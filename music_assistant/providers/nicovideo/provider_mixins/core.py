@@ -13,7 +13,6 @@ from __future__ import annotations
 from typing import Any, override
 
 from music_assistant_models.enums import MediaType
-from music_assistant_models.errors import LoginFailed
 
 from music_assistant.providers.nicovideo.config import NicovideoConfig
 from music_assistant.providers.nicovideo.provider_mixins.base import (
@@ -63,14 +62,7 @@ class NicovideoMusicProviderCoreMixin(NicovideoMusicProviderMixinBase):
         try:
             if self.nicovideo_config.auth.user_session:
                 # Try login if a user_session is configured
-                login_success = await self.service_manager.auth.try_login()
-                if not login_success:
-                    raise LoginFailed(  # noqa: TRY301 - logged by except below
-                        "Your niconico user_session cookie is invalid or has expired. "
-                        "Enter a new one in the provider settings.",
-                        translation_key="user_session_expired",
-                        translation_owner=self.translation_owner,
-                    )
+                await self.service_manager.auth.login()
                 self.logger.debug("nicovideo provider initialized successfully with login")
             else:
                 # No user_session configured - initialize without login

@@ -5,6 +5,8 @@ from __future__ import annotations
 import asyncio
 from typing import TYPE_CHECKING
 
+import requests
+from music_assistant_models.errors import LoginFailed, ProviderUnavailableError
 from niconico.exceptions import LoginFailureError
 
 from music_assistant.providers.nicovideo.helpers import log_verbose
@@ -26,59 +28,55 @@ class NicovideoAuthService(NicovideoBaseService):
         """Check if the user is logged in to niconico."""
         return bool(self.niconico_py_client.logined)
 
-    async def try_login(self) -> bool:
-        """Attempt to login to niconico with the configured user_session cookie."""
+    async def login(self) -> None:
+        """
+        Log in to niconico with the configured user_session cookie.
+
+        :raises LoginFailed: If niconico rejects the user_session cookie.
+        :raises ProviderUnavailableError: If niconico cannot be reached.
+        """
         if self.is_logged_in:
-            return True
+            return
 
         config = self.nicovideo_config
-        user_session = config.auth.user_session
-        if not user_session:
-            self.logger.debug("user_session is not set in the configuration.")
-            return False
+        user_session = str(config.auth.user_session)
         max_retries = 3
         retry_delay_seconds = 1
         for attempt in range(max_retries):
+            self.logger.debug(
+                "Trying to log in... (Number of attempts: %d/%d)",
+                attempt + 1,
+                max_retries,
+            )
             try:
-                self.logger.debug(
-                    "Trying to log in... (Number of attempts: %d/%d)",
-                    attempt + 1,
-                    max_retries,
-                )
-                await asyncio.to_thread(
-                    self.niconico_py_client.login_with_session,
-                    str(user_session),
-                )
-                self.logger.info("Successfully authenticated with Nicovideo!")
-                session = self.niconico_py_client.get_user_session()
-                if session:
-                    config.auth.save_user_session(session)
-                    log_verbose(
-                        self.logger,
-                        "Saved user session for future logins (length: %d chars)",
-                        len(session),
-                    )
-                return True
+                await asyncio.to_thread(self.niconico_py_client.login_with_session, user_session)
             except LoginFailureError as err:
-                self.logger.error("Login with user_session failed, it may have expired: %s", err)
-                return False
-            except Exception as e:
-                if (
-                    "Name or service not known" in str(e)
-                    or "Max retries exceeded" in str(e)
-                    or "ConnectionError" in str(e)
-                ):
-                    self.logger.warning(
-                        "Network or DNS error occurred: %s. Retrying in %d seconds...",
-                        e,
-                        retry_delay_seconds,
-                    )
-                    await asyncio.sleep(retry_delay_seconds)
-                else:
-                    self.logger.error("An unexpected error has occurred.: %s", e)
-                    return False
-        self.logger.error(
-            "Could not login after exceeding the maximum number of retries (%d).",
-            max_retries,
-        )
-        return False
+                raise LoginFailed(
+                    "Your niconico user_session cookie is invalid or has expired. "
+                    "Enter a new one in the provider settings.",
+                    translation_key="user_session_expired",
+                    translation_owner=self.service_manager.provider.translation_owner,
+                ) from err
+            except (requests.ConnectionError, requests.Timeout) as err:
+                if attempt + 1 == max_retries:
+                    raise ProviderUnavailableError(
+                        f"Could not reach niconico to log in: {err}"
+                    ) from err
+                self.logger.warning(
+                    "Network error while logging in: %s. Retrying in %d seconds...",
+                    err,
+                    retry_delay_seconds,
+                )
+                await asyncio.sleep(retry_delay_seconds)
+            else:
+                break
+
+        self.logger.info("Successfully authenticated with Nicovideo!")
+        session = self.niconico_py_client.get_user_session()
+        if session:
+            config.auth.save_user_session(session)
+            log_verbose(
+                self.logger,
+                "Saved user session for future logins (length: %d chars)",
+                len(session),
+            )
