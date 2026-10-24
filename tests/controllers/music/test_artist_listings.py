@@ -616,7 +616,7 @@ async def _seed_author_audiobooks(mass: MusicAssistant) -> str:
         )
     )
     for index, (name, duration, series) in enumerate(
-        (("Zebra", 300, None), ("Apple", 100, "Saga"), ("Mango", 200, "Saga"))
+        (("Zebra", 250, None), ("Apple", 100, "Saga"), ("Mango", 200, "Saga"))
     ):
         metadata = MediaItemMetadata()
         if series:
@@ -662,7 +662,7 @@ async def test_artist_audiobooks_follow_the_listing_contract(mass: MusicAssistan
 async def test_collapsed_artist_audiobooks_sort_a_collection_by_its_title(
     mass: MusicAssistant,
 ) -> None:
-    """A collapsed collection sorts and searches by its title, and has no duration of its own."""
+    """A collapsed collection searches by its title and sorts by the duration of all its books."""
     author_id = await _seed_author_audiobooks(mass)
 
     async def _books(**kwargs: Any) -> list[Audiobook | MediaCollection[Audiobook]]:
@@ -673,7 +673,8 @@ async def test_collapsed_artist_audiobooks_sort_a_collection_by_its_title(
     books = await _books()
     assert _names(books) == ["Saga", "Zebra"]
     assert isinstance(books[0], MediaCollection)
-    assert _names(await _books(sort_field=SortField.DURATION)) == ["Saga", "Zebra"]
+    # Saga's 300 seconds sort after Zebra's 250
+    assert _names(await _books(sort_field=SortField.DURATION)) == ["Zebra", "Saga"]
     assert _names(await _books(search="saga")) == ["Saga"]
 
 
