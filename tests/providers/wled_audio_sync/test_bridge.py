@@ -10,7 +10,6 @@ from unittest.mock import AsyncMock, Mock
 import numpy as np
 import pytest
 from aiosendspin.server.roles.visualizer.features import ExtractedFrame
-from music_assistant_models.errors import SetupFailedError
 
 from music_assistant.providers.wled_audio_sync.bridge import WledBridge
 from music_assistant.providers.wled_audio_sync.constants import SPECTRUM_BINS, ScalingMode
@@ -68,30 +67,6 @@ async def test_stop_removes_client_and_closes_transport() -> None:
     bridge._sendspin_client = Mock(client_id="wled-zone-11988")
     await bridge.stop()
     remove_client.assert_awaited_once_with("wled-zone-11988")
-    transport.close.assert_called_once()
-
-
-async def test_start_refuses_a_port_whose_client_is_already_registered() -> None:
-    """A second zone on the same port must not take over the live zone's client."""
-    bridge, _, _ = _make_bridge()
-    transport = Mock()
-    cast("Any", bridge.mass.loop).create_datagram_endpoint.return_value = (transport, None)
-    cast("Any", bridge.sendspin_server).get_client.return_value = Mock()
-    with pytest.raises(SetupFailedError, match="another WLED zone"):
-        await bridge.start()
-    cast("Any", bridge.sendspin_server).register_external_player.assert_not_called()
-    transport.close.assert_called_once()
-
-
-async def test_start_closes_transport_when_cleanup_fails() -> None:
-    """The socket is released even if unregistering after a failed registration raises."""
-    bridge, _, _ = _make_bridge()
-    transport = Mock()
-    cast("Any", bridge.mass.loop).create_datagram_endpoint.return_value = (transport, None)
-    bridge.register_client = Mock(side_effect=RuntimeError("register failed"))  # type: ignore[method-assign]
-    bridge.unregister_client = AsyncMock(side_effect=RuntimeError("cleanup failed"))  # type: ignore[method-assign]
-    with pytest.raises(RuntimeError, match="cleanup failed"):
-        await bridge.start()
     transport.close.assert_called_once()
 
 

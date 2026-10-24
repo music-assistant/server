@@ -7,7 +7,6 @@ from collections import deque
 from typing import TYPE_CHECKING
 
 from aiosendspin.models.visualizer import ClientHelloVisualizerSpectrum, VisualizerStatePayload
-from music_assistant_models.errors import SetupFailedError
 
 from music_assistant.providers.sendspin_lights.base import SendspinLightBridge
 
@@ -97,26 +96,14 @@ class WledBridge(SendspinLightBridge):
         self._transport, _ = await self.mass.loop.create_datagram_endpoint(
             asyncio.DatagramProtocol, remote_addr=(WLED_MULTICAST_GROUP, self.port)
         )
-        try:
-            self._ensure_client_unclaimed()
-            self.register_client()
-        except Exception:
-            try:
-                await self.unregister_client()
-            finally:
-                self._transport.close()
-            raise
+        self.register_client()
         self.logger.info("WLED sync zone started on port %d", self.port)
 
     async def stop(self) -> None:
         """Remove the Sendspin client and close the UDP transport."""
-        try:
-            self._send_silence()
-        finally:
-            try:
-                await self.unregister_client()
-            finally:
-                self._transport.close()
+        self._send_silence()
+        await self.unregister_client()
+        self._transport.close()
 
     def update_settings(self, latency_ms: int, gain_db: float, scaling_mode: ScalingMode) -> None:
         """
@@ -202,18 +189,3 @@ class WledBridge(SendspinLightBridge):
                 self._latest_f_peak_amp = frame.f_peak_amp
             if frame.peak is not None and frame.peak >= PEAK_MIN_STRENGTH:
                 self._peak_pending = True
-
-    def _ensure_client_unclaimed(self) -> None:
-        """
-        Refuse to start when another zone already holds this port's Sendspin client.
-
-        :raises SetupFailedError: If the client id is already registered.
-        """
-        # register_external_player() would silently take over a live zone's client for the
-        # same port. Nothing suspends between this check and the claim, so no other zone
-        # can load in between.
-        if self.sendspin_server.get_client(self.client_id) is not None:
-            raise SetupFailedError(
-                f"Sendspin client '{self.client_id}' is already registered: another "
-                f"WLED zone is using port {self.port}. Each WLED instance needs its own port."
-            )
