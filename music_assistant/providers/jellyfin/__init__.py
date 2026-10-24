@@ -27,7 +27,7 @@ from music_assistant_models.media_items import (
 )
 from music_assistant_models.streamdetails import StreamDetails
 
-from music_assistant.constants import CONF_USERNAME, CONF_PASSWORD, CONF_VERIFY_SSL, UNKNOWN_ARTIST, UNKNOWN_ARTIST_ID_MBID
+from music_assistant.constants import UNKNOWN_ARTIST, UNKNOWN_ARTIST_ID_MBID
 from music_assistant.controllers.cache import use_cache
 from music_assistant.mass import MusicAssistant
 from music_assistant.models import ProviderInstanceType
