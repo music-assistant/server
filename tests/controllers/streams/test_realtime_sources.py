@@ -40,6 +40,7 @@ from music_assistant.controllers.streams.audio import (
 )
 from music_assistant.controllers.streams.audio_buffer import AudioBuffer
 from music_assistant.controllers.streams.constants import (
+    ICY_WRITE_SIZE,
     BufferSize,
     PacingProfile,
     output_pacing_args,
@@ -2394,6 +2395,42 @@ async def test_flow_passes_on_encoded_audio_without_waiting_for_a_full_chunk(
         await controller.serve_queue_flow_stream(request)
 
     assert seen["chunk_size"] is None
+
+
+async def test_flow_with_icy_framing_writes_small_blocks_and_counts_to_the_interval(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """
+    An ICY flow hands audio on in small writes and inserts metadata by byte count.
+
+    A write per metadata interval held back 1.5s of FLAC at a time, which drained
+    a near-realtime player below its restart threshold (server#7147).
+    """
+    controller, request, _ = _flow_handler(monkeypatch, is_realtime=False)
+    controller.mass.config.get_raw_player_config_value.return_value = "full"
+    request.headers = {"Icy-MetaData": "1"}
+    seen: dict[str, Any] = {}
+    written: list[bytes] = []
+
+    async def _encoded_audio(**kwargs: Any) -> AsyncGenerator[bytes]:
+        seen["chunk_size"] = kwargs.get("chunk_size")
+        for _ in range(3):
+            yield b"a" * 100_000
+
+    async def _record(_self: Any, chunk: bytes) -> None:
+        written.append(chunk)
+
+    monkeypatch.setattr(controller_mod, "get_ffmpeg_stream", _encoded_audio)
+    monkeypatch.setattr(_FakeStreamResponse, "write", _record)
+
+    await controller.serve_queue_flow_stream(request)
+
+    assert seen["chunk_size"] == ICY_WRITE_SIZE
+    stream = b"".join(written)
+    metadata = controller_mod._icy_metadata_block(
+        controller.mass.player_queues.get.return_value, full=True
+    )
+    assert stream == b"a" * 256_000 + metadata + b"a" * 44_000
 
 
 async def test_flow_producer_learns_when_its_player_left(monkeypatch: pytest.MonkeyPatch) -> None:
