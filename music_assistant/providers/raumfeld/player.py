@@ -1407,6 +1407,11 @@ class RaumfeldPlayer(Player):
         # strict: the check never looks at playback without the lock
         try:
             async with self.mass.players.get_group_and_player_lock(self.player_id, strict=True):
+                if joined is not None and self._rooms_settling:
+                    # a room joined while this waited for the lock and is still being hooked
+                    # in; that join's check restarts once it plays, for these rooms as well
+                    self._rooms_to_restart_for += tuple(joined.items())
+                    return
                 if not (self.leads_group and self.plays_own_queue):
                     return
                 if self._stream_rates is None:

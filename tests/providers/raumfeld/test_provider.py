@@ -1551,6 +1551,40 @@ async def test_a_room_that_joined_after_a_seek_is_restarted_for() -> None:
     mass.player_queues.seek.assert_awaited_once()
 
 
+async def test_a_room_joining_while_a_check_waits_for_the_lock_is_waited_for() -> None:
+    """A check that got the lock while another join's room still hooks in leaves it the restart."""
+    bar, mass, _ = _joined_group(lambda sofa: _allow(sofa, 96000), stream_started_in_group=True)
+    bar._attr_group_members = [*bar._attr_group_members, "raumfeld_kitchen"]
+    _allow(mass.players.get_player("raumfeld_kitchen"), 96000)
+    _restart_on_join(bar, True)
+    lock_free = asyncio.Event()
+    kitchen_plays = asyncio.Event()
+    waiting_for_lock = asyncio.Event()
+
+    @contextlib.asynccontextmanager
+    async def player_lock(*_args: Any, **_kwargs: Any) -> AsyncIterator[None]:
+        waiting_for_lock.set()
+        await lock_free.wait()
+        yield
+
+    async def wait(rooms: list[str]) -> None:
+        if rooms == ["raumfeld_kitchen"]:
+            await kitchen_plays.wait()
+
+    mass.players.get_group_and_player_lock = player_lock
+    with patch.object(bar, "_wait_for_rooms_playing", AsyncMock(side_effect=wait)):
+        sofa = asyncio.create_task(bar._check_join(["raumfeld_sofa"]))
+        await waiting_for_lock.wait()
+        kitchen = asyncio.create_task(bar._check_join(["raumfeld_kitchen"]))
+        await asyncio.sleep(0)
+        lock_free.set()
+        await sofa
+        mass.player_queues.seek.assert_not_awaited()
+        kitchen_plays.set()
+        await kitchen
+    mass.player_queues.seek.assert_awaited_once()
+
+
 async def test_a_room_that_left_while_hooked_in_leaves_no_restart() -> None:
     """A room gone from the group again before it played needs no restart for sync."""
     bar, mass, _ = _joined_group(lambda sofa: _allow(sofa, 96000), stream_started_in_group=True)
