@@ -17,7 +17,7 @@ CLIENT_ID = "client-id"
 
 def _provider(result: Any = None, error: Exception | None = None) -> HomeAssistantProvider:
     provider = HomeAssistantProvider.__new__(HomeAssistantProvider)
-    provider.hass = SimpleNamespace(  # type: ignore[assignment]
+    provider.hass = SimpleNamespace(
         send_command=AsyncMock(return_value=result, side_effect=error),
         subscribe=AsyncMock(return_value=Mock(), side_effect=error),
     )

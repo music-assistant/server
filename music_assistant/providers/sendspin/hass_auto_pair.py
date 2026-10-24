@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from functools import partial
 from typing import TYPE_CHECKING, cast
 
 from aiosendspin.models.types import PairMethod
@@ -24,8 +25,8 @@ class HassAutoPairer:
     Pair unpaired encrypted clients without user interaction, through Home Assistant.
 
     Home Assistant announces the Sendspin client ids of the devices it can read a pairing
-    token from. A client that is both announced and connected here unpaired is
-    paired with that token, whichever of the two happens last.
+    token from. A client that is both announced and connected here unpaired is paired with
+    that token, whichever of the two happens last.
     """
 
     def __init__(self, provider: SendspinProvider) -> None:
@@ -35,21 +36,27 @@ class HassAutoPairer:
         self._announced: set[str] = set()
         self._unsubscribe: Callable[[], None] | None = None
         self._tasks: dict[str, asyncio.Task[None]] = {}
-
-    @property
-    def _hass(self) -> HomeAssistantProvider | None:
-        hass = cast("HomeAssistantProvider | None", self.provider.mass.get_provider("hass"))
-        return hass if hass is not None and hass.available else None
+        # bumped by unsubscribe(), so a subscription answered after a teardown is dropped
+        self._generation = 0
 
     async def subscribe(self) -> None:
         """Start following the client ids Home Assistant announces, if it is available."""
         self.unsubscribe()
         if (hass := self._hass) is None:
             return
-        self._unsubscribe = await hass.subscribe_sendspin_clients(self._on_clients)
+        generation = self._generation
+        unsubscribe = await hass.subscribe_sendspin_clients(partial(self._on_clients, generation))
+        if unsubscribe is None:
+            return
+        if generation != self._generation:
+            # torn down while the subscription was being set up
+            unsubscribe()
+            return
+        self._unsubscribe = unsubscribe
 
     def unsubscribe(self) -> None:
         """Stop following Home Assistant, forget its announcements and stop pending attempts."""
+        self._generation += 1
         self._announced.clear()
         if (unsubscribe := self._unsubscribe) is not None:
             self._unsubscribe = None
@@ -63,8 +70,16 @@ class HassAutoPairer:
         if client_id in self._announced:
             self._start_pairing(client_id)
 
-    def _on_clients(self, client_ids: list[str]) -> None:
+    @property
+    def _hass(self) -> HomeAssistantProvider | None:
+        hass = cast("HomeAssistantProvider | None", self.provider.mass.get_provider("hass"))
+        return hass if hass is not None and hass.available else None
+
+    def _on_clients(self, generation: int, client_ids: list[str]) -> None:
         """Handle the client ids Home Assistant can fetch a pairing token for."""
+        if generation != self._generation:
+            # a snapshot of a subscription that was torn down meanwhile
+            return
         announced = set(client_ids)
         new_client_ids = announced - self._announced
         self._announced = announced
@@ -77,7 +92,12 @@ class HassAutoPairer:
             return
         task = self.provider.mass.create_task(self._pair(client_id))
         self._tasks[client_id] = task
-        task.add_done_callback(lambda _: self._tasks.pop(client_id, None))
+        task.add_done_callback(partial(self._forget_task, client_id))
+
+    def _forget_task(self, client_id: str, task: asyncio.Task[None]) -> None:
+        """Drop a finished attempt, unless a newer one for the client replaced it already."""
+        if self._tasks.get(client_id) is task:
+            del self._tasks[client_id]
 
     async def _pair(self, client_id: str) -> None:
         """Pair the client with the token Home Assistant reads from its device."""

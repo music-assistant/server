@@ -535,6 +535,7 @@ class SendspinProvider(PlayerProvider):
                 # A reconnect within aiosendspin's cleanup delay reuses the player, and this
                 # event fires before the new connection's roles are attached.
                 self.mass.loop.call_soon(self._refresh_player_state, client_id)
+                self.mass.loop.call_soon(self._hass_auto_pairer.on_client_connected, client_id)
             case ClientDisconnectedEvent(client_id, goodbye_reason):
                 self._set_held_elsewhere(
                     client_id, held=goodbye_reason in HELD_ELSEWHERE_GOODBYE_REASONS
@@ -1726,7 +1727,6 @@ class SendspinProvider(PlayerProvider):
                     self.mass.players.delete_player_config(
                         mac_player_id, replacement_player_id=client_id
                     )
-                self._hass_auto_pairer.on_client_connected(client_id)
         finally:
             self._finish_client_event(client_id)
 

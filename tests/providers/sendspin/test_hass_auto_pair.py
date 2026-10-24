@@ -14,14 +14,18 @@ from aiosendspin.noise.keys import PSK_SIZE, b64url_encode
 from aiosendspin.noise.pairing import PairingError
 from aiosendspin.noise.pairing_token import PSKPairingToken, encode_psk_token
 from aiosendspin.noise.trust_store import PskCategory
+from aiosendspin.server import ClientConnectedEvent
 
 from music_assistant.providers.sendspin.hass_auto_pair import HassAutoPairer
 
 from .test_pin_session import _FakeServerApi, _make_provider, _offer
+from .test_refresh_player import _make_provider as _make_event_provider
+from .test_refresh_player import _mock_player
 from .test_web_player_pairing import _FakePairingStore
 
 if TYPE_CHECKING:
     from aiosendspin.models.core import SupportedPairMethods
+    from aiosendspin.server import SendspinServer
 
 CLIENT_ID = b64url_encode(bytes(range(32)))
 PAIRING_PSK = bytes(range(100, 100 + PSK_SIZE))
@@ -59,6 +63,11 @@ def _make_pairer(
     if announced:
         pairer._announced = {CLIENT_ID}
     return pairer, api, refreshed
+
+
+def _announce(pairer: HassAutoPairer, client_ids: list[str]) -> None:
+    """Deliver a snapshot for the live subscription."""
+    pairer._on_clients(pairer._generation, client_ids)
 
 
 async def _settle(pairer: HassAutoPairer) -> None:
@@ -171,7 +180,7 @@ async def test_newly_announced_clients_are_paired(monkeypatch: pytest.MonkeyPatc
     """Each snapshot from Home Assistant pairs the clients it did not list before."""
     hass = _hass()
     pairer, api, _ = _make_pairer(monkeypatch, hass, announced=False)
-    pairer._on_clients(["other", CLIENT_ID])
+    _announce(pairer, ["other", CLIENT_ID])
     assert pairer._announced == {"other", CLIENT_ID}
     assert set(pairer._tasks) == {"other", CLIENT_ID}
     await _settle(pairer)
@@ -182,10 +191,10 @@ async def test_newly_announced_clients_are_paired(monkeypatch: pytest.MonkeyPatc
     # the same snapshot again changes nothing; a device that drops off and comes
     # back is announced anew and paired again if it still needs it
     hass.get_sendspin_pairing_token.reset_mock()
-    pairer._on_clients([CLIENT_ID, "other"])
+    _announce(pairer, [CLIENT_ID, "other"])
     assert pairer._tasks == {}
-    pairer._on_clients(["other"])
-    pairer._on_clients(["other", CLIENT_ID])
+    _announce(pairer, ["other"])
+    _announce(pairer, ["other", CLIENT_ID])
     assert list(pairer._tasks) == [CLIENT_ID]
     await _settle(pairer)
     hass.get_sendspin_pairing_token.assert_awaited_once_with(CLIENT_ID)
@@ -198,18 +207,58 @@ async def test_follows_home_assistant_while_it_is_available(
     hass = _hass()
     pairer, _, _ = _make_pairer(monkeypatch, hass, announced=False)
     await pairer.subscribe()
-    hass.subscribe_sendspin_clients.assert_awaited_once_with(pairer._on_clients)
     unsubscribe = hass.subscribe_sendspin_clients.return_value
-    assert pairer._unsubscribe is unsubscribe
+    assert pairer._unsubscribe == unsubscribe
+    on_clients = hass.subscribe_sendspin_clients.await_args.args[0]
 
-    pairer._on_clients([CLIENT_ID])
+    on_clients([CLIENT_ID])
+    assert pairer._announced == {CLIENT_ID}
     task = pairer._tasks[CLIENT_ID]
     pairer.unsubscribe()
-    unsubscribe.assert_called_once_with()
+    assert unsubscribe.call_count == 1
     assert pairer._unsubscribe is None
     assert pairer._announced == set()
     assert task.cancelling()
     assert pairer._tasks == {}
+
+    # a snapshot of the torn down subscription that was still in flight is ignored
+    on_clients([CLIENT_ID])
+    assert pairer._announced == set()
+    assert pairer._tasks == {}
+
+
+async def test_a_subscription_answered_after_teardown_is_dropped(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Unsubscribing while the subscribe request is in flight still ends the subscription."""
+    hass = _hass()
+    pairer, _, _ = _make_pairer(monkeypatch, hass, announced=False)
+    unsubscribe = cast("Mock", hass.subscribe_sendspin_clients.return_value)
+
+    async def _unsubscribe_meanwhile(_callback: Any) -> Mock:
+        pairer.unsubscribe()
+        return unsubscribe
+
+    hass.subscribe_sendspin_clients.side_effect = _unsubscribe_meanwhile
+    await pairer.subscribe()
+    assert unsubscribe.call_count == 1
+    assert pairer._unsubscribe is None
+
+
+async def test_a_finished_attempt_does_not_forget_its_replacement(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The done callback of an attempt leaves a newer attempt for the same client tracked."""
+    pairer, _, _ = _make_pairer(monkeypatch, _hass())
+    loop = asyncio.get_running_loop()
+    old_task: asyncio.Task[None] = loop.create_task(asyncio.sleep(0))
+    new_task: asyncio.Task[None] = loop.create_task(asyncio.sleep(0))
+    pairer._tasks[CLIENT_ID] = new_task
+    pairer._forget_task(CLIENT_ID, old_task)
+    assert pairer._tasks == {CLIENT_ID: new_task}
+    pairer._forget_task(CLIENT_ID, new_task)
+    assert pairer._tasks == {}
+    await asyncio.gather(old_task, new_task)
 
 
 async def test_subscribing_needs_an_available_home_assistant(
@@ -221,3 +270,14 @@ async def test_subscribing_needs_an_available_home_assistant(
     await pairer.subscribe()
     hass.subscribe_sendspin_clients.assert_not_awaited()
     assert pairer._unsubscribe is None
+
+
+async def test_every_connection_triggers_an_attempt() -> None:
+    """A reconnect that reuses the player triggers the check too, once the hello is in."""
+    provider = _make_event_provider(_mock_player())
+    pairer = Mock()
+    provider._hass_auto_pairer = pairer
+    provider.event_cb(cast("SendspinServer", None), ClientConnectedEvent(CLIENT_ID))
+    pairer.on_client_connected.assert_not_called()
+    await asyncio.sleep(0)
+    pairer.on_client_connected.assert_called_once_with(CLIENT_ID)
