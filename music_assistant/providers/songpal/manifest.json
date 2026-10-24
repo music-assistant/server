@@ -1,0 +1,9 @@
+{
+  "type": "player",
+  "domain": "songpal",
+  "name": "Sony SongPal",
+  "description": "Control Sony SongPal soundbars and receivers. Quick Start / Network Standby must be enabled or the device cannot be powered on. Music Assistant audio is played over DLNA AVTransport.",
+  "codeowners": ["@yourgithubusername"],
+  "requirements": ["python-songpal==0.16.2"],
+  "stage": "alpha"
+}
