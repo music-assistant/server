@@ -105,7 +105,9 @@ class HassAutoPairer:
             # the running attempt may be about to fail on the state this trigger changed
             self._pending.add(client_id)
             return
-        self._tasks[client_id] = self.provider.mass.create_task(self._run_attempt(client_id))
+        task = self.provider.mass.create_task(self._run_attempt(client_id))
+        if not task.done():
+            self._tasks[client_id] = task
 
     async def _run_attempt(self, client_id: str) -> None:
         """Run one attempt and, if the client was triggered again meanwhile, one more."""

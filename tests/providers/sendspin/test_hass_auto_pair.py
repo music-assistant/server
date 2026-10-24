@@ -328,6 +328,26 @@ async def test_closing_stops_running_attempts(monkeypatch: pytest.MonkeyPatch) -
     assert api.attempts == []
 
 
+async def test_an_attempt_over_before_it_was_stored_does_not_linger(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """With eagerly started tasks, an announcement before the client connects leaves no trace."""
+    hass = _hass()
+    pairer, api, _ = _make_pairer(monkeypatch, hass, connected=False, announced=False)
+    loop = asyncio.get_running_loop()
+    cast("Any", pairer.provider.mass).create_task = lambda coro: asyncio.Task(
+        coro, loop=loop, eager_start=True
+    )
+    _announce(pairer, [CLIENT_ID])
+    assert pairer._tasks == {}
+    assert pairer._pending == set()
+
+    cast("Any", api._client).is_connected = True
+    pairer.on_client_connected(CLIENT_ID)
+    await _settle(pairer)
+    assert len(api.attempts) == 1
+
+
 async def test_a_closed_pairer_does_not_subscribe_again(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
