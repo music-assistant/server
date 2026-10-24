@@ -206,10 +206,10 @@ class RaumfeldPlayer(Player):
     # number of such commands running, so a poll can tell its readings no longer apply
     _playback_generation = 0
     _playback_changes = 0
-    # rooms that joined this group and are still being hooked in, and rooms that are hooked
+    # join checks still waiting for their rooms to be hooked in, and rooms that are hooked
     # in and wait for the restart of a join check that still waits, with the playback
     # generation of the stream each one joined (see _check_join); replaced, never changed
-    _rooms_settling: frozenset[str] = frozenset()
+    _joins_settling = 0
     _rooms_to_restart_for: tuple[tuple[str, int], ...] = ()
     # until when a stop is taken as MA ending this room's queue during a handover
     _handover_until = 0.0
@@ -1348,15 +1348,16 @@ class RaumfeldPlayer(Player):
             return
         # the stream the rooms joined; a restart or seek meanwhile replaces it
         generation = self._playback_generation
-        rooms = frozenset(joined)
-        self._rooms_settling |= rooms
+        # counted per check, not per room: a room can leave and join again while an earlier
+        # check still waits for it
+        self._joins_settling += 1
         try:
             # a restart while the host still hooks the rooms in drops them for a while
             await self._wait_for_rooms_playing(joined)
         finally:
-            self._rooms_settling -= rooms
-        self._rooms_to_restart_for += tuple((pid, generation) for pid in rooms)
-        if self._rooms_settling:
+            self._joins_settling -= 1
+        self._rooms_to_restart_for += tuple((pid, generation) for pid in joined)
+        if self._joins_settling:
             # rooms of another join are still being hooked in; that join's check restarts
             # once they play, for these rooms as well
             return
@@ -1407,7 +1408,7 @@ class RaumfeldPlayer(Player):
         # strict: the check never looks at playback without the lock
         try:
             async with self.mass.players.get_group_and_player_lock(self.player_id, strict=True):
-                if joined is not None and self._rooms_settling:
+                if joined is not None and self._joins_settling:
                     # a room joined while this waited for the lock and is still being hooked
                     # in; that join's check restarts once it plays, for these rooms as well
                     self._rooms_to_restart_for += tuple(joined.items())
