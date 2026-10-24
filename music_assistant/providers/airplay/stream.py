@@ -21,7 +21,7 @@ from uuid import uuid4
 from music_assistant_models.enums import PlaybackState
 from music_assistant_models.errors import PlayerCommandFailed
 
-from music_assistant.constants import VERBOSE_LOG_LEVEL
+from music_assistant.constants import CONF_PASSWORD, VERBOSE_LOG_LEVEL
 from music_assistant.helpers.images import _extract_imageproxy_id, get_image_thumb_path
 from music_assistant.helpers.named_pipe import AsyncNamedPipeWriter
 from music_assistant.helpers.process import AsyncProcess
@@ -37,7 +37,6 @@ from music_assistant.providers.airplay.constants import (
     CONF_AIRPLAY_CREDENTIALS,
     CONF_BUFFER_DEPTH,
     CONF_ENCRYPTION,
-    CONF_PASSWORD,
     CONF_RAOP_CREDENTIALS,
     RAOP_DEFAULT_PORT,
     STREAMING_MODE_AP2_COMPAT,

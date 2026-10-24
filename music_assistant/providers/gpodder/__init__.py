@@ -43,7 +43,7 @@ from music_assistant_models.media_items import (
 )
 from music_assistant_models.streamdetails import StreamDetails
 
-from music_assistant.constants import CONF_PASSWORD, CONF_USERNAME
+from music_assistant.constants import CONF_PASSWORD, CONF_USERNAME, CONF_VERIFY_SSL
 from music_assistant.helpers.datetime import from_utc_timestamp
 from music_assistant.helpers.podcast_parsers import (
     enrich_episode_chapters,
@@ -88,7 +88,6 @@ CONF_TOKEN_NC = "token"  # noqa: S105 - config key
 CONF_URL_NC = "url_nc"
 
 # General config
-CONF_VERIFY_SSL = "verify_ssl"
 CONF_MAX_NUM_EPISODES = "max_num_episodes"
 
 
