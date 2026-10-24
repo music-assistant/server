@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -24,6 +25,7 @@ from music_assistant.providers.raumfeld.helpers import (
     parse_serial_number,
     play_mode_for,
     query_last_change,
+    room_renderer_udns,
     room_udn_to_player_id,
     serial_to_player_id,
 )
@@ -281,3 +283,26 @@ def test_an_unknown_play_mode_is_not_guessed() -> None:
     """A play mode the renderer did not report, or one not seen before, stays unknown."""
     assert parse_play_mode(None) == (None, RepeatMode.UNKNOWN)
     assert parse_play_mode("INTRO") == (None, RepeatMode.UNKNOWN)
+
+
+def test_room_renderer_udns_lists_every_speaker_of_a_room() -> None:
+    """Rooms in a zone and unassigned rooms both list all their renderers, in the host's order."""
+    zone_config = {
+        "zones": {
+            "zone": [
+                {"room": [{"@udn": "uuid:a", "renderer": [{"@udn": "uuid:2"}, {"@udn": "uuid:1"}]}]}
+            ]
+        },
+        "unassignedRooms": {"room": [{"@udn": "uuid:b", "renderer": [{"@udn": "uuid:3"}]}]},
+    }
+
+    assert room_renderer_udns(zone_config) == {
+        "uuid:a": ["uuid:2", "uuid:1"],
+        "uuid:b": ["uuid:3"],
+    }
+
+
+@pytest.mark.parametrize("zone_config", [None, {}, {"zones": None}, {"zones": {"zone": []}}])
+def test_room_renderer_udns_without_rooms(zone_config: dict[str, Any] | None) -> None:
+    """A zone configuration without rooms gives no renderers."""
+    assert room_renderer_udns(zone_config) == {}

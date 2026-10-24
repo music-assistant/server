@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from typing import Any
 from urllib.parse import parse_qs, quote, unquote, urlsplit
 
 import aiohttp
@@ -64,6 +65,17 @@ def room_udn_to_player_id(room_udn: str) -> str:
     return f"{PLAYER_ID_PREFIX}_{room_udn.removeprefix('uuid:')}"
 
 
+def speaker_to_player_id(serial: str) -> str:
+    """
+    Derive the player_id of a speaker that plays as part of a room of several speakers.
+
+    :param serial: The speaker's serialNumber.
+    """
+    # apart from the room ids, which can take a speaker's serial themselves
+    cleaned = "".join(char for char in serial if char.isalnum()).lower()
+    return f"{PLAYER_ID_PREFIX}_speaker_{cleaned}"
+
+
 def parse_serial_number(description_xml: str | None) -> str | None:
     """
     Return the ``serialNumber`` from a UPnP device description, or ``None``.
@@ -84,6 +96,15 @@ def parse_model_name(description_xml: str | None) -> str | None:
     :param description_xml: The renderer's device description XML.
     """
     return _parse_description_field(description_xml, "modelName")
+
+
+def parse_friendly_name(description_xml: str | None) -> str | None:
+    """
+    Return the ``friendlyName`` from a UPnP device description, or ``None``.
+
+    :param description_xml: The renderer's device description XML.
+    """
+    return _parse_description_field(description_xml, "friendlyName")
 
 
 def parse_didl_metadata(didl_xml: str | None) -> dict[str, str | None]:
@@ -373,3 +394,20 @@ _PLAY_MODES: dict[str, tuple[bool | None, RepeatMode]] = {
     "RANDOM": (True, RepeatMode.ALL),
     "REPEAT_ONE": (False, RepeatMode.ONE),
 }
+
+
+def room_renderer_udns(zone_config: dict[str, Any] | None) -> dict[str, list[str]]:
+    """
+    Return the renderer UDNs of every room, in the order the host lists them, by room UDN.
+
+    :param zone_config: The host's zone configuration as hassfeld parses it.
+    """
+    rooms: list[dict[str, Any]] = []
+    for zone in ((zone_config or {}).get("zones") or {}).get("zone") or []:
+        rooms.extend(zone.get("room") or [])
+    rooms.extend(((zone_config or {}).get("unassignedRooms") or {}).get("room") or [])
+    return {
+        room["@udn"]: [renderer["@udn"] for renderer in room.get("renderer") or []]
+        for room in rooms
+        if room.get("@udn")
+    }
