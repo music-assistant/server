@@ -24,6 +24,8 @@ DYNAMIC_RADIO_DYNAMIC_TARGET: Final[int] = 50
 CACHE_CATEGORY_SEARCH_RESULTS: Final[int] = 10
 # the listings assembled from the providers (the tracks of an album, ...), kept as a whole
 CACHE_CATEGORY_LISTINGS: Final[int] = 11
+# Provider-reported visibility, kept separately from persisted library mappings.
+CACHE_CATEGORY_SHARE_VISIBILITY: Final[int] = 12
 # how long an assembled listing is served without asking the providers again
 LISTING_CACHE_EXPIRATION: Final[int] = 15 * 60
 # a browse folder can show what is live right now, so it is kept just long enough to page

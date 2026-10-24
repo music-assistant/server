@@ -13,6 +13,8 @@ Music Assistant's core controller for the music library. It aggregates and norma
 - `listing_cache.py`: keeps such an assembled listing for a while (`cached_listing`), grouped by the container's uri so an edit or refresh of the container drops it (`invalidate_listings`), as does a played episode for its podcast. Dynamic playlists and the playlists Music Assistant composes itself (builtin, smart playlists) are never kept.
 - `constants.py`: config keys, the database schema version, background-task ids and tuning constants.
 - `helpers.py`: stateless helper functions (needing no controller state) used by the controller.
+- `sharing.py`: public provider page resolution and human-readable metadata for sharing.
+- `sharing_catalogue.py`: additional audited catalogue page formats used by sharing.
 - `strings.json`: translatable strings for this module (`core.music.*`), including the `manifest` name/description.
 
 ## Architecture & Design Notes
@@ -22,6 +24,44 @@ Music Assistant's core controller for the music library. It aggregates and norma
 - **Startup order.** As a singleton core controller it is set up once: the database is initialized first (via the mixin), then maintenance tasks are registered and provider syncs are scheduled.
 - **Library data model.** Library items use the provider id `library`; provider mappings record which provider item(s) a library item resolves to. Maintenance prunes orphaned mappings and playlog rows.
 - **Schema migrations** are versioned against `DB_SCHEMA_VERSION`: on a version mismatch the database file is backed up before migrating, and a failed migration falls back to a fresh database (triggering a full rescan) so the user is never left without a working library.
+
+## Sharing items
+
+`music/share_item` accepts an item's Music Assistant `uri` and requires `library.read`.
+For a queue item, pass the underlying media item's URI. It returns a `title`, a list of
+`links` containing `provider_domain`, `provider_instance` and `url`, and nullable `text`.
+When public links are available, share the selected URL. Otherwise, share `text`, which
+contains human-readable item metadata. Radio text identifies the station.
+Sharing resolves album and track metadata without fetching nested artists or albums.
+
+The server resolves audited public provider pages on request and filters sources by the
+calling user's access. Clients must not infer shareability from `ProviderMapping.url`:
+that field can contain playback addresses or credentials. Unsupported providers use the
+text fallback. Playlists and SoundCloud tracks also use text until public visibility can
+be verified. SoundCloud artist pages remain supported. Adding a provider requires verifying
+its public page format and covering it with sharing tests. Sharing does not change stored
+mappings or create hosted pages.
+
+URL support is specific to each provider and media type. Catalogue IDs can resolve to
+music, podcast or audiobook pages; audited radio providers resolve to station pages.
+Podcast directory IDs can resolve to public directory pages without exposing feed or
+enclosure URLs. Existing mappings remain unchanged, and missing identity information
+uses the text fallback without additional provider requests.
+
+YouTube Music watch links require cached public visibility from an authenticated song
+metadata lookup. Private uploads, unlisted videos and legacy mappings without that evidence
+use text. Sharing reads this evidence without refreshing it or probing a website; the
+evidence expires with the provider's track metadata cache. Album and artist catalogue
+links remain supported.
+Sharing lookups recheck source access after YouTube Music's cache and throttle waits,
+and again in the worker thread before the authenticated song request.
+Concurrent sharing requests keep separate authorization contexts for provider tasks,
+while reusing the same stored metadata cache. Calls within one request still deduplicate.
+
+Built-in and Smart Playlists share their readable names as text. Provider item URIs
+can resolve stored library metadata even while that source is unavailable. Built-in
+track and radio URIs that could probe an arbitrary audio URL remain excluded.
+Provider fetches stay on the authorized account if it disconnects during library resolution.
 
 ## Schema Versions on `dev` vs `stable`
 
