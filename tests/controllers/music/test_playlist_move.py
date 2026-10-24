@@ -11,7 +11,11 @@ import pytest
 from music_assistant_models.access import PlaylistAccess
 from music_assistant_models.auth import User, UserRole
 from music_assistant_models.enums import EventType, ProviderFeature, ProviderSharing
-from music_assistant_models.errors import InsufficientPermissions, InvalidDataError
+from music_assistant_models.errors import (
+    InsufficientPermissions,
+    InvalidDataError,
+    ResourceTemporarilyUnavailable,
+)
 from music_assistant_models.media_items import Playlist, ProviderMapping
 
 from music_assistant.controllers.cache import BYPASS_CACHE
@@ -94,6 +98,7 @@ def _provider(features: set[ProviderFeature] | None = None) -> MagicMock:
         else features
     )
     provider.move_playlist_track = AsyncMock()
+    provider.move_playlist_tracks = AsyncMock()
     provider.bypass_seen = []
 
     async def _get_playlist_tracks(_prov_playlist_id: str, page: int = 0) -> list[MagicMock]:
@@ -222,3 +227,126 @@ async def test_move_below_the_first_position_is_refused(
         await playlists.move_playlist_track(added.item_id, from_position, to_position)
 
     provider.move_playlist_track.assert_not_awaited()
+
+
+async def test_move_tracks_reaches_the_provider_in_playlist_order(
+    playlists: PlaylistController, music_mass_module: MusicAssistant
+) -> None:
+    """A block move hands the positions over sorted, then reads the playlist back."""
+    added = await _add(playlists)
+    provider = _provider()
+    prov_item_id = next(iter(added.provider_mappings)).item_id
+
+    with (
+        _as_user(OWNER),
+        patch.object(music_mass_module, "get_provider", return_value=provider),
+        patch.object(music_mass_module, "signal_event") as signal_event,
+    ):
+        await playlists.move_playlist_tracks(added.item_id, [5, 2], 1)
+
+    provider.move_playlist_tracks.assert_awaited_once_with(prov_item_id, [2, 5], 1)
+    assert provider.bypass_seen == [True, True, True]
+    signal_event.assert_called_once()
+
+
+async def test_move_tracks_that_fail_part_way_still_read_the_playlist_back(
+    playlists: PlaylistController, music_mass_module: MusicAssistant
+) -> None:
+    """A provider error mid-move still refreshes and announces the partly moved playlist."""
+    added = await _add(playlists)
+    provider = _provider()
+    provider.move_playlist_tracks.side_effect = ResourceTemporarilyUnavailable("second move")
+
+    with (
+        _as_user(OWNER),
+        patch.object(music_mass_module, "get_provider", return_value=provider),
+        patch.object(music_mass_module, "signal_event") as signal_event,
+        pytest.raises(ResourceTemporarilyUnavailable),
+    ):
+        await playlists.move_playlist_tracks(added.item_id, [5, 2], 1)
+
+    assert provider.bypass_seen == [True, True, True]
+    signal_event.assert_called_once()
+
+
+async def test_move_tracks_already_in_place_changes_nothing(
+    playlists: PlaylistController, music_mass_module: MusicAssistant
+) -> None:
+    """A block that already starts at to_position is neither written nor announced."""
+    added = await _add(playlists)
+    provider = _provider()
+
+    with (
+        _as_user(OWNER),
+        patch.object(music_mass_module, "get_provider", return_value=provider),
+        patch.object(music_mass_module, "signal_event") as signal_event,
+    ):
+        await playlists.move_playlist_tracks(added.item_id, [3, 2], 2)
+
+    provider.move_playlist_tracks.assert_not_awaited()
+    signal_event.assert_not_called()
+
+
+async def test_move_tracks_without_a_target_moves_them_to_the_end(
+    playlists: PlaylistController, music_mass_module: MusicAssistant
+) -> None:
+    """Without to_position the provider is asked to move the block to the end."""
+    added = await _add(playlists)
+    provider = _provider()
+    prov_item_id = next(iter(added.provider_mappings)).item_id
+
+    with (
+        _as_user(OWNER),
+        patch.object(music_mass_module, "get_provider", return_value=provider),
+        patch.object(music_mass_module, "signal_event") as signal_event,
+    ):
+        await playlists.move_playlist_tracks(added.item_id, [1])
+
+    provider.move_playlist_tracks.assert_awaited_once_with(prov_item_id, [1], None)
+    signal_event.assert_called_once()
+
+
+@pytest.mark.parametrize(
+    ("positions", "to_position"),
+    [
+        pytest.param([], 1, id="nothing-to-move"),
+        pytest.param([2, 2], 1, id="duplicate"),
+        pytest.param([0, 1], 3, id="below-the-first"),
+        pytest.param([1, 2], 0, id="target-below-the-first"),
+    ],
+)
+async def test_move_tracks_with_invalid_positions_is_refused(
+    playlists: PlaylistController,
+    music_mass_module: MusicAssistant,
+    positions: list[int],
+    to_position: int,
+) -> None:
+    """Empty, duplicate or non-positive positions never reach the provider."""
+    added = await _add(playlists)
+    provider = _provider()
+
+    with (
+        _as_user(OWNER),
+        patch.object(music_mass_module, "get_provider", return_value=provider),
+        pytest.raises(InvalidDataError),
+    ):
+        await playlists.move_playlist_tracks(added.item_id, positions, to_position)
+
+    provider.move_playlist_tracks.assert_not_awaited()
+
+
+async def test_move_tracks_without_the_feature_is_refused(
+    playlists: PlaylistController, music_mass_module: MusicAssistant
+) -> None:
+    """A provider that cannot reorder its playlists is never asked to move a block."""
+    added = await _add(playlists)
+    provider = _provider({ProviderFeature.PLAYLIST_TRACKS_EDIT})
+
+    with (
+        _as_user(OWNER),
+        patch.object(music_mass_module, "get_provider", return_value=provider),
+        pytest.raises(InvalidDataError),
+    ):
+        await playlists.move_playlist_tracks(added.item_id, [1, 2], 3)
+
+    provider.move_playlist_tracks.assert_not_awaited()

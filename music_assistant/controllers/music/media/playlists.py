@@ -173,6 +173,11 @@ class PlaylistController(MediaControllerBase[Playlist]):
             required_scope=Scope.LIBRARY_WRITE,
         )
         self.mass.register_api_command(
+            "music/playlists/move_playlist_tracks",
+            self.move_playlist_tracks,
+            required_scope=Scope.LIBRARY_WRITE,
+        )
+        self.mass.register_api_command(
             "music/playlists/export_playlist",
             self.export_playlist,
             required_scope=Scope.LIBRARY_READ,
@@ -510,18 +515,9 @@ class PlaylistController(MediaControllerBase[Playlist]):
         :param from_position: The current position of the item, 1-based.
         :param to_position: The position the item ends up at after the move, 1-based.
         """
-        playlist = await self._get_editable_library_item(db_playlist_id)
-        if not playlist.is_editable:
-            msg = f"Playlist {playlist.name} is not editable"
-            raise InvalidDataError(msg)
-        # use _select_provider_id to respect user's provider filter
-        playlist_prov_instance, playlist_prov_item_id = self._select_provider_id(playlist)
-        provider = self.mass.get_provider(playlist_prov_instance)
-        if not provider or not isinstance(provider, MusicProvider):
-            raise ProviderUnavailableError(f"Provider {playlist_prov_instance} is not available")
-        if ProviderFeature.PLAYLIST_TRACKS_MOVE not in provider.supported_features:
-            msg = f"Provider {provider.name} does not support reordering playlists"
-            raise InvalidDataError(msg)
+        playlist, provider, playlist_prov_item_id = await self._get_reorderable_playlist(
+            db_playlist_id
+        )
         if from_position < 1 or to_position < 1:
             msg = "Playlist positions start at 1"
             raise InvalidDataError(msg)
@@ -530,6 +526,48 @@ class PlaylistController(MediaControllerBase[Playlist]):
         await provider.move_playlist_track(playlist_prov_item_id, from_position, to_position)
         await self._refresh_provider_playlist_tracks(playlist_prov_item_id, provider.instance_id)
         await self._request_metadata_refresh(playlist)
+
+    async def move_playlist_tracks(
+        self, db_playlist_id: str | int, positions: list[int], to_position: int | None = None
+    ) -> None:
+        """
+        Move items of a playlist as one block to another position.
+
+        The moved items keep their order. Returns once the provider holds the new order, so
+        the caller can reload the playlist. When the move fails part way, the playlist is
+        still read back and announced, so a reload shows the order the provider holds.
+
+        :param db_playlist_id: Library playlist id.
+        :param positions: The current positions of the items, 1-based.
+        :param to_position: The position the block's first item ends up at, 1-based. Omit it
+            to move the items to the end of the playlist.
+        """
+        playlist, provider, playlist_prov_item_id = await self._get_reorderable_playlist(
+            db_playlist_id
+        )
+        if not positions:
+            msg = "No playlist positions to move"
+            raise InvalidDataError(msg)
+        if len(set(positions)) != len(positions):
+            msg = "Each playlist position can only be moved once"
+            raise InvalidDataError(msg)
+        if min(positions) < 1 or (to_position is not None and to_position < 1):
+            msg = "Playlist positions start at 1"
+            raise InvalidDataError(msg)
+        selected = sorted(positions)
+        if to_position is not None and selected == list(
+            range(to_position, to_position + len(selected))
+        ):
+            return
+        try:
+            await provider.move_playlist_tracks(playlist_prov_item_id, selected, to_position)
+        finally:
+            # a provider that replays the block as single moves can fail part way and leave
+            # the playlist partly moved, so read it back and announce it even then
+            await self._refresh_provider_playlist_tracks(
+                playlist_prov_item_id, provider.instance_id
+            )
+            await self._request_metadata_refresh(playlist)
 
     async def match_providers(self, db_item: Playlist) -> None:
         """
@@ -2089,6 +2127,29 @@ class PlaylistController(MediaControllerBase[Playlist]):
             raise InvalidDataError(msg)
         await provider.remove_playlist_tracks(playlist_prov_item_id, positions_to_remove)
         await self._request_metadata_refresh(playlist)
+
+    async def _get_reorderable_playlist(
+        self, db_playlist_id: str | int
+    ) -> tuple[Playlist, MusicProvider, str]:
+        """
+        Return a library playlist the current user may reorder, its provider and provider id.
+
+        :param db_playlist_id: Library playlist id.
+        :raises InvalidDataError: The playlist or its provider cannot be reordered.
+        """
+        playlist = await self._get_editable_library_item(db_playlist_id)
+        if not playlist.is_editable:
+            msg = f"Playlist {playlist.name} is not editable"
+            raise InvalidDataError(msg)
+        # use _select_provider_id to respect user's provider filter
+        playlist_prov_instance, playlist_prov_item_id = self._select_provider_id(playlist)
+        provider = self.mass.get_provider(playlist_prov_instance)
+        if not provider or not isinstance(provider, MusicProvider):
+            raise ProviderUnavailableError(f"Provider {playlist_prov_instance} is not available")
+        if ProviderFeature.PLAYLIST_TRACKS_MOVE not in provider.supported_features:
+            msg = f"Provider {provider.name} does not support reordering playlists"
+            raise InvalidDataError(msg)
+        return playlist, provider, playlist_prov_item_id
 
     async def _refresh_provider_playlist_tracks(
         self, prov_playlist_id: str, provider_instance_id: str

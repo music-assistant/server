@@ -2159,3 +2159,64 @@ def test_media_item_to_playlist_item_track_round_trip_preserves_own_image() -> N
 
     assert reconstructed is not None
     assert reconstructed.metadata.images == UniqueList([image])
+
+
+def _apply_single_moves(items: list[int], steps: list[tuple[int, int]]) -> list[int]:
+    """Apply single-track moves, where each to_position is the track's final position."""
+    result = list(items)
+    for from_position, to_position in steps:
+        result.insert(to_position - 1, result.pop(from_position - 1))
+    return result
+
+
+@pytest.mark.parametrize(
+    ("positions", "to_position", "expected"),
+    [
+        pytest.param([2, 3], 4, [1, 4, 5, 2, 3], id="block-down"),
+        pytest.param([4, 5], 1, [4, 5, 1, 2, 3], id="block-to-top"),
+        pytest.param([1, 3], 4, [2, 4, 5, 1, 3], id="scattered-to-bottom"),
+        pytest.param([5, 2], 2, [1, 2, 5, 3, 4], id="unsorted-keeps-playlist-order"),
+        pytest.param([3], 1, [3, 1, 2, 4, 5], id="single"),
+    ],
+)
+def test_move_playlist_block(positions: list[int], to_position: int, expected: list[int]) -> None:
+    """The moved items keep their order and the block starts at to_position."""
+    assert playlists.move_playlist_block([1, 2, 3, 4, 5], positions, to_position) == expected
+
+
+@pytest.mark.parametrize(
+    ("positions", "to_position"),
+    [
+        pytest.param([], 1, id="nothing-to-move"),
+        pytest.param([2, 2], 1, id="duplicate"),
+        pytest.param([0], 1, id="below-the-first"),
+        pytest.param([6], 1, id="past-the-last"),
+        pytest.param([1, 2], 5, id="block-does-not-fit"),
+        pytest.param([1], 0, id="target-below-the-first"),
+    ],
+)
+def test_move_playlist_block_refuses_invalid_moves(positions: list[int], to_position: int) -> None:
+    """Positions outside the playlist, duplicates and a block that does not fit raise."""
+    with pytest.raises(InvalidDataError):
+        playlists.move_playlist_block([1, 2, 3, 4, 5], positions, to_position)
+    with pytest.raises(InvalidDataError):
+        playlists.playlist_block_move_steps(5, positions, to_position)
+
+
+def test_playlist_block_move_steps_match_the_block_move() -> None:
+    """For every block move in a short playlist, the single moves end in the same order."""
+    length = 6
+    items = list(range(1, length + 1))
+    for mask in range(1, 1 << length):
+        positions = [position for position in items if mask & (1 << (position - 1))]
+        for to_position in range(1, length - len(positions) + 2):
+            steps = playlists.playlist_block_move_steps(length, positions, to_position)
+            expected = playlists.move_playlist_block(items, positions, to_position)
+            assert _apply_single_moves(items, steps) == expected
+            assert len(steps) <= len(positions)
+            assert all(1 <= pos <= length for step in steps for pos in step)
+
+
+def test_playlist_block_move_steps_skip_a_block_already_in_place() -> None:
+    """Moving a block onto its own place needs no moves."""
+    assert playlists.playlist_block_move_steps(5, [2, 3], 2) == []
