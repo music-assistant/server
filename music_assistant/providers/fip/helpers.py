@@ -105,7 +105,9 @@ class LiveDisplay:
         upcoming = self.announced
         if upcoming is None:
             return
-        ends_at = self.shown.end if self.shown and self.shown.end else 0
+        # a song plays to its end, while a programme's songs start inside it
+        shown = self.shown
+        ends_at = shown.end if shown and shown.song_id and shown.end else 0
         if at < max(ends_at, upcoming.start or 0) + STREAM_DELAY:
             return
         self.announced = None

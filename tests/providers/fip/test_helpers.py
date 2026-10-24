@@ -206,13 +206,14 @@ def test_a_next_that_turns_into_the_old_song_is_ignored() -> None:
 
 
 def test_a_programme_hands_over_to_its_first_song() -> None:
-    """A song announced inside a programme is shown when it starts."""
+    """A song announced inside a programme is shown when it starts, not when the programme ends."""
     display = LiveDisplay()
     current, _ = parse_live(_fixture("fip_programme"))
     assert current is not None
     song = _song("Maré mansa", 1792778160, 1792778547)
     display.update(current, song, at=1792778000)
-    assert display.update(current, None, at=1792778400 + STREAM_DELAY)
+    assert not display.update(current, None, at=1792778160 + STREAM_DELAY - 1)
+    assert display.update(current, None, at=1792778160 + STREAM_DELAY)
     assert display.shown == song
 
 

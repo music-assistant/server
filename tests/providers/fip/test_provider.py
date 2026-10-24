@@ -17,8 +17,10 @@ from music_assistant.providers.fip import SUPPORTED_FEATURES
 from music_assistant.providers.fip.constants import (
     FIP_STATIONS,
     OVERDUE_UPDATE_INTERVAL,
+    STREAM_DELAY,
     STREAM_METADATA_UPDATE_INTERVAL,
 )
+from music_assistant.providers.fip.helpers import LiveDisplay, LiveItem
 from music_assistant.providers.fip.provider import LIVE_DISPLAY_KEY, FipProvider
 
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -186,6 +188,41 @@ async def test_a_failed_request_keeps_the_display(provider: FipProvider) -> None
     await provider._update_stream_metadata(details, 0)
     assert details.stream_metadata is shown
     assert details.data[LIVE_DISPLAY_KEY].shown is not None
+
+
+async def test_an_announced_song_takes_over_while_the_service_is_down(
+    provider: FipProvider,
+) -> None:
+    """A song announced before the service stopped answering is still shown when it is due."""
+    provider._get_live = AsyncMock(return_value=None)  # type: ignore[method-assign]
+    details = await provider.get_stream_details("fip_jazz", MediaType.RADIO)
+    now = time.time()
+    song = LiveItem("Next", "Artist", "cover", int(now) - STREAM_DELAY - 1, int(now) + 200, "b")
+    details.data[LIVE_DISPLAY_KEY] = LiveDisplay(
+        shown=LiveItem("Song", "Artist", "cover", int(now) - 300, song.start, "a"),
+        announced=song,
+    )
+    await provider._update_stream_metadata(details, 0)
+    assert details.stream_metadata is not None
+    assert details.stream_metadata.title == "Next"
+
+
+async def test_the_older_service_names_the_song_the_listener_hears(
+    provider: FipProvider,
+) -> None:
+    """Just after a song started in the studio, the listener still hears the one before it."""
+    provider._get_live = AsyncMock(return_value=_fixture("webradio_placeholder"))  # type: ignore[method-assign]
+    provider._get_pull = AsyncMock(return_value=_fixture("rock_pull"))  # type: ignore[method-assign]
+    # "Rise" starts at 1792838295 in the studio
+    with patch("music_assistant.providers.fip.provider.time.time", return_value=1792838296):
+        details = await provider.get_stream_details("fip_rock", MediaType.RADIO)
+    assert details.stream_metadata is not None
+    assert details.stream_metadata.title == "Thinking of you"
+
+
+def test_stations_count_as_radio_for_searches(provider: FipProvider) -> None:
+    """The stations take part in search-based lookups such as matching library radios."""
+    assert provider.supported_media_types == {MediaType.RADIO}
 
 
 async def test_a_placeholder_shows_the_station(provider: FipProvider) -> None:

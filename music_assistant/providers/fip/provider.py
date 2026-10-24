@@ -30,6 +30,7 @@ from .constants import (
     LIVE_URL,
     OVERDUE_UPDATE_INTERVAL,
     PULL_URL,
+    STREAM_DELAY,
     STREAM_METADATA_UPDATE_INTERVAL,
     STREAM_URL,
 )
@@ -55,6 +56,13 @@ class FipProvider(MusicProvider):
     def max_concurrent_streams(self) -> None:
         """Allow unlimited concurrent upstream source streams."""
         return None
+
+    @property
+    def supported_media_types(self) -> set[MediaType]:
+        """Return the media types this provider can serve."""
+        # Without library support the base implementation would report none, which would
+        # keep the provider out of search-based lookups.
+        return {MediaType.RADIO}
 
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
@@ -136,7 +144,9 @@ class FipProvider(MusicProvider):
         # while the service answers with its placeholder, the older one stands in
         if current is None or not current.is_timed:
             pulled = await self._get_pull(api_id)
-            if pulled is not None and (song := parse_pull(pulled, time.time()))[0] is not None:
+            # the listener hears what the studio played STREAM_DELAY ago
+            heard_at = time.time() - STREAM_DELAY
+            if pulled is not None and (song := parse_pull(pulled, heard_at))[0] is not None:
                 return song
         return current, upcoming
 
@@ -195,14 +205,15 @@ class FipProvider(MusicProvider):
         display: LiveDisplay = stream_details.data[LIVE_DISPLAY_KEY]
         answer = await self._live_answer(FIP_STATIONS[stream_details.item_id]["api_id"])
         now = time.time()
-        if answer is not None:
-            if display.update(*answer, now):
-                stream_details.stream_metadata = build_stream_metadata(display.shown, now)
-                self.logger.debug(
-                    "Updating stream metadata for %s: %s",
-                    stream_details.item_id,
-                    display.shown.title if display.shown else None,
-                )
+        # without an answer, a song already announced still takes over when it is due
+        current, upcoming = answer if answer is not None else (None, None)
+        if display.update(current, upcoming, now):
+            stream_details.stream_metadata = build_stream_metadata(display.shown, now)
+            self.logger.debug(
+                "Updating stream metadata for %s: %s",
+                stream_details.item_id,
+                display.shown.title if display.shown else None,
+            )
         # ask more often while the song on display should already be over
         stream_details.stream_metadata_update_interval = (
             OVERDUE_UPDATE_INTERVAL if display.overdue(now) else STREAM_METADATA_UPDATE_INTERVAL
