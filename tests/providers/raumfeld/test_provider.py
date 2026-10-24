@@ -15,7 +15,11 @@ from music_assistant_models.enums import MediaType, PlaybackState
 from music_assistant_models.errors import ResourceBusyError
 from music_assistant_models.player import PlayerMedia
 
-from music_assistant.providers.raumfeld.constants import GROUP_SETTLE_TIME
+from music_assistant.providers.raumfeld.constants import (
+    CONF_RESTART_ON_JOIN,
+    GROUP_SETTLE_TIME,
+    PLAYER_CONFIG_ENTRIES,
+)
 from music_assistant.providers.raumfeld.player import RaumfeldPlayer
 from music_assistant.providers.raumfeld.provider import RaumfeldPlayerProvider
 
@@ -1401,3 +1405,67 @@ async def test_the_rate_check_takes_the_lock_strictly() -> None:
     mass.player_queues.seek.reset_mock()
     await bar._restart_for_group_rates()
     mass.player_queues.seek.assert_not_awaited()
+
+
+@pytest.mark.parametrize(("restart_on_join", "restarts"), [(False, False), (True, True)])
+async def test_a_join_restarts_a_stream_the_group_plays_when_set_to(
+    restart_on_join: bool, restarts: bool
+) -> None:
+    """With restart on join set, a join restarts the stream even when its rate fits."""
+    bar, mass, _ = _joined_group(lambda sofa: _allow(sofa, 96000), stream_started_in_group=True)
+    rates = cast("MagicMock", bar._config).get_value.return_value
+    bar._config = MagicMock(
+        get_value=MagicMock(
+            side_effect=lambda key, *_: restart_on_join if key == CONF_RESTART_ON_JOIN else rates
+        )
+    )
+    await bar._restart_for_group_rates()
+    assert mass.player_queues.seek.await_count == (1 if restarts else 0)
+
+
+async def test_a_join_restarts_the_stream_when_the_joining_room_asks_for_it() -> None:
+    """The setting on the room that plays behind counts as much as on the leader."""
+    bar, mass, _ = _joined_group(lambda sofa: _allow(sofa, 96000), stream_started_in_group=True)
+    sofa = mass.players.get_player(bar._attr_group_members[1])
+    rates = cast("MagicMock", sofa._config).get_value.return_value
+    sofa._config = MagicMock(
+        get_value=MagicMock(side_effect=lambda key, *_: key == CONF_RESTART_ON_JOIN or rates)
+    )
+    await bar._restart_for_group_rates()
+    mass.player_queues.seek.assert_awaited_once_with(bar.player_id, 63)
+
+
+def _restart_on_join(player: RaumfeldPlayer, on: bool) -> None:
+    """Switch the restart on join setting of a room on or off, keeping its sample rates."""
+    rates = cast("MagicMock", player._config).get_value.return_value
+    player._config = MagicMock(
+        get_value=MagicMock(
+            side_effect=lambda key, *_: on if key == CONF_RESTART_ON_JOIN else rates
+        )
+    )
+
+
+@pytest.mark.parametrize(
+    ("stream_started_in_group", "restart_on_join", "restarts"),
+    [(True, True, True), (True, False, False), (False, True, True), (False, False, True)],
+)
+async def test_a_join_restarts_once_the_rooms_play_when_set_or_needed(
+    stream_started_in_group: bool, restart_on_join: bool, restarts: bool
+) -> None:
+    """A restart for sync or for the rate waits for the joined rooms; none, no wait."""
+    bar, _, _ = _joined_group(
+        lambda sofa: _allow(sofa, 96000), stream_started_in_group=stream_started_in_group
+    )
+    _restart_on_join(bar, restart_on_join)
+    with (
+        patch.object(bar, "_wait_for_rooms_playing", AsyncMock()) as wait,
+        patch.object(bar, "_restart_for_group_rates", AsyncMock()) as restart,
+    ):
+        await bar._check_join(["raumfeld_sofa"])
+    assert wait.await_count == restart.await_count == (1 if restarts else 0)
+
+
+def test_restart_on_join_is_off_by_default() -> None:
+    """Only a user who hears the offset of a joining room switches the restart on."""
+    entry = next(e for e in PLAYER_CONFIG_ENTRIES if e.key == CONF_RESTART_ON_JOIN)
+    assert entry.default_value is False

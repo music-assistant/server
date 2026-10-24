@@ -2245,6 +2245,8 @@
   "provider.raumfeld.config_entries.ip_address.label": "Raumfeld host",
   "provider.raumfeld.config_entries.port.description": "Port of the Raumfeld host webservice. Only change this if you run the host on a non-default port.",
   "provider.raumfeld.config_entries.port.label": "Raumfeld host port",
+  "provider.raumfeld.config_entries.restart_on_join.description": "A room added to a group that is already playing can play slightly behind the others. With this on, playback starts again where it is when a room joins, so every room is in sync, at the cost of a short pause. Switch it on for the room that plays behind, or for the room that leads the group.",
+  "provider.raumfeld.config_entries.restart_on_join.label": "Restart playback when a room joins",
   "provider.raumfeld.errors.no_host_found": "No Raumfeld host found at the given address. Check the IP address and port, and make sure a Raumfeld device or the Raumfeld host app is running.",
   "provider.raumfeld.manifest.description": "Stream music to Teufel Raumfeld (Smart Speaker) multiroom devices.",
   "provider.recommendations.background_task.refresh_latest_episodes": "Refresh latest podcast episodes",

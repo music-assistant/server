@@ -38,6 +38,7 @@ from music_assistant.helpers.upnp import create_didl_metadata
 from music_assistant.models.player import Player
 
 from .constants import (
+    CONF_RESTART_ON_JOIN,
     HOST_ERRORS,
     JOIN_SETTLE_INTERVAL,
     JOIN_SETTLE_TIME,
@@ -1331,13 +1332,14 @@ class RaumfeldPlayer(Player):
 
     async def _check_join(self, joined: list[str]) -> None:
         """
-        Restart the stream for rooms that joined, once they play, if they may not play it.
+        Restart the stream for rooms that joined, once they play, if it has to or is asked to.
 
         :param joined: The player ids of the rooms that joined.
         """
-        if self._stream_rates is None or set(self._stream_rates) <= set(
-            self.get_supported_sample_rates()
-        ):
+        if self._stream_rates is None:
+            return
+        rates_fit = set(self._stream_rates) <= set(self.get_supported_sample_rates())
+        if rates_fit and not self._group_restarts_on_join():
             return
         # a restart while the host still hooks the rooms in drops them for a while
         await self._wait_for_rooms_playing(joined)
@@ -1384,17 +1386,20 @@ class RaumfeldPlayer(Player):
             async with self.mass.players.get_group_and_player_lock(self.player_id, strict=True):
                 if not (self.leads_group and self.plays_own_queue):
                     return
-                if self._stream_rates is None or set(self._stream_rates) <= set(
-                    self.get_supported_sample_rates()
-                ):
+                if self._stream_rates is None:
+                    return
+                rates_fit = set(self._stream_rates) <= set(self.get_supported_sample_rates())
+                # a room that joins hooks in a little behind the others; a restart aligns them
+                if rates_fit and not self._group_restarts_on_join():
                     return
                 # the queue that plays here: the room's own, or that of a Sync Group it renders
                 queue = self.mass.players.get_active_queue(self)
                 if queue is None or queue.current_item is None:
                     return
                 self.logger.debug(
-                    "A room that joined %s may not play the format of its stream; restarting",
+                    "A room joined %s%s; restarting",
                     self.room,
+                    "" if rates_fit else ", and may not play the format of its stream",
                 )
                 try:
                     if queue.current_item.duration:
@@ -1411,6 +1416,19 @@ class RaumfeldPlayer(Player):
         except ResourceBusyError:
             # another playback action held the player all that time; it decides what plays
             self.logger.debug("Gave up checking %s after a join: the player stays busy", self.room)
+
+    def _group_restarts_on_join(self) -> bool:
+        """Return whether a room of this group asks for a restart when a room joins."""
+        # set on the room that lags (it is that room's speaker the user hears behind) or on
+        # the leader, whose stream is the one that restarts
+        for pid in self._attr_group_members or [self.player_id]:
+            room = self if pid == self.player_id else self.mass.players.get_player(pid)
+            if (
+                isinstance(room, RaumfeldPlayer)
+                and room.config.get_value(CONF_RESTART_ON_JOIN, False) is True
+            ):
+                return True
+        return False
 
     def _zones_without_leader(self) -> list[list[str]]:
         """Return the zones this leading room's members are in, other than its own."""
