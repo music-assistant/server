@@ -54,6 +54,10 @@
     "pair_now": {
       "label": "Set up now"
     },
+    "apple_home_groups": {
+      "label": "Follow Apple Home groupings",
+      "description": "Play AirPlay devices the way an iPhone does, as grouped in the Home app. An Apple TV with speakers as its audio output shows as one player named after the Apple TV; a stereo pair shows as one player named after the pair. Their speakers are hidden and share one volume. The speakers play the audio; an Apple TV joins the stream when it is on (for now playing and its remote) and is never woken. The groups are managed by the Home app: they follow the grouping there, show only while their devices can be found, and can not be renamed, changed or removed in Music Assistant."
+    },
     "verbose_ptp_logging": {
       "label": "Verbose PTP daemon logging",
       "description": "Log the shared PTP clock daemon's per-packet timing trace (Announce/Sync/Follow_Up) when verbose logging is active. Only useful when diagnosing multi-room clock sync issues; it floods the log at ~10 lines per second."

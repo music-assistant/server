@@ -130,6 +130,7 @@ class PlayerQueueConfigMixin:
         self, queue_id: str, values: dict[str, ConfigValueType]
     ) -> PlayerQueueConfig:
         """Save/update PlayerQueueConfig."""
+        self.mass.players.raise_if_managed_externally(queue_id)
         config = self.get_player_queue_config(queue_id)
         changed_keys = config.update(values)
         conf_key = f"{CONF_PLAYER_QUEUES}/{queue_id}"
