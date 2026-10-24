@@ -538,7 +538,7 @@ class HomeAssistantProvider(PluginProvider):
         :param callback: Called with the full list of client ids right away and again
             whenever it changes.
         :return: A function that ends the subscription, or None when this Home Assistant
-            hands out no Sendspin pairing tokens.
+            hands out no Sendspin pairing tokens or could not be asked.
         """
 
         def _on_message(message: Message) -> None:
@@ -548,6 +548,9 @@ class HomeAssistantProvider(PluginProvider):
             unsubscribe = await self.hass.subscribe(_on_message, "sendspin/subscribe_clients")
         except FailedCommand as err:
             self.logger.debug("Home Assistant hands out no Sendspin pairing tokens: %s", err)
+            return None
+        except BaseHassClientError as err:
+            self.logger.debug("Could not follow the Sendspin clients of Home Assistant: %s", err)
             return None
         return cast("Callable[[], None]", unsubscribe)
 

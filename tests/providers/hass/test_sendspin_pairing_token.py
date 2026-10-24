@@ -8,7 +8,7 @@ from typing import Any
 from unittest.mock import AsyncMock, Mock
 
 import pytest
-from hass_client.exceptions import FailedCommand
+from hass_client.exceptions import FailedCommand, NotConnected
 
 from music_assistant.providers.hass import HomeAssistantProvider
 
@@ -61,7 +61,14 @@ async def test_subscribes_to_the_client_ids() -> None:
     assert snapshots == [[CLIENT_ID, "other"], []]
 
 
-async def test_subscription_needs_a_recent_home_assistant() -> None:
-    """A Home Assistant without the command yields no subscription instead of an error."""
-    provider = _provider(error=FailedCommand("Unknown command."))
+@pytest.mark.parametrize(
+    "error",
+    [
+        pytest.param(FailedCommand("Unknown command."), id="old_home_assistant"),
+        pytest.param(NotConnected(), id="connection_lost"),
+    ],
+)
+async def test_subscription_failures_yield_no_subscription(error: Exception) -> None:
+    """A Home Assistant that cannot be followed yields no subscription instead of an error."""
+    provider = _provider(error=error)
     assert await provider.subscribe_sendspin_clients(Mock()) is None

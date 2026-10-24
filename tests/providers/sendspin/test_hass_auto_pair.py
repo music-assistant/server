@@ -71,8 +71,15 @@ def _announce(pairer: HassAutoPairer, client_ids: list[str]) -> None:
 
 
 async def _settle(pairer: HassAutoPairer) -> None:
-    """Let the scheduled pairing attempts finish."""
-    await asyncio.gather(*pairer._tasks.values())
+    """Let the scheduled pairing attempts, and any follow-ups they start, finish."""
+    while pairer._tasks:
+        await asyncio.gather(*pairer._tasks.values())
+        await asyncio.sleep(0)
+
+
+async def _subscribe(pairer: HassAutoPairer) -> None:
+    """Subscribe and let the subscription request complete."""
+    pairer.subscribe()
     await asyncio.sleep(0)
 
 
@@ -80,7 +87,7 @@ async def test_pairs_with_the_token_from_home_assistant(monkeypatch: pytest.Monk
     """The token Home Assistant fetched is turned into a pairing PSK attempt."""
     hass = _hass()
     pairer, api, refreshed = _make_pairer(monkeypatch, hass)
-    await pairer._pair(CLIENT_ID)
+    await pairer._attempt(CLIENT_ID)
     hass.get_sendspin_pairing_token.assert_awaited_once_with(CLIENT_ID)
     assert len(api.attempts) == 1
     assert api.attempts[0].method is PairMethod.PAIRING_PSK
@@ -94,7 +101,7 @@ async def test_no_token_leaves_the_client_for_the_next_announcement(
     """Without a token nothing is retried; the next snapshot from Home Assistant asks again."""
     hass = _hass(None)
     pairer, api, _ = _make_pairer(monkeypatch, hass)
-    await pairer._pair(CLIENT_ID)
+    await pairer._attempt(CLIENT_ID)
     hass.get_sendspin_pairing_token.assert_awaited_once_with(CLIENT_ID)
     assert api.attempts == []
 
@@ -117,7 +124,7 @@ async def test_clients_with_nothing_to_pair_are_left_alone(
     """Home Assistant is not even asked when the client cannot or need not be paired."""
     hass = _hass()
     pairer, api, _ = _make_pairer(monkeypatch, hass, **kwargs)
-    await pairer._pair(CLIENT_ID)
+    await pairer._attempt(CLIENT_ID)
     hass.get_sendspin_pairing_token.assert_not_awaited()
     assert api.attempts == []
 
@@ -129,7 +136,7 @@ async def test_a_pairing_the_user_started_is_left_alone(
     hass = _hass()
     pairer, api, _ = _make_pairer(monkeypatch, hass)
     pairer.provider._pin_sessions[CLIENT_ID] = cast("Any", SimpleNamespace(attempt_running=True))
-    await pairer._pair(CLIENT_ID)
+    await pairer._attempt(CLIENT_ID)
     hass.get_sendspin_pairing_token.assert_not_awaited()
     assert api.attempts == []
 
@@ -140,7 +147,7 @@ async def test_requires_an_available_home_assistant_provider(
 ) -> None:
     """Without a connected Home Assistant provider there is nowhere to get the token."""
     pairer, api, _ = _make_pairer(monkeypatch, hass)
-    await pairer._pair(CLIENT_ID)
+    await pairer._attempt(CLIENT_ID)
     assert api.attempts == []
 
 
@@ -152,7 +159,7 @@ async def test_a_failed_pairing_is_logged_not_raised(
     pairer, api, _ = _make_pairer(monkeypatch, hass)
     api.outcomes.append(PairingError("rejected"))
     with caplog.at_level(logging.WARNING, logger="test.sendspin.pin"):
-        await pairer._pair(CLIENT_ID)
+        await pairer._attempt(CLIENT_ID)
     assert len(api.attempts) == 1
     assert "rejected" in caplog.text
     assert TOKEN not in caplog.text
@@ -161,14 +168,13 @@ async def test_a_failed_pairing_is_logged_not_raised(
 async def test_only_announced_clients_are_paired_on_connect(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A connecting client is paired only once Home Assistant announced its id, and once."""
+    """A connecting client is paired only once Home Assistant announced its id."""
     hass = _hass()
     pairer, api, _ = _make_pairer(monkeypatch, hass, announced=False)
     pairer.on_client_connected(CLIENT_ID)
     assert pairer._tasks == {}
 
     pairer._announced = {CLIENT_ID}
-    pairer.on_client_connected(CLIENT_ID)
     pairer.on_client_connected(CLIENT_ID)
     assert list(pairer._tasks) == [CLIENT_ID]
     await _settle(pairer)
@@ -206,7 +212,7 @@ async def test_follows_home_assistant_while_it_is_available(
     """The subscription lives as long as the Home Assistant provider is connected."""
     hass = _hass()
     pairer, _, _ = _make_pairer(monkeypatch, hass, announced=False)
-    await pairer.subscribe()
+    await _subscribe(pairer)
     unsubscribe = hass.subscribe_sendspin_clients.return_value
     assert pairer._unsubscribe == unsubscribe
     on_clients = hass.subscribe_sendspin_clients.await_args.args[0]
@@ -218,8 +224,9 @@ async def test_follows_home_assistant_while_it_is_available(
     assert unsubscribe.call_count == 1
     assert pairer._unsubscribe is None
     assert pairer._announced == set()
-    assert task.cancelling()
-    assert pairer._tasks == {}
+    # an attempt already talking to the device is left to finish
+    assert not task.cancelling()
+    await _settle(pairer)
 
     # a snapshot of the torn down subscription that was still in flight is ignored
     on_clients([CLIENT_ID])
@@ -240,25 +247,101 @@ async def test_a_subscription_answered_after_teardown_is_dropped(
         return unsubscribe
 
     hass.subscribe_sendspin_clients.side_effect = _unsubscribe_meanwhile
-    await pairer.subscribe()
+    await _subscribe(pairer)
     assert unsubscribe.call_count == 1
     assert pairer._unsubscribe is None
 
 
-async def test_a_finished_attempt_does_not_forget_its_replacement(
+async def test_the_provider_never_waits_for_home_assistant(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The done callback of an attempt leaves a newer attempt for the same client tracked."""
-    pairer, _, _ = _make_pairer(monkeypatch, _hass())
-    loop = asyncio.get_running_loop()
-    old_task: asyncio.Task[None] = loop.create_task(asyncio.sleep(0))
-    new_task: asyncio.Task[None] = loop.create_task(asyncio.sleep(0))
-    pairer._tasks[CLIENT_ID] = new_task
-    pairer._forget_task(CLIENT_ID, old_task)
-    assert pairer._tasks == {CLIENT_ID: new_task}
-    pairer._forget_task(CLIENT_ID, new_task)
+    """Subscribing returns at once; an answer after teardown ends its own subscription."""
+    hass = _hass()
+    pairer, _, _ = _make_pairer(monkeypatch, hass, announced=False)
+    answered = asyncio.Event()
+
+    async def _answer_when_released(_callback: Any) -> Mock:
+        await answered.wait()
+        return cast("Mock", hass.subscribe_sendspin_clients.return_value)
+
+    hass.subscribe_sendspin_clients.side_effect = _answer_when_released
+    pairer.subscribe()
+    await asyncio.sleep(0)
+    hass.subscribe_sendspin_clients.assert_awaited_once()
+
+    pairer.unsubscribe()
+    answered.set()
+    await asyncio.sleep(0)
+    assert hass.subscribe_sendspin_clients.return_value.call_count == 1
+    assert pairer._unsubscribe is None
+
+
+async def test_a_trigger_during_an_attempt_is_tried_again_after_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A client triggered while its attempt runs gets one more attempt once that one ends."""
+    hass = _hass()
+    pairer, api, _ = _make_pairer(monkeypatch, hass)
+    first_attempt_asked = asyncio.Event()
+    release_first_attempt = asyncio.Event()
+
+    async def _token_on_the_second_ask(_client_id: str) -> str | None:
+        if first_attempt_asked.is_set():
+            return TOKEN
+        first_attempt_asked.set()
+        await release_first_attempt.wait()
+        return None
+
+    hass.get_sendspin_pairing_token.side_effect = _token_on_the_second_ask
+    pairer.on_client_connected(CLIENT_ID)
+    await first_attempt_asked.wait()
+    pairer.on_client_connected(CLIENT_ID)
+    pairer.on_client_connected(CLIENT_ID)
+    assert pairer._pending == {CLIENT_ID}
+    release_first_attempt.set()
+    await _settle(pairer)
+    assert hass.get_sendspin_pairing_token.await_count == 2
+    assert len(api.attempts) == 1
+    assert pairer._pending == set()
+
+
+async def test_closing_stops_running_attempts(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Unloading cancels an attempt and nothing is left behind, triggered again or not."""
+    hass = _hass()
+    pairer, api, _ = _make_pairer(monkeypatch, hass)
+    asked = asyncio.Event()
+
+    async def _never_answered(_client_id: str) -> None:
+        asked.set()
+        await asyncio.Event().wait()
+
+    hass.get_sendspin_pairing_token.side_effect = _never_answered
+    pairer.on_client_connected(CLIENT_ID)
+    await asked.wait()
+    pairer.on_client_connected(CLIENT_ID)
+    task = pairer._tasks[CLIENT_ID]
+    pairer.close()
+    await asyncio.sleep(0)
+    assert task.cancelled()
     assert pairer._tasks == {}
-    await asyncio.gather(old_task, new_task)
+    assert pairer._pending == set()
+    assert api.attempts == []
+
+
+async def test_a_closed_pairer_does_not_subscribe_again(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A late subscribe after the provider unloaded starts nothing."""
+    hass = _hass()
+    pairer, _, _ = _make_pairer(monkeypatch, hass, announced=False)
+    await _subscribe(pairer)
+    unsubscribe = hass.subscribe_sendspin_clients.return_value
+    pairer.close()
+    assert unsubscribe.call_count == 1
+
+    pairer.subscribe()
+    await asyncio.sleep(0)
+    hass.subscribe_sendspin_clients.assert_awaited_once()
 
 
 async def test_subscribing_needs_an_available_home_assistant(
@@ -267,9 +350,9 @@ async def test_subscribing_needs_an_available_home_assistant(
     """Without a connected Home Assistant provider there is nothing to follow."""
     hass = _hass(available=False)
     pairer, _, _ = _make_pairer(monkeypatch, hass, announced=False)
-    await pairer.subscribe()
+    pairer.subscribe()
+    await asyncio.sleep(0)
     hass.subscribe_sendspin_clients.assert_not_awaited()
-    assert pairer._unsubscribe is None
 
 
 async def test_every_connection_triggers_an_attempt() -> None:

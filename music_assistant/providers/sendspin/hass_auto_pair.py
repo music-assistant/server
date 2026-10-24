@@ -36,31 +36,33 @@ class HassAutoPairer:
         self._announced: set[str] = set()
         self._unsubscribe: Callable[[], None] | None = None
         self._tasks: dict[str, asyncio.Task[None]] = {}
+        # clients triggered again while their attempt was running: tried once more after it
+        self._pending: set[str] = set()
         # bumped by unsubscribe(), so a subscription answered after a teardown is dropped
         self._generation = 0
+        self._closed = False
 
-    async def subscribe(self) -> None:
+    def subscribe(self) -> None:
         """Start following the client ids Home Assistant announces, if it is available."""
         self.unsubscribe()
-        if (hass := self._hass) is None:
+        if self._closed or (hass := self._hass) is None:
             return
-        generation = self._generation
-        unsubscribe = await hass.subscribe_sendspin_clients(partial(self._on_clients, generation))
-        if unsubscribe is None:
-            return
-        if generation != self._generation:
-            # torn down while the subscription was being set up
-            unsubscribe()
-            return
-        self._unsubscribe = unsubscribe
+        # in the background: Home Assistant must never hold up the Sendspin provider
+        self.provider.mass.create_task(self._subscribe(hass))
 
     def unsubscribe(self) -> None:
-        """Stop following Home Assistant, forget its announcements and stop pending attempts."""
+        """Stop following Home Assistant and forget its announcements."""
         self._generation += 1
         self._announced.clear()
+        self._pending.clear()
         if (unsubscribe := self._unsubscribe) is not None:
             self._unsubscribe = None
             unsubscribe()
+
+    def close(self) -> None:
+        """Stop following Home Assistant for good and stop running attempts, as the provider unloads."""
+        self._closed = True
+        self.unsubscribe()
         for task in self._tasks.values():
             task.cancel()
         self._tasks.clear()
@@ -68,12 +70,23 @@ class HassAutoPairer:
     def on_client_connected(self, client_id: str) -> None:
         """Pair a client that just connected, if Home Assistant announced it."""
         if client_id in self._announced:
-            self._start_pairing(client_id)
+            self._request_attempt(client_id)
 
     @property
     def _hass(self) -> HomeAssistantProvider | None:
         hass = cast("HomeAssistantProvider | None", self.provider.mass.get_provider("hass"))
         return hass if hass is not None and hass.available else None
+
+    async def _subscribe(self, hass: HomeAssistantProvider) -> None:
+        """Set up the subscription, unless it was torn down while Home Assistant answered."""
+        generation = self._generation
+        unsubscribe = await hass.subscribe_sendspin_clients(partial(self._on_clients, generation))
+        if unsubscribe is None:
+            return
+        if generation != self._generation:
+            unsubscribe()
+            return
+        self._unsubscribe = unsubscribe
 
     def _on_clients(self, generation: int, client_ids: list[str]) -> None:
         """Handle the client ids Home Assistant can fetch a pairing token for."""
@@ -84,22 +97,28 @@ class HassAutoPairer:
         new_client_ids = announced - self._announced
         self._announced = announced
         for client_id in new_client_ids:
-            self._start_pairing(client_id)
+            self._request_attempt(client_id)
 
-    def _start_pairing(self, client_id: str) -> None:
+    def _request_attempt(self, client_id: str) -> None:
         """Run a pairing attempt in the background, at most one per client at a time."""
-        if (task := self._tasks.get(client_id)) is not None and not task.done():
+        if client_id in self._tasks:
+            # the running attempt may be about to fail on the state this trigger changed
+            self._pending.add(client_id)
             return
-        task = self.provider.mass.create_task(self._pair(client_id))
-        self._tasks[client_id] = task
-        task.add_done_callback(partial(self._forget_task, client_id))
+        self._tasks[client_id] = self.provider.mass.create_task(self._run_attempt(client_id))
 
-    def _forget_task(self, client_id: str, task: asyncio.Task[None]) -> None:
-        """Drop a finished attempt, unless a newer one for the client replaced it already."""
-        if self._tasks.get(client_id) is task:
-            del self._tasks[client_id]
+    async def _run_attempt(self, client_id: str) -> None:
+        """Run one attempt and, if the client was triggered again meanwhile, one more."""
+        try:
+            await self._attempt(client_id)
+        finally:
+            self._tasks.pop(client_id, None)
+        if client_id in self._pending:
+            self._pending.discard(client_id)
+            if client_id in self._announced:
+                self._request_attempt(client_id)
 
-    async def _pair(self, client_id: str) -> None:
+    async def _attempt(self, client_id: str) -> None:
         """Pair the client with the token Home Assistant reads from its device."""
         if not await self._needs_pairing(client_id) or (hass := self._hass) is None:
             return

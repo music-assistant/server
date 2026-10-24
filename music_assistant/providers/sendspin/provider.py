@@ -497,7 +497,7 @@ class SendspinProvider(PlayerProvider):
         hass = self.mass.get_provider("hass")
         self._hass_available = hass is not None and hass.available
         if self._hass_available:
-            await self._hass_auto_pairer.subscribe()
+            self._hass_auto_pairer.subscribe()
 
     async def update_config(self, config: ProviderConfig, changed_keys: set[str]) -> None:
         """Handle logic when the config is updated."""
@@ -1166,7 +1166,7 @@ class SendspinProvider(PlayerProvider):
             self.mass.cancel_timer(_management_idle_task_id(management_session.client_id))
         self._management_sessions.clear()
         self._pairing_config_snapshots.clear()
-        self._hass_auto_pairer.unsubscribe()
+        self._hass_auto_pairer.close()
         if self._running_pairing_evictions:
             await asyncio.gather(*self._running_pairing_evictions, return_exceptions=True)
         player_ids = [player.player_id for player in self.players]
@@ -1942,7 +1942,7 @@ class SendspinProvider(PlayerProvider):
             self._hass_available = hass_available
             await self._refresh_hass_esphome_enrichment()
             if hass_available:
-                await self._hass_auto_pairer.subscribe()
+                self._hass_auto_pairer.subscribe()
             else:
                 self._hass_auto_pairer.unsubscribe()
 
