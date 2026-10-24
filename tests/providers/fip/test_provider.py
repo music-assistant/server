@@ -133,8 +133,6 @@ async def test_stream_details_wire_the_live_metadata(provider: FipProvider) -> N
 
 async def test_get_live_reads_the_service(provider: FipProvider) -> None:
     """The live answer comes from the service, and a failed request gives None."""
-    # the method itself, without the cache in front of it
-    get_live = cast("Any", FipProvider._get_live).__wrapped__
     provider._throttler = Throttler(rate_limit=5, period=1.0)
     response = MagicMock(status=200)
     response.json = AsyncMock(return_value=_fixture("webradio_song"))
@@ -144,15 +142,15 @@ async def test_get_live_reads_the_service(provider: FipProvider) -> None:
     session = cast("MagicMock", provider.mass.http_session)
     session.get.return_value = request
 
-    data = await get_live(provider, 65)
+    data = await provider._get_live(65)
     assert data == _fixture("webradio_song")
     url = session.get.call_args.args[0]
     assert url == "https://api.radiofrance.fr/livemeta/live/65/webrf_webradio_player"
 
     response.status = 503
-    assert await get_live(provider, 66) is None
+    assert await provider._get_live(66) is None
     request.__aenter__.side_effect = TimeoutError
-    assert await get_live(provider, 64) is None
+    assert await provider._get_live(64) is None
 
 
 async def test_stream_details_refuse_other_media(provider: FipProvider) -> None:

@@ -34,9 +34,6 @@ OVERDUE_UPDATE_INTERVAL = 3
 # then neither the service's placeholder nor an entry that started earlier replaces it.
 ON_AIR_GRACE = 60
 
-# How long (seconds) one answer from the service is shared by the queues playing a station.
-LIVE_CACHE_EXPIRATION = 5
-
 # Per-request timeout for the now-playing service.
 API_TIMEOUT = aiohttp.ClientTimeout(total=5)
 

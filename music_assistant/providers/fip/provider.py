@@ -19,14 +19,12 @@ from music_assistant_models.media_items import (
 )
 from music_assistant_models.streamdetails import StreamDetails
 
-from music_assistant.controllers.cache import use_cache
 from music_assistant.helpers.throttle_retry import Throttler
 from music_assistant.models.music_provider import MusicProvider
 
 from .constants import (
     API_TIMEOUT,
     FIP_STATIONS,
-    LIVE_CACHE_EXPIRATION,
     LIVE_URL,
     OVERDUE_UPDATE_INTERVAL,
     PULL_URL,
@@ -147,7 +145,6 @@ class FipProvider(MusicProvider):
                 return song
         return current, upcoming
 
-    @use_cache(LIVE_CACHE_EXPIRATION, cache_none=False)
     async def _get_live(self, api_id: int) -> dict[str, Any] | None:
         """
         Get the now-playing answer for a station, or None if unavailable.
@@ -156,7 +153,6 @@ class FipProvider(MusicProvider):
         """
         return await self._fetch_json(LIVE_URL.format(api_id=api_id), api_id)
 
-    @use_cache(LIVE_CACHE_EXPIRATION, cache_none=False)
     async def _get_pull(self, api_id: int) -> dict[str, Any] | None:
         """
         Get the older now-playing service's answer for a station, or None if unavailable.
