@@ -66,8 +66,10 @@ class NicovideoMusicProviderCoreMixin(NicovideoMusicProviderMixinBase):
                 login_success = await self.service_manager.auth.try_login()
                 if not login_success:
                     raise LoginFailed(  # noqa: TRY301 - logged by except below
-                        "The user_session cookie is invalid or expired, "
-                        "enter a new one in the provider settings"
+                        "Your niconico user_session cookie is invalid or has expired. "
+                        "Enter a new one in the provider settings.",
+                        translation_key="user_session_expired",
+                        translation_owner=self.translation_owner,
                     )
                 self.logger.debug("nicovideo provider initialized successfully with login")
             else:
