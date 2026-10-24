@@ -1614,6 +1614,29 @@ async def test_a_room_that_rejoins_while_an_earlier_check_waits_is_waited_for() 
     mass.player_queues.seek.assert_awaited_once()
 
 
+async def test_a_room_that_rejoined_after_a_seek_counts_with_the_new_stream() -> None:
+    """An older check that ends last does not hide the newer stream a room rejoined."""
+    bar, mass, _ = _joined_group(lambda sofa: _allow(sofa, 96000), stream_started_in_group=True)
+    bar._attr_group_members = [*bar._attr_group_members, "raumfeld_kitchen"]
+    _allow(mass.players.get_player("raumfeld_kitchen"), 96000)
+    _restart_on_join(bar, True)
+    kitchen_plays = asyncio.Event()
+
+    async def wait(rooms: list[str]) -> None:
+        if "raumfeld_kitchen" in rooms:
+            await kitchen_plays.wait()
+
+    with patch.object(bar, "_wait_for_rooms_playing", AsyncMock(side_effect=wait)):
+        first = asyncio.create_task(bar._check_join(["raumfeld_sofa", "raumfeld_kitchen"]))
+        await asyncio.sleep(0)
+        # a seek starts a new stream, then Sofa leaves and joins that one again
+        bar._playback_generation += 2
+        await bar._check_join(["raumfeld_sofa"])
+        kitchen_plays.set()
+        await first
+    mass.player_queues.seek.assert_awaited_once()
+
+
 async def test_a_room_that_left_while_hooked_in_leaves_no_restart() -> None:
     """A room gone from the group again before it played needs no restart for sync."""
     bar, mass, _ = _joined_group(lambda sofa: _allow(sofa, 96000), stream_started_in_group=True)

@@ -1362,7 +1362,11 @@ class RaumfeldPlayer(Player):
             # once they play, for these rooms as well
             return
         rooms_joined, self._rooms_to_restart_for = self._rooms_to_restart_for, ()
-        await self._restart_for_group_rates(joined=dict(rooms_joined))
+        # a room that joined more than once counts with the newest stream it joined
+        newest: dict[str, int] = {}
+        for pid, joined_generation in rooms_joined:
+            newest[pid] = max(joined_generation, newest.get(pid, joined_generation))
+        await self._restart_for_group_rates(joined=newest)
 
     async def _wait_for_rooms_playing(self, player_ids: list[str]) -> None:
         """
