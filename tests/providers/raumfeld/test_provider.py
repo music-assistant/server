@@ -1124,7 +1124,7 @@ async def test_a_restart_for_the_rate_waits_for_the_rooms_to_play(
         await bar._check_join(["raumfeld_sofa"])
     if restarts:
         wait.assert_awaited_once_with(["raumfeld_sofa"])
-        restart.assert_awaited_once_with()
+        restart.assert_awaited_once()
     else:
         wait.assert_not_awaited()
         restart.assert_not_awaited()
@@ -1469,3 +1469,56 @@ def test_restart_on_join_is_off_by_default() -> None:
     """Only a user who hears the offset of a joining room switches the restart on."""
     entry = next(e for e in PLAYER_CONFIG_ENTRIES if e.key == CONF_RESTART_ON_JOIN)
     assert entry.default_value is False
+
+
+async def test_overlapping_joins_restart_the_stream_once() -> None:
+    """Two joins checked together: the second finds the stream already restarted for both."""
+    bar, mass, _ = _joined_group(lambda sofa: _allow(sofa, 96000), stream_started_in_group=True)
+    _restart_on_join(bar, True)
+
+    async def restarted(*_args: Any, **_kwargs: Any) -> None:
+        # MA plays the queue again, which starts a new stream
+        bar._playback_generation += 2
+
+    mass.player_queues.seek = AsyncMock(side_effect=restarted)
+    both_joined = asyncio.Event()
+    waiting = 0
+
+    async def wait_for_both(_rooms: list[str]) -> None:
+        # both rooms joined the same stream before either one plays
+        nonlocal waiting
+        waiting += 1
+        if waiting == 2:
+            both_joined.set()
+        await both_joined.wait()
+
+    with patch.object(bar, "_wait_for_rooms_playing", AsyncMock(side_effect=wait_for_both)):
+        await asyncio.gather(
+            bar._check_join(["raumfeld_sofa"]), bar._check_join(["raumfeld_kitchen"])
+        )
+    mass.player_queues.seek.assert_awaited_once()
+
+
+async def test_a_seek_while_waiting_for_the_joined_room_leaves_no_restart() -> None:
+    """A seek during the wait already started a stream every room joined at once."""
+    bar, mass, _ = _joined_group(lambda sofa: _allow(sofa, 96000), stream_started_in_group=True)
+    _restart_on_join(bar, True)
+
+    async def user_seeks(_rooms: list[str]) -> None:
+        bar._playback_generation += 2
+
+    with patch.object(bar, "_wait_for_rooms_playing", AsyncMock(side_effect=user_seeks)):
+        await bar._check_join(["raumfeld_sofa"])
+    mass.player_queues.seek.assert_not_awaited()
+
+
+async def test_a_seek_while_waiting_still_restarts_a_rate_the_room_cannot_play() -> None:
+    """A new stream started at the old rates still gets the rate check."""
+    bar, mass, _ = _joined_group(lambda sofa: _allow(sofa, 96000), stream_started_in_group=False)
+
+    async def user_seeks(_rooms: list[str]) -> None:
+        bar._playback_generation += 2
+
+    with patch.object(bar, "_wait_for_rooms_playing", AsyncMock(side_effect=user_seeks)):
+        await bar._check_join(["raumfeld_sofa"])
+    mass.player_queues.seek.assert_awaited_once()

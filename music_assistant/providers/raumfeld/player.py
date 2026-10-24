@@ -1341,9 +1341,11 @@ class RaumfeldPlayer(Player):
         rates_fit = set(self._stream_rates) <= set(self.get_supported_sample_rates())
         if rates_fit and not self._group_restarts_on_join():
             return
+        # the stream the rooms joined; a restart or seek meanwhile replaces it
+        generation = self._playback_generation
         # a restart while the host still hooks the rooms in drops them for a while
         await self._wait_for_rooms_playing(joined)
-        await self._restart_for_group_rates()
+        await self._restart_for_group_rates(joined_generation=generation)
 
     async def _wait_for_rooms_playing(self, player_ids: list[str]) -> None:
         """
@@ -1372,8 +1374,12 @@ class RaumfeldPlayer(Player):
         except TimeoutError:
             self.logger.debug("Rooms that joined %s did not report playing in time", self.room)
 
-    async def _restart_for_group_rates(self) -> None:
-        """Restart this room's queue where it is, if a room that joined cannot play its stream."""
+    async def _restart_for_group_rates(self, joined_generation: int | None = None) -> None:
+        """
+        Restart this room's queue where it is, if a room that joined cannot play its stream.
+
+        :param joined_generation: The playback generation when the rooms joined, if known.
+        """
         # the host pulls a joining room into the running stream as it is; a room that
         # cannot play its format drops out after a moment (measured). The stream can be at
         # any format the group offered when it started, so a group that no longer offers
@@ -1391,6 +1397,10 @@ class RaumfeldPlayer(Player):
                 rates_fit = set(self._stream_rates) <= set(self.get_supported_sample_rates())
                 # a room that joins hooks in a little behind the others; a restart aligns them
                 if rates_fit and not self._group_restarts_on_join():
+                    return
+                if rates_fit and joined_generation not in (None, self._playback_generation):
+                    # the stream was started again since the rooms joined (another join's
+                    # restart, a seek), and every room joined that one at once
                     return
                 # the queue that plays here: the room's own, or that of a Sync Group it renders
                 queue = self.mass.players.get_active_queue(self)
