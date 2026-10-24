@@ -182,6 +182,11 @@ class Provider:
         return path
 
     @property
+    def upnp_manual_discovery_addresses(self) -> list[str]:
+        """Return manually configured IP addresses for unicast UPNP/SSDP discovery."""
+        return []
+
+    @property
     @final
     def type(self) -> ProviderType:
         """Return type of this provider."""
