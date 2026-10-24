@@ -42,6 +42,14 @@ RENDERER_QUERY_TIMEOUT = 5
 # unreachable, and health-checks the host while connected.
 RECONNECT_INTERVAL = 30
 
+# How long (seconds) the host gets to answer a health check. hassfeld's own check allows
+# 3 s, which a host on a slow Wi-Fi link misses now and then.
+HOST_CHECK_TIMEOUT = 10
+
+# Failed health checks in a row before the host counts as lost. Losing it marks every room
+# unavailable and rebuilds the connection, too much for one slow answer.
+HOST_CHECK_FAILURES = 3
+
 # How often (seconds) the zones the host reports are compared with the groups Music Assistant
 # shows. The comparison reads hassfeld's in-memory model, so it costs no request.
 ZONE_WATCH_INTERVAL = 2
