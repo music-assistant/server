@@ -2023,3 +2023,15 @@ async def test_a_play_mode_change_after_ma_took_over_is_refused() -> None:
         with pytest.raises(PlayerCommandFailed, match="no longer plays"):
             await change
     external.assert_not_awaited()
+
+
+def test_a_room_that_is_gone_is_not_polled() -> None:
+    """A room the host no longer lists is not read until it is back."""
+    player = RaumfeldPlayer.__new__(RaumfeldPlayer)
+    player._attr_needs_poll = True
+    player._attr_available = True
+    assert player.needs_poll
+
+    player._attr_available = False
+
+    assert not player.needs_poll

@@ -325,6 +325,13 @@ class RaumfeldPlayer(Player):
         # it is gone, against a dropped player
         self._clear_next()
 
+    @property
+    def needs_poll(self) -> bool:
+        """Return if the player needs to be polled: only while its room is there."""
+        # a room the host no longer lists (a speaker in deep standby, or a lost connection)
+        # has nothing to read, and every read of it fails; it is polled again once back
+        return self._attr_needs_poll and self._attr_available
+
     def set_available(self, available: bool) -> None:
         """
         Set the availability of this player.
