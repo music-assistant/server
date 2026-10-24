@@ -14,7 +14,6 @@ from music_assistant.providers.storytel.constants import (
     CONF_USERNAME,
 )
 
-
 if TYPE_CHECKING:
     from music_assistant.models.setup_flow import SetupSession
 
