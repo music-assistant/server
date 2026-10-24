@@ -45,6 +45,8 @@ def _flow_player() -> RaumfeldPlayer:
     player._attr_supported_features = set()
     player._library_sources = {}
     player._extra_data = {}
+    # no sample rate setting: the room plays the safe default
+    player._config = MagicMock(get_value=MagicMock(return_value=None))
     mass = MagicMock()
     mass.streams.base_url = BASE_URL
     player.mass = mass
@@ -161,7 +163,7 @@ def _advancing_player() -> tuple[RaumfeldPlayer, MagicMock]:
     player._advance_task_id = "raumfeld_advance_test"
     mass = MagicMock()
     player.mass = mass
-    player.play_media = MagicMock()  # type: ignore[method-assign]
+    player._play_next = MagicMock()  # type: ignore[method-assign]
     return player, mass
 
 
@@ -170,7 +172,7 @@ def test_advances_when_the_track_ends() -> None:
     player, mass = _advancing_player()
     queued = player._next_media
     player._maybe_advance(playing=False, ended=True)
-    player.play_media.assert_called_once_with(queued)  # type: ignore[attr-defined]
+    player._play_next.assert_called_once_with(queued)  # type: ignore[attr-defined]
     mass.create_task.assert_called_once()
     assert player._next_media is None
 
@@ -1294,6 +1296,9 @@ def test_the_other_rooms_stay_grouped_when_spotify_takes_the_leader() -> None:
     bank = RaumfeldPlayer.__new__(RaumfeldPlayer)
     bank._player_id = "raumfeld_bank"
     bank._attr_group_members = []
+    bank.mass = mass
+    # leading rooms it did not lead before has its rate checked, which is not run here
+    mass.create_task.side_effect = lambda coro: coro.close()
     mass.players.get_player.return_value = bank
     with (
         patch.object(RaumfeldPlayer, "synced_to", new_callable=PropertyMock) as synced_to,
