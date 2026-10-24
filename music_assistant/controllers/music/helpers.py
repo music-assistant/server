@@ -9,6 +9,7 @@ from music_assistant_models.enums import ExternalID, ImageType
 from music_assistant_models.errors import InvalidProviderID, InvalidProviderURI
 from music_assistant_models.helpers import create_safe_string, get_global_cache_value
 from music_assistant_models.media_items import (
+    Album,
     Artist,
     ItemMapping,
     MediaItemMetadata,
@@ -343,3 +344,27 @@ def fill_track_from_recording(track: Track, recording: MusicBrainzRecording) -> 
         if is_valid_isrc(isrc):
             track.add_external_id(ExternalID.ISRC, isrc)
     return track.external_ids != known_ids
+
+
+def normalize_bandcamp_search_uris(results: SearchResults) -> SearchResults:
+    """Repair legacy Bandcamp catalog identities in cached search results."""
+
+    def normalize(item: MediaItemType | ItemMapping) -> None:
+        if (
+            item.uri
+            and item.uri.startswith(("http://", "https://"))
+            and (item.provider == "bandcamp" or item.provider.startswith("bandcamp--"))
+        ):
+            item.uri = f"{item.provider}://{item.media_type.value}/{item.item_id}"
+        if isinstance(item, Album | Track):
+            for artist in item.artists:
+                normalize(artist)
+        if isinstance(item, Track) and item.album:
+            normalize(item.album)
+
+    for field in fields(results):
+        if isinstance(items := getattr(results, field.name), list):
+            for item in items:
+                if isinstance(item, MediaItemType | ItemMapping):
+                    normalize(item)
+    return results

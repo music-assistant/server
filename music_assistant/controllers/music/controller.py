@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 from collections.abc import Awaitable, Callable, Coroutine, Iterable, Sequence
 from contextlib import suppress
 from copy import deepcopy
@@ -36,6 +37,7 @@ from music_assistant_models.errors import (
     InvalidProviderURI,
     MediaNotFoundError,
     MusicAssistantError,
+    ProviderUnavailableError,
     ResourceTemporarilyUnavailable,
     UnsupportedFeaturedException,
 )
@@ -104,6 +106,7 @@ from music_assistant.controllers.music.database import (
 from music_assistant.controllers.music.favorites import FavoritesStore
 from music_assistant.controllers.music.helpers import (
     filter_search_results,
+    normalize_bandcamp_search_uris,
     sibling_instance_mappings,
     sort_search_result,
 )
@@ -125,6 +128,15 @@ from music_assistant.controllers.music.media.tracks import TracksController
 from music_assistant.controllers.music.recency import RecencyEngine
 from music_assistant.controllers.music.recommendations.controller import (
     RecommendationsController,
+)
+from music_assistant.controllers.music.sharing import (
+    SHARE_MEDIA_TYPES,
+    ItemShareInfo,
+    ItemShareLink,
+    cached_public_provider_url,
+    share_source_access,
+    share_text,
+    share_title,
 )
 from music_assistant.controllers.music.sorting import LISTING_SORT_OPTIONS
 from music_assistant.controllers.tasks.context import (
@@ -159,8 +171,10 @@ from music_assistant.helpers.json import json_loads, serialize_to_json
 from music_assistant.helpers.provider_access import (
     access_allows,
     exact_provider,
+    hidden_music_sources,
     own_music_sources,
     playback_instance_for,
+    source_access,
     source_owner,
     visible_items,
     visible_music_sources,
@@ -673,7 +687,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             category=CACHE_CATEGORY_SEARCH_RESULTS,
             base_class=SearchResults,
         ):
-            return cast("SearchResults", cache)
+            return normalize_bandcamp_search_uris(cast("SearchResults", cache))
         # Check if the search query is a streaming provider public shareable URL
         if (url_result := await self._search_shareable_url(search_query)) is not None:
             return url_result
@@ -1443,16 +1457,120 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
 
     @api_command("music/item_by_uri", required_scope=Scope.LIBRARY_READ)
     async def get_item_by_uri(
-        self, uri: str, allow_update_metadata: bool = False
+        self, uri: str, allow_update_metadata: bool = False, recursive: bool = True
     ) -> MediaItemType | BrowseFolder:
-        """Fetch MediaItem by uri."""
+        """
+        Fetch MediaItem by uri.
+
+        :param uri: Music Assistant item URI.
+        :param allow_update_metadata: Schedule a metadata refresh on access.
+        :param recursive: Resolve nested album and artist details for tracks and albums.
+        """
         media_type, provider_instance_id_or_domain, item_id = await parse_uri(uri)
         return await self.get_item(
             media_type=media_type,
             item_id=item_id,
             provider_instance_id_or_domain=provider_instance_id_or_domain,
             allow_update_metadata=allow_update_metadata,
+            recursive=recursive,
         )
+
+    @api_command("music/share_item", required_scope=Scope.LIBRARY_READ)
+    async def get_item_share_info(self, uri: str) -> ItemShareInfo:
+        """Return public website links or human metadata for a regular MA item URI."""
+        if not isinstance(uri, str) or not re.fullmatch(r"[A-Za-z0-9_-]+://[^/]+/.+", uri):
+            raise InvalidDataError("Sharing requires a Music Assistant item URI")
+        if uri.split("://", 1)[0].lower() in {"http", "https", "rtsp", "rtmp"}:
+            raise InvalidDataError("Sharing requires a Music Assistant catalog item URI")
+        try:
+            media_type, provider_id, item_id = await parse_uri(uri)
+        except InvalidProviderURI as err:
+            raise InvalidDataError("Sharing requires a Music Assistant item URI") from err
+        user = get_current_user()
+        hidden = hidden_music_sources(self.mass, user)
+        if provider_id in hidden:
+            raise MediaNotFoundError("Item not found")
+        if media_type not in SHARE_MEDIA_TYPES:
+            raise InvalidDataError("This media type cannot be shared")
+
+        def allowed_source(instance_id: str, domain: str) -> bool:
+            source = self.mass.config.get(CONF_PROVIDERS, {}).get(instance_id)
+            user = get_current_user()
+            return bool(
+                source
+                and source.get("domain") == domain
+                and (
+                    source.get("type") == ProviderType.MUSIC
+                    or (
+                        source.get("type") == ProviderType.PLUGIN
+                        and domain == "smart_playlist"
+                        and media_type == MediaType.PLAYLIST
+                    )
+                )
+                and instance_id not in hidden_music_sources(self.mass, user)
+                and access_allows(source_access(self.mass, instance_id), user)
+            )
+
+        token = SUPPRESS_MEDIA_ITEM_UPDATES.set(True)
+        try:
+            with share_source_access(allowed_source):
+                item = await self._resolve_share_item(
+                    uri, media_type, provider_id, item_id, allowed_source
+                )
+        finally:
+            SUPPRESS_MEDIA_ITEM_UPDATES.reset(token)
+        if isinstance(item, BrowseFolder) or item.media_type not in SHARE_MEDIA_TYPES:
+            raise InvalidDataError("This media type cannot be shared")
+        if isinstance(item, Playlist) and not access_allows(item.access, get_current_user()):
+            raise MediaNotFoundError("Item not found")
+        visible_mappings = [
+            mapping
+            for mapping in item.provider_mappings
+            if allowed_source(mapping.provider_instance, mapping.provider_domain)
+        ]
+        if not visible_mappings:
+            raise MediaNotFoundError("Item not found")
+        candidates: list[ItemShareLink] = []
+        for mapping in sorted(
+            visible_mappings,
+            key=lambda mapping: (
+                mapping.provider_domain,
+                mapping.provider_instance,
+                mapping.item_id,
+            ),
+        ):
+            if allowed_source(mapping.provider_instance, mapping.provider_domain) and (
+                url := await cached_public_provider_url(self.mass.cache, item.media_type, mapping)
+            ):
+                candidates.append(
+                    {
+                        "provider_domain": mapping.provider_domain,
+                        "provider_instance": mapping.provider_instance,
+                        "url": url,
+                    }
+                )
+        # Visibility cache reads can yield after earlier links were collected. Recheck
+        # every source before returning metadata, then deduplicate only surviving links.
+        visible_sources = {
+            (mapping.provider_instance, mapping.provider_domain)
+            for mapping in visible_mappings
+            if allowed_source(mapping.provider_instance, mapping.provider_domain)
+        }
+        if not visible_sources:
+            raise MediaNotFoundError("Item not found")
+        links: list[ItemShareLink] = []
+        seen: set[str] = set()
+        for link in candidates:
+            if (link["provider_instance"], link["provider_domain"]) in visible_sources and link[
+                "url"
+            ] not in seen:
+                seen.add(link["url"])
+                links.append(link)
+        return {
+            "title": share_title(item),
+            "text": None if links else share_text(item),
+            "links": links,
+        }
 
     @api_command("music/sound_effects", required_scope=Scope.LIBRARY_READ)
     async def sound_effects(self) -> list[SoundEffect]:
@@ -1475,8 +1593,17 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         item_id: str,
         provider_instance_id_or_domain: str,
         allow_update_metadata: bool = True,
+        recursive: bool = True,
     ) -> MediaItemType | BrowseFolder:
-        """Get single music item by id and media type."""
+        """
+        Get single music item by id and media type.
+
+        :param media_type: Type of item to resolve.
+        :param item_id: Provider or library item ID.
+        :param provider_instance_id_or_domain: Source of the item.
+        :param allow_update_metadata: Schedule a metadata refresh on access.
+        :param recursive: Resolve nested album and artist details for tracks and albums.
+        """
         if provider_instance_id_or_domain == "database":
             # backwards compatibility - to remove when 2.0 stable is released
             provider_instance_id_or_domain = "library"
@@ -1506,7 +1633,9 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             # the album on one of the music providers
             if media_type == MediaType.ALBUM:
                 return await self.albums.resolve_musicbrainz_release_group(
-                    item_id, allow_update_metadata=allow_update_metadata
+                    item_id,
+                    allow_update_metadata=allow_update_metadata,
+                    recursive=recursive,
                 )
             raise MediaNotFoundError(
                 f"MusicBrainz {media_type.value} {item_id} can not be resolved"
@@ -1549,6 +1678,13 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             ctrl = self.get_controller_for_collection(item_id)
             return await ctrl.get_collection(item_id)
         ctrl = self.get_controller(media_type)
+        if not recursive and media_type in {MediaType.ALBUM, MediaType.TRACK}:
+            return await cast("AlbumsController | TracksController", ctrl).get(
+                item_id=item_id,
+                provider_instance_id_or_domain=provider_instance_id_or_domain,
+                allow_update_metadata=allow_update_metadata,
+                recursive=False,
+            )
         return await ctrl.get(
             item_id=item_id,
             provider_instance_id_or_domain=provider_instance_id_or_domain,
@@ -2944,6 +3080,76 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         msg = f"{item.name} is not available on any music source of this user"
         raise MediaNotFoundError(msg, translation_key="media_not_available_for_user")
 
+    async def _resolve_share_item(
+        self,
+        uri: str,
+        media_type: MediaType,
+        provider_id: str,
+        item_id: str,
+        allowed_source: Callable[[str, str], bool],
+    ) -> MediaItemType | BrowseFolder:
+        """Resolve authorized sharing metadata before considering a provider fallback."""
+        if provider_id in {"library", "database", "musicbrainz"}:
+            return await self.get_item_by_uri(uri, allow_update_metadata=False, recursive=False)
+        configured_sources = self.mass.config.get(CONF_PROVIDERS, {})
+        source = configured_sources.get(provider_id)
+        provider = self.mass.get_provider(provider_id)
+        domain = source.get("domain") if source else provider.domain if provider else provider_id
+        if (
+            provider_id == "builtin"
+            or domain == "builtin"
+            or (provider and provider.domain == "builtin")
+        ) and media_type != MediaType.PLAYLIST:
+            raise InvalidDataError("Sharing requires a Music Assistant catalog item URI")
+        if source:
+            if not allowed_source(provider_id, domain):
+                raise MediaNotFoundError("Item not found")
+            instances = [provider_id]
+        else:
+            instances = [
+                instance_id
+                for instance_id, config in configured_sources.items()
+                if config.get("domain") == provider_id and allowed_source(instance_id, provider_id)
+            ]
+            if not instances:
+                raise MediaNotFoundError("Item not found")
+            if provider and provider.instance_id in instances:
+                instances.remove(provider.instance_id)
+                instances.insert(0, provider.instance_id)
+            instances.sort(key=lambda instance: exact_provider(self.mass, instance) is None)
+
+        selected_instance = instances[0]
+        controller = self.get_controller(media_type)
+        if media_type != MediaType.PODCAST_EPISODE:
+            for instance_id in instances:
+                if not allowed_source(instance_id, domain):
+                    continue
+                if library_item := await controller.get_library_item_by_prov_id(
+                    item_id, instance_id
+                ):
+                    return library_item
+        # Keep the exact account chosen before any library await. The general item
+        # resolver can fall back to another account if this one disconnects meanwhile.
+        instance_id = selected_instance
+        if not allowed_source(instance_id, domain):
+            raise MediaNotFoundError("Item not found")
+        provider = self.mass.get_provider(instance_id, return_unavailable=True)
+        if provider and (
+            provider.instance_id != instance_id
+            or not allowed_source(provider.instance_id, provider.domain)
+        ):
+            raise MediaNotFoundError("Item not found")
+        if media_type == MediaType.PODCAST_EPISODE:
+            if not isinstance(provider, MusicProvider) or not provider.available:
+                raise ProviderUnavailableError(f"{instance_id} is not available")
+            return await provider.get_podcast_episode(item_id)
+        return await controller.get_provider_item(
+            item_id,
+            instance_id,
+            allow_fallback=False,
+            strict_provider_instance=True,
+        )
+
     async def _library_folder_page(
         self,
         provider: MusicProvider,
@@ -3196,7 +3402,11 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         ) is not None:
             # the cache is shared by all users, so the results are narrowed on every read
             return self._visible_search_results(
-                filter_search_results(cast("SearchResults", cache), prov.domain, skip_item_ids)
+                filter_search_results(
+                    normalize_bandcamp_search_uris(cast("SearchResults", cache)),
+                    prov.domain,
+                    skip_item_ids,
+                )
             )
         # run the provider search as a separate task (deduplicated by task_id so
         # identical concurrent searches share a single provider call); with a soft

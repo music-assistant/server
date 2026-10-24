@@ -30,7 +30,8 @@ from collections.abc import (
     Iterable,
 )
 from concurrent.futures import ThreadPoolExecutor
-from contextlib import suppress
+from contextlib import contextmanager, suppress
+from contextvars import ContextVar
 from importlib.metadata import PackageNotFoundError
 from importlib.metadata import version as pkg_version
 from ipaddress import IPv4Address, IPv6Address, ip_address
@@ -68,6 +69,7 @@ if TYPE_CHECKING:
 LOGGER = logging.getLogger(__name__)
 
 CALLBACK_TYPE = Callable[[], None]
+_TASK_SCOPE: ContextVar[object | None] = ContextVar("task_scope", default=None)
 
 
 async def warn_if_missing_x86_64_v2(logger: logging.Logger) -> None:
@@ -2239,6 +2241,23 @@ class _SupportsMass(Protocol):
     mass: MusicAssistant
 
 
+@contextmanager
+def isolate_task_scope() -> Iterator[None]:
+    """Keep deduplicated tasks within this context and its children, including threads."""
+    token = _TASK_SCOPE.set(object())
+    try:
+        yield
+    finally:
+        _TASK_SCOPE.reset(token)
+
+
+def scoped_task_id(task_id: str) -> str:
+    """Scope an in-flight task ID without changing stored cache keys or unscoped IDs."""
+    if (scope := _TASK_SCOPE.get()) is None:
+        return task_id
+    return f"scoped.{id(scope)}.{task_id}"
+
+
 def guard_single_request[SelfT: _SupportsMass, **P, R](
     func: Callable[Concatenate[SelfT, P], Coroutine[Any, Any, R]],
 ) -> Callable[Concatenate[SelfT, P], Coroutine[Any, Any, R]]:
@@ -2249,7 +2268,8 @@ def guard_single_request[SelfT: _SupportsMass, **P, R](
     receive its result. Cancelling one caller leaves both the request and the other callers
     unaffected. Calls count as identical when they are made on the same object with equal
     arguments, no matter whether those were passed positionally or by keyword; the request
-    runs with the arguments of the caller that started it.
+    runs with the arguments of the caller that started it. Isolated task scopes only
+    share requests within that scope.
 
     Every argument must be a scalar or an object identified by its ``uri``, so that equal
     arguments are guaranteed to produce an equal key.
@@ -2290,7 +2310,7 @@ def guard_single_request[SelfT: _SupportsMass, **P, R](
         # which forwarded kwargs would collide with
         task: asyncio.Task[R] = mass.create_task(
             func(self, *args, **kwargs),
-            task_id=task_id,
+            task_id=scoped_task_id(task_id),
             abort_existing=False,
             eager_start=True,
             # every caller awaits the flight below and so sees the failure itself; the
