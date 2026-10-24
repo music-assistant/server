@@ -463,7 +463,10 @@ class HomeAssistantPlayer(Player):
         # entities that were seen echoing it can be judged by it - for the others the
         # play command we issued is what tells the two sources apart. Without either
         # signal the source stays as it was.
-        media_content_id = self._hass_attributes.get("media_content_id", "")
+        media_content_id = self._hass_attributes.get("media_content_id")
+        if not isinstance(media_content_id, str):
+            # some integrations (e.g. Kodi) report a library id here, which is never our URL
+            media_content_id = ""
         if media_content_id.startswith(self.mass.streams.base_url):
             self._reports_stream_url = True
             is_ma_playback = True
