@@ -421,11 +421,13 @@ async def test_form_flow_translation_params(flow_mass: MusicAssistant) -> None:
             [USERNAME_ENTRY],
             step_id="credentials",
             translation_params=["https://example.com/callback"],
+            copy_text="copy-value",
         )
 
     with _use_flow(flow_mass, run_setup):
         step = await flow_mass.config.setup_provider(FAKE_DOMAIN)
         assert step.translation_params == ["https://example.com/callback"]
+        assert step.copy_text == "copy-value"
         await flow_mass.config.abort_setup_flow(step.flow_id)
 
 
@@ -2508,6 +2510,7 @@ async def test_external_until_completes_on_awaitable(flow_mass: MusicAssistant) 
             url="https://example.com/device",
             step_id="device",
             expires_in=300,
+            copy_text="copy-value",
         )
         await session.finish({"token": result["token"]})
 
@@ -2519,6 +2522,7 @@ async def test_external_until_completes_on_awaitable(flow_mass: MusicAssistant) 
         assert step.type == FlowStepType.EXTERNAL
         assert step.step_id == "device"
         assert step.url == "https://example.com/device"
+        assert step.copy_text == "copy-value"
         session = flow_mass.config._setup_flows[step.flow_id].session
         # completion is driven by the awaitable resolving, not a browser callback
         release.set()
