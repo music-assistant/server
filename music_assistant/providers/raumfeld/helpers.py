@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from typing import Any
 from urllib.parse import parse_qs, quote, unquote, urlsplit
 
 import aiohttp
@@ -62,6 +63,24 @@ def room_udn_to_player_id(room_udn: str) -> str:
     :param room_udn: The room UDN (e.g. ``uuid:1234...``).
     """
     return f"{PLAYER_ID_PREFIX}_{room_udn.removeprefix('uuid:')}"
+
+
+def other_room_renderers(zone_config: dict[str, Any]) -> set[str]:
+    """
+    Return the UDNs of the speakers a room plays through its own renderer.
+
+    :param zone_config: The host's zone configuration, as hassfeld parses it.
+    """
+    # A room of several speakers lists each speaker's renderer. hassfeld takes the first
+    # as the room's own, so that is the one the room's player links to; the room plays
+    # the others along with it.
+    rooms = [
+        room
+        for zone in (zone_config.get("zones") or {}).get("zone", [])
+        for room in zone.get("room", [])
+    ]
+    rooms += (zone_config.get("unassignedRooms") or {}).get("room", [])
+    return {renderer["@udn"] for room in rooms for renderer in room.get("renderer", [])[1:]}
 
 
 def parse_serial_number(description_xml: str | None) -> str | None:

@@ -6,7 +6,7 @@ import time
 from collections.abc import Awaitable, Callable, Coroutine, Sequence
 from contextlib import suppress
 from datetime import timedelta
-from typing import TYPE_CHECKING, Any, Concatenate
+from typing import TYPE_CHECKING, Any, Concatenate, cast
 from urllib.parse import urljoin, urlparse
 from xml.etree.ElementTree import ParseError
 
@@ -29,6 +29,8 @@ if TYPE_CHECKING:
     from async_upnp_client.client import UpnpDevice, UpnpService, UpnpStateVariable
     from music_assistant_models.config_entries import ConfigEntry
     from music_assistant_models.player import PlayerMedia
+
+    from music_assistant.providers.raumfeld.provider import RaumfeldPlayerProvider
 
     from .provider import DLNAPlayerProvider
 
@@ -135,6 +137,13 @@ class DLNAPlayer(Player):
             # Creating this player already stored a config for it, and an install from
             # before zone renderers were ignored may still link it to a player that keeps
             # being restored. Deleting the config drops those links as well.
+            self.mass.players.delete_player_config(self.player_id)
+            return False
+
+        if self.device and self._is_other_raumfeld_room_speaker():
+            self.logger.debug("Ignoring %s - played along with its Raumfeld room", self.device.name)
+            await self._device_disconnect()
+            # a player made for it before stays behind as a separate speaker otherwise
             self.mass.players.delete_player_config(self.player_id)
             return False
 
@@ -372,6 +381,14 @@ class DLNAPlayer(Player):
 
     async def poll(self) -> None:
         """Poll player for state updates."""
+        # the Raumfeld host may only have named the speaker's room after it was set up
+        if self.device and self._is_other_raumfeld_room_speaker():
+            self.logger.debug("Removing %s - played along with its Raumfeld room", self.device.name)
+            if TYPE_CHECKING:
+                assert isinstance(self.provider, DLNAPlayerProvider)  # for type checking
+            self.provider.ignore_player(self.player_id)
+            await self.mass.players.unregister(self.player_id, permanent=True)
+            return
         # try to reconnect the device if the connection was lost
         if not self.device:
             if not self.force_poll:
@@ -577,6 +594,18 @@ class DLNAPlayer(Player):
             "RaumfeldGenerator" in service.service_type
             for service in self.device.profile_device.root_device.all_services
         )
+
+    def _is_other_raumfeld_room_speaker(self) -> bool:
+        """Check if this speaker plays as part of a Raumfeld room played through another one."""
+        if not self.device:
+            return False
+        manufacturer = (self.device.manufacturer or "").lower()
+        if "teufel" not in manufacturer and "raumfeld" not in manufacturer:
+            return False
+        # Only the Raumfeld host knows which speakers make up a room. The room's player
+        # links to one of them, and playing to any other plays the host's queue instead.
+        raumfeld = cast("RaumfeldPlayerProvider | None", self.mass.get_provider("raumfeld"))
+        return raumfeld is not None and raumfeld.is_other_room_speaker(self.player_id)
 
     async def _is_sonos_passive_speaker(self) -> bool:
         """

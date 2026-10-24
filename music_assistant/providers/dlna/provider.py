@@ -96,6 +96,14 @@ class DLNAPlayerProvider(PlayerProvider):
 
         await self._device_discovered(ssdp_udn, description_url)
 
+    def ignore_player(self, udn: str) -> None:
+        """
+        Leave a device out when it is discovered again, as it turned out to be no player.
+
+        :param udn: The device's UDN.
+        """
+        self._ignored_udns.add(udn)
+
     async def _device_discovered(self, udn: str, description_url: str) -> None:
         """Handle discovered DLNA player."""
         async with self.lock:

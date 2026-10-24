@@ -26,8 +26,11 @@ def _player(manufacturer: str, *service_types: str) -> DLNAPlayer:
     device.profile_device.root_device.all_services = [
         MagicMock(service_type=service_type) for service_type in service_types
     ]
+    provider = MockProvider("dlna", instance_id="dlna_test")
+    # no Raumfeld provider, which would know the rooms its speakers make up
+    provider.mass.get_provider.return_value = None
     return DLNAPlayer(
-        MockProvider("dlna", instance_id="dlna_test"),  # type: ignore[arg-type]
+        provider,  # type: ignore[arg-type]
         "uuid:dlna-player",
         "http://192.168.1.41/description.xml",
         device=device,

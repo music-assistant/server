@@ -1460,3 +1460,17 @@ async def test_an_ended_update_loop_drops_the_connection_at_once() -> None:
     await _supervise_cycles(provider, check, 1)
     provider._disconnect.assert_awaited_once_with("host connection lost")  # type: ignore[attr-defined]
     check.assert_not_called()
+
+
+def test_a_speaker_played_along_with_its_room_is_recognised() -> None:
+    """The host's zone configuration names the speakers a room plays along with its own."""
+    provider = RaumfeldPlayerProvider.__new__(RaumfeldPlayerProvider)
+    provider.host = MagicMock()
+    room = {"@udn": "uuid:room", "renderer": [{"@udn": "uuid:one-m"}, {"@udn": "uuid:one-s"}]}
+    provider.host.wsd = {"zone_config": {"unassignedRooms": {"room": [room]}}}
+    provider._connected = True
+    assert provider.is_other_room_speaker("uuid:one-s") is True
+    assert provider.is_other_room_speaker("uuid:one-m") is False
+    # without a host there is nothing to go by
+    provider._connected = False
+    assert provider.is_other_room_speaker("uuid:one-s") is False

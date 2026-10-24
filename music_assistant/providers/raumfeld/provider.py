@@ -55,6 +55,7 @@ from .constants import (
 )
 from .helpers import (
     host_is_valid,
+    other_room_renderers,
     parse_control_url,
     parse_library_items,
     parse_line_in,
@@ -239,6 +240,16 @@ class RaumfeldPlayerProvider(PlayerProvider):
         uuid = rend_udn.removeprefix("uuid:") if rend_udn else None
         ip_address = urlparse(devloc).hostname if devloc else None
         return uuid, ip_address
+
+    def is_other_room_speaker(self, udn: str) -> bool:
+        """
+        Return whether a renderer is a speaker its room plays through another speaker.
+
+        :param udn: The renderer's UDN (``uuid:...``).
+        """
+        if not self._connected:
+            return False
+        return udn in other_room_renderers(self.host.wsd.get("zone_config") or {})
 
     async def refresh_station_buttons(self, player: RaumfeldPlayer) -> None:
         """

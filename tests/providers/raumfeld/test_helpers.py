@@ -14,6 +14,7 @@ from music_assistant.providers.raumfeld.helpers import (
     external_source,
     host_is_valid,
     library_uri,
+    other_room_renderers,
     parse_control_url,
     parse_didl_metadata,
     parse_duration,
@@ -326,3 +327,36 @@ def test_an_unknown_play_mode_is_not_guessed() -> None:
     """A play mode the renderer did not report, or one not seen before, stays unknown."""
     assert parse_play_mode(None) == (None, RepeatMode.UNKNOWN)
     assert parse_play_mode("INTRO") == (None, RepeatMode.UNKNOWN)
+
+
+def _room(name: str, *renderers: str) -> dict[str, object]:
+    """Return a room of the host's zone configuration, as hassfeld parses it."""
+    return {
+        "@name": name,
+        "@udn": f"uuid:room-{name}",
+        "renderer": [{"@udn": f"uuid:{renderer}", "@name": renderer} for renderer in renderers],
+    }
+
+
+def test_the_other_speakers_of_a_room_are_named() -> None:
+    """Every speaker of a room but the first, which is the room's own, is played along."""
+    zone_config = {
+        "zones": {
+            "zone": [
+                {"@udn": "uuid:zone", "room": [_room("Living", "one-m", "connector", "one-s")]}
+            ]
+        },
+        "unassignedRooms": {
+            "room": [_room("Kitchen", "kitchen"), _room("Bath", "bath-1", "bath-2")]
+        },
+    }
+    assert other_room_renderers(zone_config) == {"uuid:connector", "uuid:one-s", "uuid:bath-2"}
+
+
+def test_rooms_of_one_speaker_and_an_empty_configuration_name_none() -> None:
+    """A room of one speaker plays through that speaker, and no rooms means no speakers."""
+    assert (
+        other_room_renderers({"zones": None, "unassignedRooms": {"room": [_room("Bar", "bar")]}})
+        == set()
+    )
+    assert other_room_renderers({}) == set()
