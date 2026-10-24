@@ -32,6 +32,7 @@ class TrackStub:
     album: str | None = None
     duration: int | None = None
     provider_refs: dict[str, str] | None = None
+    version: str | None = None
 
 
 @dataclass
@@ -49,6 +50,7 @@ class SharePayload:
     art_ref: str | None = None
     provider_refs: dict[str, str] | None = None
     tracks: list[TrackStub] | None = None
+    version: str | None = None
 
     def to_base64(self) -> str:
         """Encode payload as URL-safe base64 JSON."""
@@ -69,7 +71,15 @@ class SharePayload:
             raise ValueError("Unsupported share payload")
         if not isinstance(data.get("title"), str) or not data["title"].strip():
             raise ValueError("Share payload title is missing")
-        for field_name in ("artist", "album", "isrc", "mbid", "mb_track", "barcode"):
+        for field_name in (
+            "artist",
+            "version",
+            "album",
+            "isrc",
+            "mbid",
+            "mb_track",
+            "barcode",
+        ):
             value = data.get(field_name)
             if value is not None and not isinstance(value, str):
                 raise ValueError(f"Invalid share payload field: {field_name}")
@@ -90,7 +100,7 @@ class SharePayload:
             for raw_track in raw_tracks:
                 if not isinstance(raw_track, dict) or not isinstance(raw_track.get("title"), str):
                     raise TypeError("Invalid share playlist track")
-                optional_fields = ("artist", "isrc", "mbid", "mb_track", "album")
+                optional_fields = ("artist", "version", "isrc", "mbid", "mb_track", "album")
                 if any(
                     raw_track.get(key) is not None and not isinstance(raw_track[key], str)
                     for key in optional_fields
@@ -103,6 +113,7 @@ class SharePayload:
                     TrackStub(
                         title=raw_track["title"],
                         artist=raw_track.get("artist"),
+                        version=raw_track.get("version"),
                         isrc=raw_track.get("isrc"),
                         mbid=raw_track.get("mbid"),
                         mb_track=raw_track.get("mb_track"),
@@ -118,6 +129,7 @@ class SharePayload:
             type=data["type"],
             title=data["title"],
             artist=data.get("artist"),
+            version=data.get("version"),
             album=data.get("album"),
             isrc=data.get("isrc"),
             mbid=data.get("mbid"),
