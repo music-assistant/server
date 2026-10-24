@@ -318,3 +318,13 @@ def test_the_older_service_names_the_song_the_listener_hears() -> None:
     assert current.title == "Thinking of you"
     assert upcoming is not None
     assert upcoming.title == "Rise"
+
+
+def test_the_older_service_names_a_next_song_that_overlaps_the_current() -> None:
+    """A song starting just before the current one ends is still the next one."""
+    # "Thinking of you" starts two seconds before "She's out there" ends
+    current, upcoming = parse_pull(_fixture("rock_pull"), at=1792838100 + STREAM_DELAY)
+    assert current is not None
+    assert current.title == "She's out there"
+    assert upcoming is not None
+    assert upcoming.title == "Thinking of you"

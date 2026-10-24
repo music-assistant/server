@@ -220,8 +220,13 @@ def parse_pull(data: dict[str, Any], at: float) -> tuple[LiveItem | None, LiveIt
         (step for step in reversed(songs) if int(step["start"]) <= heard_at < int(step["end"])),
         None,
     )
-    after = int(current["end"]) if current else heard_at
-    upcoming = next((step for step in songs if int(step["start"]) >= after), None)
+    # songs can overlap by a second or two, so the next one is the next to start
+    if current is not None:
+        upcoming = next(
+            (step for step in songs if int(step["start"]) > int(current["start"])), None
+        )
+    else:
+        upcoming = next((step for step in songs if int(step["start"]) >= heard_at), None)
     return _parse_pull_song(current), _parse_pull_song(upcoming)
 
 
