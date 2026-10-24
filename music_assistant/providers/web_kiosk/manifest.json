@@ -1,0 +1,12 @@
+{
+  "type": "player",
+  "domain": "web_kiosk",
+  "name": "Web Kiosk",
+  "description": "Turn any browser into a fullscreen kiosk player with Sendspin multiroom sync",
+  "codeowners": ["@TrudenBoy"],
+  "requirements": ["segno==1.6.6"],
+  "documentation": "https://music-assistant.io/player-support/web-kiosk",
+  "multi_instance": false,
+  "stage": "beta",
+  "icon": "md:monitor"
+}
