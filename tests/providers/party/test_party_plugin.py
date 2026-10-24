@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
+from collections.abc import AsyncIterator, Callable
 from typing import cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -10,7 +12,11 @@ import pytest
 from music_assistant_models.auth import Scope
 from music_assistant_models.config_entries import ProviderConfig
 from music_assistant_models.enums import ConfigEntryType, MediaType, PlaybackState, ProviderType
-from music_assistant_models.errors import ActionUnavailable, InvalidDataError
+from music_assistant_models.errors import (
+    ActionUnavailable,
+    InsufficientPermissions,
+    InvalidDataError,
+)
 
 from music_assistant.controllers.config import ConfigController
 from music_assistant.helpers.shared_playback import SharedPlaybackMode
@@ -18,10 +24,12 @@ from music_assistant.providers.party import (
     CONF_ENABLE_ADD_QUEUE,
     CONF_ENABLE_BOOST,
     CONF_ENABLE_GUEST_ACCESS,
+    CONF_ENABLE_SKIP_SONG,
     CONF_PARTY_DURATION,
     CONF_PARTY_MODE,
     CONF_PARTY_PLAYER,
     CONF_PARTY_PLAYER_AUTO,
+    CONF_PARTY_SKIP_VOTES_REQUIRED,
     CONF_PREVENT_DUPLICATE_TRACKS,
     PartyPlugin,
 )
@@ -83,6 +91,324 @@ async def test_add_to_queue_rechecks_duplicates_during_priority_insert() -> None
         await plugin.add_to_queue(uri)
 
     player_queues.load.assert_not_awaited()
+
+
+def _create_skip_vote_plugin(votes_required: int) -> tuple[PartyPlugin, MagicMock, MagicMock]:
+    """Create a party plugin with a playing queue for skip vote tests."""
+    plugin = PartyPlugin.__new__(PartyPlugin)
+    plugin.mass = MagicMock()
+    plugin.mass.player_queues = MagicMock()
+    plugin.mass.player_queues.next = AsyncMock()
+    plugin.logger = MagicMock()
+    plugin.config = MagicMock()
+    plugin._queue_lock = asyncio.Lock()
+    plugin._skip_vote_queue_id = None
+    plugin._skip_vote_item_id = None
+    plugin._skip_voters = set()
+    plugin.get_party_player = AsyncMock(return_value="party_queue")  # type: ignore[method-assign]
+    config_values = {
+        CONF_ENABLE_GUEST_ACCESS: True,
+        CONF_ENABLE_SKIP_SONG: True,
+        CONF_PARTY_SKIP_VOTES_REQUIRED: votes_required,
+    }
+    plugin.config.get_value.side_effect = config_values.__getitem__
+    current_item = MagicMock(queue_item_id="item_1", extra_attributes={})
+    queue = MagicMock(state=PlaybackState.PLAYING, current_item=current_item)
+    items = {"item_1": current_item}
+    plugin.mass.player_queues.get.return_value = queue
+    plugin.mass.player_queues.get_item.side_effect = lambda _queue_id, item_id: items.get(item_id)
+    _fake_playback_lock(plugin)
+    return plugin, queue, current_item
+
+
+def _fake_playback_lock(
+    plugin: PartyPlugin, on_acquire: Callable[[], None] | None = None
+) -> list[bool]:
+    """
+    Replace the player's playback lock with one that records whether it is held.
+
+    :param plugin: The plugin whose player controller gets the lock.
+    :param on_acquire: Called while waiting for the lock, before it is acquired.
+    """
+    held = [False]
+
+    @contextlib.asynccontextmanager
+    async def playback_lock(_player_id: str, strict: bool = False) -> AsyncIterator[None]:
+        # a skip must never run without the lock
+        assert strict
+        if on_acquire:
+            on_acquire()
+        held[0] = True
+        try:
+            yield
+        finally:
+            held[0] = False
+
+    cast("MagicMock", plugin.mass.players).get_group_and_player_lock = playback_lock
+    return held
+
+
+def _play_item(plugin: PartyPlugin, queue: MagicMock, item_id: str) -> MagicMock:
+    """Make the given item the playing one and send the queue updated event for it."""
+    known = plugin.mass.player_queues.get_item("party_queue", item_id)
+    item = known or MagicMock(queue_item_id=item_id, extra_attributes={})
+    queue.current_item = item
+    plugin._on_queue_updated(MagicMock(object_id="party_queue"))
+    return cast("MagicMock", item)
+
+
+@pytest.mark.asyncio
+async def test_skip_with_single_vote_required_skips_immediately() -> None:
+    """With the default of one vote, a single guest skips the current track."""
+    plugin, _queue, _item = _create_skip_vote_plugin(votes_required=1)
+    plugin._get_voter_id = AsyncMock(return_value="token:a")  # type: ignore[method-assign]
+
+    result = await plugin.skip_current()
+
+    assert result["skipped"] is True
+    cast("AsyncMock", plugin.mass.player_queues.next).assert_awaited_once_with("party_queue")
+
+
+@pytest.mark.asyncio
+async def test_skip_waits_for_required_distinct_votes() -> None:
+    """The track is only skipped once enough distinct guests voted."""
+    plugin, _queue, current_item = _create_skip_vote_plugin(votes_required=2)
+    next_track = cast("AsyncMock", plugin.mass.player_queues.next)
+    signal_update = cast("MagicMock", plugin.mass.player_queues.signal_update)
+
+    plugin._get_voter_id = AsyncMock(return_value="token:a")  # type: ignore[method-assign]
+    first = await plugin.skip_current()
+    assert first["skipped"] is False
+    assert first["vote_counted"] is True
+    assert first["votes"] == 1
+    assert current_item.extra_attributes["party_skip_votes"] == 1
+
+    # the same guest voting again does not count
+    repeat = await plugin.skip_current()
+    assert repeat["vote_counted"] is False
+    assert repeat["votes"] == 1
+    next_track.assert_not_awaited()
+
+    signal_update.reset_mock()
+    plugin._get_voter_id = AsyncMock(return_value="token:b")  # type: ignore[method-assign]
+    second = await plugin.skip_current()
+    assert second["skipped"] is True
+    next_track.assert_awaited_once_with("party_queue")
+    assert "party_skip_votes" not in current_item.extra_attributes
+    # removing the tally is signaled as an item change, so it is not restored from the cache
+    signal_update.assert_called_once_with("party_queue", items_changed=True)
+
+
+@pytest.mark.asyncio
+async def test_skip_votes_reset_when_track_changes() -> None:
+    """Votes cast on a previous track do not count for the new one."""
+    plugin, queue, _item = _create_skip_vote_plugin(votes_required=2)
+    plugin._get_voter_id = AsyncMock(return_value="token:a")  # type: ignore[method-assign]
+    await plugin.skip_current()
+
+    queue.current_item = MagicMock(queue_item_id="item_2", extra_attributes={})
+    plugin._get_voter_id = AsyncMock(return_value="token:b")  # type: ignore[method-assign]
+    result = await plugin.skip_current()
+
+    assert result["skipped"] is False
+    assert result["votes"] == 1
+    cast("AsyncMock", plugin.mass.player_queues.next).assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_skip_votes_reset_when_track_plays_again() -> None:
+    """A track that plays again starts without the votes it had before."""
+    plugin, queue, current_item = _create_skip_vote_plugin(votes_required=2)
+    plugin._get_voter_id = AsyncMock(return_value="token:a")  # type: ignore[method-assign]
+    await plugin.skip_current()
+
+    # playback moves on to another track and later returns, without votes in between
+    _play_item(plugin, queue, "item_2")
+    assert "party_skip_votes" not in current_item.extra_attributes
+    _play_item(plugin, queue, "item_1")
+
+    plugin._get_voter_id = AsyncMock(return_value="token:b")  # type: ignore[method-assign]
+    result = await plugin.skip_current()
+
+    assert result["skipped"] is False
+    assert result["votes"] == 1
+    cast("AsyncMock", plugin.mass.player_queues.next).assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_skip_vote_requires_player_access() -> None:
+    """A caller without access to the party player cannot vote."""
+    plugin, _queue, current_item = _create_skip_vote_plugin(votes_required=2)
+    plugin._get_voter_id = AsyncMock(return_value="token:a")  # type: ignore[method-assign]
+
+    with (
+        patch("music_assistant.providers.party.get_current_user", return_value=MagicMock()),
+        patch("music_assistant.providers.party.has_player_access", return_value=False),
+        pytest.raises(InsufficientPermissions),
+    ):
+        await plugin.skip_current()
+
+    assert plugin._skip_voters == set()
+    assert "party_skip_votes" not in current_item.extra_attributes
+
+
+@pytest.mark.asyncio
+async def test_skip_vote_rechecks_queue_after_waiting() -> None:
+    """A vote is rejected when playback stopped while the vote was being processed."""
+    plugin, queue, _item = _create_skip_vote_plugin(votes_required=2)
+
+    async def stop_playback() -> str:
+        queue.state = PlaybackState.IDLE
+        queue.current_item = None
+        return "token:a"
+
+    plugin._get_voter_id = AsyncMock(side_effect=stop_playback)  # type: ignore[method-assign]
+
+    with pytest.raises(InvalidDataError, match="Nothing is currently playing"):
+        await plugin.skip_current()
+
+    assert plugin._skip_voters == set()
+
+
+@pytest.mark.asyncio
+async def test_skip_vote_rejected_when_track_changes_while_resolving_voter() -> None:
+    """A vote is not counted for a track that started after the guest pressed skip."""
+    plugin, queue, _item = _create_skip_vote_plugin(votes_required=1)
+
+    async def advance_playback() -> str:
+        queue.current_item = MagicMock(queue_item_id="item_2", extra_attributes={})
+        return "token:a"
+
+    plugin._get_voter_id = AsyncMock(side_effect=advance_playback)  # type: ignore[method-assign]
+
+    result = await plugin.skip_current()
+
+    assert result["song_changed"] is True
+    assert result["vote_counted"] is False
+    assert plugin._skip_voters == set()
+    cast("AsyncMock", plugin.mass.player_queues.next).assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_skip_vote_rejected_when_track_changes_while_waiting_for_lock() -> None:
+    """A track change while waiting for the playback lock keeps the vote off the new track."""
+    plugin, queue, _item = _create_skip_vote_plugin(votes_required=1)
+    plugin._get_voter_id = AsyncMock(return_value="token:a")  # type: ignore[method-assign]
+
+    def advance_playback() -> None:
+        queue.current_item = MagicMock(queue_item_id="item_2", extra_attributes={})
+
+    _fake_playback_lock(plugin, on_acquire=advance_playback)
+
+    result = await plugin.skip_current()
+
+    assert result["song_changed"] is True
+    assert result["vote_counted"] is False
+    assert plugin._skip_voters == set()
+    cast("AsyncMock", plugin.mass.player_queues.next).assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_skip_vote_for_track_no_longer_playing_is_not_counted() -> None:
+    """A vote for the track the guest saw is not counted once another track plays."""
+    plugin, _queue, _item = _create_skip_vote_plugin(votes_required=1)
+    plugin._get_voter_id = AsyncMock(return_value="token:a")  # type: ignore[method-assign]
+
+    result = await plugin.skip_current(queue_item_id="item_0")
+
+    assert result["song_changed"] is True
+    assert result["skipped"] is False
+    assert plugin._skip_voters == set()
+    cast("AsyncMock", plugin.mass.player_queues.next).assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_late_skip_votes_do_not_count_for_next_track() -> None:
+    """Votes that arrive after their track was skipped do not count for the next track."""
+    plugin, queue, _item = _create_skip_vote_plugin(votes_required=3)
+
+    async def skip_to_next_track(_queue_id: str) -> None:
+        queue.current_item = MagicMock(queue_item_id="item_2", extra_attributes={})
+
+    next_track = cast("AsyncMock", plugin.mass.player_queues.next)
+    next_track.side_effect = skip_to_next_track
+
+    # five guests vote on the first track, the third vote skips it
+    results = []
+    for guest in "abcde":
+        plugin._get_voter_id = AsyncMock(return_value=f"token:{guest}")  # type: ignore[method-assign]
+        results.append(await plugin.skip_current(queue_item_id="item_1"))
+
+    assert [result["skipped"] for result in results] == [False, False, True, False, False]
+    assert [result["song_changed"] for result in results[3:]] == [True, True]
+    next_track.assert_awaited_once_with("party_queue")
+
+    # the next track starts without any of those votes
+    plugin._get_voter_id = AsyncMock(return_value="token:f")  # type: ignore[method-assign]
+    result = await plugin.skip_current(queue_item_id="item_2")
+    assert result["votes"] == 1
+    assert result["skipped"] is False
+
+
+@pytest.mark.asyncio
+async def test_skip_holds_playback_lock_until_skipped() -> None:
+    """The deciding vote skips the track while still holding the playback lock."""
+    plugin, _queue, _item = _create_skip_vote_plugin(votes_required=1)
+    plugin._get_voter_id = AsyncMock(return_value="token:a")  # type: ignore[method-assign]
+    held = _fake_playback_lock(plugin)
+    held_during_skip: list[bool] = []
+    next_track = cast("AsyncMock", plugin.mass.player_queues.next)
+    next_track.side_effect = lambda _queue_id: held_during_skip.append(held[0])
+
+    await plugin.skip_current()
+
+    assert held_during_skip == [True]
+
+
+@pytest.mark.asyncio
+async def test_unload_removes_skip_vote_tally() -> None:
+    """The tally of votes that are lost with the instance is removed on unload."""
+    plugin, _queue, current_item = _create_skip_vote_plugin(votes_required=2)
+    plugin._get_voter_id = AsyncMock(return_value="token:a")  # type: ignore[method-assign]
+    await plugin.skip_current()
+    cast("MagicMock", plugin.mass.config).get_raw_provider_config_value.return_value = True
+    plugin._unregister_handles = []
+    plugin._session = None
+    plugin._session_lock = asyncio.Lock()
+    signal_update = cast("MagicMock", plugin.mass.player_queues.signal_update)
+    signal_update.reset_mock()
+
+    await plugin.unload()
+
+    assert "party_skip_votes" not in current_item.extra_attributes
+    signal_update.assert_called_once_with("party_queue", items_changed=True)
+
+
+def test_stale_skip_vote_tally_removed_on_queue_update() -> None:
+    """A tally restored from before a reload or restart is removed when its queue updates."""
+    plugin, _queue, current_item = _create_skip_vote_plugin(votes_required=2)
+    current_item.extra_attributes["party_skip_votes"] = 1
+
+    plugin._on_queue_updated(MagicMock(object_id="party_queue"))
+
+    assert "party_skip_votes" not in current_item.extra_attributes
+    cast("MagicMock", plugin.mass.player_queues.signal_update).assert_called_once_with(
+        "party_queue", items_changed=True
+    )
+
+
+@pytest.mark.asyncio
+async def test_stale_skip_vote_tally_removed_on_load() -> None:
+    """A tally on a queue that is already loaded is removed when the plugin loads."""
+    plugin, queue, current_item = _create_skip_vote_plugin(votes_required=2)
+    plugin._unregister_handles = []
+    queue.queue_id = "party_queue"
+    cast("MagicMock", plugin.mass.player_queues).__iter__.return_value = iter([queue])
+    current_item.extra_attributes["party_skip_votes"] = 1
+
+    await plugin.loaded_in_mass()
+
+    assert "party_skip_votes" not in current_item.extra_attributes
 
 
 def _create_session_test_plugin(mode: str, guest_access: bool = True) -> PartyPlugin:
@@ -313,6 +639,9 @@ def _create_unload_plugin(*, guest_access_enabled: bool) -> PartyPlugin:
     plugin._session = None
     plugin._session_lock = asyncio.Lock()
     plugin._revoke_guest_tokens = AsyncMock()  # type: ignore[method-assign]
+    plugin._skip_vote_queue_id = None
+    plugin._skip_vote_item_id = None
+    plugin._skip_voters = set()
     return plugin
 
 

@@ -19,17 +19,33 @@ from music_assistant_models.config_entries import (
     ConfigValueOption,
     ProviderConfig,
 )
-from music_assistant_models.enums import ConfigEntryType, MediaType, PlaybackState, ProviderFeature
-from music_assistant_models.errors import InvalidDataError, SetupFailedError
+from music_assistant_models.enums import (
+    ConfigEntryType,
+    EventType,
+    MediaType,
+    PlaybackState,
+    ProviderFeature,
+)
+from music_assistant_models.errors import (
+    InsufficientPermissions,
+    InvalidDataError,
+    SetupFailedError,
+)
 
 from music_assistant.constants import CONF_ENABLED
 from music_assistant.controllers.player_queues.helpers import build_queue_item, committed_index
+from music_assistant.controllers.webserver.helpers.auth_middleware import (
+    get_current_token,
+    get_current_user,
+    has_player_access,
+)
 from music_assistant.helpers import guest_access
 from music_assistant.helpers.config_entries import PLAYBACK_TARGET_TYPES
 from music_assistant.helpers.shared_playback import SharedPlaybackMode, SharedPlaybackSession
 from music_assistant.models.plugin import PluginProvider
 
 if TYPE_CHECKING:
+    from music_assistant_models.event import MassEvent
     from music_assistant_models.provider import ProviderManifest
     from music_assistant_models.queue_item import QueueItem
 
@@ -54,6 +70,7 @@ CONF_PARTY_ADD_QUEUE_REFILL_MINUTES = "add_queue_refill_minutes"
 CONF_ENABLE_SKIP_SONG = "enable_skip_song"
 CONF_PARTY_SKIP_SONG_LIMIT = "skip_song_limit"
 CONF_PARTY_SKIP_SONG_REFILL_MINUTES = "skip_song_refill_minutes"
+CONF_PARTY_SKIP_VOTES_REQUIRED = "skip_votes_required"
 # Badge color configuration
 CONF_REQUEST_BADGE_COLOR = "request_badge_color"
 CONF_BOOST_BADGE_COLOR = "boost_badge_color"
@@ -96,6 +113,7 @@ PARTY_GUEST_DISPLAY_NAME = "Party Guest"
 # Extra attribute keys for tracking guest items in the queue
 ATTR_PARTY_GUEST = "party_guest"
 ATTR_PARTY_BOOSTED = "party_boosted"
+ATTR_PARTY_SKIP_VOTES = "party_skip_votes"
 
 SUPPORTED_FEATURES: set[ProviderFeature] = set()
 
@@ -118,6 +136,8 @@ class PartyConfig(DataClassDictMixin):
     # Skip Song rate limiting
     skip_song_limit: int
     skip_song_refill_minutes: int
+    # Number of distinct guests that must vote before the current song is skipped
+    skip_votes_required: int
     # UI settings
     karaoke_mode: bool
     highlight_ahead: bool
@@ -351,6 +371,15 @@ class PartyPlugin(PluginProvider):
                 advanced=True,
                 category="guest_features",
             ),
+            ConfigEntry(
+                key=CONF_PARTY_SKIP_VOTES_REQUIRED,
+                type=ConfigEntryType.INTEGER,
+                default_value=1,
+                depends_on=CONF_ENABLE_SKIP_SONG,
+                range=(1, 50),
+                advanced=True,
+                category="guest_features",
+            ),
             # Badge color configuration
             ConfigEntry(
                 key=CONF_REQUEST_BADGE_COLOR,
@@ -387,9 +416,19 @@ class PartyPlugin(PluginProvider):
         self._queue_lock = asyncio.Lock()
         self._session: SharedPlaybackSession | None = None
         self._session_lock = asyncio.Lock()
+        # Skip votes are only held for the queue item they were cast on
+        self._skip_vote_queue_id: str | None = None
+        self._skip_vote_item_id: str | None = None
+        self._skip_voters: set[str] = set()
 
     async def loaded_in_mass(self) -> None:
         """Call after the provider has been loaded."""
+        self._unregister_handles.append(
+            self.mass.subscribe(self._on_queue_updated, EventType.QUEUE_UPDATED)
+        )
+        # queues that are already loaded will not send an update for their tallies
+        for queue in self.mass.player_queues:
+            self._remove_stale_skip_tally(queue.queue_id)
         # Register API commands and store unregister handles
         # PROVIDERS_READ (held by guests) lets a guest fetch the join URL to display/share
         # the QR; get_party_url returns None when guest access is disabled, so nothing leaks.
@@ -454,6 +493,9 @@ class PartyPlugin(PluginProvider):
         for unregister in self._unregister_handles:
             unregister()
         self._unregister_handles.clear()
+
+        # The votes are lost with this instance, so remove their tally as well
+        self._clear_skip_votes()
 
         # Tear down the shared playback session (detaches guest listeners and,
         # in remote mode, removes the virtual player)
@@ -571,6 +613,7 @@ class PartyPlugin(PluginProvider):
             skip_song_refill_minutes=cast(
                 "int", self.config.get_value(CONF_PARTY_SKIP_SONG_REFILL_MINUTES)
             ),
+            skip_votes_required=cast("int", self.config.get_value(CONF_PARTY_SKIP_VOTES_REQUIRED)),
             karaoke_mode=cast("bool", self.config.get_value(CONF_PARTY_KARAOKE_MODE)),
             highlight_ahead=cast("bool", self.config.get_value(CONF_PARTY_HIGHLIGHT_AHEAD)),
             request_badge_color=cast("str", self.config.get_value(CONF_REQUEST_BADGE_COLOR)),
@@ -870,11 +913,19 @@ class PartyPlugin(PluginProvider):
 
         return section_end
 
-    async def skip_current(self) -> dict[str, Any]:
+    async def skip_current(self, queue_item_id: str | None = None) -> dict[str, Any]:
         """
-        Skip the currently playing track.
+        Vote to skip the currently playing track.
 
-        :returns: Result dict with success status.
+        The track is skipped once the configured number of distinct guests voted for it.
+        A guest voting twice on the same track is not counted again. A vote for a track
+        that is no longer playing is not counted.
+
+        :param queue_item_id: The queue item the guest voted on, as shown to the guest.
+            When left out, the vote is for the track playing when the vote arrives.
+        :returns: Result dict with success status, whether the track was skipped,
+            whether this vote was counted, whether the track changed before the vote
+            was counted and the current vote tally.
         """
         # Check if guest access and skip are enabled
         if not self.config.get_value(CONF_ENABLE_GUEST_ACCESS):
@@ -887,21 +938,81 @@ class PartyPlugin(PluginProvider):
         if not queue_id:
             raise InvalidDataError("Could not get player queue")
 
-        queue = self.mass.player_queues.get(queue_id)
-        if not queue:
-            raise InvalidDataError(f"Queue not found: {queue_id}")
+        # A vote counts towards skipping, so it needs the same player access as skipping
+        current_user = get_current_user()
+        if current_user and not has_player_access(
+            current_user, queue_id, self.mass.players.get_player(queue_id)
+        ):
+            msg = f"{current_user.username} does not have access to player {queue_id}"
+            raise InsufficientPermissions(msg)
 
-        if queue.state != PlaybackState.PLAYING:
-            raise InvalidDataError("Nothing is currently playing")
+        # The vote is for the track the guest saw, or else the one playing right now,
+        # even if playback moves on while the vote is being processed
+        target_item_id = queue_item_id or self._get_playing_item(queue_id).queue_item_id
+        votes_required = cast("int", self.config.get_value(CONF_PARTY_SKIP_VOTES_REQUIRED))
+        voter_id = await self._get_voter_id()
 
-        # Skip to next track
-        await self.mass.player_queues.next(queue_id)
+        # Hold the player's playback lock through the skip, so no other playback
+        # action can change the track between checking it and skipping it
+        async with (
+            self._queue_lock,
+            self.mass.players.get_group_and_player_lock(queue_id, strict=True),
+        ):
+            current_item = self._get_playing_item(queue_id)
+            if current_item.queue_item_id != target_item_id:
+                # e.g. a vote that arrives after earlier votes already skipped the track
+                self.logger.info(
+                    "Guest vote to skip not counted, the track changed on queue %s", queue_id
+                )
+                return {
+                    "success": True,
+                    "queue_id": queue_id,
+                    "skipped": False,
+                    "vote_counted": False,
+                    "song_changed": True,
+                    "votes": 0,
+                    "votes_required": votes_required,
+                }
 
-        self.logger.info("Guest skipped current track on queue: %s", queue_id)
+            if (
+                self._skip_vote_queue_id != queue_id
+                or self._skip_vote_item_id != current_item.queue_item_id
+            ):
+                self._clear_skip_votes()
+                self._skip_vote_queue_id = queue_id
+                self._skip_vote_item_id = current_item.queue_item_id
+
+            vote_counted = voter_id not in self._skip_voters
+            self._skip_voters.add(voter_id)
+            votes = len(self._skip_voters)
+            skipped = votes >= votes_required
+
+            if skipped:
+                self._clear_skip_votes()
+                await self.mass.player_queues.next(queue_id)
+            elif vote_counted:
+                # Store the tally on the item so every guest sees the vote progress
+                current_item.extra_attributes[ATTR_PARTY_SKIP_VOTES] = votes
+                self.mass.player_queues.signal_update(queue_id, items_changed=True)
+
+        if skipped:
+            self.logger.info("Guests skipped current track on queue: %s", queue_id)
+        else:
+            self.logger.info(
+                "Guest voted to skip current track on queue %s (%d/%d)",
+                queue_id,
+                votes,
+                votes_required,
+            )
 
         return {
             "success": True,
             "queue_id": queue_id,
+            "skipped": skipped,
+            "vote_counted": vote_counted,
+            "song_changed": False,
+            "votes": votes,
+            "votes_required": votes_required,
         }
 
     async def listen_in(self, web_player_id: str) -> dict[str, Any]:
@@ -1014,6 +1125,82 @@ class PartyPlugin(PluginProvider):
                 except SetupFailedError as err:
                     self.logger.warning("Unable to create venue party session: %s", err)
         return self._session
+
+    async def _get_voter_id(self) -> str:
+        """
+        Return an identifier for the caller that is unique per guest device.
+
+        All guests share the same guest user, but every guest gets its own token
+        when joining, so the token identifies the individual guest.
+        """
+        if token := get_current_token():
+            if token_id := await self.mass.webserver.auth.get_token_id_from_token(token):
+                return f"token:{token_id}"
+        if user := get_current_user():
+            return f"user:{user.user_id}"
+        return "anonymous"
+
+    def _get_playing_item(self, queue_id: str) -> QueueItem:
+        """
+        Return the item that is currently playing on the given queue.
+
+        :param queue_id: The queue ID to check.
+        :raises InvalidDataError: When nothing is playing on the queue.
+        """
+        queue = self.mass.player_queues.get(queue_id)
+        if not queue:
+            raise InvalidDataError(f"Queue not found: {queue_id}")
+        if queue.state != PlaybackState.PLAYING or not queue.current_item:
+            raise InvalidDataError("Nothing is currently playing")
+        return queue.current_item
+
+    def _on_queue_updated(self, event: MassEvent) -> None:
+        """
+        Drop the skip votes once the voted track is no longer the one playing.
+
+        :param event: The queue updated event.
+        """
+        if not (queue_id := event.object_id):
+            return
+        if queue_id == self._skip_vote_queue_id:
+            queue = self.mass.player_queues.get(queue_id)
+            current_item = queue.current_item if queue else None
+            if not current_item or current_item.queue_item_id != self._skip_vote_item_id:
+                self._clear_skip_votes()
+        self._remove_stale_skip_tally(queue_id)
+
+    def _remove_stale_skip_tally(self, queue_id: str) -> None:
+        """
+        Remove a skip vote tally that no vote counted by this instance belongs to.
+
+        Such a tally is left over from before a reload or a restart, where the queue
+        items are restored from the cache but the votes themselves are not.
+
+        :param queue_id: The queue ID to check.
+        """
+        queue = self.mass.player_queues.get(queue_id)
+        current_item = queue.current_item if queue else None
+        if (
+            current_item
+            and ATTR_PARTY_SKIP_VOTES in current_item.extra_attributes
+            and (queue_id, current_item.queue_item_id)
+            != (self._skip_vote_queue_id, self._skip_vote_item_id)
+        ):
+            current_item.extra_attributes.pop(ATTR_PARTY_SKIP_VOTES)
+            self.mass.player_queues.signal_update(queue_id, items_changed=True)
+
+    def _clear_skip_votes(self) -> None:
+        """Forget the skip votes and remove the vote tally from the item they were cast on."""
+        queue_id, item_id = self._skip_vote_queue_id, self._skip_vote_item_id
+        self._skip_vote_queue_id = None
+        self._skip_vote_item_id = None
+        self._skip_voters = set()
+        if not queue_id or not item_id:
+            return
+        voted_item = self.mass.player_queues.get_item(queue_id, item_id)
+        if voted_item and voted_item.extra_attributes.pop(ATTR_PARTY_SKIP_VOTES, None):
+            # Signal the item change so the removal reaches guests and the stored queue
+            self.mass.player_queues.signal_update(queue_id, items_changed=True)
 
     async def _revoke_guest_tokens(self) -> None:
         """
