@@ -412,7 +412,7 @@ PROVIDER_SETUP_FLOW_KEYS: dict[str, tuple[str, ...]] = {
     "listenbrainz_scrobble": ("_user_token", "api_base_url"),
     "musicme": ("username", "password"),
     "neteasecloudmusic": ("api_base_url", "cookie", "uid"),
-    "nicovideo": ("mail", "password", "user_session"),
+    "nicovideo": ("user_session",),
     "nugs": ("username", "password"),
     "opensubsonic": ("username", "password", "baseURL", "port", "path"),
     "pandora": ("username", "password"),
@@ -678,6 +678,12 @@ async def migrate(data: dict[str, Any]) -> bool:  # noqa: C901, PLR0912, PLR0915
     # artists; the provider heals and clears the marker on its next album sync.
     # TODO: remove after 2.13 release
     if _migrate_emby_album_artists_heal(data):
+        changed = True
+
+    # Drop the nicovideo mail/password/MFA credentials, which are no longer used since the
+    # provider only supports logging in with a user_session cookie.
+    # TODO: remove after 2.13 release
+    if _migrate_nicovideo_drop_mail_login(data):
         changed = True
 
     return changed
@@ -2033,4 +2039,27 @@ def _migrate_emby_album_artists_heal(data: dict[str, Any]) -> bool:
         return False
     LOGGER.info("Scheduled an album artist heal for %d Emby provider(s)", marked)
     data[CONF_EMBY_ALBUM_ARTISTS_HEAL_MIGRATED] = True
+    return True
+
+
+def _migrate_nicovideo_drop_mail_login(data: dict[str, Any]) -> bool:
+    """Remove the stored mail, password and MFA code from every nicovideo provider instance."""
+    all_provider_configs = data.get(CONF_PROVIDERS, {})
+    if not isinstance(all_provider_configs, dict):
+        return False
+    dropped = 0
+    for provider_cfg in all_provider_configs.values():
+        if not isinstance(provider_cfg, dict) or provider_cfg.get("domain") != "nicovideo":
+            continue
+        for section in ("values", "setup_data"):
+            stored = provider_cfg.get(section)
+            if not isinstance(stored, dict):
+                continue
+            for key in ("mail", "password", "mfa"):
+                if key in stored:
+                    del stored[key]
+                    dropped += 1
+    if not dropped:
+        return False
+    LOGGER.info("Removed %d unused nicovideo mail login value(s)", dropped)
     return True
