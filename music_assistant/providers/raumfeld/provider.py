@@ -46,6 +46,7 @@ from .constants import (
     DEFAULT_PORT,
     DEVICE_INFO_TIMEOUT,
     GROUP_SETTLE_TIME,
+    HOST_CHECK_FAILURES,
     HOST_ERRORS,
     INITIAL_UPDATE_TIMEOUT,
     LIBRARY_REFRESH_INTERVAL,
@@ -58,6 +59,7 @@ from .constants import (
     ZONE_WATCH_INTERVAL,
 )
 from .helpers import (
+    host_is_valid,
     parse_control_url,
     parse_friendly_name,
     parse_library_items,
@@ -95,6 +97,8 @@ class RaumfeldPlayerProvider(PlayerProvider):
     _group_changes: int = 0
     _group_changed_at: float = 0.0
     _connected: bool = False
+    # health checks the host has missed in a row while connected
+    _host_check_failures: int = 0
     # renderer UUID -> (Line-In stream url, title) for rooms that expose an analog input
     _line_in: dict[str, tuple[str, str]]
     # when the station buttons were last read
@@ -269,16 +273,19 @@ class RaumfeldPlayerProvider(PlayerProvider):
             try:
                 if not self._connected:
                     await self._try_connect()
-                elif (
-                    self._update_task is None
-                    or self._update_task.done()
-                    or not await self.host.async_host_is_valid()
-                ):
-                    # the host is gone, or hassfeld's update loop exited (it swallows a
-                    # disconnect and returns, freezing state) - drop so the next cycle
-                    # reconnects and recreates the update task
+                elif self._update_task is None or self._update_task.done():
+                    # hassfeld's update loop exited (it swallows a disconnect and returns,
+                    # freezing state) - drop so the next cycle reconnects and recreates it
                     await self._disconnect("host connection lost")
+                elif not await host_is_valid(
+                    self.mass.http_session, self._host_address, self._host_port
+                ):
+                    # one missed answer is a slow host; only a run of them is a lost one
+                    self._host_check_failures += 1
+                    if self._host_check_failures >= HOST_CHECK_FAILURES:
+                        await self._disconnect("host connection lost")
                 else:
+                    self._host_check_failures = 0
                     # host still healthy: re-sync so a room that (re)appeared or vanished
                     # (e.g. a speaker returning from deep standby) is registered / marked
                     # available again without needing a full reconnect
@@ -302,7 +309,7 @@ class RaumfeldPlayerProvider(PlayerProvider):
         self.host = hassfeld.RaumfeldHost(
             self._host_address, self._host_port, session=self.mass.http_session
         )
-        if not await self.host.async_host_is_valid():
+        if not await host_is_valid(self.mass.http_session, self._host_address, self._host_port):
             self.logger.debug("Raumfeld host %s not reachable yet; will retry", self._host_address)
             return
         self._update_task = self.mass.create_task(
@@ -338,6 +345,7 @@ class RaumfeldPlayerProvider(PlayerProvider):
         if self._connected:
             self.logger.warning("Raumfeld host %s %s - pausing", self._host_address, reason)
         self._connected = False
+        self._host_check_failures = 0
         for task in (self._update_task, self._zone_watch_task):
             if task and not task.done():
                 task.cancel()
