@@ -2097,6 +2097,9 @@ class StreamsAudio:
             discard_position = float(streamdetails.seek_position)
 
         total_chunks_received = 0
+        # the buffer this item plays from, as of its first chunk: a stop detaches it from
+        # the streamdetails before it releases it, and the duration writeback must see that
+        source_buffer: AudioBuffer | None = None
         playback_speed = cast("float", queue_item.extra_attributes.get("playback_speed", 1.0))
         try:
             async for chunk in self.get_queue_item_stream(
@@ -2110,6 +2113,8 @@ class StreamsAudio:
                 consumer_connected=consumer_connected,
             ):
                 total_chunks_received += 1
+                if total_chunks_received == 1 and queue_item.streamdetails:
+                    source_buffer = queue_item.streamdetails.buffer
                 tail_window.extend(chunk)
                 del chunk
                 hold_target = tail_hold_target(queue_item, crossfade_buffer_size, frame_size)
@@ -2445,7 +2450,7 @@ class StreamsAudio:
         streamdetails.seconds_streamed = seconds_streamed
         # an externally aborted source ends in a clean EOF mid-track, so the
         # streamed length must not be written back as the item's duration
-        source_buffer = streamdetails.buffer
+        source_buffer = source_buffer or streamdetails.buffer
         if source_buffer is None or not source_buffer.cancelled:
             uncredited_tail_seconds = uncredited_tail_bytes / pcm_format.pcm_sample_size
             # streamdetails.duration is in media-time; seconds_streamed is stream-time
@@ -2829,6 +2834,10 @@ class StreamsAudio:
                 bytes_written = 0
                 crossfade_buffer = bytearray()
                 first_chunk_received = False
+                # the buffer this item plays from, as of its first chunk: a stop detaches it
+                # from the streamdetails before it releases it, which the duration writeback
+                # must see
+                source_buffer: AudioBuffer | None = None
                 holding_back = item_crossfade_mode != CrossfadeMode.DISABLED
 
                 item_stream = await incoming_prefetcher.take(queue_track, int(raw_seek_position))
@@ -2862,6 +2871,7 @@ class StreamsAudio:
                         total_chunks_received += 1
                         if not first_chunk_received:
                             first_chunk_received = True
+                            source_buffer = queue_track.streamdetails.buffer
                             # inform the queue that the track is now loaded in the buffer
                             # so the next track can be preloaded
                             self.mass.player_queues.track_loaded_in_buffer(
@@ -3159,7 +3169,7 @@ class StreamsAudio:
                 play_log_entry.seconds_streamed = seconds_streamed
                 # an externally aborted source ends in a clean EOF mid-track, so the
                 # streamed length must not be written back as the item's duration
-                source_buffer = queue_track.streamdetails.buffer
+                source_buffer = source_buffer or queue_track.streamdetails.buffer
                 source_aborted = source_buffer is not None and source_buffer.cancelled
                 if not source_aborted:
                     # the held-back crossfade tail still counts as this track's media-time
