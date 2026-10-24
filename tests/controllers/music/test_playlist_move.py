@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from contextlib import ExitStack
 from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -10,10 +11,16 @@ from uuid import uuid4
 import pytest
 from music_assistant_models.access import PlaylistAccess
 from music_assistant_models.auth import User, UserRole
-from music_assistant_models.enums import EventType, ProviderFeature, ProviderSharing
+from music_assistant_models.enums import (
+    EventType,
+    ProviderFeature,
+    ProviderSharing,
+    TaskStatus,
+)
 from music_assistant_models.errors import (
     InsufficientPermissions,
     InvalidDataError,
+    ResourceBusyError,
     ResourceTemporarilyUnavailable,
 )
 from music_assistant_models.media_items import Playlist, ProviderMapping
@@ -350,3 +357,152 @@ async def test_move_tracks_without_the_feature_is_refused(
         await playlists.move_playlist_tracks(added.item_id, [1, 2], 3)
 
     provider.move_playlist_tracks.assert_not_awaited()
+
+
+def _removal_task(playlist: Playlist, status: TaskStatus) -> MagicMock:
+    """Return a background task removing items from the playlist, in the given status."""
+    task = MagicMock()
+    task.status = status
+    task.metadata = {"task_domain": "playlist_remove_tracks", "playlist_id": playlist.item_id}
+    return task
+
+
+async def test_move_while_another_move_is_under_way_is_refused(
+    playlists: PlaylistController, music_mass_module: MusicAssistant
+) -> None:
+    """A move of a playlist is refused, not queued, until the one under way has settled."""
+    added = await _add(playlists)
+    provider = _provider()
+    started = asyncio.Event()
+    finish = asyncio.Event()
+
+    async def _slow_move(*_args: object) -> None:
+        started.set()
+        await finish.wait()
+
+    provider.move_playlist_track.side_effect = _slow_move
+
+    with (
+        _as_user(OWNER),
+        patch.object(music_mass_module, "get_provider", return_value=provider),
+        patch.object(music_mass_module, "signal_event"),
+    ):
+        first = asyncio.create_task(playlists.move_playlist_track(added.item_id, 3, 1))
+        await started.wait()
+        with pytest.raises(ResourceBusyError, match="still being reordered"):
+            await playlists.move_playlist_tracks(added.item_id, [2], 1)
+        finish.set()
+        await first
+        # once settled, the next move is accepted
+        await playlists.move_playlist_tracks(added.item_id, [2], 1)
+
+    provider.move_playlist_track.assert_awaited_once()
+    provider.move_playlist_tracks.assert_awaited_once()
+
+
+async def test_removal_while_a_move_is_under_way_is_refused(
+    playlists: PlaylistController, music_mass_module: MusicAssistant
+) -> None:
+    """A removal is refused, not queued, while a move of the playlist is under way."""
+    added = await _add(playlists)
+    provider = _provider()
+    started = asyncio.Event()
+    finish = asyncio.Event()
+
+    async def _slow_move(*_args: object) -> None:
+        started.set()
+        await finish.wait()
+
+    provider.move_playlist_tracks.side_effect = _slow_move
+
+    with (
+        _as_user(OWNER),
+        patch.object(music_mass_module, "get_provider", return_value=provider),
+        patch.object(music_mass_module, "signal_event"),
+        patch.object(music_mass_module.tasks, "run_background_task") as run_background_task,
+    ):
+        move = asyncio.create_task(playlists.move_playlist_tracks(added.item_id, [3, 4], 1))
+        await started.wait()
+        with pytest.raises(ResourceBusyError, match="still being reordered"):
+            await playlists.remove_playlist_tracks(added.item_id, (2,))
+        finish.set()
+        await move
+
+    run_background_task.assert_not_called()
+
+
+@pytest.mark.parametrize("status", [TaskStatus.PENDING, TaskStatus.RUNNING])
+async def test_move_or_removal_while_a_removal_is_unsettled_is_refused(
+    playlists: PlaylistController, music_mass_module: MusicAssistant, status: TaskStatus
+) -> None:
+    """While a removal of the playlist is queued or running, moves and removals are refused."""
+    added = await _add(playlists)
+    other = await _add(playlists)
+    provider = _provider()
+
+    with (
+        _as_user(OWNER),
+        patch.object(music_mass_module, "get_provider", return_value=provider),
+        patch.object(music_mass_module, "signal_event"),
+        patch.object(
+            music_mass_module.tasks,
+            "list_tasks_for_user",
+            return_value=[_removal_task(added, status)],
+        ),
+        patch.object(music_mass_module.tasks, "run_background_task") as run_background_task,
+    ):
+        with pytest.raises(ResourceBusyError, match="still being removed"):
+            await playlists.move_playlist_track(added.item_id, 3, 1)
+        with pytest.raises(ResourceBusyError, match="still being removed"):
+            await playlists.move_playlist_tracks(added.item_id, [3], 1)
+        with pytest.raises(ResourceBusyError, match="still being removed"):
+            await playlists.remove_playlist_tracks(added.item_id, (2,))
+        # another playlist is not held up
+        await playlists.move_playlist_track(other.item_id, 3, 1)
+
+    provider.move_playlist_track.assert_awaited_once()
+    provider.move_playlist_tracks.assert_not_awaited()
+    run_background_task.assert_not_called()
+
+
+@pytest.mark.parametrize("status", [TaskStatus.SUCCESS, TaskStatus.FAILED, TaskStatus.CANCELLED])
+async def test_move_after_a_removal_settled_is_accepted(
+    playlists: PlaylistController, music_mass_module: MusicAssistant, status: TaskStatus
+) -> None:
+    """A removal that has finished, however it ended, no longer holds the playlist."""
+    added = await _add(playlists)
+    provider = _provider()
+
+    with (
+        _as_user(OWNER),
+        patch.object(music_mass_module, "get_provider", return_value=provider),
+        patch.object(music_mass_module, "signal_event"),
+        patch.object(
+            music_mass_module.tasks,
+            "list_tasks_for_user",
+            return_value=[_removal_task(added, status)],
+        ),
+    ):
+        await playlists.move_playlist_track(added.item_id, 3, 1)
+
+    provider.move_playlist_track.assert_awaited_once()
+
+
+async def test_move_that_failed_releases_the_playlist(
+    playlists: PlaylistController, music_mass_module: MusicAssistant
+) -> None:
+    """A move that fails at the provider still lets the next move of the playlist through."""
+    added = await _add(playlists)
+    provider = _provider()
+    provider.move_playlist_track.side_effect = [ResourceTemporarilyUnavailable("offline"), None]
+
+    with (
+        _as_user(OWNER),
+        patch.object(music_mass_module, "get_provider", return_value=provider),
+        patch.object(music_mass_module, "signal_event"),
+    ):
+        with pytest.raises(ResourceTemporarilyUnavailable):
+            await playlists.move_playlist_track(added.item_id, 3, 1)
+        await playlists.move_playlist_track(added.item_id, 3, 1)
+
+    assert provider.move_playlist_track.await_count == 2
