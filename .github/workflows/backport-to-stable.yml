@@ -31,8 +31,8 @@ jobs:
         with:
           script: |
             const label = 'backport-to-stable';
-            const wanted = pr =>
-              pr.merged_at && pr.base.ref === 'dev' && pr.labels.some(l => l.name === label);
+            const labelled = pr => pr.labels.some(l => l.name === label);
+            const wanted = pr => pr.merged_at && pr.base.ref === 'dev' && labelled(pr);
             const entry = pr => ({
               pr_number: pr.number,
               pr_title: pr.title,
@@ -41,15 +41,41 @@ jobs:
             const result = [];
 
             if (context.eventName === 'push') {
+              const unconfirmed = [];
               // A merge queue batch lands as one push with several squash commits.
               for (const commit of context.payload.commits) {
-                const { data: prs } = await github.rest.repos.listPullRequestsAssociatedWithCommit({
-                  owner: context.repo.owner,
-                  repo: context.repo.repo,
-                  commit_sha: commit.id,
-                });
-                const pr = prs.find(p => p.merge_commit_sha === commit.id && wanted(p));
-                if (pr) result.push(entry(pr));
+                // Squash subjects end with the PR number; the commit-to-PR association lags the push.
+                const number = commit.message.split('\n')[0].match(/\(#(\d+)\)$/)?.[1];
+                if (!number) {
+                  const { data: prs } = await github.rest.repos.listPullRequestsAssociatedWithCommit({
+                    owner: context.repo.owner,
+                    repo: context.repo.repo,
+                    commit_sha: commit.id,
+                  });
+                  const pr = prs.find(p => p.merge_commit_sha === commit.id && wanted(p));
+                  if (pr) result.push(entry(pr));
+                  continue;
+                }
+                for (let attempt = 1; ; attempt++) {
+                  const { data: pr } = await github.rest.pulls.get({
+                    owner: context.repo.owner,
+                    repo: context.repo.repo,
+                    pull_number: Number(number),
+                  });
+                  if (!labelled(pr)) break;
+                  if (wanted(pr) && pr.merge_commit_sha === commit.id) {
+                    result.push(entry(pr));
+                    break;
+                  }
+                  if (attempt === 5) {
+                    unconfirmed.push(`#${number}`);
+                    break;
+                  }
+                  await new Promise(resolve => setTimeout(resolve, 3000));
+                }
+              }
+              if (unconfirmed.length) {
+                core.setFailed(`Could not confirm the merge of labelled ${unconfirmed.join(', ')}, backport manually`);
               }
             } else if (context.payload.label?.name === label) {
               const { data: pr } = await github.rest.pulls.get({

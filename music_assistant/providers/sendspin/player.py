@@ -141,7 +141,7 @@ from .helpers import (
     pin_code_format,
     speaks_legacy_wire,
 )
-from .playback import SendspinPlaybackSession
+from .playback import ANCHOR_REBASE_SIGNIFICANT_US, SendspinPlaybackSession
 
 # Supported group commands for Sendspin players
 SUPPORTED_GROUP_COMMANDS = [
@@ -1860,6 +1860,16 @@ class SendspinPlayer(SendspinBasePlayer):
             abort_existing=True,
         )
 
+    def on_flow_timeline_changed(self) -> None:
+        """Re-publish the beat schedule after the flow stream's timeline was set or moved."""
+        if self.synced_to is not None:
+            return
+        self.mass.create_task(
+            self._refresh_beat_schedule(),
+            task_id=f"sendspin_beat_rebase_{self.player_id}",
+            abort_existing=True,
+        )
+
     def on_queue_updated(self, queue_id: str) -> None:
         """Push the repeat and shuffle state of the queue this player is playing."""
         current_media = self.state.current_media
@@ -2604,7 +2614,9 @@ class SendspinPlayer(SendspinBasePlayer):
         )
 
     @staticmethod
-    def _flow_track_offset_us(pq_data: PlayerQueueData | None, queue_item: QueueItem) -> int | None:
+    def _flow_track_offset_us(
+        pq_data: PlayerQueueData | None, queue_item: QueueItem, flow_position_s: float
+    ) -> int | None:
         """
         Return the current track's flow-stream start offset (minus file seek), in µs.
 
@@ -2612,6 +2624,8 @@ class SendspinPlayer(SendspinBasePlayer):
         one in the queue-flow stream, so beats anchor to this track's start
         rather than the first track's. Returns None when the flow log hasn't
         recorded this track yet, so the caller falls back to the progress anchor.
+        A track that appears more than once resolves to its latest pass that has
+        started by ``flow_position_s``, the flow-stream position playing now.
 
         A track whose intro was crossfade-trimmed loses its raw seek position
         (only the elapsed-inflated value survives), so its anchor can be off by
@@ -2621,10 +2635,18 @@ class SendspinPlayer(SendspinBasePlayer):
         if pq_data is None or queue_item.streamdetails is None:
             return None
         log = pq_data.flow_mode_stream_log
-        if not log or log[-1].queue_item_id != queue_item.queue_item_id:
+        match_index: int | None = None
+        track_flow_start_s = 0.0
+        entry_start_s = 0.0
+        for index, entry in enumerate(log):
+            if entry.queue_item_id == queue_item.queue_item_id and (
+                match_index is None or entry_start_s <= flow_position_s
+            ):
+                match_index, track_flow_start_s = index, entry_start_s
+            entry_start_s += entry.seconds_streamed or 0.0
+        if match_index is None:
             return None
-        track_flow_start_s = sum(entry.seconds_streamed or 0.0 for entry in log[:-1])
-        file_seek_s = log[-1].seek_position
+        file_seek_s = log[match_index].seek_position
         if file_seek_s is None:
             file_seek_s = float(queue_item.streamdetails.seek_position or 0)
         return int((track_flow_start_s - file_seek_s) * 1_000_000)
@@ -2670,16 +2692,20 @@ class SendspinPlayer(SendspinBasePlayer):
         # chunk commits or while the flow log hasn't recorded this track yet.
         anchor_us: int | None = None
         pq_data = self.mass.player_queues.queue_data_or_none(queue.queue_id) if queue else None
-        offset_us = self._flow_track_offset_us(pq_data, queue_item)
-        if offset_us is not None:
-            anchor_us = self.playback_session.flow_track_anchor_us(offset_us)
+        timeline_start_us = self.playback_session.flow_track_anchor_us(0)
+        if timeline_start_us is not None:
+            offset_us = self._flow_track_offset_us(
+                pq_data, queue_item, (now_us - timeline_start_us) / 1_000_000
+            )
+            if offset_us is not None:
+                anchor_us = timeline_start_us + offset_us
         if anchor_us is None:
             anchor_us = now_us - track_progress_ms * 1000
-        # Re-push only on track change or seek (anchor jumps beyond natural drift).
+        # Re-push only on track change, seek or timeline rebase (anchor jumps beyond natural drift).
         if (
             queue_item.queue_item_id == self._last_beat_queue_item_id
             and self._last_beat_anchor_us is not None
-            and abs(anchor_us - self._last_beat_anchor_us) < 500_000
+            and abs(anchor_us - self._last_beat_anchor_us) < ANCHOR_REBASE_SIGNIFICANT_US
         ):
             return
         sd = queue_item.streamdetails
@@ -2690,6 +2716,10 @@ class SendspinPlayer(SendspinBasePlayer):
             priority=(SMART_FADES_ANALYSIS_DOMAIN,),
         )
         if not self._metadata_publish_allowed(generation):
+            return
+        # A rebase refresh is not cancelled by a track change, so drop it if the track moved on.
+        live_media = self.state.current_media
+        if live_media is None or live_media.queue_item_id != queue_item.queue_item_id:
             return
         if analysis is None or analysis.beats is None or len(analysis.beats) == 0:
             visualizer_role.clear_beat_schedule()

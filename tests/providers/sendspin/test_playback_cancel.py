@@ -79,7 +79,6 @@ async def test_setup_failure_ends_the_new_stream(monkeypatch: pytest.MonkeyPatch
     session._history = deque()
     session._produced_audio_us = 0
     session._timeline_start_us = None
-    session._first_commit_monotonic_us = None
     push_stream = MagicMock()
     push_stream.set_live_source.side_effect = RuntimeError("no clients")
     monkeypatch.setattr(

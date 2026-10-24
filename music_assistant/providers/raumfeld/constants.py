@@ -58,6 +58,13 @@ ZONE_WATCH_INTERVAL = 2
 # next, a leader hands over), and mirroring one of the states in between would undo it.
 GROUP_SETTLE_TIME = 10
 
+# How long (seconds) the host gets at most to hook a joining room into the running stream
+# before that stream is restarted for the room, and how often (seconds) the room is asked
+# whether it plays yet. Restarting while the host still hooks the room in drops it, and the
+# host adds it back about ten seconds later, out of step (measured with a Connector room).
+JOIN_SETTLE_TIME = 5
+JOIN_SETTLE_INTERVAL = 0.5
+
 # Player id prefix so ids are namespaced and stable-ish per room.
 PLAYER_ID_PREFIX = "raumfeld"
 
