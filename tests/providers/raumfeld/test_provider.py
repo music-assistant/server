@@ -1499,6 +1499,48 @@ async def test_overlapping_joins_restart_the_stream_once() -> None:
     mass.player_queues.seek.assert_awaited_once()
 
 
+async def test_overlapping_joins_restart_once_the_last_room_plays() -> None:
+    """A room hooked in first waits for a room of another join that still hooks in."""
+    bar, mass, _ = _joined_group(lambda sofa: _allow(sofa, 96000), stream_started_in_group=True)
+    bar._attr_group_members = [*bar._attr_group_members, "raumfeld_kitchen"]
+    _allow(mass.players.get_player("raumfeld_kitchen"), 96000)
+    _restart_on_join(bar, True)
+    kitchen_plays = asyncio.Event()
+    restarted_while_kitchen_waits = False
+
+    async def wait(rooms: list[str]) -> None:
+        if rooms == ["raumfeld_kitchen"]:
+            await kitchen_plays.wait()
+
+    async def restart(*_args: Any, **_kwargs: Any) -> None:
+        nonlocal restarted_while_kitchen_waits
+        restarted_while_kitchen_waits = not kitchen_plays.is_set()
+
+    mass.player_queues.seek = AsyncMock(side_effect=restart)
+    with patch.object(bar, "_wait_for_rooms_playing", AsyncMock(side_effect=wait)):
+        kitchen = asyncio.create_task(bar._check_join(["raumfeld_kitchen"]))
+        await asyncio.sleep(0)
+        await bar._check_join(["raumfeld_sofa"])
+        mass.player_queues.seek.assert_not_awaited()
+        kitchen_plays.set()
+        await kitchen
+    mass.player_queues.seek.assert_awaited_once()
+    assert not restarted_while_kitchen_waits
+
+
+async def test_a_room_that_left_while_hooked_in_leaves_no_restart() -> None:
+    """A room gone from the group again before it played needs no restart for sync."""
+    bar, mass, _ = _joined_group(lambda sofa: _allow(sofa, 96000), stream_started_in_group=True)
+    _restart_on_join(bar, True)
+
+    async def sofa_leaves(_rooms: list[str]) -> None:
+        bar._attr_group_members = [bar.player_id]
+
+    with patch.object(bar, "_wait_for_rooms_playing", AsyncMock(side_effect=sofa_leaves)):
+        await bar._check_join(["raumfeld_sofa"])
+    mass.player_queues.seek.assert_not_awaited()
+
+
 async def test_a_seek_while_waiting_for_the_joined_room_leaves_no_restart() -> None:
     """A seek during the wait already started a stream every room joined at once."""
     bar, mass, _ = _joined_group(lambda sofa: _allow(sofa, 96000), stream_started_in_group=True)
