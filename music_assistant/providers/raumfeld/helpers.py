@@ -10,7 +10,7 @@ from music_assistant_models.enums import RepeatMode
 
 from music_assistant.helpers.util import try_parse_duration
 
-from .constants import PLAYER_ID_PREFIX, RENDERER_QUERY_TIMEOUT
+from .constants import HOST_CHECK_TIMEOUT, PLAYER_ID_PREFIX, RENDERER_QUERY_TIMEOUT
 
 # DIDL-Lite / metadata XML namespaces used in UPnP TrackMetaData.
 _DC = "{http://purl.org/dc/elements/1.1/}"
@@ -181,6 +181,32 @@ def parse_control_url(description_xml: str | None, service: str) -> str | None:
         if service in fields.get("serviceType", ""):
             return fields.get("controlURL") or None
     return None
+
+
+async def host_is_valid(session: aiohttp.ClientSession, host: str, port: int) -> bool:
+    """
+    Return whether a Raumfeld host answers ``getHostInfo`` at the given address.
+
+    Replaces hassfeld's ``async_host_is_valid``, which opens a session of its own and
+    gives the host 3 seconds.
+
+    :param session: The HTTP session to use.
+    :param host: Address of the Raumfeld host.
+    :param port: Port of the host's webservice.
+    """
+    try:
+        # the host answers with a redirect to a session path first, which aiohttp follows
+        async with session.get(
+            f"http://{host}:{port}/getHostInfo",
+            timeout=aiohttp.ClientTimeout(total=HOST_CHECK_TIMEOUT),
+        ) as response:
+            if response.status != 200:
+                return False
+            body = await response.text()
+        root = DefusedET.fromstring(body)
+    except aiohttp.ClientError, OSError, TimeoutError, DefusedET.ParseError:
+        return False
+    return bool((root.findtext("hostName") or "").strip())
 
 
 async def query_last_change(session: aiohttp.ClientSession, control_url: str) -> dict[str, str]:
