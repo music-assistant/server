@@ -1528,6 +1528,29 @@ async def test_overlapping_joins_restart_once_the_last_room_plays() -> None:
     assert not restarted_while_kitchen_waits
 
 
+async def test_a_room_that_joined_after_a_seek_is_restarted_for() -> None:
+    """A room that joined the stream a seek started lags, even if an earlier join ends last."""
+    bar, mass, _ = _joined_group(lambda sofa: _allow(sofa, 96000), stream_started_in_group=True)
+    bar._attr_group_members = [*bar._attr_group_members, "raumfeld_kitchen"]
+    _allow(mass.players.get_player("raumfeld_kitchen"), 96000)
+    _restart_on_join(bar, True)
+    kitchen_plays = asyncio.Event()
+
+    async def wait(rooms: list[str]) -> None:
+        if rooms == ["raumfeld_kitchen"]:
+            await kitchen_plays.wait()
+
+    with patch.object(bar, "_wait_for_rooms_playing", AsyncMock(side_effect=wait)):
+        kitchen = asyncio.create_task(bar._check_join(["raumfeld_kitchen"]))
+        await asyncio.sleep(0)
+        # a seek starts a new stream, which Sofa then joins while Kitchen still hooks in
+        bar._playback_generation += 2
+        await bar._check_join(["raumfeld_sofa"])
+        kitchen_plays.set()
+        await kitchen
+    mass.player_queues.seek.assert_awaited_once()
+
+
 async def test_a_room_that_left_while_hooked_in_leaves_no_restart() -> None:
     """A room gone from the group again before it played needs no restart for sync."""
     bar, mass, _ = _joined_group(lambda sofa: _allow(sofa, 96000), stream_started_in_group=True)

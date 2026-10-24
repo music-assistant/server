@@ -207,9 +207,10 @@ class RaumfeldPlayer(Player):
     _playback_generation = 0
     _playback_changes = 0
     # rooms that joined this group and are still being hooked in, and rooms that are hooked
-    # in and wait for the restart of a join check that still waits (see _check_join)
+    # in and wait for the restart of a join check that still waits, with the playback
+    # generation of the stream each one joined (see _check_join); replaced, never changed
     _rooms_settling: frozenset[str] = frozenset()
-    _rooms_to_restart_for: frozenset[str] = frozenset()
+    _rooms_to_restart_for: tuple[tuple[str, int], ...] = ()
     # until when a stop is taken as MA ending this room's queue during a handover
     _handover_until = 0.0
     # what a zone source was playing when it was stopped, to start it again later:
@@ -1354,13 +1355,13 @@ class RaumfeldPlayer(Player):
             await self._wait_for_rooms_playing(joined)
         finally:
             self._rooms_settling -= rooms
-        self._rooms_to_restart_for |= rooms
+        self._rooms_to_restart_for += tuple((pid, generation) for pid in rooms)
         if self._rooms_settling:
             # rooms of another join are still being hooked in; that join's check restarts
             # once they play, for these rooms as well
             return
-        rooms_joined, self._rooms_to_restart_for = self._rooms_to_restart_for, frozenset()
-        await self._restart_for_group_rates(joined_generation=generation, joined=rooms_joined)
+        rooms_joined, self._rooms_to_restart_for = self._rooms_to_restart_for, ()
+        await self._restart_for_group_rates(joined=dict(rooms_joined))
 
     async def _wait_for_rooms_playing(self, player_ids: list[str]) -> None:
         """
@@ -1389,14 +1390,12 @@ class RaumfeldPlayer(Player):
         except TimeoutError:
             self.logger.debug("Rooms that joined %s did not report playing in time", self.room)
 
-    async def _restart_for_group_rates(
-        self, joined_generation: int | None = None, joined: frozenset[str] | None = None
-    ) -> None:
+    async def _restart_for_group_rates(self, joined: dict[str, int] | None = None) -> None:
         """
         Restart this room's queue where it is, if a room that joined cannot play its stream.
 
-        :param joined_generation: The playback generation when the rooms joined, if known.
-        :param joined: The player ids of the rooms that joined, if known.
+        :param joined: The player ids of the rooms that joined, with the playback generation
+            of the stream each one joined, if known.
         """
         # the host pulls a joining room into the running stream as it is; a room that
         # cannot play its format drops out after a moment (measured). The stream can be at
@@ -1416,13 +1415,18 @@ class RaumfeldPlayer(Player):
                 # a room that joins hooks in a little behind the others; a restart aligns them
                 if rates_fit and not self._group_restarts_on_join():
                     return
-                if rates_fit and joined_generation not in (None, self._playback_generation):
-                    # the stream was started again since the rooms joined (another join's
-                    # restart, a seek), and every room joined that one at once
-                    return
-                if rates_fit and joined is not None and not joined & set(self._attr_group_members):
-                    # every room that joined has left again; the others play in step
-                    return
+                if rates_fit and joined is not None:
+                    # only a room still in the group that joined the stream playing now lags:
+                    # one that joined a stream started again since (another join's restart,
+                    # a seek) joined that one with all the others at once
+                    lagging = [
+                        pid
+                        for pid, generation in joined.items()
+                        if generation == self._playback_generation
+                        and pid in self._attr_group_members
+                    ]
+                    if not lagging:
+                        return
                 # the queue that plays here: the room's own, or that of a Sync Group it renders
                 queue = self.mass.players.get_active_queue(self)
                 if queue is None or queue.current_item is None:
