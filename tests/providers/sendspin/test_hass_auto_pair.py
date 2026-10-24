@@ -53,6 +53,8 @@ def _make_pairer(
     announced: bool = True,
 ) -> tuple[HassAutoPairer, _FakeServerApi, list[str]]:
     api = _FakeServerApi(methods, await_pin=False, connected=connected)
+    if not connected:
+        cast("Any", api._client).connection = None
     cast("Any", api).pairing_store = _FakePairingStore(paired=paired)
     cast("Any", api._client).connection_security = (
         None if psk_category is None else SimpleNamespace(psk_category=psk_category)
@@ -93,6 +95,15 @@ async def test_pairs_with_the_token_from_home_assistant(monkeypatch: pytest.Monk
     assert api.attempts[0].method is PairMethod.PAIRING_PSK
     assert api.attempts[0].pairing_psk == PAIRING_PSK
     assert refreshed == [CLIENT_ID]
+
+
+async def test_pairs_before_the_initial_state_arrived(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A client whose hello is in but whose first state is not yet is paired anyway."""
+    hass = _hass()
+    pairer, api, _ = _make_pairer(monkeypatch, hass)
+    cast("Any", api._client).is_connected = False
+    await pairer._attempt(CLIENT_ID)
+    assert len(api.attempts) == 1
 
 
 async def test_no_token_leaves_the_client_for_the_next_announcement(
@@ -342,7 +353,7 @@ async def test_an_attempt_over_before_it_was_stored_does_not_linger(
     assert pairer._tasks == {}
     assert pairer._pending == set()
 
-    cast("Any", api._client).is_connected = True
+    cast("Any", api._client).connection = api.connection
     pairer.on_client_connected(CLIENT_ID)
     await _settle(pairer)
     assert len(api.attempts) == 1

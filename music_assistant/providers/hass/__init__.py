@@ -563,7 +563,7 @@ class HomeAssistantProvider(PluginProvider):
         """
         try:
             result = await self.hass.send_command("sendspin/get_pairing_token", client_id=client_id)
-        except FailedCommand as err:
+        except (FailedCommand, BaseHassClientError) as err:
             self.logger.debug("No Sendspin pairing token for %s: %s", client_id, err)
             return None
         return cast("str", result["token"])

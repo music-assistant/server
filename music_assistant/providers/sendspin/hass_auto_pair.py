@@ -146,7 +146,7 @@ class HassAutoPairer:
         """Whether the client is connected, encrypted, unpaired and offers the token method."""
         server_api = self.provider.server_api
         sendspin_client = server_api.get_client(client_id)
-        if sendspin_client is None or not sendspin_client.is_connected:
+        if sendspin_client is None or sendspin_client.connection is None:
             return False
         security = sendspin_client.connection_security
         if security is None:

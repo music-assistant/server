@@ -39,6 +39,7 @@ async def test_returns_the_token() -> None:
     [
         pytest.param(FailedCommand("not found"), id="unknown_client"),
         pytest.param(FailedCommand("test hands out no pairing token: not ready"), id="no_token"),
+        pytest.param(NotConnected(), id="connection_lost"),
     ],
 )
 async def test_returns_none_without_a_token(error: Exception) -> None:
