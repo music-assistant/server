@@ -106,6 +106,7 @@ from music_assistant.controllers.music.database import (
 from music_assistant.controllers.music.favorites import FavoritesStore
 from music_assistant.controllers.music.helpers import (
     filter_search_results,
+    normalize_bandcamp_search_uris,
     sibling_instance_mappings,
     sort_search_result,
 )
@@ -686,7 +687,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             category=CACHE_CATEGORY_SEARCH_RESULTS,
             base_class=SearchResults,
         ):
-            return cast("SearchResults", cache)
+            return normalize_bandcamp_search_uris(cast("SearchResults", cache))
         # Check if the search query is a streaming provider public shareable URL
         if (url_result := await self._search_shareable_url(search_query)) is not None:
             return url_result
@@ -3401,7 +3402,11 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         ) is not None:
             # the cache is shared by all users, so the results are narrowed on every read
             return self._visible_search_results(
-                filter_search_results(cast("SearchResults", cache), prov.domain, skip_item_ids)
+                filter_search_results(
+                    normalize_bandcamp_search_uris(cast("SearchResults", cache)),
+                    prov.domain,
+                    skip_item_ids,
+                )
             )
         # run the provider search as a separate task (deduplicated by task_id so
         # identical concurrent searches share a single provider call); with a soft

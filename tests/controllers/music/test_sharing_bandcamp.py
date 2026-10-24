@@ -1,4 +1,4 @@
-"""Share Bandcamp mappings through Music Assistant catalog identities."""
+"""Share Bandcamp artists through their converted Music Assistant identities."""
 
 from __future__ import annotations
 
@@ -43,7 +43,7 @@ def artist(request: pytest.FixtureRequest) -> Artist:
 async def test_share_converted_bandcamp_artist(
     artist: Artist, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Catalog artist URIs resolve the converted provider mapping's public website."""
+    """Converted artists reach the provider via the real URI and item resolvers."""
     controller = MusicController.__new__(MusicController)
     controller.mass = MagicMock()
     controller.mass.create_task.side_effect = lambda coro, **_kwargs: asyncio.create_task(coro)
@@ -57,12 +57,13 @@ async def test_share_converted_bandcamp_artist(
     library_lookup = AsyncMock(return_value=None)
     monkeypatch.setattr(controller.artists, "get_library_item_by_prov_id", library_lookup)
 
-    uri = f"{artist.provider}://artist/{artist.item_id}"
-    assert await controller.get_item_share_info(uri) == {
+    assert artist.uri is not None
+    assert await controller.get_item_share_info(artist.uri) == {
         "title": "Test Artist",
         "text": None,
         "links": [{"provider_domain": "bandcamp", "provider_instance": INSTANCE, "url": WEBSITE}],
     }
+    assert artist.uri == f"{INSTANCE}://artist/123"
     mapping = next(iter(artist.provider_mappings))
     assert (mapping.item_id, mapping.provider_instance, mapping.url) == ("123", INSTANCE, WEBSITE)
     library_lookup.assert_awaited_once_with("123", INSTANCE)
@@ -76,7 +77,7 @@ async def test_share_converted_bandcamp_artist(
 
 
 async def test_share_converted_bandcamp_search_album(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Catalog album URIs share the public website without resolving nested artists."""
+    """Search albums use the same internal identity contract as artists."""
     album = BandcampConverters("bandcamp", INSTANCE).album_from_search(
         SearchResultAlbum(
             id=456,
@@ -108,8 +109,8 @@ async def test_share_converted_bandcamp_search_album(monkeypatch: pytest.MonkeyP
     monkeypatch.setattr(
         controller.albums, "get_library_item_by_prov_id", AsyncMock(return_value=None)
     )
-    uri = f"{album.provider}://album/{album.item_id}"
-    assert await controller.get_item_share_info(uri) == {
+    assert album.uri is not None
+    assert await controller.get_item_share_info(album.uri) == {
         "title": "Test Album",
         "text": None,
         "links": [
