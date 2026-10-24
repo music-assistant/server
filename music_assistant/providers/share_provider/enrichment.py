@@ -16,7 +16,7 @@ from music_assistant_models.errors import (
 from music_assistant_models.media_items import ItemMapping
 
 from music_assistant.controllers.cache import use_cache
-from music_assistant.helpers.compare import compare_strings
+from music_assistant.helpers.compare import compare_strings, compare_version
 from music_assistant.helpers.external_ids import is_valid_isrc, normalize_external_id
 from music_assistant.helpers.throttle_retry import (
     ThrottlerManager,
@@ -89,6 +89,7 @@ class ShareLinkEnricher:
         title: str,
         artist: str | None,
         apple_music_track_id: str | None = None,
+        version: str | None = None,
     ) -> None:
         """Add missing Deezer, Apple Music and configured YouTube Music links."""
         if not isrc and not title:
@@ -101,7 +102,10 @@ class ShareLinkEnricher:
             if isrc and is_valid_isrc(isrc):
                 try:
                     deezer_link = await self._get_deezer_track_url(
-                        normalize_external_id(ExternalID.ISRC, isrc)
+                        normalize_external_id(ExternalID.ISRC, isrc),
+                        title,
+                        artist,
+                        version,
                     )
                 except (ClientError, TimeoutError, ValueError, RetriesExhausted) as err:
                     lookup_failed = isinstance(err, RetriesExhausted)
@@ -112,7 +116,9 @@ class ShareLinkEnricher:
                     safe_artist = artist.replace(chr(34), "")
                     search_query = f'artist:"{safe_artist}" {search_query}'
                 try:
-                    deezer_link = await self._search_deezer_track_url(search_query, title, artist)
+                    deezer_link = await self._search_deezer_track_url(
+                        search_query, title, artist, version
+                    )
                 except (ClientError, TimeoutError, ValueError, RetriesExhausted) as err:
                     LOGGER.debug("Could not enrich share link with Deezer search: %s", err)
             if deezer_link:
@@ -124,18 +130,31 @@ class ShareLinkEnricher:
                 if apple_music_track_id:
                     apple_link = await self._get_apple_music_track_url_by_id(apple_music_track_id)
                 if not apple_link:
-                    apple_link = await self._get_apple_music_track_url(query, title, artist)
+                    apple_link = await self._get_apple_music_track_url(
+                        query, title, artist, version
+                    )
                 if apple_link:
                     provider_refs["apple_music"] = compact_provider_ref("apple_music", apple_link)
             except (ClientError, TimeoutError, ValueError, RetriesExhausted) as err:
                 LOGGER.debug("Could not enrich share link with Apple Music: %s", err)
 
+        await self._enrich_ytmusic(provider_refs, query, title, artist, version)
+
+    async def _enrich_ytmusic(
+        self,
+        provider_refs: dict[str, str],
+        query: str,
+        title: str,
+        artist: str | None,
+        version: str | None,
+    ) -> None:
         if "ytmusic" in provider_refs:
             return
         try:
             results = await self.mass.music.search(
                 query, [MediaType.TRACK], limit=3, providers=["ytmusic"]
             )
+            candidates: list[tuple[tuple[int, int], str]] = []
             for track in results.tracks or []:
                 if isinstance(track, ItemMapping):
                     continue
@@ -143,28 +162,43 @@ class ShareLinkEnricher:
                     artist and not compare_strings(artist, track.artist_str, strict=False)
                 ):
                     continue
+                if version and not compare_version(version, track.version):
+                    continue
                 for mapping in track.provider_mappings:
                     if mapping.provider_domain == "ytmusic":
                         url = f"https://music.youtube.com/watch?v={quote(mapping.item_id, safe='')}"
-                        provider_refs["ytmusic"] = compact_provider_ref("ytmusic", url)
+                        score = (
+                            int(compare_strings(title, track.name, strict=True)),
+                            int(
+                                not artist or compare_strings(artist, track.artist_str, strict=True)
+                            ),
+                        )
+                        candidates.append((score, url))
                         break
-                if "ytmusic" in provider_refs:
-                    break
+            if candidates:
+                provider_refs["ytmusic"] = compact_provider_ref(
+                    "ytmusic", max(candidates, key=lambda candidate: candidate[0])[1]
+                )
         except PROVIDER_FETCH_ERRORS as err:
             LOGGER.debug("Could not enrich share link with YouTube Music: %s", err)
 
     @use_cache(3600 * 24 * 30)
-    async def _get_deezer_track_url(self, isrc: str) -> str | None:
+    async def _get_deezer_track_url(
+        self,
+        isrc: str,
+        title: str,
+        artist: str | None,
+        version: str | None,
+    ) -> str | None:
         """Return the public Deezer track URL for an ISRC, if available."""
         data = await self._deezer_client.get_json(f"https://api.deezer.com/track/isrc:{isrc}")
         if not isinstance(data, dict):
             return None
-        link = data.get("link")
-        return link if isinstance(link, str) else None
+        return self._find_matching_track_url([data], title, artist, version)
 
     @use_cache(3600 * 24 * 30)
     async def _search_deezer_track_url(
-        self, query: str, title: str, artist: str | None
+        self, query: str, title: str, artist: str | None, version: str | None
     ) -> str | None:
         """Find a Deezer track by title and artist when ISRC lookup misses."""
         data = await self._deezer_client.get_json(
@@ -172,11 +206,11 @@ class ShareLinkEnricher:
         )
         if not isinstance(data, dict):
             return None
-        return self._find_matching_track_url(data.get("data", []), title, artist)
+        return self._find_matching_track_url(data.get("data", []), title, artist, version)
 
     @use_cache(3600 * 24 * 30)
     async def _get_apple_music_track_url(
-        self, query: str, title: str, artist: str | None
+        self, query: str, title: str, artist: str | None, version: str | None
     ) -> str | None:
         """Return the public Apple Music track URL for a text query, if available."""
         data = await self._apple_music_client.get_json(
@@ -185,7 +219,7 @@ class ShareLinkEnricher:
         )
         if not isinstance(data, dict):
             return None
-        return self._find_matching_track_url(data.get("results", []), title, artist)
+        return self._find_matching_track_url(data.get("results", []), title, artist, version)
 
     @use_cache(3600 * 24 * 30)
     async def _get_apple_music_track_url_by_id(self, track_id: str) -> str | None:
@@ -205,7 +239,12 @@ class ShareLinkEnricher:
         return None
 
     @staticmethod
-    def _find_matching_track_url(results: object, title: str, artist: str | None) -> str | None:
+    def _find_matching_track_url(
+        results: object,
+        title: str,
+        artist: str | None,
+        version: str | None = None,
+    ) -> str | None:
         if not isinstance(results, list):
             return None
         best_score = (-1, -1)
@@ -218,10 +257,20 @@ class ShareLinkEnricher:
             if result_artist is None and isinstance(result.get("artist"), dict):
                 result_artist = result["artist"].get("name")
             result_url = result.get("trackViewUrl") or result.get("link")
+            result_version = (
+                result.get("version") or result.get("title_version") or result.get("versionName")
+            )
             if (
                 not isinstance(result_title, str)
                 or not isinstance(result_url, str)
                 or not compare_strings(title, result_title, strict=False)
+                or (
+                    version
+                    and (
+                        not isinstance(result_version, str)
+                        or not compare_version(version, result_version)
+                    )
+                )
                 or (artist and not isinstance(result_artist, str))
                 or (
                     artist

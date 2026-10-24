@@ -31,7 +31,7 @@ from music_assistant_models.errors import (
 )
 from music_assistant_models.media_items import BrowseFolder, ItemMapping, Track
 
-from music_assistant.helpers.compare import compare_strings
+from music_assistant.helpers.compare import compare_strings, compare_version
 from music_assistant.helpers.external_ids import (
     is_valid_barcode,
     is_valid_isrc,
@@ -196,6 +196,7 @@ class ShareProvider(PluginProvider):
                     type="track",
                     title=stub.title,
                     artist=stub.artist,
+                    version=stub.version,
                     album=stub.album,
                     isrc=stub.isrc,
                     mbid=stub.mbid,
@@ -209,7 +210,11 @@ class ShareProvider(PluginProvider):
                         path=f"share-preview://track/{track_payload.to_base64()}",
                         length=(str(stub.duration) if stub.duration is not None else None),
                         title=stub.title,
-                        metadata={"media_type": "track", "name": stub.title},
+                        metadata={
+                            "media_type": "track",
+                            "name": stub.title,
+                            **({"version": stub.version} if stub.version else {}),
+                        },
                         artists=[ArtistInfo(stub.artist, "", "", "")] if stub.artist else [],
                         album=AlbumInfo(stub.album, "", "", "") if stub.album else None,
                     ),
@@ -258,6 +263,7 @@ class ShareProvider(PluginProvider):
                 type="track",
                 title=track.title,
                 artist=track.artist,
+                version=track.version,
                 album=track.album,
                 isrc=track.isrc,
                 mbid=track.mbid,
@@ -265,6 +271,8 @@ class ShareProvider(PluginProvider):
                 provider_refs=track.provider_refs,
             )
             metadata = {"media_type": MediaType.TRACK.value, "name": track.title}
+            if track.version:
+                metadata["version"] = track.version
             if track.isrc and is_valid_isrc(track.isrc):
                 metadata["isrc"] = normalize_external_id(ExternalID.ISRC, track.isrc)
             if track.mbid:
@@ -295,6 +303,7 @@ class ShareProvider(PluginProvider):
         """Build a SharePayload from a MediaItem."""
         media_type = item.media_type.value
         artist_str: str | None = None
+        version_str: str | None = None
         album_str: str | None = None
         isrc: str | None = None
         mbid: str | None = None
@@ -311,6 +320,7 @@ class ShareProvider(PluginProvider):
             art_ref = compact_artwork_ref(item.image.path)
 
         if item.media_type == MediaType.TRACK:
+            version_str = getattr(item, "version", None) or None
             isrc = item.get_external_id(ExternalID.ISRC)
             mbid = item.get_external_id(ExternalID.MB_RECORDING)
             mb_track = item.get_external_id(ExternalID.MB_TRACK)
@@ -328,7 +338,12 @@ class ShareProvider(PluginProvider):
                 album_str = item.album.name
             provider_refs = build_provider_refs(item, media_type)
             await self._link_enricher.enrich(
-                provider_refs, isrc, item.name, artist_str, apple_music_track_id
+                provider_refs,
+                isrc,
+                item.name,
+                artist_str,
+                apple_music_track_id,
+                version=version_str,
             )
 
         elif item.media_type == MediaType.ARTIST:
@@ -349,6 +364,7 @@ class ShareProvider(PluginProvider):
             type=cast("Literal['track', 'album', 'artist', 'playlist']", media_type),
             title=item.name,
             artist=artist_str,
+            version=version_str,
             album=album_str,
             isrc=isrc,
             mbid=mbid,
@@ -370,7 +386,12 @@ class ShareProvider(PluginProvider):
             result.append(
                 TrackStub(
                     title=track.name,
-                    artist=getattr(track, "artist_str", None) or None,
+                    artist=(
+                        ", ".join(artist.name for artist in track.artists)
+                        if track.artists
+                        else None
+                    ),
+                    version=track.version or None,
                     isrc=track.get_external_id(ExternalID.ISRC),
                     mbid=track.get_external_id(ExternalID.MB_RECORDING),
                     mb_track=track.get_external_id(ExternalID.MB_TRACK),
@@ -436,6 +457,12 @@ class ShareProvider(PluginProvider):
                 continue
             if item is not None and not isinstance(item, ItemMapping):
                 if media_type == MediaType.TRACK:
+                    if (
+                        payload.version
+                        and external_id_type != ExternalID.MB_TRACK
+                        and not compare_version(payload.version, item.version)
+                    ):
+                        continue
                     try:
                         return await self.mass.music.tracks.get(
                             item.item_id, item.provider, allow_update_metadata=False
@@ -457,6 +484,7 @@ class ShareProvider(PluginProvider):
                     for item in results.tracks or []
                     if not isinstance(item, ItemMapping)
                     and compare_strings(payload.title, item.name, strict=False)
+                    and (not payload.version or compare_version(payload.version, item.version))
                     and (
                         not payload.artist
                         or (

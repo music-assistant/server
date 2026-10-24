@@ -156,6 +156,39 @@ async def test_resolve_without_search_returns_id_match() -> None:
     mass.music.search.assert_not_called()
 
 
+async def test_resolve_keeps_release_track_id_match_despite_version_label_drift() -> None:
+    """A release-specific MusicBrainz ID is stronger than provider version labels."""
+    provider = _provider()
+    mass = _mass(provider)
+    id_match = MagicMock(item_id="release-track", provider="catalog--1", version="Studio")
+    full_track = MagicMock(version="Studio")
+    mass.music.get_controller.return_value.get_item_by_external_id = AsyncMock(
+        return_value=id_match
+    )
+    mass.music.tracks.get = AsyncMock(return_value=full_track)
+    payload = SharePayload(
+        type="track", title="Track", version="Live", mb_track="release-track-mbid"
+    )
+
+    assert await provider._resolve_media_item(payload, allow_search=False) is full_track
+    mass.music.tracks.get.assert_awaited_once_with(
+        "release-track", "catalog--1", allow_update_metadata=False
+    )
+
+
+async def test_resolve_rejects_version_mismatch_for_recording_id() -> None:
+    """A recording ID must not resolve to a different explicit version."""
+    provider = _provider()
+    mass = _mass(provider)
+    mass.music.get_controller.return_value.get_item_by_external_id = AsyncMock(
+        return_value=MagicMock(item_id="recording", provider="catalog--1", version="Studio")
+    )
+    payload = SharePayload(type="track", title="Track", version="Live", mbid="recording-mbid")
+
+    assert await provider._resolve_media_item(payload, allow_search=False) is None
+    mass.music.tracks.get.assert_not_called()
+
+
 async def test_resolve_skips_id_match_when_full_track_details_are_unavailable() -> None:
     """An ID hit whose detail fetch fails remains a miss for preview fallback."""
     provider = _provider()
@@ -220,6 +253,24 @@ async def test_resolve_falls_back_to_search_after_external_id_miss() -> None:
     mass.music.search.assert_awaited_once_with(
         "Artist Track", media_types=[MediaType.TRACK], limit=5
     )
+
+
+async def test_resolve_search_rejects_different_track_version() -> None:
+    """Search fallback does not substitute a studio recording for a live share."""
+    provider = _provider()
+    mass = _mass(provider)
+    mass.music.get_controller.return_value.get_item_by_external_id = AsyncMock(return_value=None)
+    studio = MagicMock(name="studio")
+    studio.name = "Track"
+    studio.artist_str = "Artist"
+    studio.version = "Studio"
+    mass.music.search = AsyncMock(return_value=MagicMock(tracks=[studio], albums=[], artists=[]))
+
+    result = await provider._resolve_media_item(
+        SharePayload(type="track", title="Track", artist="Artist", version="Live")
+    )
+
+    assert result is None
 
 
 async def test_resolve_falls_back_to_search_after_external_id_provider_failure() -> None:
@@ -337,9 +388,9 @@ async def test_external_http_service_throttles_transient_statuses(
 @pytest.mark.parametrize(
     ("method_name", "arguments"),
     [
-        ("_get_deezer_track_url", (ISRC,)),
-        ("_search_deezer_track_url", ('track:"Song"', "Song", "Artist")),
-        ("_get_apple_music_track_url", ("Artist Song", "Song", "Artist")),
+        ("_get_deezer_track_url", (ISRC, "Song", "Artist", None)),
+        ("_search_deezer_track_url", ('track:"Song"', "Song", "Artist", None)),
+        ("_get_apple_music_track_url", ("Artist Song", "Song", "Artist", None)),
         ("_get_apple_music_track_url_by_id", ("12345",)),
     ],
 )
@@ -397,7 +448,11 @@ async def test_ytmusic_enrichment_rejects_unrelated_search_results(include_match
     match.name = "Song"
     match.artist_str = "Artist"
     match.provider_mappings = [MagicMock(provider_domain="ytmusic", item_id="correct")]
-    results = [wrong_title, wrong_artist, *([match] if include_match else [])]
+    fuzzy_match = MagicMock()
+    fuzzy_match.name = "Sog"
+    fuzzy_match.artist_str = "Artist"
+    fuzzy_match.provider_mappings = [MagicMock(provider_domain="ytmusic", item_id="fuzzy")]
+    results = [wrong_title, wrong_artist, *([fuzzy_match, match] if include_match else [])]
     _mass(provider).music.search = AsyncMock(return_value=MagicMock(tracks=results))
     refs = {"deezer": "/track/1", "apple_music": "/album/1?i=2"}
 
@@ -407,6 +462,29 @@ async def test_ytmusic_enrichment_rejects_unrelated_search_results(include_match
         assert refs["ytmusic"] == "/watch?v=correct"
     else:
         assert "ytmusic" not in refs
+
+
+def test_link_enrichment_requires_matching_track_version() -> None:
+    """Text-search links are only retained when the service reports the same version."""
+    results = [
+        {
+            "trackName": "Song",
+            "artistName": "Artist",
+            "trackViewUrl": "https://example.com/studio",
+            "version": "Studio",
+        },
+        {
+            "trackName": "Song",
+            "artistName": "Artist",
+            "trackViewUrl": "https://example.com/live",
+            "version": "Live",
+        },
+    ]
+
+    assert ShareLinkEnricher._find_matching_track_url(results, "Song", "Artist", "Live") == (
+        "https://example.com/live"
+    )
+    assert ShareLinkEnricher._find_matching_track_url(results[:1], "Song", "Artist", "Live") is None
 
 
 def test_build_provider_links_keeps_apple_music_canonical_url() -> None:
@@ -471,6 +549,7 @@ def test_payload_uses_compact_provider_and_artwork_refs_without_version_field() 
     payload = SharePayload(
         type="track",
         title="Track",
+        version="Live",
         art_ref=art_ref,
         provider_refs={
             "apple_music": build_provider_refs(
@@ -493,6 +572,7 @@ def test_payload_uses_compact_provider_and_artwork_refs_without_version_field() 
     decoded_json = base64.urlsafe_b64decode(encoded).decode()
 
     assert decoded.art_ref == art_ref
+    assert decoded.version == "Live"
     assert decoded.provider_refs == {
         "apple_music": "/at/album/123?i=456",
     }
@@ -593,6 +673,7 @@ async def test_import_shared_playlist_uses_existing_matching_importer() -> None:
             TrackStub(
                 title="Track",
                 artist="Artist",
+                version="Live",
                 isrc=ISRC,
                 mbid="recording-mbid",
                 mb_track="release-track-mbid",
@@ -615,6 +696,7 @@ async def test_import_shared_playlist_uses_existing_matching_importer() -> None:
     assert imported_track.type == "track"
     assert imported_track.title == "Track"
     assert imported_track.artist == "Artist"
+    assert imported_track.version == "Live"
     assert imported_track.album == "Album"
     assert imported_track.isrc == ISRC
     assert imported_track.mbid == "recording-mbid"
@@ -626,6 +708,7 @@ async def test_import_shared_playlist_uses_existing_matching_importer() -> None:
     assert imported_items[0].metadata == {
         "media_type": "track",
         "name": "Track",
+        "version": "Live",
         "isrc": ISRC,
         "mbid": "recording-mbid",
         "mb_track": "release-track-mbid",
@@ -668,6 +751,44 @@ async def test_import_shared_playlist_uses_existing_matching_importer() -> None:
         library_matching=True,
         match_policy=PlaylistMatchPolicy.SAME_RECORDING,
     )
+
+
+async def test_playlist_payload_preserves_track_version_and_artist_credits() -> None:
+    """Playlist stubs retain version metadata and the track's artist credit string."""
+    provider = _provider()
+    track = Track(
+        item_id="track",
+        provider="catalog--1",
+        name="Song",
+        version="Acoustic",
+        duration=180,
+        provider_mappings=set(),
+        artists=UniqueList(
+            [
+                Artist(
+                    item_id="artist-one",
+                    provider="catalog--1",
+                    name="First Artist",
+                    provider_mappings=set(),
+                ),
+                Artist(
+                    item_id="artist-two",
+                    provider="catalog--1",
+                    name="Second Artist",
+                    provider_mappings=set(),
+                ),
+            ]
+        ),
+    )
+    mass = _mass(provider)
+    mass.music.playlists.tracks = AsyncMock(return_value=[track])
+    playlist = MagicMock(item_id="playlist", provider="catalog--1")
+
+    stubs = await provider._build_playlist_tracks(playlist)
+
+    assert len(stubs) == 1
+    assert stubs[0].artist == "First Artist, Second Artist"
+    assert stubs[0].version == "Acoustic"
 
 
 async def test_import_isrc_only_track_matches_when_duration_is_preserved() -> None:
