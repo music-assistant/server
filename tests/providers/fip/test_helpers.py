@@ -309,3 +309,12 @@ def test_the_older_service_names_the_song_on_air_and_the_next() -> None:
 def test_the_older_service_knows_no_song_past_its_last() -> None:
     """After its last song the older service names nothing on air."""
     assert parse_pull(_fixture("rock_pull"), at=2_000_000_000) == (None, None)
+
+
+def test_the_older_service_names_the_song_the_listener_hears() -> None:
+    """Just after a song started in the studio, the listener still hears the one before it."""
+    current, upcoming = parse_pull(_fixture("rock_pull"), at=1792838296)
+    assert current is not None
+    assert current.title == "Thinking of you"
+    assert upcoming is not None
+    assert upcoming.title == "Rise"

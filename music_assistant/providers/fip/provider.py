@@ -30,7 +30,6 @@ from .constants import (
     LIVE_URL,
     OVERDUE_UPDATE_INTERVAL,
     PULL_URL,
-    STREAM_DELAY,
     STREAM_METADATA_UPDATE_INTERVAL,
     STREAM_URL,
 )
@@ -144,9 +143,7 @@ class FipProvider(MusicProvider):
         # while the service answers with its placeholder, the older one stands in
         if current is None or not current.is_timed:
             pulled = await self._get_pull(api_id)
-            # the listener hears what the studio played STREAM_DELAY ago
-            heard_at = time.time() - STREAM_DELAY
-            if pulled is not None and (song := parse_pull(pulled, heard_at))[0] is not None:
+            if pulled is not None and (song := parse_pull(pulled, time.time()))[0] is not None:
                 return song
         return current, upcoming
 

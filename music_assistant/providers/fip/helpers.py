@@ -199,11 +199,13 @@ def build_stream_metadata(item: LiveItem | None, at: float) -> StreamMetadata | 
 
 def parse_pull(data: dict[str, Any], at: float) -> tuple[LiveItem | None, LiveItem | None]:
     """
-    Parse an answer of the older now-playing service into the song on air and the one after it.
+    Parse an answer of the older now-playing service into the song heard and the one after it.
 
     :param data: JSON answer of the older service.
     :param at: The current time (epoch seconds).
     """
+    # the service times songs by the studio, which the listener hears STREAM_DELAY later
+    heard_at = at - STREAM_DELAY
     songs = sorted(
         (
             step
@@ -215,9 +217,10 @@ def parse_pull(data: dict[str, Any], at: float) -> tuple[LiveItem | None, LiveIt
         key=lambda step: int(step["start"]),
     )
     current = next(
-        (step for step in reversed(songs) if int(step["start"]) <= at < int(step["end"])), None
+        (step for step in reversed(songs) if int(step["start"]) <= heard_at < int(step["end"])),
+        None,
     )
-    after = int(current["end"]) if current else at
+    after = int(current["end"]) if current else heard_at
     upcoming = next((step for step in songs if int(step["start"]) >= after), None)
     return _parse_pull_song(current), _parse_pull_song(upcoming)
 
