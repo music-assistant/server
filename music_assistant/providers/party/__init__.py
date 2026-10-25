@@ -25,6 +25,7 @@ from music_assistant_models.enums import (
     MediaType,
     PlaybackState,
     ProviderFeature,
+    RepeatMode,
 )
 from music_assistant_models.errors import (
     InsufficientPermissions,
@@ -46,6 +47,7 @@ from music_assistant.models.plugin import PluginProvider
 
 if TYPE_CHECKING:
     from music_assistant_models.event import MassEvent
+    from music_assistant_models.player_queue import PlayerQueue
     from music_assistant_models.provider import ProviderManifest
     from music_assistant_models.queue_item import QueueItem
 
@@ -988,17 +990,16 @@ class PartyPlugin(PluginProvider):
             self._skip_voters.add(voter_id)
             votes = len(self._skip_voters)
             skipped = False
+            no_next_track = False
             if votes >= votes_required:
-                await self.mass.player_queues.next(queue_id)
                 # next() returns without skipping when there is no next track
-                # (e.g. the last track of the queue with repeat off)
-                queue = self.mass.player_queues.get(queue_id)
-                skipped = bool(
-                    queue
-                    and queue.current_item
-                    and queue.current_item.queue_item_id != current_item.queue_item_id
-                )
-            no_next_track = votes >= votes_required and not skipped
+                # (e.g. the last track of the queue with repeat off), so check first
+                queue = cast("PlayerQueue", self.mass.player_queues.get(queue_id))
+                if self._has_next_track(queue):
+                    await self.mass.player_queues.next(queue_id)
+                    skipped = True
+                else:
+                    no_next_track = True
 
             if skipped:
                 self._clear_skip_votes()
@@ -1168,6 +1169,21 @@ class PartyPlugin(PluginProvider):
         if queue.state != PlaybackState.PLAYING or not queue.current_item:
             raise InvalidDataError("Nothing is currently playing")
         return queue.current_item
+
+    @staticmethod
+    def _has_next_track(queue: PlayerQueue) -> bool:
+        """
+        Return whether a skip on the given queue moves on to a next track.
+
+        Follows how the queue controller picks the track for a skip: a skip leaves
+        "repeat one" for the next track, and only "repeat all" goes from the last track
+        back to the first one, which restarts the track in a queue of one.
+
+        :param queue: The queue to check.
+        """
+        if queue.current_index is None or not queue.items:
+            return False
+        return queue.current_index < queue.items - 1 or queue.repeat_mode == RepeatMode.ALL
 
     def _on_queue_updated(self, event: MassEvent) -> None:
         """

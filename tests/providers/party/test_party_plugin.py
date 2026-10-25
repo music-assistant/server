@@ -11,7 +11,13 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from music_assistant_models.auth import Scope
 from music_assistant_models.config_entries import ProviderConfig
-from music_assistant_models.enums import ConfigEntryType, MediaType, PlaybackState, ProviderType
+from music_assistant_models.enums import (
+    ConfigEntryType,
+    MediaType,
+    PlaybackState,
+    ProviderType,
+    RepeatMode,
+)
 from music_assistant_models.errors import (
     ActionUnavailable,
     InsufficientPermissions,
@@ -113,7 +119,13 @@ def _create_skip_vote_plugin(votes_required: int) -> tuple[PartyPlugin, MagicMoc
     }
     plugin.config.get_value.side_effect = config_values.__getitem__
     current_item = MagicMock(queue_item_id="item_1", extra_attributes={})
-    queue = MagicMock(state=PlaybackState.PLAYING, current_item=current_item)
+    queue = MagicMock(
+        state=PlaybackState.PLAYING,
+        current_item=current_item,
+        current_index=0,
+        items=3,
+        repeat_mode=RepeatMode.OFF,
+    )
     items = {"item_1": current_item}
     plugin.mass.player_queues.get.return_value = queue
     plugin.mass.player_queues.get_item.side_effect = lambda _queue_id, item_id: items.get(item_id)
@@ -359,7 +371,42 @@ async def test_late_skip_votes_do_not_count_for_next_track() -> None:
 async def test_skip_keeps_votes_when_there_is_no_next_track() -> None:
     """Enough votes on the last track keep the votes, as there is nothing to skip to."""
     plugin, queue, current_item = _create_skip_vote_plugin(votes_required=2)
-    # the queue controller does not advance from the last track with repeat off
+    queue.current_index = 2  # the last of three tracks, repeat off
+
+    plugin._get_voter_id = AsyncMock(return_value="token:a")  # type: ignore[method-assign]
+    await plugin.skip_current(queue_item_id="item_1")
+    plugin._get_voter_id = AsyncMock(return_value="token:b")  # type: ignore[method-assign]
+    result = await plugin.skip_current(queue_item_id="item_1")
+
+    cast("AsyncMock", plugin.mass.player_queues.next).assert_not_awaited()
+    assert result["skipped"] is False
+    assert result["no_next_track"] is True
+    assert result["votes"] == 2
+    assert plugin._skip_voters == {"token:a", "token:b"}
+    assert current_item.extra_attributes["party_skip_votes"] == 2
+
+
+@pytest.mark.asyncio
+async def test_skip_on_last_track_with_repeat_one_has_no_next_track() -> None:
+    """A skip leaves "repeat one", so on the last track there is still nothing to skip to."""
+    plugin, queue, _item = _create_skip_vote_plugin(votes_required=1)
+    queue.current_index = 2
+    queue.repeat_mode = RepeatMode.ONE
+    plugin._get_voter_id = AsyncMock(return_value="token:a")  # type: ignore[method-assign]
+
+    result = await plugin.skip_current(queue_item_id="item_1")
+
+    assert result["no_next_track"] is True
+    cast("AsyncMock", plugin.mass.player_queues.next).assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_skip_restarts_single_track_with_repeat_all() -> None:
+    """With "repeat all", a skip on a queue of one restarts the track and drops the votes."""
+    plugin, queue, current_item = _create_skip_vote_plugin(votes_required=2)
+    queue.items = 1
+    queue.repeat_mode = RepeatMode.ALL
+    # the restart plays the same queue item again
     next_track = cast("AsyncMock", plugin.mass.player_queues.next)
     next_track.side_effect = None
 
@@ -369,12 +416,10 @@ async def test_skip_keeps_votes_when_there_is_no_next_track() -> None:
     result = await plugin.skip_current(queue_item_id="item_1")
 
     next_track.assert_awaited_once_with("party_queue")
-    assert queue.current_item is current_item
-    assert result["skipped"] is False
-    assert result["no_next_track"] is True
-    assert result["votes"] == 2
-    assert plugin._skip_voters == {"token:a", "token:b"}
-    assert current_item.extra_attributes["party_skip_votes"] == 2
+    assert result["skipped"] is True
+    assert result["no_next_track"] is False
+    assert plugin._skip_voters == set()
+    assert "party_skip_votes" not in current_item.extra_attributes
 
 
 @pytest.mark.asyncio
