@@ -60,6 +60,7 @@ if TYPE_CHECKING:
     from typing import Any, Concatenate
 
     import hassfeld
+    from async_upnp_client.client import UpnpAction
     from music_assistant_models.config_entries import ConfigEntry
 
     from .provider import RaumfeldPlayerProvider
@@ -246,6 +247,8 @@ class RaumfeldPlayer(Player):
         # source id -> (object id, container) of the station buttons offered as sources
         self._library_sources: dict[str, tuple[str, bool]] = {}
         self._external_via_room = False
+        # (device description URL, action name) -> the AVTransport action, see _transport_action
+        self._transport_actions: dict[tuple[str, str], UpnpAction] = {}
         # timestamp of the last power command, see POWER_SETTLE_TIME
         self._power_changed_at = 0.0
         self._advance_task_id = f"raumfeld_advance_{player_id}"
@@ -1164,12 +1167,25 @@ class RaumfeldPlayer(Player):
         :param arguments: The action's arguments, besides the instance id.
         """
         # not through hassfeld's own wrappers: those swallow every error, so a command
-        # the renderer rejected would be reported as done
-        action = await hassfeld_upnp.get_dlna_action(
-            location, SERVICE_AV_TRANSPORT, action_name, session=self.mass.http_session
-        )
-        response: dict[str, str] = await action.async_call(InstanceID=0, **arguments)
-        return response
+        # the renderer rejected would be reported as done.
+        # Building the action reads the device description and every service description,
+        # several requests each time, so it is kept: a station switch then costs one request
+        # per action. A renderer that reconnects comes back on another port, so another URL.
+        key = (location, action_name)
+        if (action := self._transport_actions.get(key)) is None:
+            action = await hassfeld_upnp.get_dlna_action(
+                location, SERVICE_AV_TRANSPORT, action_name, session=self.mass.http_session
+            )
+            self._transport_actions[key] = action
+        call: dict[str, Any] = {"InstanceID": 0, **arguments}
+        try:
+            response = await action.async_call(**call)
+        except UpnpActionError:
+            raise  # the renderer answered, so the action still fits it
+        except (*HOST_ERRORS, UpnpError):
+            self._transport_actions.pop(key, None)
+            raise
+        return cast("dict[str, str]", response)
 
     def _set_external(
         self,

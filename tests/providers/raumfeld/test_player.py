@@ -44,6 +44,7 @@ def _flow_player() -> RaumfeldPlayer:
     player._external_source = None
     player._attr_supported_features = set()
     player._library_sources = {}
+    player._transport_actions = {}
     player._extra_data = {}
     # no sample rate setting: the room plays the safe default
     player._config = MagicMock(get_value=MagicMock(return_value=None))
@@ -366,6 +367,58 @@ def _room_player(location: str | None = _RENDERER) -> RaumfeldPlayer:
     provider.room_renderer_location.return_value = location
     player._provider = provider
     return player
+
+
+def _upnp_action(**call: Any) -> MagicMock:
+    """Build an AVTransport action as hassfeld's get_dlna_action returns it."""
+    action = MagicMock()
+    action.async_call = AsyncMock(**call)
+    return action
+
+
+async def test_a_transport_action_is_built_once_per_renderer() -> None:
+    """The action is kept, so a station switch does not read the descriptions per command."""
+    player = _room_player()
+    action = _upnp_action(return_value={})
+    with patch(
+        "music_assistant.providers.raumfeld.player.hassfeld_upnp.get_dlna_action",
+        AsyncMock(return_value=action),
+    ) as get_action:
+        await player._transport_action(_ZONE, "Stop")
+        await player._transport_action(_ZONE, "Stop")
+        await player._transport_action(_RENDERER, "Stop")
+    assert get_action.await_count == 2
+    assert action.async_call.await_count == 3
+
+
+async def test_a_transport_action_is_built_again_after_the_renderer_was_unreachable() -> None:
+    """A renderer that did not answer may have moved, so its action is read again next time."""
+    player = _room_player()
+    unreachable = _upnp_action(side_effect=TimeoutError)
+    action = _upnp_action(return_value={"CurrentTransportState": "PLAYING"})
+    with patch(
+        "music_assistant.providers.raumfeld.player.hassfeld_upnp.get_dlna_action",
+        AsyncMock(side_effect=[unreachable, action]),
+    ) as get_action:
+        with pytest.raises(TimeoutError):
+            await player._transport_action(_ZONE, "GetTransportInfo")
+        result = await player._transport_action(_ZONE, "GetTransportInfo")
+    assert result == {"CurrentTransportState": "PLAYING"}
+    assert get_action.await_count == 2
+
+
+async def test_a_transport_action_the_renderer_rejected_is_kept() -> None:
+    """A renderer that answers with an error is still there, so its action stays."""
+    player = _room_player()
+    action = _upnp_action(side_effect=[UpnpActionError(error_code=701), {}])
+    with patch(
+        "music_assistant.providers.raumfeld.player.hassfeld_upnp.get_dlna_action",
+        AsyncMock(return_value=action),
+    ) as get_action:
+        with pytest.raises(UpnpActionError):
+            await player._transport_action(_ZONE, "Stop")
+        await player._transport_action(_ZONE, "Stop")
+    get_action.assert_awaited_once()
 
 
 async def test_mute_goes_to_the_rooms_own_renderer() -> None:
