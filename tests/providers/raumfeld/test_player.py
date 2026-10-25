@@ -2025,8 +2025,20 @@ async def test_a_play_mode_change_after_ma_took_over_is_refused() -> None:
     external.assert_not_awaited()
 
 
-def _casting(player: RaumfeldPlayer, state: PlaybackState, app: str | None = "tunein") -> MagicMock:
-    """Link a Chromecast output to the player that reports an app cast to the speaker."""
+def _casting(
+    player: RaumfeldPlayer,
+    state: PlaybackState,
+    app: str | None = "tunein",
+    controls: bool = True,
+) -> MagicMock:
+    """
+    Link a Chromecast output to the player that reports an app cast to the speaker.
+
+    :param player: The room's player.
+    :param state: The playback state the Chromecast output reports.
+    :param app: The source id of the cast app, or None for MA's own session.
+    :param controls: Whether the app offers play/pause, next/previous and seek.
+    """
     cast_player = MagicMock()
     cast_player.player_id = "cast_bar"
     cast_player.active_source = app
@@ -2037,7 +2049,9 @@ def _casting(player: RaumfeldPlayer, state: PlaybackState, app: str | None = "tu
         artist="Live",
         image_url="https://example.com/logo.png",
     )
-    source = MagicMock(id="tunein")
+    source = MagicMock(
+        id="tunein", can_play_pause=controls, can_next_previous=controls, can_seek=controls
+    )
     source.name = "TuneIn"
     cast_player.source_list = [source]
     cast_player.elapsed_time = 12.0
@@ -2083,7 +2097,20 @@ async def test_an_app_cast_to_the_speaker_shows_as_an_external_source() -> None:
     assert player._attr_current_media is not None
     assert player._attr_current_media.title == "Radio 538"
     assert player._attr_elapsed_time == 12.0
+    assert {PlayerFeature.PAUSE, PlayerFeature.NEXT_PREVIOUS, PlayerFeature.SEEK} <= (
+        player._attr_supported_features
+    )
+
+
+async def test_a_cast_app_without_controls_offers_none() -> None:
+    """An app the Chromecast output cannot control is shown without controls."""
+    player, _ = _external_player()
+    _casting(player, PlaybackState.PLAYING, controls=False)
+
+    await _poll_idle_room(player)
+
     assert PlayerFeature.PAUSE not in player._attr_supported_features
+    assert PlayerFeature.NEXT_PREVIOUS not in player._attr_supported_features
 
 
 async def test_a_cast_that_ended_clears_the_source() -> None:
@@ -2112,21 +2139,81 @@ async def test_music_assistant_casting_itself_is_no_external_source() -> None:
     assert player._attr_active_source is None
 
 
-async def test_a_stop_of_a_cast_app_goes_to_the_chromecast_output() -> None:
-    """The room's renderer refuses a stop of what is cast to it, so the cast output stops it."""
+async def test_a_stop_of_a_cast_app_pauses_it_on_the_chromecast_output() -> None:
+    """A stop pauses an app that can pause, so its cast session stays connected."""
     player, _ = _external_player()
     cast_player = _casting(player, PlaybackState.PLAYING)
+    cast_player.pause = AsyncMock()
     cast_player.stop = AsyncMock()
+    await _poll_idle_room(player)
+
+    with patch.object(player, "update_state"):
+        await player.stop()
+
+    cast_player.pause.assert_awaited_once()
+    cast_player.stop.assert_not_awaited()
+    assert player._attr_playback_state == PlaybackState.IDLE
+    assert player._attr_active_source == "chromecast_tunein"
+
+
+async def test_a_stop_of_a_cast_app_that_cannot_pause_stops_it() -> None:
+    """An app without a pause is stopped on the Chromecast output."""
+    player, _ = _external_player()
+    cast_player = _casting(player, PlaybackState.PLAYING, controls=False)
+    cast_player.stop = AsyncMock()
+    await _poll_idle_room(player)
+
+    with patch.object(player, "update_state"):
+        await player.stop()
+
+    cast_player.stop.assert_awaited_once()
+    assert player._attr_active_source is None
+    assert player._external_cast_id is None
+
+
+@pytest.mark.parametrize(
+    ("command", "cast_method"),
+    [("pause", "pause"), ("play", "play"), ("next_track", "next_track")],
+)
+async def test_a_cast_apps_controls_go_to_the_chromecast_output(
+    command: str, cast_method: str
+) -> None:
+    """Pause, play and next go to the Chromecast output, not the room's renderer."""
+    player, _ = _external_player()
+    cast_player = _casting(player, PlaybackState.PLAYING)
+    setattr(cast_player, cast_method, AsyncMock())
     await _poll_idle_room(player)
 
     with (
         patch.object(player, "update_state"),
-        patch.object(player, "_external_command", AsyncMock()) as room_command,
+        patch.object(player, "_transport_action", AsyncMock()) as room_action,
     ):
-        await player.stop()
+        await getattr(player, command)()
 
-    cast_player.stop.assert_awaited_once()
-    room_command.assert_not_awaited()
-    assert player._attr_playback_state == PlaybackState.IDLE
-    assert player._attr_active_source is None
-    assert player._external_cast_id is None
+    getattr(cast_player, cast_method).assert_awaited_once()
+    room_action.assert_not_awaited()
+
+
+async def test_a_seek_in_a_cast_app_goes_to_the_chromecast_output() -> None:
+    """A seek reaches the Chromecast output in whole seconds."""
+    player, _ = _external_player()
+    cast_player = _casting(player, PlaybackState.PLAYING)
+    cast_player.seek = AsyncMock()
+    await _poll_idle_room(player)
+
+    with patch.object(player, "update_state"):
+        await player.seek(95)
+
+    cast_player.seek.assert_awaited_once_with(95)
+
+
+async def test_a_cast_app_is_named_as_the_service_is_known() -> None:
+    """An app that calls itself in all caps is shown by the service's usual name."""
+    player, _ = _external_player()
+    cast_player = _casting(player, PlaybackState.PLAYING, app="tidal")
+    cast_player.source_list[0].id = "tidal"
+    cast_player.source_list[0].name = "TIDAL"
+
+    await _poll_idle_room(player)
+
+    assert player._attr_source_list[-1].name == "Chromecast: Tidal"

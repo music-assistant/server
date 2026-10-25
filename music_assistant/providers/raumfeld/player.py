@@ -479,16 +479,16 @@ class RaumfeldPlayer(Player):
         # a Raumfeld line-in keeps playing through a normal transport stop, so when we are
         # leaving the line-in hard-stop the room(s) by putting them into (manual) standby
         hard_stop = self._attr_active_source == SOURCE_LINE_IN
-        if (cast_id := self._external_cast_id) is not None:
-            # the room's own renderer refuses a stop of what is cast to it (UPnP error 701);
-            # the Chromecast output ends the app's session
-            if (cast := self.mass.players.get_player(cast_id)) is not None:
-                try:
-                    await cast.stop()
-                except Exception as err:
-                    raise PlayerCommandFailed(f"Failed to stop {self.room}: {err!r}") from err
-            self._clear_external()
-            self._attr_active_source = None
+        if self._external_cast_id is not None:
+            # the room's own renderer refuses a stop of what is cast to it (UPnP error 701).
+            # A stop of the Chromecast output would end the app's cast session, so an app
+            # that can pause is paused instead and stays connected; the next poll shows it
+            # paused, to be resumed.
+            pausable = "Pause" in self._external_actions
+            await self._external_command("Pause" if pausable else "Stop")
+            if not pausable:
+                self._clear_external()
+                self._attr_active_source = None
             self._attr_playback_state = PlaybackState.IDLE
             self.update_state()
             return
@@ -1062,8 +1062,18 @@ class RaumfeldPlayer(Player):
         # knows nothing of it. The Chromecast output does, but as a protocol player under
         # this one it is never shown on its own.
         media = cast.current_media
-        app = next((s.name for s in cast.source_list if s.id == cast.active_source), None)
-        app = app or cast.active_source
+        app_source = next((s for s in cast.source_list if s.id == cast.active_source), None)
+        app = app_source.name if app_source else cast.active_source
+        # the name a service is known by here: some apps call themselves all caps ("TIDAL")
+        app = external_source(app)[1]
+        # the controls the Chromecast output offers for the app, as transport actions
+        actions = []
+        if app_source and app_source.can_play_pause:
+            actions += ["Play", "Pause"]
+        if app_source and app_source.can_next_previous:
+            actions += ["Next", "Previous"]
+        if app_source and app_source.can_seek:
+            actions.append("Seek")
         self._set_external(
             {
                 "title": media.title if media else None,
@@ -1073,8 +1083,7 @@ class RaumfeldPlayer(Player):
                 "section": None,
                 "item_id": None,
             },
-            # the app is controlled from the device that casts it
-            actions=None,
+            actions=",".join(actions),
             duration=media.duration if media else None,
             via_room=True,
             # apart from the same service played through the host (the Raumfeld app)
@@ -1707,6 +1716,9 @@ class RaumfeldPlayer(Player):
         :param action_name: The AVTransport action to call.
         :param arguments: The action's arguments, besides the instance id.
         """
+        if self._external_cast_id is not None:
+            await self._cast_command(self._external_cast_id, action_name, **arguments)
+            return
         # Spotify Connect plays on the room's own renderer, everything else on its zone
         if self._external_via_room:
             location = self.raumfeld.room_renderer_location(self.room)
@@ -1719,6 +1731,36 @@ class RaumfeldPlayer(Player):
         try:
             await self._transport_action(location, action_name, **arguments)
         except (*HOST_ERRORS, UpnpError) as err:
+            raise PlayerCommandFailed(f"{action_name} failed on {self.room}: {err!r}") from err
+        # poll fast for a while so the new state and track show up promptly
+        self._play_started_at = time.time()
+
+    async def _cast_command(self, cast_id: str, action_name: str, **arguments: str) -> None:
+        """
+        Send a transport command to the Chromecast output an app casts through.
+
+        :param cast_id: The player id of the room's Chromecast output.
+        :param action_name: The AVTransport action the command stands for.
+        :param arguments: The action's arguments, besides the instance id.
+        """
+        if (cast := self.mass.players.get_player(cast_id)) is None:
+            raise PlayerCommandFailed(f"{action_name} failed on {self.room}: nothing is playing")
+        commands: dict[str, Callable[[], Coroutine[Any, Any, None]]] = {
+            "Play": cast.play,
+            "Pause": cast.pause,
+            "Stop": cast.stop,
+            "Next": cast.next_track,
+            "Previous": cast.previous_track,
+        }
+        command = commands.get(action_name)
+        if command is None and action_name != "Seek":
+            raise PlayerCommandFailed(f"{action_name} is not offered for {self.room}")
+        try:
+            if command is None:
+                await cast.seek(parse_duration(arguments.get("Target")) or 0)
+            else:
+                await command()
+        except Exception as err:
             raise PlayerCommandFailed(f"{action_name} failed on {self.room}: {err!r}") from err
         # poll fast for a while so the new state and track show up promptly
         self._play_started_at = time.time()
