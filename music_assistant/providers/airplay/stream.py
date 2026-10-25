@@ -1090,9 +1090,16 @@ class AirPlayStream:
         # mDNS properties from the RAOP service (needed by the RAOP-based flows)
         if raop_info:
             args += ["--udn", raop_info.name]
-            for prop in ("et", "md", "am", "pk", "pw", "cn"):
+            for prop in ("et", "am", "pk", "pw", "cn"):
                 if prop_value := raop_info.decoded_properties.get(prop):
                     args += [f"--{prop}", prop_value]
+            # A legacy RAOP receiver without an md TXT key accepts no metadata at all
+            # (some answer a metadata push with a 500 and drop the connection), but the
+            # binary assumes full metadata support when --md is omitted. AirPlay 2 flows
+            # keep that default: some receivers need metadata before they render audio.
+            metadata_caps = raop_info.decoded_properties.get("md")
+            if metadata_caps or target_protocol == StreamingProtocol.RAOP:
+                args += ["--md", metadata_caps or ""]
         if target_protocol == StreamingProtocol.RAOP and self.player.config.get_value(
             CONF_ENCRYPTION, True
         ):
