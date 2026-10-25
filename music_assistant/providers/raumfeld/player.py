@@ -888,7 +888,12 @@ class RaumfeldPlayer(Player):
             if self._plays_spotify_connect():
                 await self._poll_room_playback(host)
                 return
+            generation = self._playback_generation
             await self._update_volume(host)
+            if not self._reading_is_current(generation):
+                # a play or stop command ran meanwhile; the next poll reads what it brought
+                self.update_state()
+                return
             # ... or an app casts to the room's speaker, past the host
             if (cast := self._cast_playback()) is not None:
                 self._show_cast_playback(cast)
@@ -1045,6 +1050,7 @@ class RaumfeldPlayer(Player):
             cast = self.mass.players.get_player(link.output_protocol_id)
             if (
                 cast is not None
+                and cast.available
                 # a Cast app MA did not start: MA's own session reports no source, and
                 # a Cast group the speaker follows reports the group, not an app
                 and any(s.id == cast.active_source for s in cast.source_list)
@@ -1065,6 +1071,7 @@ class RaumfeldPlayer(Player):
         media = cast.current_media
         app_source = next((s for s in cast.source_list if s.id == cast.active_source), None)
         app = app_source.name if app_source else cast.active_source
+        shown_cast_id = self._external_cast_id
         # the controls the Chromecast output offers for the app, as transport actions
         actions = []
         if app_source and app_source.can_play_pause:
@@ -1088,7 +1095,7 @@ class RaumfeldPlayer(Player):
             # apart from the same service played through the host (the Raumfeld app)
             source_id_name=(f"chromecast_{cast.active_source}", f"Chromecast: {app}"),
         )
-        if self._external_cast_id != cast.player_id:
+        if shown_cast_id != cast.player_id:
             self.logger.debug("%s plays %s, cast to its speaker", self.room, app)
         self._external_cast_id = cast.player_id
         self._attr_playback_state = cast.playback_state
@@ -1279,6 +1286,8 @@ class RaumfeldPlayer(Player):
         if self._advance_armed or self._next_media is not None:
             # a queue item MA handed over must not start when this source's track ends
             self._clear_next()
+        # commands go to the host, unless the source is cast to the speaker
+        self._external_cast_id = None
         allowed = {action.strip() for action in (actions or "").split(",")}
         source_id, name = source_id_name or external_source(meta["section"])
         passive = True
@@ -1757,13 +1766,10 @@ class RaumfeldPlayer(Player):
         self.logger.debug("Sending %s for %s to its Chromecast output", action_name, self.room)
         if command is None and action_name != "Seek":
             raise PlayerCommandFailed(f"{action_name} is not offered for {self.room}")
-        try:
-            if command is None:
-                await cast.seek(parse_duration(arguments.get("Target")) or 0)
-            else:
-                await command()
-        except Exception as err:
-            raise PlayerCommandFailed(f"{action_name} failed on {self.room}: {err!r}") from err
+        if command is None:
+            await cast.seek(parse_duration(arguments.get("Target")) or 0)
+        else:
+            await command()
         # poll fast for a while so the new state and track show up promptly
         self._play_started_at = time.time()
 

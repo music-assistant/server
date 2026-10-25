@@ -2151,6 +2151,62 @@ async def test_a_cast_group_the_speaker_follows_is_no_external_source() -> None:
     assert player._attr_active_source is None
 
 
+async def test_an_unavailable_chromecast_output_is_no_external_source() -> None:
+    """A Chromecast output that lost its connection keeps no playback on the room."""
+    player, _ = _external_player()
+    player._attr_playback_state = PlaybackState.IDLE
+    cast_player = _casting(player, PlaybackState.PLAYING)
+    cast_player.available = False
+
+    await _poll_idle_room(player)
+
+    assert player._attr_playback_state == PlaybackState.IDLE
+    assert player._attr_active_source is None
+
+
+async def test_a_play_during_the_poll_is_not_overwritten_by_cast_playback() -> None:
+    """A play command that runs while the poll reads the volume keeps its own state."""
+    player, _ = _external_player()
+    player._attr_playback_state = PlaybackState.IDLE
+    _casting(player, PlaybackState.PLAYING)
+
+    async def play_meanwhile(_host: Any) -> None:
+        player._playback_generation += 1
+
+    with patch.object(player, "_update_volume", AsyncMock(side_effect=play_meanwhile)):
+        links = [MagicMock(protocol_domain="chromecast", output_protocol_id="cast_bar")]
+        with (
+            patch.object(RaumfeldPlayer, "synced_to", new_callable=PropertyMock) as synced_to,
+            patch.object(
+                RaumfeldPlayer, "linked_output_protocols", new_callable=PropertyMock
+            ) as linked,
+            patch.object(player, "update_state"),
+            patch.object(player, "_update_power"),
+            patch.object(player, "_held_for_watcher", return_value=False),
+            patch.object(player, "_plays_spotify_connect", return_value=False),
+            patch.object(player, "_active_zone", return_value=None),
+        ):
+            synced_to.return_value = None
+            linked.return_value = links
+            await player.poll()
+
+    assert player._attr_playback_state == PlaybackState.IDLE
+    assert player._external_cast_id is None
+
+
+async def test_a_source_after_a_cast_app_takes_its_commands_back_to_the_host() -> None:
+    """Spotify Connect after a cast app gets the commands, not the Chromecast output."""
+    player, _ = _external_player()
+    player._attr_playback_state = PlaybackState.IDLE
+    _casting(player, PlaybackState.PLAYING)
+    await _poll_idle_room(player)
+    assert player._external_cast_id == "cast_bar"
+
+    player._set_external(_SPOTIFY_META, "Pause,Next,Seek", 315, via_room=True)
+
+    assert player._external_cast_id is None
+
+
 async def test_a_stop_of_a_cast_app_pauses_it_on_the_chromecast_output() -> None:
     """A stop pauses an app that can pause, so its cast session stays connected."""
     player, _ = _external_player()
