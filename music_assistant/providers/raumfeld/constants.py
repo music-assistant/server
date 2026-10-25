@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import aiohttp
 from music_assistant_models.config_entries import ConfigEntry
+from music_assistant_models.enums import ConfigEntryType
 
 from music_assistant.constants import (
     CONF_ENTRY_FLOW_MODE,
@@ -90,6 +91,18 @@ CACHE_CATEGORY_ROOM_ID = 3
 ROOM_ID_CACHE_TTL = 10 * 365 * 24 * 3600
 SOURCE_LINE_IN = "line_in"
 
+# A room joining a group that plays hooks into the running stream a little behind the others
+# (measured with a Connector room, heard as a slight echo); grouping first and then playing
+# is in sync. With this on for the leader or any room of the group, the leader starts its
+# queue again where it is when a room joins.
+CONF_RESTART_ON_JOIN = "restart_on_join"
+CONF_ENTRY_RESTART_ON_JOIN = ConfigEntry(
+    key=CONF_RESTART_ON_JOIN,
+    type=ConfigEntryType.BOOLEAN,
+    default_value=False,
+    advanced=True,
+)
+
 # Per-player config entries (MA adds the flow sample-rate entry itself).
 PLAYER_CONFIG_ENTRIES = [
     # Flow mode on by default. The zone renderer has no SetNextAVTransportURI, so a stream
@@ -118,4 +131,5 @@ PLAYER_CONFIG_ENTRIES = [
         safe_max_sample_rate=96000,
         safe_max_bit_depth=24,
     ),
+    CONF_ENTRY_RESTART_ON_JOIN,
 ]

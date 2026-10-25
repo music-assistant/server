@@ -1,0 +1,38 @@
+{
+  "prev": [
+    {
+      "firstLine": "Le direct",
+      "secondLine": "Bebop, afro jazz, salsa, bossa, blues, tout le jazz, ses cousins et ses cousines",
+      "thirdLine": "Jazz",
+      "songUuid": null,
+      "cover": "2de59c50-9912-401e-9d1f-95a2f0b66567",
+      "startTime": null,
+      "endTime": null
+    }
+  ],
+  "now": {
+    "firstLine": "My Baby Just Cares For Me",
+    "firstLineSongUuid": "06bf6232-8fb4-4ad2-b15a-a2599e8a6d57",
+    "secondLine": "Nina Simone",
+    "secondLineSongUuid": "06bf6232-8fb4-4ad2-b15a-a2599e8a6d57",
+    "thirdLine": "Jazz",
+    "songUuid": "06bf6232-8fb4-4ad2-b15a-a2599e8a6d57",
+    "cover": "776705ff-88c5-4484-ae30-9155aaaa0af2",
+    "startTime": 1792779016,
+    "endTime": 1792779226
+  },
+  "next": [
+    {
+      "firstLine": "Lawns",
+      "firstLineSongUuid": "803ceb3c-00e5-41ba-ad49-6e97c70406fc",
+      "secondLine": "Clovis Nicolas",
+      "secondLineSongUuid": "803ceb3c-00e5-41ba-ad49-6e97c70406fc",
+      "thirdLine": "Jazz",
+      "songUuid": "803ceb3c-00e5-41ba-ad49-6e97c70406fc",
+      "cover": "50014513-71d6-4f54-8acc-b85933cfb9b4",
+      "startTime": 1792779226,
+      "endTime": 1792779470
+    }
+  ],
+  "delayToRefresh": 190000
+}

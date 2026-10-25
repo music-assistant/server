@@ -27,6 +27,7 @@ from music_assistant.controllers.config.migrations import (
     _migrate_bluesound_http_profile,
     _migrate_bose_soundtouch_presets,
     _migrate_emby_album_artists_heal,
+    _migrate_nicovideo_drop_mail_login,
     _migrate_orphaned_disabled_protocol_configs,
     _migrate_output_limiter,
     _migrate_player_icons,
@@ -1778,3 +1779,46 @@ def test_migrate_emby_album_artists_heal_survives_malformed_config() -> None:
     data: dict[str, Any] = {"providers": {"emby--a": {"domain": "emby", "values": "broken"}}}
     _migrate_emby_album_artists_heal(data)
     assert data["providers"]["emby--a"]["values"] == "broken"
+
+
+async def test_migrate_nicovideo_drop_mail_login_removes_credentials() -> None:
+    """The mail, password and MFA code are removed, the user_session and other values kept."""
+    data: dict[str, Any] = {
+        "providers": {
+            "nicovideo--a": {
+                "domain": "nicovideo",
+                "values": {"mail": "a@example.com", "password": "pw", "search_limit": 10},
+                "setup_data": {
+                    "mail": "enc-mail",
+                    "password": "enc-pw",
+                    "mfa": None,
+                    "user_session": "enc-session",
+                },
+            },
+            "nicovideo--b": {"domain": "nicovideo"},
+            "spotify--s": {"domain": "spotify", "values": {"password": "pw"}},
+        }
+    }
+    providers = data["providers"]
+
+    assert await migrate(data) is True
+    assert providers["nicovideo--a"]["values"] == {"search_limit": 10}
+    assert providers["nicovideo--a"]["setup_data"] == {"user_session": "enc-session"}
+    assert providers["nicovideo--b"] == {"domain": "nicovideo"}
+    assert providers["spotify--s"]["values"] == {"password": "pw"}
+
+    # a second run has nothing left to remove
+    assert _migrate_nicovideo_drop_mail_login(data) is False
+
+
+def test_migrate_nicovideo_drop_mail_login_survives_malformed_config() -> None:
+    """Malformed provider configs are skipped without raising."""
+    assert _migrate_nicovideo_drop_mail_login({"providers": "broken"}) is False
+    data: dict[str, Any] = {
+        "providers": {
+            "nicovideo--a": {"domain": "nicovideo", "values": "broken", "setup_data": None},
+            "broken": "broken",
+        }
+    }
+    assert _migrate_nicovideo_drop_mail_login(data) is False
+    assert data["providers"]["nicovideo--a"]["values"] == "broken"
