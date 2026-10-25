@@ -1222,6 +1222,11 @@ class TestSleepTimer:
 
         assert player.state.sleep_timer_expires_at is None
         assert player.state.sleep_timer_mode is None
+        # setting and clearing the target both hand the player the item that follows
+        assert mock_mass.player_queues.update_next_item_on_player.call_args_list == [
+            call("player_1"),
+            call("player_1"),
+        ]
 
     @pytest.mark.parametrize(
         ("mode", "queue_item", "queue_state", "queue_ended"),

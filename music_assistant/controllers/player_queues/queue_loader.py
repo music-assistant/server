@@ -559,7 +559,8 @@ class QueueLoaderMixin(_PlayerQueuesBase):
                 and queue.repeat_mode == RepeatMode.ALL
                 # repeating a single item would start the item a sleep timer ends at over
                 and not (
-                    len(queue_items) == 1
+                    not is_skip
+                    and len(queue_items) == 1
                     and self.mass.players.sleep_timer_ends_item(queue_id, queue_items[0])
                 )
             ):

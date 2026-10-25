@@ -647,6 +647,8 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
             self._sleep_timer_targets[player.player_id] = SleepTimerTarget(
                 queue.current_item.queue_item_id, stop_position
             )
+            # the queue no longer repeats an item the timer ends, the player may hold that repeat
+            self.mass.player_queues.update_next_item_on_player(player.player_id)
             player.set_sleep_timer_mode(mode)
             # arm from scratch, the timer set before may be of another mode
             self.mass.cancel_timer(self._sleep_timer_task_id(player.player_id))
@@ -670,7 +672,9 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         except OverflowError:
             msg = "Sleep timer duration is too large to schedule"
             raise InvalidDataError(msg) from None
-        self._sleep_timer_targets.pop(player.player_id, None)
+        if self._sleep_timer_targets.pop(player.player_id, None) is not None:
+            # let the queue hand the player its repeat again
+            self.mass.player_queues.update_next_item_on_player(player.player_id)
         player.set_sleep_timer_mode(SleepTimerMode.DURATION)
         player.set_sleep_timer_expires_at(expires_at)
         player.update_state()
@@ -4256,7 +4260,9 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         :param player: Player to clear the timer for.
         """
         self.mass.cancel_timer(self._sleep_timer_task_id(player.player_id))
-        self._sleep_timer_targets.pop(player.player_id, None)
+        if self._sleep_timer_targets.pop(player.player_id, None) is not None:
+            # let the queue hand the player its repeat again
+            self.mass.player_queues.update_next_item_on_player(player.player_id)
         if player.sleep_timer_mode is not None:
             player.set_sleep_timer_expires_at(None)
             player.set_sleep_timer_mode(None)
