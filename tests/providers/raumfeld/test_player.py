@@ -2093,3 +2093,48 @@ async def test_a_play_mode_change_after_ma_took_over_is_refused() -> None:
         with pytest.raises(PlayerCommandFailed, match="no longer plays"):
             await change
     external.assert_not_awaited()
+
+
+def test_a_room_that_is_gone_is_not_polled() -> None:
+    """A room the host no longer lists is not read until it is back."""
+    player = RaumfeldPlayer.__new__(RaumfeldPlayer)
+    player._attr_needs_poll = True
+    player._attr_available = True
+    assert player.needs_poll
+
+    player._attr_available = False
+
+    assert not player.needs_poll
+
+
+def test_a_room_that_goes_away_while_playing_reads_as_idle() -> None:
+    """A room that disappears while it plays does not keep reading as playing."""
+    player = RaumfeldPlayer.__new__(RaumfeldPlayer)
+    player._attr_available = True
+    player._attr_playback_state = PlaybackState.PLAYING
+
+    with patch.object(player, "update_state"):
+        player.set_available(False)
+
+    assert player._attr_playback_state == PlaybackState.IDLE
+
+
+async def test_a_poll_answered_after_the_room_went_away_is_not_applied() -> None:
+    """A zone reading that comes back after the room went away does not make it play again."""
+    player, _ = _external_player()
+    player._attr_available = True
+    player._attr_playback_state = PlaybackState.IDLE
+
+    async def transport_while_the_room_goes_away(*_args: object) -> dict[str, str]:
+        player.set_available(False)
+        return {"CurrentTransportState": "PLAYING"}
+
+    with (
+        patch.object(player, "update_state"),
+        patch.object(player, "_update_volume", AsyncMock()),
+        patch.object(player, "_read_transport", side_effect=transport_while_the_room_goes_away),
+        patch.object(player, "_read_position", AsyncMock(return_value={"TrackURI": ""})),
+    ):
+        await player._poll_zone(MagicMock(), ["Bar"])
+
+    assert player._attr_playback_state == PlaybackState.IDLE
