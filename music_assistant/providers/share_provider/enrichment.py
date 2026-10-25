@@ -23,6 +23,7 @@ from music_assistant.helpers.throttle_retry import (
     parse_retry_after,
     throttle_with_retries,
 )
+from music_assistant.helpers.util import parse_title_and_version
 from music_assistant.models.music_provider import PROVIDER_FETCH_ERRORS
 from music_assistant.providers.share_provider.links import compact_provider_ref
 
@@ -247,6 +248,7 @@ class ShareLinkEnricher:
     ) -> str | None:
         if not isinstance(results, list):
             return None
+        title, version = parse_title_and_version(title, version)
         best_score = (-1, -1)
         best_url: str | None = None
         for result in results:
@@ -260,23 +262,22 @@ class ShareLinkEnricher:
             result_version = (
                 result.get("version") or result.get("title_version") or result.get("versionName")
             )
+            if not isinstance(result_version, str):
+                result_version = None
             if (
                 not isinstance(result_title, str)
                 or not isinstance(result_url, str)
-                or not compare_strings(title, result_title, strict=False)
-                or (
-                    version
-                    and (
-                        not isinstance(result_version, str)
-                        or not compare_version(version, result_version)
-                    )
-                )
                 or (artist and not isinstance(result_artist, str))
                 or (
                     artist
                     and isinstance(result_artist, str)
                     and not compare_strings(artist, result_artist, strict=False)
                 )
+            ):
+                continue
+            result_title, result_version = parse_title_and_version(result_title, result_version)
+            if not compare_strings(title, result_title, strict=False) or (
+                version and not compare_version(version, result_version)
             ):
                 continue
             score = (

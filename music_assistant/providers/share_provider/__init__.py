@@ -14,7 +14,7 @@ from __future__ import annotations
 import asyncio
 import binascii
 import logging
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import replace
 from typing import TYPE_CHECKING, Literal, cast
 
@@ -29,7 +29,7 @@ from music_assistant_models.enums import (
 from music_assistant_models.errors import (
     InvalidDataError,
 )
-from music_assistant_models.media_items import BrowseFolder, ItemMapping, Track
+from music_assistant_models.media_items import Album, BrowseFolder, ItemMapping, Track
 
 from music_assistant.helpers.compare import compare_strings, compare_version
 from music_assistant.helpers.external_ids import (
@@ -351,6 +351,7 @@ class ShareProvider(PluginProvider):
             provider_refs = build_provider_refs(item, media_type)
 
         elif item.media_type == MediaType.ALBUM:
+            version_str = getattr(item, "version", None) or None
             mbid = item.get_external_id(ExternalID.MB_ALBUM)
             barcode = item.get_external_id(ExternalID.BARCODE)
             if hasattr(item, "artist_str"):
@@ -411,6 +412,14 @@ class ShareProvider(PluginProvider):
     ) -> MediaItemType | None:
         """Resolve a shared track, album, or artist using known IDs before search."""
         media_type = MediaType(payload.type)
+        item = await self._resolve_by_external_ids(payload, media_type)
+        if item is not None or not allow_search:
+            return item
+        return await self._resolve_by_search(payload, media_type)
+
+    async def _resolve_by_external_ids(
+        self, payload: SharePayload, media_type: MediaType
+    ) -> MediaItemType | None:
         external_ids: tuple[tuple[ExternalID, str | None], ...]
         if media_type == MediaType.TRACK:
             external_ids = (
@@ -435,18 +444,9 @@ class ShareProvider(PluginProvider):
             if external_id_type == ExternalID.BARCODE and not is_valid_barcode(external_id):
                 continue
             try:
-                try:
-                    item = await controller.get_item_by_external_id(
-                        normalize_external_id(external_id_type, external_id), external_id_type
-                    )
-                except PROVIDER_FETCH_ERRORS as err:
-                    LOGGER.debug(
-                        "External ID lookup failed for %s (%s): %s",
-                        external_id_type,
-                        external_id,
-                        err,
-                    )
-                    continue
+                item = await controller.get_item_by_external_id(
+                    normalize_external_id(external_id_type, external_id), external_id_type
+                )
             except PROVIDER_FETCH_ERRORS as err:
                 LOGGER.debug(
                     "External ID lookup failed for %s (%s): %s",
@@ -471,47 +471,17 @@ class ShareProvider(PluginProvider):
                         LOGGER.debug("Could not load details for shared track: %s", err)
                         continue
                 return item
+        return None
 
-        if not allow_search:
-            return None
-
+    async def _resolve_by_search(
+        self, payload: SharePayload, media_type: MediaType
+    ) -> MediaItemType | None:
         query = f"{payload.artist} {payload.title}" if payload.artist else payload.title
         results = await self.mass.music.search(query, media_types=[media_type], limit=5)
         if media_type == MediaType.TRACK:
-            return next(
-                (
-                    item
-                    for item in results.tracks or []
-                    if not isinstance(item, ItemMapping)
-                    and compare_strings(payload.title, item.name, strict=False)
-                    and (not payload.version or compare_version(payload.version, item.version))
-                    and (
-                        not payload.artist
-                        or (
-                            bool(item.artist_str)
-                            and compare_strings(payload.artist, item.artist_str, strict=False)
-                        )
-                    )
-                ),
-                None,
-            )
+            return self._best_search_match(payload, results.tracks or [])
         if media_type == MediaType.ALBUM:
-            return next(
-                (
-                    item
-                    for item in results.albums or []
-                    if not isinstance(item, ItemMapping)
-                    and compare_strings(payload.title, item.name, strict=False)
-                    and (
-                        not payload.artist
-                        or (
-                            bool(item.artist_str)
-                            and compare_strings(payload.artist, item.artist_str, strict=False)
-                        )
-                    )
-                ),
-                None,
-            )
+            return self._best_search_match(payload, results.albums or [])
         return next(
             (
                 item
@@ -521,3 +491,44 @@ class ShareProvider(PluginProvider):
             ),
             None,
         )
+
+    @staticmethod
+    def _best_search_match(
+        payload: SharePayload,
+        candidates: Sequence[Track | Album | ItemMapping],
+    ) -> Track | Album | None:
+        best_score = (-1, -1, -1)
+        best_item: Track | Album | None = None
+        for item in candidates:
+            if isinstance(item, ItemMapping):
+                continue
+            if not compare_strings(payload.title, item.name, strict=False):
+                continue
+            if payload.artist and not item.artist_str:
+                continue
+            if payload.artist and not (
+                compare_strings(payload.artist, item.artist_str, strict=True)
+                or compare_strings(payload.artist, item.artist_str, strict=False)
+            ):
+                continue
+            if (
+                payload.version
+                and item.version
+                and not compare_version(payload.version, item.version)
+            ):
+                continue
+            score = (
+                int(compare_strings(payload.title, item.name, strict=True)),
+                int(
+                    not payload.artist
+                    or compare_strings(payload.artist, item.artist_str, strict=True)
+                ),
+                int(
+                    not payload.version
+                    or (bool(item.version) and compare_version(payload.version, item.version))
+                ),
+            )
+            if score > best_score:
+                best_score = score
+                best_item = item
+        return best_item
