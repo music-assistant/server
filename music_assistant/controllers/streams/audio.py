@@ -104,6 +104,7 @@ from music_assistant.controllers.streams.constants import (
     CACHE_PROVIDER,
     CONF_ALLOW_CROSSFADE_SAME_ALBUM,
     DEFAULT_VOLUME_NORMALIZATION_MODE,
+    ICY_PLACEHOLDER_IMAGE_URLS,
     OUTCOME_ONLY_NORMALIZATION_MODES,
     STREAM_SLOT_MATCH_TIMEOUT,
     STREAM_SLOT_PLAYBACK_WAIT_TIMEOUT,
@@ -4482,6 +4483,8 @@ class StreamsAudio:
         if parsed.scheme not in ("http", "https"):
             return None
         if not parsed.path.lower().endswith((".png", ".jpg", ".jpeg")):
+            return None
+        if image_url in ICY_PLACEHOLDER_IMAGE_URLS:
             return None
         self.logger.debug("ICY metadata: StreamUrl image='%s'", image_url)
         return image_url
