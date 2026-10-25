@@ -3653,6 +3653,45 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
             await self._update_library_item_from_provider(db_id, update)
         return True
 
+    async def _get_library_artist_id(self, artist: Artist | ItemMapping) -> int:
+        """
+        Return the library ID of the given artist, adding it to the library when needed.
+
+        An artist already in the library only gains the provider mappings and the types of
+        external ids it lacks; its stored data is never overwritten.
+        """
+        if artist.provider == "library":
+            return int(artist.item_id)
+        if db_artist := await self.mass.music.artists.get_library_item_by_prov_id(
+            artist.item_id, artist.provider
+        ):
+            await self._add_new_artist_ids(db_artist, artist)
+            return int(db_artist.item_id)
+        # Convert ItemMapping to Artist if needed
+        artist_to_add = (
+            self.mass.music.artists.artist_from_item_mapping(artist)
+            if isinstance(artist, ItemMapping)
+            else artist
+        )
+        db_artist = await self.mass.music.artists.add_item_to_library(artist_to_add)
+        return int(db_artist.item_id)
+
+    async def _add_new_artist_ids(self, db_artist: Artist, artist: Artist | ItemMapping) -> None:
+        """Add the provider mappings and external id types a library artist lacks."""
+        stored_types = {id_type for id_type, _ in db_artist.external_ids}
+        new_ids = {
+            (id_type, value)
+            for id_type, value in normalize_external_ids(artist.external_ids)
+            if id_type not in stored_types
+        }
+        new_mappings = set(getattr(artist, "provider_mappings", ())) - db_artist.provider_mappings
+        if not new_ids and not new_mappings:
+            return
+        # the stored artist itself is the update, so nothing but the new ids changes
+        db_artist.external_ids.update(new_ids)
+        db_artist.provider_mappings.update(new_mappings)
+        await self.mass.music.artists.update_item_in_library(db_artist.item_id, db_artist)
+
     async def _copy_library_item_relations(self, target_id: int, source_id: int) -> None:
         """Copy the relations that reference the merged media item onto the target."""
         for table, item_column in self._library_item_relations():
