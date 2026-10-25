@@ -339,6 +339,9 @@ class RaumfeldPlayer(Player):
         :param available: Whether the player is currently reachable/usable.
         """
         self._attr_available = available
+        if not available:
+            # it is no longer polled, so nothing would end the playback it last reported
+            self._attr_playback_state = PlaybackState.IDLE
         self.update_state()
 
     def set_room(self, room: str) -> None:

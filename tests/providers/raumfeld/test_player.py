@@ -2035,3 +2035,15 @@ def test_a_room_that_is_gone_is_not_polled() -> None:
     player._attr_available = False
 
     assert not player.needs_poll
+
+
+def test_a_room_that_goes_away_while_playing_reads_as_idle() -> None:
+    """A room that disappears while it plays does not keep reading as playing."""
+    player = RaumfeldPlayer.__new__(RaumfeldPlayer)
+    player._attr_available = True
+    player._attr_playback_state = PlaybackState.PLAYING
+
+    with patch.object(player, "update_state"):
+        player.set_available(False)
+
+    assert player._attr_playback_state == PlaybackState.IDLE
