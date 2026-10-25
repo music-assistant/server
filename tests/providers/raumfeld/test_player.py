@@ -2139,6 +2139,18 @@ async def test_music_assistant_casting_itself_is_no_external_source() -> None:
     assert player._attr_active_source is None
 
 
+async def test_a_cast_group_the_speaker_follows_is_no_external_source() -> None:
+    """A Cast group the speaker plays in reports the group as source, not an app."""
+    player, _ = _external_player()
+    player._attr_playback_state = PlaybackState.IDLE
+    _casting(player, PlaybackState.PLAYING, app="cast_group_living")
+
+    await _poll_idle_room(player)
+
+    assert player._attr_playback_state == PlaybackState.IDLE
+    assert player._attr_active_source is None
+
+
 async def test_a_stop_of_a_cast_app_pauses_it_on_the_chromecast_output() -> None:
     """A stop pauses an app that can pause, so its cast session stays connected."""
     player, _ = _external_player()

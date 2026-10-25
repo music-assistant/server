@@ -1045,8 +1045,9 @@ class RaumfeldPlayer(Player):
             cast = self.mass.players.get_player(link.output_protocol_id)
             if (
                 cast is not None
-                # a Cast app MA did not start; MA's own session reports no source
-                and cast.active_source is not None
+                # a Cast app MA did not start: MA's own session reports no source, and
+                # a Cast group the speaker follows reports the group, not an app
+                and any(s.id == cast.active_source for s in cast.source_list)
                 and cast.playback_state in (PlaybackState.PLAYING, PlaybackState.PAUSED)
             ):
                 return cast
