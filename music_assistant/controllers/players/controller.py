@@ -700,8 +700,8 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         Call when the player's queue changed its playback state, current item or position.
 
         :param player_id: Player ID (and queue ID) whose sleep timer to update.
-        :param repin: Stop at the end of the item or chapter now playing, after a user moved
-            playback.
+        :param repin: Forget the stop position after a user moved playback, so the next
+            update stops at the end of the item or chapter playing then.
         """
         player = self.get_player(player_id)
         if player is None:
@@ -714,12 +714,13 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
             # the queue has nothing left the timer could wait for
             self._clear_sleep_timer(player)
             return
-        if repin:
-            self._sleep_timer_targets.pop(player_id, None)
         prev_expires_at = player.sleep_timer_expires_at
         # seconds until the stop, None while waiting for playback
         remaining: float | None = None
-        if queue.state == PlaybackState.IDLE:
+        if repin:
+            # the replacement playback is not started yet, its first position report pins it
+            self._sleep_timer_targets.pop(player_id, None)
+        elif queue.state == PlaybackState.IDLE:
             # playback stopped before it reached the stop position
             remaining = 0.0
         elif queue.state == PlaybackState.PLAYING and queue.current_item:
@@ -740,13 +741,16 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
             if target.queue_item_id != queue.current_item.queue_item_id:
                 # the pinned item played out before the timer fired
                 remaining = 0.0
-            elif (
-                pinned_before
-                and prev_expires_at is not None
-                and time.time() + remaining - prev_expires_at > SLEEP_TIMER_REPEAT_THRESHOLD
-            ):
-                # a repeat starts the pinned item over under the same queue item id
-                remaining = 0.0
+            elif pinned_before and prev_expires_at is not None:
+                # a repeat starts the pinned item over under the same queue item id, which
+                # moves the stop later by the time the item played
+                repeat_threshold: float = SLEEP_TIMER_REPEAT_THRESHOLD
+                if item_duration := queue.current_item.duration:
+                    repeat_threshold = min(
+                        repeat_threshold, item_duration / 2 / queue.playback_speed
+                    )
+                if time.time() + remaining - prev_expires_at > repeat_threshold:
+                    remaining = 0.0
         expires_at: float | None = None
         if remaining is None:
             if prev_expires_at is None:

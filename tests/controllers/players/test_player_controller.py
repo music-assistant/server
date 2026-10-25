@@ -1169,10 +1169,13 @@ class TestSleepTimer:
         controller.update_sleep_timer("player_1")
         _assert_sleep_timer_armed(mock_mass, controller, 10)
 
-        # a user seek into chapter two moves the stop to its end
+        # a user seek into chapter two arms nothing while the player starts the new stream,
+        # its first position report moves the stop to the end of chapter two
         queue.elapsed_time = 150
         queue.elapsed_time_last_updated = time.time()
         controller.update_sleep_timer("player_1", repin=True)
+        assert player.state.sleep_timer_expires_at is None
+        controller.update_sleep_timer("player_1")
         _assert_sleep_timer_armed(mock_mass, controller, 100)
 
         # the next item started before the timer fired
@@ -1181,20 +1184,26 @@ class TestSleepTimer:
         controller.update_sleep_timer("player_1")
         _assert_sleep_timer_armed(mock_mass, controller, 0)
 
-    def test_repeated_item_ends_the_item_timer(self, mock_mass: MagicMock) -> None:
+    @pytest.mark.parametrize(("duration", "stream_end"), [(600, 595), (10, 8)])
+    def test_repeated_item_ends_the_item_timer(
+        self, mock_mass: MagicMock, duration: int, stream_end: int
+    ) -> None:
         """An item that starts over on repeat stops playback instead of restarting the timer."""
         controller, _, queue = _book_sleep_timer(mock_mass, SleepTimerMode.END_OF_ITEM)
-        # the stream ends at 595 s, short of the 600 s the item claims
-        queue.elapsed_time = 595
+        queue.current_item = _book_item("item_2", chapters=None, duration=duration)
+        queue.playback_speed = 1.0
+        # the stream ends at stream_end, short of the duration the item claims
+        queue.elapsed_time = stream_end
         queue.elapsed_time_last_updated = time.time()
+        controller.update_sleep_timer("player_1", repin=True)
         controller.update_sleep_timer("player_1")
-        _assert_sleep_timer_armed(mock_mass, controller, 2.5)
+        _assert_sleep_timer_armed(mock_mass, controller, duration - stream_end)
 
         # a small position correction backwards only re-times the stop
-        queue.elapsed_time = 592
+        queue.elapsed_time = stream_end - 2
         queue.elapsed_time_last_updated = time.time()
         controller.update_sleep_timer("player_1")
-        _assert_sleep_timer_armed(mock_mass, controller, 4)
+        _assert_sleep_timer_armed(mock_mass, controller, duration - stream_end + 2)
 
         # repeat-one starts the same queue item over
         queue.elapsed_time = 0
