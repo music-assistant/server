@@ -42,9 +42,13 @@ from music_assistant.controllers.music.media.album_tracks import (
     mapped_album_listing,
 )
 from music_assistant.controllers.player_queues.media_resolver import MediaResolver, ResolvedItem
-from music_assistant.controllers.streams.constants import CONF_STREAM_SOURCE_MODE
+from music_assistant.controllers.streams.constants import (
+    CONF_STREAM_SOURCE_MODE,
+    CONF_UPGRADE_BELOW_QUALITY,
+)
 from music_assistant.controllers.streams.stream_sources import (
     StreamSourceMode,
+    UpgradeQuality,
     select_container_source,
 )
 from tests.common import set_music_source_access
@@ -219,6 +223,7 @@ def _album_resolver(
     local: Collection[str] = (),
     gone: dict[str, str] | None = None,
     mode: StreamSourceMode = StreamSourceMode.BEST_QUALITY,
+    upgrade: UpgradeQuality = UpgradeQuality.OFF,
 ) -> MediaResolver:
     """
     Build a bare resolver that plays an album the given listing lists.
@@ -227,6 +232,7 @@ def _album_resolver(
     :param local: The instances that are local sources rather than streaming services.
     :param gone: The instances that are no longer loaded, with the account answering for each.
     :param mode: The source selection mode of the streams settings.
+    :param upgrade: The upgrade quality of the streams settings.
     """
     resolver = _resolver()
     # the album selection setting is not the library tracks only
@@ -234,7 +240,10 @@ def _album_resolver(
     resolver.mass.music.albums.playback_listing = AsyncMock(return_value=listing)  # type: ignore[method-assign]
     resolver.mass.webserver.auth.get_user = AsyncMock(return_value=None)  # type: ignore[method-assign]
     resolver.mass.streams.get_config_value = Mock(  # type: ignore[method-assign]
-        side_effect=lambda key, *_args, **_kwargs: {CONF_STREAM_SOURCE_MODE: mode}[key]
+        side_effect=lambda key, *_args, **_kwargs: {
+            CONF_STREAM_SOURCE_MODE: mode,
+            CONF_UPGRADE_BELOW_QUALITY: upgrade,
+        }[key]
     )
     set_music_source_access(resolver.mass, dict.fromkeys(ALBUM_SOURCES))
 
@@ -444,6 +453,23 @@ async def test_a_track_outside_the_library_plays_its_best_entry_when_ranked_on_i
 
     assert [x.item for x in resolved] == [*tidal, spotify[2]]
     assert [_container(x) for x in resolved] == [ItemMapping.from_item(album)] * 3
+    assert [_pin(x) for x in resolved] == [(None, None)] * 3
+
+
+@pytest.mark.usefixtures("loaded_sources")
+async def test_a_track_outside_the_library_plays_an_entry_above_the_upgrade_quality() -> None:
+    """Ranking every track on its own, a better entry goes before the own account's poorer one."""
+    spotify = [_entry(SPOTIFY, position, HIRES) for position in (1, 2, 3)]
+    tidal = [_entry(TIDAL, position, LOSSY) for position in (1, 2)]
+    listing = album_listing([], [(TIDAL, tidal), (SPOTIFY, spotify)])
+    resolver = _album_resolver(
+        listing, mode=StreamSourceMode.BEST_QUALITY_PER_TRACK, upgrade=UpgradeQuality.LOSSLESS
+    )
+
+    with _sources(preferred=[TIDAL]):
+        resolved = await resolver._resolve_media_items(_album())
+
+    assert [x.item for x in resolved] == spotify
     assert [_pin(x) for x in resolved] == [(None, None)] * 3
 
 
@@ -885,3 +911,64 @@ async def test_a_subfolder_and_a_playlist_in_a_folder_are_the_origin_of_their_ow
         (FILESYSTEM, "Music/Album/01.flac"),
         (FILESYSTEM, "Music/Other/02.flac"),
     ]
+
+
+async def test_an_album_folder_below_the_played_folder_plays_as_part_of_it() -> None:
+    """The tracks of an album folder inside the played folder are played from the folder."""
+    resolver = _resolver()
+    folder = BrowseFolder(
+        item_id="Music/Miles Davis", provider=FILESYSTEM, name="Miles Davis", is_playable=True
+    )
+    album_folder = BrowseFolder(
+        item_id=FOLDER_PATH, provider=FILESYSTEM, name="Kind of Blue", is_playable=True
+    )
+    album = Album(
+        item_id="7",
+        provider="library",
+        name="Kind of Blue",
+        provider_mappings={_mapping(FILESYSTEM, FOLDER_PATH)},
+    )
+    track = _track(f"{FOLDER_PATH}/01.flac", FILESYSTEM)
+    resolver.mass.music.albums.get_library_item_by_prov_id = AsyncMock(  # type: ignore[method-assign]
+        side_effect=lambda item_id, _provider: album if item_id == FOLDER_PATH else None
+    )
+    resolver.mass.music.browse = AsyncMock(  # type: ignore[method-assign]
+        side_effect=lambda path, **_kwargs: [album_folder] if path == folder.path else [track]
+    )
+
+    album_play = await resolver._resolve_media_items(album_folder)
+    folder_play = await resolver._resolve_media_items(folder)
+
+    assert _container(album_play[0]).media_type == MediaType.ALBUM
+    assert [(_container(x).media_type, _container(x).item_id) for x in folder_play] == [
+        (MediaType.FOLDER, "Music/Miles Davis")
+    ]
+    assert [_pin(x) for x in folder_play] == [(FILESYSTEM, f"{FOLDER_PATH}/01.flac")]
+
+
+async def test_an_album_a_folder_lists_plays_as_part_of_the_folder() -> None:
+    """The tracks of an album listed in a played folder keep their pins but are played from it."""
+    resolver = _resolver()
+    folder = BrowseFolder(item_id="albums", provider=TIDAL, name="Albums", is_playable=True)
+    album = Album(
+        item_id="a1", provider=TIDAL, name="Kind of Blue", provider_mappings={_mapping(TIDAL, "a1")}
+    )
+    track = _track("t1", TIDAL)
+    resolver.mass.music.browse = AsyncMock(return_value=[album])  # type: ignore[method-assign]
+    resolver._resolve_album = AsyncMock(  # type: ignore[method-assign]
+        return_value=[
+            ResolvedItem(
+                track,
+                QueueItemOrigin(
+                    container=ItemMapping.from_item(album), provider_instance=TIDAL, item_id="t1"
+                ),
+            )
+        ]
+    )
+
+    resolved = await resolver._resolve_media_items(folder)
+
+    assert [(_container(x).media_type, _container(x).item_id) for x in resolved] == [
+        (MediaType.FOLDER, "albums")
+    ]
+    assert [_pin(x) for x in resolved] == [(TIDAL, "t1")]

@@ -41,7 +41,7 @@ from music_assistant_models.media_items.audio_format import AudioFormat
 from music_assistant_models.player_control import PlayerControl
 from music_assistant_models.streamdetails import StreamDetails
 
-from music_assistant.constants import VERBOSE_LOG_LEVEL
+from music_assistant.constants import CONF_VERIFY_SSL, VERBOSE_LOG_LEVEL
 from music_assistant.controllers.cache import use_cache
 from music_assistant.helpers.datetime import iso_from_utc_timestamp
 from music_assistant.helpers.json import SerializableType
@@ -88,7 +88,6 @@ if TYPE_CHECKING:
 DOMAIN = "hass"
 CONF_URL = "url"
 CONF_AUTH_TOKEN = "token"  # noqa: S105 - config key
-CONF_VERIFY_SSL = "verify_ssl"
 FEATURE_DISCOVERY_TIMEOUT = 30
 STATE_FETCH_TIMEOUT = 30
 STATE_FETCH_BATCH_SIZE = 500
@@ -282,6 +281,9 @@ class HomeAssistantProvider(PluginProvider):
         )
         try:
             await self.hass.connect()
+        except asyncio.CancelledError:
+            await self._cleanup_failed_init()
+            raise
         except BaseHassClientError as err:
             await self._cleanup_failed_init()
             err_msg = str(err) or err.__class__.__name__
@@ -761,6 +763,12 @@ class HomeAssistantProvider(PluginProvider):
             await self.hass.start_listening()
         except BaseHassClientError as err:
             self.logger.warning("Connection to HA lost due to error: %s", err)
+        except Exception as err:
+            # any other error would end the listener without arming the reconnect below,
+            # leaving the provider loaded but permanently disconnected
+            self.logger.warning(
+                "Home Assistant listener stopped unexpectedly: %s", err, exc_info=err
+            )
         if not self._startup_complete:
             return
         self.logger.info("Connection to HA lost. Connection will be automatically retried later.")

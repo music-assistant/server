@@ -201,6 +201,7 @@ FAMILY_POLICIES = (
         write=Capability.EDIT_LIBRARY,
         delete=Capability.DELETE_LIBRARY,
     ),
+    _family("statistics/", read=Capability.QUERY_LIBRARY, readonly=True),
     _family("players/cmd/volume_", control=Capability.CONTROL_VOLUME),
     _family("players/cmd/", control=Capability.CONTROL_PLAYERS),
     _family(

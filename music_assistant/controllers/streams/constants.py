@@ -71,6 +71,16 @@ DSD_BUFFER_MAX_BYTES: Final[dict[str, int]] = {
 # Buffer size for radio streams (short rolling buffer)
 RADIO_BUFFER_SIZE: Final[int] = 15
 
+# Seconds an HLS radio input may read ahead of playback, so a slow playlist reload and
+# segment fetch at each boundary does not starve the player. Must stay below RADIO_BUFFER_SIZE.
+HLS_RADIO_INPUT_BURST: Final[int] = 5
+
+# Generic artwork some radio platforms send in the ICY 'StreamUrl' field when a track has
+# no cover of its own; treated as no image so the artwork lookup and station image apply.
+ICY_PLACEHOLDER_IMAGE_URLS: Final[frozenset[str]] = frozenset(
+    {"https://broadcaster.live365.com/static/assets/img/blankart.jpg"}
+)
+
 
 # Ceiling on how fast stream output is handed to a player, once it has had its opening
 # burst. Music Assistant serves audio for listening, not for collecting: barely above
@@ -167,6 +177,7 @@ CONF_BUFFER_SIZE_DEFAULT: Final[str] = _get_default_buffer_size()
 CONF_ALLOW_CROSSFADE_SAME_ALBUM: Final[str] = "allow_crossfade_same_album"
 CONF_SMART_FADES_LOG_LEVEL: Final[str] = "smart_fades_log_level"
 CONF_STREAM_SOURCE_MODE: Final[str] = "stream_source_mode"
+CONF_UPGRADE_BELOW_QUALITY: Final[str] = "upgrade_below_quality"
 
 # Shortest declared tail overlap (voice over) worth mixing; below this the boundary
 # is a plain cut.
@@ -199,6 +210,10 @@ DEFAULT_PORT: Final[int] = 8097
 # Cache constants for resolved radio URLs
 CACHE_CATEGORY_RESOLVED_RADIO_URL: Final[int] = 100
 CACHE_PROVIDER: Final[str] = "audio"
+# A provider that found no match for a library track is not searched for it again until
+# its cache entry expires.
+CACHE_CATEGORY_NO_TRACK_MATCH: Final[int] = 101
+NO_TRACK_MATCH_EXPIRATION: Final[int] = 24 * 3600
 
 # StreamDetails.data key providers set to opt into the in-band title handoff.
 STREAMDETAILS_INBAND_TITLE_HANDOFF_KEY: Final[str] = "inband_title_handoff"

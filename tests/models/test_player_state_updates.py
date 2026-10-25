@@ -194,6 +194,26 @@ class TestReconcilePositionAnchor:
         assert timestamp == now - 5
         assert not jumped
 
+    def test_resume_adopts_the_fresh_anchor(self) -> None:
+        """Resuming must not extrapolate from a timestamp taken before the stop."""
+        now = time.time()
+        position, timestamp, jumped = player_module._reconcile_position_anchor(
+            59.0, now - 3600, 59.0, now - 0.5, prev_playing=False, new_playing=True
+        )
+        assert position == 59.0
+        assert timestamp == now - 0.5
+        assert not jumped
+
+    def test_pause_adopts_the_paused_anchor(self) -> None:
+        """A paused anchor is read without extrapolation, so it must hold the paused position."""
+        now = time.time()
+        position, timestamp, jumped = player_module._reconcile_position_anchor(
+            0.0, now - 90, 90.0, now, prev_playing=True, new_playing=False
+        )
+        assert position == 90.0
+        assert timestamp == now
+        assert not jumped
+
 
 class TestNativeCurrentMediaPosition:
     """The published position of native current_media and the timestamp it is paired with."""
@@ -350,6 +370,7 @@ class TestStreamMetadataPosition:
         queue_elapsed_time: float,
         queue_last_updated: float,
         media_type: MediaType = MediaType.RADIO,
+        metadata_duration: int | None = None,
     ) -> MockPlayer:
         """Build a playing player whose active queue item carries live stream metadata."""
         queue = PlayerQueue(
@@ -372,6 +393,7 @@ class TestStreamMetadataPosition:
                     media_type=media_type,
                     stream_metadata=StreamMetadata(
                         title="Live Track",
+                        duration=metadata_duration,
                         elapsed_time=metadata_elapsed_time,
                         elapsed_time_last_updated=metadata_last_updated,
                     ),
@@ -416,6 +438,25 @@ class TestStreamMetadataPosition:
         assert player.state.current_media.title == "Live Track"
         assert player.state.current_media.elapsed_time == 300
         assert player.state.current_media.elapsed_time_last_updated == queue_anchor
+
+    def test_a_song_duration_without_its_position_reports_no_position(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """A stream's song duration is not paired with how long the stream has played."""
+        queue_anchor = time.time()
+        player = self._playing_player(
+            mock_mass,
+            metadata_elapsed_time=None,
+            metadata_last_updated=None,
+            queue_elapsed_time=1289.0,
+            queue_last_updated=queue_anchor,
+            metadata_duration=430,
+        )
+
+        assert player.state.current_media is not None
+        assert player.state.current_media.duration == 430
+        assert player.state.current_media.elapsed_time is None
+        assert player.state.current_media.elapsed_time_last_updated is None
 
     def test_a_radio_station_keeps_its_own_position(self, mock_mass: MagicMock) -> None:
         """

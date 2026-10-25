@@ -1081,6 +1081,7 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
             queue.index_in_buffer = index
             # a new load owns nothing yet, so the old item must not vouch for its successor
             queue_data.last_served_item_id = None
+            queue_data.last_requested_item_id = None
             # a player still playing (or paused on) an item will report once more on it, so that
             # one stays served; the rest of the old load is never heard from again, and an idle
             # player has nothing left that could be
@@ -1283,6 +1284,9 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         if source_queue.state == PlaybackState.PLAYING:
             # use the live playback clock while actively playing
             source_resume_pos = int(source_queue.corrected_elapsed_time)
+        elif source_queue.ended:
+            # a queue that played to its end starts over, so it has no position to carry
+            source_resume_pos = 0
         else:
             # when not playing the live clock is stale, so use the stored resume position
             source_resume_pos = int(
@@ -1325,6 +1329,9 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
             self._queue_data[source_queue_id].credited_albums
         )
         target_queue.resume_pos = source_resume_pos
+        target_queue.elapsed_time = source_resume_pos
+        target_queue.elapsed_time_last_updated = time.time()
+        target_queue.ended = source_queue.ended
         target_queue.current_index = source_current_index
         if source_current_item:
             target_queue.current_item = source_current_item
@@ -1335,7 +1342,17 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         for item in source_items:
             item.queue_id = target_queue_id
         self.update_items(target_queue_id, source_items)
-        if auto_play:
+        if (
+            auto_play
+            and not target_queue.ended
+            and (current_item := source_current_item)
+            and self.index_by_id(target_queue_id, current_item.queue_item_id) is not None
+        ):
+            # the target's player can still report the media it played before, which resume()
+            # would read as this item's position: start the item where the source was instead
+            position = 0 if current_item.media_type == MediaType.RADIO else source_resume_pos
+            await self.play_index(target_queue_id, current_item.queue_item_id, position)
+        elif auto_play:
             await self.resume(target_queue_id)
 
     # Interaction with player
@@ -1424,7 +1441,12 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         queue_id = player.player_id
         if (queue := self.get(queue_id)) is None:
             return
-        if not queue.active:
+        # queue.active still holds the source from the last update. Requiring it and the
+        # live source both skips the position jump of joining or leaving a group.
+        if not queue.active or player.state.active_source not in (queue_id, None):
+            return
+        # a stopped player's position is unreliable, keep the last played position
+        if player.state.playback_state not in (PlaybackState.PLAYING, PlaybackState.PAUSED):
             return
         player_elapsed = player.state.corrected_elapsed_time
         if player_elapsed is None:
@@ -1581,15 +1603,15 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
 
     async def release_failed_item_source(self, queue_id: str, queue_item_id: str) -> None:
         """
-        Cancel the still-filling source of an item the player reported it could not play.
+        Cancel the still-filling source of an item the player gave up on.
 
-        A player that gives up on a track moves on to the next one by itself, while the
-        failed track's source keeps filling its buffer and holds the provider stream slot
-        that next track needs. Safe to call for any item: only a source that still holds
+        A player that gives up on a track moves on to another one by itself, while the
+        dropped track's source keeps filling its buffer and holds the provider stream slot
+        that other track needs. Safe to call for any item: only a source that still holds
         a capped provider slot is cancelled.
 
-        :param queue_id: The queue the failed item belongs to.
-        :param queue_item_id: The queue item id the player failed to play.
+        :param queue_id: The queue the item belongs to.
+        :param queue_item_id: The queue item id the player gave up on.
         """
         if (queue_item := self.get_item(queue_id, queue_item_id)) is None:
             return
@@ -1926,7 +1948,9 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
             return next_item
         return None
 
-    def is_current_window_item(self, queue_id: str, queue_item_id: str) -> bool:
+    def is_current_window_item(
+        self, queue_id: str, queue_item_id: str, requested_after: str | None = None
+    ) -> bool:
         """
         Return whether the item sits at or right around the queue's playhead.
 
@@ -1936,6 +1960,7 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
 
         :param queue_id: The queue to check against.
         :param queue_item_id: The queue item id the player asked for.
+        :param requested_after: The queue item id the player asked for before this one.
         """
         queue = self.get(queue_id)
         if queue is None:
@@ -1951,11 +1976,16 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         # get_next_item accounts for repeat mode and unavailable items. Measured from the
         # item the player last fetched, since that is the one it asks to follow (a player
         # reading ahead of our playhead is otherwise refused the track it needs next), and
-        # from the playhead itself: a player that gave up on a track before its stream
-        # delivered a byte asks for the one after it, which no fetch ever recorded. A
-        # served item the queue no longer holds (a clear or a replace) has no next item
-        served_item_id = self._queue_data[queue_id].last_served_item_id
-        for from_item in (served_item_id, queue.current_index):
+        # from the item it last asked for and the playhead itself: a player that gave up on
+        # a track before its stream delivered a byte asks for the one after it, which no
+        # fetch ever recorded. An item the queue no longer holds (a clear or a replace) has
+        # no next item
+        from_items = [self._queue_data[queue_id].last_served_item_id, queue.current_index]
+        # the item asked for before only vouches for its successor while it is itself still
+        # in the window: a queue edit may have moved it away while its request was set up
+        if requested_after is not None and self.is_current_window_item(queue_id, requested_after):
+            from_items.append(requested_after)
+        for from_item in from_items:
             if from_item is None:
                 continue
             next_item = self.get_next_item(queue_id, from_item)
