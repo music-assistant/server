@@ -593,6 +593,39 @@ async def test_settle_task_bails_when_the_queue_is_removed_while_waiting(
     tracker._finish_queue.assert_not_called()
 
 
+@pytest.mark.parametrize(("next_index", "resumes"), [(1, True), (0, False)])
+async def test_settle_task_resumes_only_for_an_item_added_while_idle(
+    next_index: int, resumes: bool
+) -> None:
+    """A repeat of the item that just stopped, as a sleep timer leaves it, is no added item."""
+    tracker = _tracker()
+    tracker.play_index = AsyncMock()
+    tracker.get_next_item.return_value = SimpleNamespace(queue_item_id="next")
+    tracker.index_by_id.return_value = next_index
+    prev_state, new_state = _stop_states(
+        SimpleNamespace(media_type=MediaType.TRACK, streamdetails=None, duration=3600)
+    )
+    queue = cast(
+        "PlayerQueue",
+        SimpleNamespace(
+            queue_id="q1",
+            next_item=None,
+            flow_mode=False,
+            state=PlaybackState.IDLE,
+            current_index=0,
+            display_name="Q1",
+        ),
+    )
+    PlaybackTrackerMixin._handle_end_of_queue(tracker, queue, prev_state, new_state)
+    settle_coro = tracker.mass.create_task.call_args.args[0]
+    with patch(
+        "music_assistant.controllers.player_queues.playback_tracker.asyncio.sleep", AsyncMock()
+    ):
+        await settle_coro
+
+    assert tracker.play_index.await_count == (1 if resumes else 0)
+
+
 async def test_settle_task_skips_finish_when_the_queue_vanishes_during_fetch() -> None:
     """A failed dynamic fetch on a removed queue must not mark anything as ended."""
     tracker = _tracker()

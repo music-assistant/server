@@ -1728,7 +1728,10 @@ code {{ background: #f5f5f5; padding: 2px 6px; border-radius: 3px; word-break: b
             next_item = self.provider.mass.player_queues.get_next_item(
                 queue.queue_id, media.queue_item_id
             )
-            if next_item is None:
+            # a sleep timer that stops at the end of this item must not see it advance
+            if next_item is None or self.provider.mass.players.sleep_timer_ends_item(
+                queue.queue_id, queue.current_item
+            ):
                 # Report idle like a speaker reaching end-of-file: the queue controller
                 # decides whether the queue resumes, refills or ends.
                 player.mark_idle()

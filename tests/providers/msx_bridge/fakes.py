@@ -87,6 +87,7 @@ class FakeMass:
             all=Mock(return_value=[]),
             all_players=Mock(return_value=[]),
             iter_players=Mock(return_value=[]),
+            sleep_timer_ends_item=Mock(return_value=False),
         )
         self.verify_event_loop_thread = Mock()
         self.create_task = Mock()

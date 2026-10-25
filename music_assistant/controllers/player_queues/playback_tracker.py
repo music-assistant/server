@@ -530,7 +530,8 @@ class PlaybackTrackerMixin(_PlayerQueuesBase):
                     next_item := self.get_next_item(queue.queue_id, queue.current_index)
                 ):
                     next_index = self.index_by_id(queue.queue_id, next_item.queue_item_id)
-                    if next_index is not None:
+                    # a repeat of the item that just stopped was not added while idle
+                    if next_index is not None and next_index != queue.current_index:
                         self.logger.info(
                             "Items added to queue while idle, resuming playback for %s",
                             queue.display_name,

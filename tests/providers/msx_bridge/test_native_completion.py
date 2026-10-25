@@ -20,14 +20,17 @@ if TYPE_CHECKING:
 
 
 @pytest.mark.parametrize(
-    ("repeat", "index", "expected"),
+    ("repeat", "index", "timer_ends_item", "expected"),
     [
-        (RepeatMode.OFF, 0, 1),
-        (RepeatMode.OFF, 1, None),
-        (RepeatMode.ONE, 0, 0),
-        (RepeatMode.ONE, 1, 1),
-        (RepeatMode.ALL, 0, 1),
-        (RepeatMode.ALL, 1, 0),
+        (RepeatMode.OFF, 0, False, 1),
+        (RepeatMode.OFF, 1, False, None),
+        (RepeatMode.ONE, 0, False, 0),
+        (RepeatMode.ONE, 1, False, 1),
+        (RepeatMode.ALL, 0, False, 1),
+        (RepeatMode.ALL, 1, False, 0),
+        # a sleep timer that stops at the end of the item ends playback there
+        (RepeatMode.OFF, 0, True, None),
+        (RepeatMode.ONE, 0, True, None),
     ],
 )
 async def test_natural_completion_uses_real_queue_repeat_selection(
@@ -36,6 +39,7 @@ async def test_natural_completion_uses_real_queue_repeat_selection(
     player: MSXPlayer,
     repeat: RepeatMode,
     index: int,
+    timer_ends_item: bool,
     expected: int | None,
 ) -> None:
     """Duplicate callbacks never repeat a transition, including repeat-one cycles."""
@@ -55,8 +59,8 @@ async def test_natural_completion_uses_real_queue_repeat_selection(
         state=PlaybackState.PLAYING,
     )
     controller = PlayerQueuesController.__new__(PlayerQueuesController)
-    controller.mass = Mock()
-    controller.mass.players.sleep_timer_ends_item.return_value = False
+    controller.mass = mass_mock
+    mass_mock.players.sleep_timer_ends_item.return_value = timer_ends_item
     controller._queue_data = {player.player_id: PlayerQueueData(queue=queue, items=items)}
     mass_mock.players.get_player.return_value = player
     mass_mock.player_queues.get_next_item = controller.get_next_item
