@@ -9,7 +9,7 @@ from abc import ABCMeta, abstractmethod
 from collections.abc import Iterable
 from contextlib import suppress
 from contextvars import ContextVar
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, Final, Literal, TypeVar, cast, final, overload
 
@@ -1726,6 +1726,65 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         db_id = int(item_id)  # ensure integer
         if not await self._remove_provider_images(db_id, provider_instance_id, set(paths)):
             return
+        if not SUPPRESS_MEDIA_ITEM_UPDATES.get():
+            item = await self.get_library_item(db_id)
+            self.mass.signal_event(EventType.MEDIA_ITEM_UPDATED, item.uri, item)
+
+    @final
+    async def remove_all_provider_images(self, provider_instance_id: str) -> None:
+        """
+        Remove all images of a provider from the library items of this media type.
+
+        :param provider_instance_id: The provider instance the images belong to.
+        """
+        query = (
+            f"SELECT item_id FROM {self.db_table} WHERE EXISTS ("
+            f"SELECT 1 FROM json_each({self.db_table}.metadata, '$.images') "
+            "WHERE json_extract(value, '$.provider') = :provider_instance)"
+        )
+        params = {"provider_instance": provider_instance_id}
+        for db_row in await self.mass.music.database.get_rows_from_query(query, params, limit=0):
+            db_id = int(db_row["item_id"])
+            if (
+                await self._remove_provider_images(db_id, provider_instance_id)
+                and not SUPPRESS_MEDIA_ITEM_UPDATES.get()
+            ):
+                item = await self.get_library_item(db_id)
+                self.mass.signal_event(EventType.MEDIA_ITEM_UPDATED, item.uri, item)
+
+    @final
+    async def replace_metadata(
+        self,
+        item_id: str | int,
+        values: Mapping[str, Any] | None = None,
+        provider_images: Mapping[str, Iterable[MediaItemImage]] | None = None,
+    ) -> None:
+        """
+        Overwrite metadata values and provider images stored for a library item.
+
+        A library update only fills in missing values and adds images; this replaces them.
+
+        :param item_id: The library item ID.
+        :param values: Metadata field names mapped to the values that replace the stored ones.
+        :param provider_images: Provider instance ids mapped to the images that replace
+            the images stored for that provider (an empty iterable removes them).
+        """
+        db_id = int(item_id)  # ensure integer
+        metadata = await self._get_stored_metadata(db_id)
+        images = list(metadata.images or [])
+        for provider_instance_id, given in (provider_images or {}).items():
+            new_images = list(given)
+            if [img for img in images if img.provider == provider_instance_id] != new_images:
+                images = [img for img in images if img.provider != provider_instance_id]
+                images.extend(new_images)
+        updated = replace(metadata, **(values or {}), images=UniqueList(images) or None)
+        if updated == metadata:
+            return
+        await self.mass.music.database.update(
+            self.db_table,
+            {"item_id": db_id},
+            {"metadata": serialize_to_json(updated)},
+        )
         if not SUPPRESS_MEDIA_ITEM_UPDATES.get():
             item = await self.get_library_item(db_id)
             self.mass.signal_event(EventType.MEDIA_ITEM_UPDATED, item.uri, item)

@@ -124,6 +124,7 @@ async def test_stream_details_wire_the_live_metadata(provider: FipProvider) -> N
     assert details.path == "https://icecast.radiofrance.fr/fipsacrefrancais-hifi.aac"
     assert details.stream_type == StreamType.HTTP
     assert details.audio_format.content_type == ContentType.AAC
+    assert details.audio_format.sample_rate == 48000
     assert details.stream_metadata_update_callback == provider._update_stream_metadata
     assert details.stream_metadata_update_interval == STREAM_METADATA_UPDATE_INTERVAL
     assert details.stream_metadata is not None

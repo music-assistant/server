@@ -103,8 +103,11 @@ class FipProvider(MusicProvider):
         stream_details = StreamDetails(
             item_id=item_id,
             provider=self.instance_id,
+            # Every hifi mount is 48 kHz. Left out, the format says 44.1 kHz, and the
+            # stream is resampled down when decoded and up again for a 48 kHz player.
             audio_format=AudioFormat(
                 content_type=ContentType.AAC,
+                sample_rate=48000,
                 channels=2,
             ),
             media_type=MediaType.RADIO,

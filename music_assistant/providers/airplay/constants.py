@@ -52,7 +52,6 @@ class ClockReadiness(StrEnum):
     UNREPORTED = "unreported"
 
 
-CONF_PASSWORD: Final[str] = "password"  # noqa: S105 - config key
 # Storage-only marker (no config entry) set when the device rejected the stored
 # password, so the player keeps asking for setup across restarts until a working
 # password is entered.
