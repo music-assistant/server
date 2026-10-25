@@ -529,6 +529,26 @@ async def test_external_http_service_throttles_transient_statuses(
         assert client.throttler.cooldown_remaining >= 36
 
 
+async def test_apple_music_accepts_text_javascript_json_response() -> None:
+    """ITunes search JSON remains readable when served with its text/javascript MIME type."""
+    mass = MagicMock()
+    result = {"resultCount": 0, "results": []}
+    response = MagicMock(status=200, headers={"Content-Type": "text/javascript"})
+    response.json = AsyncMock(return_value=result)
+    request_context = MagicMock()
+    request_context.__aenter__ = AsyncMock(return_value=response)
+    request_context.__aexit__ = AsyncMock(return_value=False)
+    client = _ShareHTTPClient(mass, "Apple Music")
+
+    with (
+        patch.object(mass.http_session, "get", MagicMock(return_value=request_context)),
+        patch.object(client.throttler.throttler, "acquire", AsyncMock(return_value=0)),
+    ):
+        assert await client.get_json("https://itunes.apple.com/search") == result
+
+    response.json.assert_awaited_once_with(content_type=None)
+
+
 async def test_deezer_quota_json_error_is_rate_limited() -> None:
     """Treat Deezer's quota error response as a rate limit even with HTTP 200."""
     mass = MagicMock()
@@ -604,18 +624,22 @@ async def test_ytmusic_enrichment_rejects_unrelated_search_results(include_match
     wrong_title = MagicMock(name="wrong")
     wrong_title.name = "Different song"
     wrong_title.artist_str = "Artist"
+    wrong_title.version = ""
     wrong_title.provider_mappings = [MagicMock(provider_domain="ytmusic", item_id="wrong")]
     wrong_artist = MagicMock()
     wrong_artist.name = "Song"
     wrong_artist.artist_str = "Other performer"
+    wrong_artist.version = ""
     wrong_artist.provider_mappings = [MagicMock(provider_domain="ytmusic", item_id="wrong-artist")]
     match = MagicMock()
     match.name = "Song"
     match.artist_str = "Artist"
+    match.version = ""
     match.provider_mappings = [MagicMock(provider_domain="ytmusic", item_id="correct")]
     fuzzy_match = MagicMock()
     fuzzy_match.name = "Sog"
     fuzzy_match.artist_str = "Artist"
+    fuzzy_match.version = ""
     fuzzy_match.provider_mappings = [MagicMock(provider_domain="ytmusic", item_id="fuzzy")]
     results = [wrong_title, wrong_artist, *([fuzzy_match, match] if include_match else [])]
     _mass(provider).music.search = AsyncMock(return_value=MagicMock(tracks=results))
@@ -627,6 +651,34 @@ async def test_ytmusic_enrichment_rejects_unrelated_search_results(include_match
         assert refs["ytmusic"] == "/watch?v=correct"
     else:
         assert "ytmusic" not in refs
+
+
+@pytest.mark.parametrize(
+    ("candidate_title", "candidate_version", "expected_link"),
+    [
+        ("Song", "Live", None),
+        ("Song (Live)", "", None),
+        ("Song", "", "/watch?v=candidate"),
+    ],
+)
+async def test_ytmusic_enrichment_requires_version_match_for_unversioned_share(
+    candidate_title: str, candidate_version: str, expected_link: str | None
+) -> None:
+    """Unversioned shares only use unversioned YouTube Music candidates."""
+    provider = _provider()
+    candidate = MagicMock()
+    candidate.name = candidate_title
+    candidate.artist_str = "Artist"
+    candidate.version = candidate_version
+    candidate.provider_mappings = [MagicMock(provider_domain="ytmusic", item_id="candidate")]
+    _mass(provider).music.search = AsyncMock(
+        return_value=MagicMock(tracks=[candidate], albums=[], artists=[])
+    )
+    refs = {"deezer": "/track/1", "apple_music": "/album/1?i=2"}
+
+    await provider._link_enricher.enrich(refs, None, "Song", "Artist")
+
+    assert refs.get("ytmusic") == expected_link
 
 
 @pytest.mark.parametrize(
@@ -669,6 +721,43 @@ def test_link_enrichment_rejects_known_different_service_version() -> None:
     }
 
     assert ShareLinkEnricher._find_matching_track_url([result], "Song", "Artist", "Live") is None
+
+
+@pytest.mark.parametrize(
+    ("result", "expected_url"),
+    [
+        (
+            {
+                "trackName": "Song (Live)",
+                "artistName": "Artist",
+                "trackViewUrl": "https://music.apple.com/live",
+            },
+            None,
+        ),
+        (
+            {
+                "trackName": "Song",
+                "title_version": "Live",
+                "artistName": "Artist",
+                "link": "https://www.deezer.com/live",
+            },
+            None,
+        ),
+        (
+            {
+                "trackName": "Song",
+                "artistName": "Artist",
+                "trackViewUrl": "https://music.apple.com/standard",
+            },
+            "https://music.apple.com/standard",
+        ),
+    ],
+)
+def test_link_enrichment_requires_version_match_for_unversioned_share(
+    result: dict[str, str], expected_url: str | None
+) -> None:
+    """Unversioned shares reject known service versions but accept unknown ones."""
+    assert ShareLinkEnricher._find_matching_track_url([result], "Song", "Artist") == expected_url
 
 
 @pytest.mark.parametrize(
@@ -816,6 +905,7 @@ async def test_enrich_prefers_apple_music_catalog_id_lookup() -> None:
     track = MagicMock()
     track.media_type = MediaType.TRACK
     track.name = "A Little Bit Off"
+    track.version = ""
     track.artist_str = "Five Finger Death Punch"
     track.album = None
     track.image = None
