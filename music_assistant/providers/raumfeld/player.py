@@ -1140,6 +1140,12 @@ class RaumfeldPlayer(Player):
                 play_mode=state.get("CurrentPlayMode"),
             )
         elif not active:
+            if (cast := self._cast_playback()) is not None:
+                # the host keeps the room flagged for Spotify Connect after the session
+                # ended, while an app casts to the speaker past it
+                self._show_cast_playback(cast)
+                self.update_state()
+                return
             self._clear_external()
         if position:
             self._apply_position(position, self._attr_playback_state == PlaybackState.PLAYING)

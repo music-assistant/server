@@ -1334,10 +1334,26 @@ def _renderer_state(transport_state: str) -> dict[str, str]:
 
 
 async def _poll_renderer(
-    player: RaumfeldPlayer, state: dict[str, str] | None, rel_time: str
+    player: RaumfeldPlayer,
+    state: dict[str, str] | None,
+    rel_time: str,
+    links: list[MagicMock] | None = None,
 ) -> None:
-    """Run one room-renderer poll on the given LastChange state and position."""
+    """
+    Run one room-renderer poll on the given LastChange state and position.
+
+    :param player: The room's player.
+    :param state: The LastChange state the room's renderer reports.
+    :param rel_time: The position the room's renderer reports.
+    :param links: The protocol outputs linked to the player, none by default.
+    """
     with (
+        patch.object(
+            RaumfeldPlayer,
+            "linked_output_protocols",
+            new_callable=PropertyMock,
+            return_value=links or [],
+        ),
         patch.object(player, "update_state"),
         patch.object(player, "_update_volume", AsyncMock()),
         patch.object(player, "_read_room_state", AsyncMock(return_value=state)),
@@ -2205,6 +2221,20 @@ async def test_a_source_after_a_cast_app_takes_its_commands_back_to_the_host() -
     player._set_external(_SPOTIFY_META, "Pause,Next,Seek", 315, via_room=True)
 
     assert player._external_cast_id is None
+
+
+async def test_a_cast_app_after_spotify_connect_shows_despite_the_stale_flag() -> None:
+    """A room still flagged for Spotify Connect, whose renderer stopped, shows a cast app."""
+    player, _ = _external_player()
+    player._set_external(_SPOTIFY_META, "Pause,Next,Seek", 315, via_room=True)
+    _casting(player, PlaybackState.PLAYING)
+    links = [MagicMock(protocol_domain="chromecast", output_protocol_id="cast_bar")]
+
+    await _poll_renderer(player, _renderer_state("STOPPED"), "0:00:00", links)
+
+    assert player._attr_playback_state == PlaybackState.PLAYING
+    assert player._attr_active_source == "chromecast_tunein"
+    assert player._external_cast_id == "cast_bar"
 
 
 async def test_a_stop_of_a_cast_app_pauses_it_on_the_chromecast_output() -> None:
