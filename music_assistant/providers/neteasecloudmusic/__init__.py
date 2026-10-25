@@ -231,6 +231,7 @@ class NcmApiClient:
         if params:
             req_params.update(params)
         headers: dict[str, str] = {
+            # mimics a browser on the NetEase Cloud Music website (#3640)
             "User-Agent": (
                 "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
                 "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"

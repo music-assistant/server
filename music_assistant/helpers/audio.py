@@ -26,6 +26,7 @@ from music_assistant_models.streamdetails import MultiPartPath
 
 from music_assistant.constants import (
     MASS_LOGGER_NAME,
+    MASS_USER_AGENT,
     VERBOSE_LOG_LEVEL,
 )
 from music_assistant.helpers.json import JSON_DECODE_EXCEPTIONS, json_loads
@@ -41,7 +42,7 @@ if TYPE_CHECKING:
 
 LOGGER = logging.getLogger(f"{MASS_LOGGER_NAME}.helpers.audio")
 
-HTTP_HEADERS = {"User-Agent": "Lavf/60.16.100.MusicAssistant"}
+HTTP_HEADERS = {"User-Agent": MASS_USER_AGENT}
 HTTP_HEADERS_ICY = {**HTTP_HEADERS, "Icy-MetaData": "1"}
 
 SLOW_PROVIDERS = ("tidal", "ytmusic", "apple_music")

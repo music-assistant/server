@@ -20,6 +20,7 @@ if TYPE_CHECKING:
     from aiohttp import ClientResponse
     from music_assistant_models.streamdetails import StreamDetails
 
+# mimics a browser on the Deezer web player, whose private gw-light API this uses (#625)
 USER_AGENT_HEADER = (
     "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) "
     "Chrome/79.0.3945.130 Safari/537.36"
