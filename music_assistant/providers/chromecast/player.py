@@ -801,7 +801,14 @@ class ChromecastPlayer(Player):
             app_name = self.cc.app_display_name or "Unknown App"
             app_id = app_name.lower().replace(" ", "_")
             self._attr_active_source = app_id
-            has_controls = app_name in ("Spotify", "Qobuz", "YouTube Music", "Deezer", "Tidal")
+            # apps name themselves in their own spelling ("TIDAL")
+            has_controls = app_name.lower() in (
+                "spotify",
+                "qobuz",
+                "youtube music",
+                "deezer",
+                "tidal",
+            )
             if not any(source.id == app_id for source in self._attr_source_list):
                 self._attr_source_list.append(
                     PlayerSource(

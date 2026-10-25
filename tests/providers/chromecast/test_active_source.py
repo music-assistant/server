@@ -80,3 +80,18 @@ def test_foreign_cast_app_takes_over_the_ma_queue() -> None:
     player.update_state(signal_event=False)
 
     assert player.state.active_source == "bbc_sounds"
+
+
+def test_a_known_app_in_its_own_spelling_gets_controls() -> None:
+    """An app that names itself in its own spelling ("TIDAL") is offered its controls."""
+    fake = _fake_media_receiver_player()
+    fake.cc = MagicMock(app_id="tidal_app", app_display_name="TIDAL")
+
+    ChromecastPlayer._handle_media_status(
+        fake, _media_status(playing=True, content_id="tidal://track/1")
+    )
+
+    source = next(source for source in fake._attr_source_list if source.id == "tidal")
+    assert source.name == "TIDAL"
+    assert source.can_play_pause
+    assert source.can_next_previous
