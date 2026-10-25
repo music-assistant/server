@@ -421,6 +421,23 @@ async def test_a_transport_action_the_renderer_rejected_is_kept() -> None:
     get_action.assert_awaited_once()
 
 
+async def test_actions_of_a_renderer_that_moved_are_dropped() -> None:
+    """A renderer back on another URL leaves its old actions behind; the zone's stay."""
+    player = _room_player()
+    player._provider.get_zone_for_room.return_value = ["Bar"]  # type: ignore[attr-defined]
+    player._provider.zone_location.return_value = _ZONE  # type: ignore[attr-defined]
+    moved = "http://192.168.1.42:61234/renderer.xml"
+    with patch(
+        "music_assistant.providers.raumfeld.player.hassfeld_upnp.get_dlna_action",
+        AsyncMock(return_value=_upnp_action(return_value={})),
+    ):
+        await player._transport_action(_RENDERER, "Stop")
+        await player._transport_action(_ZONE, "Stop")
+        player._provider.room_renderer_location.return_value = moved  # type: ignore[attr-defined]
+        await player._transport_action(moved, "Stop")
+    assert set(player._transport_actions) == {(_ZONE, "Stop"), (moved, "Stop")}
+
+
 async def test_mute_goes_to_the_rooms_own_renderer() -> None:
     """Muting addresses the room's renderer, so it works without a zone and for one room."""
     player = _room_player()

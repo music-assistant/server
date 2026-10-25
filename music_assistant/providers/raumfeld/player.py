@@ -1176,6 +1176,13 @@ class RaumfeldPlayer(Player):
             action = await hassfeld_upnp.get_dlna_action(
                 location, SERVICE_AV_TRANSPORT, action_name, session=self.mass.http_session
             )
+            # a reconnected renderer or a new zone leaves its old URL behind, never called again
+            in_use = self._renderer_locations() | {location}
+            self._transport_actions = {
+                cached: kept
+                for cached, kept in self._transport_actions.items()
+                if cached[0] in in_use
+            }
             self._transport_actions[key] = action
         call: dict[str, Any] = {"InstanceID": 0, **arguments}
         try:
@@ -1186,6 +1193,13 @@ class RaumfeldPlayer(Player):
             self._transport_actions.pop(key, None)
             raise
         return cast("dict[str, str]", response)
+
+    def _renderer_locations(self) -> set[str]:
+        """Return the device description URLs of the room's renderer and of its zone."""
+        locations = {self.raumfeld.room_renderer_location(self.room)}
+        if (zone := self.raumfeld.get_zone_for_room(self.room)) is not None:
+            locations.add(self.raumfeld.zone_location(zone))
+        return {location for location in locations if location}
 
     def _set_external(
         self,
