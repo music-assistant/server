@@ -167,14 +167,15 @@ def compact_artwork_ref(url: str) -> str | None:
 
 def expand_artwork_ref(value: str) -> str | None:
     """Expand a short artwork host code into a validated HTTPS URL."""
-    parts = value.split(":", maxsplit=2)
-    if len(parts) == 2:
-        host_code, path_and_query = parts
-        subdomain = ""
-    elif len(parts) == 3:
-        host_code, subdomain, path_and_query = parts
-    else:
+    host_code, separator, remainder = value.partition(":")
+    if not separator:
         return None
+    subdomain = ""
+    path_and_query = remainder
+    if not remainder.startswith("/"):
+        subdomain, separator, path_and_query = remainder.partition(":")
+        if not separator:
+            return None
     suffix = ARTWORK_SUFFIX_BY_CODE.get(host_code)
     if not suffix or not path_and_query.startswith("/"):
         return None

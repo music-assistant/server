@@ -235,6 +235,52 @@ async def test_text_search_ignores_unrelated_first_result(
     assert result is (matching if include_match else None)
 
 
+@pytest.mark.parametrize(
+    ("media_type", "results_field"), [(MediaType.TRACK, "tracks"), (MediaType.ALBUM, "albums")]
+)
+async def test_text_search_prefers_exact_title_over_earlier_fuzzy_match(
+    media_type: MediaType, results_field: str
+) -> None:
+    """Exact title matches outrank earlier fuzzy candidates from global search."""
+    provider = _provider()
+    fuzzy = MagicMock()
+    fuzzy.name = "Song 1"
+    fuzzy.artist_str = "Artist"
+    fuzzy.version = ""
+    exact = MagicMock()
+    exact.name = "Song 2"
+    exact.artist_str = "Artist"
+    exact.version = ""
+    results = MagicMock(tracks=[], albums=[], artists=[])
+    setattr(results, results_field, [fuzzy, exact])
+    _mass(provider).music.search = AsyncMock(return_value=results)
+    payload = SharePayload(
+        type=cast("Literal['track', 'album']", media_type.value),
+        title="Song 2",
+        artist="Artist",
+    )
+
+    assert await provider._resolve_media_item(payload) is exact
+
+
+async def test_resolve_matches_comma_and_slash_artist_credits() -> None:
+    """Text resolution accepts equivalent multi-artist credit separators."""
+    provider = _provider()
+    candidate = MagicMock()
+    candidate.name = "Song"
+    candidate.artist_str = "Drake/Future"
+    candidate.version = ""
+    _mass(provider).music.search = AsyncMock(
+        return_value=MagicMock(tracks=[candidate], albums=[], artists=[])
+    )
+
+    result = await provider._resolve_media_item(
+        SharePayload(type="track", title="Song", artist="Drake, Future")
+    )
+
+    assert result is candidate
+
+
 async def test_resolve_falls_back_to_search_after_external_id_miss() -> None:
     """A provider-agnostic title search remains the fallback when IDs do not match."""
     provider = _provider()
@@ -301,6 +347,7 @@ async def test_build_album_payload_includes_barcode_mbid_and_provider_link() -> 
     album = MagicMock()
     album.media_type = MediaType.ALBUM
     album.name = "Album"
+    album.version = "Deluxe"
     album.artist_str = "Artist"
     album.image = None
     album.provider_mappings = [MagicMock(provider_domain="spotify", item_id="album/123")]
@@ -312,9 +359,32 @@ async def test_build_album_payload_includes_barcode_mbid_and_provider_link() -> 
     payload = await provider._build_payload(album)
 
     assert payload.type == "album"
+    assert payload.version == "Deluxe"
     assert payload.mbid == "album-mbid"
     assert payload.barcode == BARCODE
     assert payload.provider_refs == {"spotify": "/album/album%2F123"}
+
+
+async def test_album_search_prefers_matching_version_and_allows_unknown_version() -> None:
+    """Album fallback selects the requested edition, treating absent versions as unknown."""
+    provider = _provider()
+    standard = MagicMock()
+    standard.name = "Album"
+    standard.artist_str = "Artist"
+    standard.version = "Standard"
+    deluxe = MagicMock()
+    deluxe.name = "Album"
+    deluxe.artist_str = "Artist"
+    deluxe.version = "Deluxe"
+    results = MagicMock(tracks=[], albums=[standard, deluxe], artists=[])
+    _mass(provider).music.search = AsyncMock(return_value=results)
+    payload = SharePayload(type="album", title="Album", artist="Artist", version="Deluxe")
+
+    assert await provider._resolve_media_item(payload) is deluxe
+
+    deluxe.version = ""
+    results.albums = [deluxe]
+    assert await provider._resolve_media_item(payload) is deluxe
 
 
 async def test_playlist_export_includes_all_tracks_duplicates_and_mapped_album_names() -> None:
@@ -464,27 +534,62 @@ async def test_ytmusic_enrichment_rejects_unrelated_search_results(include_match
         assert "ytmusic" not in refs
 
 
-def test_link_enrichment_requires_matching_track_version() -> None:
-    """Text-search links are only retained when the service reports the same version."""
-    results = [
-        {
-            "trackName": "Song",
-            "artistName": "Artist",
-            "trackViewUrl": "https://example.com/studio",
-            "version": "Studio",
-        },
-        {
-            "trackName": "Song",
-            "artistName": "Artist",
-            "trackViewUrl": "https://example.com/live",
-            "version": "Live",
-        },
-    ]
-
-    assert ShareLinkEnricher._find_matching_track_url(results, "Song", "Artist", "Live") == (
-        "https://example.com/live"
+@pytest.mark.parametrize(
+    ("result", "expected_url"),
+    [
+        (
+            {
+                "trackName": "Song (Live)",
+                "artistName": "Artist",
+                "trackViewUrl": "https://music.apple.com/live",
+            },
+            "https://music.apple.com/live",
+        ),
+        (
+            {
+                "title": "Song (Live)",
+                "artist": {"name": "Artist"},
+                "title_version": "Live",
+                "link": "https://www.deezer.com/live",
+            },
+            "https://www.deezer.com/live",
+        ),
+    ],
+)
+def test_link_enrichment_normalizes_service_title_and_version(
+    result: dict[str, object], expected_url: str
+) -> None:
+    """Raw Deezer and iTunes title/version shapes match normalized share metadata."""
+    assert ShareLinkEnricher._find_matching_track_url([result], "Song", "Artist", "Live") == (
+        expected_url
     )
-    assert ShareLinkEnricher._find_matching_track_url(results[:1], "Song", "Artist", "Live") is None
+
+
+def test_link_enrichment_rejects_known_different_service_version() -> None:
+    """A known studio result must not supply the link for a live recording."""
+    result = {
+        "trackName": "Song (Studio)",
+        "artistName": "Artist",
+        "trackViewUrl": "https://music.apple.com/studio",
+    }
+
+    assert ShareLinkEnricher._find_matching_track_url([result], "Song", "Artist", "Live") is None
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://archive.org/download/album/cover:front.jpg",
+        "https://archive.org/download/album/cover.jpg?part=front:2",
+        "https://ia800.archive.org/download/album/cover:front.jpg?format=full:2",
+    ],
+)
+def test_artwork_refs_roundtrip_colons_in_path_and_query(url: str) -> None:
+    """Artwork paths and queries retain colons when compacted and expanded."""
+    ref = compact_artwork_ref(url)
+
+    assert ref is not None
+    assert expand_artwork_ref(ref) == url
 
 
 def test_build_provider_links_keeps_apple_music_canonical_url() -> None:
