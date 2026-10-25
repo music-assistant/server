@@ -129,6 +129,7 @@ from .constants import (
     PLAYER_LOCK_SLOW_THRESHOLD,
     PLAYER_LOCK_STRICT_TIMEOUT,
     PLAYER_LOCK_TIMEOUT,
+    SLEEP_TIMER_REPEAT_THRESHOLD,
     PlayerLockPurpose,
 )
 from .helpers import (
@@ -715,6 +716,7 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
             return
         if repin:
             self._sleep_timer_targets.pop(player_id, None)
+        prev_expires_at = player.sleep_timer_expires_at
         # seconds until the stop, None while waiting for playback
         remaining: float | None = None
         if queue.state == PlaybackState.IDLE:
@@ -723,6 +725,7 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         elif queue.state == PlaybackState.PLAYING and queue.current_item:
             elapsed_time = queue.corrected_elapsed_time
             target = self._sleep_timer_targets.get(player_id)
+            pinned_before = target is not None
             if target is None:
                 stop_position = get_sleep_timer_stop_position(
                     mode, queue.current_item, elapsed_time
@@ -733,12 +736,17 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
                     return
                 target = SleepTimerTarget(queue.current_item.queue_item_id, stop_position)
                 self._sleep_timer_targets[player_id] = target
+            remaining = max(0.0, (target.stop_position - elapsed_time) / queue.playback_speed)
             if target.queue_item_id != queue.current_item.queue_item_id:
                 # the pinned item played out before the timer fired
                 remaining = 0.0
-            else:
-                remaining = max(0.0, (target.stop_position - elapsed_time) / queue.playback_speed)
-        prev_expires_at = player.sleep_timer_expires_at
+            elif (
+                pinned_before
+                and prev_expires_at is not None
+                and time.time() + remaining - prev_expires_at > SLEEP_TIMER_REPEAT_THRESHOLD
+            ):
+                # a repeat starts the pinned item over under the same queue item id
+                remaining = 0.0
         expires_at: float | None = None
         if remaining is None:
             if prev_expires_at is None:

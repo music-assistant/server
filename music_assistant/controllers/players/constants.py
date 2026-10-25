@@ -10,6 +10,10 @@ PLAYER_LOCK_SLOW_THRESHOLD: Final = 5
 PLAYER_LOCK_TIMEOUT: Final = 30
 PLAYER_LOCK_STRICT_TIMEOUT: Final = 120
 
+# An END_OF_ITEM/END_OF_CHAPTER sleep timer whose stop moves later by more than this many
+# seconds without a re-pin has seen its item start over (repeat), so it stops playback.
+SLEEP_TIMER_REPEAT_THRESHOLD: Final = 10
+
 
 class PlayerLockPurpose(StrEnum):
     """Lock categories for get_player_lock to serialize commands per player."""
