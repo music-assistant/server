@@ -5,8 +5,9 @@ from typing import TypedDict
 import aiohttp
 
 # Now-playing API, also used by ABC's own web players.
-API_BASE_URL = "https://music.abcradio.net.au/api/v1"
-NOW_PLAYING_URL = API_BASE_URL + "/plays/{station_id}/now.json"
+# The station code is the upper-cased station id (e.g. TRIPLEJ, CLASSIC).
+API_BASE_URL = "https://www.abc.net.au/core-next/api"
+NOW_PLAYING_URL = API_BASE_URL + "/musicNowPlaying/{station_code}"
 
 # Live HLS streams as served by ABC's streaming CDN.
 STREAM_BASE_URL = "https://streaming.abc-cdn.net.au/audio/hls"
@@ -20,6 +21,19 @@ STREAM_METADATA_UPDATE_INTERVAL = 30
 # Per-request timeout for ABC Radio API calls.
 API_TIMEOUT = aiohttp.ClientTimeout(total=10)
 
+# Timezone sent to the now-playing API (its "tz" query parameter).
+CONF_TIMEZONE = "timezone"
+DEFAULT_TIMEZONE = "Australia/Sydney"
+TIMEZONE_OPTIONS = (
+    "Australia/Sydney",
+    "Australia/Melbourne",
+    "Australia/Brisbane",
+    "Australia/Adelaide",
+    "Australia/Darwin",
+    "Australia/Perth",
+    "Australia/Hobart",
+)
+
 
 class ABCRadioStation(TypedDict):
     """Type definition for an ABC Radio station."""
@@ -30,7 +44,7 @@ class ABCRadioStation(TypedDict):
     logo_url: str
 
 
-# Station ids double as the service ids used by the ABC Radio now-playing API.
+# Station ids, upper-cased, double as the station codes used by the now-playing API.
 ABC_RADIO_STATIONS: dict[str, ABCRadioStation] = {
     "triplej": {
         "name": "triple j",
@@ -57,7 +71,7 @@ ABC_RADIO_STATIONS: dict[str, ABCRadioStation] = {
         "logo_url": f"{STATION_LOGO_BASE_URL}/457cfcb2f56f45a89fe67c5e075ca91b",
     },
     "classic": {
-        "name": "ABC Classic",
+        "name": "ABC Classic (NSW)",
         "description": "Classical music to help you relax, focus and escape",
         "stream_url": f"{STREAM_BASE_URL}/classicnsw.m3u8",
         "logo_url": f"{STATION_LOGO_BASE_URL}/1613925515143520dff362b9f5bdf0cf",

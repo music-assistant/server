@@ -1,4 +1,19 @@
 {
+  "config_entries": {
+    "timezone": {
+      "label": "Timezone",
+      "description": "Timezone sent to ABC when requesting now-playing information.",
+      "options": {
+        "Australia/Sydney": "Sydney / Canberra (NSW, ACT)",
+        "Australia/Melbourne": "Melbourne (VIC)",
+        "Australia/Brisbane": "Brisbane (QLD)",
+        "Australia/Adelaide": "Adelaide (SA)",
+        "Australia/Darwin": "Darwin (NT)",
+        "Australia/Perth": "Perth (WA)",
+        "Australia/Hobart": "Hobart (TAS)"
+      }
+    }
+  },
   "manifest": {
     "description": "Stream the live music stations of the Australian ABC Radio network — including triple j, Double J, ABC Classic and ABC Jazz — with live now-playing information."
   }

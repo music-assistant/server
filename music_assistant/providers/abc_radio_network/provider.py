@@ -6,7 +6,8 @@ from collections.abc import Sequence
 from typing import TYPE_CHECKING, Any
 
 import aiohttp
-from music_assistant_models.enums import ContentType, MediaType, StreamType
+from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption
+from music_assistant_models.enums import ConfigEntryType, ContentType, MediaType, StreamType
 from music_assistant_models.errors import MediaNotFoundError, UnplayableMediaError
 from music_assistant_models.media_items import (
     AudioFormat,
@@ -23,8 +24,11 @@ from music_assistant.models.music_provider import MusicProvider
 from .constants import (
     ABC_RADIO_STATIONS,
     API_TIMEOUT,
+    CONF_TIMEZONE,
+    DEFAULT_TIMEZONE,
     NOW_PLAYING_URL,
     STREAM_METADATA_UPDATE_INTERVAL,
+    TIMEZONE_OPTIONS,
 )
 from .helpers import parse_now_playing, parse_radio
 
@@ -39,6 +43,17 @@ class ABCRadioProvider(MusicProvider):
     def max_concurrent_streams(self) -> None:
         """Allow unlimited concurrent upstream source streams."""
         return None
+
+    async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
+        """Return the config entries to configure this provider."""
+        return (
+            ConfigEntry(
+                key=CONF_TIMEZONE,
+                type=ConfigEntryType.STRING,
+                options=[ConfigValueOption(tz) for tz in TIMEZONE_OPTIONS],
+                default_value=DEFAULT_TIMEZONE,
+            ),
+        )
 
     async def get_radio(self, prov_radio_id: str) -> Radio:
         """Get full radio details by id."""
@@ -109,9 +124,12 @@ class ABCRadioProvider(MusicProvider):
 
         :param station_id: A known ABC Radio station id.
         """
-        url = NOW_PLAYING_URL.format(station_id=station_id)
+        url = NOW_PLAYING_URL.format(station_code=station_id.upper())
+        params = {"tz": str(self.config.get_value(CONF_TIMEZONE, DEFAULT_TIMEZONE))}
         try:
-            async with self.mass.http_session.get(url, timeout=API_TIMEOUT) as response:
+            async with self.mass.http_session.get(
+                url, params=params, timeout=API_TIMEOUT
+            ) as response:
                 if response.status != 200:
                     self.logger.debug(
                         "ABC Radio API returned status %s for station %s",
