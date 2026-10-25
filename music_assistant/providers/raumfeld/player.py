@@ -196,6 +196,9 @@ class RaumfeldPlayer(Player):
     _attr_external_pause_idle_timeout = EXTERNAL_PAUSE_IDLE_TIMEOUT
     # set before the player is fully constructed, as the base class reads the features
     _external_source: PlayerSource | None = None
+    # the Chromecast output an app casts to the room's speaker through, while that is the
+    # external source shown (see _show_cast_playback)
+    _external_cast_id: str | None = None
     # the transport actions the host allows for the external source
     _external_actions: frozenset[str] | set[str] = frozenset()
     # shuffle and repeat share one play mode, so a change reads the other and sends both;
@@ -476,6 +479,19 @@ class RaumfeldPlayer(Player):
         # a Raumfeld line-in keeps playing through a normal transport stop, so when we are
         # leaving the line-in hard-stop the room(s) by putting them into (manual) standby
         hard_stop = self._attr_active_source == SOURCE_LINE_IN
+        if (cast_id := self._external_cast_id) is not None:
+            # the room's own renderer refuses a stop of what is cast to it (UPnP error 701);
+            # the Chromecast output ends the app's session
+            if (cast := self.mass.players.get_player(cast_id)) is not None:
+                try:
+                    await cast.stop()
+                except Exception as err:
+                    raise PlayerCommandFailed(f"Failed to stop {self.room}: {err!r}") from err
+            self._clear_external()
+            self._attr_active_source = None
+            self._attr_playback_state = PlaybackState.IDLE
+            self.update_state()
+            return
         # only a room that is part of an active zone has something to stop; a
         # standby/unassigned room has no zone the host can address
         if self._external_via_room:
@@ -1061,6 +1077,7 @@ class RaumfeldPlayer(Player):
             duration=media.duration if media else None,
             via_room=True,
         )
+        self._external_cast_id = cast.player_id
         self._attr_playback_state = cast.playback_state
         self._attr_elapsed_time = cast.elapsed_time
         self._attr_elapsed_time_last_updated = cast.elapsed_time_last_updated
@@ -1548,6 +1565,7 @@ class RaumfeldPlayer(Player):
         if self._attr_active_source == self._external_source.id:
             self._attr_active_source = None
         self._external_source = None
+        self._external_cast_id = None
         self._external_actions = frozenset()
         self._external_via_room = False
         self._attr_source_list = list(self._static_sources)

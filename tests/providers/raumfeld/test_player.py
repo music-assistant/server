@@ -2028,6 +2028,7 @@ async def test_a_play_mode_change_after_ma_took_over_is_refused() -> None:
 def _casting(player: RaumfeldPlayer, state: PlaybackState, app: str | None = "tunein") -> MagicMock:
     """Link a Chromecast output to the player that reports an app cast to the speaker."""
     cast_player = MagicMock()
+    cast_player.player_id = "cast_bar"
     cast_player.active_source = app
     cast_player.playback_state = state
     cast_player.current_media = PlayerMedia(
@@ -2109,3 +2110,23 @@ async def test_music_assistant_casting_itself_is_no_external_source() -> None:
 
     assert player._attr_playback_state == PlaybackState.IDLE
     assert player._attr_active_source is None
+
+
+async def test_a_stop_of_a_cast_app_goes_to_the_chromecast_output() -> None:
+    """The room's renderer refuses a stop of what is cast to it, so the cast output stops it."""
+    player, _ = _external_player()
+    cast_player = _casting(player, PlaybackState.PLAYING)
+    cast_player.stop = AsyncMock()
+    await _poll_idle_room(player)
+
+    with (
+        patch.object(player, "update_state"),
+        patch.object(player, "_external_command", AsyncMock()) as room_command,
+    ):
+        await player.stop()
+
+    cast_player.stop.assert_awaited_once()
+    room_command.assert_not_awaited()
+    assert player._attr_playback_state == PlaybackState.IDLE
+    assert player._attr_active_source is None
+    assert player._external_cast_id is None
