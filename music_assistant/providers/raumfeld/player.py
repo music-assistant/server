@@ -340,7 +340,9 @@ class RaumfeldPlayer(Player):
         """
         self._attr_available = available
         if not available:
-            # it is no longer polled, so nothing would end the playback it last reported
+            # it is no longer polled, so nothing would end the playback it last reported;
+            # a poll still waiting for an answer must not bring that back
+            self._playback_generation += 1
             self._attr_playback_state = PlaybackState.IDLE
         self.update_state()
 
@@ -864,7 +866,11 @@ class RaumfeldPlayer(Player):
         # polls only its own (per-room) volume and mirrors the leader's state: without that a
         # stopped group would leave the follower reading as playing until it is ungrouped
         if self.synced_to and self.synced_to != self.player_id:
+            generation = self._playback_generation
             await self._update_volume(host)
+            if not self._reading_is_current(generation):
+                self.update_state()
+                return
             leader = self.mass.players.get_player(self.synced_to)
             self._attr_playback_state = leader.playback_state if leader else PlaybackState.IDLE
             if self._attr_playback_state == PlaybackState.PLAYING:

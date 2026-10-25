@@ -2047,3 +2047,24 @@ def test_a_room_that_goes_away_while_playing_reads_as_idle() -> None:
         player.set_available(False)
 
     assert player._attr_playback_state == PlaybackState.IDLE
+
+
+async def test_a_poll_answered_after_the_room_went_away_is_not_applied() -> None:
+    """A zone reading that comes back after the room went away does not make it play again."""
+    player, _ = _external_player()
+    player._attr_available = True
+    player._attr_playback_state = PlaybackState.IDLE
+
+    async def transport_while_the_room_goes_away(*_args: object) -> dict[str, str]:
+        player.set_available(False)
+        return {"CurrentTransportState": "PLAYING"}
+
+    with (
+        patch.object(player, "update_state"),
+        patch.object(player, "_update_volume", AsyncMock()),
+        patch.object(player, "_read_transport", side_effect=transport_while_the_room_goes_away),
+        patch.object(player, "_read_position", AsyncMock(return_value={"TrackURI": ""})),
+    ):
+        await player._poll_zone(MagicMock(), ["Bar"])
+
+    assert player._attr_playback_state == PlaybackState.IDLE
