@@ -1156,8 +1156,10 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
                         # reset the elapsed clock together with the item switch (like
                         # next/previous do), so queue updates signaled before the player
                         # reports position don't carry the previous item's elapsed_time
+                        # or playback speed
                         queue.elapsed_time = seek_position if index == requested_index else 0
                         queue.elapsed_time_last_updated = time.time()
+                        queue.playback_speed = get_current_playback_speed(queue)
                         self.mass.players.update_sleep_timer(queue_id, repin=True)
                         if (prev_state := queue_data.prev_state) and prev_state[
                             "current_item_id"

@@ -55,8 +55,9 @@ def _controller_with_stale_queue() -> tuple[
 
 
 async def test_play_index_resets_elapsed_with_item_switch() -> None:
-    """Starting a new item zeroes elapsed_time and freshens its timestamp."""
+    """Starting a new item zeroes elapsed_time, freshens its timestamp and takes its speed."""
     ctrl, queue, signals = _controller_with_stale_queue()
+    queue.playback_speed = 2.0
     before = time.time()
 
     await ctrl.play_index(QUEUE_ID, 1)
@@ -65,6 +66,7 @@ async def test_play_index_resets_elapsed_with_item_switch() -> None:
     assert queue.current_item.queue_item_id == "new"
     assert queue.elapsed_time == 0
     assert queue.elapsed_time_last_updated >= before
+    assert queue.playback_speed == 1.0
     # no signaled state may pair the new item with the previous item's elapsed
     assert all(elapsed == 0 for item_id, elapsed in signals if item_id == "new"), signals
 
