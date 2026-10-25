@@ -29,6 +29,8 @@ def _session(submissions: list[str], allowed: bool = True) -> MagicMock:
     session.form = AsyncMock(side_effect=[{CONF_PATH: path} for path in submissions])
     session.finish = AsyncMock()
     session.mass.storage.can_hold_music_source = MagicMock(return_value=allowed)
+    session.mass.storage.is_available = AsyncMock(side_effect=lambda path: Path(path).is_dir())
+    session.mass.storage.get_location_for_path = MagicMock(return_value=None)
     return session
 
 
@@ -82,4 +84,23 @@ async def test_a_folder_outside_the_storage_locations_is_refused(tmp_path: Path)
     error = errors[1][CONF_PATH] if errors[1] else None
     assert isinstance(error, SetupFlowError)
     assert error.translation_key == "folder_not_allowed"
+    session.finish.assert_not_awaited()
+
+
+async def test_a_folder_on_unavailable_storage_is_refused(tmp_path: Path) -> None:
+    """A folder on a storage location that is not there, such as an unmounted share, is refused."""
+    session = _session([str(tmp_path)])
+    session.form.side_effect = [{CONF_PATH: str(tmp_path)}, _StopFlowError()]
+    session.mass.storage.is_available = AsyncMock(return_value=False)
+    session.mass.storage.get_location_for_path = MagicMock(
+        return_value=MagicMock(path=str(tmp_path), available=False)
+    )
+
+    with pytest.raises(_StopFlowError):
+        await run_setup(session)
+
+    errors = _form_errors(session)
+    error = errors[1][CONF_PATH] if errors[1] else None
+    assert isinstance(error, SetupFlowError)
+    assert error.translation_key == "storage_location_unavailable"
     session.finish.assert_not_awaited()

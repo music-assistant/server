@@ -30,7 +30,15 @@ from music_assistant_models.errors import (
     RetriesExhausted,
 )
 from music_assistant_models.helpers import get_global_cache_value
-from music_assistant_models.media_items import Album, Artist, MediaItemImage, Track
+from music_assistant_models.media_items import (
+    Album,
+    Artist,
+    MediaItemImage,
+    MediaItemMetadata,
+    Track,
+)
+from music_assistant_models.media_items.metadata import LifeSpan
+from music_assistant_models.unique_list import UniqueList
 
 from music_assistant.constants import VARIOUS_ARTISTS_MBID, VARIOUS_ARTISTS_NAME
 from music_assistant.controllers.music.helpers import (
@@ -58,7 +66,6 @@ if TYPE_CHECKING:
 
     from music_assistant_models.config_entries import CoreConfig
     from music_assistant_models.media_items import Audiobook, MediaItemType, Playlist, Podcast
-    from music_assistant_models.unique_list import UniqueList
 
     from music_assistant import MusicAssistant
     from music_assistant.models.media_capabilities import MusicDiscoveryMixin
@@ -83,6 +90,8 @@ _TEMPORARY_ERRORS = (
     RetriesExhausted,
     TimeoutError,
 )
+# the artist values of a local metadata provider that replace those of the other sources
+_LOCAL_ARTIST_FIELDS = ("style", "mood", "artist_entity_type")
 
 
 class MetadataEnrichmentMixin:
@@ -185,6 +194,9 @@ class MetadataEnrichmentMixin:
         # TODO: Utilize a global (cloud) cache for metadata lookups to save on API calls
         online_enabled = bool(self.config.get_value(CONF_ENABLE_ONLINE_METADATA) and artist.mbid)
         local_candidates: list[tuple[str | None, str]] = []
+        # a local provider's values and images replace the stored ones instead of filling gaps
+        local_fields: set[str] = set()
+        local_images: dict[str, list[MediaItemImage]] = {}
         for provider in self.providers:
             if ProviderFeature.ARTIST_METADATA not in provider.supported_features:
                 continue
@@ -210,7 +222,12 @@ class MetadataEnrichmentMixin:
                     exc_info=err if self.logger.isEnabledFor(10) else None,
                 )
                 continue
+            if provider.is_local:
+                _drop_provider_images(artist.metadata, provider.instance_id)
+                local_images[provider.instance_id] = list(metadata.images or []) if metadata else []
             if metadata:
+                if provider.is_local:
+                    local_fields |= _apply_local_values(artist.metadata, metadata)
                 if prefer_local_genres and not provider.is_local:
                     metadata = replace(metadata, genres=None)
                 if metadata.description:
@@ -230,12 +247,16 @@ class MetadataEnrichmentMixin:
         )
         artist.metadata.description = description
         artist.metadata.description_language = description_language
-        for provider in self.providers:
-            await provider.save_artist_metadata(artist)
+        replacements = {name: getattr(artist.metadata, name) for name in local_fields}
         # the library keeps a stored bio in the same language, so a local bio is written over it
         if description and (description_language, description) in local_candidates:
-            await self.mass.music.artists.update_description(
-                artist.item_id, description, description_language
+            replacements |= {
+                "description": description,
+                "description_language": description_language,
+            }
+        if replacements or local_images:
+            await self.mass.music.artists.replace_metadata(
+                artist.item_id, replacements, local_images
             )
 
         # update final item in library database
@@ -258,7 +279,7 @@ class MetadataEnrichmentMixin:
         Return the chosen ``(description, language)`` for the artist this refresh.
 
         :param candidates: ``(language, text)`` tuples in provider-priority order
-            (music providers first, then TADB, then Wikipedia).
+            (local metadata providers first, then music providers, then TADB, then Wikipedia).
         :param prev_description: Bio stored before this refresh.
         :param prev_description_language: Language of the bio stored before this refresh.
         """
@@ -949,6 +970,32 @@ def _tracks_named(
                 named.append(track)
                 seen.add(track.uri)
     return named
+
+
+def _apply_local_values(target: MediaItemMetadata, local: MediaItemMetadata) -> set[str]:
+    """Overwrite target with the artist values a local provider supplies, returning their names."""
+    replaced = {name for name in _LOCAL_ARTIST_FIELDS if getattr(local, name) is not None}
+    for name in replaced:
+        setattr(target, name, getattr(local, name))
+    if span := local.life_span:
+        # dates the local provider leaves out are still completed from the other sources
+        current = target.life_span or LifeSpan()
+        target.life_span = LifeSpan(
+            begin=span.begin or current.begin,
+            end=span.end or current.end,
+            ended=span.ended or current.ended,
+        )
+        replaced.add("life_span")
+    return replaced
+
+
+def _drop_provider_images(metadata: MediaItemMetadata, provider_instance_id: str) -> None:
+    """Remove the images of a provider from metadata (in-place)."""
+    if metadata.images:
+        metadata.images = (
+            UniqueList(img for img in metadata.images if img.provider != provider_instance_id)
+            or None
+        )
 
 
 def _refresh_timestamp(retry_soon: bool) -> int:

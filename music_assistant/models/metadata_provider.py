@@ -41,8 +41,7 @@ class MetadataProvider(RecommendationsMixin, MusicDiscoveryMixin, Provider):
         """
         Whether this provider reads metadata from local storage instead of an online service.
 
-        A local provider is also asked for metadata when online metadata is disabled and for
-        artists without a MusicBrainz id, and its artist bio is considered first.
+        Such a provider needs no network access and does not rely on a MusicBrainz id.
         """
         return False
 
@@ -69,12 +68,3 @@ class MetadataProvider(RecommendationsMixin, MusicDiscoveryMixin, Provider):
         if ProviderFeature.PLAYLIST_METADATA in self.supported_features:
             raise NotImplementedError
         return None
-
-    async def save_artist_metadata(self, artist: Artist) -> None:
-        """
-        Store the artist's metadata, merged from all providers, before it is saved to the library.
-
-        Called on every artist metadata refresh; the provider may also update the given artist.
-
-        :param artist: The library artist with its merged metadata.
-        """

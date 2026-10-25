@@ -9,7 +9,7 @@ from abc import ABCMeta, abstractmethod
 from collections.abc import Iterable
 from contextlib import suppress
 from contextvars import ContextVar
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, Final, Literal, TypeVar, cast, final, overload
 
@@ -1730,29 +1730,38 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
             item = await self.get_library_item(db_id)
             self.mass.signal_event(EventType.MEDIA_ITEM_UPDATED, item.uri, item)
 
-    async def update_description(
-        self, item_id: str | int, description: str, description_language: str | None
+    @final
+    async def replace_metadata(
+        self,
+        item_id: str | int,
+        values: Mapping[str, Any] | None = None,
+        provider_images: Mapping[str, Iterable[MediaItemImage]] | None = None,
     ) -> None:
         """
-        Replace the description stored for a library item.
+        Overwrite metadata values and provider images stored for a library item.
+
+        A library update only fills in missing values and adds images; this replaces them.
 
         :param item_id: The library item ID.
-        :param description: The new description.
-        :param description_language: The language of the new description.
+        :param values: Metadata field names mapped to the values that replace the stored ones.
+        :param provider_images: Provider instance ids mapped to the images that replace
+            the images stored for that provider (an empty iterable removes them).
         """
         db_id = int(item_id)  # ensure integer
         metadata = await self._get_stored_metadata(db_id)
-        if (metadata.description, metadata.description_language) == (
-            description,
-            description_language,
-        ):
+        images = list(metadata.images or [])
+        for provider_instance_id, given in (provider_images or {}).items():
+            new_images = list(given)
+            if [img for img in images if img.provider == provider_instance_id] != new_images:
+                images = [img for img in images if img.provider != provider_instance_id]
+                images.extend(new_images)
+        updated = replace(metadata, **(values or {}), images=UniqueList(images) or None)
+        if updated == metadata:
             return
-        metadata.description = description
-        metadata.description_language = description_language
         await self.mass.music.database.update(
             self.db_table,
             {"item_id": db_id},
-            {"metadata": serialize_to_json(metadata)},
+            {"metadata": serialize_to_json(updated)},
         )
         if not SUPPRESS_MEDIA_ITEM_UPDATES.get():
             item = await self.get_library_item(db_id)

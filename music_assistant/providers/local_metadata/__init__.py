@@ -2,7 +2,7 @@
 Local metadata provider for Music Assistant.
 
 Reads artist metadata from a Kodi-style artist information folder: one subfolder per artist
-holding an ``artist.nfo`` and artwork files. Optionally saves missing artwork into it.
+holding an ``artist.nfo`` and artwork files.
 """
 
 from __future__ import annotations
@@ -12,19 +12,18 @@ import os
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from music_assistant_models.config_entries import ConfigEntry
-from music_assistant_models.enums import ConfigEntryType, ImageType, ProviderFeature
-from music_assistant_models.errors import MediaNotFoundError, ProviderUnavailableError
-from music_assistant_models.helpers import create_safe_string
+from music_assistant_models.enums import ImageType, ProviderFeature
+from music_assistant_models.errors import ProviderUnavailableError
 from music_assistant_models.media_items import Artist, MediaItemImage, MediaItemMetadata
 
-from music_assistant.constants import CONF_PATH, DB_TABLE_ARTISTS
-from music_assistant.helpers.images import detect_image_content_format, get_image_data
+from music_assistant.constants import CONF_PATH
 from music_assistant.helpers.nfo import parse_artist_nfo, parse_nfo_root
 from music_assistant.helpers.security import is_safe_path
 from music_assistant.models.metadata_provider import MetadataProvider
 
 if TYPE_CHECKING:
+    from collections.abc import Iterable
+
     from music_assistant_models.config_entries import ProviderConfig
     from music_assistant_models.provider import ProviderManifest
 
@@ -32,8 +31,6 @@ if TYPE_CHECKING:
     from music_assistant.models import ProviderInstanceType
 
 SUPPORTED_FEATURES = {ProviderFeature.ARTIST_METADATA}
-
-CONF_SAVE_ARTWORK = "save_artwork"
 
 NFO_FILENAME = "artist.nfo"
 IMAGE_EXTENSIONS = ("jpg", "jpeg", "png", "gif")
@@ -53,15 +50,7 @@ IMAGE_STEMS: dict[str, ImageType] = {
     "back": ImageType.BACK,
     "discart": ImageType.DISCART,
 }
-# the file name Kodi uses for each artwork type that is saved
-SAVE_STEMS: dict[ImageType, str] = {
-    ImageType.THUMB: "folder",
-    ImageType.FANART: "fanart",
-    ImageType.LOGO: "clearlogo",
-    ImageType.BANNER: "banner",
-    ImageType.CLEARART: "clearart",
-    ImageType.LANDSCAPE: "landscape",
-}
+
 # characters Windows does not allow in a file name, replaced the way Kodi does
 RESERVED_CHARS = str.maketrans(dict.fromkeys('<>:"/\\|?*', "_"))
 
@@ -87,15 +76,9 @@ class LocalMetadataProvider(MetadataProvider):
 
     _root: str
     # subfolders of the root by casefolded name, refreshed when the root's mtime changes
+    # (a network share can report a stale mtime, so an exact name is checked on disk first)
     _subfolders: dict[str, str]
     _root_mtime: int | None = None
-    _read_only_warned: bool = False
-
-    async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
-        """Return Config entries to configure this provider."""
-        return (
-            ConfigEntry(key=CONF_SAVE_ARTWORK, type=ConfigEntryType.BOOLEAN, default_value=False),
-        )
 
     @property
     def priority(self) -> int:
@@ -113,7 +96,15 @@ class LocalMetadataProvider(MetadataProvider):
         self._subfolders = {}
 
     async def get_artist_metadata(self, artist: Artist) -> MediaItemMetadata | None:
-        """Retrieve metadata for an artist from its folder in the artist information folder."""
+        """
+        Retrieve metadata for an artist from its folder in the artist information folder.
+
+        :param artist: The library artist.
+        :raises ProviderUnavailableError: When the artist information folder can not be read.
+        """
+        if not await self.mass.storage.is_available(self._root):
+            msg = f"Artist information folder {self._root} is not available"
+            raise ProviderUnavailableError(msg)
         if not (match := await self._find_artist_folder(artist)):
             return None
         folder, nfo_artist, files = match
@@ -123,55 +114,15 @@ class LocalMetadataProvider(MetadataProvider):
             # an nfo has no language, so its bio counts as written in the user's language
             metadata.description_language = self.mass.metadata.preferred_language
             metadata.genres = nfo_artist.metadata.genres
+            metadata.style = nfo_artist.metadata.style
+            metadata.mood = nfo_artist.metadata.mood
+            metadata.artist_entity_type = nfo_artist.metadata.artist_entity_type
+            metadata.life_span = nfo_artist.metadata.life_span
         for file_name, image_type in _artwork_files(files):
-            metadata.add_image(self._local_image(image_type, f"{folder}/{file_name}"))
+            # the modification time in the path makes a replaced file a new image to the cache
+            path = f"{folder}/{file_name}?v={files[file_name]}"
+            metadata.add_image(self._local_image(image_type, path))
         return metadata
-
-    async def save_artist_metadata(self, artist: Artist) -> None:
-        """
-        Save artwork types the artist's folder lacks, downloaded from the artist's online images.
-
-        Existing files are never overwritten. Each saved file is added to the artist's images.
-
-        :param artist: The library artist with its merged metadata.
-        """
-        images = artist.metadata.images
-        if not self.config.get_value(CONF_SAVE_ARTWORK) or not images:
-            return
-        if not await self.mass.storage.is_available(self._root):
-            return
-        if not await asyncio.to_thread(os.access, self._root, os.W_OK):
-            if not self._read_only_warned:
-                self._read_only_warned = True
-                self.logger.warning("Unable to save artwork, folder %s is read-only", self._root)
-            return
-        try:
-            target = await self._save_folder(artist)
-        except OSError as err:
-            self.logger.warning("Unable to read the folder of artist %s: %s", artist.name, err)
-            return
-        if not target:
-            return
-        folder, files = target
-        present = {image_type for _, image_type in _artwork_files(files)}
-        for image_type, stem in SAVE_STEMS.items():
-            if image_type in present:
-                continue
-            remote = next(
-                (img for img in images if img.type == image_type and img.remotely_accessible),
-                None,
-            )
-            if remote is None:
-                continue
-            try:
-                file_name = await self._save_image(folder, stem, remote)
-            except (OSError, MediaNotFoundError, ProviderUnavailableError) as err:
-                self.logger.warning(
-                    "Unable to save %s artwork of artist %s: %s", image_type, artist.name, err
-                )
-                continue
-            if file_name:
-                artist.metadata.add_image(self._local_image(image_type, f"{folder}/{file_name}"))
 
     async def resolve_image(self, path: str) -> bytes | None:
         """
@@ -179,76 +130,58 @@ class LocalMetadataProvider(MetadataProvider):
 
         :param path: The file path, relative to the artist information folder.
         """
+        # drop the version suffix appended to the image path
+        path = path.split("?v=", 1)[0]
         if not is_safe_path(path, self._root):
             return None
-        return await asyncio.to_thread(_read_file, os.path.join(self._root, path))
+        return await asyncio.to_thread(_read_image, self._root, path)
 
     async def _find_artist_folder(
         self, artist: Artist
-    ) -> tuple[str, Artist | None, list[str]] | None:
-        """Return the artist's folder name, its parsed artist.nfo and its file names."""
+    ) -> tuple[str, Artist | None, dict[str, int]] | None:
+        """Return the artist's folder name, its parsed artist.nfo and the mtime of its files."""
         if not (name := artist_folder_name(artist.name)):
             return None
         candidates = [f"{name}_{artist.mbid[:4]}", name] if artist.mbid else [name]
         for candidate in candidates:
             if (folder := await self._find_subfolder(candidate)) is None:
                 continue
-            nfo_data, files = await asyncio.to_thread(
-                _read_folder, os.path.join(self._root, folder)
-            )
+            try:
+                nfo_data, files = await asyncio.to_thread(_read_folder, self._root, folder)
+            except OSError as err:
+                self.logger.debug("Failed to read artist folder %s: %s", folder, err)
+                # the folder list may be outdated, so it is read again on the next lookup
+                self._root_mtime = None
+                continue
             nfo_artist = self._parse_nfo(artist, f"{folder}/{NFO_FILENAME}", nfo_data)
             nfo_mbid = nfo_artist.mbid if nfo_artist else None
-            if nfo_mbid and artist.mbid:
-                if nfo_mbid == artist.mbid:
-                    return folder, nfo_artist, files
-                # the folder of a namesake
+            # the folder of a namesake
+            if nfo_mbid and artist.mbid and nfo_mbid != artist.mbid:
+                self.logger.debug(
+                    "Skipping folder %s for artist %s: its nfo MusicBrainz id %s does not match %s",
+                    folder,
+                    artist.name,
+                    nfo_mbid,
+                    artist.mbid,
+                )
                 continue
-            # a plain name folder is ambiguous when the library holds a namesake
-            if candidate != name or not await self._has_namesake(artist):
-                return folder, nfo_artist, files
+            return folder, nfo_artist, files
         return None
-
-    async def _save_folder(self, artist: Artist) -> tuple[str, list[str]] | None:
-        """Return the folder name to save the artist's artwork in and its file names."""
-        if match := await self._find_artist_folder(artist):
-            return match[0], match[2]
-        if not (name := artist_folder_name(artist.name)):
-            return None
-        if await self._has_namesake(artist):
-            if not artist.mbid:
-                return None
-            name = f"{name}_{artist.mbid[:4]}"
-        # an existing folder that did not match belongs to a namesake
-        if await self._find_subfolder(name) is not None:
-            return None
-        return name, []
 
     async def _find_subfolder(self, name: str) -> str | None:
         """Return the actual name of a subfolder of the root, matched ignoring case."""
-        mtime, subfolders = await asyncio.to_thread(_list_subfolders, self._root, self._root_mtime)
+        if await asyncio.to_thread(os.path.isdir, os.path.join(self._root, name)):
+            return name
+        try:
+            mtime, subfolders = await asyncio.to_thread(
+                _list_subfolders, self._root, self._root_mtime
+            )
+        except OSError as err:
+            msg = f"Artist information folder {self._root} can not be read: {err}"
+            raise ProviderUnavailableError(msg) from err
         if subfolders is not None:
             self._root_mtime, self._subfolders = mtime, subfolders
         return self._subfolders.get(name.casefold())
-
-    async def _save_image(self, folder: str, stem: str, image: MediaItemImage) -> str | None:
-        """Download an image into the artist's folder and return its file name."""
-        data = await get_image_data(self.mass, image.path, image.provider)
-        ext = detect_image_content_format(data)
-        if ext not in ("jpg", "png"):
-            self.logger.debug("Not saving image %s of unsupported format %s", image.path, ext)
-            return None
-        file_name = f"{stem}.{ext}"
-        await asyncio.to_thread(_write_new_file, os.path.join(self._root, folder), file_name, data)
-        return file_name
-
-    async def _has_namesake(self, artist: Artist) -> bool:
-        """Return True when another library artist has the same name, ignoring case."""
-        rows = await self.mass.music.database.get_rows_from_query(
-            f"SELECT name FROM {DB_TABLE_ARTISTS} WHERE search_name = :search_name",
-            {"search_name": create_safe_string(artist.name, True, True)},
-        )
-        name = artist.name.casefold()
-        return sum(str(row["name"]).casefold() == name for row in rows) > 1
 
     def _parse_nfo(self, artist: Artist, source: str, data: bytes | None) -> Artist | None:
         """Return the artist described by an artist.nfo, or None when absent or malformed."""
@@ -273,7 +206,7 @@ class LocalMetadataProvider(MetadataProvider):
         )
 
 
-def _artwork_files(files: list[str]) -> list[tuple[str, ImageType]]:
+def _artwork_files(files: Iterable[str]) -> list[tuple[str, ImageType]]:
     """Return the artwork files among the file names with their type, in order of preference."""
     by_stem: dict[str, str] = {}
     for file_name in sorted(files):
@@ -285,27 +218,39 @@ def _artwork_files(files: list[str]) -> list[tuple[str, ImageType]]:
     ]
 
 
-def _list_subfolders(
-    root: str, known_mtime: int | None
-) -> tuple[int | None, dict[str, str] | None]:
+def _list_subfolders(root: str, known_mtime: int | None) -> tuple[int, dict[str, str] | None]:
     """Return the root's mtime and its subfolders by casefolded name, or None when unchanged."""
-    try:
-        mtime = Path(root).stat().st_mtime_ns
-    except FileNotFoundError:
-        return None, {}
+    mtime = Path(root).stat().st_mtime_ns
     if mtime == known_mtime:
         return mtime, None
     with os.scandir(root) as entries:
         return mtime, {entry.name.casefold(): entry.name for entry in entries if entry.is_dir()}
 
 
-def _read_folder(path: str) -> tuple[bytes | None, list[str]]:
-    """Return the content of a folder's artist.nfo, if any, and the folder's file names."""
+def _read_folder(root: str, folder: str) -> tuple[bytes | None, dict[str, int]]:
+    """Return a subfolder's artist.nfo content, if any, and the mtime of its files in the root."""
+    path = os.path.join(root, folder)
+    real_root = os.path.realpath(root)
     with os.scandir(path) as entries:
-        files = [entry.name for entry in entries if entry.is_file()]
+        files = {
+            entry.name: entry.stat().st_mtime_ns
+            for entry in entries
+            if entry.is_file() and _is_inside(entry.path, real_root)
+        }
     nfo_name = next((name for name in files if name.casefold() == NFO_FILENAME), None)
     nfo_data = _read_file(os.path.join(path, nfo_name)) if nfo_name else None
     return nfo_data, files
+
+
+def _read_image(root: str, path: str) -> bytes | None:
+    """Return the content of a file of the root, or None when it is not a readable file in it."""
+    full_path = os.path.join(root, path)
+    if not _is_inside(full_path, os.path.realpath(root)):
+        return None
+    try:
+        return _read_file(full_path)
+    except PermissionError, IsADirectoryError:
+        return None
 
 
 def _read_file(path: str) -> bytes | None:
@@ -317,8 +262,6 @@ def _read_file(path: str) -> bytes | None:
         return None
 
 
-def _write_new_file(folder: str, file_name: str, data: bytes) -> None:
-    """Write a new file, creating its folder when needed; an existing file is never replaced."""
-    Path(folder).mkdir(exist_ok=True)
-    with open(os.path.join(folder, file_name), "xb") as file:
-        file.write(data)
+def _is_inside(path: str, real_root: str) -> bool:
+    """Return whether the real path of a file lies inside the real root (blocking)."""
+    return is_safe_path(os.path.realpath(path), real_root)

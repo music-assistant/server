@@ -3,14 +3,10 @@
     "path": {
       "label": "Artist information folder",
       "description": "Folder with one subfolder per artist, holding an artist.nfo file and artwork, as used by Kodi."
-    },
-    "save_artwork": {
-      "label": "Save artwork to the folder",
-      "description": "Save artwork found online for an artist into its subfolder when that type of artwork is missing. Existing files are never replaced."
     }
   },
   "manifest": {
-    "description": "Reads artist biographies, genres and artwork from a Kodi style artist information folder, and can save missing artwork into it."
+    "description": "Reads artist biographies, genres and artwork from a Kodi style artist information folder."
   },
   "setup_flow": {
     "user": {
@@ -19,6 +15,7 @@
   },
   "errors": {
     "folder_not_found": "The folder {0} does not exist.",
-    "folder_not_allowed": "The folder {0} is not in a storage location you can use."
+    "folder_not_allowed": "The folder {0} is not in a storage location you can use.",
+    "storage_location_unavailable": "The storage location at {0} is not available right now."
   }
 }

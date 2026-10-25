@@ -20,7 +20,7 @@ async def run_setup(session: SetupSession) -> None:
     """
     Run the setup flow: collect the artist information folder, then create the provider.
 
-    The folder must be an existing folder in a media storage location.
+    The folder must be an available folder in a media storage location.
 
     :param session: The setup session driving the flow.
     """
@@ -51,22 +51,37 @@ async def run_setup(session: SetupSession) -> None:
 
 
 async def _check_folder(session: SetupSession, path: str) -> None:
-    """Raise when a path is not an existing folder in a media storage location."""
+    """Raise when a path is not an available folder in a media storage location."""
     storage = session.mass.storage
     manages_all_sources = session.context.manages_all_sources
-    real_path = await asyncio.to_thread(os.path.realpath, path)
-    if not (
-        storage.can_hold_music_source(path, manages_all_sources)
-        and storage.can_hold_music_source(real_path, manages_all_sources)
-    ):
+    if not storage.can_hold_music_source(path, manages_all_sources):
+        raise _folder_not_allowed(path)
+    # the storage controller answers first, so a share whose server is gone is never touched
+    available = await storage.is_available(path)
+    location = storage.get_location_for_path(path)
+    if not available and location is not None and not location.available:
         raise SetupFlowError(
-            f"{path} is not in a storage location the caller may use",
-            translation_key="folder_not_allowed",
-            translation_args=[path],
+            f"Storage location {location.path} is not available",
+            translation_key="storage_location_unavailable",
+            translation_args=[location.path],
         )
-    if not await asyncio.to_thread(os.path.isdir, real_path):
+    # checked before a missing folder is reported, so a symlink does not tell what exists
+    # outside the locations the caller may use
+    real_path = await asyncio.to_thread(os.path.realpath, path)
+    if not storage.can_hold_music_source(real_path, manages_all_sources):
+        raise _folder_not_allowed(path)
+    if not available:
         raise SetupFlowError(
             f"Folder {path} does not exist",
             translation_key="folder_not_found",
             translation_args=[path],
         )
+
+
+def _folder_not_allowed(path: str) -> SetupFlowError:
+    """Return the error for a folder outside the storage locations the caller may use."""
+    return SetupFlowError(
+        f"{path} is not in a storage location the caller may use",
+        translation_key="folder_not_allowed",
+        translation_args=[path],
+    )

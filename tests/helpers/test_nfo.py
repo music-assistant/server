@@ -92,14 +92,14 @@ def test_parse_artist_nfo() -> None:
 
 
 def test_parse_artist_nfo_life_span() -> None:
-    """Born/died take part in the life span; dates that are not ISO are ignored."""
+    """Born/died take part in the life span; dates that are not recognised are ignored."""
     artist = Artist(item_id="test", provider="test", name="", provider_mappings=set())
     parse_artist_nfo(artist, {"born": "1958-08-29"})
     assert artist.metadata.life_span == LifeSpan(begin="1958-08-29", end=None, ended=False)
 
     artist = Artist(item_id="test", provider="test", name="", provider_mappings=set())
     parse_artist_nfo(artist, {"born": "August 29, 1958", "died": "2009-06"})
-    assert artist.metadata.life_span == LifeSpan(begin=None, end="2009-06", ended=True)
+    assert artist.metadata.life_span == LifeSpan(begin="1958-08-29", end="2009-06", ended=True)
 
     artist = Artist(item_id="test", provider="test", name="", provider_mappings=set())
     parse_artist_nfo(artist, {"born": "unknown", "type": "not-a-type"})
@@ -115,9 +115,53 @@ def test_parse_artist_nfo_ignores_impossible_dates(value: str) -> None:
     assert artist.metadata.life_span is None
 
 
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        ("15 Dec 1970", "1970-12-15"),
+        ("15 December 1970", "1970-12-15"),
+        ("December 15, 1970", "1970-12-15"),
+        ("Dec 15 1970", "1970-12-15"),
+        (" 5 MAY 1970 ", "1970-05-05"),
+        ("29 Feb 2000", "2000-02-29"),
+        ("15/12/1970", "1970-12-15"),
+        ("5/6/1970", "1970-06-05"),
+        ("1970/12/15", "1970-12-15"),
+        ("12/15/1970", None),
+        ("1970/15/12", None),
+        ("15-12-1970", None),
+        ("15 Decem 1970", None),
+        ("31 April 1970", None),
+        ("29 Feb 2023", None),
+    ],
+)
+def test_parse_artist_nfo_reads_written_out_dates(value: str, expected: str | None) -> None:
+    """Dates with a month name or a slashed month in the middle are read; impossible ones not."""
+    artist = Artist(item_id="test", provider="test", name="", provider_mappings=set())
+    parse_artist_nfo(artist, {"born": value})
+    assert (artist.metadata.life_span.begin if artist.metadata.life_span else None) == expected
+
+
 @pytest.mark.parametrize("value", ["2024-02-29", "2000-02-29", "1958-12", "1958"])
 def test_parse_artist_nfo_keeps_valid_dates_with_their_precision(value: str) -> None:
     """Valid (partial) dates, leap days included, are kept exactly as written."""
     artist = Artist(item_id="test", provider="test", name="", provider_mappings=set())
     parse_artist_nfo(artist, {"died": value})
     assert artist.metadata.life_span == LifeSpan(begin=None, end=value, ended=True)
+
+
+def test_parse_artist_nfo_ignores_repeated_single_value_fields() -> None:
+    """A type or date given more than once is ignored instead of failing the whole NFO."""
+    artist = Artist(item_id="test", provider="test", name="", provider_mappings=set())
+    root = parse_nfo_root(
+        b"<artist><title>Test Artist</title><type>Group</type><type>Person</type>"
+        b"<born>1970</born><born>1971</born><died>2001</died></artist>",
+        "artist",
+    )
+    assert root is not None
+
+    parse_artist_nfo(artist, root)
+
+    assert artist.name == "Test Artist"
+    assert artist.metadata.artist_entity_type is None
+    assert artist.metadata.life_span == LifeSpan(begin=None, end="2001", ended=True)

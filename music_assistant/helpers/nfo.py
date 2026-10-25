@@ -18,6 +18,38 @@ if TYPE_CHECKING:
 
 # LifeSpan dates are ISO (YYYY-MM-DD) or partial (YYYY-MM or YYYY)
 _ISO_PARTIAL_DATE = re.compile(r"^\d{4}(-\d{2}(-\d{2})?)?$")
+# written-out dates with the day and month name in either order: 15 Dec 1970, December 15, 1970
+_WRITTEN_DATES = (
+    re.compile(r"^(?P<day>\d{1,2})\s+(?P<month>[a-z]+),?\s+(?P<year>\d{4})$", re.IGNORECASE),
+    re.compile(r"^(?P<month>[a-z]+)\s+(?P<day>\d{1,2}),?\s+(?P<year>\d{4})$", re.IGNORECASE),
+)
+# slashed dates always have the month in the middle: 15/12/1970, 1970/12/15
+_SLASHED_DATES = (
+    re.compile(r"^(?P<day>\d{1,2})/(?P<month>\d{1,2})/(?P<year>\d{4})$"),
+    re.compile(r"^(?P<year>\d{4})/(?P<month>\d{1,2})/(?P<day>\d{1,2})$"),
+)
+# English month names, full and abbreviated, independent of the process locale
+_MONTHS = {
+    month_name: number
+    for number, name in enumerate(
+        (
+            "january",
+            "february",
+            "march",
+            "april",
+            "may",
+            "june",
+            "july",
+            "august",
+            "september",
+            "october",
+            "november",
+            "december",
+        ),
+        start=1,
+    )
+    for month_name in (name, name[:3])
+}
 
 
 def parse_nfo_root(data: bytes, root_tag: str) -> dict[str, Any] | None:
@@ -59,9 +91,11 @@ def parse_artist_nfo(artist: Artist, nfo_artist: dict[Any, Any], source: str | N
         artist.metadata.style = f"{TAG_SPLITTER} ".join(split_items(style))
     if mood := nfo_artist.get("mood"):
         artist.metadata.mood = f"{TAG_SPLITTER} ".join(split_items(mood))
-    if (artist_type := nfo_artist.get("type")) and (
-        entity_type := ArtistEntityType(artist_type.strip().lower())
-    ) != ArtistEntityType.UNKNOWN:
+    if (
+        isinstance(artist_type := nfo_artist.get("type"), str)
+        and (entity_type := ArtistEntityType(artist_type.strip().lower()))
+        != ArtistEntityType.UNKNOWN
+    ):
         artist.metadata.artist_entity_type = entity_type
     begin = _iso_partial_date(nfo_artist.get("born") or nfo_artist.get("formed"))
     end = _iso_partial_date(nfo_artist.get("died") or nfo_artist.get("disbanded"))
@@ -69,16 +103,25 @@ def parse_artist_nfo(artist: Artist, nfo_artist: dict[Any, Any], source: str | N
         artist.metadata.life_span = LifeSpan(begin=begin, end=end, ended=end is not None)
 
 
-def _iso_partial_date(value: str | None) -> str | None:
-    """Return the value when it is an ISO (partial) date, otherwise None."""
-    if not value or not _ISO_PARTIAL_DATE.match(value := value.strip()):
+def _iso_partial_date(value: Any) -> str | None:
+    """Return the value as an ISO (partial) date when it is a date in a supported form, else None."""
+    if not isinstance(value, str):
         return None
-    year, month, day = (*map(int, value.split("-")), 1, 1)[:3]
+    text = value.strip()
+    if written := next((m for pattern in _WRITTEN_DATES if (m := pattern.match(text))), None):
+        if not (month := _MONTHS.get(written["month"].lower())):
+            return None
+        text = f"{written['year']}-{month:02d}-{int(written['day']):02d}"
+    elif slashed := next((m for pattern in _SLASHED_DATES if (m := pattern.match(text))), None):
+        text = f"{slashed['year']}-{int(slashed['month']):02d}-{int(slashed['day']):02d}"
+    elif not _ISO_PARTIAL_DATE.match(text):
+        return None
+    year, month, day = (*map(int, text.split("-")), 1, 1)[:3]
     try:
         date(year, month, day)
     except ValueError:
         return None
-    return value
+    return text
 
 
 def _lowercase_nfo_key(_path: Any, key: str, value: Any) -> tuple[str, Any]:
