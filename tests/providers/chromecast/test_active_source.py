@@ -86,10 +86,11 @@ def test_a_known_app_in_its_own_spelling_gets_controls() -> None:
     """An app that names itself in its own spelling ("TIDAL") is offered its controls."""
     fake = _fake_media_receiver_player()
     fake.cc = MagicMock(app_id="tidal_app", app_display_name="TIDAL")
+    status = _media_status(playing=True, content_id="tidal://track/1")
+    # no media session, so only recognising the app can offer the controls
+    status.media_session_id = None
 
-    ChromecastPlayer._handle_media_status(
-        fake, _media_status(playing=True, content_id="tidal://track/1")
-    )
+    ChromecastPlayer._handle_media_status(fake, status)
 
     source = next(source for source in fake._attr_source_list if source.id == "tidal")
     assert source.name == "TIDAL"
