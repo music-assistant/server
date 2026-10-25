@@ -63,6 +63,7 @@ if TYPE_CHECKING:
     import hassfeld
     from music_assistant_models.config_entries import ConfigEntry
     from music_assistant_models.event import MassEvent
+    from music_assistant_models.player_queue import PlayerQueue
 
     from .provider import RaumfeldPlayerProvider
 
@@ -80,6 +81,9 @@ STARTUP_POLL_WINDOW = 20
 # How long (seconds) after a play command to wait before telling the zone which track of
 # the flow stream plays, so it has taken the stream it was given first.
 FLOW_ANNOUNCE_SETTLE_TIME = 5
+# How far ahead (seconds) of the end of a track in the flow stream to time the announcement
+# of the next one; a poll inside this window sets the timer again with the latest position.
+FLOW_ANNOUNCE_LOOKAHEAD = 30
 # Only re-anchor MA's elapsed-time clock when the reported flow position diverges from
 # the expected (extrapolated) position by more than this many seconds. Keeps the
 # progress bar smooth despite the device's 1-second position granularity while a real
@@ -336,6 +340,7 @@ class RaumfeldPlayer(Player):
         await super().on_unload()
         if self._unsub_queue_events is not None:
             self._unsub_queue_events()
+        self.mass.cancel_timer(self._announce_timer_id)
         # the timer is held by mass, not by this player, so it would otherwise fire after
         # it is gone, against a dropped player
         self._clear_next()
@@ -624,6 +629,7 @@ class RaumfeldPlayer(Player):
         didl_metadata = create_didl_metadata(media, url)
         self._flow_url = url if self._is_queue_flow(url) else None
         self._announced_item_id = None
+        self.mass.cancel_timer(self._announce_timer_id)
         try:
             zone = await self._ensure_playable_zone()
             # wake any room in (manual) standby first: a manually-standby renderer does not
@@ -1593,13 +1599,52 @@ class RaumfeldPlayer(Player):
             or time.time() - self._play_started_at < FLOW_ANNOUNCE_SETTLE_TIME
         ):
             return
-        queue = self.mass.player_queues.get(self.player_id)
-        item = queue.current_item if queue else None
-        if item is None or item.queue_item_id == self._announced_item_id:
+        if (queue := self.mass.player_queues.get(self.player_id)) is None:
             return
-        self._announced_item_id = item.queue_item_id
+        if queue.current_item is not None:
+            self._start_flow_announcement(queue.current_item.queue_item_id)
+        self._schedule_next_announcement(queue)
+
+    @property
+    def _announce_timer_id(self) -> str:
+        """Return the id of the timer that announces the flow stream's next track."""
+        return f"raumfeld_announce_next_{self.player_id}"
+
+    def _schedule_next_announcement(self, queue: PlayerQueue) -> None:
+        """
+        Announce the flow stream's next track at the moment the zone reaches it.
+
+        :param queue: The room's queue, playing as a flow stream.
+        """
+        # MA moves the queue on only when a poll reports the zone past the boundary, up to
+        # a poll interval late; the time left of the current track tells when it comes
+        current, upcoming = queue.current_item, queue.next_item
+        if current is None or upcoming is None or not current.duration:
+            return
+        remaining = current.duration - queue.corrected_elapsed_time
+        if 0 < remaining <= FLOW_ANNOUNCE_LOOKAHEAD:
+            self.mass.call_later(
+                remaining,
+                self._start_flow_announcement,
+                upcoming.queue_item_id,
+                task_id=self._announce_timer_id,
+            )
+
+    def _start_flow_announcement(self, queue_item_id: str) -> None:
+        """
+        Announce a track of the flow stream to the zone, unless it was already.
+
+        :param queue_item_id: The queue item that plays now.
+        """
+        if (
+            self._flow_url is None
+            or queue_item_id == self._announced_item_id
+            or self._attr_playback_state != PlaybackState.PLAYING
+        ):
+            return
+        self._announced_item_id = queue_item_id
         self.mass.create_task(
-            self._announce_flow_item(self._flow_url, item.queue_item_id),
+            self._announce_flow_item(self._flow_url, queue_item_id),
             task_id=f"raumfeld_announce_{self.player_id}",
             abort_existing=True,
         )

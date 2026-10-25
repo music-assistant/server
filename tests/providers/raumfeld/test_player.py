@@ -322,6 +322,7 @@ async def test_unload_cancels_its_timers() -> None:
     assert {call.args[0] for call in mass.cancel_timer.call_args_list} == {
         "raumfeld_advance_test",
         "external_pause_raumfeld_test",
+        "raumfeld_announce_next_raumfeld_test",
     }
     assert player._advance_armed is False
     assert player._next_media is None
@@ -2039,7 +2040,9 @@ def _announcing_player(current_item_id: str = "q2") -> RaumfeldPlayer:
     player._attr_playback_state = PlaybackState.PLAYING
     player._play_started_at = 0.0
     cast("MagicMock", player.mass.player_queues).get.return_value = MagicMock(
-        current_item=MagicMock(queue_item_id=current_item_id)
+        current_item=MagicMock(queue_item_id=current_item_id, duration=200),
+        next_item=MagicMock(queue_item_id="q3"),
+        corrected_elapsed_time=10.0,
     )
     return player
 
@@ -2063,6 +2066,39 @@ def test_a_new_track_of_the_flow_is_announced_once() -> None:
 
     assert player._announced_item_id == "q2"
     assert cast("MagicMock", player.mass.create_task).call_count == 1
+
+
+def test_the_next_track_is_announced_when_the_current_one_ends() -> None:
+    """Near the end of a track, the next one is announced at the moment the zone reaches it."""
+    player = _announcing_player()
+    queue = cast("MagicMock", player.mass.player_queues).get.return_value
+    queue.corrected_elapsed_time = 188.0
+
+    player._maybe_announce_flow_item()
+
+    timer = cast("MagicMock", player.mass.call_later)
+    timer.assert_called_once()
+    assert timer.call_args.args[0] == pytest.approx(12.0)
+    assert timer.call_args.args[2] == "q3"
+    assert timer.call_args.kwargs["task_id"] == "raumfeld_announce_next_raumfeld_bar"
+
+    # the timer fires: the next track is announced, and not again once MA reaches it
+    player._start_flow_announcement("q3")
+    queue.current_item = MagicMock(queue_item_id="q3", duration=300)
+    queue.corrected_elapsed_time = 1.0
+    player._maybe_announce_flow_item()
+
+    assert player._announced_item_id == "q3"
+    assert cast("MagicMock", player.mass.create_task).call_count == 2
+
+
+def test_no_timer_is_set_far_from_the_end_of_a_track() -> None:
+    """Far from the end of a track the next poll sets the timer, with a fresher position."""
+    player = _announcing_player()
+
+    player._maybe_announce_flow_item()
+
+    cast("MagicMock", player.mass.call_later).assert_not_called()
 
 
 @pytest.mark.parametrize(
