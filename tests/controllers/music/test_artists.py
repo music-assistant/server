@@ -228,10 +228,30 @@ async def test_item_overwrite_adds_a_new_mbid_to_the_library_artist(mass: MusicA
     assert refreshed.sort_name == artist.sort_name
 
 
-async def test_item_overwrite_adds_a_new_spelling_to_the_library_artist(
+async def test_item_overwrite_keeps_the_stored_mbid_of_the_library_artist(
     mass: MusicAssistant,
 ) -> None:
-    """An update whose artist is a new spelling of a library artist adds it as a mapping."""
+    """An update whose artist carries another MusicBrainz id leaves the stored one."""
+    artist = await _add_artist_with_two_spellings(mass)
+    await mass.music.artists.set_external_ids(
+        artist.item_id, {*artist.external_ids, (ExternalID.MB_ARTIST, ARTIST_MBID)}
+    )
+    db_track = await mass.music.tracks.add_item_to_library(create_track("spotify_1", "track1"))
+    spelling = _short_spelling()
+    spelling.mbid = "11111111-2222-3333-4444-555555555555"
+
+    update = create_track("spotify_1", "track1")
+    update.artists = UniqueList([spelling])
+    await mass.music.tracks.update_item_in_library(db_track.item_id, update, overwrite=True)
+
+    refreshed = await mass.music.artists.get_library_item(artist.item_id)
+    assert refreshed.external_ids == {*artist.external_ids, (ExternalID.MB_ARTIST, ARTIST_MBID)}
+
+
+async def test_item_overwrite_links_a_new_spelling_matched_by_mbid(
+    mass: MusicAssistant,
+) -> None:
+    """An update whose artist is a new spelling matched by MusicBrainz id adds it as a mapping."""
     artist = await _add_artist_with_two_spellings(mass)
     await mass.music.artists.set_external_ids(
         artist.item_id, {*artist.external_ids, (ExternalID.MB_ARTIST, ARTIST_MBID)}

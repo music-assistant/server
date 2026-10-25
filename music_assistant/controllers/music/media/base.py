@@ -3657,8 +3657,9 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         """
         Return the library ID of the given artist, adding it to the library when needed.
 
-        An artist already in the library only gains the provider mappings and the types of
-        external ids it lacks; its stored data is never overwritten.
+        An artist found by its provider id only gains the provider mappings and the types of
+        external ids it lacks, and is never overwritten. A new artist is added without
+        overwriting a library artist it matches.
         """
         if artist.provider == "library":
             return int(artist.item_id)
