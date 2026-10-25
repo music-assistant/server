@@ -34,12 +34,26 @@ TIMEZONE_OPTIONS = (
     "Australia/Hobart",
 )
 
+# Region code of the local stream for each timezone, filled into a station's
+# stream_url. triple j and Double J have no Victoria or Tasmania streams, and
+# Classic has none for Tasmania; those states share Sydney's time, so use NSW.
+TIMEZONE_STREAM_REGIONS = {
+    "Australia/Sydney": "nsw",
+    "Australia/Melbourne": "nsw",
+    "Australia/Brisbane": "qld",
+    "Australia/Adelaide": "sa",
+    "Australia/Darwin": "nt",
+    "Australia/Perth": "wa",
+    "Australia/Hobart": "nsw",
+}
+
 
 class ABCRadioStation(TypedDict):
     """Type definition for an ABC Radio station."""
 
     name: str
     description: str
+    # May hold a "{region}" placeholder for stations with local streams per timezone.
     stream_url: str
     logo_url: str
 
@@ -49,7 +63,7 @@ ABC_RADIO_STATIONS: dict[str, ABCRadioStation] = {
     "triplej": {
         "name": "triple j",
         "description": "New music and the best new and emerging artists",
-        "stream_url": f"{STREAM_BASE_URL}/triplejnsw.m3u8",
+        "stream_url": f"{STREAM_BASE_URL}/triplej{{region}}.m3u8",
         "logo_url": f"{STATION_LOGO_BASE_URL}/c170c3d8b69f13bf43865be27b027687",
     },
     "h100": {
@@ -61,7 +75,7 @@ ABC_RADIO_STATIONS: dict[str, ABCRadioStation] = {
     "doublej": {
         "name": "Double J",
         "description": "Music news, interviews and new releases for grown-up music lovers",
-        "stream_url": f"{STREAM_BASE_URL}/doublejnsw.m3u8",
+        "stream_url": f"{STREAM_BASE_URL}/doublej{{region}}.m3u8",
         "logo_url": f"{STATION_LOGO_BASE_URL}/fe840de7a554fe27949bd9f6ee74c67d",
     },
     "unearthed": {
@@ -71,9 +85,9 @@ ABC_RADIO_STATIONS: dict[str, ABCRadioStation] = {
         "logo_url": f"{STATION_LOGO_BASE_URL}/457cfcb2f56f45a89fe67c5e075ca91b",
     },
     "classic": {
-        "name": "ABC Classic (NSW)",
+        "name": "ABC Classic",
         "description": "Classical music to help you relax, focus and escape",
-        "stream_url": f"{STREAM_BASE_URL}/classicnsw.m3u8",
+        "stream_url": f"{STREAM_BASE_URL}/classic{{region}}.m3u8",
         "logo_url": f"{STATION_LOGO_BASE_URL}/1613925515143520dff362b9f5bdf0cf",
     },
     "classic2": {
