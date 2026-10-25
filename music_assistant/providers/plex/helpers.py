@@ -6,7 +6,9 @@ import asyncio
 import dataclasses
 import json
 import logging
+import platform
 import re
+import uuid
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, cast
 
@@ -144,6 +146,42 @@ def configure_plex_identity(client_id: str) -> None:
     plexapi.BASE_HEADERS["X-Plex-Product"] = APPLICATION_NAME
     plexapi.BASE_HEADERS["X-Plex-Device-Name"] = APPLICATION_NAME
     plexapi.BASE_HEADERS["X-Plex-Client-Identifier"] = client_id
+
+
+def compute_client_id(plex_provider_id: str, ma_player_id: str) -> str:
+    """
+    Return the stable Plex client identifier of a Music Assistant player.
+
+    The Plex provider reports a player's playback under this identifier, and Plex Connect
+    uses it as GDM Resource-Identifier, companion server machineIdentifier and plex.tv
+    X-Plex-Client-Identifier, so Plex sees the player as one and the same device.
+
+    :param plex_provider_id: Instance id of the Plex music provider.
+    :param ma_player_id: The Music Assistant player id.
+    """
+    return str(
+        uuid.uuid5(
+            uuid.NAMESPACE_DNS,
+            f"music-assistant-plex-{plex_provider_id}-{ma_player_id}",
+        )
+    )
+
+
+def player_client_headers(client_id: str, device_name: str) -> dict[str, str]:
+    """
+    Return the headers that present a Music Assistant player to the Plex server.
+
+    :param client_id: The player's client identifier, see compute_client_id.
+    :param device_name: The name Plex shows for the player.
+    """
+    return {
+        "X-Plex-Device-Name": device_name,
+        "X-Plex-Session-Identifier": client_id,
+        "X-Plex-Client-Identifier": client_id,
+        "X-Plex-Product": APPLICATION_NAME,
+        "X-Plex-Platform": APPLICATION_NAME,
+        "X-Plex-Platform-Version": platform.release(),
+    }
 
 
 def extract_library_name(conf_value: str) -> str:

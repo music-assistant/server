@@ -93,6 +93,8 @@ def _make_provider(sync_on_library_change: bool = True, content_changed_at: str 
     mock_manifest.domain = "plex"
 
     provider = PlexProvider(mock_mass, mock_manifest, mock_config, SUPPORTED_FEATURES)
+    # the playback reporter starts with the provider too, see test_playback_reporter.py
+    provider.playback_reporter = MagicMock()
     provider._baseurl = "https://192.168.1.10:32400"
     provider._plex_library = MagicMock()
     provider._plex_library.key = SECTION_KEY
