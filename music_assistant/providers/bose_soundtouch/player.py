@@ -29,6 +29,7 @@ from music_assistant_models.player import (
 from music_assistant.constants import (
     CONF_ENTRY_FLOW_MODE,
     CONF_ENTRY_OUTPUT_CODEC_DEFAULT_MP3,
+    MASS_USER_AGENT,
     create_sample_rates_config_entry,
 )
 from music_assistant.helpers.upnp import AVTransport
@@ -54,7 +55,6 @@ from .const import (
     SOURCE_STANDBY,
     UPNP_CONTROL_ENDPOINT,
     UPNP_PORT,
-    UPNP_USER_AGENT,
     PlayerOptionKeys,
 )
 from .helpers import extract_preset_id, source_id
@@ -326,7 +326,7 @@ class BoseSoundTouchPlayer(Player):
         return AVTransport(
             client=self.mass.http_session,
             ctrl_url=f"http://{format_ip_for_url(self.ip_address)}:{UPNP_PORT}/{UPNP_CONTROL_ENDPOINT}",
-            user_agent=UPNP_USER_AGENT,
+            user_agent=MASS_USER_AGENT,
             encoding=STRING_ENCODING,
         )
 
