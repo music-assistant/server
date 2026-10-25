@@ -17,6 +17,7 @@ from music_assistant_models.enums import ContentType, PlaybackState
 from music_assistant_models.errors import PlayerCommandFailed
 from music_assistant_models.media_items import AudioFormat
 
+from music_assistant.constants import CONF_PASSWORD
 from music_assistant.helpers.named_pipe import WRITE_POLL_INTERVAL_MS, AsyncNamedPipeWriter
 from music_assistant.helpers.process import AsyncProcess
 from music_assistant.providers.airplay.constants import (
@@ -26,7 +27,6 @@ from music_assistant.providers.airplay.constants import (
     CONF_AIRPLAY_CREDENTIALS,
     CONF_BUFFER_DEPTH,
     CONF_ENCRYPTION,
-    CONF_PASSWORD,
     STREAMING_MODE_AP2_COMPAT,
     STREAMING_MODE_AP2_NTP,
     STREAMING_MODE_AP2_PTP,
