@@ -281,6 +281,34 @@ async def test_item_overwrite_links_a_new_spelling_matched_by_mbid(
     assert [x.item_id for x in stored.artists] == [artist.item_id]
 
 
+async def test_item_overwrite_keeps_the_ids_of_an_artist_matched_by_mbid(
+    mass: MusicAssistant,
+) -> None:
+    """A new spelling matched by MusicBrainz id adds no id of a type the library artist holds."""
+    artist = await _add_artist_with_two_spellings(mass)
+    await mass.music.artists.set_external_ids(
+        artist.item_id, {*artist.external_ids, (ExternalID.MB_ARTIST, ARTIST_MBID)}
+    )
+    db_album = await mass.music.albums.add_item_to_library(create_album("spotify_1", "album1"))
+    new_spelling = Artist(
+        item_id="tchaikovsky_new",
+        provider="spotify_1",
+        name="Tchaikovsky",
+        provider_mappings={_spotify_mapping("tchaikovsky_new")},
+        external_ids={(ExternalID.DISCOGS, "9999")},
+    )
+    new_spelling.mbid = ARTIST_MBID
+
+    update = create_album("spotify_1", "album1")
+    update.artists = UniqueList([new_spelling])
+    await mass.music.albums.update_item_in_library(db_album.item_id, update, overwrite=True)
+
+    refreshed = await mass.music.artists.get_library_item(artist.item_id)
+    assert refreshed.external_ids == {*artist.external_ids, (ExternalID.MB_ARTIST, ARTIST_MBID)}
+    assert "tchaikovsky_new" in {x.item_id for x in refreshed.provider_mappings}
+    assert refreshed.name == artist.name
+
+
 async def test_item_overwrite_without_new_artist_ids_writes_no_artist(
     mass: MusicAssistant,
 ) -> None:

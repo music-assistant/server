@@ -3657,24 +3657,26 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         """
         Return the library ID of the given artist, adding it to the library when needed.
 
-        An artist found by its provider id only gains the provider mappings and the types of
-        external ids it lacks, and is never overwritten. A new artist is added without
-        overwriting a library artist it matches.
+        An artist already in the library, found by its provider id or matched by its ids or
+        name, only gains the provider mappings and the types of external ids it lacks, and is
+        never overwritten.
         """
+        artists = self.mass.music.artists
         if artist.provider == "library":
             return int(artist.item_id)
-        if db_artist := await self.mass.music.artists.get_library_item_by_prov_id(
-            artist.item_id, artist.provider
-        ):
+        if db_artist := await artists.get_library_item_by_prov_id(artist.item_id, artist.provider):
             await self._add_new_artist_ids(db_artist, artist)
             return int(db_artist.item_id)
         # Convert ItemMapping to Artist if needed
         artist_to_add = (
-            self.mass.music.artists.artist_from_item_mapping(artist)
-            if isinstance(artist, ItemMapping)
-            else artist
+            artists.artist_from_item_mapping(artist) if isinstance(artist, ItemMapping) else artist
         )
-        db_artist = await self.mass.music.artists.add_item_to_library(artist_to_add)
+        if library_id := await artists._get_library_item_by_match(artist_to_add):
+            await self._add_new_artist_ids(
+                await artists.get_library_item(library_id), artist_to_add
+            )
+            return library_id
+        db_artist = await artists.add_item_to_library(artist_to_add)
         return int(db_artist.item_id)
 
     async def _add_new_artist_ids(self, db_artist: Artist, artist: Artist | ItemMapping) -> None:
