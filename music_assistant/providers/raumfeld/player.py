@@ -1064,8 +1064,6 @@ class RaumfeldPlayer(Player):
         media = cast.current_media
         app_source = next((s for s in cast.source_list if s.id == cast.active_source), None)
         app = app_source.name if app_source else cast.active_source
-        # the name a service is known by here: some apps call themselves all caps ("TIDAL")
-        app = external_source(app)[1]
         # the controls the Chromecast output offers for the app, as transport actions
         actions = []
         if app_source and app_source.can_play_pause:

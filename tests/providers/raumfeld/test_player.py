@@ -2205,15 +2205,3 @@ async def test_a_seek_in_a_cast_app_goes_to_the_chromecast_output() -> None:
         await player.seek(95)
 
     cast_player.seek.assert_awaited_once_with(95)
-
-
-async def test_a_cast_app_is_named_as_the_service_is_known() -> None:
-    """An app that calls itself in all caps is shown by the service's usual name."""
-    player, _ = _external_player()
-    cast_player = _casting(player, PlaybackState.PLAYING, app="tidal")
-    cast_player.source_list[0].id = "tidal"
-    cast_player.source_list[0].name = "TIDAL"
-
-    await _poll_idle_room(player)
-
-    assert player._attr_source_list[-1].name == "Chromecast: Tidal"
