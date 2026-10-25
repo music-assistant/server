@@ -29,6 +29,7 @@ from .constants import (
     NOW_PLAYING_URL,
     STREAM_METADATA_UPDATE_INTERVAL,
     TIMEZONE_OPTIONS,
+    TIMEZONE_STREAM_REGIONS,
 )
 from .helpers import parse_now_playing, parse_radio
 
@@ -99,7 +100,7 @@ class ABCRadioProvider(MusicProvider):
             ),
             media_type=MediaType.RADIO,
             stream_type=StreamType.HLS,
-            path=ABC_RADIO_STATIONS[item_id]["stream_url"],
+            path=self._get_stream_url(item_id),
             allow_seek=False,
             can_seek=False,
             duration=0,
@@ -117,6 +118,16 @@ class ABCRadioProvider(MusicProvider):
             parse_radio(station_id, self.instance_id, self.domain)
             for station_id in ABC_RADIO_STATIONS
         ]
+
+    def _get_stream_url(self, station_id: str) -> str:
+        """
+        Get the stream url of a station, using the local stream for the configured timezone.
+
+        :param station_id: A known ABC Radio station id.
+        """
+        timezone = str(self.config.get_value(CONF_TIMEZONE, DEFAULT_TIMEZONE))
+        region = TIMEZONE_STREAM_REGIONS.get(timezone, TIMEZONE_STREAM_REGIONS[DEFAULT_TIMEZONE])
+        return ABC_RADIO_STATIONS[station_id]["stream_url"].format(region=region)
 
     async def _get_now_playing(self, station_id: str) -> StreamMetadata | None:
         """
