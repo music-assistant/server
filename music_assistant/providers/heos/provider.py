@@ -220,7 +220,22 @@ class HeosPlayerProvider(PlayerProvider):
         """Build source list based on data from controller."""
         if not self._heos:
             return
-        self._input_source_list = list(await self._heos.get_input_sources())
+        # Browse the inputs of each device separately (instead of pyheos' get_input_sources),
+        # so a single unresponsive device does not block the setup of the whole provider.
+        self._input_source_list = []
+        aux_sources = await self._heos.browse(const.MUSIC_SOURCE_AUX_INPUT)
+        for aux_source in aux_sources.items:
+            try:
+                aux_inputs = await aux_source.browse()
+            except HeosError as err:
+                self.logger.warning(
+                    "Unable to retrieve input sources of HEOS device %s, "
+                    "its inputs will not be available: %s",
+                    aux_source.name,
+                    err,
+                )
+                continue
+            self._input_source_list.extend(aux_inputs.items)
 
         music_sources = await self._heos.get_music_sources()
         for source_id, source in music_sources.items():
