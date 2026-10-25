@@ -156,6 +156,26 @@ async def test_resolve_without_search_returns_id_match() -> None:
     mass.music.search.assert_not_called()
 
 
+async def test_generate_share_link_rejects_oversized_playlist() -> None:
+    """Reject playlist payloads that cannot fit in a single API DataChannel message."""
+    provider = _provider()
+    mass = _mass(provider)
+    mass.music.get_item_by_uri = AsyncMock(return_value=MagicMock())
+    payload = SharePayload(
+        type="playlist",
+        title="Playlist",
+        tracks=[TrackStub(title="x" * (50 * 1024))],
+    )
+
+    with (
+        patch.object(provider, "_build_payload", new=AsyncMock(return_value=payload)),
+        pytest.raises(InvalidDataError) as err,
+    ):
+        await provider.generate_share_link("library://playlist/1")
+
+    assert err.value.translation_key == "share_playlist_too_large"
+
+
 async def test_resolve_keeps_release_track_id_match_despite_version_label_drift() -> None:
     """A release-specific MusicBrainz ID is stronger than provider version labels."""
     provider = _provider()
@@ -186,6 +206,23 @@ async def test_resolve_rejects_version_mismatch_for_recording_id() -> None:
     payload = SharePayload(type="track", title="Track", version="Live", mbid="recording-mbid")
 
     assert await provider._resolve_media_item(payload, allow_search=False) is None
+    mass.music.tracks.get.assert_not_called()
+
+
+async def test_resolve_unversioned_track_rejects_versioned_recording_id() -> None:
+    """An unversioned share must not resolve to a version-specific recording ID."""
+    provider = _provider()
+    mass = _mass(provider)
+    mass.music.get_controller.return_value.get_item_by_external_id = AsyncMock(
+        return_value=MagicMock(item_id="live-recording", provider="catalog--1", version="Live")
+    )
+
+    assert (
+        await provider._resolve_media_item(
+            SharePayload(type="track", title="Track", isrc=ISRC), allow_search=False
+        )
+        is None
+    )
     mass.music.tracks.get.assert_not_called()
 
 
@@ -317,6 +354,43 @@ async def test_resolve_search_rejects_different_track_version() -> None:
     )
 
     assert result is None
+
+
+async def test_resolve_unversioned_track_rejects_versioned_search_result() -> None:
+    """Search fallback must not select an explicitly versioned recording."""
+    provider = _provider()
+    live = MagicMock()
+    live.name = "Track"
+    live.artist_str = "Artist"
+    live.version = "Live"
+    _mass(provider).music.search = AsyncMock(
+        return_value=MagicMock(tracks=[live], albums=[], artists=[])
+    )
+
+    result = await provider._resolve_media_item(
+        SharePayload(type="track", title="Track", artist="Artist")
+    )
+
+    assert result is None
+
+
+async def test_unversioned_track_search_accepts_standard_candidate() -> None:
+    """An unversioned share may resolve to a standard, unversioned search result."""
+    provider = _provider()
+    standard = MagicMock()
+    standard.name = "Track"
+    standard.artist_str = "Artist"
+    standard.version = ""
+    _mass(provider).music.search = AsyncMock(
+        return_value=MagicMock(tracks=[standard], albums=[], artists=[])
+    )
+
+    assert (
+        await provider._resolve_media_item(
+            SharePayload(type="track", title="Track", artist="Artist")
+        )
+        is standard
+    )
 
 
 async def test_resolve_falls_back_to_search_after_external_id_provider_failure() -> None:
@@ -453,6 +527,27 @@ async def test_external_http_service_throttles_transient_statuses(
     get_request.assert_called_once()
     if status == 429:
         assert client.throttler.cooldown_remaining >= 36
+
+
+async def test_deezer_quota_json_error_is_rate_limited() -> None:
+    """Treat Deezer's quota error response as a rate limit even with HTTP 200."""
+    mass = MagicMock()
+    response = MagicMock(status=200, headers={})
+    response.json = AsyncMock(return_value={"error": {"code": 4, "message": "Quota exceeded"}})
+    request_context = MagicMock()
+    request_context.__aenter__ = AsyncMock(return_value=response)
+    request_context.__aexit__ = AsyncMock(return_value=False)
+    client = _ShareHTTPClient(mass, "Deezer")
+    client.throttler.retry_attempts = 1
+
+    with (
+        patch.object(mass.http_session, "get", MagicMock(return_value=request_context)),
+        patch.object(client.throttler.throttler, "acquire", AsyncMock(return_value=0)),
+        pytest.raises(RetriesExhausted),
+    ):
+        await client.get_json("https://api.deezer.com/test")
+
+    assert client.throttler.cooldown_remaining > 0
 
 
 @pytest.mark.parametrize(
@@ -685,6 +780,19 @@ def test_payload_uses_compact_provider_and_artwork_refs_without_version_field() 
     assert expand_provider_ref("apple_music", decoded.provider_refs["apple_music"]) == apple_url
     assert "https://" not in decoded_json
     assert '"v"' not in decoded_json
+
+
+def test_playlist_payload_omits_null_track_fields() -> None:
+    """Nested playlist stubs omit null fields from their serialized payload."""
+    payload = SharePayload(
+        type="playlist",
+        title="Playlist",
+        tracks=[TrackStub(title="Unversioned track")],
+    )
+
+    decoded = json.loads(base64.urlsafe_b64decode(payload.to_base64()).decode())
+
+    assert decoded["tracks"] == [{"title": "Unversioned track"}]
 
 
 def test_build_provider_links_ignores_non_apple_mapping_urls() -> None:

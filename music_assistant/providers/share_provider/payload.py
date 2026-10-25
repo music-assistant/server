@@ -54,7 +54,7 @@ class SharePayload:
 
     def to_base64(self) -> str:
         """Encode payload as URL-safe base64 JSON."""
-        data = {key: value for key, value in asdict(self).items() if value is not None}
+        data = _drop_none(asdict(self))
         return base64.urlsafe_b64encode(json.dumps(data, separators=(",", ":")).encode()).decode()
 
     @classmethod
@@ -154,3 +154,11 @@ def _validated_provider_refs(value: object, error_message: str) -> dict[str, str
             raise ValueError(error_message)
         refs[domain] = ref
     return refs
+
+
+def _drop_none(value: object) -> object:
+    if isinstance(value, dict):
+        return {key: _drop_none(item) for key, item in value.items() if item is not None}
+    if isinstance(value, list):
+        return [_drop_none(item) for item in value]
+    return value

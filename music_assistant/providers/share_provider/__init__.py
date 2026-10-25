@@ -68,6 +68,8 @@ if TYPE_CHECKING:
 
 CONF_SHARE_BASE_URL = "share_base_url"
 DEFAULT_SHARE_BASE_URL = "https://share.music-assistant.io"
+# Leave room for the API command envelope under the 64 KiB fallback DataChannel limit.
+MAX_SHARE_PLAYLIST_PAYLOAD_SIZE = 48 * 1024
 LOGGER = logging.getLogger(__name__)
 __all__ = ["SharePayload", "ShareProvider", "TrackStub", "setup"]
 
@@ -153,8 +155,15 @@ class ShareProvider(PluginProvider):
         if isinstance(item, BrowseFolder):
             raise InvalidDataError("Sharing browse folders is not supported")
         payload = await self._build_payload(item)
+        encoded_payload = payload.to_base64()
+        if payload.type == "playlist" and len(encoded_payload) > MAX_SHARE_PLAYLIST_PAYLOAD_SIZE:
+            raise InvalidDataError(
+                "This playlist is too large to share.",
+                translation_key="share_playlist_too_large",
+                translation_owner=self.translation_owner,
+            )
         base_url = self.config.get_value(CONF_SHARE_BASE_URL) or DEFAULT_SHARE_BASE_URL
-        return f"{base_url}/#{payload.to_base64()}"
+        return f"{base_url}/#{encoded_payload}"
 
     async def resolve_share_link(
         self, encoded: str, allow_search: bool = True
@@ -457,10 +466,9 @@ class ShareProvider(PluginProvider):
                 continue
             if item is not None and not isinstance(item, ItemMapping):
                 if media_type == MediaType.TRACK:
-                    if (
-                        payload.version
-                        and external_id_type != ExternalID.MB_TRACK
-                        and not compare_version(payload.version, item.version)
+                    item_version = item.version if isinstance(item.version, str) else ""
+                    if external_id_type != ExternalID.MB_TRACK and not compare_version(
+                        payload.version or "", item_version
                     ):
                         continue
                     try:
@@ -511,22 +519,30 @@ class ShareProvider(PluginProvider):
                 or compare_strings(payload.artist, item.artist_str, strict=False)
             ):
                 continue
-            if (
+            is_track = payload.type == MediaType.TRACK.value
+            item_version = item.version if isinstance(item.version, str) else ""
+            if is_track:
+                if not compare_version(payload.version or "", item_version):
+                    continue
+            elif (
                 payload.version
                 and item.version
                 and not compare_version(payload.version, item.version)
             ):
                 continue
+            version_matches = (
+                compare_version(payload.version or "", item_version)
+                if is_track
+                else not payload.version
+                or bool(item.version and compare_version(payload.version or "", item_version))
+            )
             score = (
                 int(compare_strings(payload.title, item.name, strict=True)),
                 int(
                     not payload.artist
                     or compare_strings(payload.artist, item.artist_str, strict=True)
                 ),
-                int(
-                    not payload.version
-                    or (bool(item.version) and compare_version(payload.version, item.version))
-                ),
+                int(version_matches),
             )
             if score > best_score:
                 best_score = score
