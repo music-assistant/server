@@ -28,7 +28,7 @@ if TYPE_CHECKING:
     from mutagen.mp4 import MP4Tags
 
 from music_assistant.constants import MASS_LOGGER_NAME, UNKNOWN_ARTIST
-from music_assistant.helpers.ffmpeg import tls_verify_args
+from music_assistant.helpers.ffmpeg import tls_verify_args, user_agent_args
 from music_assistant.helpers.json import json_loads
 from music_assistant.helpers.process import (
     AsyncProcess,
@@ -806,6 +806,7 @@ def parse_tags(
         "-print_format",
         "json",
         *tls_verify_args(source, verify_ssl),
+        *user_agent_args(source),
         "-i",
         source,
     )
@@ -880,6 +881,7 @@ def get_file_duration(
         "-loglevel",
         "info",
         *tls_verify_args(input_file, verify_ssl),
+        *user_agent_args(input_file),
         "-i",
         input_file,
         "-f",
@@ -1773,6 +1775,7 @@ async def _get_embedded_image(
         # URL may not open local files, whatever either of them references
         "-protocol_whitelist",
         "http,https,tcp,tls" if is_url else "file",
+        *user_agent_args(source),
         "-i",
         source,
         "-an",
