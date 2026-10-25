@@ -106,7 +106,9 @@ def test_an_unknown_app_gets_the_controls_it_reports() -> None:
     status.media_session_id = 1
     status.supports_pause = True
     status.supports_seek = False
-    status.supports_queue_next = False
+    # next and previous share one control, so it needs both
+    status.supports_queue_next = True
+    status.supports_queue_prev = False
 
     ChromecastPlayer._handle_media_status(fake, status)
 

@@ -819,7 +819,11 @@ class ChromecastPlayer(Player):
                 can_play_pause=known_app or (reports_commands and bool(status.supports_pause)),
                 can_seek=known_app or (reports_commands and bool(status.supports_seek)),
                 can_next_previous=known_app
-                or (reports_commands and bool(status.supports_queue_next)),
+                or (
+                    reports_commands
+                    and bool(status.supports_queue_next)
+                    and bool(status.supports_queue_prev)
+                ),
             )
             current = next((s for s in self._attr_source_list if s.id == app_id), None)
             if current is None:
