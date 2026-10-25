@@ -35,6 +35,7 @@ from music_assistant_models.enums import (
     PlaybackState,
     PlayerFeature,
     PlayerType,
+    SleepTimerMode,
 )
 from music_assistant_models.errors import (
     InsufficientPermissions,
@@ -45,9 +46,11 @@ from music_assistant_models.errors import (
     ResourceBusyError,
     UnsupportedFeaturedException,
 )
+from music_assistant_models.media_items import Audiobook, MediaItemChapter
 from music_assistant_models.player import DeviceInfo, PlayerMedia, PlayerSource
 from music_assistant_models.player_control import PlayerControl
 from music_assistant_models.player_queue import PlayerQueue
+from music_assistant_models.queue_item import QueueItem
 
 from music_assistant.constants import (
     ANNOUNCE_ALERT_FILE,
@@ -72,6 +75,7 @@ from music_assistant.controllers.players import PlayerController
 from music_assistant.controllers.players import controller as players_controller
 from music_assistant.controllers.players.announcements import ANNOUNCEMENT_TTS_TIMEOUT
 from music_assistant.controllers.players.constants import PlayerLockPurpose
+from music_assistant.controllers.players.helpers import get_sleep_timer_stop_position
 from music_assistant.controllers.webserver.helpers.auth_middleware import (
     current_user,
     get_current_user,
@@ -119,6 +123,68 @@ def _stub_queue(queue_id: str) -> PlayerQueue:
         display_name=queue_id,
         available=True,
         items=0,
+    )
+
+
+BOOK_CHAPTERS = [
+    MediaItemChapter(position=1, name="One", start=0, end=100),
+    MediaItemChapter(position=2, name="Two", start=100),
+    MediaItemChapter(position=3, name="Three", start=250),
+]
+
+
+def _book_item(
+    queue_item_id: str = "item_1",
+    chapters: list[MediaItemChapter] | None = BOOK_CHAPTERS,
+    duration: int | None = 600,
+) -> QueueItem:
+    """Build a queue item for an audiobook with the given chapters."""
+    book = Audiobook(item_id="book_1", provider="library", name="Book 1", provider_mappings=set())
+    book.metadata.chapters = chapters
+    return QueueItem(
+        queue_id="player_1",
+        queue_item_id=queue_item_id,
+        name="Book 1",
+        duration=duration,
+        media_item=book,
+    )
+
+
+def _chapter_sleep_timer(
+    mock_mass: MagicMock,
+) -> tuple[PlayerController, MockPlayer, PlayerQueue]:
+    """Set an END_OF_CHAPTER sleep timer on a book playing at 40 seconds, double speed."""
+    controller = PlayerController(mock_mass)
+    provider = MockProvider("test_provider", instance_id="test", mass=mock_mass)
+    player = MockPlayer(provider, "player_1", "Player 1")
+    controller._players = {"player_1": player}
+    mock_mass.players = controller
+    queue = _stub_queue("player_1")
+    queue.active = True
+    queue.state = PlaybackState.PLAYING
+    queue.current_item = _book_item()
+    queue.elapsed_time = 40
+    queue.elapsed_time_last_updated = time.time()
+    queue.playback_speed = 2.0
+    mock_mass.player_queues.get.return_value = queue
+    controller.set_sleep_timer("player_1", mode=SleepTimerMode.END_OF_CHAPTER)
+    return controller, player, queue
+
+
+def _assert_sleep_timer_armed(
+    mock_mass: MagicMock, controller: PlayerController, delay: float
+) -> None:
+    """Assert the sleep timer was last armed to fire after the delay."""
+    timer_calls = [
+        c
+        for c in mock_mass.call_later.call_args_list
+        if c.kwargs.get("task_id") == "player_sleep_timer_player_1"
+    ]
+    assert timer_calls[-1] == call(
+        pytest.approx(delay, abs=0.1),
+        controller._handle_sleep_timer_expired,
+        "player_1",
+        task_id="player_sleep_timer_player_1",
     )
 
 
@@ -972,6 +1038,7 @@ class TestSleepTimer:
 
         assert controller.get_sleep_timer("player_1") == expires_at
         assert player.sleep_timer_expires_at == expires_at
+        assert player.state.sleep_timer_mode == SleepTimerMode.DURATION
         mock_mass.call_later.assert_called_with(
             30,
             controller._handle_sleep_timer_expired,
@@ -994,6 +1061,7 @@ class TestSleepTimer:
             object_id="player_1",
             data=None,
         )
+        assert player.state.sleep_timer_mode is None
 
     async def test_sleep_timer_removed_when_player_unregistered(self, mock_mass: MagicMock) -> None:
         """Unregistering a player cancels and clears its sleep timer."""
@@ -1001,6 +1069,7 @@ class TestSleepTimer:
         provider = MockProvider("test_provider", instance_id="test", mass=mock_mass)
         player = MockPlayer(provider, "player_1", "Player 1")
         controller._players = {"player_1": player}
+        player.set_sleep_timer_mode(SleepTimerMode.DURATION)
         player.set_sleep_timer_expires_at(123.0)
 
         await controller.unregister("player_1")
@@ -1014,6 +1083,7 @@ class TestSleepTimer:
         provider = MockProvider("test_provider", instance_id="test", mass=mock_mass)
         player = MockPlayer(provider, "player_1", "Player 1")
         controller._players = {"player_1": player}
+        player.set_sleep_timer_mode(SleepTimerMode.DURATION)
         player.set_sleep_timer_expires_at(123.0)
         controller.cmd_stop = AsyncMock()  # type: ignore[method-assign]
 
@@ -1035,10 +1105,130 @@ class TestSleepTimer:
         player = MockPlayer(provider, "player_1", "Player 1")
         controller._players = {"player_1": player}
 
-        # 0/-30 are non-positive; 10**400 exceeds the float range for the expiry math
-        for invalid in (0, -30, 10**400):
+        # None/0/-30 are no positive duration; 10**400 exceeds the float range for the expiry math
+        for invalid in (None, 0, -30, 10**400):
             with pytest.raises(InvalidDataError):
                 controller.set_sleep_timer("player_1", invalid)
+
+        assert controller.get_sleep_timer("player_1") is None
+        mock_mass.call_later.assert_not_called()
+
+    @pytest.mark.parametrize(
+        ("mode", "chapters", "duration", "elapsed_time", "expected"),
+        [
+            (SleepTimerMode.END_OF_ITEM, BOOK_CHAPTERS, 600, 50, 600),
+            (SleepTimerMode.END_OF_CHAPTER, BOOK_CHAPTERS, 600, 50, 100),
+            # a chapter without an end runs to the next chapter, the last one to the item end
+            (SleepTimerMode.END_OF_CHAPTER, BOOK_CHAPTERS, 600, 100, 250),
+            (SleepTimerMode.END_OF_CHAPTER, BOOK_CHAPTERS, 600, 300, 600),
+            (SleepTimerMode.END_OF_CHAPTER, None, 600, 50, 600),
+            (SleepTimerMode.END_OF_CHAPTER, BOOK_CHAPTERS, None, 50, None),
+        ],
+    )
+    def test_sleep_timer_stop_position(
+        self,
+        mode: SleepTimerMode,
+        chapters: list[MediaItemChapter] | None,
+        duration: int | None,
+        elapsed_time: float,
+        expected: float | None,
+    ) -> None:
+        """The stop position is the end of the chapter or item playing at the position."""
+        queue_item = _book_item(chapters=chapters, duration=duration)
+        assert get_sleep_timer_stop_position(mode, queue_item, elapsed_time) == expected
+
+    def test_end_of_chapter_timer_follows_playback(self, mock_mass: MagicMock) -> None:
+        """The timer waits while paused, re-pins on a user seek and stops a played out item."""
+        controller, player, queue = _chapter_sleep_timer(mock_mass)
+        # chapter one ends at 100: 60 seconds of book at double speed
+        assert player.state.sleep_timer_expires_at == pytest.approx(time.time() + 30, abs=0.1)
+        _assert_sleep_timer_armed(mock_mass, controller, 30)
+
+        # a pause stops the countdown, the timer stays set
+        queue.state = PlaybackState.PAUSED
+        controller.update_sleep_timer("player_1")
+        mock_mass.cancel_timer.assert_called_with("player_sleep_timer_player_1")
+        assert player.state.sleep_timer_expires_at is None
+        assert player.state.sleep_timer_mode == SleepTimerMode.END_OF_CHAPTER
+
+        queue.state = PlaybackState.PLAYING
+        queue.elapsed_time = 90
+        queue.elapsed_time_last_updated = time.time()
+        queue.playback_speed = 1.0
+        controller.update_sleep_timer("player_1")
+        _assert_sleep_timer_armed(mock_mass, controller, 10)
+
+        # a user seek into chapter two moves the stop to its end
+        queue.elapsed_time = 150
+        queue.elapsed_time_last_updated = time.time()
+        controller.update_sleep_timer("player_1", repin=True)
+        _assert_sleep_timer_armed(mock_mass, controller, 100)
+
+        # the next item started before the timer fired
+        queue.current_item = _book_item("item_2")
+        queue.elapsed_time = 0
+        controller.update_sleep_timer("player_1")
+        _assert_sleep_timer_armed(mock_mass, controller, 0)
+
+    def test_stopped_queue_ends_the_chapter_timer(self, mock_mass: MagicMock) -> None:
+        """Playback that stops before the stop position fires the timer at once."""
+        controller, _, queue = _chapter_sleep_timer(mock_mass)
+
+        queue.state = PlaybackState.IDLE
+        controller.update_sleep_timer("player_1")
+
+        _assert_sleep_timer_armed(mock_mass, controller, 0)
+
+    @pytest.mark.parametrize("queue_change", [{"ended": True}, {"active": False}])
+    def test_chapter_timer_clears_without_its_queue(
+        self, mock_mass: MagicMock, queue_change: dict[str, bool]
+    ) -> None:
+        """A queue that ended or lost the player has nothing left for the timer to wait for."""
+        controller, player, queue = _chapter_sleep_timer(mock_mass)
+
+        for attribute, value in queue_change.items():
+            setattr(queue, attribute, value)
+        controller.update_sleep_timer("player_1")
+
+        assert player.state.sleep_timer_expires_at is None
+        assert player.state.sleep_timer_mode is None
+
+    @pytest.mark.parametrize(
+        ("mode", "queue_item", "queue_state", "queue_ended"),
+        [
+            (SleepTimerMode.END_OF_ITEM, None, PlaybackState.PLAYING, False),
+            (
+                SleepTimerMode.END_OF_CHAPTER,
+                _book_item(duration=None),
+                PlaybackState.PLAYING,
+                False,
+            ),
+            (SleepTimerMode.END_OF_ITEM, _book_item(), PlaybackState.IDLE, False),
+            (SleepTimerMode.END_OF_ITEM, _book_item(), PlaybackState.IDLE, True),
+            (SleepTimerMode.UNKNOWN, _book_item(), PlaybackState.PLAYING, False),
+        ],
+    )
+    def test_set_sleep_timer_rejects_unusable_queue(
+        self,
+        mock_mass: MagicMock,
+        mode: SleepTimerMode,
+        queue_item: QueueItem | None,
+        queue_state: PlaybackState,
+        queue_ended: bool,
+    ) -> None:
+        """A mode needs an item with a known end that plays from the player's queue."""
+        controller = PlayerController(mock_mass)
+        provider = MockProvider("test_provider", instance_id="test", mass=mock_mass)
+        controller._players = {"player_1": MockPlayer(provider, "player_1", "Player 1")}
+        queue = _stub_queue("player_1")
+        queue.active = True
+        queue.current_item = queue_item
+        queue.state = queue_state
+        queue.ended = queue_ended
+        mock_mass.player_queues.get.return_value = queue
+
+        with pytest.raises(InvalidDataError):
+            controller.set_sleep_timer("player_1", mode=mode)
 
         assert controller.get_sleep_timer("player_1") is None
         mock_mass.call_later.assert_not_called()

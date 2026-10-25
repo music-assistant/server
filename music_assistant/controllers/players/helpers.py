@@ -10,8 +10,9 @@ from __future__ import annotations
 import asyncio
 import functools
 from collections.abc import Awaitable, Callable, Coroutine
-from typing import TYPE_CHECKING, Any, Concatenate, TypedDict, overload
+from typing import TYPE_CHECKING, Any, Concatenate, NamedTuple, TypedDict, overload
 
+from music_assistant_models.enums import SleepTimerMode
 from music_assistant_models.errors import (
     InsufficientPermissions,
     MusicAssistantError,
@@ -28,6 +29,7 @@ if TYPE_CHECKING:
     import logging
 
     from music_assistant_models.player_control import PlayerControl
+    from music_assistant_models.queue_item import QueueItem
 
     from music_assistant.models.player import Player
 
@@ -43,6 +45,44 @@ class AnnounceData(TypedDict):
     # player that fetches the announcement stream when it is not the
     # visible player itself (e.g. a linked protocol player)
     announce_player_id: str | None
+
+
+class SleepTimerTarget(NamedTuple):
+    """Queue item and media position at which a sleep timer stops playback."""
+
+    queue_item_id: str
+    stop_position: float
+
+
+def get_sleep_timer_stop_position(
+    mode: SleepTimerMode, queue_item: QueueItem, elapsed_time: float
+) -> float | None:
+    """
+    Return the position in the queue item at which a sleep timer in the given mode stops it.
+
+    Returns None when the item has no known end. Outside of any chapter, END_OF_CHAPTER stops
+    at the end of the item.
+
+    :param mode: END_OF_ITEM or END_OF_CHAPTER.
+    :param queue_item: The queue item that is playing.
+    :param elapsed_time: The (media-time) position in the queue item.
+    """
+    if not queue_item.duration:
+        return None
+    item_end = float(queue_item.duration)
+    if mode != SleepTimerMode.END_OF_CHAPTER or queue_item.media_item is None:
+        return item_end
+    chapters = sorted(queue_item.media_item.metadata.chapters or [], key=lambda x: x.start)
+    for index, chapter in enumerate(chapters):
+        if chapter.end is not None:
+            chapter_end = chapter.end
+        elif index + 1 < len(chapters):
+            chapter_end = chapters[index + 1].start
+        else:
+            chapter_end = item_end
+        if chapter.start <= elapsed_time < chapter_end:
+            return chapter_end
+    return item_end
 
 
 @overload

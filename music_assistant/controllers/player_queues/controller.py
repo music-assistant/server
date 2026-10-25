@@ -738,6 +738,7 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         queue.index_in_buffer = None
         queue.resume_pos = 0
         self.mass.create_task(self._cleanup_queue_audio_data(queue_id))
+        self.mass.players.update_sleep_timer(queue_id)
         self.signal_update(queue_id)
 
     @api_command("player_queues/save_as_playlist", required_scope=Scope.LIBRARY_WRITE)
@@ -1157,6 +1158,7 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
                         # reports position don't carry the previous item's elapsed_time
                         queue.elapsed_time = seek_position if index == requested_index else 0
                         queue.elapsed_time_last_updated = time.time()
+                        self.mass.players.update_sleep_timer(queue_id, repin=True)
                         if (prev_state := queue_data.prev_state) and prev_state[
                             "current_item_id"
                         ] == queue_item.queue_item_id:
@@ -1429,6 +1431,7 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
             return
         # queue is active and preflight checks passed, update the queue details
         self._update_queue_from_player(player)
+        self.mass.players.update_sleep_timer(queue_id)
 
     def on_player_elapsed_time_corrected(self, player: Player) -> None:
         """Correct the queue's timing base if the player's real elapsed_time diverged."""
@@ -1464,6 +1467,9 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         queue.elapsed_time = elapsed_time
         queue.elapsed_time_last_updated = now
         queue.playback_speed = speed
+        # a skip sets the next item before play_index re-pins the sleep timer to it
+        if not self._queue_data[queue_id].transitioning:
+            self.mass.players.update_sleep_timer(queue_id)
         self.mass.signal_event(
             EventType.QUEUE_TIME_UPDATED,
             object_id=queue_id,
