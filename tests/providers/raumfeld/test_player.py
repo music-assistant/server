@@ -2023,3 +2023,89 @@ async def test_a_play_mode_change_after_ma_took_over_is_refused() -> None:
         with pytest.raises(PlayerCommandFailed, match="no longer plays"):
             await change
     external.assert_not_awaited()
+
+
+def _casting(player: RaumfeldPlayer, state: PlaybackState, app: str | None = "tunein") -> MagicMock:
+    """Link a Chromecast output to the player that reports an app cast to the speaker."""
+    cast_player = MagicMock()
+    cast_player.active_source = app
+    cast_player.playback_state = state
+    cast_player.current_media = PlayerMedia(
+        uri="https://stream.example.com/radio",
+        title="Radio 538",
+        artist="Live",
+        image_url="https://example.com/logo.png",
+    )
+    source = MagicMock(id="tunein")
+    source.name = "TuneIn"
+    cast_player.source_list = [source]
+    cast_player.elapsed_time = 12.0
+    cast_player.elapsed_time_last_updated = 1000.0
+    cast("MagicMock", player.mass.players.get_player).side_effect = lambda pid: (
+        cast_player if pid == "cast_bar" else None
+    )
+    return cast_player
+
+
+async def _poll_idle_room(player: RaumfeldPlayer) -> None:
+    """Poll a room that plays nothing through the host."""
+    links = [MagicMock(protocol_domain="chromecast", output_protocol_id="cast_bar")]
+    with (
+        patch.object(RaumfeldPlayer, "synced_to", new_callable=PropertyMock) as synced_to,
+        patch.object(
+            RaumfeldPlayer, "linked_output_protocols", new_callable=PropertyMock
+        ) as linked,
+        patch.object(player, "update_state"),
+        patch.object(player, "_update_power"),
+        patch.object(player, "_held_for_watcher", return_value=False),
+        patch.object(player, "_plays_spotify_connect", return_value=False),
+        patch.object(player, "_active_zone", return_value=None),
+        patch.object(player, "_update_volume", AsyncMock()),
+    ):
+        synced_to.return_value = None
+        linked.return_value = links
+        await player.poll()
+
+
+async def test_an_app_cast_to_the_speaker_shows_as_an_external_source() -> None:
+    """Playback cast to the room's speaker, past the host, is shown with its app and media."""
+    player, _ = _external_player()
+    player._attr_playback_state = PlaybackState.IDLE
+    _casting(player, PlaybackState.PLAYING)
+
+    await _poll_idle_room(player)
+
+    assert player._attr_playback_state == PlaybackState.PLAYING
+    assert player._attr_active_source == "tunein"
+    assert player._attr_source_list[-1].name == "TuneIn"
+    assert player._attr_source_list[-1].passive
+    assert player._attr_current_media is not None
+    assert player._attr_current_media.title == "Radio 538"
+    assert player._attr_elapsed_time == 12.0
+    assert PlayerFeature.PAUSE not in player._attr_supported_features
+
+
+async def test_a_cast_that_ended_clears_the_source() -> None:
+    """Once the cast app stops, the room shows nothing playing again."""
+    player, _ = _external_player()
+    cast_player = _casting(player, PlaybackState.PLAYING)
+    await _poll_idle_room(player)
+
+    cast_player.playback_state = PlaybackState.IDLE
+    await _poll_idle_room(player)
+
+    assert player._attr_playback_state == PlaybackState.IDLE
+    assert player._attr_active_source is None
+    assert player._attr_current_media is None
+
+
+async def test_music_assistant_casting_itself_is_no_external_source() -> None:
+    """A Chromecast session MA started reports no app source, so the room is left alone."""
+    player, _ = _external_player()
+    player._attr_playback_state = PlaybackState.IDLE
+    _casting(player, PlaybackState.PLAYING, app=None)
+
+    await _poll_idle_room(player)
+
+    assert player._attr_playback_state == PlaybackState.IDLE
+    assert player._attr_active_source is None

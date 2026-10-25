@@ -873,6 +873,11 @@ class RaumfeldPlayer(Player):
                 await self._poll_room_playback(host)
                 return
             await self._update_volume(host)
+            # ... or an app casts to the room's speaker, past the host
+            if (cast := self._cast_playback()) is not None:
+                self._show_cast_playback(cast)
+                self.update_state()
+                return
             self._clear_external()
             self._attr_playback_state = PlaybackState.IDLE
             self._attr_poll_interval = IDLE_POLL_INTERVAL
@@ -1015,6 +1020,55 @@ class RaumfeldPlayer(Player):
             return bool(self.raumfeld.host.room_is_spotify_single_room(self.room))
         except HOST_ERRORS:
             return False
+
+    def _cast_playback(self) -> Player | None:
+        """Return the room's linked Chromecast output while an app cast to the speaker plays."""
+        for link in self.linked_output_protocols:
+            if link.protocol_domain != "chromecast":
+                continue
+            cast = self.mass.players.get_player(link.output_protocol_id)
+            if (
+                cast is not None
+                # a Cast app MA did not start; MA's own session reports no source
+                and cast.active_source is not None
+                and cast.playback_state in (PlaybackState.PLAYING, PlaybackState.PAUSED)
+            ):
+                return cast
+        return None
+
+    def _show_cast_playback(self, cast: Player) -> None:
+        """
+        Show what an app cast to the room's speaker plays, as an external source.
+
+        :param cast: The room's linked Chromecast output, playing a Cast app.
+        """
+        # The speaker's built-in Chromecast plays it without the host, so the room's zone
+        # knows nothing of it. The Chromecast output does, but as a protocol player under
+        # this one it is never shown on its own.
+        media = cast.current_media
+        app = next((s.name for s in cast.source_list if s.id == cast.active_source), None)
+        self._set_external(
+            {
+                "title": media.title if media else None,
+                "artist": media.artist if media else None,
+                "album": media.album if media else None,
+                "image_url": media.image_url if media else None,
+                "section": app or cast.active_source,
+                "item_id": None,
+            },
+            # the app is controlled from the device that casts it
+            actions=None,
+            duration=media.duration if media else None,
+            via_room=True,
+        )
+        self._attr_playback_state = cast.playback_state
+        self._attr_elapsed_time = cast.elapsed_time
+        self._attr_elapsed_time_last_updated = cast.elapsed_time_last_updated
+        self._attr_poll_interval = (
+            PLAYING_POLL_INTERVAL
+            if cast.playback_state == PlaybackState.PLAYING
+            else IDLE_POLL_INTERVAL
+        )
 
     async def _poll_room_playback(self, host: hassfeld.RaumfeldHost) -> None:
         """Read what the room's own renderer plays (Spotify Connect), outside any zone."""
