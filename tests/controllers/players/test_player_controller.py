@@ -1121,6 +1121,17 @@ class TestSleepTimer:
             # a chapter without an end runs to the next chapter, the last one to the item end
             (SleepTimerMode.END_OF_CHAPTER, BOOK_CHAPTERS, 600, 100, 250),
             (SleepTimerMode.END_OF_CHAPTER, BOOK_CHAPTERS, 600, 300, 600),
+            # a seek to the chapter starting at 100.5 lands on the whole second before it
+            (
+                SleepTimerMode.END_OF_CHAPTER,
+                [
+                    MediaItemChapter(position=1, name="One", start=0, end=100.5),
+                    MediaItemChapter(position=2, name="Two", start=100.5, end=200),
+                ],
+                600,
+                100,
+                200,
+            ),
             (SleepTimerMode.END_OF_CHAPTER, None, 600, 50, 600),
             (SleepTimerMode.END_OF_CHAPTER, BOOK_CHAPTERS, None, 50, None),
         ],

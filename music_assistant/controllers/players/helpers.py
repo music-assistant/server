@@ -73,6 +73,8 @@ def get_sleep_timer_stop_position(
     if mode != SleepTimerMode.END_OF_CHAPTER or queue_item.media_item is None:
         return item_end
     chapters = sorted(queue_item.media_item.metadata.chapters or [], key=lambda x: x.start)
+    # a seek takes whole seconds, so a seek to a chapter start lands up to a second before it
+    position = elapsed_time + 1
     for index, chapter in enumerate(chapters):
         if chapter.end is not None:
             chapter_end = chapter.end
@@ -80,7 +82,7 @@ def get_sleep_timer_stop_position(
             chapter_end = chapters[index + 1].start
         else:
             chapter_end = item_end
-        if chapter.start <= elapsed_time < chapter_end:
+        if chapter.start <= position < chapter_end:
             return chapter_end
     return item_end
 
