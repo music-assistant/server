@@ -65,7 +65,15 @@ class _ShareHTTPClient:
                     )
                 if response.status != 200:
                     return None
-                return cast("object", await response.json())
+                data = await response.json()
+                if (
+                    self.service == "Deezer"
+                    and isinstance(data, dict)
+                    and isinstance(data.get("error"), dict)
+                    and data["error"].get("code") == 4
+                ):
+                    raise RateLimited("Deezer rate limited the share lookup", backoff_time=1)
+                return cast("object", data)
         except (ClientError, TimeoutError) as err:
             raise ResourceTemporarilyUnavailable(
                 f"{self.service} request failed", backoff_time=1
