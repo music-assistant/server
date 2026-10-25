@@ -925,7 +925,8 @@ class PartyPlugin(PluginProvider):
             When left out, the vote is for the track playing when the vote arrives.
         :returns: Result dict with success status, whether the track was skipped,
             whether this vote was counted, whether the track changed before the vote
-            was counted and the current vote tally.
+            was counted, whether enough votes were cast but there is no next track to
+            skip to, and the current vote tally.
         """
         # Check if guest access and skip are enabled
         if not self.config.get_value(CONF_ENABLE_GUEST_ACCESS):
@@ -970,6 +971,7 @@ class PartyPlugin(PluginProvider):
                     "skipped": False,
                     "vote_counted": False,
                     "song_changed": True,
+                    "no_next_track": False,
                     "votes": 0,
                     "votes_required": votes_required,
                 }
@@ -985,11 +987,21 @@ class PartyPlugin(PluginProvider):
             vote_counted = voter_id not in self._skip_voters
             self._skip_voters.add(voter_id)
             votes = len(self._skip_voters)
-            skipped = votes >= votes_required
+            skipped = False
+            if votes >= votes_required:
+                await self.mass.player_queues.next(queue_id)
+                # next() returns without skipping when there is no next track
+                # (e.g. the last track of the queue with repeat off)
+                queue = self.mass.player_queues.get(queue_id)
+                skipped = bool(
+                    queue
+                    and queue.current_item
+                    and queue.current_item.queue_item_id != current_item.queue_item_id
+                )
+            no_next_track = votes >= votes_required and not skipped
 
             if skipped:
                 self._clear_skip_votes()
-                await self.mass.player_queues.next(queue_id)
             elif vote_counted:
                 # Store the tally on the item so every guest sees the vote progress
                 current_item.extra_attributes[ATTR_PARTY_SKIP_VOTES] = votes
@@ -997,6 +1009,8 @@ class PartyPlugin(PluginProvider):
 
         if skipped:
             self.logger.info("Guests skipped current track on queue: %s", queue_id)
+        elif no_next_track:
+            self.logger.info("Guests voted to skip, but there is no next track on %s", queue_id)
         else:
             self.logger.info(
                 "Guest voted to skip current track on queue %s (%d/%d)",
@@ -1011,6 +1025,7 @@ class PartyPlugin(PluginProvider):
             "skipped": skipped,
             "vote_counted": vote_counted,
             "song_changed": False,
+            "no_next_track": no_next_track,
             "votes": votes,
             "votes_required": votes_required,
         }
