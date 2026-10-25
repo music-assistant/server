@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING
 from aiohttp import web
 from music_assistant_models.enums import EventType
 
-from music_assistant.providers.plex.helpers import compute_client_id, player_client_headers
+from music_assistant.providers.plex.helpers import compute_client_id
 
 from .gdm import PlexGDMAdvertiser
 from .playback import PlaybackMixin
@@ -154,12 +154,6 @@ class PlexRemoteControlServer(QueueCommandsMixin, PlaybackMixin, QueueSyncMixin,
         # Flag to prevent circular updates when we modify the queue ourselves
         self._updating_from_plex = False
 
-        self.player = self.provider.mass.players.get_player(self._ma_player_id)  # type: ignore[arg-type]
-
-        self.device_name = f"{self.player.display_name}" if self.player else "Music Assistant"
-
-        self.headers = player_client_headers(self.client_id, self.device_name)
-
         self._setup_routes()
 
     def _setup_routes(self) -> None:
@@ -198,9 +192,11 @@ class PlexRemoteControlServer(QueueCommandsMixin, PlaybackMixin, QueueSyncMixin,
         LOGGER.info(f"Plex remote control server started on HTTP port {self.port}")
 
         if self._ma_player_id:
-            # this server reports the player's playback to Plex itself, with its play queue
+            # the Plex provider reports the player's playback to Plex, within this play queue
             self._unsub_callbacks.append(
-                self.provider.playback_reporter.skip_player(self._ma_player_id)
+                self.provider.playback_reporter.add_play_queue(
+                    self._ma_player_id, self._play_queue_params
+                )
             )
             self._unsub_callbacks.append(
                 self.provider.mass.subscribe(

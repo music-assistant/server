@@ -40,6 +40,7 @@ class _Timeline:
     position_ms: int
     duration_ms: int
     headers: dict[str, str]
+    play_queue_params: dict[str, str]
     seen_at: float
     reported_at: float = 0.0
     reported_state: str | None = None
@@ -61,7 +62,8 @@ class PlexPlaybackReporter:
     Report the tracks the Plex provider streams to its Plex server, as the player plays them.
 
     Each player shows up in the Now Playing view and the listening history of Plex as a
-    device of its own. A player that Plex Connect exposes is reported by Plex Connect.
+    device of its own. A queue that Plex Connect mirrors to a Plex play queue is reported
+    within that play queue.
     """
 
     def __init__(self, provider: PlexProvider) -> None:
@@ -74,7 +76,7 @@ class PlexPlaybackReporter:
         self.mass = provider.mass
         self.logger = provider.logger
         self._timelines: dict[str, _Timeline] = {}
-        self._skipped_players: list[str] = []
+        self._play_queues: dict[str, Callable[[PlayerQueue], dict[str, str]]] = {}
         self._wake = asyncio.Event()
         self._task: asyncio.Task[None] | None = None
         self._unsubscribe: Callable[[], None] | None = None
@@ -97,23 +99,25 @@ class PlexPlaybackReporter:
             self._task.cancel()
             self._task = None
 
-    def skip_player(self, player_id: str) -> Callable[[], None]:
+    def add_play_queue(
+        self, queue_id: str, play_queue_params: Callable[[PlayerQueue], dict[str, str]]
+    ) -> Callable[[], None]:
         """
-        Leave reporting the playback of a player to the caller.
+        Report the tracks of a queue within the Plex play queue it is mirrored to.
 
-        Returns a callable that hands the reporting back.
+        Returns a callable that stops reporting the queue within the play queue.
 
-        :param player_id: The player whose playback the caller reports to the Plex server.
+        :param queue_id: The queue that is mirrored to a Plex play queue.
+        :param play_queue_params: Returns the timeline params that place the current track
+            of the queue in its Plex play queue.
         """
-        self._skipped_players.append(player_id)
-        self._wake.set()
+        self._play_queues[queue_id] = play_queue_params
 
-        def resume() -> None:
-            with suppress(ValueError):
-                self._skipped_players.remove(player_id)
-            self._wake.set()
+        def remove() -> None:
+            if self._play_queues.get(queue_id) is play_queue_params:
+                del self._play_queues[queue_id]
 
-        return resume
+        return remove
 
     def _on_queue_event(self, _event: MassEvent) -> None:
         """Report a changed queue state without waiting for the next position report."""
@@ -146,12 +150,10 @@ class PlexPlaybackReporter:
     async def _report_queues(self) -> None:
         """Report the track each queue plays to the Plex server, where it changed or is due."""
         now = time.monotonic()
-        skipped_queue_ids = self._skipped_queue_ids()
         queue_ids: set[str] = set()
         for queue in self.mass.player_queues.all():
             queue_ids.add(queue.queue_id)
-            seen = None if queue.queue_id in skipped_queue_ids else self._seen_timeline(queue, now)
-            await self._report_queue(queue.queue_id, seen, now)
+            await self._report_queue(queue.queue_id, self._seen_timeline(queue, now), now)
         for queue_id in set(self._timelines) - queue_ids:
             await self._report_queue(queue_id, None, now)
 
@@ -201,6 +203,7 @@ class PlexPlaybackReporter:
             return None
         duration = streamdetails.duration or item.duration or 0
         client_id = compute_client_id(self.provider.instance_id, queue.queue_id)
+        play_queue_params = self._play_queues.get(queue.queue_id)
         return _Timeline(
             queue_item_id=item.queue_item_id,
             key=streamdetails.item_id,
@@ -208,18 +211,9 @@ class PlexPlaybackReporter:
             position_ms=round(queue.corrected_elapsed_time * 1000),
             duration_ms=round(duration * 1000),
             headers=player_client_headers(client_id, queue.display_name),
+            play_queue_params=play_queue_params(queue) if play_queue_params else {},
             seen_at=now,
         )
-
-    def _skipped_queue_ids(self) -> set[str]:
-        """Return the queues that play on a player whose playback is reported elsewhere."""
-        queue_ids: set[str] = set()
-        for player_id in self._skipped_players:
-            if (player := self.mass.players.get_player(player_id)) and (
-                queue := self.mass.players.get_active_queue(player)
-            ):
-                queue_ids.add(queue.queue_id)
-        return queue_ids
 
     async def _send(self, timeline: _Timeline, state: str, position_ms: int) -> None:
         """
@@ -235,6 +229,7 @@ class PlexPlaybackReporter:
             "state": state,
             "time": str(position_ms),
             "duration": str(timeline.duration_ms),
+            **timeline.play_queue_params,
         }
         try:
             await asyncio.to_thread(

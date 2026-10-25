@@ -222,25 +222,47 @@ async def test_stopped_playback_ends_the_report(clock: MagicMock, change: str) -
     ]
 
 
-@pytest.mark.usefixtures("clock")
-async def test_skipped_player_is_left_to_its_reporter() -> None:
-    """The queue of a player that Plex Connect reports is left alone until handed back."""
+async def test_mirrored_queue_is_reported_within_its_play_queue(clock: MagicMock) -> None:
+    """A queue that Plex Connect mirrors is reported within its Plex play queue until removed."""
     queue = _queue()
-    reporter = _reporter(queue)
-    player = MagicMock()
-    reporter.mass.players.get_player.return_value = player
-    reporter.mass.players.get_active_queue.return_value = queue
+    other_queue = _queue(queue_id="player2")
+    reporter = _reporter(queue, other_queue)
+    play_queue_item_ids = {"qi1": "901", "qi2": "902"}
 
-    resume = reporter.skip_player("player1")
+    remove = reporter.add_play_queue(
+        "player1",
+        lambda queue: {
+            "containerKey": "/playQueues/77",
+            "playQueueItemID": play_queue_item_ids[queue.current_item.queue_item_id],
+        },
+    )
     await reporter._report_queues()
-    assert _sent(reporter) == []
-    reporter.mass.players.get_player.assert_called_with("player1")
-    reporter.mass.players.get_active_queue.assert_called_with(player)
+    clock.return_value = 101.0
+    queue.current_item = _item(queue_item_id="qi2", key="/library/metadata/102")
+    await reporter._report_queues()
+    remove()
+    clock.return_value = 111.0
+    await reporter._report_queues()
 
-    resume()
-    resume()
-    await reporter._report_queues()
-    assert [params["state"] for params, _ in _sent(reporter)] == ["playing"]
+    queue_ids = {
+        compute_client_id(INSTANCE_ID, q.queue_id): q.queue_id for q in (queue, other_queue)
+    }
+    assert [
+        (
+            queue_ids[headers["X-Plex-Client-Identifier"]],
+            params["state"],
+            params.get("playQueueItemID"),
+        )
+        for params, headers in _sent(reporter)
+    ] == [
+        ("player1", "playing", "901"),
+        ("player2", "playing", None),
+        # the previous track is stopped within its own play queue item
+        ("player1", "stopped", "901"),
+        ("player1", "playing", "902"),
+        ("player1", "playing", None),
+        ("player2", "playing", None),
+    ]
 
 
 async def test_failed_report_waits_for_the_interval(clock: MagicMock) -> None:
