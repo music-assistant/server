@@ -65,7 +65,10 @@ class _ShareHTTPClient:
                     )
                 if response.status != 200:
                     return None
-                data = await response.json()
+                if self.service == "Apple Music":
+                    data = await response.json(content_type=None)
+                else:
+                    data = await response.json()
                 if (
                     self.service == "Deezer"
                     and isinstance(data, dict)
@@ -159,6 +162,7 @@ class ShareLinkEnricher:
     ) -> None:
         if "ytmusic" in provider_refs:
             return
+        title, version = parse_title_and_version(title, version)
         try:
             results = await self.mass.music.search(
                 query, [MediaType.TRACK], limit=3, providers=["ytmusic"]
@@ -167,17 +171,20 @@ class ShareLinkEnricher:
             for track in results.tracks or []:
                 if isinstance(track, ItemMapping):
                     continue
-                if not compare_strings(title, track.name, strict=False) or (
+                candidate_title, candidate_version = parse_title_and_version(
+                    track.name, track.version
+                )
+                if not compare_strings(title, candidate_title, strict=False) or (
                     artist and not compare_strings(artist, track.artist_str, strict=False)
                 ):
                     continue
-                if version and not compare_version(version, track.version):
+                if not compare_version(version or "", candidate_version or ""):
                     continue
                 for mapping in track.provider_mappings:
                     if mapping.provider_domain == "ytmusic":
                         url = f"https://music.youtube.com/watch?v={quote(mapping.item_id, safe='')}"
                         score = (
-                            int(compare_strings(title, track.name, strict=True)),
+                            int(compare_strings(title, candidate_title, strict=True)),
                             int(
                                 not artist or compare_strings(artist, track.artist_str, strict=True)
                             ),
@@ -284,8 +291,8 @@ class ShareLinkEnricher:
             ):
                 continue
             result_title, result_version = parse_title_and_version(result_title, result_version)
-            if not compare_strings(title, result_title, strict=False) or (
-                version and not compare_version(version, result_version)
+            if not compare_strings(title, result_title, strict=False) or not compare_version(
+                version or "", result_version or ""
             ):
                 continue
             score = (
