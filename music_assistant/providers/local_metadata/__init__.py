@@ -140,7 +140,8 @@ class LocalMetadataProvider(MetadataProvider):
         """
         # drop the version suffix appended to the image path
         path = path.split("?v=", 1)[0]
-        if not is_safe_path(path, self._root):
+        # checked joined to the root, so a folder name starting with dots is not taken for ".."
+        if not is_safe_path(os.path.join(self._root, path), self._root):
             return None
         return await asyncio.to_thread(_read_image, self._root, self._real_root, path)
 

@@ -169,6 +169,20 @@ async def test_resolve_image_stays_inside_the_folder(tmp_path: Path) -> None:
     assert await provider.resolve_image("Radiohead") is None
 
 
+async def test_artwork_of_a_folder_name_starting_with_dots_is_read(tmp_path: Path) -> None:
+    """An artist folder whose name starts with dots serves its artwork."""
+    name = "...And You Will Know Us by the Trail of Dead"
+    (tmp_path / name).mkdir()
+    (tmp_path / name / "folder.jpg").write_bytes(JPEG)
+    provider = await _provider(tmp_path)
+
+    metadata = await provider.get_artist_metadata(_artist(name))
+
+    assert metadata is not None
+    assert metadata.images
+    assert await provider.resolve_image(metadata.images[0].path) == JPEG
+
+
 async def test_artwork_linked_from_outside_the_folder_is_neither_listed_nor_read(
     tmp_path: Path,
 ) -> None:
