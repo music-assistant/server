@@ -3,7 +3,7 @@
   "domain": "fip",
   "stage": "beta",
   "name": "FIP",
-  "description": "Stream FIP, Radio France's eclectic music station, and its twelve webradios — from FIP Jazz to FIP Metal — with the song, artist and cover art of what is playing.",
+  "description": "Stream FIP, Radio France's eclectic music station, and its twelve webradios — from FIP Jazz to FIP Metal.",
   "codeowners": ["@culmat"],
   "requirements": [],
   "documentation": "https://music-assistant.io/music-providers/fip/",
