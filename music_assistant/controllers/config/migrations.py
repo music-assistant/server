@@ -16,6 +16,8 @@ from music_assistant.constants import (
     CONF_CORE,
     CONF_CROSSFADE_DURATION,
     CONF_CROSSFADE_MODE,
+    CONF_EMBY_ALBUM_ARTISTS_HEAL_MIGRATED,
+    CONF_EMBY_ALBUM_ARTISTS_HEAL_PENDING,
     CONF_HTTP_PROFILE,
     CONF_ICON,
     CONF_LINKED_PROTOCOL_IDS,
@@ -410,7 +412,7 @@ PROVIDER_SETUP_FLOW_KEYS: dict[str, tuple[str, ...]] = {
     "listenbrainz_scrobble": ("_user_token", "api_base_url"),
     "musicme": ("username", "password"),
     "neteasecloudmusic": ("api_base_url", "cookie", "uid"),
-    "nicovideo": ("mail", "password", "user_session"),
+    "nicovideo": ("user_session",),
     "nugs": ("username", "password"),
     "opensubsonic": ("username", "password", "baseURL", "port", "path"),
     "pandora": ("username", "password"),
@@ -670,6 +672,18 @@ async def migrate(data: dict[str, Any]) -> bool:  # noqa: C901, PLR0912, PLR0915
     # Move Apple Music library sync tasks still on the former 12 hour default to 24 hours.
     # TODO: remove after 2.13 release
     if _migrate_apple_music_sync_schedule(data):
+        changed = True
+
+    # Mark Emby instances to unlink the featured track artists earlier syncs stored as album
+    # artists; the provider heals and clears the marker on its next album sync.
+    # TODO: remove after 2.13 release
+    if _migrate_emby_album_artists_heal(data):
+        changed = True
+
+    # Drop the nicovideo mail/password/MFA credentials, which are no longer used since the
+    # provider only supports logging in with a user_session cookie.
+    # TODO: remove after 2.13 release
+    if _migrate_nicovideo_drop_mail_login(data):
         changed = True
 
     return changed
@@ -2002,4 +2016,50 @@ def _migrate_apple_music_sync_schedule(data: dict[str, Any]) -> bool:
         LOGGER.info("Moved %d Apple Music library sync task(s) to a daily schedule", migrated)
     # claim the marker even when nothing moved, so a 12 hour schedule picked later is kept
     data[CONF_APPLE_MUSIC_SYNC_SCHEDULE_MIGRATED] = True
+    return True
+
+
+def _migrate_emby_album_artists_heal(data: dict[str, Any]) -> bool:
+    """Mark each Emby provider instance for a one-time album artist heal, once."""
+    if data.get(CONF_EMBY_ALBUM_ARTISTS_HEAL_MIGRATED):
+        return False
+    all_provider_configs = data.get(CONF_PROVIDERS, {})
+    if not isinstance(all_provider_configs, dict):
+        return False
+    marked = 0
+    for provider_cfg in all_provider_configs.values():
+        if not isinstance(provider_cfg, dict) or provider_cfg.get("domain") != "emby":
+            continue
+        values = provider_cfg.setdefault("values", {})
+        if not isinstance(values, dict):
+            continue
+        values[CONF_EMBY_ALBUM_ARTISTS_HEAL_PENDING] = True
+        marked += 1
+    if not marked:
+        return False
+    LOGGER.info("Scheduled an album artist heal for %d Emby provider(s)", marked)
+    data[CONF_EMBY_ALBUM_ARTISTS_HEAL_MIGRATED] = True
+    return True
+
+
+def _migrate_nicovideo_drop_mail_login(data: dict[str, Any]) -> bool:
+    """Remove the stored mail, password and MFA code from every nicovideo provider instance."""
+    all_provider_configs = data.get(CONF_PROVIDERS, {})
+    if not isinstance(all_provider_configs, dict):
+        return False
+    dropped = 0
+    for provider_cfg in all_provider_configs.values():
+        if not isinstance(provider_cfg, dict) or provider_cfg.get("domain") != "nicovideo":
+            continue
+        for section in ("values", "setup_data"):
+            stored = provider_cfg.get(section)
+            if not isinstance(stored, dict):
+                continue
+            for key in ("mail", "password", "mfa"):
+                if key in stored:
+                    del stored[key]
+                    dropped += 1
+    if not dropped:
+        return False
+    LOGGER.info("Removed %d unused nicovideo mail login value(s)", dropped)
     return True

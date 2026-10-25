@@ -200,6 +200,10 @@ async def test_podcast_episodes_follow_the_listing_contract(mass: MusicAssistant
         # a part-played episode is not played to the end
         assert await _episodes_of(fully_played=False) == ["ep6", "ep5", "ep4", "ep3", "ep1"]
         assert await _episodes_of(limit=0) == ["ep6", "ep5", "ep4", "ep3", "ep2", "ep1"]
+        assert await _episodes_of(exclude_item_id="ep5", limit=2, offset=1) == [
+            "ep4",
+            "ep3",
+        ]
         with pytest.raises(InvalidDataError):
             await _episodes_of(sort_field=SortField.YEAR)
     assert provider.listings == 1

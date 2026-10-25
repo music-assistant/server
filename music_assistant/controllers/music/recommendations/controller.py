@@ -16,6 +16,8 @@ from music_assistant.controllers.music.constants import (
     RECOMMENDATIONS_ITEMS_TIMEOUT,
     RECOMMENDATIONS_ROWS_TIMEOUT,
 )
+from music_assistant.controllers.webserver.helpers.auth_middleware import get_current_user
+from music_assistant.helpers.provider_access import visible_items
 from music_assistant.providers.recommendations import LibraryRecommendationsProvider
 
 if TYPE_CHECKING:
@@ -91,7 +93,9 @@ class RecommendationsController:
                     return await prov.get_recommendation_items(item_id, providers=providers)
                 # external provider rows don't support provider filtering: their SPI
                 # signature is unchanged, so `providers` is silently ignored here
-                return await cast("RecommendationsMixin", prov).get_recommendation_items(item_id)
+                items = await cast("RecommendationsMixin", prov).get_recommendation_items(item_id)
+            # a plugin or metadata row can list items on any music source
+            return UniqueList(visible_items(self.mass, items, get_current_user()))
         except TimeoutError:
             self.logger.warning(
                 "Timeout while fetching recommendation items for %s/%s; skipping",

@@ -45,7 +45,7 @@ class AIRadioMediaMixin:
         station = self._stations.get(prov_radio_id)
         if station is None:
             raise MediaNotFoundError(f"AI Radio show {prov_radio_id} not found")
-        return self._station_to_radio(station)
+        return await self._station_to_radio(station)
 
     async def get_radio_tracks(self, prov_radio_id: str, page: int = 0) -> list[Track]:
         """
@@ -64,7 +64,7 @@ class AIRadioMediaMixin:
             return []
         return await self._snapshot_show_tracks(station)
 
-    def _station_to_radio(self, station: dict[str, Any]) -> Radio:
+    async def _station_to_radio(self, station: dict[str, Any]) -> Radio:
         """Build the Radio media item for a station."""
         station_id = str(station["id"])
         radio = Radio(
@@ -81,16 +81,7 @@ class AIRadioMediaMixin:
                 )
             },
         )
-        radio.metadata.images = UniqueList(
-            [
-                MediaItemImage(
-                    type=ImageType.THUMB,
-                    path=self._ai_radio_cover_image_path(),
-                    provider="builtin",
-                    remotely_accessible=False,
-                )
-            ]
-        )
+        radio.metadata.images = UniqueList([await self._show_thumb(station)])
         return radio
 
     async def _sync_show_library_items(self) -> None:
@@ -98,7 +89,7 @@ class AIRadioMediaMixin:
         radio_ctrl = self.mass.music.radio
         show_library_ids: dict[str, str] = {}
         for station in self._stations.values():
-            prov_item = self._station_to_radio(station)
+            prov_item = await self._station_to_radio(station)
             for prov_map in prov_item.provider_mappings:
                 prov_map.in_library = True
             library_item = await radio_ctrl.get_library_item_by_prov_mappings(
@@ -109,6 +100,7 @@ class AIRadioMediaMixin:
             elif (
                 prov_item.name != library_item.name
                 or prov_item.is_endless != library_item.is_endless
+                or prov_item.metadata.images != library_item.metadata.images
             ):
                 # must overwrite: merging keeps mappings that serve the wrong tracks
                 library_item = await radio_ctrl.update_item_in_library(
@@ -191,3 +183,19 @@ class AIRadioMediaMixin:
             if total_minutes >= max_minutes:
                 break
         return kept
+
+    async def _show_thumb(self, station: dict[str, Any]) -> MediaItemImage:
+        """Return the source playlist's thumb, or the AI Radio cover when it has none."""
+        # library only: no provider round trip at startup and no per-user visibility filter
+        playlist = await self.mass.music.playlists.get_library_item_by_prov_id(
+            str(station.get("source_playlist_id", "")),
+            str(station.get("source_playlist_provider", "library")),
+        )
+        if playlist and (thumb := playlist.image):
+            return thumb
+        return MediaItemImage(
+            type=ImageType.THUMB,
+            path=self._ai_radio_cover_image_path(),
+            provider="builtin",
+            remotely_accessible=False,
+        )

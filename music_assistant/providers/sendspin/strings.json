@@ -25,6 +25,9 @@
     "security_status_disconnected": {
       "label": "The device disconnected and will reappear once it reconnects."
     },
+    "security_status_held_unapproved": {
+      "label": "Another server is using this device, and Music Assistant has not paired it or allowed guest access yet."
+    },
     "security_status_unencrypted": {
       "label": "This device is connected without encryption (legacy mode). Pairing is not available."
     },

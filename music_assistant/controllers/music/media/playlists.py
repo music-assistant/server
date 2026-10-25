@@ -168,6 +168,11 @@ class PlaylistController(MediaControllerBase[Playlist]):
             required_scope=Scope.LIBRARY_WRITE,
         )
         self.mass.register_api_command(
+            "music/playlists/move_playlist_track",
+            self.move_playlist_track,
+            required_scope=Scope.LIBRARY_WRITE,
+        )
+        self.mass.register_api_command(
             "music/playlists/export_playlist",
             self.export_playlist,
             required_scope=Scope.LIBRARY_READ,
@@ -219,6 +224,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
         sort_direction: SortDirection | None = None,
         limit: int | None = 500,
         offset: int = 0,
+        random_seed: int | None = None,
     ) -> list[PlaylistPlayableItem]:
         """
         Return the items of a playlist, searched, sorted and paged.
@@ -240,6 +246,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
         :param sort_direction: Sort direction, the field's default when omitted.
         :param limit: Maximum number of items to return; 0 returns them all.
         :param offset: Number of items to skip.
+        :param random_seed: Keep random ordering stable across pages with the same seed.
         :raises InvalidDataError: When the sort field is not offered for playlist tracks.
         """
         # an unsupported sort is rejected before the playlist is fetched
@@ -292,6 +299,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
             sort_direction=sort_direction,
             limit=limit,
             offset=offset,
+            random_seed=random_seed,
         )
 
     async def iter_tracks(
@@ -489,6 +497,39 @@ class PlaylistController(MediaControllerBase[Playlist]):
             },
             priority=True,
         )
+
+    async def move_playlist_track(
+        self, db_playlist_id: str | int, from_position: int, to_position: int
+    ) -> None:
+        """
+        Move one item of a playlist to another position.
+
+        Returns once the provider holds the new order, so the caller can reload the playlist.
+
+        :param db_playlist_id: Library playlist id.
+        :param from_position: The current position of the item, 1-based.
+        :param to_position: The position the item ends up at after the move, 1-based.
+        """
+        playlist = await self._get_editable_library_item(db_playlist_id)
+        if not playlist.is_editable:
+            msg = f"Playlist {playlist.name} is not editable"
+            raise InvalidDataError(msg)
+        # use _select_provider_id to respect user's provider filter
+        playlist_prov_instance, playlist_prov_item_id = self._select_provider_id(playlist)
+        provider = self.mass.get_provider(playlist_prov_instance)
+        if not provider or not isinstance(provider, MusicProvider):
+            raise ProviderUnavailableError(f"Provider {playlist_prov_instance} is not available")
+        if ProviderFeature.PLAYLIST_TRACKS_MOVE not in provider.supported_features:
+            msg = f"Provider {provider.name} does not support reordering playlists"
+            raise InvalidDataError(msg)
+        if from_position < 1 or to_position < 1:
+            msg = "Playlist positions start at 1"
+            raise InvalidDataError(msg)
+        if from_position == to_position:
+            return
+        await provider.move_playlist_track(playlist_prov_item_id, from_position, to_position)
+        await self._refresh_provider_playlist_tracks(playlist_prov_item_id, provider.instance_id)
+        await self._request_metadata_refresh(playlist)
 
     async def match_providers(self, db_item: Playlist) -> None:
         """
@@ -2019,9 +2060,13 @@ class PlaylistController(MediaControllerBase[Playlist]):
 
         # actually add the tracks to the playlist on the provider
         update_current_task_progress(90, f"Adding {len(ids_to_add)} item(s) to playlist")
+        task = get_current_task()
+        failures_before = task.failure_count if task else 0
         await playlist_prov.add_playlist_tracks(playlist_prov_item_id, ids_to_add)
+        # the provider reports each item it could not add as a task failure
+        skipped = task.failure_count - failures_before if task else 0
         await self._request_metadata_refresh(playlist)
-        update_current_task_progress(100, f"Added {len(ids_to_add)} item(s) to playlist")
+        update_current_task_progress(100, f"Added {len(ids_to_add) - skipped} item(s) to playlist")
 
     async def _handle_remove_playlist_tracks(
         self, db_playlist_id: str | int, positions_to_remove: tuple[int, ...], user_id: str | None
@@ -2044,6 +2089,35 @@ class PlaylistController(MediaControllerBase[Playlist]):
             raise InvalidDataError(msg)
         await provider.remove_playlist_tracks(playlist_prov_item_id, positions_to_remove)
         await self._request_metadata_refresh(playlist)
+
+    async def _refresh_provider_playlist_tracks(
+        self, prov_playlist_id: str, provider_instance_id: str
+    ) -> None:
+        """
+        Read all pages of a provider playlist past the caches, so the next read gets them fresh.
+
+        :param prov_playlist_id: The playlist id on the provider.
+        :param provider_instance_id: The provider instance the playlist is on.
+        """
+        page = 0
+        try:
+            while await self._get_provider_playlist_tracks(
+                prov_playlist_id,
+                provider_instance_id,
+                page=page,
+                force_refresh=True,
+                strict_provider_instance=True,
+            ):
+                page += 1
+        except PROVIDER_FETCH_ERRORS as err:
+            # the change itself is done, only the cached copy may stay stale until it expires
+            self.logger.log(
+                provider_fetch_log_level(err),
+                "Unable to refresh playlist %s from provider %s: %s",
+                prov_playlist_id,
+                provider_instance_id,
+                err,
+            )
 
     async def _request_metadata_refresh(self, playlist: Playlist) -> None:
         """Have the next metadata run refresh the playlist, and announce its changed items."""
