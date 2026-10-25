@@ -89,6 +89,7 @@ def _controller(
     )
     get_stream_details = AsyncMock(return_value=MagicMock(duration=None))
     mass.streams.audio.get_stream_details = get_stream_details
+    mass.players.sleep_timer_ends_item.return_value = False
     controller.mass = mass
     return controller, get_stream_details
 

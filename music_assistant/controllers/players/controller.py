@@ -129,7 +129,6 @@ from .constants import (
     PLAYER_LOCK_SLOW_THRESHOLD,
     PLAYER_LOCK_STRICT_TIMEOUT,
     PLAYER_LOCK_TIMEOUT,
-    SLEEP_TIMER_REPEAT_THRESHOLD,
     PlayerLockPurpose,
 )
 from .helpers import (
@@ -149,6 +148,7 @@ if TYPE_CHECKING:
     )
     from music_assistant_models.player import OutputProtocol
     from music_assistant_models.player_queue import PlayerQueue
+    from music_assistant_models.queue_item import QueueItem
 
     from music_assistant import MusicAssistant
     from music_assistant.helpers.json import SerializableType
@@ -700,8 +700,8 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         Call when the player's queue changed its playback state, current item or position.
 
         :param player_id: Player ID (and queue ID) whose sleep timer to update.
-        :param repin: Forget the stop position after a user moved playback, so the next
-            update stops at the end of the item or chapter playing then.
+        :param repin: Stop at the end of the item or chapter now playing, after a user moved
+            playback.
         """
         player = self.get_player(player_id)
         if player is None:
@@ -714,43 +714,39 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
             # the queue has nothing left the timer could wait for
             self._clear_sleep_timer(player)
             return
+        if repin:
+            if (
+                not queue.current_item
+                or (
+                    stop_position := get_sleep_timer_stop_position(
+                        mode, queue.current_item, queue.corrected_elapsed_time
+                    )
+                )
+                is None
+            ):
+                # the item the user moved to has no end to stop at
+                self._clear_sleep_timer(player)
+                return
+            self._sleep_timer_targets[player_id] = SleepTimerTarget(
+                queue.current_item.queue_item_id, stop_position
+            )
+        if (target := self._sleep_timer_targets.get(player_id)) is None:
+            return
         prev_expires_at = player.sleep_timer_expires_at
         # seconds until the stop, None while waiting for playback
         remaining: float | None = None
-        if repin:
-            # the replacement playback is not started yet, its first position report pins it
-            self._sleep_timer_targets.pop(player_id, None)
-        elif queue.state == PlaybackState.IDLE:
+        if queue.state == PlaybackState.IDLE:
             # playback stopped before it reached the stop position
             remaining = 0.0
         elif queue.state == PlaybackState.PLAYING and queue.current_item:
-            elapsed_time = queue.corrected_elapsed_time
-            target = self._sleep_timer_targets.get(player_id)
-            pinned_before = target is not None
-            if target is None:
-                stop_position = get_sleep_timer_stop_position(
-                    mode, queue.current_item, elapsed_time
-                )
-                if stop_position is None:
-                    # the item now playing has no end to stop at
-                    self._clear_sleep_timer(player)
-                    return
-                target = SleepTimerTarget(queue.current_item.queue_item_id, stop_position)
-                self._sleep_timer_targets[player_id] = target
-            remaining = max(0.0, (target.stop_position - elapsed_time) / queue.playback_speed)
-            if target.queue_item_id != queue.current_item.queue_item_id:
-                # the pinned item played out before the timer fired
-                remaining = 0.0
-            elif pinned_before and prev_expires_at is not None:
-                # a repeat starts the pinned item over under the same queue item id, which
-                # moves the stop later by the time the item played
-                repeat_threshold: float = SLEEP_TIMER_REPEAT_THRESHOLD
-                if item_duration := queue.current_item.duration:
-                    repeat_threshold = min(
-                        repeat_threshold, item_duration / 2 / queue.playback_speed
-                    )
-                if time.time() + remaining - prev_expires_at > repeat_threshold:
-                    remaining = 0.0
+            if queue.current_item.queue_item_id != target.queue_item_id:
+                # the player moved on just before the armed stop, or still reports the item
+                # it left: the armed stop stays as it is
+                return
+            remaining = max(
+                0.0,
+                (target.stop_position - queue.corrected_elapsed_time) / queue.playback_speed,
+            )
         expires_at: float | None = None
         if remaining is None:
             if prev_expires_at is None:
@@ -770,6 +766,21 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         player.set_sleep_timer_expires_at(expires_at)
         player.update_state()
         self._signal_sleep_timer_updated(player, expires_at)
+
+    def sleep_timer_ends_item(self, player_id: str, queue_item: QueueItem) -> bool:
+        """
+        Return whether the player's sleep timer stops playback at the end of the queue item.
+
+        :param player_id: Player ID (and queue ID) whose sleep timer to check.
+        :param queue_item: The queue item to check.
+        """
+        target = self._sleep_timer_targets.get(player_id)
+        return (
+            target is not None
+            and target.queue_item_id == queue_item.queue_item_id
+            and queue_item.duration is not None
+            and target.stop_position >= queue_item.duration
+        )
 
     # Player commands
 

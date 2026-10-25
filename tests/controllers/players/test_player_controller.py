@@ -1169,47 +1169,36 @@ class TestSleepTimer:
         controller.update_sleep_timer("player_1")
         _assert_sleep_timer_armed(mock_mass, controller, 10)
 
-        # a user seek into chapter two arms nothing while the player starts the new stream,
-        # its first position report moves the stop to the end of chapter two
+        # a user seek into chapter two moves the stop to its end
         queue.elapsed_time = 150
         queue.elapsed_time_last_updated = time.time()
         controller.update_sleep_timer("player_1", repin=True)
-        assert player.state.sleep_timer_expires_at is None
-        controller.update_sleep_timer("player_1")
         _assert_sleep_timer_armed(mock_mass, controller, 100)
 
-        # the next item started before the timer fired
+        # the player moves on early, or still reports the item it left: the armed stop stays
+        expires_at = player.state.sleep_timer_expires_at
         queue.current_item = _book_item("item_2")
         queue.elapsed_time = 0
         controller.update_sleep_timer("player_1")
-        _assert_sleep_timer_armed(mock_mass, controller, 0)
+        assert player.state.sleep_timer_expires_at == expires_at
+        _assert_sleep_timer_armed(mock_mass, controller, 100)
 
-    @pytest.mark.parametrize(("duration", "stream_end"), [(600, 595), (10, 8)])
-    def test_repeated_item_ends_the_item_timer(
-        self, mock_mass: MagicMock, duration: int, stream_end: int
+    @pytest.mark.parametrize(
+        ("mode", "queue_item_id", "ends_item"),
+        [
+            (SleepTimerMode.END_OF_ITEM, "item_1", True),
+            # chapter one ends at 100 of the item's 600 seconds
+            (SleepTimerMode.END_OF_CHAPTER, "item_1", False),
+            (SleepTimerMode.END_OF_ITEM, "item_2", False),
+        ],
+    )
+    def test_sleep_timer_ends_item(
+        self, mock_mass: MagicMock, mode: SleepTimerMode, queue_item_id: str, ends_item: bool
     ) -> None:
-        """An item that starts over on repeat stops playback instead of restarting the timer."""
-        controller, _, queue = _book_sleep_timer(mock_mass, SleepTimerMode.END_OF_ITEM)
-        queue.current_item = _book_item("item_2", chapters=None, duration=duration)
-        queue.playback_speed = 1.0
-        # the stream ends at stream_end, short of the duration the item claims
-        queue.elapsed_time = stream_end
-        queue.elapsed_time_last_updated = time.time()
-        controller.update_sleep_timer("player_1", repin=True)
-        controller.update_sleep_timer("player_1")
-        _assert_sleep_timer_armed(mock_mass, controller, duration - stream_end)
+        """Only a timer that stops at the end of the item itself ends that item."""
+        controller, _, _ = _book_sleep_timer(mock_mass, mode)
 
-        # a small position correction backwards only re-times the stop
-        queue.elapsed_time = stream_end - 2
-        queue.elapsed_time_last_updated = time.time()
-        controller.update_sleep_timer("player_1")
-        _assert_sleep_timer_armed(mock_mass, controller, duration - stream_end + 2)
-
-        # repeat-one starts the same queue item over
-        queue.elapsed_time = 0
-        queue.elapsed_time_last_updated = time.time()
-        controller.update_sleep_timer("player_1")
-        _assert_sleep_timer_armed(mock_mass, controller, 0)
+        assert controller.sleep_timer_ends_item("player_1", _book_item(queue_item_id)) is ends_item
 
     def test_stopped_queue_ends_the_chapter_timer(self, mock_mass: MagicMock) -> None:
         """Playback that stops before the stop position fires the timer at once."""

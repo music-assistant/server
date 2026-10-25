@@ -55,6 +55,8 @@ async def test_natural_completion_uses_real_queue_repeat_selection(
         state=PlaybackState.PLAYING,
     )
     controller = PlayerQueuesController.__new__(PlayerQueuesController)
+    controller.mass = Mock()
+    controller.mass.players.sleep_timer_ends_item.return_value = False
     controller._queue_data = {player.player_id: PlayerQueueData(queue=queue, items=items)}
     mass_mock.players.get_player.return_value = player
     mass_mock.player_queues.get_next_item = controller.get_next_item

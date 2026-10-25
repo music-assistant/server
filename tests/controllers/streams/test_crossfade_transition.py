@@ -253,6 +253,7 @@ async def test_flow_repeat_preload_preserves_progress_and_duration(
     data = PlayerQueueData(queue=queue, items=[cast("Any", item)], session_id="session-1")
     controller = PlayerQueuesController.__new__(PlayerQueuesController)
     controller.mass = mass
+    mass.players.sleep_timer_ends_item.return_value = False
     controller.logger = MagicMock()
     controller._queue_data = {queue.queue_id: data}
     mass.player_queues.queue_data.return_value = data
