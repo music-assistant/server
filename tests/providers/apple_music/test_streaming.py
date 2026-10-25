@@ -42,9 +42,10 @@ def _metadata(*, key_server: bool, song_id: str = "397010985") -> dict[str, Any]
 async def test_library_track_with_key_server_uses_the_widevine_path() -> None:
     """A purchased library track is encrypted, so it must not be served as clear HTTP."""
     manager = _manager()
-    manager._fetch_song_stream_metadata = AsyncMock(return_value=_metadata(key_server=True))
-    manager._parse_stream_url_and_uri = AsyncMock(return_value=(CTRP_URL, KEY_URI))
-    manager._get_decryption_key = AsyncMock(return_value="abc123")
+    manager._fetch_song_stream_metadata = AsyncMock(return_value=_metadata(key_server=True))  # type: ignore[method-assign]
+    manager._parse_stream_url_and_uri = AsyncMock(return_value=(CTRP_URL, KEY_URI))  # type: ignore[method-assign]
+    get_decryption_key = AsyncMock(return_value="abc123")
+    manager._get_decryption_key = get_decryption_key  # type: ignore[method-assign]
 
     result = await manager.get_stream_details("i.AWPNG58CL3m51X")
 
@@ -58,34 +59,38 @@ async def test_library_track_with_key_server_uses_the_widevine_path() -> None:
 async def test_library_track_is_licensed_under_the_purchase_adam_id() -> None:
     """Apple rejects a library ID at the license server, so songId must be sent."""
     manager = _manager()
-    manager._fetch_song_stream_metadata = AsyncMock(return_value=_metadata(key_server=True))
-    manager._parse_stream_url_and_uri = AsyncMock(return_value=(CTRP_URL, KEY_URI))
-    manager._get_decryption_key = AsyncMock(return_value="abc123")
+    manager._fetch_song_stream_metadata = AsyncMock(return_value=_metadata(key_server=True))  # type: ignore[method-assign]
+    manager._parse_stream_url_and_uri = AsyncMock(return_value=(CTRP_URL, KEY_URI))  # type: ignore[method-assign]
+    get_decryption_key = AsyncMock(return_value="abc123")
+    manager._get_decryption_key = get_decryption_key  # type: ignore[method-assign]
 
     await manager.get_stream_details("i.AWPNG58CL3m51X")
 
-    assert manager._get_decryption_key.await_args.args[3] == "i.AWPNG58CL3m51X"
-    assert manager._get_decryption_key.await_args.args[4] == "397010985"
+    assert get_decryption_key.await_args is not None
+    assert get_decryption_key.await_args.args[3] == "i.AWPNG58CL3m51X"
+    assert get_decryption_key.await_args.args[4] == "397010985"
 
 
 async def test_catalog_track_still_licenses_under_its_own_id() -> None:
     """For a catalog track songId is the catalog ID, so nothing changes."""
     manager = _manager()
-    manager._fetch_song_stream_metadata = AsyncMock(
+    manager._fetch_song_stream_metadata = AsyncMock(  # type: ignore[method-assign]
         return_value=_metadata(key_server=True, song_id="1193701326")
     )
-    manager._parse_stream_url_and_uri = AsyncMock(return_value=(CTRP_URL, KEY_URI))
-    manager._get_decryption_key = AsyncMock(return_value="abc123")
+    manager._parse_stream_url_and_uri = AsyncMock(return_value=(CTRP_URL, KEY_URI))  # type: ignore[method-assign]
+    get_decryption_key = AsyncMock(return_value="abc123")
+    manager._get_decryption_key = get_decryption_key  # type: ignore[method-assign]
 
     await manager.get_stream_details("1193701326")
 
-    assert manager._get_decryption_key.await_args.args[4] == "1193701326"
+    assert get_decryption_key.await_args is not None
+    assert get_decryption_key.await_args.args[4] == "1193701326"
 
 
 async def test_library_track_without_key_server_is_served_clear() -> None:
     """Uploads and iTunes Match carry no key server and play without decryption."""
     manager = _manager()
-    manager._fetch_song_stream_metadata = AsyncMock(return_value=_metadata(key_server=False))
+    manager._fetch_song_stream_metadata = AsyncMock(return_value=_metadata(key_server=False))  # type: ignore[method-assign]
 
     result = await manager.get_stream_details("i.uploadedsong")
 
@@ -98,7 +103,7 @@ async def test_missing_cdm_files_raise_for_an_encrypted_library_track() -> None:
     """Without a CDM an encrypted library track must fail loudly, not stream unplayable."""
     manager = _manager()
     manager._decrypt_client_id = None
-    manager._fetch_song_stream_metadata = AsyncMock(return_value=_metadata(key_server=True))
+    manager._fetch_song_stream_metadata = AsyncMock(return_value=_metadata(key_server=True))  # type: ignore[method-assign]
 
     with pytest.raises(MediaNotFoundError):
         await manager.get_stream_details("i.AWPNG58CL3m51X")

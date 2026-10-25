@@ -1137,21 +1137,18 @@ async def test_resolve_purchased_ids_returns_only_what_apple_still_sells() -> No
     provider._storefront = "pt"
     provider.instance_id = "apple_music--test"
     provider.logger = MagicMock()
-    provider.api_client = MagicMock()
-    manager = AppleMusicLibraryManager(provider)
-    manager.api.get_data = AsyncMock(
+    get_data = AsyncMock(
         return_value={"data": [{"id": "397010985"}]}  # the U2 id is simply absent
     )
+    provider.api_client.get_data = get_data
+    manager = AppleMusicLibraryManager(provider)
 
     result = await manager._resolve_purchased_ids({"397010985", "915794195"})
 
     assert result == {"397010985"}
-    endpoint, kwargs = (
-        manager.api.get_data.await_args.args[0],
-        manager.api.get_data.await_args.kwargs,
-    )
-    assert endpoint == "catalog/pt/songs"
-    assert kwargs["ids"] == "397010985,915794195"
+    assert get_data.await_args is not None
+    assert get_data.await_args.args[0] == "catalog/pt/songs"
+    assert get_data.await_args.kwargs["ids"] == "397010985,915794195"
 
 
 async def test_resolve_purchased_ids_treats_a_404_as_none_still_sold() -> None:
@@ -1159,9 +1156,8 @@ async def test_resolve_purchased_ids_treats_a_404_as_none_still_sold() -> None:
     provider = MagicMock()
     provider._storefront = "pt"
     provider.logger = MagicMock()
-    provider.api_client = MagicMock()
+    provider.api_client.get_data = AsyncMock(side_effect=MediaNotFoundError("not found"))
     manager = AppleMusicLibraryManager(provider)
-    manager.api.get_data = AsyncMock(side_effect=MediaNotFoundError("not found"))
 
     assert await manager._resolve_purchased_ids({"915794195"}) == set()
 
@@ -1170,12 +1166,12 @@ async def test_resolve_purchased_ids_makes_no_call_when_there_are_no_purchases()
     """The common case is a library with no purchases at all; it must cost nothing."""
     provider = MagicMock()
     provider.logger = MagicMock()
-    provider.api_client = MagicMock()
+    get_data = AsyncMock()
+    provider.api_client.get_data = get_data
     manager = AppleMusicLibraryManager(provider)
-    manager.api.get_data = AsyncMock()
 
     assert await manager._resolve_purchased_ids(set()) == set()
-    manager.api.get_data.assert_not_awaited()
+    get_data.assert_not_awaited()
 
 
 def test_promote_purchase_only_ever_promotes() -> None:
