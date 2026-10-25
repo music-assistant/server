@@ -656,7 +656,7 @@ class ChromecastPlayer(Player):
 
         self._update_playback_state(status, is_playing)
         self._update_elapsed_time(status, is_playing)
-        self._update_active_source(group_player)
+        self._update_active_source(status, group_player)
         self._update_current_media(status, is_idle)
         self._update_multichannel_group_members()
         self.update_state()
@@ -741,10 +741,13 @@ class ChromecastPlayer(Player):
             status.adjusted_current_time if is_playing else status.current_time
         )
 
-    def _update_active_source(self, group_player: ChromecastPlayer | None) -> None:
+    def _update_active_source(
+        self, status: MediaStatus, group_player: ChromecastPlayer | None
+    ) -> None:
         """
         Apply the active source, exposing a foreign Cast app as a selectable source.
 
+        :param status: Media status as reported by the receiver.
         :param group_player: Cast group player whose status is being followed, if any.
         """
         if group_player:
@@ -759,18 +762,35 @@ class ChromecastPlayer(Player):
             app_name = self.cc.app_display_name or "Unknown App"
             app_id = app_name.lower().replace(" ", "_")
             self._attr_active_source = app_id
-            has_controls = app_name in ("Spotify", "Qobuz", "YouTube Music", "Deezer", "Tidal")
-            if not any(source.id == app_id for source in self._attr_source_list):
-                self._attr_source_list.append(
-                    PlayerSource(
-                        id=app_id,
-                        name=app_name,
-                        passive=True,
-                        can_play_pause=has_controls,
-                        can_seek=has_controls,
-                        can_next_previous=has_controls,
-                    )
-                )
+            # apps name themselves in their own spelling ("TIDAL")
+            known_app = app_name.lower() in (
+                "spotify",
+                "qobuz",
+                "youtube music",
+                "deezer",
+                "tidal",
+            )
+            # any other app announces the commands it takes in its media status,
+            # which only means something once it has loaded media
+            reports_commands = status.media_session_id is not None
+            source = PlayerSource(
+                id=app_id,
+                name=app_name,
+                passive=True,
+                can_play_pause=known_app or (reports_commands and bool(status.supports_pause)),
+                can_seek=known_app or (reports_commands and bool(status.supports_seek)),
+                can_next_previous=known_app
+                or (
+                    reports_commands
+                    and bool(status.supports_queue_next)
+                    and bool(status.supports_queue_prev)
+                ),
+            )
+            current = next((s for s in self._attr_source_list if s.id == app_id), None)
+            if current is None:
+                self._attr_source_list.append(source)
+            elif reports_commands and current != source:
+                self._attr_source_list[self._attr_source_list.index(current)] = source
 
     def _update_current_media(self, status: MediaStatus, is_idle: bool) -> None:
         """
