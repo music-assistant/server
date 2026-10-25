@@ -14,6 +14,7 @@ from music_assistant_models.media_items import Artist
 
 from music_assistant.constants import CONF_LOG_LEVEL, CONF_PATH
 from music_assistant.providers.local_metadata import (
+    SUBFOLDER_LIST_MAX_AGE,
     LocalMetadataProvider,
     artist_folder_name,
 )
@@ -186,6 +187,43 @@ async def test_artwork_linked_from_outside_the_folder_is_neither_listed_nor_read
     assert await provider.resolve_image("Radiohead/folder.jpg") is None
 
 
+@pytest.mark.parametrize("swapped", ["file", "folder"])
+async def test_artwork_swapped_for_a_link_leading_outside_is_not_read(
+    tmp_path: Path, swapped: str
+) -> None:
+    """
+    Artwork listed inside the folder is not read once it, or its folder, leads outside.
+
+    The swap happens right before the file is opened, after every check on its path.
+
+    :param swapped: Whether the artwork file or its artist folder becomes a symlink.
+    """
+    root = tmp_path / "root"
+    folder = root / "Radiohead"
+    _nfo(folder)
+    (folder / "folder.jpg").write_bytes(JPEG)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "folder.jpg").write_bytes(b"secret")
+    provider = await _provider(root)
+    metadata = await provider.get_artist_metadata(_artist("Radiohead"))
+    assert metadata is not None
+    image_path = (metadata.images or [])[0].path
+    real_open = os.open
+
+    def _swap_then_open(path: str, flags: int) -> int:
+        if swapped == "file":
+            (folder / "folder.jpg").unlink()
+            (folder / "folder.jpg").symlink_to(outside / "folder.jpg")
+        else:
+            folder.rename(tmp_path / "moved")
+            folder.symlink_to(outside, target_is_directory=True)
+        return real_open(path, flags)
+
+    with patch("music_assistant.providers.local_metadata.os.open", _swap_then_open):
+        assert await provider.resolve_image(image_path) is None
+
+
 async def test_replaced_artwork_gets_a_new_image_path(tmp_path: Path) -> None:
     """The image path carries the file's version, which reading the image ignores."""
     folder = tmp_path / "Radiohead"
@@ -269,6 +307,30 @@ async def test_new_folder_is_found_when_the_root_mtime_is_stale(tmp_path: Path) 
     assert metadata is not None
     assert metadata.description == "A bio"
     assert await provider.get_artist_metadata(_artist("Radiohead")) is None
+
+
+async def test_folder_list_is_read_again_once_it_is_too_old(tmp_path: Path) -> None:
+    """A new folder that differs in case is found once the folder list expires, mtime or not."""
+    _nfo(tmp_path / "Radiohead")
+    provider = await _provider(tmp_path)
+    clock = MagicMock()
+    clock.monotonic.return_value = 1000.0
+
+    with patch("music_assistant.providers.local_metadata.time", clock):
+        assert await provider.get_artist_metadata(_artist("Muse")) is None
+        # a network share can keep reporting the old mtime of the root
+        stat = tmp_path.stat()
+        _nfo(tmp_path / "MUSE")
+        os.utime(tmp_path, ns=(stat.st_atime_ns, stat.st_mtime_ns))
+
+        clock.monotonic.return_value = 1000.0 + SUBFOLDER_LIST_MAX_AGE - 1
+        assert await provider.get_artist_metadata(_artist("Muse")) is None
+
+        clock.monotonic.return_value = 1000.0 + SUBFOLDER_LIST_MAX_AGE
+        metadata = await provider.get_artist_metadata(_artist("Muse"))
+
+    assert metadata is not None
+    assert metadata.description == "A bio"
 
 
 async def test_unreadable_artist_folder_is_reported_as_temporarily_unavailable(

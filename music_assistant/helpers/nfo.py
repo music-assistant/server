@@ -21,15 +21,16 @@ if TYPE_CHECKING:
 LOGGER = logging.getLogger(f"{MASS_LOGGER_NAME}.nfo")
 # LifeSpan dates are ISO (YYYY-MM-DD) or partial (YYYY-MM or YYYY)
 _ISO_PARTIAL_DATE = re.compile(r"^\d{4}(-\d{2}(-\d{2})?)?$")
-# written-out dates with the day and month name in either order: 15 Dec 1970, December 15, 1970
-_WRITTEN_DATES = (
+# other date forms, read with the month as a name or, in a numeric date, as the middle number:
+# 15 Dec 1970, December 15, 1970, Dec 1970, 15/12/1970, 1970.12.15, 1970/12, 12-1970
+_DATE_FORMS = (
     re.compile(r"^(?P<day>\d{1,2})\s+(?P<month>[a-z]+),?\s+(?P<year>\d{4})$", re.IGNORECASE),
     re.compile(r"^(?P<month>[a-z]+)\s+(?P<day>\d{1,2}),?\s+(?P<year>\d{4})$", re.IGNORECASE),
-)
-# numeric dates always have the month in the middle: 15/12/1970, 15-12-1970, 15.12.1970, 1970/12/15
-_NUMERIC_DATES = (
+    re.compile(r"^(?P<month>[a-z]+),?\s+(?P<year>\d{4})$", re.IGNORECASE),
     re.compile(r"^(?P<day>\d{1,2})(?P<sep>[/.-])(?P<month>\d{1,2})(?P=sep)(?P<year>\d{4})$"),
     re.compile(r"^(?P<year>\d{4})(?P<sep>[/.-])(?P<month>\d{1,2})(?P=sep)(?P<day>\d{1,2})$"),
+    re.compile(r"^(?P<year>\d{4})[/.-](?P<month>\d{1,2})$"),
+    re.compile(r"^(?P<month>\d{1,2})[/.-](?P<year>\d{4})$"),
 )
 # English month names, full and abbreviated, independent of the process locale
 _MONTHS = {
@@ -127,12 +128,14 @@ def _iso_partial_date(value: str | None) -> str | None:
     if value is None:
         return None
     text = value.strip()
-    if written := next((m for pattern in _WRITTEN_DATES if (m := pattern.match(text))), None):
-        if not (month := _MONTHS.get(written["month"].lower())):
+    if match := next((m for pattern in _DATE_FORMS if (m := pattern.match(text))), None):
+        month_text = match["month"]
+        month = int(month_text) if month_text.isdigit() else _MONTHS.get(month_text.lower())
+        if not month:
             return None
-        text = f"{written['year']}-{month:02d}-{int(written['day']):02d}"
-    elif numeric := next((m for pattern in _NUMERIC_DATES if (m := pattern.match(text))), None):
-        text = f"{numeric['year']}-{int(numeric['month']):02d}-{int(numeric['day']):02d}"
+        text = f"{match['year']}-{month:02d}"
+        if day := match.groupdict().get("day"):
+            text += f"-{int(day):02d}"
     elif not _ISO_PARTIAL_DATE.match(text):
         return None
     year, month, day = (*map(int, text.split("-")), 1, 1)[:3]

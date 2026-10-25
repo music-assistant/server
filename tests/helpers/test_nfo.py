@@ -126,6 +126,15 @@ def test_parse_artist_nfo_ignores_impossible_dates(value: str) -> None:
         (" 5 MAY 1970 ", "1970-05-05"),
         ("29 Feb 2000", "2000-02-29"),
         ("15/12/1970", "1970-12-15"),
+        ("Dec 1970", "1970-12"),
+        ("December, 1970", "1970-12"),
+        ("1970/12", "1970-12"),
+        ("1970.12", "1970-12"),
+        ("12-1970", "1970-12"),
+        ("12.1970", "1970-12"),
+        ("13/1970", None),
+        ("1970.0", None),
+        ("Decem 1970", None),
         ("5/6/1970", "1970-06-05"),
         ("1970/12/15", "1970-12-15"),
         ("12/15/1970", None),
@@ -141,7 +150,7 @@ def test_parse_artist_nfo_ignores_impossible_dates(value: str) -> None:
     ],
 )
 def test_parse_artist_nfo_reads_written_out_dates(value: str, expected: str | None) -> None:
-    """Dates with a month name or a numeric month in the middle are read; impossible ones not."""
+    """Full and year-month dates with a month name or a numeric month are read; impossible ones not."""
     artist = Artist(item_id="test", provider="test", name="", provider_mappings=set())
     parse_artist_nfo(artist, {"born": value})
     assert (artist.metadata.life_span.begin if artist.metadata.life_span else None) == expected

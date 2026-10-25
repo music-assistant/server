@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -18,7 +19,7 @@ from music_assistant_models.media_items import Artist, MediaItemImage, MediaItem
 
 from music_assistant.constants import CONF_PATH
 from music_assistant.helpers.nfo import parse_artist_nfo, parse_nfo_root
-from music_assistant.helpers.security import is_safe_path
+from music_assistant.helpers.security import is_safe_path, real_path_of_fd
 from music_assistant.models.metadata_provider import MetadataProvider
 
 if TYPE_CHECKING:
@@ -53,6 +54,8 @@ IMAGE_STEMS: dict[str, ImageType] = {
 
 # characters Windows does not allow in a file name, replaced the way Kodi does
 RESERVED_CHARS = str.maketrans(dict.fromkeys('<>:"/\\|?*', "_"))
+# seconds after which the folder list of the root is read again, also when its mtime is the same
+SUBFOLDER_LIST_MAX_AGE = 60
 
 
 async def setup(
@@ -75,10 +78,14 @@ class LocalMetadataProvider(MetadataProvider):
     """Metadata provider for a Kodi-style artist information folder."""
 
     _root: str
-    # subfolders of the root by casefolded name, refreshed when the root's mtime changes
-    # (a network share can report a stale mtime, so an exact name is checked on disk first)
+    # the root with its symlinks resolved at setup, which every read must stay inside
+    _real_root: str
+    # subfolders of the root by casefolded name, refreshed when the root's mtime changes or the
+    # list is older than SUBFOLDER_LIST_MAX_AGE (a network share can report a stale mtime, so an
+    # exact name is checked on disk first)
     _subfolders: dict[str, str]
     _root_mtime: int | None = None
+    _listed_at: float = 0.0
 
     @property
     def priority(self) -> int:
@@ -93,6 +100,7 @@ class LocalMetadataProvider(MetadataProvider):
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
         self._root = os.path.normpath(str(self.get_setup_value(CONF_PATH)))
+        self._real_root = await asyncio.to_thread(os.path.realpath, self._root)
         self._subfolders = {}
 
     async def get_artist_metadata(self, artist: Artist) -> MediaItemMetadata | None:
@@ -134,7 +142,7 @@ class LocalMetadataProvider(MetadataProvider):
         path = path.split("?v=", 1)[0]
         if not is_safe_path(path, self._root):
             return None
-        return await asyncio.to_thread(_read_image, self._root, path)
+        return await asyncio.to_thread(_read_image, self._root, self._real_root, path)
 
     async def _find_artist_folder(
         self, artist: Artist
@@ -148,7 +156,7 @@ class LocalMetadataProvider(MetadataProvider):
                 continue
             try:
                 nfo_name, nfo_root, files = await asyncio.to_thread(
-                    _read_folder, self._root, folder
+                    _read_folder, self._root, self._real_root, folder
                 )
             except FileNotFoundError, NotADirectoryError:
                 self.logger.debug("Artist folder %s no longer exists", folder)
@@ -179,15 +187,15 @@ class LocalMetadataProvider(MetadataProvider):
         """Return the actual name of a subfolder of the root, matched ignoring case."""
         if await asyncio.to_thread(os.path.isdir, os.path.join(self._root, name)):
             return name
+        now = time.monotonic()
+        known_mtime = self._root_mtime if now - self._listed_at < SUBFOLDER_LIST_MAX_AGE else None
         try:
-            mtime, subfolders = await asyncio.to_thread(
-                _list_subfolders, self._root, self._root_mtime
-            )
+            mtime, subfolders = await asyncio.to_thread(_list_subfolders, self._root, known_mtime)
         except OSError as err:
             msg = f"Artist information folder {self._root} can not be read: {err}"
             raise ProviderUnavailableError(msg) from err
         if subfolders is not None:
-            self._root_mtime, self._subfolders = mtime, subfolders
+            self._root_mtime, self._subfolders, self._listed_at = mtime, subfolders, now
         return self._subfolders.get(name.casefold())
 
     def _parse_nfo(self, artist: Artist, source: str, root: dict[str, Any] | None) -> Artist | None:
@@ -233,11 +241,10 @@ def _list_subfolders(root: str, known_mtime: int | None) -> tuple[int, dict[str,
 
 
 def _read_folder(
-    root: str, folder: str
+    root: str, real_root: str, folder: str
 ) -> tuple[str | None, dict[str, Any] | None, dict[str, int]]:
     """Return a subfolder's artist.nfo name and parsed root, if any, and the mtime of its files."""
     path = os.path.join(root, folder)
-    real_root = os.path.realpath(root)
     with os.scandir(path) as entries:
         files = {
             entry.name: entry.stat().st_mtime_ns
@@ -245,29 +252,30 @@ def _read_folder(
             if entry.is_file() and _is_inside(entry.path, real_root)
         }
     nfo_name = next((name for name in files if name.casefold() == NFO_FILENAME), None)
-    if nfo_name and (nfo_data := _read_file(os.path.join(path, nfo_name))) is not None:
+    if nfo_name and (nfo_data := _read_file(real_root, os.path.join(path, nfo_name))) is not None:
         return nfo_name, parse_nfo_root(nfo_data, "artist"), files
     return None, None, files
 
 
-def _read_image(root: str, path: str) -> bytes | None:
+def _read_image(root: str, real_root: str, path: str) -> bytes | None:
     """Return the content of a file of the root, or None when it is not a readable file in it."""
-    full_path = os.path.join(root, path)
-    if not _is_inside(full_path, os.path.realpath(root)):
-        return None
     try:
-        return _read_file(full_path)
+        return _read_file(real_root, os.path.join(root, path))
     except PermissionError, IsADirectoryError:
         return None
 
 
-def _read_file(path: str) -> bytes | None:
-    """Return the content of a file, or None when it does not exist."""
+def _read_file(real_root: str, path: str) -> bytes | None:
+    """Return the content of a file, or None when it does not exist or lies outside the real root."""
     try:
-        with open(path, "rb") as file:
-            return file.read()
+        fd = os.open(path, os.O_RDONLY)
     except FileNotFoundError:
         return None
+    # checked on the opened file, so a path re-pointed after the check is not read
+    with os.fdopen(fd, "rb") as file:
+        if not is_safe_path(real_path_of_fd(fd), real_root):
+            return None
+        return file.read()
 
 
 def _is_inside(path: str, real_root: str) -> bool:

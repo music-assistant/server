@@ -259,6 +259,30 @@ async def test_local_artist_provider_runs_without_online_metadata_or_mbid() -> N
     online.get_artist_metadata.assert_not_awaited()
 
 
+@pytest.mark.asyncio
+async def test_local_artist_provider_runs_when_musicbrainz_is_unavailable() -> None:
+    """Local providers still run when identifying an artist on MusicBrainz fails for now."""
+    enrichment = _enrichment()
+    local = _local_provider(MediaItemMetadata(style="Grunge"))
+    enrichment.providers = [local]  # type: ignore[misc]
+    artist = Artist(item_id="1", provider="library", name="Test Artist", provider_mappings=set())
+    identify = AsyncMock(side_effect=aiohttp.ClientError("network down"))
+
+    with (
+        patch.object(enrichment.config, "get_value", return_value=False),
+        patch.object(enrichment, "_get_artist_mbid", identify),
+        patch(_ENRICHMENT_TIME, return_value=NOW),
+    ):
+        await enrichment._update_artist_metadata(artist, force_refresh=True)
+
+    identify.assert_awaited_once_with(artist)
+    local.get_artist_metadata.assert_awaited_once_with(artist)
+    assert artist.metadata.style == "Grunge"
+    assert artist.metadata.last_refresh == NOW - REFRESH_INTERVAL + REFRESH_RETRY_INTERVAL
+    assert artist.metadata.last_musicbrainz_lookup is None
+    _logger(enrichment).warning.assert_not_called()
+
+
 def _bio_provider(name: str, description: str, language: str, is_local: bool) -> MagicMock:
     """Return an artist metadata provider supplying a bio."""
     provider = _metadata_provider(name, ProviderFeature.ARTIST_METADATA)

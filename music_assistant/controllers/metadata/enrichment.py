@@ -175,11 +175,24 @@ class MetadataEnrichmentMixin:
 
         # The musicbrainz ID is mandatory for all metadata lookups
         merge_mbid: str | None = None
+        retry_soon = False
         if not artist.mbid:
-            if found := await self._get_artist_mbid(artist):
+            try:
+                found = await self._get_artist_mbid(artist)
+            except _TEMPORARY_ERRORS as err:
+                found = None
+                retry_soon = True
+                self.logger.debug(
+                    "Artist %s could not be identified on MusicBrainz right now: %s",
+                    artist.name,
+                    err,
+                )
+            if found:
                 artist.mbid, by_name = found
                 merge_mbid = None if by_name else artist.mbid
-        retry_soon = await self._link_artist_to_musicbrainz(artist)
+        # a failed identification leaves the MusicBrainz lookup marker unset for a later retry
+        if not retry_soon:
+            retry_soon = await self._link_artist_to_musicbrainz(artist)
 
         # don't merge online genres on top of source-supplied ones; propagation-derived
         # genres also count as a local source so they survive metadata refreshes

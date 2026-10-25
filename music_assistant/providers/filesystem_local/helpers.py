@@ -3,12 +3,10 @@
 from __future__ import annotations
 
 import errno
-import fcntl
 import hashlib
 import logging
 import os
 import re
-import sys
 from collections.abc import Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -19,7 +17,7 @@ from music_assistant_models.errors import MediaNotFoundError
 from music_assistant.helpers.compare import compare_strings
 from music_assistant.helpers.external_ids import is_valid_isrc
 from music_assistant.helpers.json import make_utf8_safe
-from music_assistant.helpers.security import is_safe_path
+from music_assistant.helpers.security import is_safe_path, real_path_of_fd
 
 from .constants import IMAGE_EXTENSIONS, METADATA_IMAGE_STEMS, NFO_FILENAMES
 
@@ -544,7 +542,7 @@ def open_real_path(real_base_path: str, path: str, flags: int = os.O_RDONLY) -> 
         check_real_path(real_base_path, path)
         raise
     try:
-        inside = is_safe_path(_real_path_of(fd), real_base_path)
+        inside = is_safe_path(real_path_of_fd(fd), real_base_path)
     except BaseException:
         os.close(fd)
         raise
@@ -848,11 +846,3 @@ def _path_outside_folder(path: str) -> MediaNotFoundError:
         translation_owner="provider.filesystem_local",
         translation_args=[path],
     )
-
-
-def _real_path_of(fd: int) -> str:
-    """Return where the file of an open descriptor lies, with its symlinks resolved."""
-    if sys.platform == "darwin":
-        # 1024 is MAXPATHLEN, the buffer size F_GETPATH writes the path into
-        return os.fsdecode(fcntl.fcntl(fd, fcntl.F_GETPATH, bytes(1024)).split(b"\0", 1)[0])
-    return str(Path(f"/proc/self/fd/{fd}").readlink())
