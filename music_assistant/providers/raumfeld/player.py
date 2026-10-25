@@ -1063,19 +1063,22 @@ class RaumfeldPlayer(Player):
         # this one it is never shown on its own.
         media = cast.current_media
         app = next((s.name for s in cast.source_list if s.id == cast.active_source), None)
+        app = app or cast.active_source
         self._set_external(
             {
                 "title": media.title if media else None,
                 "artist": media.artist if media else None,
                 "album": media.album if media else None,
                 "image_url": media.image_url if media else None,
-                "section": app or cast.active_source,
+                "section": None,
                 "item_id": None,
             },
             # the app is controlled from the device that casts it
             actions=None,
             duration=media.duration if media else None,
             via_room=True,
+            # apart from the same service played through the host (the Raumfeld app)
+            source_id_name=(f"chromecast_{cast.active_source}", f"Chromecast: {app}"),
         )
         self._external_cast_id = cast.player_id
         self._attr_playback_state = cast.playback_state
@@ -1250,6 +1253,7 @@ class RaumfeldPlayer(Player):
         via_room: bool,
         loaded_container: str | None = None,
         play_mode: str | None = None,
+        source_id_name: tuple[str, str] | None = None,
     ) -> None:
         """
         Report an external source as active, with the controls the host allows for it.
@@ -1260,12 +1264,13 @@ class RaumfeldPlayer(Player):
         :param via_room: Whether the room's own renderer plays it rather than its zone.
         :param loaded_container: The library album or playlist the zone has loaded, if any.
         :param play_mode: The renderer's play mode (shuffle and repeat), if known.
+        :param source_id_name: The source's id and name, instead of the one for its section.
         """
         if self._advance_armed or self._next_media is not None:
             # a queue item MA handed over must not start when this source's track ends
             self._clear_next()
         allowed = {action.strip() for action in (actions or "").split(",")}
-        source_id, name = external_source(meta["section"])
+        source_id, name = source_id_name or external_source(meta["section"])
         passive = True
         # a station button, pressed here or on the speaker, plays its own library item:
         # report that button rather than the service behind it

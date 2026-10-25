@@ -2077,8 +2077,8 @@ async def test_an_app_cast_to_the_speaker_shows_as_an_external_source() -> None:
     await _poll_idle_room(player)
 
     assert player._attr_playback_state == PlaybackState.PLAYING
-    assert player._attr_active_source == "tunein"
-    assert player._attr_source_list[-1].name == "TuneIn"
+    assert player._attr_active_source == "chromecast_tunein"
+    assert player._attr_source_list[-1].name == "Chromecast: TuneIn"
     assert player._attr_source_list[-1].passive
     assert player._attr_current_media is not None
     assert player._attr_current_media.title == "Radio 538"
