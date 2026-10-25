@@ -269,3 +269,54 @@ async def test_new_folder_is_found_when_the_root_mtime_is_stale(tmp_path: Path) 
     assert metadata is not None
     assert metadata.description == "A bio"
     assert await provider.get_artist_metadata(_artist("Radiohead")) is None
+
+
+async def test_unreadable_artist_folder_is_reported_as_temporarily_unavailable(
+    tmp_path: Path,
+) -> None:
+    """An artist folder that exists but can not be read raises instead of reporting nothing."""
+    _nfo(tmp_path / "Radiohead")
+    provider = await _provider(tmp_path)
+    folder = str(tmp_path / "Radiohead")
+    real_scandir = os.scandir
+
+    def _scandir(path: str) -> Any:
+        if path == folder:
+            raise PermissionError("denied")
+        return real_scandir(path)
+
+    with (
+        patch("music_assistant.providers.local_metadata.os.scandir", side_effect=_scandir),
+        pytest.raises(ProviderUnavailableError),
+    ):
+        await provider.get_artist_metadata(_artist("Radiohead"))
+
+
+async def test_artist_folder_removed_while_looking_it_up_gets_nothing(tmp_path: Path) -> None:
+    """An artist folder that disappears while it is looked up is treated as not there."""
+    _nfo(tmp_path / "Radiohead")
+    provider = await _provider(tmp_path)
+
+    with patch(
+        "music_assistant.providers.local_metadata.os.scandir",
+        side_effect=FileNotFoundError("gone"),
+    ):
+        assert await provider.get_artist_metadata(_artist("Radiohead")) is None
+
+
+async def test_malformed_nfo_still_gives_the_artwork(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A malformed artist.nfo is skipped with a warning, the artwork of the folder is kept."""
+    folder = tmp_path / "Radiohead"
+    folder.mkdir()
+    (folder / "artist.nfo").write_text("not xml at all <<<")
+    (folder / "folder.jpg").write_bytes(JPEG)
+    provider = await _provider(tmp_path)
+
+    metadata = await provider.get_artist_metadata(_artist("Radiohead"))
+
+    assert metadata is not None
+    assert metadata.description is None
+    assert [image.type for image in metadata.images or []] == [ImageType.THUMB]
+    assert "Failed to parse artist NFO file Radiohead/artist.nfo" in caplog.text

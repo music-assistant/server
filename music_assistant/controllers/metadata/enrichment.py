@@ -228,6 +228,8 @@ class MetadataEnrichmentMixin:
             if metadata:
                 if provider.is_local:
                     local_fields |= _apply_local_values(artist.metadata, metadata)
+                    if metadata.genres and self.config.get_value(CONF_PREFER_LOCAL_GENRES):
+                        prefer_local_genres = True
                 if prefer_local_genres and not provider.is_local:
                     metadata = replace(metadata, genres=None)
                 if metadata.description:

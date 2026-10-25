@@ -10,7 +10,7 @@ from __future__ import annotations
 import asyncio
 import os
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from music_assistant_models.enums import ImageType, ProviderFeature
 from music_assistant_models.errors import ProviderUnavailableError
@@ -147,13 +147,20 @@ class LocalMetadataProvider(MetadataProvider):
             if (folder := await self._find_subfolder(candidate)) is None:
                 continue
             try:
-                nfo_data, files = await asyncio.to_thread(_read_folder, self._root, folder)
-            except OSError as err:
-                self.logger.debug("Failed to read artist folder %s: %s", folder, err)
+                nfo_name, nfo_root, files = await asyncio.to_thread(
+                    _read_folder, self._root, folder
+                )
+            except FileNotFoundError, NotADirectoryError:
+                self.logger.debug("Artist folder %s no longer exists", folder)
                 # the folder list may be outdated, so it is read again on the next lookup
                 self._root_mtime = None
                 continue
-            nfo_artist = self._parse_nfo(artist, f"{folder}/{NFO_FILENAME}", nfo_data)
+            except OSError as err:
+                msg = f"Artist folder {folder} can not be read: {err}"
+                raise ProviderUnavailableError(msg) from err
+            nfo_artist = (
+                self._parse_nfo(artist, f"{folder}/{nfo_name}", nfo_root) if nfo_name else None
+            )
             nfo_mbid = nfo_artist.mbid if nfo_artist else None
             # the folder of a namesake
             if nfo_mbid and artist.mbid and nfo_mbid != artist.mbid:
@@ -183,11 +190,9 @@ class LocalMetadataProvider(MetadataProvider):
             self._root_mtime, self._subfolders = mtime, subfolders
         return self._subfolders.get(name.casefold())
 
-    def _parse_nfo(self, artist: Artist, source: str, data: bytes | None) -> Artist | None:
-        """Return the artist described by an artist.nfo, or None when absent or malformed."""
-        if data is None:
-            return None
-        if (root := parse_nfo_root(data, "artist")) is None:
+    def _parse_nfo(self, artist: Artist, source: str, root: dict[str, Any] | None) -> Artist | None:
+        """Return the artist described by a parsed artist.nfo, or None when it was malformed."""
+        if root is None:
             self.logger.warning("Failed to parse artist NFO file %s", source)
             return None
         nfo_artist = Artist(
@@ -227,8 +232,10 @@ def _list_subfolders(root: str, known_mtime: int | None) -> tuple[int, dict[str,
         return mtime, {entry.name.casefold(): entry.name for entry in entries if entry.is_dir()}
 
 
-def _read_folder(root: str, folder: str) -> tuple[bytes | None, dict[str, int]]:
-    """Return a subfolder's artist.nfo content, if any, and the mtime of its files in the root."""
+def _read_folder(
+    root: str, folder: str
+) -> tuple[str | None, dict[str, Any] | None, dict[str, int]]:
+    """Return a subfolder's artist.nfo name and parsed root, if any, and the mtime of its files."""
     path = os.path.join(root, folder)
     real_root = os.path.realpath(root)
     with os.scandir(path) as entries:
@@ -238,8 +245,9 @@ def _read_folder(root: str, folder: str) -> tuple[bytes | None, dict[str, int]]:
             if entry.is_file() and _is_inside(entry.path, real_root)
         }
     nfo_name = next((name for name in files if name.casefold() == NFO_FILENAME), None)
-    nfo_data = _read_file(os.path.join(path, nfo_name)) if nfo_name else None
-    return nfo_data, files
+    if nfo_name and (nfo_data := _read_file(os.path.join(path, nfo_name))) is not None:
+        return nfo_name, parse_nfo_root(nfo_data, "artist"), files
+    return None, None, files
 
 
 def _read_image(root: str, path: str) -> bytes | None:

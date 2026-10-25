@@ -1731,6 +1731,28 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
             self.mass.signal_event(EventType.MEDIA_ITEM_UPDATED, item.uri, item)
 
     @final
+    async def remove_all_provider_images(self, provider_instance_id: str) -> None:
+        """
+        Remove all images of a provider from the library items of this media type.
+
+        :param provider_instance_id: The provider instance the images belong to.
+        """
+        query = (
+            f"SELECT item_id FROM {self.db_table} WHERE EXISTS ("
+            f"SELECT 1 FROM json_each({self.db_table}.metadata, '$.images') "
+            "WHERE json_extract(value, '$.provider') = :provider_instance)"
+        )
+        params = {"provider_instance": provider_instance_id}
+        for db_row in await self.mass.music.database.get_rows_from_query(query, params, limit=0):
+            db_id = int(db_row["item_id"])
+            if (
+                await self._remove_provider_images(db_id, provider_instance_id)
+                and not SUPPRESS_MEDIA_ITEM_UPDATES.get()
+            ):
+                item = await self.get_library_item(db_id)
+                self.mass.signal_event(EventType.MEDIA_ITEM_UPDATED, item.uri, item)
+
+    @final
     async def replace_metadata(
         self,
         item_id: str | int,

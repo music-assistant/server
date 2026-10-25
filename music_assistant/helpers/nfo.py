@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import re
 from datetime import date
 from typing import TYPE_CHECKING, Any
@@ -11,11 +12,13 @@ import xmltodict
 from music_assistant_models.enums import ArtistEntityType
 from music_assistant_models.media_items.metadata import LifeSpan
 
+from music_assistant.constants import MASS_LOGGER_NAME
 from music_assistant.helpers.tags import TAG_SPLITTER, clean_mbid, split_items
 
 if TYPE_CHECKING:
     from music_assistant_models.media_items import Artist
 
+LOGGER = logging.getLogger(f"{MASS_LOGGER_NAME}.nfo")
 # LifeSpan dates are ISO (YYYY-MM-DD) or partial (YYYY-MM or YYYY)
 _ISO_PARTIAL_DATE = re.compile(r"^\d{4}(-\d{2}(-\d{2})?)?$")
 # written-out dates with the day and month name in either order: 15 Dec 1970, December 15, 1970
@@ -23,10 +26,10 @@ _WRITTEN_DATES = (
     re.compile(r"^(?P<day>\d{1,2})\s+(?P<month>[a-z]+),?\s+(?P<year>\d{4})$", re.IGNORECASE),
     re.compile(r"^(?P<month>[a-z]+)\s+(?P<day>\d{1,2}),?\s+(?P<year>\d{4})$", re.IGNORECASE),
 )
-# slashed dates always have the month in the middle: 15/12/1970, 1970/12/15
-_SLASHED_DATES = (
-    re.compile(r"^(?P<day>\d{1,2})/(?P<month>\d{1,2})/(?P<year>\d{4})$"),
-    re.compile(r"^(?P<year>\d{4})/(?P<month>\d{1,2})/(?P<day>\d{1,2})$"),
+# numeric dates always have the month in the middle: 15/12/1970, 15-12-1970, 15.12.1970, 1970/12/15
+_NUMERIC_DATES = (
+    re.compile(r"^(?P<day>\d{1,2})(?P<sep>[/.-])(?P<month>\d{1,2})(?P=sep)(?P<year>\d{4})$"),
+    re.compile(r"^(?P<year>\d{4})(?P<sep>[/.-])(?P<month>\d{1,2})(?P=sep)(?P<day>\d{1,2})$"),
 )
 # English month names, full and abbreviated, independent of the process locale
 _MONTHS = {
@@ -77,13 +80,14 @@ def parse_artist_nfo(artist: Artist, nfo_artist: dict[Any, Any], source: str | N
     :param nfo_artist: The parsed 'artist' element from the NFO file.
     :param source: Origin of the NFO data (e.g. file path), included in log messages.
     """
-    if title := nfo_artist.get("title") or nfo_artist.get("name"):
+    title = _single_value(nfo_artist, "title", source) or _single_value(nfo_artist, "name", source)
+    if title:
         artist.name = title
-    if sort_name := nfo_artist.get("sortname"):
+    if sort_name := _single_value(nfo_artist, "sortname", source):
         artist.sort_name = sort_name
-    if mbid := clean_mbid(nfo_artist.get("musicbrainzartistid"), source):
+    if mbid := clean_mbid(_single_value(nfo_artist, "musicbrainzartistid", source), source):
         artist.mbid = mbid
-    if description := nfo_artist.get("biography"):
+    if description := _single_value(nfo_artist, "biography", source):
         artist.metadata.description = description
     if genre := nfo_artist.get("genre"):
         artist.metadata.genres = set(split_items(genre))
@@ -91,29 +95,44 @@ def parse_artist_nfo(artist: Artist, nfo_artist: dict[Any, Any], source: str | N
         artist.metadata.style = f"{TAG_SPLITTER} ".join(split_items(style))
     if mood := nfo_artist.get("mood"):
         artist.metadata.mood = f"{TAG_SPLITTER} ".join(split_items(mood))
-    if (
-        isinstance(artist_type := nfo_artist.get("type"), str)
-        and (entity_type := ArtistEntityType(artist_type.strip().lower()))
-        != ArtistEntityType.UNKNOWN
-    ):
+    if (artist_type := _single_value(nfo_artist, "type", source)) and (
+        entity_type := ArtistEntityType(artist_type.strip().lower())
+    ) != ArtistEntityType.UNKNOWN:
         artist.metadata.artist_entity_type = entity_type
-    begin = _iso_partial_date(nfo_artist.get("born") or nfo_artist.get("formed"))
-    end = _iso_partial_date(nfo_artist.get("died") or nfo_artist.get("disbanded"))
+    begin = _iso_partial_date(
+        _single_value(nfo_artist, "born", source) or _single_value(nfo_artist, "formed", source)
+    )
+    end = _iso_partial_date(
+        _single_value(nfo_artist, "died", source) or _single_value(nfo_artist, "disbanded", source)
+    )
     if begin or end:
         artist.metadata.life_span = LifeSpan(begin=begin, end=end, ended=end is not None)
 
 
-def _iso_partial_date(value: Any) -> str | None:
+def _single_value(nfo_artist: dict[Any, Any], key: str, source: str | None) -> str | None:
+    """Return the first text value of a single-value NFO element, warning when it is repeated."""
+    value = nfo_artist.get(key)
+    if isinstance(value, list) and value and isinstance(value[0], str):
+        LOGGER.warning(
+            "Using the first <%s> value and skipping the repeated ones in %s",
+            key,
+            source or "NFO data",
+        )
+        return value[0]
+    return value if isinstance(value, str) else None
+
+
+def _iso_partial_date(value: str | None) -> str | None:
     """Return the value as an ISO (partial) date when it is a date in a supported form, else None."""
-    if not isinstance(value, str):
+    if value is None:
         return None
     text = value.strip()
     if written := next((m for pattern in _WRITTEN_DATES if (m := pattern.match(text))), None):
         if not (month := _MONTHS.get(written["month"].lower())):
             return None
         text = f"{written['year']}-{month:02d}-{int(written['day']):02d}"
-    elif slashed := next((m for pattern in _SLASHED_DATES if (m := pattern.match(text))), None):
-        text = f"{slashed['year']}-{int(slashed['month']):02d}-{int(slashed['day']):02d}"
+    elif numeric := next((m for pattern in _NUMERIC_DATES if (m := pattern.match(text))), None):
+        text = f"{numeric['year']}-{int(numeric['month']):02d}-{int(numeric['day']):02d}"
     elif not _ISO_PARTIAL_DATE.match(text):
         return None
     year, month, day = (*map(int, text.split("-")), 1, 1)[:3]

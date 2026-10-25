@@ -1,5 +1,6 @@
 """Tests for the shared NFO helpers."""
 
+import logging
 import uuid
 
 import pytest
@@ -129,14 +130,18 @@ def test_parse_artist_nfo_ignores_impossible_dates(value: str) -> None:
         ("1970/12/15", "1970-12-15"),
         ("12/15/1970", None),
         ("1970/15/12", None),
-        ("15-12-1970", None),
+        ("15-12-1970", "1970-12-15"),
+        ("15.12.1970", "1970-12-15"),
+        ("1970.12.15", "1970-12-15"),
+        ("1970-1-5", "1970-01-05"),
+        ("15/12-1970", None),
         ("15 Decem 1970", None),
         ("31 April 1970", None),
         ("29 Feb 2023", None),
     ],
 )
 def test_parse_artist_nfo_reads_written_out_dates(value: str, expected: str | None) -> None:
-    """Dates with a month name or a slashed month in the middle are read; impossible ones not."""
+    """Dates with a month name or a numeric month in the middle are read; impossible ones not."""
     artist = Artist(item_id="test", provider="test", name="", provider_mappings=set())
     parse_artist_nfo(artist, {"born": value})
     assert (artist.metadata.life_span.begin if artist.metadata.life_span else None) == expected
@@ -150,18 +155,38 @@ def test_parse_artist_nfo_keeps_valid_dates_with_their_precision(value: str) -> 
     assert artist.metadata.life_span == LifeSpan(begin=None, end=value, ended=True)
 
 
-def test_parse_artist_nfo_ignores_repeated_single_value_fields() -> None:
-    """A type or date given more than once is ignored instead of failing the whole NFO."""
+def test_parse_artist_nfo_takes_the_first_of_repeated_single_value_fields(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A single-value field given more than once uses its first value and logs a warning."""
     artist = Artist(item_id="test", provider="test", name="", provider_mappings=set())
     root = parse_nfo_root(
         b"<artist><title>Test Artist</title><type>Group</type><type>Person</type>"
-        b"<born>1970</born><born>1971</born><died>2001</died></artist>",
+        b"<born>1970</born><born>1971</born><died>2001</died>"
+        b"<biography>One</biography><biography>Two</biography></artist>",
         "artist",
     )
     assert root is not None
 
-    parse_artist_nfo(artist, root)
+    with caplog.at_level(logging.WARNING):
+        parse_artist_nfo(artist, root, "Test Artist/artist.nfo")
 
     assert artist.name == "Test Artist"
-    assert artist.metadata.artist_entity_type is None
-    assert artist.metadata.life_span == LifeSpan(begin=None, end="2001", ended=True)
+    assert artist.metadata.artist_entity_type == ArtistEntityType.GROUP
+    assert artist.metadata.life_span == LifeSpan(begin="1970", end="2001", ended=True)
+    assert artist.metadata.description == "One"
+    warnings = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
+    assert len(warnings) == 3
+    assert all("Test Artist/artist.nfo" in message for message in warnings)
+    for key in ("type", "born", "biography"):
+        assert any(f"<{key}>" in message for message in warnings)
+
+
+def test_parse_artist_nfo_ignores_single_value_fields_without_text() -> None:
+    """A single-value field that holds no plain text is ignored."""
+    artist = Artist(item_id="test", provider="test", name="Kept", provider_mappings=set())
+
+    parse_artist_nfo(artist, {"title": {"#text": "x", "@lang": "en"}, "biography": [{"p": "x"}]})
+
+    assert artist.name == "Kept"
+    assert artist.metadata.description is None

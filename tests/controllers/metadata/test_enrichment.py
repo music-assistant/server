@@ -354,6 +354,23 @@ async def test_local_artist_genres_are_kept_when_local_genres_are_preferred() ->
     assert artist.metadata.genres == {"Jazz", "Rock"}
 
 
+@pytest.mark.asyncio
+async def test_local_artist_genres_keep_online_genres_out_of_an_artist_without_genres() -> None:
+    """Genres from a local provider count as local genres for the providers after it."""
+    enrichment = _enrichment()
+    _mass(enrichment).music.genres.has_derived_genre_mappings = AsyncMock(return_value=False)
+    online = _metadata_provider("online", ProviderFeature.ARTIST_METADATA)
+    online.get_artist_metadata = AsyncMock(return_value=MediaItemMetadata(genres={"Pop"}))
+    local = _local_provider(MediaItemMetadata(genres={"Rock"}))
+    enrichment.providers = [local, online]  # type: ignore[misc]
+    artist = _library_artist(MediaItemMetadata())
+
+    with patch.object(enrichment.config, "get_value", return_value=True):
+        await enrichment._update_artist_metadata(artist, force_refresh=True)
+
+    assert artist.metadata.genres == {"Rock"}
+
+
 def _local_provider(
     metadata: MediaItemMetadata | None = None, error: Exception | None = None
 ) -> MagicMock:
