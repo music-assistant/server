@@ -1087,6 +1087,8 @@ class RaumfeldPlayer(Player):
             # apart from the same service played through the host (the Raumfeld app)
             source_id_name=(f"chromecast_{cast.active_source}", f"Chromecast: {app}"),
         )
+        if self._external_cast_id != cast.player_id:
+            self.logger.debug("%s plays %s, cast to its speaker", self.room, app)
         self._external_cast_id = cast.player_id
         self._attr_playback_state = cast.playback_state
         self._attr_elapsed_time = cast.elapsed_time
@@ -1751,6 +1753,7 @@ class RaumfeldPlayer(Player):
             "Previous": cast.previous_track,
         }
         command = commands.get(action_name)
+        self.logger.debug("Sending %s for %s to its Chromecast output", action_name, self.room)
         if command is None and action_name != "Seek":
             raise PlayerCommandFailed(f"{action_name} is not offered for {self.room}")
         try:
