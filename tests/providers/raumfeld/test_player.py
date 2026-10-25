@@ -2023,3 +2023,112 @@ async def test_a_play_mode_change_after_ma_took_over_is_refused() -> None:
         with pytest.raises(PlayerCommandFailed, match="no longer plays"):
             await change
     external.assert_not_awaited()
+
+
+FLOW_URL = f"{BASE_URL}/flow/session1/raumfeld_bar/item1.flac"
+
+
+def _announcing_player(current_item_id: str = "q2") -> RaumfeldPlayer:
+    """Build a player that plays its queue as a flow stream, settled on the zone."""
+    player = _flow_player()
+    player._player_id = "raumfeld_bar"
+    player.room = "Bar"
+    player.logger = MagicMock()
+    player._flow_url = FLOW_URL
+    player._attr_active_source = "raumfeld_bar"
+    player._attr_playback_state = PlaybackState.PLAYING
+    player._play_started_at = 0.0
+    cast("MagicMock", player.mass.player_queues).get.return_value = MagicMock(
+        current_item=MagicMock(queue_item_id=current_item_id)
+    )
+    return player
+
+
+def test_a_flow_url_of_the_room_queue_is_recognised() -> None:
+    """Only the room's own queue played as a flow stream counts as its flow."""
+    player = _flow_player()
+    player._player_id = "raumfeld_bar"
+    assert player._is_queue_flow(FLOW_URL)
+    assert not player._is_queue_flow(f"{BASE_URL}/single/session1/raumfeld_bar/item1.flac")
+    assert not player._is_queue_flow(f"{BASE_URL}/flow/session1/raumfeld_bank/item1.flac")
+    assert not player._is_queue_flow("http://radio.example.com/live.mp3")
+
+
+def test_a_new_track_of_the_flow_is_announced_once() -> None:
+    """MA reaching the next track of the flow announces it to the zone, only once."""
+    player = _announcing_player()
+
+    player._maybe_announce_flow_item()
+    player._maybe_announce_flow_item()
+
+    assert player._announced_item_id == "q2"
+    assert cast("MagicMock", player.mass.create_task).call_count == 1
+
+
+@pytest.mark.parametrize(
+    "change",
+    ["starting", "external_source", "paused", "no_flow"],
+)
+def test_no_track_is_announced_outside_a_settled_flow(change: str) -> None:
+    """Nothing is announced while the zone starts, plays something else or does not play."""
+    player = _announcing_player()
+    if change == "starting":
+        player._play_started_at = time.time()
+    elif change == "external_source":
+        player._attr_active_source = "tunein"
+    elif change == "paused":
+        player._attr_playback_state = PlaybackState.PAUSED
+    else:
+        player._flow_url = None
+
+    player._maybe_announce_flow_item()
+
+    assert player._announced_item_id is None
+    cast("MagicMock", player.mass.create_task).assert_not_called()
+
+
+async def test_the_announcement_describes_the_track_on_the_same_flow_url() -> None:
+    """The zone gets the track's title, artist, album and cover, on the flow url it plays."""
+    player = _announcing_player()
+    media = PlayerMedia(
+        uri="library://track/1",
+        title="Buena",
+        artist="Morphine",
+        album="Cure for Pain",
+        image_url="http://mass.local:8097/imageproxy/cover.jpg",
+        duration=198,
+        queue_item_id="q2",
+    )
+    cast("MagicMock", player.mass.player_queues).player_media_from_queue_item = AsyncMock(
+        return_value=media
+    )
+    with (
+        patch.object(player, "_active_zone", return_value=["Bar"]),
+        patch.object(player, "_zone_command", AsyncMock()) as zone_command,
+    ):
+        await player._announce_flow_item(FLOW_URL, "q2")
+
+    zone_command.assert_awaited_once()
+    args, kwargs = zone_command.call_args
+    assert args == (["Bar"], "BendAVTransportURI")
+    assert kwargs["CurrentURI"] == FLOW_URL
+    didl = kwargs["CurrentURIMetaData"]
+    assert "Buena" in didl
+    assert "Morphine" in didl
+    assert "Cure for Pain" in didl
+    assert "cover.jpg" in didl
+
+
+async def test_a_refused_announcement_leaves_playback_alone() -> None:
+    """A zone that refuses the announcement only costs the track description."""
+    player = _announcing_player()
+    cast("MagicMock", player.mass.player_queues).player_media_from_queue_item = AsyncMock(
+        return_value=PlayerMedia(uri="library://track/1", title="Buena", queue_item_id="q2")
+    )
+    with (
+        patch.object(player, "_active_zone", return_value=["Bar"]),
+        patch.object(
+            player, "_zone_command", AsyncMock(side_effect=PlayerCommandFailed("refused"))
+        ),
+    ):
+        await player._announce_flow_item(FLOW_URL, "q2")

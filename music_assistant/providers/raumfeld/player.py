@@ -15,6 +15,7 @@ from hassfeld import webservice as hassfeld_ws
 from hassfeld.constants import SERVICE_AV_TRANSPORT
 from music_assistant_models.config_entries import MULTI_VALUE_SPLITTER
 from music_assistant_models.enums import (
+    EventType,
     IdentifierType,
     MediaType,
     PlaybackState,
@@ -61,6 +62,7 @@ if TYPE_CHECKING:
 
     import hassfeld
     from music_assistant_models.config_entries import ConfigEntry
+    from music_assistant_models.event import MassEvent
 
     from .provider import RaumfeldPlayerProvider
 
@@ -75,6 +77,9 @@ IDLE_POLL_INTERVAL = 15
 # How long (seconds) after a play/resume command to keep polling fast, so MA catches
 # the device actually starting playback (Raumfeld renderers buffer before they start).
 STARTUP_POLL_WINDOW = 20
+# How long (seconds) after a play command to wait before telling the zone which track of
+# the flow stream plays, so it has taken the stream it was given first.
+FLOW_ANNOUNCE_SETTLE_TIME = 5
 # Only re-anchor MA's elapsed-time clock when the reported flow position diverges from
 # the expected (extrapolated) position by more than this many seconds. Keeps the
 # progress bar smooth despite the device's 1-second position granularity while a real
@@ -204,6 +209,11 @@ class RaumfeldPlayer(Player):
     # bumped when a command that changes what plays starts and when it ends, and the
     # number of such commands running, so a poll can tell its readings no longer apply
     _playback_generation = 0
+    # In flow mode: the queue's stream the zone plays, and the queue item last announced to
+    # the zone, so the Raumfeld app follows each track of the one continuous stream.
+    _flow_url: str | None = None
+    _announced_item_id: str | None = None
+    _unsub_queue_events: Callable[[], None] | None = None
     _playback_changes = 0
     # until when a stop is taken as MA ending this room's queue during a handover
     _handover_until = 0.0
@@ -249,6 +259,9 @@ class RaumfeldPlayer(Player):
         # timestamp of the last power command, see POWER_SETTLE_TIME
         self._power_changed_at = 0.0
         self._advance_task_id = f"raumfeld_advance_{player_id}"
+        self._unsub_queue_events = self.mass.subscribe(
+            self._on_queue_updated, EventType.QUEUE_UPDATED, id_filter=player_id
+        )
         self._attr_device_info = DeviceInfo(
             model=provider.room_model(room) or "Raumfeld", manufacturer="Teufel"
         )
@@ -321,6 +334,8 @@ class RaumfeldPlayer(Player):
     async def on_unload(self) -> None:
         """Handle logic when the player is unloaded from the Player controller."""
         await super().on_unload()
+        if self._unsub_queue_events is not None:
+            self._unsub_queue_events()
         # the timer is held by mass, not by this player, so it would otherwise fire after
         # it is gone, against a dropped player
         self._clear_next()
@@ -607,6 +622,8 @@ class RaumfeldPlayer(Player):
         )
         url = await self.mass.streams.resolve_stream_url(self.player_id, media)
         didl_metadata = create_didl_metadata(media, url)
+        self._flow_url = url if self._is_queue_flow(url) else None
+        self._announced_item_id = None
         try:
             zone = await self._ensure_playable_zone()
             # wake any room in (manual) standby first: a manually-standby renderer does not
@@ -945,6 +962,9 @@ class RaumfeldPlayer(Player):
         # poll fast right after a play command so MA sees playback actually start, and in
         # the final seconds of a track when this room advances the queue itself; a relaxed
         # rate while it plays on, the slow rate when idle
+        if playing:
+            # also catches the first track, which plays before the zone is settled
+            self._maybe_announce_flow_item()
         recently_started = (time.time() - self._play_started_at) < STARTUP_POLL_WINDOW
         if recently_started or (self._advance_armed and playing and self._near_end):
             self._attr_poll_interval = FAST_POLL_INTERVAL
@@ -1552,6 +1572,66 @@ class RaumfeldPlayer(Player):
             raise PlayerCommandFailed(f"{action_name} failed on {self.room}: {err!r}") from err
         except (*HOST_ERRORS, UpnpError) as err:
             raise PlayerCommandFailed(f"{action_name} failed on {self.room}: {err!r}") from err
+
+    def _is_queue_flow(self, url: str) -> bool:
+        """Return whether the url is this room's queue played as one continuous flow stream."""
+        base_url = self.mass.streams.base_url
+        parts = url.removeprefix(f"{base_url}/").split("/") if url.startswith(base_url) else []
+        return len(parts) > 2 and parts[0] == "flow" and parts[2] == self.player_id
+
+    def _on_queue_updated(self, event: MassEvent) -> None:
+        """Announce a new track of the flow stream to the zone, once MA reaches it."""
+        self._maybe_announce_flow_item()
+
+    def _maybe_announce_flow_item(self) -> None:
+        """Announce the flow stream's current track to the zone, if it has not been yet."""
+        if (
+            self._flow_url is None
+            or self._attr_active_source != self.player_id
+            or self._attr_playback_state != PlaybackState.PLAYING
+            # the zone is still starting the stream it was just given
+            or time.time() - self._play_started_at < FLOW_ANNOUNCE_SETTLE_TIME
+        ):
+            return
+        queue = self.mass.player_queues.get(self.player_id)
+        item = queue.current_item if queue else None
+        if item is None or item.queue_item_id == self._announced_item_id:
+            return
+        self._announced_item_id = item.queue_item_id
+        self.mass.create_task(
+            self._announce_flow_item(self._flow_url, item.queue_item_id),
+            task_id=f"raumfeld_announce_{self.player_id}",
+            abort_existing=True,
+        )
+
+    async def _announce_flow_item(self, url: str, queue_item_id: str) -> None:
+        """
+        Tell the zone which track of the flow stream plays now, without disturbing playback.
+
+        :param url: The flow stream the zone plays.
+        :param queue_item_id: The queue item that plays now.
+        """
+        # In flow mode the zone streams the whole queue as one item, so it - and with it the
+        # Raumfeld app - knows only the description it got when the flow started; ICY brings
+        # the title along but nothing else. BendAVTransportURI updates what the zone reports
+        # without it fetching the uri (measured: the transport stays PLAYING, its clock runs
+        # on and no request follows), so giving it the same flow url leaves the audio alone.
+        if (zone := self._active_zone()) is None:
+            return
+        if (item := self.mass.player_queues.get_item(self.player_id, queue_item_id)) is None:
+            return
+        media = await self.mass.player_queues.player_media_from_queue_item(item)
+        try:
+            await self._zone_command(
+                zone,
+                "BendAVTransportURI",
+                CurrentURI=url,
+                CurrentURIMetaData=create_didl_metadata(media, url),
+            )
+        except PlayerCommandFailed as err:
+            self.logger.debug("Could not announce %s to %s: %s", media.title, self.room, err)
+            return
+        self.logger.debug("Announced %s to the zone of %s", media.title, self.room)
 
     async def _stop_before_switching(self, zone: list[str]) -> None:
         """Stop the zone before it is pointed at another stream, if that works."""
