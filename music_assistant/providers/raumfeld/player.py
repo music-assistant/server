@@ -217,6 +217,8 @@ class RaumfeldPlayer(Player):
     # the zone, so the Raumfeld app follows each track of the one continuous stream.
     _flow_url: str | None = None
     _announced_item_id: str | None = None
+    # the queue item whose end the timer announced the next track at
+    _passed_item_id: str | None = None
     _unsub_queue_events: Callable[[], None] | None = None
     _playback_changes = 0
     # until when a stop is taken as MA ending this room's queue during a handover
@@ -629,6 +631,7 @@ class RaumfeldPlayer(Player):
         didl_metadata = create_didl_metadata(media, url)
         self._flow_url = url if self._is_queue_flow(url) else None
         self._announced_item_id = None
+        self._passed_item_id = None
         self.mass.cancel_timer(self._announce_timer_id)
         try:
             zone = await self._ensure_playable_zone()
@@ -1601,8 +1604,10 @@ class RaumfeldPlayer(Player):
             return
         if (queue := self.mass.player_queues.get(self.player_id)) is None:
             return
-        if queue.current_item is not None:
-            self._start_flow_announcement(queue.current_item.queue_item_id)
+        current = queue.current_item
+        # the queue moves on only after the timer announced the next track
+        if current is not None and current.queue_item_id != self._passed_item_id:
+            self._start_flow_announcement(current.queue_item_id)
         self._schedule_next_announcement(queue)
 
     @property
@@ -1625,10 +1630,21 @@ class RaumfeldPlayer(Player):
         if 0 < remaining <= FLOW_ANNOUNCE_LOOKAHEAD:
             self.mass.call_later(
                 remaining,
-                self._start_flow_announcement,
+                self._announce_upcoming,
                 upcoming.queue_item_id,
+                current.queue_item_id,
                 task_id=self._announce_timer_id,
             )
+
+    def _announce_upcoming(self, queue_item_id: str, passed_item_id: str) -> None:
+        """
+        Announce the flow stream's next track, as the zone reaches it.
+
+        :param queue_item_id: The queue item the zone reaches now.
+        :param passed_item_id: The queue item that has just ended.
+        """
+        self._passed_item_id = passed_item_id
+        self._start_flow_announcement(queue_item_id)
 
     def _start_flow_announcement(self, queue_item_id: str) -> None:
         """

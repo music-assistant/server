@@ -2082,8 +2082,11 @@ def test_the_next_track_is_announced_when_the_current_one_ends() -> None:
     assert timer.call_args.args[2] == "q3"
     assert timer.call_args.kwargs["task_id"] == "raumfeld_announce_next_raumfeld_bar"
 
-    # the timer fires: the next track is announced, and not again once MA reaches it
-    player._start_flow_announcement("q3")
+    # the timer fires: the next track is announced, the one that ended is not announced
+    # again while the queue still lags, and the next one not again once MA reaches it
+    player._announce_upcoming("q3", "q2")
+    player._maybe_announce_flow_item()
+    assert player._announced_item_id == "q3"
     queue.current_item = MagicMock(queue_item_id="q3", duration=300)
     queue.corrected_elapsed_time = 1.0
     player._maybe_announce_flow_item()
