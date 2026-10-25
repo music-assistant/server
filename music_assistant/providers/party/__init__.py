@@ -1173,17 +1173,20 @@ class PartyPlugin(PluginProvider):
     @staticmethod
     def _has_next_track(queue: PlayerQueue) -> bool:
         """
-        Return whether a skip on the given queue moves on to a next track.
+        Return whether a skip on the given queue moves on to another track.
 
         Follows how the queue controller picks the track for a skip: a skip leaves
         "repeat one" for the next track, and only "repeat all" goes from the last track
-        back to the first one, which restarts the track in a queue of one.
+        back to the first one. In a queue of one track that would only restart the same
+        track, so it does not count as a next track.
 
         :param queue: The queue to check.
         """
         if queue.current_index is None or not queue.items:
             return False
-        return queue.current_index < queue.items - 1 or queue.repeat_mode == RepeatMode.ALL
+        if queue.current_index < queue.items - 1:
+            return True
+        return queue.repeat_mode == RepeatMode.ALL and queue.items > 1
 
     def _on_queue_updated(self, event: MassEvent) -> None:
         """

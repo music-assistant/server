@@ -401,25 +401,33 @@ async def test_skip_on_last_track_with_repeat_one_has_no_next_track() -> None:
 
 
 @pytest.mark.asyncio
-async def test_skip_restarts_single_track_with_repeat_all() -> None:
-    """With "repeat all", a skip on a queue of one restarts the track and drops the votes."""
-    plugin, queue, current_item = _create_skip_vote_plugin(votes_required=2)
+async def test_skip_on_single_track_with_repeat_all_has_no_next_track() -> None:
+    """In a queue of one, "repeat all" would only restart the track, so it is not skipped."""
+    plugin, queue, current_item = _create_skip_vote_plugin(votes_required=1)
     queue.items = 1
     queue.repeat_mode = RepeatMode.ALL
-    # the restart plays the same queue item again
-    next_track = cast("AsyncMock", plugin.mass.player_queues.next)
-    next_track.side_effect = None
-
     plugin._get_voter_id = AsyncMock(return_value="token:a")  # type: ignore[method-assign]
-    await plugin.skip_current(queue_item_id="item_1")
-    plugin._get_voter_id = AsyncMock(return_value="token:b")  # type: ignore[method-assign]
+
     result = await plugin.skip_current(queue_item_id="item_1")
 
-    next_track.assert_awaited_once_with("party_queue")
+    assert result["skipped"] is False
+    assert result["no_next_track"] is True
+    cast("AsyncMock", plugin.mass.player_queues.next).assert_not_awaited()
+    assert current_item.extra_attributes["party_skip_votes"] == 1
+
+
+@pytest.mark.asyncio
+async def test_skip_on_last_track_with_repeat_all_goes_to_first_track() -> None:
+    """With "repeat all", a skip on the last track of a longer queue goes to the first one."""
+    plugin, queue, _item = _create_skip_vote_plugin(votes_required=1)
+    queue.current_index = 2
+    queue.repeat_mode = RepeatMode.ALL
+    plugin._get_voter_id = AsyncMock(return_value="token:a")  # type: ignore[method-assign]
+
+    result = await plugin.skip_current(queue_item_id="item_1")
+
     assert result["skipped"] is True
-    assert result["no_next_track"] is False
-    assert plugin._skip_voters == set()
-    assert "party_skip_votes" not in current_item.extra_attributes
+    cast("AsyncMock", plugin.mass.player_queues.next).assert_awaited_once_with("party_queue")
 
 
 @pytest.mark.asyncio
