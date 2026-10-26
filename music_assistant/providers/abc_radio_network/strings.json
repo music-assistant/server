@@ -1,16 +1,16 @@
 {
   "config_entries": {
-    "timezone": {
-      "label": "Timezone",
-      "description": "Timezone sent to ABC when requesting now-playing information.",
+    "state": {
+      "label": "Your state",
+      "description": "Picks the local stream of triple j, Double J, ABC Classic and ABC Kids listen, and the matching now-playing info. Other stations have one national stream.",
       "options": {
-        "Australia/Sydney": "Sydney / Canberra (NSW, ACT)",
-        "Australia/Melbourne": "Melbourne (VIC)",
-        "Australia/Brisbane": "Brisbane (QLD)",
-        "Australia/Adelaide": "Adelaide (SA)",
-        "Australia/Darwin": "Darwin (NT)",
-        "Australia/Perth": "Perth (WA)",
-        "Australia/Hobart": "Hobart (TAS)"
+        "nsw": "New South Wales / ACT",
+        "vic": "Victoria",
+        "qld": "Queensland",
+        "sa": "South Australia",
+        "nt": "Northern Territory",
+        "wa": "Western Australia",
+        "tas": "Tasmania"
       }
     }
   },
