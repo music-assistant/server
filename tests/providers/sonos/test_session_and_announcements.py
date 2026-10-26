@@ -16,6 +16,8 @@ from music_assistant.providers.sonos import player as player_module
 from music_assistant.providers.sonos.player import SonosPlayer
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from aiosonos.api.models import AudioClipStatusEvent, SessionError
 
 PLAYER = "RINCON_F0F6C1CC8D0401400"
@@ -219,7 +221,9 @@ async def test_an_unanswered_load_keeps_the_queue_only_with_a_session(
     """An unanswered load may have reached the speaker; an unanswered createSession did not."""
     player: SonosPlayer
 
-    async def _load(*_args: object, **_kwargs: object) -> None:
+    async def _load(*_args: object, **kwargs: object) -> None:
+        if session_after:
+            cast("Callable[[str], None]", kwargs["on_session"])(session_after)
         client.player.group.active_session_id = session_after
         raise CommandTimeout("playbackSession:loadCloudQueue", 10)
 
@@ -288,21 +292,46 @@ async def test_a_flow_mode_load_evicted_in_its_reply_keeps_the_queue_a_move_will
     assert player._evicted_cloud_queue[0] == "old_queue"
 
 
+FLOW_LOAD_CUT_OFF_CASES = [
+    ("stream-session", "stream-session", "new_queue"),
+    (None, "session1", None),
+    ("session1", "session1", "new_queue"),
+    ("stream-session", None, None),
+]
+FLOW_LOAD_CUT_OFF_IDS = [
+    "new_session_named",
+    "create_unanswered",
+    "same_session_handed_back",
+    "named_session_evicted_meanwhile",
+]
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    ("session_after", "flow_after"),
-    [("stream-session", "new_queue"), ("session1", None)],
-    ids=["new_session_unanswered", "create_unanswered"],
+    ("named_session", "session_after", "flow_after"),
+    FLOW_LOAD_CUT_OFF_CASES,
+    ids=FLOW_LOAD_CUT_OFF_IDS,
 )
-async def test_an_unanswered_stream_keeps_the_queue_only_in_a_session_of_its_own(
-    session_after: str, flow_after: str | None
+async def test_an_unanswered_stream_keeps_the_queue_in_the_session_the_load_named(
+    named_session: str | None, session_after: str | None, flow_after: str | None
 ) -> None:
-    """A stream always gets a new session; the cloud queue's session left held is not its own."""
+    """
+    A stream load that named its session may have gone through; one that never did has not.
+
+    The speaker can hand the session it held back under the same id, so the name, not a
+    changed id, tells the load was sent; a session evicted since does not play it.
+
+    :param named_session: The session the load named before it was cut off, if it got that far.
+    :param session_after: The session the speaker holds afterwards.
+    :param flow_after: The queue the player should still claim afterwards.
+    """
     player: SonosPlayer
 
-    async def _load(*_args: object, **_kwargs: object) -> None:
+    async def _load(*_args: object, **kwargs: object) -> None:
+        if named_session is not None:
+            cast("Callable[[str], None]", kwargs["on_session"])(named_session)
         client.player.group.active_session_id = session_after
-        raise CommandTimeout("playbackSession:createSession", 10)
+        raise CommandTimeout("playbackSession:loadStreamUrl", 10)
 
     player, client, media = _player_streaming_our_queue(_load)
     with (
@@ -312,7 +341,7 @@ async def test_an_unanswered_stream_keeps_the_queue_only_in_a_session_of_its_own
         await player.play_media(media)
 
     assert player._flow_queue_id == flow_after
-    assert player._queue_session_id == (session_after if flow_after else None)
+    assert player._queue_session_id == (named_session if flow_after else None)
 
 
 @pytest.mark.asyncio
@@ -327,7 +356,9 @@ async def test_a_cancelled_load_is_settled_like_an_unanswered_one(
     """A load cut off by a cancel may have reached the speaker; it is kept only with a session."""
     player: SonosPlayer
 
-    async def _load(*_args: object, **_kwargs: object) -> None:
+    async def _load(*_args: object, **kwargs: object) -> None:
+        if session_after:
+            cast("Callable[[str], None]", kwargs["on_session"])(session_after)
         client.player.group.active_session_id = session_after
         raise asyncio.CancelledError
 
@@ -343,18 +374,47 @@ async def test_a_cancelled_load_is_settled_like_an_unanswered_one(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize(
-    ("session_after", "flow_after"),
-    [("stream-session", "new_queue"), ("session1", None)],
-    ids=["new_session_held", "replaced_session_held"],
-)
-async def test_a_cancelled_stream_load_keeps_the_queue_only_in_a_session_of_its_own(
-    session_after: str, flow_after: str | None
-) -> None:
-    """A stream cut off by a cancel is kept only when the speaker made its session already."""
+async def test_a_stream_load_cut_off_as_the_player_left_its_group_is_forgotten() -> None:
+    """A player without a group holds no session the named one could still be."""
     player: SonosPlayer
 
-    async def _load(*_args: object, **_kwargs: object) -> None:
+    async def _load(*_args: object, **kwargs: object) -> None:
+        cast("Callable[[str], None]", kwargs["on_session"])("stream-session")
+        client.player.group = None
+        raise CommandTimeout("playbackSession:loadStreamUrl", 10)
+
+    player, client, media = _player_streaming_our_queue(_load)
+    with (
+        patch.object(SonosPlayer, "flow_mode", property(lambda _self: True)),
+        pytest.raises(CommandTimeout),
+    ):
+        await player.play_media(media)
+
+    assert player._flow_queue_id is None
+    assert player._queue_session_id is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("named_session", "session_after", "flow_after"),
+    FLOW_LOAD_CUT_OFF_CASES,
+    ids=FLOW_LOAD_CUT_OFF_IDS,
+)
+async def test_a_cancelled_stream_load_keeps_the_queue_in_the_session_the_load_named(
+    named_session: str | None, session_after: str | None, flow_after: str | None
+) -> None:
+    """
+    A stream load cut off by a cancel is settled like an unanswered one.
+
+    :param named_session: The session the load named before it was cut off, if it got that far.
+    :param session_after: The session the speaker holds afterwards.
+    :param flow_after: The queue the player should still claim afterwards.
+    """
+    player: SonosPlayer
+
+    async def _load(*_args: object, **kwargs: object) -> None:
+        if named_session is not None:
+            cast("Callable[[str], None]", kwargs["on_session"])(named_session)
         client.player.group.active_session_id = session_after
         raise asyncio.CancelledError
 
@@ -366,7 +426,7 @@ async def test_a_cancelled_stream_load_keeps_the_queue_only_in_a_session_of_its_
         await player.play_media(media)
 
     assert player._flow_queue_id == flow_after
-    assert player._queue_session_id == (session_after if flow_after else None)
+    assert player._queue_session_id == (named_session if flow_after else None)
 
 
 @pytest.mark.asyncio
