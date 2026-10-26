@@ -583,39 +583,33 @@ class SendspinBasePlayer(Player):
             return [ConfigEntry(key="source_autostart_unavailable", type=ConfigEntryType.LABEL)]
         # A source that is also a player defaults to playing on itself, which for a
         # protocol player means the visible player it belongs to.
-        own_target = self.protocol_parent_id or self.player_id
+        own_target = (
+            (self.protocol_parent_id or self.player_id)
+            if "player" in self._negotiated_families()
+            else None
+        )
         options = [
             ConfigValueOption(SOURCE_AUTOSTART_OFF),
+            # Lead with the device's own player, so the default sits at the top of the list.
+            # It is offered even while unavailable, as it is during the device's own setup.
+            *([ConfigValueOption(own_target, translation_key="this_device")] if own_target else []),
             *(
-                ConfigValueOption(
-                    player.player_id,
-                    title=None if player.player_id == own_target else player.display_name,
-                    translation_key="this_device" if player.player_id == own_target else None,
-                )
+                ConfigValueOption(player.player_id, title=player.display_name)
                 for player in sorted(
                     self.mass.players.all_players(False, False),
-                    # Lead with the device's own player, so the default sits at the top
-                    # of the list rather than alphabetically among every other player.
-                    key=lambda player: (
-                        player.player_id != own_target,
-                        player.display_name.lower(),
-                    ),
+                    key=lambda player: player.display_name.lower(),
                 )
                 # Only players that render audio, so lights, displays and other
                 # capture-only clients are not offered as somewhere to play a line-in.
-                if player.type in SOURCE_AUTOSTART_TARGET_TYPES
+                if player.type in SOURCE_AUTOSTART_TARGET_TYPES and player.player_id != own_target
             ),
         ]
-        valid = {option.value for option in options}
-        default = (
-            own_target if "player" in self._negotiated_families() and own_target in valid else None
-        )
         return [
             ConfigEntry(
                 key=CONF_SOURCE_AUTOSTART_TARGET,
                 type=ConfigEntryType.STRING,
                 options=options,
-                default_value=default or SOURCE_AUTOSTART_OFF,
+                default_value=own_target or SOURCE_AUTOSTART_OFF,
             ),
         ]
 
