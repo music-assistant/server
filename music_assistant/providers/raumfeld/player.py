@@ -217,6 +217,9 @@ class RaumfeldPlayer(Player):
     # the zone, so the Raumfeld app follows each track of the one continuous stream.
     _flow_url: str | None = None
     _announced_item_id: str | None = None
+    # the queue position of the item last announced, and when it was announced
+    _announced_index: int | None = None
+    _announced_at = 0.0
     # the queue item whose end the timer announced the next track at
     _passed_item_id: str | None = None
     _unsub_queue_events: Callable[[], None] | None = None
@@ -631,6 +634,7 @@ class RaumfeldPlayer(Player):
         didl_metadata = create_didl_metadata(media, url)
         self._flow_url = url if self._is_queue_flow(url) else None
         self._announced_item_id = None
+        self._announced_index = None
         self._passed_item_id = None
         self.mass.cancel_timer(self._announce_timer_id)
         try:
@@ -1658,7 +1662,20 @@ class RaumfeldPlayer(Player):
             or self._attr_playback_state != PlaybackState.PLAYING
         ):
             return
+        index = self.mass.player_queues.index_by_id(self.player_id, queue_item_id)
+        if (
+            index is not None
+            and self._announced_index is not None
+            and index < self._announced_index
+            and time.time() - self._announced_at < FLOW_ANNOUNCE_SETTLE_TIME
+        ):
+            # Right after a track that ends at once (playback resumed close to its end) the
+            # queue goes back and forth between it and the next for a moment; the flow only
+            # goes back with a new play command, or at the end of a repeated queue.
+            return
         self._announced_item_id = queue_item_id
+        self._announced_index = index
+        self._announced_at = time.time()
         self.mass.create_task(
             self._announce_flow_item(self._flow_url, queue_item_id),
             task_id=f"raumfeld_announce_{self.player_id}",

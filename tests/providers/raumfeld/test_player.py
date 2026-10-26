@@ -2039,6 +2039,10 @@ def _announcing_player(current_item_id: str = "q2") -> RaumfeldPlayer:
     player._attr_active_source = "raumfeld_bar"
     player._attr_playback_state = PlaybackState.PLAYING
     player._play_started_at = 0.0
+    indexes = {"q1": 0, "q2": 1, "q3": 2}
+    cast("MagicMock", player.mass.player_queues).index_by_id.side_effect = (
+        lambda _queue_id, item_id: indexes.get(item_id)
+    )
     cast("MagicMock", player.mass.player_queues).get.return_value = MagicMock(
         current_item=MagicMock(queue_item_id=current_item_id, duration=200),
         next_item=MagicMock(queue_item_id="q3"),
@@ -2093,6 +2097,25 @@ def test_the_next_track_is_announced_when_the_current_one_ends() -> None:
 
     assert player._announced_item_id == "q3"
     assert cast("MagicMock", player.mass.create_task).call_count == 2
+
+
+def test_the_queue_going_back_for_a_moment_is_not_announced() -> None:
+    """A queue that goes back to the previous track for a moment does not bring its cover back."""
+    player = _announcing_player()
+    queue = cast("MagicMock", player.mass.player_queues).get.return_value
+
+    player._maybe_announce_flow_item()
+    queue.current_item = MagicMock(queue_item_id="q1", duration=1)
+    player._maybe_announce_flow_item()
+
+    assert player._announced_item_id == "q2"
+    assert cast("MagicMock", player.mass.create_task).call_count == 1
+
+    # a repeated queue that starts over later is announced as usual
+    player._announced_at -= 60
+    player._maybe_announce_flow_item()
+
+    assert player._announced_item_id == "q1"
 
 
 def test_no_timer_is_set_far_from_the_end_of_a_track() -> None:
