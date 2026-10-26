@@ -176,3 +176,35 @@ async def test_well_known_alongside_mcp_mount() -> None:
         # Well-known root form also works (RFC 9728 §3.1 fallback).
         meta_root = await client.get("/.well-known/oauth-protected-resource")
         assert meta_root.status == 200
+
+
+async def test_unauthenticated_challenge_points_at_served_resource_metadata(
+    mock_mass: Any, mock_config: Any
+) -> None:
+    """A 401 names the RFC 9728 metadata URL, and that URL serves the metadata."""
+    import logging  # noqa: PLC0415
+
+    from music_assistant.providers.fastmcp_server.server import MCPServerRuntime  # noqa: PLC0415
+
+    ws = FakeWebserver()
+    mock_mass.webserver.register_dynamic_route = ws.register_dynamic_route
+    runtime = MCPServerRuntime(mock_mass, mock_config, logging.getLogger("fastmcp_server.e2e"))
+    await runtime.start()
+    try:
+        async with TestClient(TestServer(build_aiohttp_app(ws))) as client:
+            resp = await client.post(
+                "/mcp/v1",
+                headers={
+                    "Content-Type": "application/json",
+                    "Accept": "application/json, text/event-stream",
+                },
+                json={"jsonrpc": "2.0", "id": 1, "method": "ping"},
+            )
+            assert resp.status == 401
+            metadata_url = "http://localhost:8095/.well-known/oauth-protected-resource/mcp/v1"
+            assert f'resource_metadata="{metadata_url}"' in resp.headers["WWW-Authenticate"]
+            meta = await client.get("/.well-known/oauth-protected-resource/mcp/v1")
+            assert meta.status == 200
+            assert (await meta.json())["resource"] == "http://localhost:8095/mcp/v1"
+    finally:
+        await runtime.stop()

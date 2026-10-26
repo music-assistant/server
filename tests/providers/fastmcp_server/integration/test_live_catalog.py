@@ -145,10 +145,16 @@ async def collect_resource_catalog(client: LiveClient) -> tuple[list[str], str]:
     return names, revision
 
 
-async def call_ma(client: LiveClient, command: str, arguments: Mapping[str, Any]) -> Any:
+async def call_ma(
+    client: LiveClient,
+    command: str,
+    arguments: Mapping[str, Any],
+    response_mode: str = "compact",
+) -> Any:
     """Invoke a canonical MA command and return its JSON-compatible payload."""
     result = await client.call_tool(
-        "call_tool", {"name": f"ma_api:{command}", "arguments": dict(arguments)}
+        "call_tool",
+        {"name": f"ma_api:{command}", "arguments": dict(arguments), "response_mode": response_mode},
     )
     envelope = structured_content(result)
     assert envelope["command"] == f"ma_api:{command}"
@@ -169,11 +175,23 @@ def item_id(item: Mapping[str, Any]) -> str:
     return str(item.get("queue_item_id") or item["item_id"])
 
 
+def queue_item_uri(item: Mapping[str, Any]) -> str:
+    """Return the URI of the media a queue item plays."""
+    media_item = item.get("media_item")
+    return str(media_item.get("uri", "")) if isinstance(media_item, Mapping) else ""
+
+
 async def queue_items(client: LiveClient, queue_id: str) -> list[dict[str, Any]]:
     """Read enough queue items to compare ordering after reversible cleanup."""
+    # Compact mode trims the list to its response budget; a queue diff needs every row.
     return cast(
         "list[dict[str, Any]]",
-        await call_ma(client, "player_queues/items", {"queue_id": queue_id, "limit": 500}),
+        await call_ma(
+            client,
+            "player_queues/items",
+            {"queue_id": queue_id, "limit": 500},
+            response_mode="full",
+        ),
     )
 
 
@@ -207,7 +225,7 @@ async def wait_for_own_added_item(
         added = [
             item for item in await queue_items(client, queue_id) if item_id(item) not in before_ids
         ]
-        owned = [item for item in added if str(item.get("uri", "")) == track_uri]
+        owned = [item for item in added if queue_item_uri(item) == track_uri]
         if len(owned) == 1:
             return owned[0]
         if len(owned) > 1:
@@ -357,7 +375,7 @@ async def test_live_reversible_queue_cycle(live_client: LiveClient) -> None:
         pytest.skip("queue test requires a dedicated player with an active non-empty queue")
     before_ids = {item_id(item) for item in before}
     track_uri = await find_test_track_uri(live_client, purpose="queue mutation")
-    if any(str(item.get("uri", "")) == track_uri for item in before):
+    if any(queue_item_uri(item) == track_uri for item in before):
         pytest.skip("dedicated queue already contains the selected test track URI")
     added_id: str | None = None
     add_attempted = False
@@ -385,7 +403,7 @@ async def test_live_reversible_queue_cycle(live_client: LiveClient) -> None:
             int(current_index) if current_index is not None else -1,
             int(buffer_index) if buffer_index is not None else -1,
         )
-        assert int(added["index"]) > protected
+        assert int(added["sort_index"]) > protected
         await call_ma(
             live_client,
             "player_queues/move_item_end",
