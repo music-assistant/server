@@ -23,6 +23,7 @@ from music_assistant.providers.raumfeld.player import (
     PLAYING_POLL_INTERVAL,
     ZONE_CREATE_ATTEMPTS,
     RaumfeldPlayer,
+    _changes_playback,
     _map_transport_state,
     _near_track_end,
 )
@@ -2155,7 +2156,7 @@ def _flow_start(seek_position: int, duration: int = 259) -> tuple[RaumfeldPlayer
     item.name = "Paper Doll"
     item.streamdetails = MagicMock(seek_position=seek_position, duration=duration)
     queues = cast("MagicMock", player.mass.player_queues)
-    queues.get.return_value = MagicMock(current_item=item)
+    queues.get.return_value = MagicMock(current_item=item, playback_speed=1.0)
     queues.play_index = MagicMock()
     media = PlayerMedia(uri="library://track/1", source_id="raumfeld_bar")
     return player, media
@@ -2200,3 +2201,29 @@ def test_a_single_item_stream_starts_as_asked() -> None:
     player, media = _flow_start(254)
 
     assert not player._start_flow_earlier(media, f"{BASE_URL}/single/s/raumfeld_bar/q.flac")
+
+
+def test_the_least_of_the_first_track_scales_with_the_playback_speed() -> None:
+    """At 2x speed 8 s of audio take 16 s of the track, so 12 s left is too little."""
+    player, media = _flow_start(247, duration=259)
+    queue = cast("MagicMock", player.mass.player_queues).get.return_value
+    queue.playback_speed = 2.0
+
+    with patch.object(player, "update_state"):
+        assert player._start_flow_earlier(media, FLOW_START_URL)
+
+    cast("MagicMock", player.mass.player_queues).play_index.assert_called_once_with(
+        "raumfeld_bar", "q2", seek_position=243
+    )
+
+
+async def test_a_command_after_the_earlier_start_cancels_the_restart() -> None:
+    """A stop that comes while the restart waits for the playback lock stands."""
+    player, _ = _flow_start(254)
+    restart = MagicMock()
+    restart.done.return_value = False
+    player._flow_restart = restart
+
+    await _changes_playback(AsyncMock())(player)
+
+    restart.cancel.assert_called_once()

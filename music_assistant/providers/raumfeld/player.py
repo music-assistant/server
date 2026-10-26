@@ -161,6 +161,11 @@ def _changes_playback[**P, R](
     async def wrapper(player: RaumfeldPlayer, /, *args: P.args, **kwargs: P.kwargs) -> R:
         player._playback_changes += 1
         player._playback_generation += 1
+        # a restart of the flow at an earlier position is replaced by this command, unless
+        # this command is that restart
+        restart = player._flow_restart
+        if restart is not None and restart is not asyncio.current_task() and not restart.done():
+            restart.cancel()
         try:
             return await func(player, *args, **kwargs)
         finally:
@@ -211,6 +216,8 @@ class RaumfeldPlayer(Player):
     # bumped when a command that changes what plays starts and when it ends, and the
     # number of such commands running, so a poll can tell its readings no longer apply
     _playback_generation = 0
+    # a flow started again at an earlier position, see _start_flow_earlier
+    _flow_restart: asyncio.Task[None] | None = None
     _playback_changes = 0
     # join checks still waiting for their rooms to be hooked in, and rooms that are hooked
     # in and wait for the restart of a join check that still waits, with the playback
@@ -335,6 +342,8 @@ class RaumfeldPlayer(Player):
     async def on_unload(self) -> None:
         """Handle logic when the player is unloaded from the Player controller."""
         await super().on_unload()
+        if self._flow_restart is not None:
+            self._flow_restart.cancel()
         # the timer is held by mass, not by this player, so it would otherwise fire after
         # it is gone, against a dropped player
         self._clear_next()
@@ -1989,11 +1998,14 @@ class RaumfeldPlayer(Player):
         if item is None or details is None or not details.seek_position:
             return False
         duration = details.duration or item.duration
-        if not duration or duration <= FLOW_MIN_FIRST_TRACK:
+        # the queue's position is in media time; at another playback speed (an audiobook)
+        # the seconds that reach the zone differ
+        least = FLOW_MIN_FIRST_TRACK * (queue.playback_speed or 1.0)
+        if not duration or duration <= least:
             return False
-        if duration - details.seek_position >= FLOW_MIN_FIRST_TRACK:
+        if duration - details.seek_position >= least:
             return False
-        position = int(duration - FLOW_MIN_FIRST_TRACK)
+        position = int(duration - least)
         self.logger.debug(
             "%s would start %s %ss before its end, starting at %ss instead",
             self.room,
@@ -2002,9 +2014,10 @@ class RaumfeldPlayer(Player):
             position,
         )
         # Not awaited: MA holds the player's playback lock until it sees this play command
-        # take effect. Reporting it as playing lets MA release the lock for the seek at once.
-        # By item rather than the queue's current one, which can move back meanwhile.
-        self.mass.create_task(
+        # take effect. Reporting it as playing lets MA release the lock for the restart at once.
+        # A stop or another play command after this one cancels the restart (see
+        # _changes_playback), also while it waits for the playback lock.
+        self._flow_restart = self.mass.create_task(
             self.mass.player_queues.play_index(
                 media.source_id, item.queue_item_id, seek_position=position
             )
