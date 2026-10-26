@@ -286,7 +286,10 @@ class ShareLinkEnricher:
                 or (
                     artist
                     and isinstance(result_artist, str)
-                    and not compare_strings(artist, result_artist, strict=False)
+                    and not (
+                        compare_strings(artist, result_artist, strict=True)
+                        or compare_strings(artist, result_artist, strict=False)
+                    )
                 )
             ):
                 continue
