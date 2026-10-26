@@ -1752,28 +1752,13 @@ def _icy_provider(stored: dict[str, Any]) -> RaumfeldPlayerProvider:
 
 @pytest.mark.parametrize(
     ("stored", "expected"),
-    [
-        ({}, "basic"),
-        ({"enable_icy_metadata": "full"}, "basic"),
-        ({"enable_icy_metadata": "disabled"}, "disabled"),
-        ({"enable_icy_metadata": "full", "raumfeld_icy_basic_migrated": True}, "full"),
-    ],
-    ids=["new_room", "former_default", "own_choice", "full_picked_after_the_move"],
+    [({}, "basic"), ({"enable_icy_metadata": "full"}, "full")],
+    ids=["new_room", "own_choice"],
 )
-def test_the_icy_preference_moves_to_basic_once(stored: dict[str, Any], expected: str) -> None:
-    """A new room and the former "full" default get "basic"; a choice made later is kept."""
+def test_a_room_without_an_icy_preference_gets_basic(stored: dict[str, Any], expected: str) -> None:
+    """A room with nothing stored gets "basic"; a stored value is left for the user."""
     provider = _icy_provider(stored)
 
     provider._ensure_icy_default("raumfeld_bar")
-    provider._ensure_icy_default("raumfeld_bar")
 
     assert stored["enable_icy_metadata"] == expected
-    assert stored["raumfeld_icy_basic_migrated"] is True
-
-
-def test_the_icy_move_survives_a_player_config_that_is_gone() -> None:
-    """A player whose config went away meanwhile is left for the next sync."""
-    provider = _icy_provider({})
-    cast("MagicMock", provider.mass.config).set_raw_player_config_value.side_effect = KeyError
-
-    provider._ensure_icy_default("raumfeld_bar")

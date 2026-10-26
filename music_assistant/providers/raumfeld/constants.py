@@ -89,10 +89,6 @@ SOURCE_LINE_IN = "line_in"
 # (measured with a Connector room, heard as a slight echo); grouping first and then playing
 # is in sync. With this on for the leader or any room of the group, the leader starts its
 # queue again where it is when a room joins.
-# Stored per player once the ICY preference was moved from the former "full" default to
-# "basic", so a "full" the user picks afterwards is kept.
-CONF_ICY_BASIC_MIGRATED = "raumfeld_icy_basic_migrated"
-
 CONF_RESTART_ON_JOIN = "restart_on_join"
 CONF_ENTRY_RESTART_ON_JOIN = ConfigEntry(
     key=CONF_RESTART_ON_JOIN,

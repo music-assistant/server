@@ -40,7 +40,6 @@ from music_assistant.models.player_provider import PlayerProvider
 from .constants import (
     BUTTON_ITEM_CACHE_TTL,
     CACHE_CATEGORY_BUTTON_ITEMS,
-    CONF_ICY_BASIC_MIGRATED,
     DEFAULT_PORT,
     DEVICE_INFO_TIMEOUT,
     GROUP_SETTLE_TIME,
@@ -761,19 +760,13 @@ class RaumfeldPlayerProvider(PlayerProvider):
         # entry's own default ("disabled"), so the "basic" default this provider's entry
         # declares would only take effect once the user saves the player's settings. Store
         # it once - only while nothing is stored, so a value the user picks later stays.
-        # The former default "full" was stored the same way for every room and cannot be
-        # told apart from a user's pick, so it is moved to "basic" once.
-        config = self.mass.config
-        try:
-            stored = config.get_raw_player_config_value(player_id, CONF_ENABLE_ICY_METADATA)
-            migrated = config.get_raw_player_config_value(player_id, CONF_ICY_BASIC_MIGRATED)
-            if stored is None or (stored == "full" and not migrated):
-                config.set_raw_player_config_value(player_id, CONF_ENABLE_ICY_METADATA, "basic")
-            if not migrated:
-                config.set_raw_player_config_value(player_id, CONF_ICY_BASIC_MIGRATED, True)
-        except KeyError:
-            # the player's config is gone meanwhile; the next sync stores it
-            return
+        if (
+            self.mass.config.get_raw_player_config_value(player_id, CONF_ENABLE_ICY_METADATA)
+            is None
+        ):
+            self.mass.config.set_raw_player_config_value(
+                player_id, CONF_ENABLE_ICY_METADATA, "basic"
+            )
 
     def _zone_rooms_leader_first(self, zone_rooms: list[str]) -> list[str]:
         """Return the zone's rooms ordered with the coordinator (leader) first."""
