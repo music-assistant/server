@@ -33,6 +33,8 @@ if TYPE_CHECKING:
 LOGGER = logging.getLogger(__name__)
 HTTP_RATE_LIMIT = 1
 HTTP_RATE_PERIOD = 1.0
+HTTP_RETRY_ATTEMPTS = 2
+HTTP_INITIAL_BACKOFF = 1
 
 
 class _ShareHTTPClient:
@@ -42,7 +44,12 @@ class _ShareHTTPClient:
         self.mass = mass
         self.service = service
         self.logger = LOGGER
-        self.throttler = ThrottlerManager(rate_limit=HTTP_RATE_LIMIT, period=HTTP_RATE_PERIOD)
+        self.throttler = ThrottlerManager(
+            rate_limit=HTTP_RATE_LIMIT,
+            period=HTTP_RATE_PERIOD,
+            retry_attempts=HTTP_RETRY_ATTEMPTS,
+            initial_backoff=HTTP_INITIAL_BACKOFF,
+        )
 
     @throttle_with_retries
     async def get_json(self, url: str, params: dict[str, str | int] | None = None) -> object | None:

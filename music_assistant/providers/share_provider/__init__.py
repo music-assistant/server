@@ -31,7 +31,7 @@ from music_assistant_models.errors import (
 )
 from music_assistant_models.media_items import Album, BrowseFolder, ItemMapping, Track
 
-from music_assistant.helpers.compare import compare_strings, compare_version
+from music_assistant.helpers.compare import compare_album_name, compare_strings, compare_version
 from music_assistant.helpers.external_ids import (
     is_valid_barcode,
     is_valid_isrc,
@@ -70,6 +70,8 @@ CONF_SHARE_BASE_URL = "share_base_url"
 DEFAULT_SHARE_BASE_URL = "https://share.music-assistant.io"
 # Leave room for the API command envelope under the 64 KiB fallback DataChannel limit.
 MAX_SHARE_PLAYLIST_PAYLOAD_SIZE = 48 * 1024
+# Provider links are optional, so third-party outages must not hold up share generation.
+SHARE_LINK_ENRICHMENT_TIMEOUT = 10
 LOGGER = logging.getLogger(__name__)
 __all__ = ["SharePayload", "ShareProvider", "TrackStub", "setup"]
 
@@ -348,14 +350,18 @@ class ShareProvider(PluginProvider):
             if hasattr(item, "album") and item.album:
                 album_str = item.album.name
             provider_refs = build_provider_refs(item, media_type)
-            await self._link_enricher.enrich(
-                provider_refs,
-                isrc,
-                item.name,
-                artist_str,
-                apple_music_track_id,
-                version=version_str,
-            )
+            try:
+                async with asyncio.timeout(SHARE_LINK_ENRICHMENT_TIMEOUT):
+                    await self._link_enricher.enrich(
+                        provider_refs,
+                        isrc,
+                        item.name,
+                        artist_str,
+                        apple_music_track_id,
+                        version=version_str,
+                    )
+            except TimeoutError:
+                LOGGER.debug("Timed out enriching share links for %s", item.name)
 
         elif item.media_type == MediaType.ARTIST:
             mbid = item.get_external_id(ExternalID.MB_ARTIST)
@@ -484,11 +490,24 @@ class ShareProvider(PluginProvider):
                 ):
                     continue
                 if media_type == MediaType.TRACK:
-                    item_version = item.version if isinstance(item.version, str) else ""
-                    if external_id_type != ExternalID.MB_TRACK and not compare_version(
-                        payload.version or "", item_version
-                    ):
-                        continue
+                    if external_id_type == ExternalID.ISRC:
+                        if (
+                            not isinstance(item, Track)
+                            or self._best_search_match(payload, [item]) is None
+                        ):
+                            continue
+                        item_mbid = item.get_external_id(ExternalID.MB_RECORDING)
+                        if (
+                            payload.mbid
+                            and item_mbid
+                            and normalize_external_id(ExternalID.MB_RECORDING, payload.mbid)
+                            != normalize_external_id(ExternalID.MB_RECORDING, item_mbid)
+                        ):
+                            continue
+                    elif external_id_type != ExternalID.MB_TRACK:
+                        item_version = item.version if isinstance(item.version, str) else ""
+                        if not compare_version(payload.version or "", item_version):
+                            continue
                     if not hydrate_track:
                         return item
                     try:
@@ -530,7 +549,13 @@ class ShareProvider(PluginProvider):
         for item in candidates:
             if isinstance(item, ItemMapping):
                 continue
-            if not compare_strings(payload.title, item.name, strict=False):
+            is_album = payload.type == MediaType.ALBUM.value
+            title_matches = (
+                compare_album_name(payload.title, item.name)
+                if is_album
+                else compare_strings(payload.title, item.name, strict=False)
+            )
+            if not title_matches:
                 continue
             if payload.artist and not item.artist_str:
                 continue
