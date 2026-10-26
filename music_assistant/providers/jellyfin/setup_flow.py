@@ -10,6 +10,7 @@ from aiojellyfin.session import SessionConfiguration
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption, ConfigValueType
 from music_assistant_models.enums import ConfigEntryType
 
+from music_assistant.constants import CONF_PASSWORD, CONF_USERNAME, CONF_VERIFY_SSL
 from music_assistant.models.setup_flow import SetupFlowError, StepExpiredError
 from music_assistant.providers.jellyfin import (
     AUTH_METHOD_PASSWORD,
@@ -21,7 +22,6 @@ from music_assistant.providers.jellyfin import (
     authenticate_with_quick_connect,
     initiate_quick_connect,
 )
-from music_assistant.constants import CONF_PASSWORD, CONF_USERNAME, CONF_VERIFY_SSL
 
 if TYPE_CHECKING:
     from music_assistant.models.setup_flow import SetupSession
