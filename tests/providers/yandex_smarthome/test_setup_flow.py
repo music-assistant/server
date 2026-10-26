@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import dataclasses
 from types import SimpleNamespace
@@ -405,6 +406,44 @@ async def test_direct_provisioning_reuses_routes_of_a_running_instance() -> None
         return _done_artifacts("skill-id")
 
     assert await _provision_direct(session, _create) == "skill-id"
+
+
+async def test_concurrent_direct_provisioning_keeps_routes_until_last_flow_exits() -> None:
+    """A flow finishing first must not pull the routes from under a still-deploying one."""
+    first = _fake_session()
+    second = _fake_session()
+    second.mass = first.mass
+    routes = _route_recorder(first)
+    first_deploying = asyncio.Event()
+    second_deploying = asyncio.Event()
+    first_done = asyncio.Event()
+    served_after_first_done: set[tuple[str, str]] = set()
+
+    async def _first_create(**_: Any) -> Any:
+        first_deploying.set()
+        await second_deploying.wait()
+        return _done_artifacts("first-skill")
+
+    async def _second_create(**_: Any) -> Any:
+        second_deploying.set()
+        await first_done.wait()
+        served_after_first_done.update(routes)
+        return _done_artifacts("second-skill")
+
+    async def _run_first() -> Any:
+        try:
+            return await _provision_direct(first, _first_create)
+        finally:
+            first_done.set()
+
+    async def _run_second() -> Any:
+        await first_deploying.wait()
+        return await _provision_direct(second, _second_create)
+
+    second_id, first_id = await asyncio.gather(_run_second(), _run_first())
+    assert (first_id, second_id) == ("first-skill", "second-skill")
+    assert (DIRECT_API_BASE_PATH, "HEAD") in served_after_first_done
+    assert routes == {}
 
 
 async def test_cloud_provisioning_registers_no_backend_routes() -> None:

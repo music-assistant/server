@@ -22,6 +22,7 @@ from __future__ import annotations
 import base64
 import logging
 from contextlib import asynccontextmanager
+from dataclasses import dataclass
 from html import escape
 from typing import TYPE_CHECKING
 from uuid import uuid4
@@ -284,6 +285,17 @@ async def _run_direct(
             errors = {"base": err}
 
 
+@dataclass
+class _SetupDirectBackend:
+    """Direct backend routes served on behalf of the setup flows deploying a skill."""
+
+    handler: DirectConnectionHandler | None = None
+    users: int = 0
+
+
+_SETUP_DIRECT_BACKEND = _SetupDirectBackend()
+
+
 @asynccontextmanager
 async def _serve_direct_backend(
     session: SetupSession,
@@ -299,24 +311,33 @@ async def _serve_direct_backend(
     if connection_type != CONNECTION_TYPE_DIRECT:
         yield
         return
-    handler = DirectConnectionHandler(
-        mass=session.mass,
-        user_id="",
-        access_token="",
-        client_secret=str(collected.get(CONF_DIRECT_CLIENT_SECRET) or ""),
-        logger=_LOGGER,
-    )
-    try:
-        handler.register_routes()
-    except RuntimeError:
-        # a loaded instance (reconfigure) already serves the backend
-        _LOGGER.debug("Direct backend routes already registered, reusing them")
-        yield
-        return
+    backend = _SETUP_DIRECT_BACKEND
+    if backend.users == 0:
+        handler = DirectConnectionHandler(
+            mass=session.mass,
+            user_id="",
+            access_token="",
+            client_secret=str(collected.get(CONF_DIRECT_CLIENT_SECRET) or ""),
+            logger=_LOGGER,
+        )
+        try:
+            handler.register_routes()
+        except RuntimeError:
+            # registration is all-or-nothing and the webserver is running, so a refusal
+            # means a loaded instance (reconfigure) already serves the complete backend
+            _LOGGER.debug("Direct backend routes already registered, reusing them")
+            yield
+            return
+        backend.handler = handler
+    # concurrent setup flows share one set of routes; the last one out releases them
+    backend.users += 1
     try:
         yield
     finally:
-        handler.unregister_routes()
+        backend.users -= 1
+        if backend.users == 0 and backend.handler is not None:
+            backend.handler.unregister_routes()
+            backend.handler = None
 
 
 async def _provision_skill(

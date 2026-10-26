@@ -10,7 +10,9 @@ from music_assistant.providers.yandex_smarthome import setup_flow
 
 def test_setup_flow_translation_keys_are_complete() -> None:
     """Every setup step and surfaced error has owner-provided English text."""
-    strings = json.loads(Path(setup_flow.__file__).with_name("strings.json").read_text())
+    strings = json.loads(
+        Path(setup_flow.__file__).with_name("strings.json").read_text(encoding="utf-8")
+    )
 
     assert set(strings["setup_flow"]) >= {
         "user",
