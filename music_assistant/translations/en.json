@@ -2339,6 +2339,7 @@
   "provider.sendspin.config_entries.source_autostart_target.label": "Automatically play line-in on",
   "provider.sendspin.config_entries.source_autostart_target.options.off": "Off",
   "provider.sendspin.config_entries.source_autostart_target.options.this_device": "This device",
+  "provider.sendspin.config_entries.source_autostart_unavailable.label": "This device does not support automatically playing its line-in on a speaker.",
   "provider.sendspin.config_entries.source_input_action.label": "Audio input",
   "provider.sendspin.config_entries.source_input_action.option_descriptions.dismiss": "Playback is unaffected. Music Assistant will stop offering this device's audio input.",
   "provider.sendspin.config_entries.source_input_action.option_descriptions.pair": "Sets up a verified connection, which is required before the device may send audio to Music Assistant.",
