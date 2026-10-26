@@ -2564,6 +2564,29 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
                 "Provider %s was not not fully removed from library", provider_instance
             )
 
+    async def cleanup_provider_images(self, provider_instance: str) -> None:
+        """
+        Remove the images of a removed metadata provider from all library items.
+
+        :param provider_instance: The instance ID of the removed provider.
+        """
+        # no per-item MEDIA_ITEM_UPDATED events for this bulk removal, to not flood subscribers
+        token = SUPPRESS_MEDIA_ITEM_UPDATES.set(True)
+        try:
+            for ctrl in (
+                self.artists,
+                self.albums,
+                self.tracks,
+                self.playlists,
+                self.radio,
+                self.audiobooks,
+                self.podcasts,
+                self.genres,
+            ):
+                await ctrl.remove_all_provider_images(provider_instance)
+        finally:
+            SUPPRESS_MEDIA_ITEM_UPDATES.reset(token)
+
     async def cleanup_provider_shortcuts(self, provider_instance: str) -> None:
         """
         Clean up sidebar shortcuts after a music provider is removed.
