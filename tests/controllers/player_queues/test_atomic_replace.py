@@ -16,6 +16,7 @@ from unittest.mock import AsyncMock, MagicMock, Mock
 
 import pytest
 from music_assistant_models.enums import MediaType, PlaybackState, QueueOption
+from music_assistant_models.errors import InvalidDataError
 from music_assistant_models.media_items import (
     ItemMapping,
     Playlist,
@@ -378,3 +379,67 @@ async def test_plugins_prepare_opening_items_before_playback(option: QueueOption
     assert ctrl._queue_data["q1"].items[0].name == "Intro"
     plugin.on_queue_start.assert_awaited_once_with("q1", 0)
     ctrl.play_index.assert_awaited_once_with("q1", 0)
+
+
+@pytest.mark.parametrize("option", [QueueOption.PLAY, QueueOption.REPLACE])
+@pytest.mark.parametrize("error_type", [InvalidDataError, RuntimeError])
+async def test_plugin_failure_is_logged_and_does_not_block_playback(
+    option: QueueOption, error_type: type[Exception]
+) -> None:
+    """A failing plugin does not prevent other plugins or loaded music from starting."""
+    ctrl = _controller()
+    broken = MagicMock(spec=PluginProvider)
+    broken.name = "Broken plugin"
+    broken.on_queue_start = AsyncMock(side_effect=error_type("Preparation failed"))
+    following = MagicMock(spec=PluginProvider)
+    following.on_queue_start = AsyncMock(return_value=0)
+    ctrl.mass.get_providers.return_value = [broken, following]
+
+    await ctrl.play_media("q1", _playlist(), option)
+
+    following.on_queue_start.assert_awaited_once_with("q1", 0)
+    ctrl.play_index.assert_awaited_once_with("q1", 0)
+    assert len(ctrl._queue_data["q1"].items) == len(NEW_TRACKS)
+    ctrl.logger.exception.assert_called_once()
+    message, *arguments = ctrl.logger.exception.call_args.args
+    logged = message % tuple(arguments)
+    assert broken.name in logged
+    assert "q1" in logged
+
+
+@pytest.mark.parametrize("with_following", [False, True])
+async def test_plugin_failure_keeps_the_last_prepared_start_index(with_following: bool) -> None:
+    """A failed preparation preserves an earlier plugin's result for the remaining chain."""
+    ctrl = _controller()
+    first = MagicMock(spec=PluginProvider)
+    first.on_queue_start = AsyncMock(return_value=2)
+    broken = MagicMock(spec=PluginProvider)
+    broken.on_queue_start = AsyncMock(side_effect=RuntimeError("Preparation failed"))
+    following = MagicMock(spec=PluginProvider)
+    following.on_queue_start = AsyncMock(return_value=1)
+    ctrl.mass.get_providers.return_value = [first, broken, *([following] if with_following else [])]
+
+    await ctrl._start_queue("q1", 0)
+
+    broken.on_queue_start.assert_awaited_once_with("q1", 2)
+    if with_following:
+        following.on_queue_start.assert_awaited_once_with("q1", 2)
+    ctrl.play_index.assert_awaited_once_with("q1", 1 if with_following else 2)
+
+
+@pytest.mark.parametrize("option", [QueueOption.PLAY, QueueOption.REPLACE])
+async def test_cancelled_plugin_preparation_does_not_start_playback(option: QueueOption) -> None:
+    """Cancellation propagates instead of being treated as an optional plugin failure."""
+    ctrl = _controller()
+    cancelled = MagicMock(spec=PluginProvider)
+    cancelled.on_queue_start = AsyncMock(side_effect=asyncio.CancelledError)
+    following = MagicMock(spec=PluginProvider)
+    following.on_queue_start = AsyncMock(return_value=0)
+    ctrl.mass.get_providers.return_value = [cancelled, following]
+
+    with pytest.raises(asyncio.CancelledError):
+        await ctrl.play_media("q1", _playlist(), option)
+
+    ctrl.play_index.assert_not_awaited()
+    following.on_queue_start.assert_not_awaited()
+    ctrl.logger.exception.assert_not_called()

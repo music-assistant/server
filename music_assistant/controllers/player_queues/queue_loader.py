@@ -246,7 +246,12 @@ class QueueLoaderMixin(_PlayerQueuesBase):
         """Prepare newly enqueued media with plugins, then start playback."""
         for provider in self.mass.get_providers(ProviderType.PLUGIN):
             if isinstance(provider, PluginProvider):
-                start_index = await provider.on_queue_start(queue_id, start_index)
+                try:
+                    start_index = await provider.on_queue_start(queue_id, start_index)
+                except Exception:
+                    self.logger.exception(
+                        "Plugin %s failed to prepare queue %s for playback", provider.name, queue_id
+                    )
         await self.play_index(queue_id, start_index)
 
     async def _load_pinned_first(
