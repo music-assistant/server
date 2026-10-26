@@ -2,20 +2,19 @@
 
 from __future__ import annotations
 
-import asyncio
 import logging
 from dataclasses import replace
 from typing import TYPE_CHECKING
 from urllib.parse import urlparse
 
-import hassfeld
 from async_upnp_client.search import async_search
 from music_assistant_models.config_entries import ConfigEntry
 from music_assistant_models.enums import ConfigEntryType
 
 from music_assistant.constants import CONF_IP_ADDRESS, CONF_PORT
 from music_assistant.models.setup_flow import SetupFlowError
-from music_assistant.providers.raumfeld import DEFAULT_PORT, HOST_ERRORS
+from music_assistant.providers.raumfeld import DEFAULT_PORT
+from music_assistant.providers.raumfeld.helpers import host_is_valid
 
 if TYPE_CHECKING:
     from async_upnp_client.utils import CaseInsensitiveDict
@@ -23,9 +22,6 @@ if TYPE_CHECKING:
     from music_assistant.models.setup_flow import SetupSession
 
 LOGGER = logging.getLogger(__name__)
-
-# how long (seconds) to wait for the host validation during setup
-_VALIDATE_TIMEOUT = 10
 
 # Only the Raumfeld host publishes this UPnP device, so searching for it finds the host and
 # none of the speakers.
@@ -79,12 +75,7 @@ async def run_setup(session: SetupSession) -> None:
 
 async def _host_reachable(session: SetupSession, host: str, port: int) -> bool:
     """Return whether a valid Raumfeld host answers at the given address."""
-    raumfeld_host = hassfeld.RaumfeldHost(host, port, session=session.mass.http_session)
-    try:
-        async with asyncio.timeout(_VALIDATE_TIMEOUT):
-            return bool(await raumfeld_host.async_host_is_valid())
-    except HOST_ERRORS:
-        return False
+    return await host_is_valid(session.mass.http_session, host, port)
 
 
 async def _discover_host() -> str | None:

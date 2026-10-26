@@ -16,14 +16,12 @@ from music_assistant.providers.jellyfin import (
     AUTH_METHOD_QUICK_CONNECT,
     CONF_ACCESS_TOKEN,
     CONF_DEVICE_ID,
-    CONF_PASSWORD,
     CONF_URL,
     CONF_USER_ID,
-    CONF_USERNAME,
-    CONF_VERIFY_SSL,
     authenticate_with_quick_connect,
     initiate_quick_connect,
 )
+from music_assistant.constants import CONF_PASSWORD, CONF_USERNAME, CONF_VERIFY_SSL
 
 if TYPE_CHECKING:
     from music_assistant.models.setup_flow import SetupSession

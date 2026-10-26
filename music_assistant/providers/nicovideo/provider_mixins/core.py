@@ -13,7 +13,6 @@ from __future__ import annotations
 from typing import Any, override
 
 from music_assistant_models.enums import MediaType
-from music_assistant_models.errors import LoginFailed
 
 from music_assistant.providers.nicovideo.config import NicovideoConfig
 from music_assistant.providers.nicovideo.provider_mixins.base import (
@@ -61,21 +60,12 @@ class NicovideoMusicProviderCoreMixin(NicovideoMusicProviderMixinBase):
     async def handle_async_init_for_mixin(self) -> None:
         """Handle async initialization of the provider."""
         try:
-            # Check if login credentials are provided
-            has_credentials = bool(
-                self.nicovideo_config.auth.user_session
-                or (self.nicovideo_config.auth.mail and self.nicovideo_config.auth.password)
-            )
-
-            if has_credentials:
-                # Try login if credentials are provided
-                login_success = await self.service_manager.auth.try_login()
-                if not login_success:
-                    raise LoginFailed("Login failed with provided credentials")  # noqa: TRY301 - logged by except below
-                self.service_manager.auth.start_periodic_relogin_task()
+            if self.nicovideo_config.auth.user_session:
+                # Try login if a user_session is configured
+                await self.service_manager.auth.login()
                 self.logger.debug("nicovideo provider initialized successfully with login")
             else:
-                # No credentials provided - initialize without login
+                # No user_session configured - initialize without login
                 self.logger.debug("nicovideo provider initialized successfully without login")
         except Exception as err:
             self.logger.error("Failed to initialize nicovideo provider: %s", err)
@@ -84,9 +74,4 @@ class NicovideoMusicProviderCoreMixin(NicovideoMusicProviderMixinBase):
     @override
     async def unload_for_mixin(self, is_removed: bool = False) -> None:
         """Handle unload/close of the provider."""
-        try:
-            # Stop the periodic relogin task
-            self.service_manager.auth.stop_periodic_relogin_task()
-            self.logger.debug("nicovideo provider unloaded successfully")
-        except Exception as err:
-            self.logger.warning("Error during nicovideo provider unload: %s", err)
+        self.logger.debug("nicovideo provider unloaded successfully")
