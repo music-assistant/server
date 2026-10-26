@@ -723,6 +723,20 @@ def test_link_enrichment_rejects_known_different_service_version() -> None:
     assert ShareLinkEnricher._find_matching_track_url([result], "Song", "Artist", "Live") is None
 
 
+def test_link_enrichment_accepts_equivalent_multi_artist_credits() -> None:
+    """Punctuation differences do not discard a matching multi-artist service link."""
+    result = {
+        "trackName": "Song",
+        "artistName": "Drake & Future",
+        "trackViewUrl": "https://music.apple.com/song",
+    }
+
+    assert (
+        ShareLinkEnricher._find_matching_track_url([result], "Song", "Drake/Future")
+        == "https://music.apple.com/song"
+    )
+
+
 @pytest.mark.parametrize(
     ("result", "expected_url"),
     [
