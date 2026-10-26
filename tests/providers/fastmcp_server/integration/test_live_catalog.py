@@ -409,7 +409,11 @@ async def test_live_reversible_queue_cycle(live_client: LiveClient) -> None:
             int(current_index) if current_index is not None else -1,
             int(buffer_index) if buffer_index is not None else -1,
         )
-        assert int(added["sort_index"]) > protected
+        # current_index and index_in_buffer are positions in the queue list, so compare
+        # them with the item's list position. sort_index only records insertion order
+        # (it is what un-shuffle restores) and index is not set in item listings.
+        ordered = [item_id(item) for item in await queue_items(live_client, queue_id)]
+        assert ordered.index(added_id) > protected
         await call_ma(
             live_client,
             "player_queues/move_item_end",
