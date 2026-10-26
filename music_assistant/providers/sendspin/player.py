@@ -574,9 +574,11 @@ class SendspinBasePlayer(Player):
         await session.finish({})
 
     def _get_source_autostart_config_entries(self) -> list[ConfigEntry]:
-        """Return the line-in autostart entries, for source clients that can sense a signal."""
-        if not self._supports_line_sense():
+        """Return the line-in autostart entries for source clients, or a note when they cannot sense a signal."""
+        if "source" not in self._negotiated_families():
             return []
+        if not self._supports_line_sense():
+            return [ConfigEntry(key="source_autostart_unavailable", type=ConfigEntryType.LABEL)]
         # A source that is also a player defaults to playing on itself, which for a
         # protocol player means the visible player it belongs to.
         own_target = self.protocol_parent_id or self.player_id

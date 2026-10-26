@@ -334,6 +334,13 @@ class RaumfeldPlayer(Player):
         # it is gone, against a dropped player
         self._clear_next()
 
+    @property
+    def needs_poll(self) -> bool:
+        """Return if the player needs to be polled: only while its room is there."""
+        # a room the host no longer lists (a speaker in deep standby, or a lost connection)
+        # has nothing to read, and every read of it fails; it is polled again once back
+        return self._attr_needs_poll and self._attr_available
+
     def set_available(self, available: bool) -> None:
         """
         Set the availability of this player.
@@ -341,6 +348,11 @@ class RaumfeldPlayer(Player):
         :param available: Whether the player is currently reachable/usable.
         """
         self._attr_available = available
+        if not available:
+            # it is no longer polled, so nothing would end the playback it last reported;
+            # a poll still waiting for an answer must not bring that back
+            self._playback_generation += 1
+            self._attr_playback_state = PlaybackState.IDLE
         self.update_state()
 
     def set_room(self, room: str) -> None:
@@ -863,7 +875,11 @@ class RaumfeldPlayer(Player):
         # polls only its own (per-room) volume and mirrors the leader's state: without that a
         # stopped group would leave the follower reading as playing until it is ungrouped
         if self.synced_to and self.synced_to != self.player_id:
+            generation = self._playback_generation
             await self._update_volume(host)
+            if not self._reading_is_current(generation):
+                self.update_state()
+                return
             leader = self.mass.players.get_player(self.synced_to)
             self._attr_playback_state = leader.playback_state if leader else PlaybackState.IDLE
             if self._attr_playback_state == PlaybackState.PLAYING:
@@ -1402,6 +1418,8 @@ class RaumfeldPlayer(Player):
         """
         Wait until the given rooms' own renderers play, for at most JOIN_SETTLE_TIME.
 
+        The wait ends early when a room shows it cannot hook into the running stream.
+
         :param player_ids: The player ids of the rooms to wait for.
         """
         waiting = {
@@ -1419,8 +1437,24 @@ class RaumfeldPlayer(Player):
                     await asyncio.sleep(JOIN_SETTLE_INTERVAL)
                     for url in list(waiting):
                         state = await self._read_room_state(url) or {}
+                        transport_state = (state.get("TransportState") or "").upper()
                         # only PLAYING itself: a room still TRANSITIONING is being hooked in
-                        if (state.get("TransportState") or "").upper() == "PLAYING":
+                        if transport_state == "PLAYING":
+                            waiting.discard(url)
+                            continue
+                        # A room that cannot keep up with the running stream drops it and
+                        # tries again, over and over, and never plays (seen on 1st generation
+                        # speakers at 96 kHz). Only a restart gets it in, so waiting longer
+                        # only prolongs the gap. An idle room reports NO_MEDIA_PRESENT too,
+                        # but with status OK.
+                        transport_status = (state.get("TransportStatus") or "").lower()
+                        if transport_state == "NO_MEDIA_PRESENT" and "underrun" in transport_status:
+                            self.logger.debug(
+                                "A room that joined %s cannot hook into its stream (%s)",
+                                self.room,
+                                state.get("TransportStatus"),
+                            )
+                            # the other rooms that joined may still be hooking in
                             waiting.discard(url)
         except TimeoutError:
             self.logger.debug("Rooms that joined %s did not report playing in time", self.room)
