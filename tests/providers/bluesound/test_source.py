@@ -6,9 +6,11 @@ from typing import cast
 from unittest.mock import MagicMock
 
 import pytest
+from music_assistant_models.enums import PlaybackState
 
 from music_assistant.providers.bluesound.const import PLAYER_SOURCE_MAP
 from music_assistant.providers.bluesound.player import BluesoundPlayer
+from tests.common import MockPlayer, MockProvider
 
 
 def _player(input_id: str | None = None, service: str | None = "LocalMusic") -> MagicMock:
@@ -98,3 +100,42 @@ def test_ma_stream_is_not_classified_as_external() -> None:
 
     assert fake._attr_active_source is None
     assert fake._attr_source_list == []
+
+
+@pytest.mark.parametrize("own_stream", [False, True], ids=["library", "ma_stream"])
+def test_published_source_after_ma_to_library_switch(own_stream: bool) -> None:
+    """Publish library metadata despite the remembered MA queue, but trust no MA stream."""
+    mass = MagicMock()
+    mass.closing = False
+    mass.config.get_raw_player_config_value = MagicMock(
+        side_effect=lambda _player_id, _key, default=None: default
+    )
+    mass.player_queues.get = MagicMock(return_value=None)
+    mass.players.get_audio_source_session = MagicMock(return_value=None)
+    mass.players.scale_volume_from_device = MagicMock(side_effect=lambda _pid, volume: volume)
+    mass.streams.base_url = "http://mass.example:8097"
+    player_id = "bluesound_player"
+    player = cast(
+        "BluesoundPlayer", MockPlayer(MockProvider("bluesound", mass=mass), player_id, "BluOS")
+    )
+    player._attr_trusts_reported_source = BluesoundPlayer._attr_trusts_reported_source
+    player._attr_playback_state = PlaybackState.PLAYING
+    player.set_active_mass_source(player_id)
+    player.update_state(signal_event=False)
+    assert player.state.active_source == player_id
+
+    status = _player().status
+    if own_stream:
+        status.stream_url = "http://mass.example:8097/flow/test.flac"
+    player.status = status
+    player.client = MagicMock(base_url="http://player.example:11000")
+    BluesoundPlayer._resolve_source(player)
+    BluesoundPlayer._resolve_media(player)
+    player.update_state(signal_event=False)
+
+    assert player.state.active_source == (player_id if own_stream else "LocalMusic")
+    if not own_stream:
+        assert player.state.current_media is not None
+        assert player.state.current_media.title == "Kashmir"
+        assert player.state.current_media.artist == "Led Zeppelin"
+        assert player.state.current_media.album == "Mothership"
