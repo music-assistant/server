@@ -226,6 +226,47 @@ def test_tuple_scope_with_unmapped_member_fails_closed() -> None:
 
 
 @pytest.mark.parametrize(
+    ("command", "scope"),
+    [
+        ("smart_playlists/create", Scope.LIBRARY_WRITE),
+        ("smart_playlists/generate", Scope.LIBRARY_WRITE),
+        ("smart_playlists/update_rules", Scope.LIBRARY_WRITE),
+    ],
+)
+def test_smart_playlist_writes_respect_a_denied_playlist_capability(
+    command: str, scope: Scope
+) -> None:
+    """A library.write scope must not let playlist edits past a denied edit:playlists."""
+    decision = resolve_command_policy(command, scope, None)
+    snapshot = policy_snapshot(
+        PolicyProfile.CUSTOM,
+        {
+            Capability.QUERY_LIBRARY: PolicyMode.ALLOW,
+            Capability.EDIT_LIBRARY: PolicyMode.ALLOW,
+            Capability.EDIT_PLAYLISTS: PolicyMode.DENY,
+        },
+    )
+    assert decision.effective_mode(snapshot) is PolicyMode.DENY
+
+
+@pytest.mark.parametrize(
+    "command",
+    ["smart_playlists/list", "smart_playlists/get_rules", "smart_playlists/preview_tracks"],
+)
+def test_smart_playlist_reads_need_only_library_query(command: str) -> None:
+    """Reading smart playlist rules or previews stays a library query."""
+    decision = resolve_command_policy(command, Scope.LIBRARY_READ, None)
+    assert decision.required_capabilities == frozenset({str(Capability.QUERY_LIBRARY)})
+
+
+def test_party_url_requires_system_admin() -> None:
+    """The party URL mints a guest user and join code, so it is not a read."""
+    decision = resolve_command_policy("party/url", Scope.PROVIDERS_READ, None)
+    assert decision.required_capabilities == frozenset({str(Capability.SYSTEM_ADMIN)})
+    assert decision.annotations["readOnlyHint"] is False
+
+
+@pytest.mark.parametrize(
     ("command", "capability"),
     [
         ("yandex_station/say", Capability.CONTROL_PLAYERS),

@@ -201,6 +201,13 @@ FAMILY_POLICIES = (
         write=Capability.EDIT_LIBRARY,
         delete=Capability.DELETE_LIBRARY,
     ),
+    # Registered with library.write, but each write creates or rewrites a playlist.
+    _family(
+        "smart_playlists/",
+        read=Capability.QUERY_LIBRARY,
+        write=Capability.EDIT_PLAYLISTS,
+        delete=Capability.DELETE_PLAYLISTS,
+    ),
     _family("statistics/", read=Capability.QUERY_LIBRARY, readonly=True),
     _family("players/cmd/volume_", control=Capability.CONTROL_VOLUME),
     _family("players/cmd/", control=Capability.CONTROL_PLAYERS),
@@ -379,6 +386,8 @@ EXACT_POLICIES: dict[str, CommandDecision] = {
     "fastmcp/debug/health": _readonly_debug(Capability.DEBUG_PROVIDERS),
     "fastmcp/debug/routes": _readonly_debug(Capability.DEBUG_PROVIDERS),
     "fastmcp/debug/packages": _readonly_debug(Capability.DEBUG_PROVIDERS),
+    # Declared as providers.read, but it mints a guest user and a join code.
+    "party/url": _control(Capability.SYSTEM_ADMIN),
     # Declared as players.control, but free text to Alice can drive every
     # device in the user's Yandex smart home, not only the Station.
     "yandex_station/command": CommandDecision(

@@ -182,17 +182,23 @@ def queue_item_uri(item: Mapping[str, Any]) -> str:
 
 
 async def queue_items(client: LiveClient, queue_id: str) -> list[dict[str, Any]]:
-    """Read enough queue items to compare ordering after reversible cleanup."""
-    # Compact mode trims the list to its response budget; a queue diff needs every row.
-    return cast(
-        "list[dict[str, Any]]",
-        await call_ma(
-            client,
-            "player_queues/items",
-            {"queue_id": queue_id, "limit": 500},
-            response_mode="full",
-        ),
-    )
+    """Read every queue item, page by page, to compare ordering after cleanup."""
+    # Full mode still caps each response by item count and bytes, so a queue
+    # diff has to page with the number of rows each response actually returned.
+    items: list[dict[str, Any]] = []
+    while True:
+        page = cast(
+            "list[dict[str, Any]]",
+            await call_ma(
+                client,
+                "player_queues/items",
+                {"queue_id": queue_id, "limit": 25, "offset": len(items)},
+                response_mode="full",
+            ),
+        )
+        if not page:
+            return items
+        items.extend(page)
 
 
 async def find_test_track_uri(client: LiveClient, *, purpose: str) -> str:
