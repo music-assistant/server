@@ -132,12 +132,111 @@ def test_track_preview_is_hard_denied() -> None:
     assert decision.required_capabilities == frozenset()
 
 
-@pytest.mark.parametrize("scope", [None, "library.read", "system.read"])
-def test_unknown_command_fails_closed_instead_of_inheriting_scope(scope: str | None) -> None:
-    """Upstream scope metadata alone cannot classify an unknown command family."""
+@pytest.mark.parametrize(
+    "scope",
+    [None, "", "*", "unknown", "users.read", "users.impersonate", "library.unheard_of"],
+)
+def test_unknown_command_without_mapped_scope_fails_closed(scope: str | None) -> None:
+    """An unknown family with no scope, or one without a capability, stays hidden."""
     decision = resolve_command_policy("future/new_command", scope, None)
     assert decision.hard_denied is True
     assert decision.required_capabilities == frozenset()
+
+
+@pytest.mark.parametrize(
+    ("scope", "capability", "read_only"),
+    [
+        (Scope.LIBRARY_READ, Capability.QUERY_LIBRARY, True),
+        (Scope.LIBRARY_WRITE, Capability.EDIT_LIBRARY, False),
+        (Scope.LIBRARY_MANAGE, Capability.EDIT_LIBRARY, False),
+        (Scope.PLAYERS_READ, Capability.QUERY_PLAYERS, True),
+        (Scope.PLAYERS_CONTROL, Capability.CONTROL_PLAYERS, False),
+        (Scope.QUEUES_READ, Capability.QUERY_QUEUE, True),
+        (Scope.QUEUES_CONTROL, Capability.EDIT_QUEUE, False),
+        (Scope.PROVIDERS_READ, Capability.DEBUG_PROVIDERS, True),
+        (Scope.CONFIG_PLAYERS_READ, Capability.CONFIG_READ, True),
+        (Scope.CONFIG_PROVIDERS_READ, Capability.CONFIG_READ, True),
+        (Scope.CONFIG_CORE_READ, Capability.CONFIG_READ, True),
+        (Scope.CONFIG_PLAYERS_WRITE, Capability.CONFIG_WRITE_PLAYER, False),
+        (Scope.CONFIG_PROVIDERS_WRITE, Capability.CONFIG_WRITE_PROVIDER, False),
+        (Scope.CONFIG_PROVIDERS_OWN, Capability.CONFIG_WRITE_PROVIDER, False),
+        (Scope.CONFIG_CORE_WRITE, Capability.CONFIG_WRITE_CORE, False),
+        (Scope.SYSTEM_READ, Capability.SYSTEM_ADMIN, False),
+        (Scope.SYSTEM_MANAGE, Capability.SYSTEM_ADMIN, False),
+    ],
+)
+def test_provider_registered_command_is_classified_by_its_scope(
+    scope: Scope, capability: Capability, read_only: bool
+) -> None:
+    """A command outside every known family takes the capability of its declared scope."""
+    decision = resolve_command_policy("future_provider/do_thing", scope, None)
+    assert decision.hard_denied is False
+    assert decision.required_capabilities == frozenset({str(capability)})
+    assert decision.annotations["readOnlyHint"] is read_only
+    assert decision.annotations["destructiveHint"] is (capability == Capability.SYSTEM_ADMIN)
+
+
+@pytest.mark.parametrize(
+    ("command", "scope", "capability"),
+    [
+        ("ambient_sounds/remove_sound", Scope.LIBRARY_WRITE, Capability.DELETE_LIBRARY),
+        ("future_provider/clear_items", Scope.QUEUES_CONTROL, Capability.DELETE_QUEUE),
+        ("future_provider/remove_link", Scope.PLAYERS_CONTROL, Capability.CONTROL_PLAYERS),
+    ],
+)
+def test_destructive_provider_command_uses_the_scope_delete_capability(
+    command: str, scope: Scope, capability: Capability
+) -> None:
+    """A destructive verb selects the scope's delete capability when it has one."""
+    decision = resolve_command_policy(command, scope, None)
+    assert decision.hard_denied is False
+    assert decision.required_capabilities == frozenset({str(capability)})
+    assert decision.annotations["destructiveHint"] is True
+
+
+@pytest.mark.parametrize(
+    ("command", "scope"),
+    [
+        ("future_provider/clear_cache", Scope.LIBRARY_READ),
+        ("future_provider/remove_pairing", Scope.PLAYERS_READ),
+    ],
+)
+def test_destructive_provider_command_never_falls_back_to_a_read_capability(
+    command: str, scope: Scope
+) -> None:
+    """A read-only scope cannot guard a destructive command, so it stays hidden."""
+    decision = resolve_command_policy(command, scope, None)
+    assert decision.hard_denied is True
+
+
+def test_tuple_scope_provider_command_uses_its_weakest_member() -> None:
+    """MA grants a tuple scope when any member is held, so the weakest one classifies it."""
+    decision = resolve_command_policy(
+        "future_provider/peek", (Scope.SYSTEM_MANAGE, Scope.PLAYERS_READ), None
+    )
+    assert decision.required_capabilities == frozenset({str(Capability.QUERY_PLAYERS)})
+
+
+def test_tuple_scope_with_unmapped_member_fails_closed() -> None:
+    """One unmapped member leaves the command's real reach unknown."""
+    decision = resolve_command_policy(
+        "future_provider/peek", (Scope.PLAYERS_READ, Scope.USERS_MANAGE), None
+    )
+    assert decision.hard_denied is True
+
+
+@pytest.mark.parametrize(
+    ("command", "capability"),
+    [
+        ("yandex_station/say", Capability.CONTROL_PLAYERS),
+        ("yandex_station/command", Capability.SYSTEM_ADMIN),
+    ],
+)
+def test_yandex_station_commands(command: str, capability: Capability) -> None:
+    """Free-text Alice commands reach the whole smart home, so they need system admin."""
+    decision = resolve_command_policy(command, Scope.PLAYERS_CONTROL, None)
+    assert decision.hard_denied is False
+    assert decision.required_capabilities == frozenset({str(capability)})
 
 
 @pytest.mark.parametrize(
@@ -161,7 +260,7 @@ def test_unknown_descendant_of_known_family_uses_the_family_policy(
 @pytest.mark.parametrize("command", ["providers_elevated", "config/core_backup/read"])
 def test_family_prefix_near_matches_fail_closed(command: str) -> None:
     """A command must match a complete family path segment, not only its text prefix."""
-    decision = resolve_command_policy(command, "config.core.read", None)
+    decision = resolve_command_policy(command, None, None)
     assert decision.hard_denied is True
 
 

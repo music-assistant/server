@@ -256,6 +256,30 @@ FAMILY_POLICIES = (
 )
 
 
+SCOPE_FAMILIES: Mapping[str, FamilyPolicy] = {
+    scope: FamilyPolicy(scope, capabilities)
+    for scope, capabilities in {
+        "library.read": {"read": Capability.QUERY_LIBRARY},
+        "library.write": {"write": Capability.EDIT_LIBRARY, "delete": Capability.DELETE_LIBRARY},
+        "library.manage": {"write": Capability.EDIT_LIBRARY, "delete": Capability.DELETE_LIBRARY},
+        "players.read": {"read": Capability.QUERY_PLAYERS},
+        "players.control": {"control": Capability.CONTROL_PLAYERS},
+        "queues.read": {"read": Capability.QUERY_QUEUE},
+        "queues.control": {"control": Capability.EDIT_QUEUE, "delete": Capability.DELETE_QUEUE},
+        "providers.read": {"read": Capability.DEBUG_PROVIDERS},
+        "config.players.read": {"read": Capability.CONFIG_READ},
+        "config.providers.read": {"read": Capability.CONFIG_READ},
+        "config.core.read": {"read": Capability.CONFIG_READ},
+        "config.players.write": {"write": Capability.CONFIG_WRITE_PLAYER},
+        "config.providers.write": {"write": Capability.CONFIG_WRITE_PROVIDER},
+        "config.providers.own": {"write": Capability.CONFIG_WRITE_PROVIDER},
+        "config.core.write": {"write": Capability.CONFIG_WRITE_CORE},
+        "system.read": {"system": Capability.SYSTEM_ADMIN},
+        "system.manage": {"system": Capability.SYSTEM_ADMIN},
+    }.items()
+}
+
+
 def _readonly_debug(capability: Capability) -> CommandDecision:
     """Return a read-only command guarded by one debug capability."""
     return CommandDecision(
@@ -355,6 +379,12 @@ EXACT_POLICIES: dict[str, CommandDecision] = {
     "fastmcp/debug/health": _readonly_debug(Capability.DEBUG_PROVIDERS),
     "fastmcp/debug/routes": _readonly_debug(Capability.DEBUG_PROVIDERS),
     "fastmcp/debug/packages": _readonly_debug(Capability.DEBUG_PROVIDERS),
+    # Declared as players.control, but free text to Alice can drive every
+    # device in the user's Yandex smart home, not only the Station.
+    "yandex_station/command": CommandDecision(
+        _SYSTEM_ANNOTATIONS,
+        frozenset({str(Capability.SYSTEM_ADMIN)}),
+    ),
 }
 
 
@@ -384,7 +414,7 @@ def resolve_command_policy(
 
     family = _matching_family(command)
     if family is None:
-        return CommandDecision({}, hard_denied=True)
+        return _scope_fallback_policy(command, scope, profile)
     operation = _operation(command, scope, profile, family)
     destructive = operation == "delete"
     annotations = dict(
@@ -543,6 +573,42 @@ def _matching_family(command: str) -> FamilyPolicy | None:
         )
     )
     return max(matches, key=lambda family: len(family.prefix), default=None)
+
+
+def _scope_fallback_policy(
+    command: str, scope: Any, profile: CommandProfile | None
+) -> CommandDecision:
+    """Classify a command outside every known family by its declared MA scope."""
+    family = _scope_family(scope)
+    if family is None:
+        return CommandDecision({}, hard_denied=True)
+    operation = _operation(command, scope, profile, family)
+    capability = family.capabilities.get(operation)
+    scope_operation, scope_capability = next(iter(family.capabilities.items()))
+    # A mutating command never inherits a read column: a read scope cannot guard it.
+    if capability is None and (operation == "read" or scope_operation != "read"):
+        capability = scope_capability
+    if capability is None:
+        return CommandDecision({}, hard_denied=True)
+    annotations = dict(_annotations(operation, destructive=operation == "delete"))
+    if profile is not None:
+        annotations.update(profile.annotations)
+    return CommandDecision(annotations, frozenset({str(capability)}))
+
+
+def _scope_family(scope: Any) -> FamilyPolicy | None:
+    """Return the capability columns for a scope, or None when any part is unmapped."""
+    if isinstance(scope, tuple):
+        families = [_scope_family(member) for member in scope]
+        if not families or None in families:
+            return None
+        # Same weakest-member rule as _scope_operation: any one member grants access.
+        return min(
+            (family for family in families if family is not None),
+            key=lambda family: _OPERATION_ORDER.index(next(iter(family.capabilities))),
+        )
+    value = str(getattr(scope, "value", scope) or "").casefold()
+    return SCOPE_FAMILIES.get(value)
 
 
 def _operation(
