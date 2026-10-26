@@ -6,10 +6,10 @@ import asyncio
 import hashlib
 import random
 import time
-from collections.abc import AsyncGenerator, Callable
+from collections.abc import AsyncGenerator, Callable, Coroutine
 from contextlib import aclosing, suppress
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Literal, cast
+from typing import TYPE_CHECKING, Any, Literal, TypeVar, cast
 
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption
 from music_assistant_models.enums import (
@@ -99,6 +99,9 @@ _PREFETCH_FORMAT_TIMEOUT = 2.5
 # Idempotency cache TTL for outbound peer-commands.
 _COMMAND_IDEMPOTENCY_TTL = 1.0
 
+# How long unload lets source releases handed to Music Assistant finish.
+_UNLOAD_FINISH_TIMEOUT = 5.0
+
 # stable id for the single AudioSource this provider exposes;
 # combined with the provider instance_id this forms the persistent uri
 AUDIO_SOURCE_ID = "main"
@@ -125,6 +128,9 @@ _MUSIC_TOKEN_CACHE_MAX = 4
 # Used defensively to reject stale/tampered values without raising.
 _VALID_SAMPLE_RATES: frozenset[str] = frozenset({"44100", "48000", "96000"})
 _VALID_BIT_DEPTHS: frozenset[str] = frozenset({"16", "24"})
+
+
+_T = TypeVar("_T")
 
 
 class _StreamOwnerMismatchError(InvalidDataError):
@@ -201,6 +207,9 @@ class YandexYnisonProvider(PluginProvider):
         # Runtime state
         self._ynison: YnisonClient | None = None
         self._runner_task: asyncio.Task[None] | None = None
+        # Every background task; unload cancels them (or lets releases finish).
+        self._tasks: set[asyncio.Task[Any]] = set()
+        self._finish_on_unload: set[asyncio.Task[Any]] = set()
         self._on_unload_callbacks: list[Callable[..., None]] = []
         self._yandex_provider: YandexMusicProviderLike | None = None
         # Source claim, stream cursor, restart and stop requests.
@@ -336,7 +345,7 @@ class YandexYnisonProvider(PluginProvider):
             on_auth_failure=self._refresh_ynison_token,
         )
 
-        self._runner_task = self.mass.create_task(self._ynison.connect())
+        self._runner_task = self._spawn(self._ynison.connect())
 
         # Subscribe to provider events to detect linked yandex_music provider
         self._on_unload_callbacks.append(
@@ -359,22 +368,22 @@ class YandexYnisonProvider(PluginProvider):
             )
         )
         # Initial check for matching provider
-        self.mass.create_task(self._check_yandex_provider_match())
+        self._spawn(self._check_yandex_provider_match())
 
     async def unload(self, is_removed: bool = False) -> None:
         """Handle close/cleanup of the provider."""
-        if self._prefetch_task and not self._prefetch_task.done():
-            self._prefetch_task.cancel()
-            with suppress(asyncio.CancelledError):
-                await self._prefetch_task
-
         if self._ynison:
             await self._ynison.disconnect()
 
-        if self._runner_task and not self._runner_task.done():
-            self._runner_task.cancel()
-            with suppress(asyncio.CancelledError):
-                await self._runner_task
+        # Releases handed to Music Assistant must finish; everything else stops.
+        finishing = [task for task in self._tasks if task in self._finish_on_unload]
+        if finishing:
+            await asyncio.wait(finishing, timeout=_UNLOAD_FINISH_TIMEOUT)
+        pending = [task for task in self._tasks if not task.done()]
+        for task in pending:
+            task.cancel()
+        if pending:
+            await asyncio.gather(*pending, return_exceptions=True)
 
         for callback in self._on_unload_callbacks:
             with suppress(KeyError):
@@ -1126,7 +1135,7 @@ class YandexYnisonProvider(PluginProvider):
             self._playback.consumer_player_id = target_player_id
             if upcoming and (switching_player or upcoming != self._playback.track_id):
                 await self._prefetch_format_for_track(upcoming)
-            self.mass.create_task(
+            self._spawn(
                 self.mass.player_queues.play_media(target_player_id, str(self._audio_source.uri))
             )
 
@@ -1491,7 +1500,7 @@ class YandexYnisonProvider(PluginProvider):
             if owner_player_id:
                 # give the source back as well as stopping: a session left on the player
                 # keeps it publishing this source, so its own queue stays unreachable
-                self.mass.create_task(
+                self._spawn(
                     self.mass.players.deselect_source(
                         owner_player_id,
                         provider_instance_id=self.instance_id,
@@ -1499,7 +1508,8 @@ class YandexYnisonProvider(PluginProvider):
                         playback_session_id=(
                             source_session.playback_session_id if source_session else None
                         ),
-                    )
+                    ),
+                    finish_on_unload=True,
                 )
             self.mass.players.trigger_player_update(prev_player_id)
 
@@ -1507,9 +1517,40 @@ class YandexYnisonProvider(PluginProvider):
     # Yandex Music provider matching
     # ------------------------------------------------------------------
 
+    def _spawn(
+        self,
+        coro: Coroutine[Any, Any, _T],
+        *,
+        task_name: str | None = None,
+        finish_on_unload: bool = False,
+    ) -> asyncio.Task[_T]:
+        """
+        Start a background task owned by this provider.
+
+        :param coro: Work to run.
+        :param task_name: Optional task name for diagnostics.
+        :param finish_on_unload: Let the task finish during unload instead of
+            cancelling it, for releases handed to Music Assistant.
+        """
+        task = (
+            self.mass.create_task(coro, task_name=task_name)
+            if task_name
+            else self.mass.create_task(coro)
+        )
+        self._tasks.add(task)
+        if finish_on_unload:
+            self._finish_on_unload.add(task)
+        task.add_done_callback(self._forget_task)
+        return task
+
+    def _forget_task(self, task: asyncio.Task[Any]) -> None:
+        """Drop a finished task from the owned sets."""
+        self._tasks.discard(task)
+        self._finish_on_unload.discard(task)
+
     def _on_provider_event(self, event: MassEvent) -> None:
         """Handle provider added/removed events."""
-        self.mass.create_task(self._check_yandex_provider_match())
+        self._spawn(self._check_yandex_provider_match())
 
     async def _check_yandex_provider_match(self) -> None:
         """
@@ -1840,7 +1881,7 @@ class YandexYnisonProvider(PluginProvider):
                 # sees upcoming tracks and enables the "next" button.
                 await self._update_queue_list(result, expected_generation=generation)
 
-        self._prefetch_task = self.mass.create_task(
+        self._prefetch_task = self._spawn(
             _do_prefetch(), task_name=f"ynison_prefetch_{self.instance_id}"
         )
 

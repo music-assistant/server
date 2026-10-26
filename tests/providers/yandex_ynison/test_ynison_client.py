@@ -2093,6 +2093,30 @@ class TestMessageLoop:
         # failures, a different error kind, so the default ladder takes over.
         assert await self._record_reconnect_delays(client, 5) == [0.0, 1.0, 5.0, 30.0, 300.0]
 
+    async def test_state_frames_wait_for_the_previous_callback(
+        self, client: YnisonClient, mock_state_callback: AsyncMock
+    ) -> None:
+        """A frame is not applied while the provider still handles the previous one."""
+        seen_during_callback: list[bool] = []
+
+        async def slow_callback(state: YnisonState) -> None:
+            if not seen_during_callback:
+                await asyncio.sleep(0.01)
+                seen_during_callback.append(state.is_paused)
+
+        mock_state_callback.side_effect = slow_callback
+        frames = [
+            _make_ws_msg(
+                aiohttp.WSMsgType.TEXT,
+                json.dumps({"player_state": {"status": {"paused": paused}}}),
+            )
+            for paused in (False, True)
+        ]
+
+        await self._run_loop_with_messages(client, frames)
+
+        assert seen_during_callback == [False]
+
     async def test_text_message_invalid_json(self, client: YnisonClient) -> None:
         """TEXT message with invalid JSON logs warning, continues."""
         bad_msg = _make_ws_msg(aiohttp.WSMsgType.TEXT, "not valid json{{{")

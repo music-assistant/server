@@ -375,6 +375,51 @@ class TestProviderInit:
         ):
             await provider._ynison.connect()
 
+    async def test_unload_cancels_every_spawned_task(self) -> None:
+        """Background work started by the provider does not outlive unload."""
+        provider = _make_provider()
+        provider.mass.create_task = MagicMock(  # type: ignore[method-assign]
+            side_effect=lambda coro, *_a, **_kw: asyncio.get_event_loop().create_task(coro)
+        )
+        never = asyncio.Event()
+        tasks = [provider._spawn(never.wait()) for _ in range(3)]
+
+        await provider.unload()
+
+        assert all(task.cancelled() for task in tasks)
+        assert provider._tasks == set()
+
+    async def test_unload_lets_source_release_finish(self) -> None:
+        """Giving the source back to its player completes even while unloading."""
+        provider = _make_provider()
+        provider.mass.create_task = MagicMock(  # type: ignore[method-assign]
+            side_effect=lambda coro, *_a, **_kw: asyncio.get_event_loop().create_task(coro)
+        )
+        released = asyncio.Event()
+
+        async def release() -> None:
+            await asyncio.sleep(0.05)
+            released.set()
+
+        task = provider._spawn(release(), finish_on_unload=True)
+        await provider.unload()
+
+        assert released.is_set()
+        assert not task.cancelled()
+
+    async def test_finished_tasks_are_forgotten(self) -> None:
+        """A task that completes on its own leaves the owned set."""
+        provider = _make_provider()
+        provider.mass.create_task = MagicMock(  # type: ignore[method-assign]
+            side_effect=lambda coro, *_a, **_kw: asyncio.get_event_loop().create_task(coro)
+        )
+
+        task = provider._spawn(asyncio.sleep(0))
+        await task
+        await asyncio.sleep(0)
+
+        assert task not in provider._tasks
+
 
 # ------------------------------------------------------------------
 # Player selection
