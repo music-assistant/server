@@ -1,6 +1,6 @@
 """Constants for the ABC Radio provider."""
 
-from typing import TypedDict
+from typing import NotRequired, TypedDict
 
 import aiohttp
 
@@ -21,30 +21,20 @@ STREAM_METADATA_UPDATE_INTERVAL = 30
 # Per-request timeout for ABC Radio API calls.
 API_TIMEOUT = aiohttp.ClientTimeout(total=10)
 
-# Timezone sent to the now-playing API (its "tz" query parameter).
-CONF_TIMEZONE = "timezone"
-DEFAULT_TIMEZONE = "Australia/Sydney"
-TIMEZONE_OPTIONS = (
-    "Australia/Sydney",
-    "Australia/Melbourne",
-    "Australia/Brisbane",
-    "Australia/Adelaide",
-    "Australia/Darwin",
-    "Australia/Perth",
-    "Australia/Hobart",
-)
+# The listener's state, which picks the local stream and now-playing info.
+CONF_STATE = "state"
+DEFAULT_STATE = "nsw"
 
-# Region code of the local stream for each timezone, filled into a station's
-# stream_url. triple j and Double J have no Victoria or Tasmania streams, and
-# Classic has none for Tasmania; those states share Sydney's time, so use NSW.
-TIMEZONE_STREAM_REGIONS = {
-    "Australia/Sydney": "nsw",
-    "Australia/Melbourne": "nsw",
-    "Australia/Brisbane": "qld",
-    "Australia/Adelaide": "sa",
-    "Australia/Darwin": "nt",
-    "Australia/Perth": "wa",
-    "Australia/Hobart": "nsw",
+# Timezone of each state, sent to the now-playing API (its "tz" query parameter)
+# for the stream being played. The order here is the order of the options.
+STATE_TIMEZONES = {
+    "nsw": "Australia/Sydney",
+    "vic": "Australia/Melbourne",
+    "qld": "Australia/Brisbane",
+    "sa": "Australia/Adelaide",
+    "nt": "Australia/Darwin",
+    "wa": "Australia/Perth",
+    "tas": "Australia/Hobart",
 }
 
 
@@ -53,9 +43,12 @@ class ABCRadioStation(TypedDict):
 
     name: str
     description: str
-    # May hold a "{region}" placeholder for stations with local streams per timezone.
+    # Holds a "{region}" placeholder when the station has regions.
     stream_url: str
     logo_url: str
+    # States with their own stream; other states play DEFAULT_STATE's stream.
+    # Left out for stations with a single national stream.
+    regions: NotRequired[tuple[str, ...]]
 
 
 # Station ids, upper-cased, double as the station codes used by the now-playing API.
@@ -65,6 +58,7 @@ ABC_RADIO_STATIONS: dict[str, ABCRadioStation] = {
         "description": "New music and the best new and emerging artists",
         "stream_url": f"{STREAM_BASE_URL}/triplej{{region}}.m3u8",
         "logo_url": f"{STATION_LOGO_BASE_URL}/c170c3d8b69f13bf43865be27b027687",
+        "regions": ("nsw", "qld", "sa", "nt", "wa"),
     },
     "h100": {
         "name": "triple j Hottest",
@@ -77,6 +71,7 @@ ABC_RADIO_STATIONS: dict[str, ABCRadioStation] = {
         "description": "Music news, interviews and new releases for grown-up music lovers",
         "stream_url": f"{STREAM_BASE_URL}/doublej{{region}}.m3u8",
         "logo_url": f"{STATION_LOGO_BASE_URL}/fe840de7a554fe27949bd9f6ee74c67d",
+        "regions": ("nsw", "qld", "sa", "nt", "wa"),
     },
     "unearthed": {
         "name": "triple j Unearthed",
@@ -89,6 +84,7 @@ ABC_RADIO_STATIONS: dict[str, ABCRadioStation] = {
         "description": "Classical music to help you relax, focus and escape",
         "stream_url": f"{STREAM_BASE_URL}/classic{{region}}.m3u8",
         "logo_url": f"{STATION_LOGO_BASE_URL}/1613925515143520dff362b9f5bdf0cf",
+        "regions": ("nsw", "vic", "qld", "sa", "nt", "wa"),
     },
     "classic2": {
         "name": "ABC Classic 2",
@@ -111,7 +107,8 @@ ABC_RADIO_STATIONS: dict[str, ABCRadioStation] = {
     "kidslisten": {
         "name": "ABC Kids listen",
         "description": "Music and stories made for young children",
-        "stream_url": f"{STREAM_BASE_URL}/abckids.m3u8",
+        "stream_url": f"{STREAM_BASE_URL}/abckids{{region}}.m3u8",
         "logo_url": f"{STATION_LOGO_BASE_URL}/fca9b9528d2502f6ed38568557274e21",
+        "regions": ("nsw", "qld", "sa", "nt", "wa"),
     },
 }
