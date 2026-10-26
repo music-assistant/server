@@ -731,7 +731,7 @@ class MetadataEnrichmentMixin:
                 self.logger.debug("Album %s was not found on MusicBrainz", album.name)
             else:
                 if album.mbid and album.mbid.casefold() != release.id.casefold():
-                    await self._replace_release_id(musicbrainz, album, release.id)
+                    await self._follow_merged_release(musicbrainz, album, release.id)
                 urls = relation_urls(release.relations)
                 _fill_album_from_release(album, release, urls)
                 link_providers = self.link_providers_via_musicbrainz
@@ -799,31 +799,25 @@ class MetadataEnrichmentMixin:
         track.metadata.last_musicbrainz_lookup = int(time())
         return False
 
-    async def _replace_release_id(
+    async def _follow_merged_release(
         self, musicbrainz: MusicbrainzProvider, album: Album, release_id: str
     ) -> None:
         """
-        Give an album the release it was identified as in place of the release id it had.
+        Give an album the release its stored release was merged into on MusicBrainz.
+
+        A stored release MusicBrainz does not answer for is kept, as the MusicBrainz mirror may
+        not have it yet.
 
         :param musicbrainz: The MusicBrainz provider.
         :param album: The library album, stored with the new id.
         :param release_id: The id of the release the album was identified as.
         """
         try:
-            # read again from the identify step's lookup, so no request is made
-            merged = (await musicbrainz.get_release_details(album.mbid or "")).id == release_id
+            # the identify step looked the stored release up first, so this reads its answer again
+            stored = await musicbrainz.get_release_details(album.mbid or "")
         except InvalidDataError:
-            merged = False
-        if merged:
-            await self._follow_merged_id(album, release_id)
             return
-        self.logger.debug(
-            'Release %s of album "%s" is no longer on MusicBrainz, identified it again as %s',
-            album.mbid,
-            album.name,
-            release_id,
-        )
-        await self._store_musicbrainz_id(album, release_id)
+        await self._follow_merged_id(album, stored.id)
 
     async def _follow_merged_id(self, item: Album | Artist, mbid: str) -> None:
         """

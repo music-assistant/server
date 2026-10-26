@@ -1147,22 +1147,17 @@ async def test_album_identity_follows_a_release_merged_into_another() -> None:
 
 
 @pytest.mark.asyncio
-async def test_album_identity_replaces_a_release_gone_from_musicbrainz() -> None:
-    """An album whose release is gone takes the id of the release it is identified as now."""
+async def test_album_identity_keeps_a_release_musicbrainz_does_not_answer_for() -> None:
+    """An album keeps a release id MusicBrainz does not answer for, which its mirror may lack."""
     musicbrainz = _musicbrainz(release=_release())
-    musicbrainz.get_release_details = AsyncMock(side_effect=InvalidDataError("gone"))
+    musicbrainz.get_release_details = AsyncMock(side_effect=InvalidDataError("not found"))
     enrichment = _enrichment(musicbrainz)
     album = _album({(ExternalID.MB_ALBUM, OTHER_MBID)})
 
     await enrichment._update_album_metadata(album, force_refresh=True)
 
-    assert album.mbid == RELEASE_ID
-    assert (ExternalID.MB_ALBUM, OTHER_MBID) not in album.external_ids
-    _stored_ids(enrichment).assert_awaited_once_with("1", album.external_ids)
-    assert any(
-        "is no longer on MusicBrainz" in call.args[0]
-        for call in _logger(enrichment).debug.call_args_list
-    )
+    assert album.mbid == OTHER_MBID
+    _stored_ids(enrichment).assert_not_awaited()
 
 
 @pytest.mark.asyncio
