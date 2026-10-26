@@ -67,28 +67,31 @@ class AIRadioQueueDJMixin:
 
     async def on_queue_start(self, queue_id: str, start_index: int) -> int:
         """Prepare a show's opening and song breaks before the player buffers its first item."""
-        station_id = self._queue_show_station(queue_id)
-        if self._unloading or station_id is None:
+        if self._unloading or self._queue_show_station(queue_id) is None:
             return start_index
-        station = self._stations.get(station_id)
-        if station is None or (host := self._hosts.get(str(station["host_id"]))) is None:
-            return start_index
-        if (previous := self._dj_queues.get(queue_id)) is not None and not previous.station_id:
-            return start_index
-        items = self._dj_queue_items(queue_id)
-        if not 0 <= start_index < len(items):
-            return start_index
-        first_item_id = items[start_index].queue_item_id
-        program = self._build_program(station, host)
-        # Publish ownership before yielding: queue events must recognise this as an
-        # automatic show arm, while a later explicit selection replaces this state.
-        state = self._arm_dj_state(queue_id, str(host["id"]))
-        state.station_id = station_id
-        self._armed_show_queues[queue_id] = station_id
+        async with self._dj_lock:
+            station_id = self._queue_show_station(queue_id)
+            if self._unloading or station_id is None:
+                return start_index
+            station = self._stations.get(station_id)
+            if station is None or (host := self._hosts.get(str(station["host_id"]))) is None:
+                return start_index
+            if (previous := self._dj_queues.get(queue_id)) is not None and not previous.station_id:
+                return start_index
+            items = self._dj_queue_items(queue_id)
+            if not 0 <= start_index < len(items):
+                return start_index
+            first_item_id = items[start_index].queue_item_id
+            program = self._build_program(station, host)
+            # Reserve the automatic assignment under the same lock as detachment. Later
+            # manual selections may replace it while weather preparation is in flight.
+            state = self._arm_dj_state(queue_id, str(host["id"]))
+            state.station_id = station_id
+            self._armed_show_queues[queue_id] = station_id
         try:
             runtime_tokens = await self._prepare_runtime_tokens(program)
             async with self._dj_lock:
-                if self._dj_queues.get(queue_id) is not state:
+                if self._unloading or self._dj_queues.get(queue_id) is not state:
                     return start_index
                 # Weather and persistence can yield while the queue is edited. Re-read
                 # the items and retain the requested starting item before publishing.
@@ -114,12 +117,15 @@ class AIRadioQueueDJMixin:
                 tracks = [
                     self._queue_item_to_track(index, item) for index, item in enumerate(upcoming)
                 ]
+                state.songs_before_window, state.minutes_before_window = self._dj_window_offsets(
+                    items, first_item_id
+                )
                 planned, state.history = self._plan_sections(
                     session_id=state.dj_session_id,
                     tracks=tracks,
                     program=program,
-                    track_index_offset=0,
-                    minute_offset=0.0,
+                    track_index_offset=state.songs_before_window,
+                    minute_offset=state.minutes_before_window,
                     history_state={},
                     allowed_slot_when=["start_of_playlist", "between_songs", "end_of_playlist"],
                     runtime_tokens=runtime_tokens,
@@ -154,10 +160,15 @@ class AIRadioQueueDJMixin:
                 await self._write_queue_dj()
                 return start_index
         finally:
-            if self._dj_queues.get(queue_id) is state and not state.ready:
-                del self._dj_queues[queue_id]
-                self._armed_show_queues.pop(queue_id, None)
-                self.mass.streams.set_boundary_mix_required(queue_id, self.instance_id, False)
+            if not state.ready:
+                async with self._dj_lock:
+                    if self._dj_queues.get(queue_id) is state:
+                        del self._dj_queues[queue_id]
+                        self._armed_show_queues.pop(queue_id, None)
+                        if not self._unloading:
+                            self.mass.streams.set_boundary_mix_required(
+                                queue_id, self.instance_id, False
+                            )
 
     async def set_queue_dj(self, queue_id: str, host_id: str | None) -> dict[str, dict[str, str]]:
         """
@@ -192,7 +203,8 @@ class AIRadioQueueDJMixin:
                 if station_id is not None:
                     queue = self.mass.player_queues.get(queue_id)
                     if (
-                        queue_id in self._dj_queues
+                        self._unloading
+                        or queue_id in self._dj_queues
                         or self._armed_show_queues.get(queue_id) == station_id
                         or queue is None
                         or queue.ended
@@ -300,6 +312,8 @@ class AIRadioQueueDJMixin:
 
     async def _ensure_show_dj(self, queue_id: str) -> None:
         """Arm, once per play, or re-bind after a restart the show's host on a show queue."""
+        if self._unloading:
+            return
         station_id = self._queue_show_station(queue_id)
         if station_id is None:
             return
@@ -333,15 +347,24 @@ class AIRadioQueueDJMixin:
 
     async def _maybe_detach_show_dj(self, queue_id: str) -> None:
         """Detach an auto-armed show DJ once the queue left the show."""
-        state = self._dj_queues.get(queue_id)
-        if state is None or not state.station_id:
-            return
-        queue = self.mass.player_queues.get(queue_id)
-        if queue is not None and self._queue_show_station(queue_id) == state.station_id:
-            if not queue.ended:
+        async with self._dj_lock:
+            if self._unloading:
                 return
-        await self.set_queue_dj(queue_id, None)
-        self._armed_show_queues.pop(queue_id, None)
+            # A show replacement may have acquired the lock before this pending detach.
+            # Decide against the live assignment and sources, never an earlier snapshot.
+            state = self._dj_queues.get(queue_id)
+            if state is None or not state.station_id:
+                return
+            queue = self.mass.player_queues.get(queue_id)
+            if queue is not None and self._queue_show_station(queue_id) == state.station_id:
+                if not queue.ended:
+                    return
+            del self._dj_queues[queue_id]
+            if self._armed_show_queues.get(queue_id) == state.station_id:
+                self._armed_show_queues.pop(queue_id, None)
+            self.mass.streams.set_boundary_mix_required(queue_id, self.instance_id, False)
+            await self._write_queue_dj()
+        self._remove_pending_dj_clips(queue_id)
 
     def _forget_armed_show(self, queue_id: str, queue_removed: bool = False) -> None:
         """Drop the queue's arm-once record once it stops sourcing the show it names."""
@@ -467,8 +490,9 @@ class AIRadioQueueDJMixin:
                     "Disabling queue DJ on %s: host %s no longer exists", queue_id, state.host_id
                 )
                 async with self._dj_lock:
-                    self._dj_queues.pop(queue_id, None)
-                    await self._write_queue_dj()
+                    if self._dj_queues.get(queue_id) is state:
+                        self._dj_queues.pop(queue_id, None)
+                        await self._write_queue_dj()
                 return
 
             window_tracks = [
