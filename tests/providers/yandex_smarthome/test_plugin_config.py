@@ -25,6 +25,10 @@ from music_assistant.providers.yandex_smarthome.plugin import YandexSmartHomePlu
 def _plugin() -> YandexSmartHomePlugin:
     """Build a plugin with lightweight runtime collaborators."""
     mass = mock.MagicMock()
+    # No setup_data persisted on the mock config store, so get_setup_value falls through
+    # to the config entry value/default via get_config_value (the provided ProviderConfig).
+    mass.config.get = mock.MagicMock(return_value=None)
+    mass.config.get_raw_provider_config_value = mock.MagicMock(return_value=None)
     mass.players.all_players.return_value = [
         SimpleNamespace(state=SimpleNamespace(player_id="player-1", name="Kitchen"))
     ]
@@ -32,10 +36,11 @@ def _plugin() -> YandexSmartHomePlugin:
         CONF_INSTANCE_NAME: "Living room",
         CONF_EXPOSED_PLAYERS: ["player-1"],
         CONF_EXPOSED_PLAYLISTS: ["library://playlist/1"],
+        "log_level": "GLOBAL",
     }
     config = mock.MagicMock()
     config.get_value.side_effect = lambda key, *_: config_values.get(key)
-    return YandexSmartHomePlugin(mass, mock.MagicMock(), config, set())
+    return YandexSmartHomePlugin(mass, mock.MagicMock(domain="yandex_smarthome"), config, set())
 
 
 async def test_config_entries_only_contain_runtime_options() -> None:
