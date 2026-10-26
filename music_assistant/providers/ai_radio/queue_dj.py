@@ -131,7 +131,8 @@ class AIRadioQueueDJMixin:
             queue_id, self.instance_id, self._host_posts(state.host_id)
         )
         self.mass.player_queues.update_items(queue_id, items[:start_index] + upcoming)
-        await self._write_queue_dj()
+        async with self._dj_lock:
+            await self._write_queue_dj()
         return start_index
 
     async def set_queue_dj(self, queue_id: str, host_id: str | None) -> dict[str, dict[str, str]]:
