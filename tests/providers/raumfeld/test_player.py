@@ -2109,6 +2109,9 @@ def _announcing_player(current_item_id: str = "q2") -> RaumfeldPlayer:
     player._attr_active_source = "raumfeld_bar"
     player._attr_playback_state = PlaybackState.PLAYING
     player._play_started_at = 0.0
+    # a room in no other room's zone
+    player._provider = MagicMock()
+    cast("MagicMock", player.mass.players).iter_players.return_value = []
     indexes = {"q1": 0, "q2": 1, "q3": 2}
     cast("MagicMock", player.mass.player_queues).index_by_id.side_effect = (
         lambda _queue_id, item_id: indexes.get(item_id)
@@ -2118,6 +2121,8 @@ def _announcing_player(current_item_id: str = "q2") -> RaumfeldPlayer:
         next_item=MagicMock(queue_item_id="q3"),
         corrected_elapsed_time=10.0,
         playback_speed=1.0,
+        crossfade_enabled=False,
+        smart_fades_active=False,
     )
     return player
 
@@ -2230,6 +2235,42 @@ async def test_an_announcement_for_a_replaced_flow_is_not_sent() -> None:
         await player._announce_flow_item(FLOW_URL, "q2", 0)
 
     zone_command.assert_not_awaited()
+
+
+def test_a_clock_that_moved_back_drops_the_timer() -> None:
+    """A reading far from the end drops a timer set from an earlier, later reading."""
+    player = _announcing_player()
+
+    player._maybe_announce_flow_item()
+
+    cast("MagicMock", player.mass.cancel_timer).assert_called_with(
+        "raumfeld_announce_next_raumfeld_bar"
+    )
+    cast("MagicMock", player.mass.call_later).assert_not_called()
+
+
+def test_no_timer_is_set_while_tracks_fade_into_each_other() -> None:
+    """A fade moves the boundary, so the next track waits for MA to move the media on."""
+    player = _announcing_player()
+    queue = cast("MagicMock", player.mass.player_queues).get.return_value
+    queue.corrected_elapsed_time = 188.0
+    queue.smart_fades_active = True
+
+    player._maybe_announce_flow_item()
+
+    cast("MagicMock", player.mass.call_later).assert_not_called()
+
+
+def test_a_room_that_joined_another_zone_announces_nothing() -> None:
+    """A room merged into another room's zone leaves the announcements to that room."""
+    player = _announcing_player()
+    with patch.object(
+        RaumfeldPlayer, "synced_to", new_callable=PropertyMock, return_value="raumfeld_bank"
+    ):
+        player._announce_upcoming("q3", "q2")
+
+    assert player._announced_item_id is None
+    cast("MagicMock", player.mass.create_task).assert_not_called()
 
 
 def test_no_timer_is_set_far_from_the_end_of_a_track() -> None:

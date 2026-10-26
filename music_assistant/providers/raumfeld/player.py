@@ -1735,8 +1735,14 @@ class RaumfeldPlayer(Player):
         """
         # MA moves the queue on only when a poll reports the zone past the boundary, up to
         # a poll interval late; the time left of the current track tells when it comes
+        # a timer set from an earlier reading must not outlive it: the clock can move back
+        self.mass.cancel_timer(self._announce_timer_id)
         current, upcoming = queue.current_item, queue.next_item
         if current is None or upcoming is None or not current.duration:
+            return
+        if queue.crossfade_enabled or queue.smart_fades_active:
+            # a fade moves the boundary away from the end of the track; MA moving the
+            # player's media on announces the next one instead
             return
         # the queue's position is in media time; at another playback speed (an audiobook)
         # the wall-clock time left differs
@@ -1772,6 +1778,8 @@ class RaumfeldPlayer(Player):
             or queue_item_id == self._announced_item_id
             # a station button or another source took over from the queue
             or self._attr_active_source != self.player_id
+            # the room joined another room's zone, which announces its own queue
+            or (self.synced_to is not None and self.synced_to != self.player_id)
             or self._attr_playback_state != PlaybackState.PLAYING
         ):
             return
