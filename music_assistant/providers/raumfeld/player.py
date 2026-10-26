@@ -1139,6 +1139,7 @@ class RaumfeldPlayer(Player):
         active = self._attr_playback_state in (PlaybackState.PLAYING, PlaybackState.PAUSED)
         if self._line_in is not None and device_uri == self._line_in[0]:
             # this room's Line-In, a source of its own, also when the Raumfeld app started it
+            self._drop_flow()
             self._clear_external()
             if active:
                 self._attr_active_source = SOURCE_LINE_IN
@@ -1282,11 +1283,7 @@ class RaumfeldPlayer(Player):
         if self._advance_armed or self._next_media is not None:
             # a queue item MA handed over must not start when this source's track ends
             self._clear_next()
-        if self._flow_url is not None:
-            # the queue's flow no longer plays, so nothing of it is announced any more
-            self._flow_url = None
-            self.mass.cancel_timer(self._announce_timer_id)
-            self.mass.cancel_task(self._announce_task_id)
+        self._drop_flow()
         allowed = {action.strip() for action in (actions or "").split(",")}
         source_id, name = external_source(meta["section"])
         passive = True
@@ -1730,6 +1727,14 @@ class RaumfeldPlayer(Player):
             self._start_flow_announcement(current.queue_item_id)
         self._schedule_next_announcement(queue)
 
+    def _drop_flow(self) -> None:
+        """Stop announcing the queue's flow, once another source took over from it."""
+        if self._flow_url is None:
+            return
+        self._flow_url = None
+        self.mass.cancel_timer(self._announce_timer_id)
+        self.mass.cancel_task(self._announce_task_id)
+
     @property
     def _announce_timer_id(self) -> str:
         """Return the id of the timer that announces the flow stream's next track."""
@@ -1791,6 +1796,8 @@ class RaumfeldPlayer(Player):
             or queue_item_id == self._announced_item_id
             # a station button or another source took over from the queue
             or self._attr_active_source != self.player_id
+            # a command that changes what plays is under way; the next reading tells
+            or self._playback_changes
             # the room joined another room's zone, which announces its own queue
             or (self.synced_to is not None and self.synced_to != self.player_id)
             or self._attr_playback_state != PlaybackState.PLAYING

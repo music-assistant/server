@@ -2479,3 +2479,28 @@ async def test_the_poll_announces_after_applying_its_reading() -> None:
         await player._poll_zone(MagicMock(), ["Bar"])
 
     assert order == ["state", "announce"]
+
+
+async def test_line_in_taking_over_from_the_flow_drops_its_announcements() -> None:
+    """The room's Line-In started on the speaker ends the flow's announcements as well."""
+    player = _announcing_player()
+    player._line_in = ("http://192.168.1.42:8888/linein.wav", "Line-in")
+    player._external_source = None
+    with patch.object(player, "_clear_external"), patch.object(player, "set_current_media"):
+        await player._update_zone_source(
+            {"TrackURI": "http://192.168.1.42:8888/linein.wav"}, ["Bar"], 0
+        )
+
+    assert player._flow_url is None
+    cast("MagicMock", player.mass).cancel_task.assert_called_with("raumfeld_announce_raumfeld_bar")
+
+
+def test_a_timer_firing_during_a_command_announces_nothing() -> None:
+    """A track reached while a stop is under way is not taken as announced."""
+    player = _announcing_player()
+    player._playback_changes = 1
+
+    player._announce_upcoming("q3", "q2")
+
+    assert player._announced_item_id is None
+    cast("MagicMock", player.mass.create_task).assert_not_called()
