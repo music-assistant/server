@@ -619,8 +619,6 @@ class RaumfeldPlayer(Player):
             self._attr_playback_state = PlaybackState.IDLE
             self.update_state()
             return
-        if self._start_flow_earlier(media):
-            return
         self._mark_play_started()
         # a new item supersedes the queued next one; MA enqueues the next after it again
         self._clear_next()
@@ -634,6 +632,8 @@ class RaumfeldPlayer(Player):
             else self.get_supported_sample_rates()
         )
         url = await self.mass.streams.resolve_stream_url(self.player_id, media)
+        if self._start_flow_earlier(media, url):
+            return
         didl_metadata = create_didl_metadata(media, url)
         try:
             zone = await self._ensure_playable_zone()
@@ -1968,14 +1968,19 @@ class RaumfeldPlayer(Player):
             self._attr_elapsed_time += now - self._attr_elapsed_time_last_updated
             self._attr_elapsed_time_last_updated = now
 
-    def _start_flow_earlier(self, media: PlayerMedia) -> bool:
+    def _start_flow_earlier(self, media: PlayerMedia, url: str) -> bool:
         """
         Start a flow that would begin in the last seconds of a track a little earlier.
 
         :param media: The media MA asked to play.
+        :param url: The stream url MA resolved for it.
         :return: Whether the flow is started again from an earlier position instead.
         """
-        if not self.flow_mode or not media.source_id:
+        # the url tells a flow stream apart, also one that crossfade forces with the
+        # room's own flow setting off: <base url>/flow/<session>/<queue id>/...
+        base_url = self.mass.streams.base_url
+        parts = url.removeprefix(f"{base_url}/").split("/") if url.startswith(base_url) else []
+        if not media.source_id or len(parts) < 3 or parts[0] != "flow":
             return False
         if (queue := self.mass.player_queues.get(media.source_id)) is None:
             return False
@@ -1998,7 +2003,12 @@ class RaumfeldPlayer(Player):
         )
         # Not awaited: MA holds the player's playback lock until it sees this play command
         # take effect. Reporting it as playing lets MA release the lock for the seek at once.
-        self.mass.create_task(self.mass.player_queues.seek(media.source_id, position))
+        # By item rather than the queue's current one, which can move back meanwhile.
+        self.mass.create_task(
+            self.mass.player_queues.play_index(
+                media.source_id, item.queue_item_id, seek_position=position
+            )
+        )
         self._attr_playback_state = PlaybackState.PLAYING
         self.update_state()
         return True

@@ -2151,27 +2151,30 @@ def _flow_start(seek_position: int, duration: int = 259) -> tuple[RaumfeldPlayer
     player._player_id = "raumfeld_bar"
     player.room = "Bar"
     player.logger = MagicMock()
-    item = MagicMock(duration=duration)
+    item = MagicMock(duration=duration, queue_item_id="q2")
     item.name = "Paper Doll"
     item.streamdetails = MagicMock(seek_position=seek_position, duration=duration)
     queues = cast("MagicMock", player.mass.player_queues)
     queues.get.return_value = MagicMock(current_item=item)
-    queues.seek = MagicMock()
-    media = PlayerMedia(uri=f"{BASE_URL}/flow/s/raumfeld_bar/q.flac", source_id="raumfeld_bar")
+    queues.play_index = MagicMock()
+    media = PlayerMedia(uri="library://track/1", source_id="raumfeld_bar")
     return player, media
+
+
+FLOW_START_URL = f"{BASE_URL}/flow/s/raumfeld_bar/q.flac"
 
 
 def test_a_flow_starting_in_the_last_seconds_of_a_track_starts_earlier() -> None:
     """A flow left with 5 s of its first track is started 8 s before the end instead."""
     player, media = _flow_start(254)
 
-    with (
-        patch.object(RaumfeldPlayer, "flow_mode", new_callable=PropertyMock, return_value=True),
-        patch.object(player, "update_state"),
-    ):
-        assert player._start_flow_earlier(media)
+    with patch.object(player, "update_state"):
+        assert player._start_flow_earlier(media, FLOW_START_URL)
 
-    cast("MagicMock", player.mass.player_queues).seek.assert_called_once_with("raumfeld_bar", 251)
+    # by item: the queue's current item can move back to the previous one meanwhile
+    cast("MagicMock", player.mass.player_queues).play_index.assert_called_once_with(
+        "raumfeld_bar", "q2", seek_position=251
+    )
     # MA waits for the play command to take effect before it lets the seek through
     assert player._attr_playback_state == PlaybackState.PLAYING
 
@@ -2187,7 +2190,13 @@ def test_a_flow_with_enough_of_its_first_track_starts_as_asked(
     """A flow that starts far enough from the end, or a track too short to move, is left."""
     player, media = _flow_start(seek_position, duration)
 
-    with patch.object(RaumfeldPlayer, "flow_mode", new_callable=PropertyMock, return_value=True):
-        assert not player._start_flow_earlier(media)
+    assert not player._start_flow_earlier(media, FLOW_START_URL)
 
-    cast("MagicMock", player.mass.player_queues).seek.assert_not_called()
+    cast("MagicMock", player.mass.player_queues).play_index.assert_not_called()
+
+
+def test_a_single_item_stream_starts_as_asked() -> None:
+    """Without flow mode each item is its own stream, which a zone starts from any point."""
+    player, media = _flow_start(254)
+
+    assert not player._start_flow_earlier(media, f"{BASE_URL}/single/s/raumfeld_bar/q.flac")
