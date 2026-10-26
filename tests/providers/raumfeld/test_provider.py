@@ -1804,3 +1804,33 @@ async def test_an_ended_update_loop_drops_the_connection_at_once() -> None:
     await _supervise_cycles(provider, check, 1)
     provider._disconnect.assert_awaited_once_with("host connection lost")  # type: ignore[attr-defined]
     check.assert_not_called()
+
+
+def _icy_provider(stored: dict[str, Any]) -> RaumfeldPlayerProvider:
+    """
+    Build a provider whose player config holds the given raw values.
+
+    :param stored: The raw values stored for the player, changed in place on a write.
+    """
+    provider = RaumfeldPlayerProvider.__new__(RaumfeldPlayerProvider)
+    mass = MagicMock()
+    mass.config.get_raw_player_config_value.side_effect = lambda _pid, key: stored.get(key)
+    mass.config.set_raw_player_config_value.side_effect = lambda _pid, key, value: (
+        stored.__setitem__(key, value)
+    )
+    provider.mass = mass
+    return provider
+
+
+@pytest.mark.parametrize(
+    ("stored", "expected"),
+    [({}, "basic"), ({"enable_icy_metadata": "full"}, "full")],
+    ids=["new_room", "own_choice"],
+)
+def test_a_room_without_an_icy_preference_gets_basic(stored: dict[str, Any], expected: str) -> None:
+    """A room with nothing stored gets "basic"; a stored value is left for the user."""
+    provider = _icy_provider(stored)
+
+    provider._ensure_icy_default("raumfeld_bar")
+
+    assert stored["enable_icy_metadata"] == expected
