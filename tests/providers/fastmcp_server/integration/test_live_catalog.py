@@ -202,7 +202,7 @@ async def queue_items(client: LiveClient, queue_id: str) -> list[dict[str, Any]]
 
 
 async def find_test_track_uri(client: LiveClient, *, purpose: str) -> str:
-    """Find one provider-backed item, or explicitly skip unavailable live coverage."""
+    """Find one provider-backed track and return the URI MA reports for it."""
     search = await call_ma(
         client,
         "music/search",
@@ -219,7 +219,10 @@ async def find_test_track_uri(client: LiveClient, *, purpose: str) -> str:
         uri = str(track.get("uri", ""))
         provider = str(track.get("provider", ""))
         if uri.startswith("yandex_music") and provider.startswith("yandex_music"):
-            return uri
+            # MA swaps in the library item when the track is in the library, both
+            # here and when it loads the queue, so compare against that URI.
+            resolved = await call_ma(client, "music/item_by_uri", {"uri": uri})
+            return str(resolved["uri"])
     pytest.skip(f"configured provider search returned no provider-backed track URI for {purpose}")
 
 
