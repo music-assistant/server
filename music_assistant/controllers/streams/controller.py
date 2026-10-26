@@ -16,6 +16,7 @@ from dataclasses import dataclass
 from ipaddress import ip_address
 from math import ceil
 from typing import TYPE_CHECKING, cast
+from urllib.parse import urlparse
 from uuid import uuid4
 
 from aiofiles.os import wrap
@@ -56,6 +57,7 @@ from music_assistant.constants import (
     CONF_OUTPUT_CODEC,
     CONF_PLAYER_QUEUES,
     CONF_PREFER_WAV_FOR_LIVE_SOURCES,
+    CONF_PUBLISH_BASE_URL,
     CONF_PUBLISH_IP,
     CONF_VALUE_AUTO,
     CONF_VOLUME_NORMALIZATION_FIXED_GAIN_RADIO,
@@ -566,6 +568,16 @@ class StreamsController(CoreController):
                 validate=_is_valid_publish_ip,
             ),
             ConfigEntry(
+                key=CONF_PUBLISH_BASE_URL,
+                type=ConfigEntryType.STRING,
+                default_value=None,
+                required=False,
+                category="generic",
+                advanced=True,
+                requires_reload=True,
+                validate=_is_valid_publish_base_url,
+            ),
+            ConfigEntry(
                 key=CONF_BIND_PORT,
                 type=ConfigEntryType.INTEGER,
                 default_value=DEFAULT_PORT,
@@ -626,6 +638,19 @@ class StreamsController(CoreController):
             self.mass.config.set_raw_core_config_value(
                 self.domain, CONF_PUBLISH_IP, CONF_VALUE_AUTO
             )
+        raw_publish_base_url = self.mass.config.get_raw_core_config_value(
+            self.domain, CONF_PUBLISH_BASE_URL
+        )
+        if raw_publish_base_url and not _is_valid_publish_base_url(raw_publish_base_url):
+            # mirror the publish_ip handling: a stored value that fails the current
+            # validator (upgrade with stricter rules, hand-edited settings file) is
+            # warned once and cleared, so the UI reflects the actual state in use
+            self.logger.warning(
+                "Published base URL %r in the streams settings is not a valid URL, "
+                "clearing it; stream URLs will fall back to http://<publish_ip>:<bind_port>",
+                raw_publish_base_url,
+            )
+            self.mass.config.set_raw_core_config_value(self.domain, CONF_PUBLISH_BASE_URL, None)
         publish_candidates = await get_publish_ip_candidates(include_ipv6=True)
         bind_ip = str(config.get_value(CONF_BIND_IP))
         self._resolve_publish_state(bind_ip, publish_candidates)
@@ -668,18 +693,28 @@ class StreamsController(CoreController):
         self.publish_port = cast("int", self._server.port)
         self._resolve_publish_state(self._server.bind_ip or DEFAULT_HOST, publish_candidates)
         # print a big fat message in the log where the streamserver is running
-        # because this is a common source of issues for people with more complex setups
+        # because this is a common source of issues for people with more complex setups.
+        # with publish_base_url set the IP shown is just the bind side; the override
+        # line below is what players actually fetch from.
+        default_base_url = f"http://{format_ip_for_url(self.publish_ip)}:{self.publish_port}"
+        override_line = (
+            ""
+            if self._base_url == default_base_url
+            else f"Players fetch stream URLs from: {self._base_url}\n"
+        )
         self.logger.log(
             logging.INFO if self.mass.config.onboard_done else logging.WARNING,
             "\n\n################################################################################\n"
             "Started streamserver on %s:%s\n"
             "This is the IP address that is communicated to players.\n"
+            "%s"
             "If this is incorrect, audio will not play!\n"
             "See the documentation for how to configure the publish IP for the Streamserver\n"
             "in Settings --> System --> Streams\n"
             "################################################################################\n",
             self.publish_ip,
             self.publish_port,
+            override_line,
         )
         await self._reload_network_dependent_providers()
 
@@ -2692,7 +2727,20 @@ class StreamsController(CoreController):
         )
         # the single address players are handed, taken from the top of the ranked list
         self.publish_ip = self._publish_addresses[0]
-        self._base_url = f"http://{format_ip_for_url(self.publish_ip)}:{self.publish_port}"
+        # publish_base_url, when set, overrides the generated URL entirely so operators
+        # can place the stream server behind a reverse proxy (TLS, friendly hostname,
+        # different port). publish_ip stays an IP for mDNS/AirPlay/Snapcast/Sendspin
+        # consumers that hand it to APIs that take IP literals, so discovery continues
+        # to work on the LAN alongside a public HTTPS stream URL for internet players.
+        # setup() has already validated and cleared any invalid stored value, so a
+        # truthy value here is trusted.
+        configured_base_url = self.mass.config.get_raw_core_config_value(
+            self.domain, CONF_PUBLISH_BASE_URL
+        )
+        if configured_base_url:
+            self._base_url = str(configured_base_url).rstrip("/")
+        else:
+            self._base_url = f"http://{format_ip_for_url(self.publish_ip)}:{self.publish_port}"
 
     async def _handle_info_request(self, request: web.Request) -> web.Response:
         """Answer a reachability probe with this server's id."""
@@ -2760,6 +2808,49 @@ def _is_valid_publish_ip(value: ConfigValueType) -> bool:
     except ValueError:
         return False
     return True
+
+
+def _is_valid_publish_base_url(value: ConfigValueType) -> bool:
+    """
+    Return whether a configured publish_base_url value is usable.
+
+    An empty value (unset) means the default ``http://<publish_ip>:<bind_port>``
+    URL is used; it is accepted here as a defensive case for callers that bypass
+    the config layer (the parser itself skips validation for ``None``).
+
+    A non-empty value must be an http(s) scheme + host URL with no userinfo,
+    no query, no fragment, and no path other than a bare ``/`` (which is
+    tolerated and stripped at use time). Leading/trailing whitespace is
+    rejected rather than silently normalized.
+    """
+    if not value:
+        return True
+    if not isinstance(value, str):
+        return False
+    # a pasted value with surrounding whitespace is almost always a config pasteo;
+    # reject rather than silently normalize so the operator sees the problem
+    if value != value.strip():
+        return False
+    parsed = urlparse(value)
+    if parsed.scheme not in ("http", "https"):
+        return False
+    if not parsed.hostname:
+        return False
+    # credentials in the URL would leak into every stream URL handed to players
+    # (and into logs); refuse them outright
+    if parsed.username is not None or parsed.password is not None:
+        return False
+    # a dangling colon ("https://host:" or "https://[::1]:") leaves parsed.port as None
+    # on Python >= 3.9 rather than raising; reject it here. A non-integer port raises.
+    if parsed.netloc.endswith(":"):
+        return False
+    try:
+        _ = parsed.port
+    except ValueError:
+        return False
+    if parsed.path and parsed.path != "/":
+        return False
+    return not (parsed.query or parsed.fragment)
 
 
 def _root_cause(err: BaseException) -> BaseException:
