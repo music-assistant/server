@@ -25,7 +25,7 @@ import time
 from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, MagicMock
 
-from music_assistant_models.enums import PlaybackState, PlayerFeature, PlayerType
+from music_assistant_models.enums import ConfigEntryType, PlaybackState, PlayerFeature, PlayerType
 from music_assistant_models.errors import PlayerUnavailableError, UnsupportedFeaturedException
 
 if TYPE_CHECKING:
@@ -33,6 +33,7 @@ if TYPE_CHECKING:
 
 from music_assistant.providers.yandex_station.constants import (
     CONF_INTERCEPT_ENABLED,
+    CONF_INTERCEPT_MIRROR_VOLUME,
     CONF_INTERCEPT_TARGET,
 )
 from music_assistant.providers.yandex_station.player import (
@@ -50,6 +51,7 @@ def _make_intercept_player(
     target_player_id: str | None = "target_player",
     yandex_music_present: bool = True,
     external_playing: bool = False,
+    mirror_volume: bool | None = None,
 ) -> YandexStationPlayer:
     """Build a player with intercept-related state and mocked mass."""
     player = YandexStationPlayer.__new__(YandexStationPlayer)
@@ -81,6 +83,8 @@ def _make_intercept_player(
             return per_player_enabled
         if key == CONF_INTERCEPT_TARGET:
             return target_player_id
+        if key == CONF_INTERCEPT_MIRROR_VOLUME and mirror_volume is not None:
+            return mirror_volume
         return default
 
     player_config = MagicMock()
@@ -694,6 +698,57 @@ async def test_user_unmute_via_yandex_app_clears_self_mute_flag() -> None:
     assert player._saved_station_volume == 80
 
 
+async def test_volume_mirror_disabled_sends_no_target_volume() -> None:
+    """With volume mirroring off, an intercept session never touches target volume."""
+    player = _make_intercept_player(mirror_volume=False)
+    state, player_state, _ = _state(track_id="1", volume=0.4)
+
+    await player._handle_intercept_tick(state, player_state, True)
+    assert player._intercept_active is True
+    state2, ps2, _ = _state(track_id="1", volume=0.7)
+    await player._handle_intercept_tick(state2, ps2, True)
+
+    player.mass.player_queues.play_media.assert_awaited_once()
+    player.mass.players.cmd_volume_set.assert_not_awaited()
+
+
+async def test_volume_mirror_disabled_still_tracks_user_unmute() -> None:
+    """With mirroring off, a mid-session Station unmute still moves the restore baseline."""
+    player = _make_intercept_player(mirror_volume=False)
+    player._intercept_active = True
+    player._station_muted_by_intercept = True
+    player._saved_station_volume = 50
+
+    await player._maybe_mirror_volume(0.8)
+
+    player.mass.players.cmd_volume_set.assert_not_awaited()
+    assert player._station_muted_by_intercept is False
+    assert player._saved_station_volume == 80
+
+
+async def test_volume_mirror_disabled_session_end_restores_station_volume() -> None:
+    """With mirroring off, ending a session still restores the Station volume."""
+    player = _make_intercept_player(mirror_volume=False)
+    player._intercept_active = True
+    player._saved_station_volume = 70
+    player._station_muted_by_intercept = True
+
+    await player._end_intercept_session(clear_debounce=True)
+
+    sent = [c.args[0] for c in player.glagol.send.await_args_list]
+    assert {"command": "setVolume", "volume": 0.7} in sent
+
+
+async def test_volume_mirror_explicitly_enabled_mirrors() -> None:
+    """With mirroring explicitly on, Station volume reaches the target."""
+    player = _make_intercept_player(mirror_volume=True)
+    player._intercept_active = True
+
+    await player._maybe_mirror_volume(0.3)
+
+    player.mass.players.cmd_volume_set.assert_awaited_once_with("target_player", 30)
+
+
 async def test_alice_active_unmutes_station() -> None:
     """LISTENING/SPEAKING during a session → restore Station volume for Alice TTS."""
     player = _make_intercept_player()
@@ -1294,3 +1349,15 @@ async def test_concurrent_mirror_volume_serialised() -> None:
 
     # In-order application: 30 then 60 (not the reverse).
     assert applied == [30, 60]
+
+
+async def test_player_config_entries_include_volume_mirror_toggle() -> None:
+    """Each Station exposes a boolean volume-mirror toggle that defaults to on."""
+    player = _make_intercept_player()
+    player.mass.players.all_players = MagicMock(return_value=[])
+
+    entries = await YandexStationPlayer.get_config_entries(player)
+    entry = next(e for e in entries if getattr(e, "key", None) == CONF_INTERCEPT_MIRROR_VOLUME)
+
+    assert entry.type == ConfigEntryType.BOOLEAN
+    assert entry.default_value is True

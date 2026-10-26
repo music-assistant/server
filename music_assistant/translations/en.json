@@ -2924,6 +2924,8 @@
   "provider.yandex_station.config_entries.intercept_enabled.label": "Experimental: Intercept native Station playback",
   "provider.yandex_station.config_entries.intercept_feature_enabled.description": "Master switch for the intercept feature. When ON, individual stations can be configured (in their player settings) to redirect Alice-initiated playback to another Music Assistant player. When OFF, intercept is fully disabled regardless of per-player settings. Requires the 'yandex_music' music provider to be configured to actually resolve tracks.",
   "provider.yandex_station.config_entries.intercept_feature_enabled.label": "Experimental: Enable intercept feature",
+  "provider.yandex_station.config_entries.intercept_mirror_volume.description": "When ON, volume changes on the Station (buttons, the Yandex app, 'Алиса, громче') are copied to the intercept target player. Turn OFF to manage the target's volume independently in Music Assistant; the Station is still muted during intercept and its volume is restored afterwards.",
+  "provider.yandex_station.config_entries.intercept_mirror_volume.label": "Mirror Station volume to intercept target",
   "provider.yandex_station.config_entries.intercept_target_player_id.description": "Music Assistant player that receives intercepted playback. Lists every registered player except this Station; pause / volume_set / seek mirrors gracefully no-op on players that don't support them.",
   "provider.yandex_station.config_entries.intercept_target_player_id.label": "Intercept target player",
   "provider.yandex_station.config_entries.method.description": "Sign in with a short device code, by scanning a QR code with the Yandex app, or by pasting browser cookies.",
