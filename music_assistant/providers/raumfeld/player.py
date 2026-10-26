@@ -77,6 +77,11 @@ IDLE_POLL_INTERVAL = 15
 # How long (seconds) after a play/resume command to keep polling fast, so MA catches
 # the device actually starting playback (Raumfeld renderers buffer before they start).
 STARTUP_POLL_WINDOW = 20
+# The least of the first track (seconds) a flow stream must start with. A zone given a flow
+# that starts closer to the end of a track drops the stream at the track change and
+# requests it again, over and over, and then stops (seen on a One S with 3.5 s of a Spotify
+# track left; with 6 s it plays on into the next track).
+FLOW_MIN_FIRST_TRACK = 8
 # Only re-anchor MA's elapsed-time clock when the reported flow position diverges from
 # the expected (extrapolated) position by more than this many seconds. Keeps the
 # progress bar smooth despite the device's 1-second position granularity while a real
@@ -613,6 +618,8 @@ class RaumfeldPlayer(Player):
             self.logger.debug("Nothing to resume on %s for %s", self.room, media.uri)
             self._attr_playback_state = PlaybackState.IDLE
             self.update_state()
+            return
+        if self._start_flow_earlier(media):
             return
         self._mark_play_started()
         # a new item supersedes the queued next one; MA enqueues the next after it again
@@ -1960,6 +1967,41 @@ class RaumfeldPlayer(Player):
             now = time.time()
             self._attr_elapsed_time += now - self._attr_elapsed_time_last_updated
             self._attr_elapsed_time_last_updated = now
+
+    def _start_flow_earlier(self, media: PlayerMedia) -> bool:
+        """
+        Start a flow that would begin in the last seconds of a track a little earlier.
+
+        :param media: The media MA asked to play.
+        :return: Whether the flow is started again from an earlier position instead.
+        """
+        if not self.flow_mode or not media.source_id:
+            return False
+        if (queue := self.mass.player_queues.get(media.source_id)) is None:
+            return False
+        item = queue.current_item
+        details = item.streamdetails if item else None
+        if item is None or details is None or not details.seek_position:
+            return False
+        duration = details.duration or item.duration
+        if not duration or duration <= FLOW_MIN_FIRST_TRACK:
+            return False
+        if duration - details.seek_position >= FLOW_MIN_FIRST_TRACK:
+            return False
+        position = int(duration - FLOW_MIN_FIRST_TRACK)
+        self.logger.debug(
+            "%s would start %s %ss before its end, starting at %ss instead",
+            self.room,
+            item.name,
+            int(duration - details.seek_position),
+            position,
+        )
+        # Not awaited: MA holds the player's playback lock until it sees this play command
+        # take effect. Reporting it as playing lets MA release the lock for the seek at once.
+        self.mass.create_task(self.mass.player_queues.seek(media.source_id, position))
+        self._attr_playback_state = PlaybackState.PLAYING
+        self.update_state()
+        return True
 
     def _mark_play_started(self) -> None:
         """Record a play/resume command and switch to fast polling."""
