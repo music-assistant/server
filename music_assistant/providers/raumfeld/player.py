@@ -1856,6 +1856,10 @@ class RaumfeldPlayer(Player):
         if not self._reading_is_current(generation) or url != self._flow_url:
             # a play or stop command replaced the flow meanwhile
             return
+        if not await self._zone_plays_queue(self.raumfeld.host, zone):
+            # Zones merged in the Raumfeld app: until the groups are followed, the active zone
+            # can be one that plays another room's queue.
+            return
         try:
             await self._zone_command(
                 zone,

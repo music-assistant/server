@@ -2113,6 +2113,7 @@ def _announcing_player(current_item_id: str = "q2") -> RaumfeldPlayer:
     # a room in no other room's zone
     player._provider = MagicMock()
     cast("MagicMock", player.mass.players).iter_players.return_value = []
+    player._zone_plays_queue = AsyncMock(return_value=True)  # type: ignore[method-assign]
     indexes = {"q1": 0, "q2": 1, "q3": 2}
     cast("MagicMock", player.mass.player_queues).index_by_id.side_effect = (
         lambda _queue_id, item_id: indexes.get(item_id)
@@ -2231,6 +2232,25 @@ async def test_an_announcement_for_a_replaced_flow_is_not_sent() -> None:
     queues.player_media_from_queue_item = AsyncMock(side_effect=media_while_a_play_runs)
     with (
         patch.object(player, "_active_zone", return_value=["Bar"]),
+        patch.object(player, "_zone_command", AsyncMock()) as zone_command,
+    ):
+        await player._announce_flow_item(FLOW_URL, "q2", 0)
+
+    zone_command.assert_not_awaited()
+
+
+@pytest.mark.parametrize("plays_queue", [False, None])
+async def test_an_announcement_skips_a_zone_that_plays_another_queue(
+    plays_queue: bool | None,
+) -> None:
+    """A zone merged in the app, before the groups are followed, gets no announcement."""
+    player = _announcing_player()
+    cast("MagicMock", player.mass.player_queues).player_media_from_queue_item = AsyncMock(
+        return_value=PlayerMedia(uri="library://track/1", title="Buena", queue_item_id="q2")
+    )
+    player._zone_plays_queue = AsyncMock(return_value=plays_queue)  # type: ignore[method-assign]
+    with (
+        patch.object(player, "_active_zone", return_value=["Bar", "Kitchen"]),
         patch.object(player, "_zone_command", AsyncMock()) as zone_command,
     ):
         await player._announce_flow_item(FLOW_URL, "q2", 0)
