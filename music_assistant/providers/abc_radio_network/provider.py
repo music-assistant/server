@@ -24,12 +24,11 @@ from music_assistant.models.music_provider import MusicProvider
 from .constants import (
     ABC_RADIO_STATIONS,
     API_TIMEOUT,
-    CONF_TIMEZONE,
-    DEFAULT_TIMEZONE,
+    CONF_STATE,
+    DEFAULT_STATE,
     NOW_PLAYING_URL,
+    STATE_TIMEZONES,
     STREAM_METADATA_UPDATE_INTERVAL,
-    TIMEZONE_OPTIONS,
-    TIMEZONE_STREAM_REGIONS,
 )
 from .helpers import parse_now_playing, parse_radio
 
@@ -49,10 +48,10 @@ class ABCRadioProvider(MusicProvider):
         """Return the config entries to configure this provider."""
         return (
             ConfigEntry(
-                key=CONF_TIMEZONE,
+                key=CONF_STATE,
                 type=ConfigEntryType.STRING,
-                options=[ConfigValueOption(tz) for tz in TIMEZONE_OPTIONS],
-                default_value=DEFAULT_TIMEZONE,
+                options=[ConfigValueOption(state) for state in STATE_TIMEZONES],
+                default_value=DEFAULT_STATE,
             ),
         )
 
@@ -119,15 +118,44 @@ class ABCRadioProvider(MusicProvider):
             for station_id in ABC_RADIO_STATIONS
         ]
 
-    def _get_stream_url(self, station_id: str) -> str:
+    def _get_state(self) -> str:
+        """Get the configured state, falling back to the default for unknown values."""
+        state = str(self.config.get_value(CONF_STATE, DEFAULT_STATE))
+        return state if state in STATE_TIMEZONES else DEFAULT_STATE
+
+    def _get_stream_region(self, station_id: str) -> str:
         """
-        Get the stream url of a station, using the local stream for the configured timezone.
+        Get the region of the stream played for a station.
+
+        This is the configured state when the station has a stream for it, otherwise the
+        default state. Single-stream stations play the default state's (Sydney) feed.
 
         :param station_id: A known ABC Radio station id.
         """
-        timezone = str(self.config.get_value(CONF_TIMEZONE, DEFAULT_TIMEZONE))
-        region = TIMEZONE_STREAM_REGIONS.get(timezone, TIMEZONE_STREAM_REGIONS[DEFAULT_TIMEZONE])
-        return ABC_RADIO_STATIONS[station_id]["stream_url"].format(region=region)
+        state = self._get_state()
+        return (
+            state if state in ABC_RADIO_STATIONS[station_id].get("regions", ()) else DEFAULT_STATE
+        )
+
+    def _get_stream_url(self, station_id: str) -> str:
+        """
+        Get the stream url of a station, using the local stream for the configured state.
+
+        :param station_id: A known ABC Radio station id.
+        """
+        stream_url = ABC_RADIO_STATIONS[station_id]["stream_url"]
+        return stream_url.format(region=self._get_stream_region(station_id))
+
+    def _get_api_timezone(self, station_id: str) -> str:
+        """
+        Get the timezone to send to the now-playing API for a station.
+
+        This is the timezone of the stream being played, so the now-playing info
+        matches the audio.
+
+        :param station_id: A known ABC Radio station id.
+        """
+        return STATE_TIMEZONES[self._get_stream_region(station_id)]
 
     async def _get_now_playing(self, station_id: str) -> StreamMetadata | None:
         """
@@ -136,7 +164,7 @@ class ABCRadioProvider(MusicProvider):
         :param station_id: A known ABC Radio station id.
         """
         url = NOW_PLAYING_URL.format(station_code=station_id.upper())
-        params = {"tz": str(self.config.get_value(CONF_TIMEZONE, DEFAULT_TIMEZONE))}
+        params = {"tz": self._get_api_timezone(station_id)}
         try:
             async with self.mass.http_session.get(
                 url, params=params, timeout=API_TIMEOUT
