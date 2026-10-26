@@ -18,6 +18,7 @@ from music_assistant_models.errors import (
     MusicAssistantError,
 )
 
+from music_assistant.mass import MusicAssistant
 from music_assistant.providers.ai_radio.constants import (
     ATTR_GAP_NEXT_ID,
     ATTR_HOST_ID,
@@ -387,6 +388,20 @@ def _make_replan_dj(
     # set_queue_dj marks a state plannable once its clip cleanup ran, and these harnesses
     # start from a queue whose switch already settled
     dummy._arm_dj_state("queue-1", "rick").ready = True
+    return dummy
+
+
+def _make_show_dj(tmp_path: Path, track_count: int = 3) -> ReplanQueueDJ:
+    """Build a fresh show queue before its player has buffered an item."""
+    dummy = _make_replan_dj(
+        tmp_path,
+        [_track(index) for index in range(track_count)],
+        current_index=None,
+        index_in_buffer=None,
+    )
+    dummy.player_queues._queue.sources = [SimpleNamespace(uri=f"{dummy.instance_id}://radio/show")]
+    dummy._stations["show"] = {"id": "show", "name": "Show", "host_id": "rick"}
+    dummy._dj_queues.clear()
     return dummy
 
 
@@ -773,7 +788,7 @@ async def test_repair_never_treats_a_trailing_outro_as_stale(tmp_path: Path) -> 
     assert dummy.player_queues.deleted == []
 
 
-async def test_splice_dj_clip_inserts_after_the_last_window_track(tmp_path: Path) -> None:
+async def test_splice_dj_slot_inserts_after_the_last_window_track(tmp_path: Path) -> None:
     """An end_of_playlist section splices its clip after the target, not before it."""
     tracks = [_track(index) for index in range(2)]
     dummy = _make_replan_dj(tmp_path, list(tracks))
@@ -792,14 +807,14 @@ async def test_splice_dj_clip_inserts_after_the_last_window_track(tmp_path: Path
     )
     items = list(dummy.player_queues.items("queue-1"))
 
-    outcome = dummy._splice_dj_clip(
+    outcome = dummy._splice_dj_slot(
         queue_id="queue-1",
         items=items,
         guard_index=-1,
         state=state,
         program=program,
         target={"item_id": tracks[-1].queue_item_id},
-        section=section,
+        sections=[section],
         after_target=True,
     )
 
@@ -1075,6 +1090,222 @@ async def test_show_start_respects_a_manually_selected_host(tmp_path: Path) -> N
 
     assert await dummy.on_queue_start("queue-1", 0) == 0
     assert dummy._dj_queues["queue-1"] is manual_state
+    assert dummy.player_queues.items("queue-1") == tracks
+
+
+@pytest.mark.parametrize("when", ["start_of_playlist", "between_songs", "end_of_playlist"])
+@pytest.mark.parametrize("track_count", [1, 3])
+async def test_show_start_preserves_multiple_sections_in_slot_order(
+    tmp_path: Path, when: str, track_count: int
+) -> None:
+    """A slot's sections play in configured order and survive a later repair pass."""
+    dummy = _make_show_dj(tmp_path, track_count)
+    tracks = list(dummy.player_queues.items("queue-1"))
+    for section_id in ("A", "B"):
+        dummy._sections[section_id] = {
+            **_transition_section(),
+            "id": section_id,
+            "name": section_id,
+        }
+    dummy._hosts["rick"]["section_ids"] = ["A", "B"]
+    dummy._hosts["rick"]["section_order"] = [{"when": when, "flow": [{"MUST": "A"}, {"MUST": "B"}]}]
+    expected = []
+    for index, track in enumerate(tracks):
+        if (when == "start_of_playlist" and index == 0) or (when == "between_songs" and index > 0):
+            expected.extend(["A", "B"])
+        expected.append(track.name)
+    if when == "end_of_playlist":
+        expected.extend(["A", "B"])
+
+    assert await dummy.on_queue_start("queue-1", 0) == 0
+    assert [item.name for item in dummy.player_queues.items("queue-1")] == expected
+
+    await dummy._replan_queue("queue-1")
+
+    items = dummy.player_queues.items("queue-1")
+    assert [item.name for item in items] == expected
+    assert len({item.queue_item_id for item in items}) == len(items)
+    assert dummy.player_queues.deleted == []
+
+
+async def test_show_start_handles_eager_queue_events_during_loading(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An automatic arm started by loading the queue does not suppress its opening."""
+    dummy = _make_show_dj(tmp_path)
+    tracks = list(dummy.player_queues.items("queue-1"))
+    dummy._sections["Intro"] = {**_transition_section(), "id": "Intro", "name": "Intro"}
+    dummy._hosts["rick"]["section_ids"].append("Intro")
+    dummy._hosts["rick"]["section_order"].insert(
+        0, {"when": "start_of_playlist", "flow": [{"MUST": "Intro"}]}
+    )
+    entered = asyncio.Event()
+    release = asyncio.Event()
+    tasks: list[asyncio.Task[Any]] = []
+
+    async def persist() -> None:
+        entered.set()
+        await release.wait()
+
+    def eager_task(target: Coroutine[Any, Any, Any]) -> asyncio.Task[Any]:
+        task = asyncio.Task(target, loop=asyncio.get_running_loop(), eager_start=True)
+        tasks.append(task)
+        return task
+
+    dispatcher = cast(
+        "MusicAssistant",
+        SimpleNamespace(
+            closing=False,
+            verify_event_loop_thread=lambda _: None,
+            create_task=eager_task,
+            _subscribers=[(dummy._on_dj_queue_event, None, None, True)],
+        ),
+    )
+    monkeypatch.setattr(dummy, "_write_queue_dj", persist)
+    monkeypatch.setattr(dummy, "_schedule_replan", lambda _: None)
+    dummy.player_queues.on_items_updated = lambda: MusicAssistant.signal_event(
+        dispatcher, EventType.QUEUE_ITEMS_UPDATED, object_id="queue-1"
+    )
+    dummy.player_queues.update_items("queue-1", tracks)
+    assert entered.is_set()
+    startup = asyncio.Task(
+        dummy.on_queue_start("queue-1", 0), loop=asyncio.get_running_loop(), eager_start=True
+    )
+    release.set()
+    try:
+        assert await startup == 0
+        await asyncio.gather(*tasks)
+    finally:
+        release.set()
+        await asyncio.gather(startup, *tasks, return_exceptions=True)
+
+    assert [item.name for item in dummy.player_queues.items("queue-1")] == [
+        "Intro",
+        tracks[0].name,
+        "Song Transition",
+        tracks[1].name,
+        "Song Transition",
+        tracks[2].name,
+    ]
+    assert dummy._dj_queues["queue-1"].station_id == "show"
+    assert dummy._dj_queues["queue-1"].ready is True
+
+
+@pytest.mark.parametrize("when", ["between_songs", "end_of_playlist"])
+async def test_replan_preserves_multiple_sections_in_slot_order(tmp_path: Path, when: str) -> None:
+    """Later replans insert an entire unmerged slot without reversing or losing sections."""
+    dummy = _make_show_dj(tmp_path, 4)
+    for section_id in ("A", "B"):
+        dummy._sections[section_id] = {
+            **_transition_section(),
+            "id": section_id,
+            "name": section_id,
+        }
+    dummy._hosts["rick"]["section_ids"] = ["A", "B"]
+    dummy._hosts["rick"]["section_order"] = [{"when": when, "flow": [{"MUST": "A"}, {"MUST": "B"}]}]
+    state = dummy._arm_dj_state("queue-1", "rick")
+    state.station_id = "show"
+    state.ready = True
+    dummy.player_queues._queue.current_index = 0
+    dummy.player_queues._queue.index_in_buffer = 0
+
+    await dummy._replan_queue("queue-1")
+    prepared = list(dummy.player_queues.items("queue-1"))
+    names = [item.name for item in prepared]
+    assert names.count("A") == names.count("B") > 0
+    assert all(names[index + 1] == "B" for index, name in enumerate(names) if name == "A")
+
+    await dummy._replan_queue("queue-1")
+
+    assert dummy.player_queues.items("queue-1") == prepared
+
+
+async def test_repair_removes_a_whole_slot_when_its_target_moves(tmp_path: Path) -> None:
+    """Repair removes a displaced group while retaining another group's valid sections."""
+    dummy = _make_show_dj(tmp_path)
+    tracks = list(dummy.player_queues.items("queue-1"))
+    dummy._sections["B"] = {**_transition_section(), "id": "B", "name": "B"}
+    dummy._hosts["rick"]["section_ids"].append("B")
+    dummy._hosts["rick"]["section_order"][0]["flow"].append({"MUST": "B"})
+    await dummy.on_queue_start("queue-1", 0)
+    state = dummy._dj_queues["queue-1"]
+    items = list(dummy.player_queues.items("queue-1"))
+    displaced = [
+        item.queue_item_id
+        for item in items
+        if item.extra_attributes.get(ATTR_GAP_NEXT_ID) == tracks[1].queue_item_id
+    ]
+    items.remove(tracks[1])
+    items.insert(0, tracks[1])
+    dummy.player_queues.update_items("queue-1", items)
+
+    assert dummy._repair_dj_clips("queue-1", state, items, -1) is True
+
+    assert dummy.player_queues.deleted == displaced
+    assert tracks[1].queue_item_id not in state.decided_gap_ids
+    assert [item.name for item in dummy.player_queues.items("queue-1")] == [
+        tracks[1].name,
+        tracks[0].name,
+        "Song Transition",
+        "B",
+        tracks[2].name,
+    ]
+
+
+@pytest.mark.parametrize("host_id", [None, "other"])
+async def test_show_start_respects_selection_changed_during_weather_lookup(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, host_id: str | None
+) -> None:
+    """A pending startup cannot overwrite a newer host selection or a manual disable."""
+    dummy = _make_show_dj(tmp_path)
+    tracks = list(dummy.player_queues.items("queue-1"))
+    dummy._hosts["other"] = {**dummy._hosts["rick"], "id": "other", "name": "Other"}
+    entered = asyncio.Event()
+    release = asyncio.Event()
+
+    async def weather(_program: dict[str, Any]) -> dict[str, str]:
+        entered.set()
+        await release.wait()
+        return {}
+
+    monkeypatch.setattr(dummy, "_prepare_runtime_tokens", weather)
+    monkeypatch.setattr(dummy, "_schedule_replan", lambda _: None)
+    startup = asyncio.create_task(dummy.on_queue_start("queue-1", 0))
+    try:
+        await entered.wait()
+        await dummy.set_queue_dj("queue-1", host_id)
+    finally:
+        release.set()
+        await startup
+
+    await dummy._ensure_show_dj("queue-1")
+    selected = dummy._dj_queues.get("queue-1")
+    assert (selected.host_id if selected is not None else None) == host_id
+    assert dummy.player_queues.items("queue-1") == tracks
+
+
+async def test_cancelled_show_start_does_not_leave_an_unready_assignment(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A cancelled preparation releases its assignment so a later show can start."""
+    dummy = _make_show_dj(tmp_path)
+    tracks = list(dummy.player_queues.items("queue-1"))
+    entered = asyncio.Event()
+
+    async def weather(_program: dict[str, Any]) -> dict[str, str]:
+        entered.set()
+        await asyncio.Event().wait()
+        return {}
+
+    monkeypatch.setattr(dummy, "_prepare_runtime_tokens", weather)
+    startup = asyncio.create_task(dummy.on_queue_start("queue-1", 0))
+    await entered.wait()
+    startup.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await startup
+
+    assert "queue-1" not in dummy._dj_queues
+    assert "queue-1" not in dummy._armed_show_queues
     assert dummy.player_queues.items("queue-1") == tracks
 
 

@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from itertools import groupby
 from typing import TYPE_CHECKING, Any, Literal
 from uuid import uuid4
 
@@ -79,61 +80,84 @@ class AIRadioQueueDJMixin:
             return start_index
         first_item_id = items[start_index].queue_item_id
         program = self._build_program(station, host)
-        runtime_tokens = await self._prepare_runtime_tokens(program)
-        # Weather preparation can yield while the queue is edited. Re-read the items and
-        # keep the requested starting item, rather than publishing an outdated snapshot.
-        items = self._dj_queue_items(queue_id)
-        current_index = next(
-            (index for index, item in enumerate(items) if item.queue_item_id == first_item_id),
-            None,
-        )
-        if current_index is None or self._queue_show_station(queue_id) != station_id:
-            raise InvalidDataError("The show queue changed while preparing playback")
-        start_index = current_index
-        upcoming = [
-            item for item in items[start_index:] if not item.extra_attributes.get(ATTR_QUEUE_DJ)
-        ]
-        if not upcoming:
-            return start_index
-        tracks = [self._queue_item_to_track(index, item) for index, item in enumerate(upcoming)]
-        state = DJQueueState(
-            queue_id=queue_id,
-            host_id=str(host["id"]),
-            dj_session_id=f"dj{uuid4().hex[:12]}",
-            station_id=station_id,
-        )
-        planned, history = self._plan_sections(
-            session_id=state.dj_session_id,
-            tracks=tracks,
-            program=program,
-            track_index_offset=0,
-            minute_offset=0.0,
-            history_state={},
-            allowed_slot_when=["start_of_playlist", "between_songs", "end_of_playlist"],
-            runtime_tokens=runtime_tokens,
-        )
-        # Only this not-yet-started batch is safe to decorate from its first item. Later
-        # replans retain the current/buffered-item guard on the already playing queue.
-        for section in sorted(planned, key=lambda item: item.insert_at_index, reverse=True):
-            after_target = section.when == "end_of_playlist"
-            target = tracks[-1] if after_target else tracks[section.insert_at_index]
-            outcome = self._splice_dj_clip(
-                queue_id, upcoming, -2, state, program, target, section, after_target=after_target
-            )
-            if outcome != "injected":
-                raise InvalidDataError(f"Unable to prepare show section: {section.section_name}")
-        state.history = history
-        state.decided_gap_ids = {str(track["item_id"]) for track in tracks[1:]}
-        state.ready = True
-        self._dj_queues[queue_id] = state
+        # Publish ownership before yielding: queue events must recognise this as an
+        # automatic show arm, while a later explicit selection replaces this state.
+        state = self._arm_dj_state(queue_id, str(host["id"]))
+        state.station_id = station_id
         self._armed_show_queues[queue_id] = station_id
-        self.mass.streams.set_boundary_mix_required(
-            queue_id, self.instance_id, self._host_posts(state.host_id)
-        )
-        self.mass.player_queues.update_items(queue_id, items[:start_index] + upcoming)
-        async with self._dj_lock:
-            await self._write_queue_dj()
-        return start_index
+        try:
+            runtime_tokens = await self._prepare_runtime_tokens(program)
+            async with self._dj_lock:
+                if self._dj_queues.get(queue_id) is not state:
+                    return start_index
+                # Weather and persistence can yield while the queue is edited. Re-read
+                # the items and retain the requested starting item before publishing.
+                items = self._dj_queue_items(queue_id)
+                current_index = next(
+                    (
+                        index
+                        for index, item in enumerate(items)
+                        if item.queue_item_id == first_item_id
+                    ),
+                    None,
+                )
+                if current_index is None or self._queue_show_station(queue_id) != station_id:
+                    raise InvalidDataError("The show queue changed while preparing playback")
+                start_index = current_index
+                upcoming = [
+                    item
+                    for item in items[start_index:]
+                    if not item.extra_attributes.get(ATTR_QUEUE_DJ)
+                ]
+                if not upcoming:
+                    return start_index
+                tracks = [
+                    self._queue_item_to_track(index, item) for index, item in enumerate(upcoming)
+                ]
+                planned, state.history = self._plan_sections(
+                    session_id=state.dj_session_id,
+                    tracks=tracks,
+                    program=program,
+                    track_index_offset=0,
+                    minute_offset=0.0,
+                    history_state={},
+                    allowed_slot_when=["start_of_playlist", "between_songs", "end_of_playlist"],
+                    runtime_tokens=runtime_tokens,
+                )
+                # Only this not-yet-started batch is safe to decorate from its first item.
+                # Later replans retain the current/buffered-item guard.
+                for slot_index, group in groupby(
+                    sorted(planned, key=lambda item: item.insert_at_index, reverse=True),
+                    key=lambda item: item.insert_at_index,
+                ):
+                    sections = list(group)
+                    after_target = sections[0].when == "end_of_playlist"
+                    target = tracks[-1] if after_target else tracks[slot_index]
+                    outcome = self._splice_dj_slot(
+                        queue_id,
+                        upcoming,
+                        -2,
+                        state,
+                        program,
+                        target,
+                        sections,
+                        after_target=after_target,
+                    )
+                    if outcome != "injected":
+                        raise InvalidDataError(f"Unable to prepare show slot: {slot_index}")
+                state.decided_gap_ids = {str(track["item_id"]) for track in tracks[1:]}
+                self.mass.streams.set_boundary_mix_required(
+                    queue_id, self.instance_id, self._host_posts(state.host_id)
+                )
+                self.mass.player_queues.update_items(queue_id, items[:start_index] + upcoming)
+                state.ready = True
+                await self._write_queue_dj()
+                return start_index
+        finally:
+            if self._dj_queues.get(queue_id) is state and not state.ready:
+                del self._dj_queues[queue_id]
+                self._armed_show_queues.pop(queue_id, None)
+                self.mass.streams.set_boundary_mix_required(queue_id, self.instance_id, False)
 
     async def set_queue_dj(self, queue_id: str, host_id: str | None) -> dict[str, dict[str, str]]:
         """
@@ -147,9 +171,34 @@ class AIRadioQueueDJMixin:
         if not queue_id:
             raise InvalidDataError("queue_id is required")
         check_player_access(queue_id)
+        await self._set_queue_dj(queue_id, host_id)
+        return await self.get_queue_dj_status()
+
+    async def get_queue_dj_status(self) -> dict[str, dict[str, str]]:
+        """Return, for the queues the calling user may see, the armed host and show station."""
+        return {
+            queue_id: {"host_id": state.host_id, "station_id": state.station_id}
+            for queue_id, state in self._dj_queues.items()
+            if has_player_access(queue_id)
+        }
+
+    async def _set_queue_dj(
+        self, queue_id: str, host_id: str | None, station_id: str | None = None
+    ) -> None:
+        """Apply a manual assignment or automatically arm a show's host."""
         armed: DJQueueState | None = None
         try:
             async with self._dj_lock:
+                if station_id is not None:
+                    queue = self.mass.player_queues.get(queue_id)
+                    if (
+                        queue_id in self._dj_queues
+                        or self._armed_show_queues.get(queue_id) == station_id
+                        or queue is None
+                        or queue.ended
+                        or self._queue_show_station(queue_id) != station_id
+                    ):
+                        return
                 if host_id is None:
                     self._dj_queues.pop(queue_id, None)
                     self.mass.streams.set_boundary_mix_required(queue_id, self.instance_id, False)
@@ -159,12 +208,17 @@ class AIRadioQueueDJMixin:
                         raise InvalidDataError(f"Unknown host id: {host_id}")  # noqa: TRY301 - re-raised after cleanup
                     previous = self._dj_queues.get(queue_id)
                     armed = self._arm_dj_state(queue_id, host_id)
-                    if previous is not None:
+                    if station_id is not None:
+                        armed.station_id = station_id
+                        self._armed_show_queues[queue_id] = station_id
+                    elif previous is not None:
                         # a mid-show host switch keeps the show binding
                         armed.station_id = previous.station_id
-                        if armed.station_id:
+                    if armed.station_id:
+                        required = self._host_posts(host_id)
+                        if required or station_id is None:
                             self.mass.streams.set_boundary_mix_required(
-                                queue_id, self.instance_id, self._host_posts(host_id)
+                                queue_id, self.instance_id, required
                             )
                 await self._write_queue_dj()
             # stale clips carry the old host's persona, so they must go before a replan
@@ -177,6 +231,12 @@ class AIRadioQueueDJMixin:
                 async with self._dj_lock:
                     if self._dj_queues.get(queue_id) is armed:
                         del self._dj_queues[queue_id]
+                        if station_id is not None:
+                            self._armed_show_queues.pop(queue_id, None)
+                        if armed.station_id:
+                            self.mass.streams.set_boundary_mix_required(
+                                queue_id, self.instance_id, False
+                            )
                         self.signal_provider_event({"event": EVENT_QUEUE_DJ_UPDATED})
             raise
         if armed is not None:
@@ -185,15 +245,6 @@ class AIRadioQueueDJMixin:
                 # flipped after cleanup so a racing pass doesn't mark old clips' gaps served
                 armed.ready = True
             self._schedule_replan(queue_id)
-        return await self.get_queue_dj_status()
-
-    async def get_queue_dj_status(self) -> dict[str, dict[str, str]]:
-        """Return, for the queues the calling user may see, the armed host and show station."""
-        return {
-            queue_id: {"host_id": state.host_id, "station_id": state.station_id}
-            for queue_id, state in self._dj_queues.items()
-            if has_player_access(queue_id)
-        }
 
     async def _load_queue_dj(self) -> None:
         """Load persisted queue DJ assignments and arm their states."""
@@ -278,23 +329,7 @@ class AIRadioQueueDJMixin:
                 "Not arming the DJ for show %s: host %s no longer exists", station_id, host_id
             )
             return
-        if self._host_posts(host_id):
-            # the show's breaks carry over the next track: the server mixes them between
-            # the item streams of a player that plays gapless and streams any other player
-            # in flow mode, decided at the play start this arm precedes
-            self.mass.streams.set_boundary_mix_required(queue_id, self.instance_id, True)
-        try:
-            await self.set_queue_dj(queue_id, host_id)
-        except Exception:
-            self.mass.streams.set_boundary_mix_required(queue_id, self.instance_id, False)
-            raise
-        if (state := self._dj_queues.get(queue_id)) is None:
-            return
-        state.station_id = station_id
-        self._armed_show_queues[queue_id] = station_id
-        # set_queue_dj persisted the state before it carried the binding
-        async with self._dj_lock:
-            await self._write_queue_dj()
+        await self._set_queue_dj(queue_id, host_id, station_id)
 
     async def _maybe_detach_show_dj(self, queue_id: str) -> None:
         """Detach an auto-armed show DJ once the queue left the show."""
@@ -486,31 +521,35 @@ class AIRadioQueueDJMixin:
             injected = 0
             skipped: dict[str, int] = {}
             rejected: list[PlannedSection] = []
-            for section in sorted(planned, key=lambda item: item.insert_at_index, reverse=True):
+            for slot_index, group in groupby(
+                sorted(planned, key=lambda item: item.insert_at_index, reverse=True),
+                key=lambda item: item.insert_at_index,
+            ):
+                sections = list(group)
                 # an end_of_playlist section targets a slot past the last window track;
                 # _plan_sections numbers it len(window_tracks), one past the last valid index
-                after_target = section.insert_at_index == len(window_tracks)
+                after_target = slot_index == len(window_tracks)
                 if after_target:
                     # the outro belongs after the show's true final track, which is not
                     # necessarily the queue tail (a user may have appended tracks behind it)
                     target = outro_target if outro_target is not None else window_tracks[-1]
                 else:
-                    target = window_tracks[section.insert_at_index]
-                outcome = self._splice_dj_clip(
+                    target = window_tracks[slot_index]
+                outcome = self._splice_dj_slot(
                     queue_id=queue_id,
                     items=working,
                     guard_index=guard_index,
                     state=state,
                     program=program,
                     target=target,
-                    section=section,
+                    sections=sections,
                     after_target=after_target,
                 )
                 if outcome == "injected":
-                    injected += 1
+                    injected += len(sections)
                 else:
-                    rejected.append(section)
-                    skipped[outcome] = skipped.get(outcome, 0) + 1
+                    rejected.extend(sections)
+                    skipped[outcome] = skipped.get(outcome, 0) + len(sections)
                     if outcome == "gap_gone":
                         # the target moved or left the queue, so nothing was decided about
                         # its gap and a later pass has to look at it again
@@ -542,7 +581,7 @@ class AIRadioQueueDJMixin:
                 len(state.decided_gap_ids),
             )
 
-    def _splice_dj_clip(
+    def _splice_dj_slot(
         self,
         queue_id: str,
         items: list[QueueItem],
@@ -550,10 +589,10 @@ class AIRadioQueueDJMixin:
         state: DJQueueState,
         program: dict[str, Any],
         target: dict[str, Any],
-        section: PlannedSection,
+        sections: list[PlannedSection],
         after_target: bool = False,
     ) -> DJSpliceOutcome:
-        """Insert one planned clip in front of (or, for an outro, after) its target track."""
+        """Insert a slot's ordered clips before (or, for an outro, after) its target track."""
         target_index = next(
             (index for index, item in enumerate(items) if item.queue_item_id == target["item_id"]),
             None,
@@ -577,18 +616,21 @@ class AIRadioQueueDJMixin:
             return "occupied"
         # the planner numbers its clips from zero every pass, so the id comes from the
         # state counter instead to stay unique for the lifetime of the session
-        section.clip_id = f"{state.dj_session_id}_{state.clip_counter:03d}"
-        state.clip_counter += 1
-        clip = self._section_to_clip_item(queue_id, state.dj_session_id, program, section)
-        clip.extra_attributes[ATTR_QUEUE_DJ] = True
-        if not after_target:
-            clip.extra_attributes[ATTR_GAP_NEXT_ID] = target["item_id"]
-        # else: an outro announces no successor track, so it carries no gap-next id;
-        # _repair_dj_clips exempts clips without one from its stale-successor check
-        # sharing the neighbouring item's sort index keeps the clip next to the track it
-        # announces when the queue is un-shuffled, without renumbering everything behind it
-        clip.sort_index = items[target_index].sort_index
-        items.insert(insert_index, clip)
+        clips = []
+        for section in sections:
+            section.clip_id = f"{state.dj_session_id}_{state.clip_counter:03d}"
+            state.clip_counter += 1
+            clip = self._section_to_clip_item(queue_id, state.dj_session_id, program, section)
+            clip.extra_attributes[ATTR_QUEUE_DJ] = True
+            if not after_target:
+                clip.extra_attributes[ATTR_GAP_NEXT_ID] = target["item_id"]
+            # an outro has no successor to announce; the other clips in a slot share
+            # their target and session so repair can recognise the ordered group
+            # sharing the target's sort index also keeps the ordered slot beside its
+            # track when the queue is un-shuffled
+            clip.sort_index = items[target_index].sort_index
+            clips.append(clip)
+        items[insert_index:insert_index] = clips
         return "injected"
 
     def _remove_pending_dj_clips(self, queue_id: str) -> None:
@@ -691,7 +733,17 @@ class AIRadioQueueDJMixin:
             if gap_next_id is None:
                 # an outro announces no successor track, so there is nothing to repair against
                 continue
-            successor = items[index + 1] if index + 1 < len(items) else None
+            next_index = index + 1
+            while next_index < len(items):
+                following = items[next_index].extra_attributes
+                if not (
+                    following.get(ATTR_QUEUE_DJ)
+                    and following.get(ATTR_GAP_NEXT_ID) == gap_next_id
+                    and following.get(ATTR_SESSION_ID) == item.extra_attributes.get(ATTR_SESSION_ID)
+                ):
+                    break
+                next_index += 1
+            successor = items[next_index] if next_index < len(items) else None
             if successor is not None and successor.queue_item_id == gap_next_id:
                 continue
             stale_ids.add(item.queue_item_id)
