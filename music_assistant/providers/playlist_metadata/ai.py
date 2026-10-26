@@ -114,6 +114,8 @@ from .ai_constants import (
 )
 
 if TYPE_CHECKING:
+    from collections.abc import Iterator
+
     from music_assistant.models.plugin import AIEngine, ImageEngine
     from music_assistant.providers.smart_playlist import SmartPlaylistProvider
 
@@ -214,6 +216,8 @@ class AIArtwork:
     _waiting: bool
     # until when an engine that could not be reached is left alone, per engine
     _paused_until: dict[str, float]
+    # the metadata refreshes running per playlist, each set once it has returned
+    _refreshing: dict[str, set[asyncio.Event]]
     # set when the provider unloads, so nothing queued afterwards starts a worker
     _stopped: bool
     # whether a worker runs; set before it is started, as an eagerly started task can queue
@@ -241,6 +245,7 @@ class AIArtwork:
         self._wakeup = asyncio.Event()
         self._waiting = False
         self._paused_until = {}
+        self._refreshing = {}
         self._stopped = False
         self._working = False
 
@@ -464,6 +469,11 @@ class AIArtwork:
         if self._preview_lock.locked():
             raise ActionUnavailable("A preview is already being generated, wait for it to finish")
         async with self._preview_lock:
+            if paused := self._engine_paused_for(ENGINE_IMAGE):
+                raise ActionUnavailable(
+                    "The image engine could not be reached, "
+                    f"try again in {paused // 60 + 1} minute(s)"
+                )
             # previews count towards the hourly limit, like the covers they preview. The check
             # and the reservation of every slot run with nothing awaited in between, so a
             # background generation can not take a slot in between
@@ -480,17 +490,15 @@ class AIArtwork:
                 raise ActionUnavailable("The provider is unloading")
             concept = await self._concept(playlist, context)
             slots = asyncio.Semaphore(PREVIEW_CONCURRENCY)
-
-            async def render(look: CoverLook) -> bytes:
-                async with slots:
-                    if self._stopped:
-                        raise ActionUnavailable("The provider is unloading")
-                    return await self._render(playlist, image_engine, look, context, concept)
-
             describe = asyncio.ensure_future(
                 self._preview_description(playlist, text_engine, context)
             )
-            renders = [asyncio.ensure_future(render(look)) for look in looks]
+            renders = [
+                asyncio.ensure_future(
+                    self._render_preview(slots, playlist, image_engine, look, context, concept)
+                )
+                for look in looks
+            ]
             # kept, so unloading cancels the description and the renders that are still
             # running or waiting
             self._preview_tasks = [describe, *renders]
@@ -627,6 +635,27 @@ class AIArtwork:
             return
         if not await self._backing_off(KIND_DESCRIPTION, playlist, checksum):
             self._enqueue(playlist, KIND_DESCRIPTION)
+
+    @contextlib.contextmanager
+    def refreshing(self, playlist: Playlist) -> Iterator[None]:
+        """
+        Mark the playlist as having its metadata refreshed while the block runs.
+
+        A refresh to apply a new cover or description waits for these, see _refresh_playlist.
+
+        :param playlist: The playlist whose metadata is refreshed.
+        """
+        item_id = str(playlist.item_id)
+        done = asyncio.Event()
+        self._refreshing.setdefault(item_id, set()).add(done)
+        try:
+            yield
+        finally:
+            done.set()
+            running = self._refreshing.get(item_id, set())
+            running.discard(done)
+            if not running:
+                self._refreshing.pop(item_id, None)
 
     def in_scope(self, playlist: Playlist) -> bool:
         """Return whether the playlist gets a generated cover and description."""
@@ -989,7 +1018,15 @@ class AIArtwork:
         engines = [KIND_ENGINES[kind]]
         if kind == KIND_COVER and self.provider.config.get_value(CONF_USE_PROMPT_ENGINE):
             engines.append(ENGINE_TEXT)
-        remaining = max(self._paused_until.get(engine, 0) for engine in engines) - time.time()
+        return max(self._engine_paused_for(engine) for engine in engines)
+
+    def _engine_paused_for(self, engine: str) -> int:
+        """
+        Return the seconds an engine is left alone after it could not be reached, 0 if not.
+
+        :param engine: Which engine, the image or the text engine.
+        """
+        remaining = self._paused_until.get(engine, 0) - time.time()
         return int(remaining) + 1 if remaining > 0 else 0
 
     def _blocked_for(self, kind: str) -> int | None:
@@ -1001,10 +1038,6 @@ class AIArtwork:
         timestamps = self._generated_at if kind == KIND_COVER else self._described_at
         limited = self._throttle_delay(timestamps) or 0
         return max(self._paused_for(kind), limited) or None
-
-    def _text_engine_paused(self) -> bool:
-        """Return whether the text engine is left alone after it could not be reached."""
-        return self._paused_until.get(ENGINE_TEXT, 0) > time.time()
 
     def _check_paused(self, kind: str) -> None:
         """
@@ -1136,13 +1169,35 @@ class AIArtwork:
             image = await engine.provider.ai_generate_image(prompt, engine_id=engine.id)
         return await asyncio.to_thread(_render_cover, image, _overlay_layout(look), playlist.name)
 
+    async def _render_preview(
+        self,
+        slots: asyncio.Semaphore,
+        playlist: Playlist,
+        engine: ImageEngine,
+        look: CoverLook,
+        context: PlaylistContext,
+        concept: str,
+    ) -> bytes:
+        """Return a preview cover in one style, once one of the preview's slots is free."""
+        async with slots:
+            if self._stopped:
+                raise ActionUnavailable("The provider is unloading")
+            if self._engine_paused_for(ENGINE_IMAGE):
+                # an earlier style found the engine unreachable or rate limited
+                raise ActionUnavailable("The image engine could not be reached")
+            try:
+                return await self._render(playlist, engine, look, context, concept)
+            except Exception as err:
+                self._pause_if_unreachable(ENGINE_IMAGE, err)
+                raise
+
     async def _preview_description(
         self, playlist: Playlist, engine: AIEngine | None, context: PlaylistContext
     ) -> str:
         """Return a description to preview for the playlist, empty when none could be written."""
         if (
             engine is None
-            or self._text_engine_paused()
+            or self._engine_paused_for(ENGINE_TEXT)
             or self._throttle_delay(self._described_at) is not None
         ):
             return ""
@@ -1228,7 +1283,7 @@ class AIArtwork:
         if not self.provider.config.get_value(CONF_USE_PROMPT_ENGINE):
             return DEFAULT_CONCEPT
         engine = await select_ai_engine(self.provider, CONF_TEXT_ENGINE)
-        if engine is None or self._text_engine_paused():
+        if engine is None or self._engine_paused_for(ENGINE_TEXT):
             # the worker waits for a paused engine, so this serves previews and a cover that
             # was already under way when the engine was paused
             return DEFAULT_CONCEPT
@@ -1483,6 +1538,11 @@ class AIArtwork:
 
     async def _refresh_playlist(self, playlist: Playlist) -> None:
         """Refresh the playlist's metadata, by reference so the refresh reads it as it is now."""
+        # a refresh that is still running read the playlist before the new cover or description
+        # was made, and would store its older copy over this one when it finishes last. Only
+        # those are waited for: one that starts later asks for the new cover itself
+        for done in list(self._refreshing.get(str(playlist.item_id), ())):
+            await done.wait()
         await self.mass.metadata.update_metadata(playlist.uri or playlist, force_refresh=True)
 
     def _task_id(self, name: str) -> str:

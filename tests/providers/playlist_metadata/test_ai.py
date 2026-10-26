@@ -1676,6 +1676,73 @@ async def test_unloading_stops_a_running_preview(provider: PlaylistMetadataProvi
     assert _engine_calls(provider) == 2
 
 
+async def test_a_rate_limited_preview_style_pauses_the_image_engine(
+    provider: PlaylistMetadataProvider,
+) -> None:
+    """A style that hits the rate limit pauses the engine, so the styles after it are not tried."""
+    _mass(provider).music.playlists.get_library_item = AsyncMock(return_value=_smart_playlist())
+    _set_config(
+        provider,
+        **{
+            CONF_PREVIEW_PLAYLIST: "234",
+            CONF_PREVIEW_STYLE: ["bold", "neon", "gouache"],
+            CONF_DESCRIPTIONS: False,
+        },
+    )
+    provider.test_engine.provider.ai_generate_image = AsyncMock(  # type: ignore[attr-defined]
+        side_effect=RateLimited("slow down", backoff_time=3600)
+    )
+
+    with _no_engine_pickers(), pytest.raises(RateLimited):
+        await provider.handle_config_action(CONF_ACTION_PREVIEW)
+
+    # the first style found the engine rate limited, so the others were not tried
+    assert _engine_calls(provider) == 1
+    assert provider._ai._paused_until["image"] - time.time() > 3500
+    assert provider._ai._blocked_for("cover") is not None
+
+
+async def test_a_preview_is_refused_while_the_image_engine_is_paused(
+    provider: PlaylistMetadataProvider,
+) -> None:
+    """A preview asks nothing of a paused image engine, and takes no slot of the limit."""
+    _mass(provider).music.playlists.get_library_item = AsyncMock(return_value=_smart_playlist())
+    _set_config(provider, **{CONF_PREVIEW_PLAYLIST: "234", CONF_PREVIEW_STYLE: ["bold"]})
+    provider._ai._paused_until["image"] = time.time() + 600
+
+    with _no_engine_pickers(), pytest.raises(ActionUnavailable, match="could not be reached"):
+        await provider.handle_config_action(CONF_ACTION_PREVIEW)
+
+    assert _engine_calls(provider) == 0
+    assert not provider._ai._generated_at
+
+
+async def test_a_new_cover_waits_for_a_refresh_of_the_playlist_still_running(
+    provider: PlaylistMetadataProvider,
+) -> None:
+    """A refresh that read the playlist before its cover was made finishes before it is applied."""
+    _set_config(provider, **{CONF_DESCRIPTIONS: False})
+    playlist = _smart_playlist()
+    _register(provider, playlist)
+    apply = _mass(provider).metadata.update_metadata
+
+    with provider._ai.refreshing(playlist):
+        await provider.get_playlist_metadata(playlist)
+        # the worker writes the cover in a thread, so this waits for real time
+        for _ in range(1000):
+            if any(Path(provider._images_dir).glob("ai_*")):
+                break
+            await asyncio.sleep(0.01)
+        await asyncio.sleep(0.05)
+        assert _engine_calls(provider) == 1
+        apply.assert_not_awaited()
+
+    await _settle(provider)
+    apply.assert_awaited_once()
+    assert playlist.image is not None
+    assert playlist.image.provider == INSTANCE_ID
+
+
 @pytest.mark.parametrize(
     ("held_key", "use_prompt_engine"),
     [("described_at", False), ("generated_at", True)],
