@@ -2258,6 +2258,27 @@ async def test_an_announcement_skips_a_zone_that_plays_another_queue(
     zone_command.assert_not_awaited()
 
 
+async def test_an_announcement_that_could_not_tell_the_queue_is_tried_again() -> None:
+    """A zone whose queue could not be read gets the track once a later reading can."""
+    player = _announcing_player()
+    cast("MagicMock", player.mass.player_queues).player_media_from_queue_item = AsyncMock(
+        return_value=PlayerMedia(uri="library://track/1", title="Buena", queue_item_id="q2")
+    )
+    player._zone_plays_queue = AsyncMock(side_effect=[None, True])  # type: ignore[method-assign]
+    with (
+        patch.object(player, "_active_zone", return_value=["Bar"]),
+        patch.object(player, "_zone_command", AsyncMock()) as zone_command,
+    ):
+        player._start_flow_announcement("q2")
+        await cast("MagicMock", player.mass.create_task).call_args.args[0]
+        zone_command.assert_not_awaited()
+
+        player._start_flow_announcement("q2")
+        await cast("MagicMock", player.mass.create_task).call_args.args[0]
+
+    zone_command.assert_awaited_once()
+
+
 def test_a_clock_that_moved_back_drops_the_timer() -> None:
     """A reading far from the end drops a timer set from an earlier, later reading."""
     player = _announcing_player()
