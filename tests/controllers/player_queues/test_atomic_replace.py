@@ -9,6 +9,7 @@ new items are ready, and hands the audio over in a single swap.
 
 from __future__ import annotations
 
+import asyncio
 from types import SimpleNamespace
 from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock, Mock
@@ -29,6 +30,7 @@ from music_assistant.controllers.player_queues import PlayerQueuesController
 from music_assistant.controllers.player_queues.media_resolver import ResolvedItem
 from music_assistant.controllers.player_queues.state import PlayerQueueData
 from music_assistant.models.player import Player
+from music_assistant.models.plugin import PluginProvider
 
 NEW_TRACKS = ["n1", "n2", "n3"]
 PLAYING_TRACKS = ["p1", "p2", "p3"]
@@ -342,3 +344,37 @@ async def test_a_player_still_reporting_the_replaced_item_keeps_the_new_queue_po
     assert queue.next_item is new_items[1]
     assert queue.elapsed_time == 0
     assert updated is False
+
+
+@pytest.mark.parametrize("option", [QueueOption.PLAY, QueueOption.REPLACE])
+async def test_plugins_prepare_opening_items_before_playback(option: QueueOption) -> None:
+    """Starting media waits for plugins to finish adding their opening queue items."""
+    ctrl = _controller()
+    entered = asyncio.Event()
+    release = asyncio.Event()
+    plugin = MagicMock(spec=PluginProvider)
+
+    async def prepare(queue_id: str, start_index: int) -> int:
+        entered.set()
+        await release.wait()
+        items = list(ctrl._queue_data[queue_id].items)
+        items.insert(
+            start_index,
+            QueueItem(queue_id=queue_id, queue_item_id="intro", name="Intro", duration=15),
+        )
+        ctrl.update_items(queue_id, items)
+        return start_index
+
+    plugin.on_queue_start = AsyncMock(side_effect=prepare)
+    ctrl.mass.get_providers.return_value = [plugin]
+    task = asyncio.create_task(ctrl.play_media("q1", _playlist(), option))
+    try:
+        await asyncio.wait_for(entered.wait(), timeout=1)
+        ctrl.play_index.assert_not_awaited()
+    finally:
+        release.set()
+        await task
+
+    assert ctrl._queue_data["q1"].items[0].name == "Intro"
+    plugin.on_queue_start.assert_awaited_once_with("q1", 0)
+    ctrl.play_index.assert_awaited_once_with("q1", 0)

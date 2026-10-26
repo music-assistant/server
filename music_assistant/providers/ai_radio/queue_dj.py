@@ -64,6 +64,76 @@ class AIRadioQueueDJMixin:
 
         def _render_ahead(self, queue_id: str) -> None: ...
 
+    async def on_queue_start(self, queue_id: str, start_index: int) -> int:
+        """Prepare a show's opening and song breaks before the player buffers its first item."""
+        station_id = self._queue_show_station(queue_id)
+        if self._unloading or station_id is None:
+            return start_index
+        station = self._stations.get(station_id)
+        if station is None or (host := self._hosts.get(str(station["host_id"]))) is None:
+            return start_index
+        if (previous := self._dj_queues.get(queue_id)) is not None and not previous.station_id:
+            return start_index
+        items = self._dj_queue_items(queue_id)
+        if not 0 <= start_index < len(items):
+            return start_index
+        first_item_id = items[start_index].queue_item_id
+        program = self._build_program(station, host)
+        runtime_tokens = await self._prepare_runtime_tokens(program)
+        # Weather preparation can yield while the queue is edited. Re-read the items and
+        # keep the requested starting item, rather than publishing an outdated snapshot.
+        items = self._dj_queue_items(queue_id)
+        current_index = next(
+            (index for index, item in enumerate(items) if item.queue_item_id == first_item_id),
+            None,
+        )
+        if current_index is None or self._queue_show_station(queue_id) != station_id:
+            raise InvalidDataError("The show queue changed while preparing playback")
+        start_index = current_index
+        upcoming = [
+            item for item in items[start_index:] if not item.extra_attributes.get(ATTR_QUEUE_DJ)
+        ]
+        if not upcoming:
+            return start_index
+        tracks = [self._queue_item_to_track(index, item) for index, item in enumerate(upcoming)]
+        state = DJQueueState(
+            queue_id=queue_id,
+            host_id=str(host["id"]),
+            dj_session_id=f"dj{uuid4().hex[:12]}",
+            station_id=station_id,
+        )
+        planned, history = self._plan_sections(
+            session_id=state.dj_session_id,
+            tracks=tracks,
+            program=program,
+            track_index_offset=0,
+            minute_offset=0.0,
+            history_state={},
+            allowed_slot_when=["start_of_playlist", "between_songs", "end_of_playlist"],
+            runtime_tokens=runtime_tokens,
+        )
+        # Only this not-yet-started batch is safe to decorate from its first item. Later
+        # replans retain the current/buffered-item guard on the already playing queue.
+        for section in sorted(planned, key=lambda item: item.insert_at_index, reverse=True):
+            after_target = section.when == "end_of_playlist"
+            target = tracks[-1] if after_target else tracks[section.insert_at_index]
+            outcome = self._splice_dj_clip(
+                queue_id, upcoming, -2, state, program, target, section, after_target=after_target
+            )
+            if outcome != "injected":
+                raise InvalidDataError(f"Unable to prepare show section: {section.section_name}")
+        state.history = history
+        state.decided_gap_ids = {str(track["item_id"]) for track in tracks[1:]}
+        state.ready = True
+        self._dj_queues[queue_id] = state
+        self._armed_show_queues[queue_id] = station_id
+        self.mass.streams.set_boundary_mix_required(
+            queue_id, self.instance_id, self._host_posts(state.host_id)
+        )
+        self.mass.player_queues.update_items(queue_id, items[:start_index] + upcoming)
+        await self._write_queue_dj()
+        return start_index
+
     async def set_queue_dj(self, queue_id: str, host_id: str | None) -> dict[str, dict[str, str]]:
         """
         Enable, switch or disable the sticky AI DJ on a queue.
@@ -500,7 +570,7 @@ class AIRadioQueueDJMixin:
         # that would follow the new clip) for an after-target splice, ahead of it otherwise.
         # an outro behind the queue tail has no such slot
         occupant_index = insert_index if after_target else insert_index - 1
-        if occupant_index < len(items) and items[occupant_index].extra_attributes.get(
+        if 0 <= occupant_index < len(items) and items[occupant_index].extra_attributes.get(
             ATTR_QUEUE_DJ
         ):
             return "occupied"

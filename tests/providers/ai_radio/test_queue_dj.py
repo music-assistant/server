@@ -1002,6 +1002,91 @@ async def test_replan_respects_buffer_guard(tmp_path: Path) -> None:
     assert queue_items[0].extra_attributes[ATTR_GAP_NEXT_ID] == tracks[3].queue_item_id
 
 
+@pytest.mark.parametrize("with_intro", [False, True])
+@pytest.mark.parametrize("track_count", [1, 3])
+async def test_show_start_includes_opening_sections_before_buffering(
+    tmp_path: Path, with_intro: bool, track_count: int
+) -> None:
+    """A newly loaded show includes its intro and every transition before playback starts."""
+    tracks = [_track(index) for index in range(track_count)]
+    dummy = _make_replan_dj(tmp_path, list(tracks), index_in_buffer=1)
+    queue = dummy.player_queues._queue
+    queue.sources = [SimpleNamespace(uri=f"{dummy.instance_id}://radio/show")]
+    dummy._stations["show"] = {"id": "show", "name": "Show", "host_id": "rick"}
+    dummy._dj_queues.clear()
+    if with_intro:
+        intro = {**_transition_section(), "id": "Intro", "name": "Intro"}
+        dummy._sections["Intro"] = intro
+        dummy._sections["Outro"] = {**intro, "id": "Outro", "name": "Outro"}
+        dummy._hosts["rick"]["section_ids"].append("Intro")
+        dummy._hosts["rick"]["section_ids"].append("Outro")
+        dummy._hosts["rick"]["section_order"].insert(
+            0, {"when": "start_of_playlist", "flow": [{"MUST": "Intro"}]}
+        )
+        dummy._hosts["rick"]["section_order"].append(
+            {"when": "end_of_playlist", "flow": [{"MUST": "Outro"}]}
+        )
+
+    start_index = await dummy.on_queue_start("queue-1", 0)
+
+    items = dummy.player_queues.items("queue-1")
+    expected = [name for track in tracks for name in [track.name, "Song Transition"]][:-1]
+    if with_intro:
+        expected.insert(0, "Intro")
+        expected.append("Outro")
+    assert [item.name for item in items] == expected
+    assert start_index == 0
+    state = dummy._dj_queues["queue-1"]
+    assert state.station_id == "show"
+    assert state.ready is True
+    assert state.decided_gap_ids == {track.queue_item_id for track in tracks[1:]}
+
+    await dummy._replan_queue("queue-1")
+
+    assert [item.name for item in dummy.player_queues.items("queue-1")] == expected
+
+
+async def test_show_start_keeps_already_playing_items(tmp_path: Path) -> None:
+    """Starting a show behind another item only prepares the new part of the queue."""
+    tracks = [_track(index) for index in range(3)]
+    dummy = _make_replan_dj(tmp_path, list(tracks))
+    dummy.player_queues._queue.sources = [SimpleNamespace(uri=f"{dummy.instance_id}://radio/show")]
+    dummy._stations["show"] = {"id": "show", "name": "Show", "host_id": "rick"}
+    dummy._dj_queues.clear()
+
+    start_index = await dummy.on_queue_start("queue-1", 1)
+
+    assert start_index == 1
+    assert [item.name for item in dummy.player_queues.items("queue-1")] == [
+        tracks[0].name,
+        tracks[1].name,
+        "Song Transition",
+        tracks[2].name,
+    ]
+
+
+async def test_show_start_respects_a_manually_selected_host(tmp_path: Path) -> None:
+    """A show start does not replace a host the user explicitly selected for the queue."""
+    tracks = [_track(index) for index in range(3)]
+    dummy = _make_replan_dj(tmp_path, list(tracks))
+    dummy.player_queues._queue.sources = [SimpleNamespace(uri=f"{dummy.instance_id}://radio/show")]
+    dummy._stations["show"] = {"id": "show", "name": "Show", "host_id": "rick"}
+    manual_state = dummy._dj_queues["queue-1"]
+
+    assert await dummy.on_queue_start("queue-1", 0) == 0
+    assert dummy._dj_queues["queue-1"] is manual_state
+    assert dummy.player_queues.items("queue-1") == tracks
+
+
+async def test_ordinary_playlist_start_leaves_queue_unchanged(tmp_path: Path) -> None:
+    """The show preparation hook does not decorate an ordinary playlist."""
+    tracks = [_track(index) for index in range(3)]
+    dummy = _make_replan_dj(tmp_path, list(tracks))
+
+    assert await dummy.on_queue_start("queue-1", 0) == 0
+    assert dummy.player_queues.items("queue-1") == tracks
+
+
 async def test_disable_removes_all_pending_clips(tmp_path: Path) -> None:
     """Disabling drops every upcoming DJ clip whatever session it came from, played ones stay."""
     tracks = [_track(index) for index in range(3)]
