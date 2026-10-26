@@ -164,6 +164,91 @@ async def test_initial_empty_redirect_recovers_with_refreshed_token(
             assert not session.closed
 
 
+@pytest.mark.integration
+async def test_server_go_away_defers_reconnect_for_requested_window(
+    aiohttp_server: Callable[[web.Application], Awaitable[TestServer]],
+) -> None:
+    """A throttled session is not redialled before the server's go-away window ends."""
+    registrations = 0
+    redialled = asyncio.Event()
+
+    async def redirect(request: web.Request) -> web.WebSocketResponse:
+        socket = web.WebSocketResponse()
+        await socket.prepare(request)
+        await socket.send_json(
+            {"host": request.host, "redirect_ticket": "local-ticket", "session_id": 1}
+        )
+        await socket.close()
+        return socket
+
+    async def state_service(request: web.Request) -> web.WebSocketResponse:
+        nonlocal registrations
+        socket = web.WebSocketResponse()
+        await socket.prepare(request)
+        await socket.receive_json()
+        await socket.receive_json()
+        registrations += 1
+        if registrations > 1:
+            redialled.set()
+        await socket.send_json(
+            {
+                "error": {
+                    "details": {
+                        "ynison-error-code": "500140000",
+                        "ynison-go-away-for-seconds": "1",
+                    },
+                    "grpc_code": 14,
+                    "http_code": 503,
+                    "message": "Ynison service is temporary unavailable.",
+                }
+            }
+        )
+        await socket.close()
+        return socket
+
+    async def on_state(_state: YnisonState) -> None:
+        return None
+
+    app = web.Application()
+    app.router.add_get("/redirect", redirect)
+    app.router.add_get("/state", state_service)
+    server = await aiohttp_server(app)
+    async with aiohttp.ClientSession() as session:
+        connect_ws = session.ws_connect
+
+        async def local_ws(url: str, **kwargs: Any) -> aiohttp.ClientWebSocketResponse:
+            return cast(
+                "aiohttp.ClientWebSocketResponse",
+                await connect_ws(url.replace("wss://", "ws://", 1), **kwargs),
+            )
+
+        client = YnisonClient(
+            SecretStr("local-test-token"),
+            YnisonDeviceInfo("local-device", "Test player"),
+            on_state,
+            logging.getLogger(__name__),
+            http_session=session,
+        )
+        with (
+            patch(
+                "music_assistant.providers.yandex_ynison.ynison_client.YNISON_REDIRECT_URL",
+                str(server.make_url("/redirect")),
+            ),
+            patch(
+                "music_assistant.providers.yandex_ynison.ynison_client.YNISON_STATE_PATH", "/state"
+            ),
+            patch("music_assistant.providers.yandex_ynison.ynison_client.RECONNECT_DELAYS", [0.05]),
+            patch.object(session, "ws_connect", side_effect=local_ws),
+        ):
+            try:
+                await client.connect()
+                await asyncio.sleep(0.7)
+                assert registrations == 1
+                await asyncio.wait_for(redialled.wait(), timeout=3)
+            finally:
+                await client.disconnect()
+
+
 def _make_ynison_app(
     connections: list[list[dict[str, Any]]],
     finish: asyncio.Event,

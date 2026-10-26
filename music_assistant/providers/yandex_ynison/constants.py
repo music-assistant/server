@@ -47,13 +47,24 @@ DEFAULT_APP_VERSION: Final[str] = "1.0.0"
 DEVICE_TYPE_WEB: Final[str] = "WEB"
 YNISON_DEVICE_SERVER_DISCONNECT: Final[str] = "server-paused-on-active-device-disconnecting"
 
-# Reconnect settings — indexed by attempt number; attempts past the tuple
-# saturate at the last entry (so reconnect continues forever at 60 s intervals).
-RECONNECT_DELAYS: Final[tuple[float, ...]] = (5.0, 10.0, 30.0, 60.0)
+# Reconnect ladder used when the server supplies none (official client default).
+RECONNECT_DELAYS: Final[tuple[float, ...]] = (1.0, 5.0, 30.0)
+# Wait between attempts once a ladder is exhausted or the server status is not
+# retryable. The official client stops until a network/foreground/account
+# trigger; a long-running plugin has none, so it keeps trying slowly.
+RECONNECT_IDLE_DELAY: Final[float] = 300.0
+
+# How long a delivery-critical send waits for a reconnecting channel (official
+# client: 5 s before an event is dropped).
+STRICT_SEND_WAIT: Final[float] = 5.0
+# A best-effort status within this distance of the extrapolated server status
+# is not re-sent (official client: ±2000 ms).
+STATUS_DEDUP_WINDOW_MS: Final[int] = 2000
 
 # WebSocket timeouts
 WS_CONNECT_TIMEOUT: Final[float] = 15.0
 WS_HEARTBEAT: Final[float] = 30.0
+WS_MIN_HEARTBEAT: Final[float] = 5.0
 
 # Ynison error codes that require immediate reconnection
 YNISON_ERROR_REBALANCED: Final[str] = "300100001"
