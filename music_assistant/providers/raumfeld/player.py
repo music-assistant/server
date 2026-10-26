@@ -1418,6 +1418,8 @@ class RaumfeldPlayer(Player):
         """
         Wait until the given rooms' own renderers play, for at most JOIN_SETTLE_TIME.
 
+        The wait ends early when a room shows it cannot hook into the running stream.
+
         :param player_ids: The player ids of the rooms to wait for.
         """
         waiting = {
@@ -1435,8 +1437,24 @@ class RaumfeldPlayer(Player):
                     await asyncio.sleep(JOIN_SETTLE_INTERVAL)
                     for url in list(waiting):
                         state = await self._read_room_state(url) or {}
+                        transport_state = (state.get("TransportState") or "").upper()
                         # only PLAYING itself: a room still TRANSITIONING is being hooked in
-                        if (state.get("TransportState") or "").upper() == "PLAYING":
+                        if transport_state == "PLAYING":
+                            waiting.discard(url)
+                            continue
+                        # A room that cannot keep up with the running stream drops it and
+                        # tries again, over and over, and never plays (seen on 1st generation
+                        # speakers at 96 kHz). Only a restart gets it in, so waiting longer
+                        # only prolongs the gap. An idle room reports NO_MEDIA_PRESENT too,
+                        # but with status OK.
+                        transport_status = (state.get("TransportStatus") or "").lower()
+                        if transport_state == "NO_MEDIA_PRESENT" and "underrun" in transport_status:
+                            self.logger.debug(
+                                "A room that joined %s cannot hook into its stream (%s)",
+                                self.room,
+                                state.get("TransportStatus"),
+                            )
+                            # the other rooms that joined may still be hooking in
                             waiting.discard(url)
         except TimeoutError:
             self.logger.debug("Rooms that joined %s did not report playing in time", self.room)
