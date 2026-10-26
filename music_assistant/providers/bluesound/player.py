@@ -41,6 +41,8 @@ if TYPE_CHECKING:
 class BluesoundPlayer(Player):
     """Holds the details of the (discovered) BluOS player."""
 
+    _attr_trusts_reported_source = True
+
     def __init__(
         self,
         provider: BluesoundPlayerProvider,
