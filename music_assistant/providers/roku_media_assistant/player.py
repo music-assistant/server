@@ -59,6 +59,7 @@ class MediaAssistantPlayer(Player):
         self._attr_volume_level = 100
         self.lock = asyncio.Lock()  # Held when connecting or disconnecting the device
         self._position_last_moved: float | None = None  # end-of-stream detector
+        self._stream_end_logged = False
 
     async def setup(self) -> None:
         """Set up player in MA."""
@@ -240,6 +241,7 @@ class MediaAssistantPlayer(Player):
             self._attr_elapsed_time = 0
             self._attr_elapsed_time_last_updated = time.time()
             self._position_last_moved = time.time()
+            self._stream_end_logged = False
             self.update_state()
         except Exception:
             self.logger.error("Failed to Play Media on: %s", self.name)
@@ -356,6 +358,7 @@ class MediaAssistantPlayer(Player):
                         )
                         if position != prev_position or self._position_last_moved is None:
                             self._position_last_moved = now
+                            self._stream_end_logged = False
                         elif (
                             self._attr_playback_state == PlaybackState.PLAYING
                             and duration is not None
@@ -363,12 +366,15 @@ class MediaAssistantPlayer(Player):
                             and now - self._position_last_moved >= 10
                         ):
                             self._attr_playback_state = PlaybackState.IDLE
-                            self.logger.info(
-                                "%s stream ended (position frozen at %.1fs for %.0fs)",
-                                self.name,
-                                position,
-                                now - self._position_last_moved,
-                            )
+                            # every poll finds the app in "play" again: say it once
+                            if not self._stream_end_logged:
+                                self._stream_end_logged = True
+                                self.logger.info(
+                                    "%s stream ended (position frozen at %.1fs for %.0fs)",
+                                    self.name,
+                                    position,
+                                    now - self._position_last_moved,
+                                )
                         self._attr_elapsed_time = position
                         self._attr_elapsed_time_last_updated = now
                     except Exception:

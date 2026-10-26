@@ -39,6 +39,7 @@ def _make_player() -> MediaAssistantPlayer:
     player._attr_elapsed_time = None
     player._attr_elapsed_time_last_updated = None
     player._position_last_moved = None
+    player._stream_end_logged = False
     player.queued = None
     device_info = MagicMock()
     device_info.app.app_id = APP_ID

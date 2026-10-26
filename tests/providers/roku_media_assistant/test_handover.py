@@ -97,6 +97,21 @@ async def test_position_frozen_at_the_end_is_idle() -> None:
     assert player._attr_playback_state == PlaybackState.IDLE
 
 
+async def test_stream_end_is_logged_once_per_stream(caplog: pytest.LogCaptureFixture) -> None:
+    """Polls that keep finding the app at the end say so once; the next stream's end again."""
+    player = _make_player()
+    await player.play_media(_media("first"))
+
+    await _poll_frozen(player, 299.5, frozen_for=11)
+    await player.poll()
+    await player.poll()
+    await player.play_media(_media("second"))
+    await _poll_frozen(player, 299.5, frozen_for=11)
+
+    assert player._attr_playback_state == PlaybackState.IDLE
+    assert caplog.text.count("stream ended") == 2
+
+
 async def test_position_frozen_briefly_at_the_end_is_still_playing() -> None:
     """The last seconds of a track aren't taken for its end."""
     player = _make_player()
