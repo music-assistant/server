@@ -503,7 +503,8 @@ class SendspinBasePlayer(Player):
         as a side effect of the provider pairing calls;
         declining the audio input persists via the player config. Bridge/web players
         and unencrypted (legacy) connections have nothing to pair. A device another server
-        holds is dialed for the pairing.
+        holds is dialed for the pairing. A device whose line-in was allowed and can sense a
+        signal then picks where that line-in plays automatically.
 
         :param session: The setup flow session used to interact with the user.
         """
@@ -571,6 +572,7 @@ class SendspinBasePlayer(Player):
             await self._run_pin_pairing_flow(
                 session, provider, static=method == PAIR_METHOD_STATIC_PIN
             )
+        await self._run_source_autostart_step(session)
         await session.finish({})
 
     def _get_source_autostart_config_entries(self) -> list[ConfigEntry]:
@@ -682,7 +684,9 @@ class SendspinBasePlayer(Player):
             )
         # A device with an audio input needs its own wording; the rest of the page is shared.
         step_id = "approve_device_source" if has_input else "approve_device"
-        values = await session.form(entries, step_id=step_id, last_step=True)
+        values = await session.form(
+            entries, step_id=step_id, last_step=not self._supports_line_sense()
+        )
         method = str(values.get(CONF_CONNECT_METHOD, options[0].value))
         if method == CONNECT_METHOD_PAIR:
             return True
@@ -692,6 +696,8 @@ class SendspinBasePlayer(Player):
                 self.player_id, CONF_SOURCE_INPUT_DECLINED, not allow_input
             )
         await provider.set_trusted_unpaired(self.player_id, enabled=True, allow_input=allow_input)
+        if allow_input:
+            await self._run_source_autostart_step(session)
         return False
 
     async def _run_source_input_step(self, session: SetupSession, *, offer_pair: bool) -> bool:
@@ -717,6 +723,21 @@ class SendspinBasePlayer(Player):
         )
         self.update_state()
         return True
+
+    async def _run_source_autostart_step(self, session: SetupSession) -> None:
+        """Ask where the line-in plays automatically, for a device that can sense a signal on it."""
+        if not self._supports_line_sense():
+            return
+        entry = self._get_source_autostart_config_entries()[0]
+        entry.value = session.context.values.get(CONF_SOURCE_AUTOSTART_TARGET)
+        values = await session.form([entry], step_id="source_autostart", last_step=True)
+        target = values[CONF_SOURCE_AUTOSTART_TARGET]
+        # Keep the default unstored, as the settings page does, so it follows the device's player.
+        self.mass.config.set_raw_player_config_value(
+            self.player_id,
+            CONF_SOURCE_AUTOSTART_TARGET,
+            None if target == entry.default_value else target,
+        )
 
     def _subscribe_client_callbacks(self) -> None:
         """Subscribe to client and group events for the currently bound client."""
