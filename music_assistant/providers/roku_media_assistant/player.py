@@ -263,9 +263,10 @@ class MediaAssistantPlayer(Player):
 
                 if not app_running:
                     self.logger.warning(
-                        "Not enqueuing %s on %s: Media Assistant app is not running",
+                        "Not enqueuing %s on %s: none of the Roku apps %s is in front",
                         media.title,
                         self.name,
+                        ", ".join(self.app_ids),
                     )
                     return
                 await self.roku_input(

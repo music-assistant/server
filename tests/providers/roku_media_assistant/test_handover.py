@@ -74,8 +74,8 @@ async def test_enqueue_gives_up_after_three_attempts(
     assert "Gave up enqueuing queued on Roku after 3 attempts" in caplog.text
 
 
-async def test_enqueue_needs_the_app_in_front() -> None:
-    """Nothing is handed over while another app is in front."""
+async def test_enqueue_needs_the_app_in_front(caplog: pytest.LogCaptureFixture) -> None:
+    """Nothing is handed over while another app is in front, and the log names the apps."""
     player = _make_player()
     await player.play_media(_media("first"))
     player.roku_input.reset_mock()  # type: ignore[attr-defined]
@@ -85,6 +85,7 @@ async def test_enqueue_needs_the_app_in_front() -> None:
 
     player.roku_input.assert_not_awaited()  # type: ignore[attr-defined]
     assert player.queued is None
+    assert "none of the Roku apps dev is in front" in caplog.text
 
 
 async def test_position_frozen_at_the_end_is_idle() -> None:
