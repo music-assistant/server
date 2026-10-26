@@ -20,7 +20,7 @@ import asyncio
 import contextlib
 import time
 import weakref
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import suppress
 from copy import deepcopy
 from typing import TYPE_CHECKING, Any, cast
@@ -306,6 +306,77 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
                 self.get_player_lock(player_id, PlayerLockPurpose.PLAYBACK, strict=strict)
             )
             yield
+
+    @contextlib.asynccontextmanager
+    async def get_playback_locks(
+        self, *player_ids: str, strict: bool = False
+    ) -> AsyncIterator[Callable[[str], Awaitable[None]]]:
+        """
+        Acquire the playback locks of several players, each preceded by that of its group.
+
+        For a command that changes the playback of more than one player (a queue transfer).
+        The players are locked in one fixed order, whatever order they are given in, so two
+        such commands over the same players never each hold a lock the other waits for.
+        The body receives a callable that hands back the locks taken for one of the players
+        before the others, for a player the command is done with while it goes on with the
+        rest; a lock another of the players was given too stays held for it.
+
+        :param player_ids: The players to lock.
+        :param strict: Never run without the locks, see get_player_lock.
+        :raises ResourceBusyError: When a strict acquisition timed out.
+        """
+        owners = {
+            player_id: self._resolve_playback_owner(player)
+            if (player := self.get_player(player_id))
+            else None
+            for player_id in set(player_ids)
+        }
+        # a group locks the members it captures from under its own lock, so every group
+        # comes first; the other players follow by their owning group or leader, each
+        # member right after its owner (see get_group_and_player_lock)
+        ordered: list[str] = []
+        # the lock ids taken for each player given, one entry per player given
+        chains: list[tuple[str, list[str]]] = []
+        for player_id in sorted(
+            player_ids,
+            key=lambda player_id: (
+                owner.type is not PlayerType.GROUP if (owner := owners[player_id]) else True,
+                owner.player_id if owner else player_id,
+                player_id,
+            ),
+        ):
+            owner = owners[player_id]
+            chain = (
+                [player_id]
+                if owner is None or owner.player_id == player_id
+                else [owner.player_id, player_id]
+            )
+            chains.append((player_id, chain))
+            for lock_id in chain:
+                if lock_id not in ordered:
+                    ordered.append(lock_id)
+        stacks: dict[str, contextlib.AsyncExitStack] = {}
+
+        async def release(player_id: str) -> None:
+            index = next((i for i, (given, _) in enumerate(chains) if given == player_id), None)
+            if index is None:
+                return
+            _, chain = chains.pop(index)
+            still_needed = {lock_id for _, other in chains for lock_id in other}
+            for lock_id in reversed(chain):
+                if lock_id not in still_needed and (stack := stacks.pop(lock_id, None)):
+                    await stack.aclose()
+
+        try:
+            for lock_id in ordered:
+                stacks[lock_id] = contextlib.AsyncExitStack()
+                await stacks[lock_id].enter_async_context(
+                    self.get_player_lock(lock_id, PlayerLockPurpose.PLAYBACK, strict=strict)
+                )
+            yield release
+        finally:
+            while chains:
+                await release(chains[-1][0])
 
     async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
         """Return Config Entries for the Player Controller."""
