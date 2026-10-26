@@ -23,6 +23,7 @@ from music_assistant.providers.raumfeld.player import (
     PLAYING_POLL_INTERVAL,
     ZONE_CREATE_ATTEMPTS,
     RaumfeldPlayer,
+    _changes_playback,
     _map_transport_state,
     _near_track_end,
 )
@@ -2271,6 +2272,40 @@ def test_a_room_that_joined_another_zone_announces_nothing() -> None:
 
     assert player._announced_item_id is None
     cast("MagicMock", player.mass.create_task).assert_not_called()
+
+
+def test_a_track_that_ended_is_announced_again_once_the_queue_caught_up() -> None:
+    """A repeated queue that comes back to the track the timer passed announces it again."""
+    player = _announcing_player()
+    queue = cast("MagicMock", player.mass.player_queues).get.return_value
+    player._announce_upcoming("q3", "q2")
+    queue.current_item = MagicMock(queue_item_id="q3", duration=300)
+    player._maybe_announce_flow_item()
+    assert player._passed_item_id is None
+
+    # repeat-all comes back to q2 later, with fades on and so no timer
+    player._announced_at -= 60
+    queue.smart_fades_active = True
+    queue.current_item = MagicMock(queue_item_id="q2", duration=200)
+    player._maybe_announce_flow_item()
+
+    assert player._announced_item_id == "q2"
+
+
+async def test_a_command_that_changes_playback_cancels_an_announcement_on_its_way() -> None:
+    """A stop or another source stops an announcement that is still waiting on the zone."""
+    player = _announcing_player()
+    player._announced_item_id = "q2"
+    task = MagicMock()
+    task.done.return_value = False
+    cast("MagicMock", player.mass).get_task.return_value = task
+
+    command = _changes_playback(AsyncMock())
+
+    await command(player)
+
+    task.cancel.assert_called()
+    assert player._announced_item_id is None
 
 
 def test_no_timer_is_set_far_from_the_end_of_a_track() -> None:

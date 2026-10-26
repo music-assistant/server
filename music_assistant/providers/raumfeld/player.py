@@ -163,6 +163,11 @@ def _changes_playback[**P, R](
     async def wrapper(player: RaumfeldPlayer, /, *args: P.args, **kwargs: P.kwargs) -> R:
         player._playback_changes += 1
         player._playback_generation += 1
+        # an announcement still on its way describes the playback this command changes
+        task = player.mass.get_task(player._announce_task_id) if player._flow_url else None
+        if task is not None and not task.done():
+            task.cancel()
+            player._announced_item_id = None
         try:
             return await func(player, *args, **kwargs)
         finally:
@@ -1714,6 +1719,8 @@ class RaumfeldPlayer(Player):
         current = queue.current_item
         # the queue moves on only after the timer announced the next track
         if current is not None and current.queue_item_id != self._passed_item_id:
+            # the queue caught up with the timer, so a later visit of that track is announced
+            self._passed_item_id = None
             self._start_flow_announcement(current.queue_item_id)
         self._schedule_next_announcement(queue)
 
