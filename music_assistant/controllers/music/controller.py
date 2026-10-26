@@ -674,8 +674,16 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             base_class=SearchResults,
         ):
             return cast("SearchResults", cache)
-        # Check if the search query is a streaming provider public shareable URL
-        if (url_result := await self._search_shareable_url(search_query)) is not None:
+        # Check if the search query is a streaming provider public shareable URL.
+        # The caller's media_types and providers filters are honored inside
+        # _search_shareable_url so a scoped per-provider search only resolves
+        # the URL on the one call whose target matches the URL's provider, and
+        # a type-restricted search doesn't return items of other types.
+        if (
+            url_result := await self._search_shareable_url(
+                search_query, media_types=media_types, providers=providers
+            )
+        ) is not None:
             return url_result
         # handle normal global search by querying the library and all providers
         # the library (if included) is searched first: it is fast and its results are
@@ -3125,11 +3133,18 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             sound_effects=visible_items(self.mass, results.sound_effects, user),
         )
 
-    async def _search_shareable_url(self, search_query: str) -> SearchResults | None:
+    async def _search_shareable_url(
+        self,
+        search_query: str,
+        media_types: list[MediaType] = MediaType.ALL,
+        providers: list[str] | None = None,
+    ) -> SearchResults | None:
         """
         Handle a search query that is a streaming provider public shareable URL.
 
         Returns None if the query is not such a URL and a regular search must be done.
+        Returns an empty SearchResults when the URL is a shareable URL but the
+        caller's media_types or providers filter excludes it.
         """
         try:
             media_type, provider_instance_id_or_domain, item_id = await parse_uri(
@@ -3142,6 +3157,35 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             return SearchResults()
         if provider_instance_id_or_domain not in PROVIDERS_WITH_SHAREABLE_URLS:
             return None
+        # A URL that resolves to e.g. a playlist must not come back when the
+        # caller only asked for tracks.
+        if media_type not in media_types:
+            return SearchResults()
+        # The frontend's progressive search dispatches one music/search per
+        # target provider; without this guard every one of those scoped calls
+        # returned the resolved item, turning one pasted URL into N duplicates.
+        # Resolve on the one scoped call whose target matches the URL's
+        # provider; return empty on the others. On a multi-account install we
+        # pick an instance that is both in the requested scope and serves the
+        # URL's domain, so a request scoped to a second account is answered by
+        # that account's instance (not whichever one get_provider happens to
+        # select first).
+        if providers is not None:
+            requested = set(providers)
+            matching = next(
+                (
+                    prov
+                    for prov in self.mass.providers
+                    if prov.domain == provider_instance_id_or_domain
+                    and (prov.instance_id in requested or prov.domain in requested)
+                ),
+                None,
+            )
+            if matching is None:
+                return SearchResults()
+            # scope the lookup to the matched instance so get_item resolves
+            # against that account, not the default domain lookup
+            provider_instance_id_or_domain = matching.instance_id
         try:
             item = await self.get_item(
                 media_type=media_type,
