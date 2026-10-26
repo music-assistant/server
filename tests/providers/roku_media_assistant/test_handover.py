@@ -56,8 +56,10 @@ async def test_failed_enqueue_is_retried() -> None:
     assert player.queued is queued
 
 
-async def test_enqueue_gives_up_after_three_attempts() -> None:
-    """Three failed handovers leave nothing queued."""
+async def test_enqueue_gives_up_after_three_attempts(
+    no_retry_wait: AsyncMock, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Three failed handovers leave nothing queued, with a wait only between them."""
     player = _make_player()
     await player.play_media(_media("first"))
     player.roku_input.reset_mock()  # type: ignore[attr-defined]
@@ -67,6 +69,9 @@ async def test_enqueue_gives_up_after_three_attempts() -> None:
 
     assert player.roku_input.await_count == 3  # type: ignore[attr-defined]
     assert player.queued is None
+    # the handover holds the player's lock: no wait after the last attempt
+    assert no_retry_wait.await_count == 2
+    assert "Gave up enqueuing queued on Roku after 3 attempts" in caplog.text
 
 
 async def test_enqueue_needs_the_app_in_front() -> None:

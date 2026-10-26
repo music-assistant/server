@@ -252,7 +252,8 @@ class MediaAssistantPlayer(Player):
         # retries (player_queues/stream_feeder._enqueue_next_item), so one failed POST used
         # to mean the app ran out of audio at the end of the track. Retry here, and say
         # what happened at INFO so a missed handover is visible in the normal log.
-        for attempt in range(1, 4):
+        attempts = 3
+        for attempt in range(1, attempts + 1):
             try:
                 device_info = await self.roku.update()
 
@@ -283,9 +284,14 @@ class MediaAssistantPlayer(Player):
                 return
             except Exception:
                 self.logger.error(
-                    "Failed to Enqueue Media on: %s (attempt %d/3)", self.name, attempt
+                    "Failed to Enqueue Media on: %s (attempt %d/%d)", self.name, attempt, attempts
                 )
-                await asyncio.sleep(2)
+                # the handover holds the player's lock, so don't wait after the last try
+                if attempt < attempts:
+                    await asyncio.sleep(2)
+        self.logger.error(
+            "Gave up enqueuing %s on %s after %d attempts", media.title, self.name, attempts
+        )
 
     async def poll(self) -> None:
         """Poll player for state updates."""
