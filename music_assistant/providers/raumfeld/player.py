@@ -1454,7 +1454,8 @@ class RaumfeldPlayer(Player):
                                 self.room,
                                 state.get("TransportStatus"),
                             )
-                            return
+                            # the other rooms that joined may still be hooking in
+                            waiting.discard(url)
         except TimeoutError:
             self.logger.debug("Rooms that joined %s did not report playing in time", self.room)
 

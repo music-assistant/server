@@ -1166,6 +1166,37 @@ async def test_the_wait_ends_once_the_joined_room_cannot_hook_in() -> None:
     assert reads.await_count == 2
 
 
+async def test_a_room_that_cannot_hook_in_leaves_the_others_waited_for() -> None:
+    """One room dropping the stream does not end the wait for another still hooking in."""
+    bar, _, _ = _joined_group(lambda sofa: _allow(sofa, 96000), stream_started_in_group=False)
+    rooms = {"raumfeld_sofa": _player("Sofa"), "raumfeld_kitchen": _player("Kitchen")}
+    states = {
+        "http://sofa/ctrl": iter(
+            [{"TransportState": "NO_MEDIA_PRESENT", "TransportStatus": "buffer underrun"}]
+        ),
+        "http://kitchen/ctrl": iter(
+            [
+                {"TransportState": "TRANSITIONING", "TransportStatus": "OK"},
+                {"TransportState": "TRANSITIONING", "TransportStatus": "OK"},
+                {"TransportState": "PLAYING", "TransportStatus": "OK"},
+            ]
+        ),
+    }
+    reads = AsyncMock(side_effect=lambda url: next(states[url]))
+    with (
+        patch.object(bar.mass.players, "get_player", side_effect=rooms.get),
+        patch.object(
+            bar.raumfeld,
+            "room_transport_url",
+            side_effect=lambda room: f"http://{room.lower()}/ctrl",
+        ),
+        patch("music_assistant.providers.raumfeld.player.JOIN_SETTLE_INTERVAL", 0),
+        patch.object(bar, "_read_room_state", reads),
+    ):
+        await bar._wait_for_rooms_playing(list(rooms))
+    assert reads.await_count == 4
+
+
 async def test_a_room_without_media_but_no_underrun_is_waited_for() -> None:
     """NO_MEDIA_PRESENT with status OK is a room not hooked in yet, so the wait goes on."""
     bar, _, _ = _joined_group(lambda sofa: _allow(sofa, 96000), stream_started_in_group=False)
