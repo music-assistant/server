@@ -1863,3 +1863,10 @@ def test_migrate_raumfeld_icy_basic_survives_malformed_players() -> None:
     }
     assert _migrate_raumfeld_icy_basic(data) is True
     assert data["players"]["raumfeld_bar"] == "broken"
+
+
+def test_migrate_raumfeld_icy_basic_noop_without_raumfeld() -> None:
+    """Installs without a Raumfeld player are left untouched."""
+    data: dict[str, Any] = {"players": {"sonos_kitchen": {"provider": "sonos"}}}
+    assert _migrate_raumfeld_icy_basic(data) is False
+    assert "raumfeld_icy_basic_migrated" not in data

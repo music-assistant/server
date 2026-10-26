@@ -2086,10 +2086,15 @@ def _migrate_raumfeld_icy_basic(data: dict[str, Any]) -> bool:
     all_player_configs = data.get(CONF_PLAYERS, {})
     if not isinstance(all_player_configs, dict):
         return False
+    raumfeld_configs = [
+        player_cfg
+        for player_cfg in all_player_configs.values()
+        if isinstance(player_cfg, dict) and player_cfg.get("provider") == "raumfeld"
+    ]
+    if not raumfeld_configs:
+        return False
     migrated = 0
-    for player_cfg in all_player_configs.values():
-        if not isinstance(player_cfg, dict) or player_cfg.get("provider") != "raumfeld":
-            continue
+    for player_cfg in raumfeld_configs:
         player_values = player_cfg.get("values")
         if (
             isinstance(player_values, dict)
