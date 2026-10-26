@@ -77,6 +77,9 @@ def _metadata_provider(name: str, feature: ProviderFeature) -> MagicMock:
     return provider
 
 
+DISCOGS_ID = (ExternalID.DISCOGS, "4321")
+
+
 def _enrichment(musicbrainz: MagicMock | None = None) -> MetadataEnrichmentMixin:
     """
     Return an enrichment mixin with its library and providers stubbed.
@@ -117,6 +120,13 @@ def _mass(enrichment: MetadataEnrichmentMixin) -> MagicMock:
 def _stored_ids(enrichment: MetadataEnrichmentMixin) -> AsyncMock:
     """Return the stub that stores a library item's external ids in place of its old ones."""
     return cast("AsyncMock", _mass(enrichment).music.get_controller.return_value.set_external_ids)
+
+
+def _stored_item(enrichment: MetadataEnrichmentMixin, item: Album | Artist) -> None:
+    """Let the library hold the given item, as stored now."""
+    _mass(enrichment).music.get_controller.return_value.get_library_item = AsyncMock(
+        return_value=item
+    )
 
 
 def _logger(enrichment: MetadataEnrichmentMixin) -> MagicMock:
@@ -1137,13 +1147,17 @@ async def test_album_identity_follows_a_release_merged_into_another() -> None:
     musicbrainz.get_release_details = AsyncMock(return_value=_release())
     enrichment = _enrichment(musicbrainz)
     album = _album({(ExternalID.MB_ALBUM, OTHER_MBID)})
+    # a sync stored a Discogs id on the album while it was looked up
+    _stored_item(enrichment, _album({(ExternalID.MB_ALBUM, OTHER_MBID), DISCOGS_ID}))
 
     await enrichment._update_album_metadata(album, force_refresh=True)
 
     assert album.mbid == RELEASE_ID
     assert (ExternalID.MB_ALBUM, OTHER_MBID) not in album.external_ids
     musicbrainz.get_release_details.assert_awaited_once_with(OTHER_MBID)
-    _stored_ids(enrichment).assert_awaited_once_with("1", album.external_ids)
+    _stored_ids(enrichment).assert_awaited_once_with(
+        "1", {(ExternalID.MB_ALBUM, RELEASE_ID), DISCOGS_ID}
+    )
 
 
 @pytest.mark.asyncio
@@ -1637,12 +1651,16 @@ async def test_artist_identity_follows_an_artist_merged_into_another() -> None:
     """An artist MusicBrainz merged into another takes the other's id in place of its own."""
     enrichment = _enrichment(_musicbrainz_answering_with(MBID))
     artist = _merged_artist({(ExternalID.MB_ARTIST, OTHER_MBID)})
+    # a sync stored a Discogs id on the artist while it was looked up
+    _stored_item(enrichment, _merged_artist({(ExternalID.MB_ARTIST, OTHER_MBID), DISCOGS_ID}))
 
     await enrichment._update_artist_metadata(artist, force_refresh=True)
 
     assert artist.mbid == MBID
     assert (ExternalID.MB_ARTIST, OTHER_MBID) not in artist.external_ids
-    _stored_ids(enrichment).assert_awaited_once_with("1", artist.external_ids)
+    _stored_ids(enrichment).assert_awaited_once_with(
+        "1", {(ExternalID.MB_ARTIST, MBID), DISCOGS_ID}
+    )
 
 
 @pytest.mark.asyncio

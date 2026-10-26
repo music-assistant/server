@@ -841,10 +841,16 @@ class MetadataEnrichmentMixin:
 
     async def _store_musicbrainz_id(self, item: Album | Artist, mbid: str) -> None:
         """Store a library item with a MusicBrainz id in place of the one it has."""
+        previous = set(item.external_ids)
         item.mbid = mbid
-        # a library update would add the new id next to the old one
+        # a library update would add the new id next to the old one, so the ids stored now are
+        # written with only the MusicBrainz id swapped, keeping any added meanwhile
         controller = self.mass.music.get_controller(item.media_type)
-        await controller.set_external_ids(item.item_id, item.external_ids)
+        stored = (await controller.get_library_item(item.item_id)).external_ids
+        await controller.set_external_ids(
+            item.item_id,
+            (set(stored) - (previous - item.external_ids)) | (item.external_ids - previous),
+        )
 
     async def _in_library(self, item: MediaItemType) -> bool:
         """Return whether the given library item still exists in the library."""
