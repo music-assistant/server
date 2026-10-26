@@ -13,7 +13,7 @@ from ya_dialogs_api import SkillCreationState, load_artifacts
 from ya_passport_auth import InvalidCredentialsError
 from ya_passport_auth.ma import BORROW_SOURCE_OWN
 
-from music_assistant.models.setup_flow import AbortFlow
+from music_assistant.models.setup_flow import AbortFlow, StepExpiredError
 from music_assistant.providers.yandex_smarthome.constants import (
     CONF_AUTH_X_TOKEN,
     CONF_CLOUD_CONNECTION_TOKEN,
@@ -28,6 +28,7 @@ from music_assistant.providers.yandex_smarthome.constants import (
     CONNECTION_TYPE_CLOUD,
     CONNECTION_TYPE_CLOUD_PLUS,
     CONNECTION_TYPE_DIRECT,
+    DIRECT_API_BASE_PATH,
 )
 from music_assistant.providers.yandex_smarthome.setup_flow import (
     _code_image,
@@ -327,10 +328,115 @@ async def test_provisioning_tracks_intermediate_artifacts() -> None:
     assert observed_states == [SkillCreationState.APP_CREATED]
 
 
+def _route_recorder(session: Any, *, taken: frozenset[tuple[str, str]] = frozenset()) -> Any:
+    """Record webserver dynamic routes; already-taken routes refuse registration."""
+    routes: dict[tuple[str, str], Any] = {}
+
+    def _register(path: str, handler: Any, method: str) -> Any:
+        if (path, method) in taken or (path, method) in routes:
+            raise RuntimeError(f"route {method} {path} already registered")
+        routes[(path, method)] = handler
+        return lambda: routes.pop((path, method), None)
+
+    session.mass.webserver.register_dynamic_route = mock.MagicMock(side_effect=_register)
+    return routes
+
+
+def _direct_collected() -> dict[str, Any]:
+    """Build collected values for a direct-mode provisioning run."""
+    return {
+        CONF_EXTERNAL_BASE_URL: "https://ma.example.com",
+        CONF_DIRECT_CLIENT_SECRET: "client-secret",
+    }
+
+
+async def _provision_direct(session: Any, create: Any) -> Any:
+    """Run direct-mode provisioning with the skill pipeline replaced by ``create``."""
+    with (
+        mock.patch(f"{_SETUP_FLOW}.make_authenticator"),
+        mock.patch(f"{_SETUP_FLOW}.auto_create_skill", side_effect=create),
+        mock.patch(f"{_SETUP_FLOW}.load_default_logo_bytes", return_value=b"logo"),
+        mock.patch(f"{_SETUP_FLOW}._borrowed_x_token", return_value="borrowed-token"),
+    ):
+        return await _provision_skill(
+            session,
+            _direct_collected(),
+            connection_type=CONNECTION_TYPE_DIRECT,
+            skill_name="Test",
+            ym_instance="linked-account",
+        )
+
+
+async def test_direct_provisioning_serves_backend_while_skill_deploys() -> None:
+    """Yandex validates the backend URI during deploy, so it must answer before setup ends."""
+    session = _fake_session()
+    routes = _route_recorder(session)
+    served_during_deploy: set[tuple[str, str]] = set()
+
+    async def _create(**_: Any) -> Any:
+        served_during_deploy.update(routes)
+        return _done_artifacts("skill-id")
+
+    assert await _provision_direct(session, _create) == "skill-id"
+    assert (DIRECT_API_BASE_PATH, "HEAD") in served_during_deploy
+    assert (f"{DIRECT_API_BASE_PATH}/user/devices", "POST") in served_during_deploy
+    assert routes == {}
+
+
+async def test_direct_provisioning_releases_backend_routes_on_failure() -> None:
+    """A failed deploy leaves no setup-time routes behind on the webserver."""
+    session = _fake_session()
+    routes = _route_recorder(session)
+
+    async def _create(**_: Any) -> Any:
+        raise RuntimeError("deploy failed")
+
+    with pytest.raises(RuntimeError, match="deploy failed"):
+        await _provision_direct(session, _create)
+    assert routes == {}
+
+
+async def test_direct_provisioning_reuses_routes_of_a_running_instance() -> None:
+    """When a loaded instance already serves the backend, provisioning still proceeds."""
+    session = _fake_session()
+    _route_recorder(session, taken=frozenset({(DIRECT_API_BASE_PATH, "HEAD")}))
+
+    async def _create(**_: Any) -> Any:
+        return _done_artifacts("skill-id")
+
+    assert await _provision_direct(session, _create) == "skill-id"
+
+
+async def test_cloud_provisioning_registers_no_backend_routes() -> None:
+    """Relay modes never expose direct-mode routes on the MA webserver."""
+    session = _fake_session()
+    routes = _route_recorder(session)
+    served_during_deploy: set[tuple[str, str]] = set()
+
+    async def _create(**_: Any) -> Any:
+        served_during_deploy.update(routes)
+        return _done_artifacts("skill-id")
+
+    with (
+        mock.patch(f"{_SETUP_FLOW}.make_authenticator"),
+        mock.patch(f"{_SETUP_FLOW}.auto_create_skill", side_effect=_create),
+        mock.patch(f"{_SETUP_FLOW}.load_default_logo_bytes", return_value=b"logo"),
+        mock.patch(f"{_SETUP_FLOW}._borrowed_x_token", return_value="borrowed-token"),
+    ):
+        await _provision_skill(
+            session,
+            {CONF_CLOUD_INSTANCE_ID: "cloud-id"},
+            connection_type=CONNECTION_TYPE_CLOUD_PLUS,
+            skill_name="Test",
+            ym_instance="linked-account",
+        )
+    assert served_during_deploy == set()
+
+
 async def test_device_login_timeout_propagates_to_setup_engine() -> None:
     """Setup-session expiry remains responsible for rendering timeout state."""
     session = _fake_session()
-    session.progress_until = mock.AsyncMock(side_effect=TimeoutError("expired"))
+    session.progress_until = mock.AsyncMock(side_effect=StepExpiredError("expired"))
     device = SimpleNamespace(
         user_code="ABCD-1234",
         verification_url="https://ya.ru/device",
@@ -345,7 +451,7 @@ async def test_device_login_timeout_propagates_to_setup_engine() -> None:
 
     with (
         mock.patch("ya_passport_auth.PassportClient.create", return_value=client_cm),
-        pytest.raises(TimeoutError, match="expired"),
+        pytest.raises(StepExpiredError, match="expired"),
     ):
         await _device_login(session)
 
