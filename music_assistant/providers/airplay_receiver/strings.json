@@ -7,6 +7,10 @@
     "publish_name_template": {
       "label": "[%key:common::config_entries::publish_name_template::label%]",
       "description": "How each receiver shown in the AirPlay device list is named, based on the connected player's name."
+    },
+    "latency_offset_ms": {
+      "label": "Latency offset (ms)",
+      "description": "Added to the playback delay the AirPlay sender asks for (about 2 seconds on Apple devices). A negative value plays AirPlay audio sooner: set it to about minus the fixed delay of the connected player, for example -500 for a Bluetooth speaker. Too negative a value causes dropouts."
     }
   },
   "manifest": {
