@@ -32,6 +32,10 @@
       "label": "Intercept target player",
       "description": "Music Assistant player that receives intercepted playback. Lists every registered player except this Station; pause / volume_set / seek mirrors gracefully no-op on players that don't support them."
     },
+    "intercept_mirror_volume": {
+      "label": "Mirror Station volume to intercept target",
+      "description": "When ON, volume changes on the Station (buttons, the Yandex app, 'Алиса, громче') are copied to the intercept target player. Turn OFF to manage the target's volume independently in Music Assistant; the Station is still muted during intercept and its volume is restored afterwards."
+    },
     "ym_instance": {
       "label": "Yandex account source",
       "description": "Borrow the Yandex account of a configured Yandex Music provider (single login, one token family) or use this provider's own credentials. When borrowing, authentication is managed in the linked Yandex Music provider.",
