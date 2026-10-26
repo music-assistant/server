@@ -162,9 +162,10 @@ class YnisonState:
     # version block is present (e.g. status-only update from a peer
     # that did not round-trip via our device).
     last_update_is_echo: bool = False
-    # True iff the most recent update repeated the newest status already known
-    # to the server (received from it or sent by us). Status is published only
-    # on change, so such a relay carries a deliberately stale position.
+    # True iff the most recent update carried no status or repeated the newest
+    # status already known to the server (received from it or sent by us).
+    # Status is published only on change, so such a status carries a
+    # deliberately stale position.
     status_is_relay: bool = False
 
     @property
@@ -260,7 +261,9 @@ class YnisonClient:
         self._status_watermarks: deque[_StatusWatermark] = deque(maxlen=8)
         # (progress_ms, duration_ms, paused, monotonic time) of the newest
         # status known to the server: received from it or sent by us.
-        self._status_baseline: tuple[int, int, bool, float] | None = None
+        # (progress, duration, paused, monotonic time, version); the version is
+        # None for a status we sent, whose echo comes back without our version.
+        self._status_baseline: tuple[int, int, bool, float, dict[str, Any] | None] | None = None
 
         # Latest state from server
         self.state = YnisonState()
@@ -461,7 +464,7 @@ class YnisonClient:
         }
         sent = await self._send(msg, strict=strict)
         if sent:
-            self._status_baseline = (progress_ms, duration_ms, paused, time.monotonic())
+            self._status_baseline = (progress_ms, duration_ms, paused, time.monotonic(), None)
             track_id = self.state.current_track_id
             if track_id is not None:
                 self._status_watermarks.append(
@@ -739,7 +742,13 @@ class YnisonClient:
             duration = int(status.get("duration_ms", 0))
         except TypeError, ValueError:
             return False
-        base_progress, base_duration, base_paused, _at = self._status_baseline
+        base_progress, base_duration, base_paused, _at, base_version = self._status_baseline
+        # A status authored by another device under a new version is a fresh
+        # command, even when it lands on the position we already know.
+        version = status.get("version") or {}
+        author = version.get("device_id") or ""
+        if author and author != self.device_id and version != base_version:
+            return False
         return (progress, duration, bool(status.get("paused", True))) == (
             base_progress,
             base_duration,
@@ -761,6 +770,7 @@ class YnisonClient:
             duration,
             bool(status.get("paused", True)),
             time.monotonic(),
+            status.get("version") or {},
         )
 
     def _channel_ready(self) -> bool:
@@ -771,7 +781,7 @@ class YnisonClient:
         """Return whether a status equals the newest server-known one within the dedup window."""
         if self._status_baseline is None:
             return False
-        base_progress, base_duration, base_paused, at = self._status_baseline
+        base_progress, base_duration, base_paused, at, _version = self._status_baseline
         if base_paused != paused or base_duration != duration_ms:
             return False
         expected = base_progress
@@ -1164,7 +1174,8 @@ class YnisonClient:
         # objects, so merging nested dicts would retain stale keys that are
         # absent from the update.
         incoming_ps = data.get("player_state")
-        self.state.status_is_relay = False
+        # A frame without a status keeps the retained one, which is already known.
+        self.state.status_is_relay = not (isinstance(incoming_ps, dict) and "status" in incoming_ps)
         if incoming_ps is not None:
             # Normalize timestamp fields before storing: Ynison rejects int
             # `status.progress_ms`/`duration_ms`/`version.*` on outbound

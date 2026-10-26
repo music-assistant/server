@@ -872,6 +872,75 @@ class TestReportStatus:
         )
         assert client.state.status_is_relay is True
 
+    def test_peer_seek_to_known_position_is_not_a_relay(self, client: YnisonClient) -> None:
+        """A newly versioned peer status is fresh even at the last known position."""
+        client._parse_state(
+            {
+                "player_state": {
+                    "status": {
+                        "progress_ms": "10000",
+                        "duration_ms": "200000",
+                        "paused": False,
+                        "version": {"device_id": "peer", "version": "2", "timestamp_ms": "0"},
+                    }
+                }
+            }
+        )
+        assert client.state.status_is_relay is False
+
+    def test_relay_keeps_the_known_version(self, client: YnisonClient) -> None:
+        """A status repeated with its original version is a relay."""
+        client._parse_state(
+            {
+                "player_state": {
+                    "status": {
+                        "progress_ms": "10000",
+                        "duration_ms": "200000",
+                        "paused": False,
+                        "version": {"device_id": "peer", "version": "1", "timestamp_ms": "0"},
+                    }
+                }
+            }
+        )
+        assert client.state.status_is_relay is True
+
+    async def test_peer_seek_to_own_sent_position_is_not_a_relay(
+        self, client: YnisonClient
+    ) -> None:
+        """A peer command at the position we published last is not our relay."""
+        assert await client.report_status(0, 200000, paused=False, strict=True)
+
+        client._parse_state(
+            {
+                "player_state": {
+                    "status": {
+                        "progress_ms": "0",
+                        "duration_ms": "200000",
+                        "paused": False,
+                        "version": {"device_id": "peer", "version": "3", "timestamp_ms": "0"},
+                    }
+                }
+            }
+        )
+        assert client.state.status_is_relay is False
+
+    def test_frame_without_status_keeps_relay_marker(self, client: YnisonClient) -> None:
+        """A frame that does not carry a status leaves the retained status stale."""
+        client._parse_state({"devices": [{"info": {"device_id": "peer"}}]})
+        assert client.state.status_is_relay is True
+
+        client._parse_state(
+            {
+                "player_state": {
+                    "player_queue": {
+                        "current_playable_index": 0,
+                        "playable_list": [{"playable_id": "t1"}, {"playable_id": "t2"}],
+                    }
+                }
+            }
+        )
+        assert client.state.status_is_relay is True
+
     async def test_best_effort_skipped_while_other_device_active(
         self, client: YnisonClient
     ) -> None:

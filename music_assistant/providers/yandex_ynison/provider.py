@@ -1802,15 +1802,26 @@ class YandexYnisonProvider(PluginProvider):
             raise PlayerCommandFailed("Ynison WebSocket disconnected")
         return self._ynison
 
+    def _current_progress_ms(self, state: YnisonState) -> int:
+        """Return the position of the current Ynison track, preferring our own stream."""
+        # Status is published only on change, so the server sample can be far
+        # behind the position this source has streamed.
+        if (
+            self._playback.owner_player_id
+            and self._playback.track_id == state.current_track_id
+            and self._playback.progress_ms >= 0
+        ):
+            return self._playback.progress_ms
+        return state.progress_ms
+
     async def _on_play(self) -> None:
         """Handle play command — send resume to Ynison."""
         client = await self._require_connected_ynison()
         if not self._idempotent("on_play", None):
             return
-        state = client.state
         try:
             await client.report_status(
-                progress_ms=state.progress_ms,
+                progress_ms=self._current_progress_ms(client.state),
                 duration_ms=self._best_duration_ms(),
                 paused=False,
                 strict=True,
@@ -1824,10 +1835,9 @@ class YandexYnisonProvider(PluginProvider):
         client = await self._require_connected_ynison()
         if not self._idempotent("on_pause", None):
             return
-        state = client.state
         try:
             await client.report_status(
-                progress_ms=state.progress_ms,
+                progress_ms=self._current_progress_ms(client.state),
                 duration_ms=self._best_duration_ms(),
                 paused=True,
                 strict=True,

@@ -2903,6 +2903,40 @@ class TestPlaybackControls:
             progress_ms=5000, duration_ms=120000, paused=True, strict=True
         )
 
+    async def test_on_pause_sends_the_playing_position(self) -> None:
+        """Pause publishes where this source is playing, not the last server sample."""
+        provider = _make_provider()
+        provider._playback.duration_ms = 120000
+        provider._playback.owner_player_id = "player1"
+        provider._playback.track_id = "track1"
+        provider._playback.progress_ms = 70000
+        state = _make_ynison_state(progress_ms=10000, duration_ms=120000, paused=False)
+        mock_yn = _mock_ynison(state)
+        provider._ynison = mock_yn
+
+        await provider._on_pause()
+
+        mock_yn.report_status.assert_awaited_once_with(
+            progress_ms=70000, duration_ms=120000, paused=True, strict=True
+        )
+
+    async def test_on_pause_ignores_position_of_another_track(self) -> None:
+        """A position streamed for a different track is not published for this one."""
+        provider = _make_provider()
+        provider._playback.duration_ms = 120000
+        provider._playback.owner_player_id = "player1"
+        provider._playback.track_id = "old-track"
+        provider._playback.progress_ms = 70000
+        state = _make_ynison_state(progress_ms=10000, duration_ms=120000, paused=False)
+        mock_yn = _mock_ynison(state)
+        provider._ynison = mock_yn
+
+        await provider._on_pause()
+
+        mock_yn.report_status.assert_awaited_once_with(
+            progress_ms=10000, duration_ms=120000, paused=True, strict=True
+        )
+
     async def test_on_pause_no_ynison_raises(self) -> None:
         """_on_pause raises when Ynison is not connected."""
         provider = _make_provider()
