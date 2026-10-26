@@ -176,6 +176,9 @@
         "this_device": "This device"
       }
     },
+    "source_autostart_unavailable": {
+      "label": "This device does not support automatically playing its line-in on a speaker."
+    },
     "source_input_action": {
       "label": "Audio input",
       "options": {
