@@ -386,6 +386,16 @@ EXACT_POLICIES: dict[str, CommandDecision] = {
     "fastmcp/debug/health": _readonly_debug(Capability.DEBUG_PROVIDERS),
     "fastmcp/debug/routes": _readonly_debug(Capability.DEBUG_PROVIDERS),
     "fastmcp/debug/packages": _readonly_debug(Capability.DEBUG_PROVIDERS),
+    # Declared as queues.control, but these skip the track or start a stopped
+    # queue, which core commands guard with control:playback.
+    "party/skip": _control(Capability.CONTROL_PLAYBACK),
+    **{
+        command: CommandDecision(
+            _CONTROL_ANNOTATIONS,
+            frozenset({str(Capability.EDIT_QUEUE), str(Capability.CONTROL_PLAYBACK)}),
+        )
+        for command in ("party/add_to_queue", "party/boost_queue_item")
+    },
     # Declared as providers.read, but it mints a guest user and a join code.
     "party/url": _control(Capability.SYSTEM_ADMIN),
     # Declared as players.control, but free text to Alice can drive every

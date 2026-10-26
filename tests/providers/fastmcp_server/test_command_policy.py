@@ -259,6 +259,34 @@ def test_smart_playlist_reads_need_only_library_query(command: str) -> None:
     assert decision.required_capabilities == frozenset({str(Capability.QUERY_LIBRARY)})
 
 
+@pytest.mark.parametrize("command", ["party/skip", "party/add_to_queue", "party/boost_queue_item"])
+def test_party_playback_commands_respect_a_denied_playback_capability(command: str) -> None:
+    """Party commands that skip or start playback need control:playback like core ones."""
+    decision = resolve_command_policy(command, Scope.QUEUES_CONTROL, None)
+    snapshot = policy_snapshot(
+        PolicyProfile.CUSTOM,
+        {
+            Capability.EDIT_QUEUE: PolicyMode.ALLOW,
+            Capability.CONTROL_PLAYBACK: PolicyMode.DENY,
+        },
+    )
+    assert decision.effective_mode(snapshot) is PolicyMode.DENY
+
+
+@pytest.mark.parametrize(
+    ("command", "capabilities"),
+    [
+        ("party/skip", {Capability.CONTROL_PLAYBACK}),
+        ("party/add_to_queue", {Capability.EDIT_QUEUE, Capability.CONTROL_PLAYBACK}),
+        ("party/boost_queue_item", {Capability.EDIT_QUEUE, Capability.CONTROL_PLAYBACK}),
+    ],
+)
+def test_party_playback_command_capabilities(command: str, capabilities: set[Capability]) -> None:
+    """Queue-changing party commands keep edit:queue on top of playback control."""
+    decision = resolve_command_policy(command, Scope.QUEUES_CONTROL, None)
+    assert decision.required_capabilities == frozenset(str(c) for c in capabilities)
+
+
 def test_party_url_requires_system_admin() -> None:
     """The party URL mints a guest user and join code, so it is not a read."""
     decision = resolve_command_policy("party/url", Scope.PROVIDERS_READ, None)
