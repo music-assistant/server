@@ -1732,3 +1732,48 @@ async def test_an_ended_update_loop_drops_the_connection_at_once() -> None:
     await _supervise_cycles(provider, check, 1)
     provider._disconnect.assert_awaited_once_with("host connection lost")  # type: ignore[attr-defined]
     check.assert_not_called()
+
+
+def _icy_provider(stored: dict[str, Any]) -> RaumfeldPlayerProvider:
+    """
+    Build a provider whose player config holds the given raw values.
+
+    :param stored: The raw values stored for the player, changed in place on a write.
+    """
+    provider = RaumfeldPlayerProvider.__new__(RaumfeldPlayerProvider)
+    mass = MagicMock()
+    mass.config.get_raw_player_config_value.side_effect = lambda _pid, key: stored.get(key)
+    mass.config.set_raw_player_config_value.side_effect = lambda _pid, key, value: (
+        stored.__setitem__(key, value)
+    )
+    provider.mass = mass
+    return provider
+
+
+@pytest.mark.parametrize(
+    ("stored", "expected"),
+    [
+        ({}, "basic"),
+        ({"enable_icy_metadata": "full"}, "basic"),
+        ({"enable_icy_metadata": "disabled"}, "disabled"),
+        ({"enable_icy_metadata": "full", "raumfeld_icy_basic_migrated": True}, "full"),
+    ],
+    ids=["new_room", "former_default", "own_choice", "full_picked_after_the_move"],
+)
+def test_the_icy_preference_moves_to_basic_once(stored: dict[str, Any], expected: str) -> None:
+    """A new room and the former "full" default get "basic"; a choice made later is kept."""
+    provider = _icy_provider(stored)
+
+    provider._ensure_icy_default("raumfeld_bar")
+    provider._ensure_icy_default("raumfeld_bar")
+
+    assert stored["enable_icy_metadata"] == expected
+    assert stored["raumfeld_icy_basic_migrated"] is True
+
+
+def test_the_icy_move_survives_a_player_config_that_is_gone() -> None:
+    """A player whose config went away meanwhile is left for the next sync."""
+    provider = _icy_provider({})
+    cast("MagicMock", provider.mass.config).set_raw_player_config_value.side_effect = KeyError
+
+    provider._ensure_icy_default("raumfeld_bar")
