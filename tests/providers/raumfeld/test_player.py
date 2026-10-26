@@ -2353,3 +2353,12 @@ async def test_a_poll_answered_after_the_room_went_away_is_not_applied() -> None
         await player._poll_zone(MagicMock(), ["Bar"])
 
     assert player._attr_playback_state == PlaybackState.IDLE
+
+
+def test_new_media_on_the_player_announces_the_flow_track() -> None:
+    """MA moving the player's current media on is what announces the next track."""
+    player = _announcing_player()
+
+    player.on_player_media_updated()
+
+    assert player._announced_item_id == "q2"

@@ -15,7 +15,6 @@ from hassfeld import webservice as hassfeld_ws
 from hassfeld.constants import SERVICE_AV_TRANSPORT
 from music_assistant_models.config_entries import MULTI_VALUE_SPLITTER
 from music_assistant_models.enums import (
-    EventType,
     IdentifierType,
     MediaType,
     PlaybackState,
@@ -64,7 +63,6 @@ if TYPE_CHECKING:
     import hassfeld
     from async_upnp_client.client import UpnpAction
     from music_assistant_models.config_entries import ConfigEntry
-    from music_assistant_models.event import MassEvent
     from music_assistant_models.player_queue import PlayerQueue
 
     from .provider import RaumfeldPlayerProvider
@@ -224,7 +222,6 @@ class RaumfeldPlayer(Player):
     _announced_at = 0.0
     # the queue item whose end the timer announced the next track at
     _passed_item_id: str | None = None
-    _unsub_queue_events: Callable[[], None] | None = None
     _playback_changes = 0
     # join checks still waiting for their rooms to be hooked in, and rooms that are hooked
     # in and wait for the restart of a join check that still waits, with the playback
@@ -277,9 +274,6 @@ class RaumfeldPlayer(Player):
         # timestamp of the last power command, see POWER_SETTLE_TIME
         self._power_changed_at = 0.0
         self._advance_task_id = f"raumfeld_advance_{player_id}"
-        self._unsub_queue_events = self.mass.subscribe(
-            self._on_queue_updated, EventType.QUEUE_UPDATED, id_filter=player_id
-        )
         self._attr_device_info = DeviceInfo(
             model=provider.room_model(room) or "Raumfeld", manufacturer="Teufel"
         )
@@ -352,8 +346,6 @@ class RaumfeldPlayer(Player):
     async def on_unload(self) -> None:
         """Handle logic when the player is unloaded from the Player controller."""
         await super().on_unload()
-        if self._unsub_queue_events is not None:
-            self._unsub_queue_events()
         self.mass.cancel_timer(self._announce_timer_id)
         self.mass.cancel_task(self._announce_task_id)
         # the timer is held by mass, not by this player, so it would otherwise fire after
@@ -366,6 +358,10 @@ class RaumfeldPlayer(Player):
         # a room the host no longer lists (a speaker in deep standby, or a lost connection)
         # has nothing to read, and every read of it fails; it is polled again once back
         return self._attr_needs_poll and self._attr_available
+
+    def on_player_media_updated(self) -> None:
+        """Announce a new track of the flow stream to the zone, once MA reaches it."""
+        self._maybe_announce_flow_item()
 
     def set_available(self, available: bool) -> None:
         """
@@ -1702,10 +1698,6 @@ class RaumfeldPlayer(Player):
         base_url = self.mass.streams.base_url
         parts = url.removeprefix(f"{base_url}/").split("/") if url.startswith(base_url) else []
         return len(parts) > 2 and parts[0] == "flow" and parts[2] == self.player_id
-
-    def _on_queue_updated(self, event: MassEvent) -> None:
-        """Announce a new track of the flow stream to the zone, once MA reaches it."""
-        self._maybe_announce_flow_item()
 
     def _maybe_announce_flow_item(self) -> None:
         """Announce the flow stream's current track to the zone, if it has not been yet."""
