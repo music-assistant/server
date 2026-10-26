@@ -17,7 +17,7 @@ from music_assistant_models.errors import (
     ProviderUnavailableError,
     RetriesExhausted,
 )
-from music_assistant_models.media_items import Artist, ItemMapping, Track, UniqueList
+from music_assistant_models.media_items import Album, Artist, ItemMapping, Track, UniqueList
 
 from music_assistant.helpers.compare import compare_track
 from music_assistant.helpers.playlists import (
@@ -104,7 +104,11 @@ async def test_resolve_uses_controller_external_id_before_search(
     """Resolve matching media types through the shared controller contract."""
     provider = _provider()
     controller = _mass(provider).music.get_controller.return_value
-    item = MagicMock()
+    item = (
+        Album(item_id="item", provider="library", name="Item", provider_mappings=set())
+        if media_type == MediaType.ALBUM
+        else MagicMock()
+    )
     controller.get_item_by_external_id = AsyncMock(return_value=item)
     _mass(provider).music.tracks.get = AsyncMock(return_value=item)
     encoded = SharePayload(
@@ -136,6 +140,33 @@ async def test_resolve_without_search_returns_none_after_id_miss(lookup_failure:
     encoded = SharePayload(type="track", title="Track", isrc=ISRC).to_base64()
 
     assert await provider.resolve_share_link(encoded, allow_search=False) is None
+    mass.music.search.assert_not_called()
+
+
+async def test_resolve_skips_unrelated_barcode_album_and_tries_mbid() -> None:
+    """A barcode collision does not mask an album matching the shared metadata."""
+    provider = _provider()
+    mass = _mass(provider)
+    unrelated = Album(
+        item_id="wrong-album",
+        provider="library",
+        name="Different Album",
+        provider_mappings=set(),
+    )
+    matching = Album(
+        item_id="right-album",
+        provider="library",
+        name="Shared Album",
+        provider_mappings=set(),
+    )
+    controller = mass.music.get_controller.return_value
+    controller.get_item_by_external_id = AsyncMock(side_effect=[unrelated, matching])
+    payload = SharePayload(type="album", title="Shared Album", barcode=BARCODE, mbid="album-mbid")
+
+    result = await provider._resolve_media_item(payload, allow_search=False)
+
+    assert result is matching
+    assert controller.get_item_by_external_id.await_count == 2
     mass.music.search.assert_not_called()
 
 
@@ -679,6 +710,24 @@ async def test_ytmusic_enrichment_requires_version_match_for_unversioned_share(
     await provider._link_enricher.enrich(refs, None, "Song", "Artist")
 
     assert refs.get("ytmusic") == expected_link
+
+
+async def test_ytmusic_enrichment_accepts_equivalent_multi_artist_credits() -> None:
+    """Strict normalized artist credits match despite comma/slash formatting."""
+    provider = _provider()
+    candidate = MagicMock()
+    candidate.name = "Song"
+    candidate.artist_str = "Drake/Future"
+    candidate.version = ""
+    candidate.provider_mappings = [MagicMock(provider_domain="ytmusic", item_id="candidate")]
+    _mass(provider).music.search = AsyncMock(
+        return_value=MagicMock(tracks=[candidate], albums=[], artists=[])
+    )
+    refs = {"deezer": "/track/1", "apple_music": "/album/1?i=2"}
+
+    await provider._link_enricher.enrich(refs, None, "Song", "Drake, Future")
+
+    assert refs["ytmusic"] == "/watch?v=candidate"
 
 
 @pytest.mark.parametrize(
@@ -1228,8 +1277,33 @@ async def test_preview_keeps_unmatched_and_duplicate_tracks_in_original_order() 
     assert tracks[1].artists[0].name == "Artist"
     assert tracks[1].album is not None
     assert tracks[1].album.name == "Album"
-    assert all(kwargs == {"allow_search": False} for _, kwargs in resolver.call_args_list)
+    assert all(
+        kwargs == {"allow_search": False, "hydrate_track": False}
+        for _, kwargs in resolver.call_args_list
+    )
     _mass(provider).music.playlists.import_playlist.assert_not_called()
+
+
+async def test_preview_skips_full_track_hydration_for_matched_tracks() -> None:
+    """A preview returns the matched Track without per-track audio-analysis hydration."""
+    provider = _provider()
+    mass = _mass(provider)
+    matched = Track(item_id="42", provider="library", name="Known", provider_mappings=set())
+    controller = mass.music.get_controller.return_value
+    controller.get_item_by_external_id = AsyncMock(return_value=matched)
+    mass.music.tracks.get = AsyncMock()
+    encoded = SharePayload(
+        type="playlist",
+        title="Playlist",
+        tracks=[TrackStub(title="Known", isrc=ISRC)],
+    ).to_base64()
+
+    tracks = await provider.preview_shared_playlist(encoded)
+
+    assert len(tracks) == 1
+    assert tracks[0].name == "Known"
+    assert tracks[0].position == 1
+    mass.music.tracks.get.assert_not_called()
 
 
 async def test_preview_only_resolves_the_requested_block() -> None:

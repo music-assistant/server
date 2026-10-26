@@ -175,7 +175,11 @@ class ShareLinkEnricher:
                     track.name, track.version
                 )
                 if not compare_strings(title, candidate_title, strict=False) or (
-                    artist and not compare_strings(artist, track.artist_str, strict=False)
+                    artist
+                    and not (
+                        compare_strings(artist, track.artist_str, strict=True)
+                        or compare_strings(artist, track.artist_str, strict=False)
+                    )
                 ):
                     continue
                 if not compare_version(version or "", candidate_version or ""):

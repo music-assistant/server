@@ -211,7 +211,9 @@ class ShareProvider(PluginProvider):
                     mbid=stub.mbid,
                     mb_track=stub.mb_track,
                 )
-                item = await self._resolve_media_item(track_payload, allow_search=False)
+                item = await self._resolve_media_item(
+                    track_payload, allow_search=False, hydrate_track=False
+                )
                 if isinstance(item, Track):
                     return replace(item, position=index + 1)
                 preview = construct_media_item_from_playlist_item(
@@ -417,17 +419,24 @@ class ShareProvider(PluginProvider):
     # ------------------------------------------------------------------
 
     async def _resolve_media_item(
-        self, payload: SharePayload, allow_search: bool = True
+        self,
+        payload: SharePayload,
+        allow_search: bool = True,
+        hydrate_track: bool = True,
     ) -> MediaItemType | None:
-        """Resolve a shared track, album, or artist using known IDs before search."""
+        """
+        Resolve a shared track, album, or artist using known IDs before search.
+
+        :param hydrate_track: Fetch full details for track results.
+        """
         media_type = MediaType(payload.type)
-        item = await self._resolve_by_external_ids(payload, media_type)
+        item = await self._resolve_by_external_ids(payload, media_type, hydrate_track)
         if item is not None or not allow_search:
             return item
         return await self._resolve_by_search(payload, media_type)
 
     async def _resolve_by_external_ids(
-        self, payload: SharePayload, media_type: MediaType
+        self, payload: SharePayload, media_type: MediaType, hydrate_track: bool
     ) -> MediaItemType | None:
         external_ids: tuple[tuple[ExternalID, str | None], ...]
         if media_type == MediaType.TRACK:
@@ -465,12 +474,23 @@ class ShareProvider(PluginProvider):
                 )
                 continue
             if item is not None and not isinstance(item, ItemMapping):
+                if (
+                    media_type == MediaType.ALBUM
+                    and external_id_type == ExternalID.BARCODE
+                    and (
+                        not isinstance(item, Album)
+                        or self._best_search_match(payload, [item]) is None
+                    )
+                ):
+                    continue
                 if media_type == MediaType.TRACK:
                     item_version = item.version if isinstance(item.version, str) else ""
                     if external_id_type != ExternalID.MB_TRACK and not compare_version(
                         payload.version or "", item_version
                     ):
                         continue
+                    if not hydrate_track:
+                        return item
                     try:
                         return await self.mass.music.tracks.get(
                             item.item_id, item.provider, allow_update_metadata=False
