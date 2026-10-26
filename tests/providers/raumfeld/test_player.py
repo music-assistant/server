@@ -2438,3 +2438,44 @@ def test_new_media_on_the_player_announces_the_flow_track() -> None:
     player.on_player_media_updated()
 
     assert player._announced_item_id == "q2"
+
+
+def test_a_source_that_takes_over_from_the_flow_drops_its_announcements() -> None:
+    """A station button pressed on the speaker ends the flow's announcements, also on their way."""
+    player = _announcing_player()
+    player._advance_armed = False
+    player._next_media = None
+    player._static_sources = []
+
+    with patch.object(player, "update_state"):
+        player._set_external(_RADIO_META, "Stop", None, via_room=False)
+
+    assert player._flow_url is None
+    mass = cast("MagicMock", player.mass)
+    mass.cancel_task.assert_called_with("raumfeld_announce_raumfeld_bar")
+    mass.cancel_timer.assert_any_call("raumfeld_announce_next_raumfeld_bar")
+
+
+async def test_the_poll_announces_after_applying_its_reading() -> None:
+    """The announcement reads the queue's position only once the poll's reading is applied."""
+    player = _announcing_player()
+    player._advance_armed = False
+    order: list[str] = []
+    with (
+        patch.object(player, "update_state", side_effect=lambda: order.append("state")),
+        patch.object(
+            player, "_maybe_announce_flow_item", side_effect=lambda: order.append("announce")
+        ),
+        patch.object(player, "_update_volume", AsyncMock()),
+        patch.object(
+            player,
+            "_read_transport",
+            AsyncMock(return_value={"CurrentTransportState": "PLAYING"}),
+        ),
+        patch.object(player, "_read_position", AsyncMock(return_value=None)),
+        patch.object(player, "_follows_or_held", return_value=False),
+        patch.object(player, "_active_zone", return_value=["Bar"]),
+    ):
+        await player._poll_zone(MagicMock(), ["Bar"])
+
+    assert order == ["state", "announce"]

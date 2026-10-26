@@ -1003,9 +1003,6 @@ class RaumfeldPlayer(Player):
         # poll fast right after a play command so MA sees playback actually start, and in
         # the final seconds of a track when this room advances the queue itself; a relaxed
         # rate while it plays on, the slow rate when idle
-        if playing:
-            # also catches the first track, which plays before the zone is settled
-            self._maybe_announce_flow_item()
         recently_started = (time.time() - self._play_started_at) < STARTUP_POLL_WINDOW
         if recently_started or (self._advance_armed and playing and self._near_end):
             self._attr_poll_interval = FAST_POLL_INTERVAL
@@ -1015,6 +1012,10 @@ class RaumfeldPlayer(Player):
             self._attr_poll_interval = IDLE_POLL_INTERVAL
 
         self.update_state()
+        if playing:
+            # after update_state, so the queue's position includes this reading; also
+            # catches the first track, which plays before the zone is settled
+            self._maybe_announce_flow_item()
 
     def _apply_position(self, pos: dict[str, str], playing: bool) -> None:
         """Report the device position to MA (in flow mode: the position within the flow)."""
@@ -1281,6 +1282,11 @@ class RaumfeldPlayer(Player):
         if self._advance_armed or self._next_media is not None:
             # a queue item MA handed over must not start when this source's track ends
             self._clear_next()
+        if self._flow_url is not None:
+            # the queue's flow no longer plays, so nothing of it is announced any more
+            self._flow_url = None
+            self.mass.cancel_timer(self._announce_timer_id)
+            self.mass.cancel_task(self._announce_task_id)
         allowed = {action.strip() for action in (actions or "").split(",")}
         source_id, name = external_source(meta["section"])
         passive = True
