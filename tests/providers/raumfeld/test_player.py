@@ -2504,3 +2504,31 @@ def test_a_timer_firing_during_a_command_announces_nothing() -> None:
 
     assert player._announced_item_id is None
     cast("MagicMock", player.mass.create_task).assert_not_called()
+
+
+def test_a_queue_still_on_the_ended_track_after_a_while_announces_it_again() -> None:
+    """A track the timer took as ended but that still plays (a repeat) gets its cover back."""
+    player = _announcing_player()
+    player._announce_upcoming("q3", "q2")
+    assert player._announced_item_id == "q3"
+
+    # the queue lags right after the timer: the ended track is not announced again
+    player._maybe_announce_flow_item()
+    assert player._announced_item_id == "q3"
+
+    # still on it well after that: it really plays
+    player._announced_at -= 60
+    player._maybe_announce_flow_item()
+    assert player._announced_item_id == "q2"
+
+
+def test_the_timer_announces_the_first_track_of_a_repeated_queue() -> None:
+    """At the end of a repeated queue the timer's track comes first, however short the last."""
+    player = _announcing_player()
+    player._announced_item_id = "q3"
+    player._announced_index = 2
+    player._announced_at = time.time()
+
+    player._announce_upcoming("q1", "q3")
+
+    assert player._announced_item_id == "q1"

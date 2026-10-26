@@ -84,6 +84,9 @@ FLOW_ANNOUNCE_SETTLE_TIME = 5
 # How far ahead (seconds) of the end of a track in the flow stream to time the announcement
 # of the next one; a poll inside this window sets the timer again with the latest position.
 FLOW_ANNOUNCE_LOOKAHEAD = 30
+# How long (seconds) after the timer announced the next track the queue may still report
+# the track that ended; MA moves the queue on when a poll reports the zone past it.
+FLOW_QUEUE_LAG = 12
 # Only re-anchor MA's elapsed-time clock when the reported flow position diverges from
 # the expected (extrapolated) position by more than this many seconds. Keeps the
 # progress bar smooth despite the device's 1-second position granularity while a real
@@ -1720,9 +1723,15 @@ class RaumfeldPlayer(Player):
         if (queue := self.mass.player_queues.get(self.player_id)) is None:
             return
         current = queue.current_item
-        # the queue moves on only after the timer announced the next track
-        if current is not None and current.queue_item_id != self._passed_item_id:
-            # the queue caught up with the timer, so a later visit of that track is announced
+        # The queue moves on only after the timer announced the next track. It catches up
+        # within a poll or two; a queue still on the ended track after that really plays it
+        # (a repeat the timer could not know of), so it is announced again.
+        lagging = (
+            current is not None
+            and current.queue_item_id == self._passed_item_id
+            and time.time() - self._announced_at < FLOW_QUEUE_LAG
+        )
+        if current is not None and not lagging:
             self._passed_item_id = None
             self._start_flow_announcement(current.queue_item_id)
         self._schedule_next_announcement(queue)
@@ -1783,13 +1792,15 @@ class RaumfeldPlayer(Player):
         :param passed_item_id: The queue item that has just ended.
         """
         self._passed_item_id = passed_item_id
-        self._start_flow_announcement(queue_item_id)
+        # timed from the track that ended, so also the first track after a repeated queue
+        self._start_flow_announcement(queue_item_id, forward_only=False)
 
-    def _start_flow_announcement(self, queue_item_id: str) -> None:
+    def _start_flow_announcement(self, queue_item_id: str, forward_only: bool = True) -> None:
         """
         Announce a track of the flow stream to the zone, unless it was already.
 
         :param queue_item_id: The queue item that plays now.
+        :param forward_only: Whether an earlier track than the one just announced is refused.
         """
         if (
             self._flow_url is None
@@ -1805,7 +1816,8 @@ class RaumfeldPlayer(Player):
             return
         index = self.mass.player_queues.index_by_id(self.player_id, queue_item_id)
         if (
-            index is not None
+            forward_only
+            and index is not None
             and self._announced_index is not None
             and index < self._announced_index
             and time.time() - self._announced_at < FLOW_ANNOUNCE_SETTLE_TIME
