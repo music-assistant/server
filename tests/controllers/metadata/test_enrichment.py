@@ -16,6 +16,7 @@ from music_assistant_models.enums import (
     ProviderFeature,
 )
 from music_assistant_models.errors import (
+    InvalidDataError,
     MediaNotFoundError,
     ProviderUnavailableError,
     RateLimited,
@@ -101,6 +102,8 @@ def _enrichment(musicbrainz: MagicMock | None = None) -> MetadataEnrichmentMixin
         controller.update_item_in_library = AsyncMock()
         controller.replace_metadata = AsyncMock()
         controller.link_musicbrainz_mappings = AsyncMock(return_value=[])
+    music.get_controller.return_value.set_external_ids = AsyncMock()
+    music.artists.merge_library_artists_by_mbid = AsyncMock(return_value=1)
     music.albums.get_library_album_tracks = AsyncMock(return_value=[])
     music.albums.link_album_tracks = AsyncMock()
     return enrichment
@@ -109,6 +112,11 @@ def _enrichment(musicbrainz: MagicMock | None = None) -> MetadataEnrichmentMixin
 def _mass(enrichment: MetadataEnrichmentMixin) -> MagicMock:
     """Return the stubbed MusicAssistant instance of an enrichment mixin."""
     return cast("MagicMock", enrichment.mass)
+
+
+def _stored_ids(enrichment: MetadataEnrichmentMixin) -> AsyncMock:
+    """Return the stub that stores a library item's external ids in place of its old ones."""
+    return cast("AsyncMock", _mass(enrichment).music.get_controller.return_value.set_external_ids)
 
 
 def _logger(enrichment: MetadataEnrichmentMixin) -> MagicMock:
@@ -1071,14 +1079,14 @@ async def test_album_identity_fills_the_blanks_and_keeps_existing_values() -> No
     """MusicBrainz fills in what the album lacks; ids, year and type it has are kept."""
     enrichment = _enrichment(_musicbrainz(release=_release()))
     album = _album(
-        {(ExternalID.MB_ALBUM, OTHER_MBID), (ExternalID.BARCODE, "0000000000000")},
+        {(ExternalID.MB_ALBUM, RELEASE_ID), (ExternalID.BARCODE, "0000000000000")},
         year=2001,
         album_type=AlbumType.EP,
     )
 
     await enrichment._update_album_metadata(album, force_refresh=True)
 
-    assert album.mbid == OTHER_MBID
+    assert album.mbid == RELEASE_ID
     assert album.get_external_id(ExternalID.BARCODE) == "0000000000000"
     assert (album.year, album.album_type) == (2001, AlbumType.EP)
     assert album.get_external_id(ExternalID.MB_RELEASEGROUP) == RELEASE_GROUP_ID
@@ -1120,6 +1128,56 @@ async def test_album_identity_links_the_album_and_its_tracks() -> None:
     albums.link_album_tracks.assert_awaited_once_with(
         album, db_tracks, release, link_providers=True
     )
+
+
+@pytest.mark.asyncio
+async def test_album_identity_follows_a_release_merged_into_another() -> None:
+    """An album whose release MusicBrainz merged into another takes the other's id in place."""
+    musicbrainz = _musicbrainz(release=_release())
+    musicbrainz.get_release_details = AsyncMock(return_value=_release())
+    enrichment = _enrichment(musicbrainz)
+    album = _album({(ExternalID.MB_ALBUM, OTHER_MBID)})
+
+    await enrichment._update_album_metadata(album, force_refresh=True)
+
+    assert album.mbid == RELEASE_ID
+    assert (ExternalID.MB_ALBUM, OTHER_MBID) not in album.external_ids
+    musicbrainz.get_release_details.assert_awaited_once_with(OTHER_MBID)
+    _stored_ids(enrichment).assert_awaited_once_with("1", album.external_ids)
+
+
+@pytest.mark.asyncio
+async def test_album_identity_replaces_a_release_gone_from_musicbrainz() -> None:
+    """An album whose release is gone takes the id of the release it is identified as now."""
+    musicbrainz = _musicbrainz(release=_release())
+    musicbrainz.get_release_details = AsyncMock(side_effect=InvalidDataError("gone"))
+    enrichment = _enrichment(musicbrainz)
+    album = _album({(ExternalID.MB_ALBUM, OTHER_MBID)})
+
+    await enrichment._update_album_metadata(album, force_refresh=True)
+
+    assert album.mbid == RELEASE_ID
+    assert (ExternalID.MB_ALBUM, OTHER_MBID) not in album.external_ids
+    _stored_ids(enrichment).assert_awaited_once_with("1", album.external_ids)
+    assert any(
+        "is no longer on MusicBrainz" in call.args[0]
+        for call in _logger(enrichment).debug.call_args_list
+    )
+
+
+@pytest.mark.asyncio
+async def test_album_identity_keeps_a_release_id_musicbrainz_answers_with() -> None:
+    """An album whose release id MusicBrainz answers with unchanged keeps it as it is."""
+    musicbrainz = _musicbrainz(release=_release())
+    musicbrainz.get_release_details = AsyncMock(return_value=_release())
+    enrichment = _enrichment(musicbrainz)
+    album = _album({(ExternalID.MB_ALBUM, RELEASE_ID)})
+
+    await enrichment._update_album_metadata(album, force_refresh=True)
+
+    assert album.mbid == RELEASE_ID
+    musicbrainz.get_release_details.assert_not_awaited()
+    _stored_ids(enrichment).assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -1561,6 +1619,76 @@ async def test_artist_identity_with_linking_disabled_fills_discogs_but_links_not
     assert artist.get_external_id(ExternalID.DISCOGS) == "3840"
     assert artist.metadata.last_musicbrainz_lookup is not None
     _mass(enrichment).music.artists.link_musicbrainz_mappings.assert_not_awaited()
+
+
+def _merged_artist(external_ids: set[tuple[ExternalID, str]] | None = None) -> Artist:
+    """Return a library artist whose MusicBrainz details answer with the id MBID."""
+    return Artist(
+        item_id="1",
+        provider="library",
+        name="Radiohead",
+        provider_mappings=set(),
+        external_ids=external_ids or set(),
+    )
+
+
+def _musicbrainz_answering_with(mbid: str) -> MagicMock:
+    """Return a MusicBrainz provider stub whose artist details carry the given id."""
+    return _musicbrainz(artist=MusicBrainzArtist(id=mbid, name="Radiohead", sort_name="Radiohead"))
+
+
+@pytest.mark.asyncio
+async def test_artist_identity_follows_an_artist_merged_into_another() -> None:
+    """An artist MusicBrainz merged into another takes the other's id in place of its own."""
+    enrichment = _enrichment(_musicbrainz_answering_with(MBID))
+    artist = _merged_artist({(ExternalID.MB_ARTIST, OTHER_MBID)})
+
+    await enrichment._update_artist_metadata(artist, force_refresh=True)
+
+    assert artist.mbid == MBID
+    assert (ExternalID.MB_ARTIST, OTHER_MBID) not in artist.external_ids
+    _stored_ids(enrichment).assert_awaited_once_with("1", artist.external_ids)
+
+
+@pytest.mark.asyncio
+async def test_artist_identity_merges_the_library_artists_sharing_a_followed_id() -> None:
+    """An artist that followed a merge is merged with the library artists holding the new id."""
+    enrichment = _enrichment(_musicbrainz_answering_with(MBID))
+    artist = _merged_artist({(ExternalID.MB_ARTIST, OTHER_MBID)})
+
+    await enrichment._update_artist_metadata(artist, force_refresh=True)
+
+    artists = _mass(enrichment).music.artists
+    artists.merge_library_artists_by_mbid.assert_awaited_once_with(1, MBID)
+
+
+@pytest.mark.asyncio
+async def test_artist_identity_does_not_follow_an_id_a_name_search_found() -> None:
+    """An id only a name search found may be a namesake's, so a merge it leads to is not followed."""
+    enrichment = _enrichment(_musicbrainz_answering_with(MBID))
+    enrichment._get_artist_mbid = AsyncMock(return_value=(OTHER_MBID, True))  # type: ignore[method-assign]
+    artist = _merged_artist()
+
+    await enrichment._update_artist_metadata(artist, force_refresh=True)
+
+    assert artist.mbid == OTHER_MBID
+    artists = _mass(enrichment).music.artists
+    _stored_ids(enrichment).assert_not_awaited()
+    artists.merge_library_artists_by_mbid.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_artist_identity_keeps_an_id_musicbrainz_answers_with() -> None:
+    """An artist whose id MusicBrainz answers with unchanged keeps it and merges nothing."""
+    enrichment = _enrichment(_musicbrainz_answering_with(MBID))
+    artist = _merged_artist({(ExternalID.MB_ARTIST, MBID)})
+
+    await enrichment._update_artist_metadata(artist, force_refresh=True)
+
+    assert artist.mbid == MBID
+    artists = _mass(enrichment).music.artists
+    _stored_ids(enrichment).assert_not_awaited()
+    artists.merge_library_artists_by_mbid.assert_not_awaited()
 
 
 @pytest.mark.asyncio
