@@ -2000,7 +2000,8 @@ class RaumfeldPlayer(Player):
         duration = details.duration or item.duration
         # the queue's position is in media time; at another playback speed (an audiobook)
         # the seconds that reach the zone differ
-        least = FLOW_MIN_FIRST_TRACK * (queue.playback_speed or 1.0)
+        speed = cast("float", item.extra_attributes.get("playback_speed", 1.0))
+        least = FLOW_MIN_FIRST_TRACK * (speed or 1.0)
         if not duration or duration <= least:
             return False
         if duration - details.seek_position >= least:

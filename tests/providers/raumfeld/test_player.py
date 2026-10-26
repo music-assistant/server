@@ -2152,7 +2152,7 @@ def _flow_start(seek_position: int, duration: int = 259) -> tuple[RaumfeldPlayer
     player._player_id = "raumfeld_bar"
     player.room = "Bar"
     player.logger = MagicMock()
-    item = MagicMock(duration=duration, queue_item_id="q2")
+    item = MagicMock(duration=duration, queue_item_id="q2", extra_attributes={})
     item.name = "Paper Doll"
     item.streamdetails = MagicMock(seek_position=seek_position, duration=duration)
     queues = cast("MagicMock", player.mass.player_queues)
@@ -2207,7 +2207,9 @@ def test_the_least_of_the_first_track_scales_with_the_playback_speed() -> None:
     """At 2x speed 8 s of audio take 16 s of the track, so 12 s left is too little."""
     player, media = _flow_start(247, duration=259)
     queue = cast("MagicMock", player.mass.player_queues).get.return_value
-    queue.playback_speed = 2.0
+    # the item's own speed counts: the queue's can still be the previous item's
+    queue.current_item.extra_attributes["playback_speed"] = 2.0
+    queue.playback_speed = 1.0
 
     with patch.object(player, "update_state"):
         assert player._start_flow_earlier(media, FLOW_START_URL)
