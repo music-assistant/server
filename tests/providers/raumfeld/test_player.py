@@ -2219,6 +2219,17 @@ def test_the_least_of_the_first_track_scales_with_the_playback_speed() -> None:
     )
 
 
+def test_a_flow_that_would_restart_at_zero_starts_as_asked() -> None:
+    """A 10 s item at 1.2x would restart at 0, which the queue reads as its resume position."""
+    player, media = _flow_start(5, duration=10)
+    queue = cast("MagicMock", player.mass.player_queues).get.return_value
+    queue.current_item.extra_attributes["playback_speed"] = 1.2
+
+    assert not player._start_flow_earlier(media, FLOW_START_URL)
+
+    cast("MagicMock", player.mass.player_queues).play_index.assert_not_called()
+
+
 async def test_a_command_after_the_earlier_start_cancels_the_restart() -> None:
     """A stop that comes while the restart waits for the playback lock stands."""
     player, _ = _flow_start(254)

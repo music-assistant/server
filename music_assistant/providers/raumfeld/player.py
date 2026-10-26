@@ -2006,7 +2006,9 @@ class RaumfeldPlayer(Player):
             return False
         if duration - details.seek_position >= least:
             return False
-        position = int(duration - least)
+        if (position := int(duration - least)) < 1:
+            # a seek position of 0 makes the queue restore the item's saved resume position
+            return False
         self.logger.debug(
             "%s would start %s %ss before its end, starting at %ss instead",
             self.room,
