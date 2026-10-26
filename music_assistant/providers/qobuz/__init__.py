@@ -107,7 +107,7 @@ SUPPORTED_FEATURES = {
 
 VARIOUS_ARTISTS_ID = "145383"
 # Bump when the shape of parsed artists, albums or tracks changes, so cached items are re-parsed
-PARSED_ITEM_CACHE_CHECKSUM = "instance_id_provider_v1"
+PARSED_ITEM_CACHE_CHECKSUM = "instance_id_provider_v2"
 
 CONF_QUALITY = "quality"
 
@@ -245,6 +245,7 @@ class QobuzProvider(MusicProvider):
     @use_cache(3600 * 24 * 30, cache_checksum=PARSED_ITEM_CACHE_CHECKSUM)  # Cache for 30 days
     async def get_artist(self, prov_artist_id: str) -> Artist:
         """Get full artist details by id."""
+        _require_qobuz_artist_id(prov_artist_id)
         params: dict[str, Any] = {"artist_id": prov_artist_id}
         artist_obj = await self._get_data("artist/get", **params)
         if artist_obj and artist_obj.get("id"):
@@ -388,6 +389,8 @@ class QobuzProvider(MusicProvider):
     )  # Cache for 14 days
     async def get_artist_albums(self, prov_artist_id: str) -> list[Album]:
         """Get a list of albums for the given artist."""
+        if not _is_qobuz_artist_id(prov_artist_id):
+            return []
         result = await self._get_data(
             "artist/get",
             artist_id=prov_artist_id,
@@ -413,6 +416,8 @@ class QobuzProvider(MusicProvider):
     )  # Cache for 14 days
     async def get_artist_toptracks(self, prov_artist_id: str) -> list[Track]:
         """Get a list of most popular tracks for the given artist."""
+        if not _is_qobuz_artist_id(prov_artist_id):
+            return []
         result = await self._get_data(
             "artist/get",
             artist_id=prov_artist_id,
@@ -449,6 +454,8 @@ class QobuzProvider(MusicProvider):
         """Add item to library."""
         result = None
         if item.media_type == MediaType.ARTIST:
+            if not _is_qobuz_artist_id(item.item_id):
+                return False
             result = await self._get_data("favorite/create", artist_id=item.item_id)
         elif item.media_type == MediaType.ALBUM:
             result = await self._get_data("favorite/create", album_ids=item.item_id)
@@ -462,6 +469,8 @@ class QobuzProvider(MusicProvider):
         """Remove item from library."""
         result = None
         if media_type == MediaType.ARTIST:
+            if not _is_qobuz_artist_id(prov_item_id):
+                return False
             result = await self._get_data("favorite/delete", artist_ids=prov_item_id)
         elif media_type == MediaType.ALBUM:
             result = await self._get_data("favorite/delete", album_ids=prov_item_id)
@@ -616,7 +625,7 @@ class QobuzProvider(MusicProvider):
         artist = Artist(
             item_id=str(artist_obj["id"]),
             provider=self.instance_id,
-            name=artist_obj["name"],
+            name=artist_obj["name"].strip(),
             provider_mappings={
                 ProviderMapping(
                     item_id=str(artist_obj["id"]),
@@ -773,7 +782,7 @@ class QobuzProvider(MusicProvider):
                 if ", " not in performer_str:
                     continue
                 role = performer_str.split(", ")[1]
-                name = performer_str.split(", ")[0]
+                name = performer_str.split(", ")[0].strip()
                 if "artist" in role.lower():
                     artist = Artist(
                         item_id=name,
@@ -795,7 +804,7 @@ class QobuzProvider(MusicProvider):
             if album:
                 track.album = album
         if track_obj.get("performers"):
-            track.metadata.performers = {x.strip() for x in track_obj["performers"].split("-")}
+            track.metadata.performers = {x.strip() for x in track_obj["performers"].split(" - ")}
         if track_obj.get("copyright"):
             track.metadata.copyright = track_obj["copyright"]
         if track_obj.get("parental_warning"):
@@ -935,7 +944,6 @@ class QobuzProvider(MusicProvider):
             kwargs["limit"] = limit
             kwargs["offset"] = offset
             result = await self._get_data(endpoint, **kwargs)
-            offset += limit
             if not result:
                 break
             if not result.get(key) or not result[key].get("items"):
@@ -943,6 +951,7 @@ class QobuzProvider(MusicProvider):
             all_items.extend(result[key]["items"])
             total = result[key].get("total", 0)
             items_received = len(result[key]["items"])
+            offset += items_received
             if items_received < limit:
                 # If the API returned fewer items than requested but reports more exist,
                 # the server silently capped our limit. Continue paginating.
@@ -1086,3 +1095,25 @@ class QobuzProvider(MusicProvider):
         if obj.get("artist"):
             return self.__get_image(obj["artist"])
         return None
+
+
+def _is_qobuz_artist_id(item_id: str) -> bool:
+    """
+    Return whether an artist id is a Qobuz artist id.
+
+    An artist Qobuz names without an id has its name as its id, which must never be sent to the
+    API.
+
+    :param item_id: The provider item id of the artist.
+    """
+    return item_id.isdecimal()
+
+
+def _require_qobuz_artist_id(item_id: str) -> None:
+    """
+    Raise MediaNotFoundError for an artist id that cannot exist on Qobuz, without a request.
+
+    :param item_id: The provider item id of the artist.
+    """
+    if not _is_qobuz_artist_id(item_id):
+        raise MediaNotFoundError(f"{item_id} is not a Qobuz artist id")
