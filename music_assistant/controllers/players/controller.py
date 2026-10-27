@@ -211,6 +211,8 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         self._task_held_locks: weakref.WeakKeyDictionary[asyncio.Task[Any], set[str]] = (
             weakref.WeakKeyDictionary()
         )
+        # Taken by get_playback_locks, so one command at a time acquires several players
+        self._playback_locks_turn = asyncio.Lock()
         # Lock to prevent race conditions during player registration
         self._register_lock = asyncio.Lock()
         # Track pending protocol player evaluations (delayed to allow all protocols to register)
@@ -315,53 +317,80 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         Acquire the playback locks of several players, each preceded by that of its group.
 
         For a command that changes the playback of more than one player (a queue transfer).
-        The players are locked in one fixed order, whatever order they are given in, so two
-        such commands over the same players never each hold a lock the other waits for.
-        A player grouped or released while its lock is awaited has the locks taken again
-        for its new owner, so the body starts under the locks of the players' current owners.
+        One such command runs at a time, also over unrelated players: the others wait for
+        its turn before taking any lock, so no two that wait for the turn each hold a lock
+        the other waits for, whatever the players' grouping when each looked. A command
+        that already holds a playback lock (a transfer called from a group change on the
+        leader) does not wait for the turn, since the command holding the turn may be
+        waiting for that lock; such a nested call needs strict locks around it, as a lock
+        a non-strict wait gave up on is not held. The players are locked in one fixed
+        order, every group first, as a single command over a group and its member takes
+        them. A player grouped or released while its lock is awaited has the locks taken
+        again for its new owner, so the body starts under the locks of the players'
+        current owners.
         The body receives a callable that hands back the locks taken for one of the players
         before the others, for a player the command is done with while it goes on with the
         rest; a lock another of the players was given too stays held for it.
 
         :param player_ids: The players to lock.
         :param strict: Never run without the locks, see get_player_lock.
-        :raises ResourceBusyError: When a strict acquisition timed out.
+        :raises ResourceBusyError: When a strict acquisition timed out, or the turn stayed
+            taken past the strict timeout.
         """
-        while True:
-            ordered, chains = self._playback_lock_order(player_ids)
-            stacks: dict[str, contextlib.AsyncExitStack] = {}
-            try:
-                for lock_id in ordered:
-                    stacks[lock_id] = contextlib.AsyncExitStack()
-                    await stacks[lock_id].enter_async_context(
-                        self.get_player_lock(lock_id, PlayerLockPurpose.PLAYBACK, strict=strict)
+        task = asyncio.current_task()
+        in_turn = task is not None and any(
+            lock_key.startswith(f"{PlayerLockPurpose.PLAYBACK.value}_")
+            for lock_key in self._task_held_locks.get(task, set())
+        )
+        async with contextlib.AsyncExitStack() as turn:
+            if not in_turn:
+                # bounded like a strict lock, so a turn holder waiting for a stuck player
+                # does not hold up every command queued behind it for good
+                try:
+                    async with asyncio.timeout(PLAYER_LOCK_STRICT_TIMEOUT):
+                        await self._playback_locks_turn.acquire()
+                except TimeoutError:
+                    msg = (
+                        "Another command over several players is still busy after "
+                        f"{PLAYER_LOCK_STRICT_TIMEOUT}s"
                     )
-            except BaseException:
+                    raise ResourceBusyError(msg) from None
+                turn.callback(self._playback_locks_turn.release)
+            while True:
+                ordered, chains = self._playback_lock_order(player_ids)
+                stacks: dict[str, contextlib.AsyncExitStack] = {}
+                try:
+                    for lock_id in ordered:
+                        stacks[lock_id] = contextlib.AsyncExitStack()
+                        await stacks[lock_id].enter_async_context(
+                            self.get_player_lock(lock_id, PlayerLockPurpose.PLAYBACK, strict=strict)
+                        )
+                except BaseException:
+                    for stack in reversed(stacks.values()):
+                        await stack.aclose()
+                    raise
+                if self._playback_lock_order(player_ids) == (ordered, chains):
+                    break
+                # a player was grouped or released while we waited, so the locks taken are not
+                # the ones of its owner now: hand them back and take those of the new owners
                 for stack in reversed(stacks.values()):
                     await stack.aclose()
-                raise
-            if self._playback_lock_order(player_ids) == (ordered, chains):
-                break
-            # a player was grouped or released while we waited, so the locks taken are not
-            # the ones of its owner now: hand them back and take those of the new owners
-            for stack in reversed(stacks.values()):
-                await stack.aclose()
 
-        async def release(player_id: str) -> None:
-            index = next((i for i, (given, _) in enumerate(chains) if given == player_id), None)
-            if index is None:
-                return
-            _, chain = chains.pop(index)
-            still_needed = {lock_id for _, other in chains for lock_id in other}
-            for lock_id in reversed(chain):
-                if lock_id not in still_needed and (stack := stacks.pop(lock_id, None)):
-                    await stack.aclose()
+            async def release(player_id: str) -> None:
+                index = next((i for i, (given, _) in enumerate(chains) if given == player_id), None)
+                if index is None:
+                    return
+                _, chain = chains.pop(index)
+                still_needed = {lock_id for _, other in chains for lock_id in other}
+                for lock_id in reversed(chain):
+                    if lock_id not in still_needed and (stack := stacks.pop(lock_id, None)):
+                        await stack.aclose()
 
-        try:
-            yield release
-        finally:
-            while chains:
-                await release(chains[-1][0])
+            try:
+                yield release
+            finally:
+                while chains:
+                    await release(chains[-1][0])
 
     async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
         """Return Config Entries for the Player Controller."""
@@ -4143,18 +4172,23 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
             new_leader_id,
             len(remaining_members),
         )
-        # Move the queue to the new leader. transfer_queue frees the new leader from
-        # the old leader's group and stops the old leader; the playback position
-        # survives because stop() stores it in resume_pos.
-        await self.mass.player_queues.transfer_queue(
-            leader.player_id, new_leader_id, auto_play=False
-        )
-        # regroup the other remaining members under the new leader
-        other_members = [m for m in remaining_members if m != new_leader_id]
-        if other_members:
-            await self.cmd_set_members(new_leader_id, player_ids_to_add=other_members)
-        if was_playing:
-            await self.mass.player_queues.resume(new_leader_id)
+        # both leaders stay locked from the transfer to the resume, taken while the new one
+        # is still the old one's member: the transfer alone would release the new leader on
+        # return, and a transfer between the two could then take it and wait for the old
+        # one, which the caller holds, while the regroup here waits for the new one
+        async with self.get_playback_locks(leader.player_id, new_leader_id, strict=True):
+            # Move the queue to the new leader. transfer_queue frees the new leader from
+            # the old leader's group and stops the old leader; the playback position
+            # survives because stop() stores it in resume_pos.
+            await self.mass.player_queues.transfer_queue(
+                leader.player_id, new_leader_id, auto_play=False
+            )
+            # regroup the other remaining members under the new leader
+            other_members = [m for m in remaining_members if m != new_leader_id]
+            if other_members:
+                await self.cmd_set_members(new_leader_id, player_ids_to_add=other_members)
+            if was_playing:
+                await self.mass.player_queues.resume(new_leader_id)
 
     def _select_ad_hoc_leader(self, leader: Player, remaining_members: list[str]) -> str:
         """

@@ -172,9 +172,9 @@ async def test_playback_locks_take_a_group_before_the_players_it_may_capture(
     assert lock_keys == ["playback_z", "playback_b"]
 
 
-def _add_group_holding(controller: PlayerController, player_id: str) -> None:
+def _add_group_holding(controller: PlayerController, mock_mass: MagicMock, player_id: str) -> None:
     """Add group "g" to the controller and let it capture the given player."""
-    provider = controller._players["z"].provider
+    provider = MockProvider("test", instance_id="test", mass=mock_mass)
     group = MockPlayer(provider, "g", "Other group", player_type=PlayerType.GROUP)
     group.set_initialized()
     group.update_state(signal_event=False)
@@ -192,7 +192,7 @@ async def test_playback_locks_take_every_group_before_a_member_another_group_hol
     for the player, so taking the player first would lock the group out until its timeout.
     """
     controller = _controller_with_synced_pair(mock_mass)
-    _add_group_holding(controller, "b")
+    _add_group_holding(controller, mock_mass, "b")
     lock_keys = _spy_on_lock_order(controller)
 
     async with controller.get_playback_locks("b", "z"):
@@ -221,13 +221,168 @@ async def test_playback_locks_follow_a_player_grouped_while_they_wait(
     await asyncio.sleep(0)
     transfer = asyncio.create_task(_transfer())
     await asyncio.sleep(0)
-    _add_group_holding(controller, "b")
+    _add_group_holding(controller, mock_mass, "b")
     release.set()
     await holder
     await transfer
 
     for player_id in ("b", "g"):
         assert not controller._player_command_locks[f"playback_{player_id}"].locked()
+
+
+async def test_playback_locks_run_two_transfers_across_an_ungroup_in_turn(
+    mock_mass: MagicMock, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """
+    Two transfers over a member and its leader both run when the member is ungrouped meanwhile.
+
+    The first waits for the leader, taken first while the member is grouped; after the
+    ungroup the second would take the member first, and the two would each hold a lock
+    the other waits for. The second waits for the first's turn instead.
+    """
+    monkeypatch.setattr(players_controller, "PLAYER_LOCK_SLOW_THRESHOLD", 0.4)
+    monkeypatch.setattr(players_controller, "PLAYER_LOCK_TIMEOUT", 0.45)
+    monkeypatch.setattr(players_controller, "PLAYER_LOCK_STRICT_TIMEOUT", 0.5)
+    controller = _controller_with_synced_pair(mock_mass)
+    go = asyncio.Event()
+    ungrouped = asyncio.Event()
+    release = asyncio.Event()
+    done: list[str] = []
+
+    async def _ungroup() -> None:
+        async with controller.get_player_lock("c", PlayerLockPurpose.PLAYBACK):
+            await go.wait()
+            controller._players["a"].state.synced_to = None
+            ungrouped.set()
+            await release.wait()
+
+    async def _transfer(name: str) -> None:
+        async with controller.get_playback_locks("a", "c", strict=True):
+            done.append(name)
+
+    holder = asyncio.create_task(_ungroup())
+    await asyncio.sleep(0)
+    first = asyncio.create_task(_transfer("first"))
+    await asyncio.sleep(0)
+    go.set()
+    await ungrouped.wait()
+    second = asyncio.create_task(_transfer("second"))
+    await asyncio.sleep(0)
+    release.set()
+    await asyncio.wait_for(asyncio.gather(holder, first, second), timeout=5)
+
+    assert sorted(done) == ["first", "second"]
+
+
+async def test_playback_locks_run_two_transfers_across_a_regroup_in_turn(
+    mock_mass: MagicMock, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """
+    Two transfers over a member and its leader both run when the member is grouped meanwhile.
+
+    The first takes the standalone member and waits for the busy leader; the member is
+    then grouped under it, so the second would wait for the leader first. A wait past the
+    slow threshold starts over at the back of the leader's queue, which would hand the
+    leader to the second while the first holds the member. The second waits for the
+    first's turn instead.
+    """
+    monkeypatch.setattr(players_controller, "PLAYER_LOCK_SLOW_THRESHOLD", 0.1)
+    monkeypatch.setattr(players_controller, "PLAYER_LOCK_TIMEOUT", 0.5)
+    monkeypatch.setattr(players_controller, "PLAYER_LOCK_STRICT_TIMEOUT", 1.5)
+    controller = _controller_with_synced_pair(mock_mass)
+    member = controller._players["a"]
+    member.state.synced_to = None
+    regroup = asyncio.Event()
+    release = asyncio.Event()
+    done: list[str] = []
+
+    async def _hold_the_leader() -> None:
+        async with controller.get_player_lock("c", PlayerLockPurpose.PLAYBACK):
+            await regroup.wait()
+            member.state.synced_to = "c"
+            await release.wait()
+
+    async def _transfer(name: str) -> None:
+        async with controller.get_playback_locks("a", "c", strict=True):
+            done.append(name)
+
+    holder = asyncio.create_task(_hold_the_leader())
+    await asyncio.sleep(0)
+    first = asyncio.create_task(_transfer("first"))
+    await asyncio.sleep(0.02)
+    regroup.set()
+    await asyncio.sleep(0.02)
+    second = asyncio.create_task(_transfer("second"))
+    # past the first's slow threshold, before the second's
+    await asyncio.sleep(0.075)
+    release.set()
+    await asyncio.wait_for(asyncio.gather(holder, first, second), timeout=1)
+
+    assert sorted(done) == ["first", "second"]
+
+
+async def test_playback_locks_skip_the_turn_for_a_task_holding_a_playback_lock(
+    mock_mass: MagicMock,
+) -> None:
+    """
+    A command already holding a playback lock takes its locks while another holds the turn.
+
+    The holder of the turn may be waiting for the lock that command holds (a transfer on a
+    leader whose group change hands its queue to a member), so waiting for the turn would
+    leave both waiting until the strict timeout.
+    """
+    controller = _controller_with_synced_pair(mock_mass)
+    in_turn = asyncio.Event()
+
+    async def _transfer_waiting_for_the_leader() -> None:
+        async with controller.get_playback_locks("c", strict=True):
+            pass
+
+    async def _group_change_on_the_leader() -> None:
+        async with controller.get_player_lock("c", PlayerLockPurpose.PLAYBACK):
+            await in_turn.wait()
+            async with controller.get_playback_locks("c", "b", strict=True):
+                assert controller._player_command_locks["playback_b"].locked()
+
+    group_change = asyncio.create_task(_group_change_on_the_leader())
+    await asyncio.sleep(0)
+    transfer = asyncio.create_task(_transfer_waiting_for_the_leader())
+    await asyncio.sleep(0)
+    assert controller._playback_locks_turn.locked()
+    in_turn.set()
+    await asyncio.wait_for(asyncio.gather(group_change, transfer), timeout=1)
+
+
+async def test_playback_locks_give_up_on_a_turn_that_stays_taken(
+    mock_mass: MagicMock, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """
+    A command over idle players fails at the strict timeout when the turn stays taken.
+
+    The holder of the turn may wait for a stuck player up to the strict timeout per lock;
+    without a bound, every command queued behind it would wait for all of them in turn.
+    """
+    monkeypatch.setattr(players_controller, "PLAYER_LOCK_STRICT_TIMEOUT", 0.1)
+    controller = _controller_with_synced_pair(mock_mass)
+    release = asyncio.Event()
+
+    async def _hold_the_turn() -> None:
+        async with controller._playback_locks_turn:
+            await release.wait()
+
+    holder = asyncio.create_task(_hold_the_turn())
+    await asyncio.sleep(0)
+    try:
+        with pytest.raises(ResourceBusyError):
+            async with controller.get_playback_locks("b", "z", strict=True):
+                pytest.fail("the body ran while another command held the turn")
+    finally:
+        release.set()
+        await holder
+    assert not controller._playback_locks_turn.locked()
+    for player_id in ("b", "z"):
+        lock = controller._player_command_locks.get(f"playback_{player_id}")
+        assert lock is None or not lock.locked()
 
 
 async def test_playback_locks_hand_back_a_players_locks_early(mock_mass: MagicMock) -> None:
