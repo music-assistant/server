@@ -308,6 +308,8 @@ class ShareProvider(PluginProvider):
             )
             playlist_item = self._playlist_item_from_payload(track_payload, include_isrc=False)
             metadata = playlist_item.metadata or {}
+            # M3U uses this separator to distinguish metadata fields, so untrusted values could
+            # otherwise inject matching identifiers into the imported track.
             m3u_values = (
                 playlist_item.title or "",
                 *metadata.keys(),
@@ -405,6 +407,31 @@ class ShareProvider(PluginProvider):
                 raise InvalidDataError(
                     f"Sharing playlists containing {track.media_type.value} entries is not supported"
                 )
+            if track.provider == "builtin" and track.item_id.startswith("share://track/"):
+                try:
+                    payload = SharePayload.from_base64(track.item_id.removeprefix("share://track/"))
+                except (binascii.Error, TypeError, ValueError) as err:
+                    raise InvalidDataError(
+                        "Cannot re-share an invalid imported share track"
+                    ) from err
+                if payload.type != "track":
+                    raise InvalidDataError("Imported share playlist entry is not a track")
+                # Import omits ISRC from match metadata, but the encoded URI retains the source ID.
+                result.append(
+                    TrackStub(
+                        title=payload.title,
+                        artist=payload.artist,
+                        artists=payload.artists,
+                        version=payload.version,
+                        isrc=payload.isrc,
+                        mbid=payload.mbid,
+                        mb_track=payload.mb_track,
+                        album=payload.album,
+                        duration=payload.duration,
+                        provider_refs=payload.provider_refs,
+                    )
+                )
+                continue
             result.append(
                 TrackStub(
                     title=track.name,
@@ -443,27 +470,8 @@ class ShareProvider(PluginProvider):
     async def _searchable_music_provider_instances(self) -> set[str]:
         return await ShareLinkResolver(self.mass)._searchable_music_provider_instances()
 
-    def _track_from_payload(self, payload: SharePayload) -> Track:
-        return ShareLinkResolver(self.mass)._track_from_payload(payload)
-
     @staticmethod
     def _playlist_item_from_payload(
         payload: SharePayload, include_isrc: bool = True
     ) -> PlaylistItem:
         return ShareLinkResolver._playlist_item_from_payload(payload, include_isrc)
-
-    @staticmethod
-    def _album_reference(payload: SharePayload) -> Album | ItemMapping:
-        return ShareLinkResolver._album_reference(payload)
-
-    @staticmethod
-    def _matches_album_reference(
-        payload: SharePayload,
-        reference: Album | ItemMapping,
-        candidate: Album | ItemMapping,
-    ) -> bool:
-        return ShareLinkResolver._matches_album_reference(payload, reference, candidate)
-
-    @staticmethod
-    def _artist_reference(payload: SharePayload) -> ItemMapping:
-        return ShareLinkResolver._artist_reference(payload)
