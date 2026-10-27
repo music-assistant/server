@@ -7,7 +7,7 @@ import dataclasses
 import functools
 import re
 import time
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, Any, cast
 
 from async_upnp_client.exceptions import UpnpActionError, UpnpError
 from hassfeld import upnp as hassfeld_upnp
@@ -2021,25 +2021,37 @@ class RaumfeldPlayer(Player):
         # A stop or another play command after this one cancels the restart (see
         # _changes_playback), also while it waits for the playback lock.
         self._flow_restart = self.mass.create_task(
-            self._restart_flow(media.source_id, item.queue_item_id, position)
+            self._restart_flow(
+                media.source_id, item.queue_item_id, position, asyncio.current_task()
+            )
         )
         self._attr_playback_state = PlaybackState.PLAYING
         self.update_state()
         return True
 
-    async def _restart_flow(self, queue_id: str, queue_item_id: str, position: int) -> None:
+    async def _restart_flow(
+        self,
+        queue_id: str,
+        queue_item_id: str,
+        position: int,
+        started_by: asyncio.Task[Any] | None,
+    ) -> None:
         """
         Start the queue's flow again at an earlier position, unless a skip came first.
 
         :param queue_id: The queue that plays the flow.
         :param queue_item_id: The queue item to start.
         :param position: The position (seconds) to start the item at.
+        :param started_by: The task of the play command that asked for the flow.
         """
         async with self.mass.players.get_group_and_player_lock(queue_id, strict=True):
             # Next and previous only schedule their play_index under the lock, and play_index
             # cancels a scheduled one; a skip that took the lock before this restart wins.
             task_id = f"queue_play_index_{queue_id}"
-            if task_id in self.mass._tracked_timers or self.mass.get_task(task_id):
+            # a skip's own play_index, the one that led here, stays listed until it ended
+            task = self.mass.get_task(task_id)
+            pending = task is not None and task is not started_by and not task.done()
+            if task_id in self.mass._tracked_timers or pending:
                 self.logger.debug("%s skipped meanwhile, not starting earlier", self.room)
                 return
             await self.mass.player_queues.play_index(

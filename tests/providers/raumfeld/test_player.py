@@ -2250,12 +2250,36 @@ async def test_a_skip_ahead_of_the_restart_stands(pending: str) -> None:
     if pending == "timer":
         player.mass._tracked_timers["queue_play_index_raumfeld_bar"] = MagicMock()
     else:
+        running = MagicMock()
+        running.done.return_value = False
         cast("MagicMock", player.mass).get_task.side_effect = lambda task_id: (
-            MagicMock() if task_id == "queue_play_index_raumfeld_bar" else None
+            running if task_id == "queue_play_index_raumfeld_bar" else None
         )
     await _run_restart(player)
 
     cast("MagicMock", player.mass.player_queues).play_index.assert_not_called()
+
+
+@pytest.mark.parametrize("listed", ["ended", "own"])
+async def test_the_skip_that_led_to_the_restart_does_not_stop_it(listed: str) -> None:
+    """A skip's play_index, still listed as it ends or as the one that asked, is no new skip."""
+    player, media = _flow_start(254)
+    skip = MagicMock()
+    skip.done.return_value = listed == "ended"
+    cast("MagicMock", player.mass).get_task.side_effect = lambda task_id: (
+        skip if task_id == "queue_play_index_raumfeld_bar" else None
+    )
+
+    with (
+        patch.object(player, "update_state"),
+        patch("asyncio.current_task", return_value=skip if listed == "own" else None),
+    ):
+        assert player._start_flow_earlier(media, FLOW_START_URL)
+    await _run_restart(player)
+
+    cast("MagicMock", player.mass.player_queues).play_index.assert_called_once_with(
+        "raumfeld_bar", "q2", seek_position=251
+    )
 
 
 async def test_a_command_after_the_earlier_start_cancels_the_restart() -> None:
