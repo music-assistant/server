@@ -10,13 +10,12 @@ from aiohttp import ClientSession
 from aiojellyfin.session import SessionConfiguration
 from aiojellyfin.testing import FixtureBuilder
 
+from music_assistant.constants import CONF_PASSWORD, CONF_USERNAME
 from music_assistant.mass import MusicAssistant
 from music_assistant.models.setup_flow import SetupFlowContext, SetupSession
 from music_assistant.providers.jellyfin import (
     CONF_ACCESS_TOKEN,
-    CONF_PASSWORD,
     CONF_USER_ID,
-    CONF_USERNAME,
     authenticate_with_quick_connect,
     initiate_quick_connect,
     setup_flow,
