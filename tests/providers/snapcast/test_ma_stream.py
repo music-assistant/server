@@ -159,32 +159,50 @@ class _ConsumingFFMpeg(_FakeFFMpeg):
         return 0
 
 
-@pytest.mark.asyncio
-async def test_streamer_waits_until_clients_played_the_buffered_audio(
-    fake_provider: MagicMock,
-) -> None:
-    """A short clip is not cut off by switching the group away while clients still play it."""
+def _clip_stream(fake_provider: MagicMock, seconds: float) -> SnapcastMAStream:
+    """Build a stream on the built-in server (0.5 s buffer) whose source yields a clip."""
     fake_provider._use_builtin_server = True
-    fake_provider._snapcast_server_buffer_size = 1000
+    fake_provider._snapcast_server_buffer_size = 500
     fake_provider._snapcast_server_host = "127.0.0.1"
     fake_provider.mass.create_task.side_effect = asyncio.ensure_future
     fake_provider.mass.closing = True
 
     async def clip() -> AsyncGenerator[bytes]:
-        # 1.5 s of audio
-        yield b"\0" * int(DEFAULT_SNAPCAST_FORMAT.pcm_sample_size * 1.5)
+        yield b"\0" * int(DEFAULT_SNAPCAST_FORMAT.pcm_sample_size * seconds)
 
     fake_provider.mass.streams.get_stream = MagicMock(return_value=clip())
     stream = _make_stream(fake_provider)
     stream.snap_stream = MagicMock(identifier="clip-1", path="tcp://0.0.0.0:4953")
+    return stream
+
+
+@pytest.mark.asyncio
+async def test_streamer_ends_once_clients_played_the_buffered_audio(
+    fake_provider: MagicMock,
+) -> None:
+    """A short clip is not cut off by switching the group away while clients still play it."""
+    stream = _clip_stream(fake_provider, seconds=0.5)
 
     with patch("music_assistant.providers.snapcast.ma_stream.FFMpeg", _ConsumingFFMpeg):
         task = asyncio.ensure_future(stream._streamer_task_impl())
-        await asyncio.sleep(0.2)
+        # played out after 0.5 s buffer + 0.5 s clip
+        await asyncio.sleep(0.7)
+        assert not task.done()
+        await asyncio.wait_for(task, 1)
+
+
+@pytest.mark.asyncio
+async def test_stop_ends_the_play_out_wait(fake_provider: MagicMock) -> None:
+    """A stop request does not wait for the clients to play the buffered audio."""
+    stream = _clip_stream(fake_provider, seconds=1.5)
+
+    with patch("music_assistant.providers.snapcast.ma_stream.FFMpeg", _ConsumingFFMpeg):
+        task = asyncio.ensure_future(stream._streamer_task_impl())
+        await asyncio.sleep(0.1)
         assert not task.done()
 
         stream.request_stop_stream()
-        await asyncio.wait_for(task, 1)
+        await asyncio.wait_for(task, 0.5)
 
 
 @pytest.mark.asyncio
