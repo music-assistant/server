@@ -1004,23 +1004,6 @@ class SendspinProvider(PlayerProvider):
             return
         await self._pair_with_token_or_raise(client_id, pairing_token)
 
-    async def is_paired(self, client_id: str) -> bool:
-        """
-        Return whether this server holds a pairing for a Sendspin client.
-
-        True when the server holds a pairing for the client and, if it is connected, the
-        connection confirms it. A client that is not connected is not waited for.
-
-        :param client_id: The client to check.
-        """
-        if await self.server_api.pairing_store.record_by_client_id(client_id) is None:
-            return False
-        client = self.server_api.get_client(client_id)
-        if client is None or not client.is_connected:
-            return True
-        security = client.connection_security
-        return security is not None and security.psk_category is PskCategory.LONG_TERM
-
     def get_management_session(self, client_id: str) -> ManagementSession | None:
         """Return the client's management session, dropping one whose connection is gone."""
         session = self._management_sessions.get(client_id)
@@ -1127,13 +1110,6 @@ class SendspinProvider(PlayerProvider):
                 "sendspin/pair_with_token",
                 self.pair_device_with_token,
                 required_scope=Scope.CONFIG_PLAYERS_WRITE,
-            )
-        )
-        self.unregister_cbs.append(
-            self.mass.register_api_command(
-                "sendspin/is_paired",
-                self.is_paired,
-                required_scope=Scope.CONFIG_PLAYERS_READ,
             )
         )
         # Pairings bound to a user's access must not outlive it (guest access switched
