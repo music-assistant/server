@@ -1205,7 +1205,8 @@ class YandexStationPlayer(Player):
         )
 
         _LOGGER.debug(
-            "[%s] playing=%s vol=%s prog=%s dur=%s title=%s extra=%s alice=%s",
+            "[%s] playing=%s vol=%s prog=%s dur=%s title=%s extra=%s alice=%s "
+            "requestID=%s id=%s type=%s playerType=%s",
             self.player_id,
             playing,
             state.get("volume"),
@@ -1214,6 +1215,10 @@ class YandexStationPlayer(Player):
             (player_state.get("title", "") or "")[:30],
             list(extra.keys()) if extra else None,
             state.get("aliceState"),
+            extra.get("requestID") if extra else None,
+            player_state.get("id"),
+            player_state.get("type"),
+            player_state.get("playerType"),
         )
 
         # Volume (0.0-1.0 → 0-100)
