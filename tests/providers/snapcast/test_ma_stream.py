@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from typing import TYPE_CHECKING, Any, Self
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from music_assistant_models.enums import ContentType
@@ -542,6 +542,50 @@ def test_one_member_finishing_does_not_release_another_members_pin(
     SnapCastProvider.update_stream_usage(fake_provider)
 
     fake_provider.mass.loop.call_later.assert_called_once_with(3.0, stream.request_stop_stream)
+
+
+async def test_replay_after_stop_waits_for_the_previous_run(fake_provider: MagicMock) -> None:
+    """
+    Regression: replaying right after a stop must not return while the old run drains.
+
+    The caller points the group at the stream once this returns; snapserver still plays
+    the previous session's audio until the stopping run has finished.
+    """
+    stream = _make_stream(fake_provider)
+    stream._setup_done = True
+    fake_provider.mass.create_task = asyncio.ensure_future
+    new_run = AsyncMock()
+    stream._streamer_task_impl = new_run  # type: ignore[method-assign]
+    old_run_done = asyncio.Event()
+
+    async def old_run() -> None:
+        await old_run_done.wait()
+
+    stream._streamer_task = asyncio.ensure_future(old_run())
+    stream._streamer_task.add_done_callback(stream._on_streamer_done)
+    stream.request_stop_stream()
+
+    start = asyncio.ensure_future(stream.start_stream(allow_restart=True))
+    with pytest.raises(TimeoutError):
+        await asyncio.wait_for(asyncio.shield(start), 0.05)
+
+    old_run_done.set()
+    await asyncio.wait_for(start, 1)
+    await asyncio.sleep(0.01)
+    new_run.assert_awaited_once()
+
+
+async def test_restart_of_a_running_stream_does_not_wait(fake_provider: MagicMock) -> None:
+    """A media change on a playing stream returns at once; the group is already on it."""
+    stream = _make_stream(fake_provider)
+    stream._setup_done = True
+    stream._streamer_task = asyncio.ensure_future(asyncio.sleep(10))
+
+    stream.update_media(MagicMock())
+    await asyncio.wait_for(stream.start_stream(allow_restart=True), 0.05)
+
+    assert stream._restart_requested
+    stream._streamer_task.cancel()
 
 
 def test_releasing_the_pin_schedules_the_stop_again(fake_provider: MagicMock) -> None:
