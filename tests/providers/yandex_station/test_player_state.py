@@ -78,7 +78,7 @@ def _report(
     *,
     playing: bool,
     alice_state: str = "IDLE",
-    external_media_matches: bool | None = None,
+    stream_reported: bool | None = None,
     progress: float = 0,
     duration: float = 0,
     native_track_id: str = "",
@@ -87,7 +87,7 @@ def _report(
     player._update_playback_state(
         playing,
         player._alice.feed(alice_state),
-        external_media_matches,
+        stream_reported,
         progress,
         duration,
         native_track_id,
@@ -197,7 +197,7 @@ async def test_audio_play_from_idle_confirms_on_first_playing_state() -> None:
         player,
         playing=True,
         alice_state="IDLE",
-        external_media_matches=True,
+        stream_reported=True,
     )
 
     assert player._external_play_confirmed is True
@@ -279,6 +279,7 @@ async def test_terminal_state_during_pending_play_command_is_preserved(
                         "playing": playing,
                         "aliceState": "IDLE",
                         "playerState": {
+                            "id": "",
                             "progress": progress,
                             "duration": 180,
                             "title": "Requested Track",
@@ -696,78 +697,56 @@ def test_external_playing_confirms_after_native_stop_is_observed() -> None:
     assert player._external_play_confirmed is True
 
 
-def test_audio_play_ignores_stale_state_during_track_handoff() -> None:
-    """Old-track state must not turn new-track startup into a physical pause."""
-    player = _make_player()
-    _disable_voice_control(player)
-    player._provider = cast("PlayerProvider", SimpleNamespace(config=_StubConfig()))
-    player._external_playing = True
-    vars(player)["_external_audio_client"] = True
-    requested_media = cast(
-        "PlayerMedia",
-        SimpleNamespace(
-            uri="yandex_music://track/2",
-            title="New Track",
-            artist="Artist",
-            duration=180,
-            image_url=None,
-        ),
+def _station_report(player: YandexStationPlayer, *, track_id: str, playing: bool) -> None:
+    """Feed a report the way the Station sends it: its own track id, empty for our stream."""
+    player._on_glagol_update(
+        {
+            "supported_features": ["audio_client"],
+            "state": {
+                "playing": playing,
+                "aliceState": "IDLE",
+                "playerState": {"id": track_id, "progress": 0, "duration": 180, "title": "T"},
+            },
+        }
     )
-    player._external_media = requested_media
 
-    def update(*, title: str, playing: bool) -> None:
-        player._on_glagol_update(
-            {
-                "supported_features": ["audio_client"],
-                "state": {
-                    "playing": playing,
-                    "aliceState": "IDLE",
-                    "playerState": {"progress": 0, "duration": 180, "title": title},
-                },
-            }
-        )
 
-    update(title="Old Track", playing=True)
+def test_audio_play_over_station_playback_is_confirmed_by_its_empty_track_id() -> None:
+    """The Station's own track keeps its id until our stream, with an empty id, starts."""
+    player = _make_player()
+    player._provider = cast("PlayerProvider", SimpleNamespace(config=_StubConfig()))
+    player._attr_playback_state = PlaybackState.PLAYING
+    player._start_external_session(_media(), audio_client=True)
+
+    _station_report(player, track_id="60112", playing=True)
     assert vars(player)["_external_play_confirmed"] is False
-
-    update(title="New Track", playing=False)
     assert player._external_playing is True
-    assert player._external_media is requested_media
 
-    update(title="New Track", playing=True)
+    _station_report(player, track_id="", playing=True)
 
     assert player._external_play_confirmed is True
     assert player._attr_playback_state == PlaybackState.PLAYING
 
 
-def test_audio_play_requires_a_state_boundary_before_title_confirmation() -> None:
-    """A same-title old track cannot confirm the new audio_play session."""
+def test_audio_play_after_another_ma_stream_needs_a_stopped_report() -> None:
+    """
+    Two MA streams both report an empty track id.
+
+    The new one is only attributed after the Station reported a stop, so the
+    old stream still playing cannot confirm it, and its end is not a user stop.
+    """
     player = _make_player()
-    _disable_voice_control(player)
-    player._external_playing = True
-    vars(player)["_external_audio_client"] = True
-    _report(
-        player,
-        playing=True,
-        alice_state="IDLE",
-        external_media_matches=True,
-    )
+    player._provider = cast("PlayerProvider", SimpleNamespace(config=_StubConfig()))
+    _start_confirmed_stream(player)
+    player._start_external_session(_media("yandex_music://track/2", "Next"), audio_client=True)
 
-    assert player._external_play_confirmed is False
+    _station_report(player, track_id="", playing=True)
+    assert vars(player)["_external_play_confirmed"] is False
 
-    _report(
-        player,
-        playing=False,
-        alice_state="IDLE",
-        external_media_matches=True,
-    )
-    _report(
-        player,
-        playing=True,
-        alice_state="IDLE",
-        external_media_matches=True,
-    )
+    _station_report(player, track_id="", playing=False)
+    assert player._external_playing is True
 
+    _station_report(player, track_id="", playing=True)
     assert player._external_play_confirmed is True
 
 
@@ -783,7 +762,7 @@ def test_audio_play_end_of_track_sets_idle_without_replay() -> None:
         player,
         playing=False,
         alice_state="IDLE",
-        external_media_matches=True,
+        stream_reported=True,
         progress=180,
         duration=180,
     )
@@ -873,7 +852,7 @@ async def test_pause_is_advertised_only_while_no_ma_stream_plays() -> None:
     assert player._attr_active_source == player.player_id
 
     player._external_play_confirmed = True
-    _report(player, playing=False, external_media_matches=True, progress=30, duration=180)
+    _report(player, playing=False, stream_reported=True, progress=30, duration=180)
 
     assert PlayerFeature.PAUSE in player._attr_supported_features
     assert player._external_playing is False
@@ -889,7 +868,7 @@ def test_stream_stopped_on_the_speaker_is_left_to_the_core() -> None:
     player = _make_player()
     _start_confirmed_stream(player)
 
-    _report(player, playing=False, external_media_matches=True, progress=30, duration=180)
+    _report(player, playing=False, stream_reported=True, progress=30, duration=180)
 
     assert player._attr_playback_state == PlaybackState.IDLE
     assert player._external_playing is False
@@ -901,7 +880,7 @@ def test_finished_stream_lets_the_queue_advance() -> None:
     player = _make_player()
     _start_confirmed_stream(player)
 
-    _report(player, playing=False, external_media_matches=True, progress=180, duration=180)
+    _report(player, playing=False, stream_reported=True, progress=180, duration=180)
 
     assert player._attr_playback_state == PlaybackState.IDLE
     assert vars(player)["_external_play_generation"] == 0
@@ -943,7 +922,7 @@ async def test_command_that_does_not_reach_the_station_changes_nothing(
     """A rejected or cancelled stop leaves the stream the Station keeps playing."""
     player = _make_player()
     _start_confirmed_stream(player)
-    _record_commands(player, outcome, {"playing": True, "external_media_matches": True})
+    _record_commands(player, outcome, {"playing": True, "stream_reported": True})
 
     with pytest.raises(PlayerCommandFailed if outcome == "timeout" else asyncio.CancelledError):
         await getattr(player, command)()
@@ -960,7 +939,7 @@ async def test_stop_confirmed_with_the_response_ends_the_stream_once() -> None:
     _record_commands(
         player,
         "success",
-        {"playing": False, "external_media_matches": True, "progress": 30, "duration": 180},
+        {"playing": False, "stream_reported": True, "progress": 30, "duration": 180},
     )
 
     await player.stop()
@@ -1019,7 +998,7 @@ def test_voice_request_over_ducked_stream_keeps_the_stream() -> None:
     _start_confirmed_stream(player)
 
     for alice_state in ("LISTENING", "BUSY", "NONE", "LISTENING", "IDLE"):
-        _report(player, playing=True, alice_state=alice_state, external_media_matches=True)
+        _report(player, playing=True, alice_state=alice_state, stream_reported=True)
 
     assert player._external_playing is True
     assert player._attr_playback_state == PlaybackState.PLAYING
@@ -1093,7 +1072,7 @@ def test_wake_word_less_stop_leaves_the_stream_stopped() -> None:
     _enable_voice_control(player)
     _start_confirmed_stream(player)
 
-    _report(player, playing=False, external_media_matches=True, progress=30, duration=180)
+    _report(player, playing=False, stream_reported=True, progress=30, duration=180)
 
     assert player._attr_playback_state == PlaybackState.IDLE
     assert player._voice_interrupted is False
@@ -1106,7 +1085,7 @@ def test_server_action_phrase_keeps_the_stream() -> None:
     _start_confirmed_stream(player)
 
     for alice_state in ("NONE", "NONE", "IDLE"):
-        _report(player, playing=True, alice_state=alice_state, external_media_matches=True)
+        _report(player, playing=True, alice_state=alice_state, stream_reported=True)
 
     assert player._external_playing is True
     player.mass.call_later.assert_not_called()
@@ -1164,3 +1143,38 @@ async def test_transport_command_cancels_the_auto_resume(command: str, outcome: 
     for alice_state in ("NONE", "IDLE"):
         _report(player, playing=False, alice_state=alice_state)
     player.mass.call_later.assert_not_called()
+
+
+def test_station_playback_that_replaces_the_stream_ends_it() -> None:
+    """
+    Music Alice was asked for replaces the MA stream without a stop in between.
+
+    Recorded on a Station: the reports go from an empty track id to the new
+    track's id with playing=True throughout. The stream is gone and the
+    Station's own playback takes over.
+    """
+    player = _make_player()
+    player._provider = cast("PlayerProvider", SimpleNamespace(config=_StubConfig()))
+    _start_confirmed_stream(player)
+
+    _station_report(player, track_id="", playing=True)
+    _station_report(player, track_id="138389651", playing=True)
+
+    assert player._external_playing is False
+    assert player._attr_playback_state == PlaybackState.PLAYING
+    assert player._attr_active_source == STATION_SOURCE_ID
+    assert PlayerFeature.PAUSE in player._attr_supported_features
+    assert vars(player)["_external_play_generation"] == 1
+
+
+def test_report_without_a_track_id_keeps_the_stream() -> None:
+    """A report that does not name a track says nothing about the source."""
+    player = _make_player()
+    player._provider = cast("PlayerProvider", SimpleNamespace(config=_StubConfig()))
+    _start_confirmed_stream(player)
+
+    player._on_glagol_update(
+        {"state": {"playing": True, "aliceState": "IDLE", "playerState": {"title": "Other"}}}
+    )
+
+    assert player._external_playing is True

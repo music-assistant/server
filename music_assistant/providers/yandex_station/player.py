@@ -121,17 +121,17 @@ def _parse_yandex_track_id(raw: str) -> str:
     return raw.split(":", 1)[0].strip()
 
 
-def _external_media_title_matches(
-    media: PlayerMedia | None, player_state: dict[str, Any]
-) -> bool | None:
-    """Compare requested and reported titles, or return unknown if either is absent."""
-    if media is None:
+def _reports_handed_stream(player_state: dict[str, Any]) -> bool | None:
+    """
+    Return whether a report describes a stream handed over with audio_play.
+
+    The Station reports an empty track id for such a stream and the Yandex Music
+    track id for its own playback. None means the report does not say.
+    """
+    track_id = player_state.get("id")
+    if not isinstance(track_id, str):
         return None
-    expected_title = (media.title or "").strip()
-    reported_title = (player_state.get("title") or "").strip()
-    if not expected_title or not reported_title:
-        return None
-    return expected_title == reported_title
+    return track_id == ""
 
 
 def _raise_if_failed(result: dict[str, Any] | None, command: str) -> None:
@@ -203,8 +203,9 @@ class YandexStationPlayer(Player):
         # Used to distinguish the startup window (station fetching stream) from
         # a user-initiated physical pause on the speaker.
         self._external_play_confirmed = False
-        # A playing=True update can belong to the native source that radio_play
-        # is replacing. Only accept it after a non-playing state boundary.
+        # A playing=True update can belong to the source the stream replaces when
+        # it cannot be told apart (legacy radio_play, or another MA stream). Only
+        # accept it after a non-playing boundary.
         self._external_stop_observed = False
         # Alice's activity, followed through the reported aliceState.
         self._alice = AliceTracker()
@@ -602,12 +603,21 @@ class YandexStationPlayer(Player):
 
     def _start_external_session(self, media: PlayerMedia, *, audio_client: bool) -> None:
         """Record the Music Assistant stream the Station is about to be told to play."""
+        # A stream that replaces another MA stream is only attributed after a
+        # stopped report: both report an empty track id. Legacy radio_play
+        # reports carry no track id, so its stream always needs that boundary.
+        replaces_stream = self._external_playing and (
+            self._attr_playback_state == PlaybackState.PLAYING
+        )
         self._external_playing = True
         self._external_audio_client = audio_client
         self._external_media = media
         self._external_play_confirmed = False
-        # An already-idle Station has crossed the boundary before this command.
-        self._external_stop_observed = self._attr_playback_state != PlaybackState.PLAYING
+        self._external_stop_observed = (
+            not replaces_stream
+            if audio_client
+            else self._attr_playback_state != PlaybackState.PLAYING
+        )
         self._attr_active_source = self.player_id
         # The Station cannot pause this stream; the core stops it instead.
         self._attr_supported_features = self._attr_supported_features - {PlayerFeature.PAUSE}
@@ -1099,12 +1109,23 @@ class YandexStationPlayer(Player):
         self,
         playing: bool,
         alice: AliceUpdate,
-        external_media_matches: bool | None = None,
+        stream_reported: bool | None = None,
         progress: float = 0,
         duration: float = 0,
         native_track_id: str = "",
     ) -> None:
         """Apply one Station playback report to the player state."""
+        if (
+            self._external_playing
+            and playing
+            and self._external_play_confirmed
+            and stream_reported is False
+        ):
+            # The Station plays its own content without a stop in between, e.g.
+            # music Alice was asked for: the stream is gone.
+            _LOGGER.debug("[%s] Station playback replaced the MA stream", self.player_id)
+            self._external_play_generation += 1
+            self._end_external_session()
         if self._external_playing:
             # While Alice handles a request the Station usually only ducks the
             # stream; it is interrupted only once the Station reports it stopped.
@@ -1116,7 +1137,9 @@ class YandexStationPlayer(Player):
                 self._interrupt_for_voice()
             elif playing:
                 if self._external_audio_client:
-                    if self._external_stop_observed and external_media_matches is not False:
+                    # The Station reports the stream it was handed with an empty
+                    # track id; until then it still reports the source it replaces.
+                    if stream_reported and self._external_stop_observed:
                         self._external_play_confirmed = True
                 elif self._external_stop_observed:
                     self._external_play_confirmed = True
@@ -1125,7 +1148,7 @@ class YandexStationPlayer(Player):
             elif (
                 self._external_play_confirmed
                 and alice.activity != AliceActivity.REQUEST
-                and external_media_matches is not False
+                and stream_reported is not False
             ):
                 # The stream stopped without Alice: it finished, or the user stopped
                 # it on the Station. Either way it is gone; the core resumes the queue.
@@ -1136,11 +1159,10 @@ class YandexStationPlayer(Player):
                 self._end_external_session()
                 self._attr_playback_state = PlaybackState.IDLE
             else:
-                # Startup window: radio_play sent but station not yet fetching.
-                # Record the native stop and stay optimistic until a later
-                # playing=True can be attributed to the new external session.
-                if not self._external_audio_client or external_media_matches is not False:
-                    self._external_stop_observed = True
+                # Startup window: the stream was sent but the Station does not play
+                # it yet; the stopped report is the boundary after the source it
+                # replaces.
+                self._external_stop_observed = True
                 self._attr_playback_state = PlaybackState.PLAYING
                 self._attr_powered = True
         elif playing:
@@ -1198,8 +1220,8 @@ class YandexStationPlayer(Player):
         playing = state.get("playing", False)
         extra = player_state.get("extra", {})
 
-        external_media_matches = (
-            _external_media_title_matches(self._external_media, player_state)
+        stream_reported = (
+            _reports_handed_stream(player_state)
             if self._external_playing and self._external_audio_client
             else None
         )
@@ -1231,7 +1253,7 @@ class YandexStationPlayer(Player):
         self._update_playback_state(
             playing,
             alice,
-            external_media_matches,
+            stream_reported,
             player_state.get("progress", 0),
             player_state.get("duration", 0),
             (player_state.get("id") or "").strip(),
@@ -1251,7 +1273,7 @@ class YandexStationPlayer(Player):
         if self._external_playing and self._external_media:
             # Keep requested MA metadata. audio_play reports reliable progress,
             # while legacy radio_play can still expose stale native state.
-            if self._external_audio_client and external_media_matches is not False:
+            if self._external_audio_client and stream_reported is not False:
                 self._attr_elapsed_time = progress
                 self._attr_elapsed_time_last_updated = time.time()
             self.set_current_media(
