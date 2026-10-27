@@ -52,6 +52,7 @@ from music_assistant.providers.share_provider.links import (
     expand_artwork_ref,
     expand_provider_ref,
 )
+from music_assistant.providers.share_provider.resolver import ShareLinkResolver
 
 ISRC = "USRC17607839"
 BARCODE = "00724354283857"
@@ -830,7 +831,7 @@ async def test_track_payload_preserves_separate_artist_credits() -> None:
     )
 
     payload = await provider._build_payload(track)
-    reconstructed = provider._track_from_payload(payload)
+    reconstructed = ShareLinkResolver(provider.mass)._track_from_payload(payload)
 
     assert payload.artist == "First, Second"
     assert payload.artists == ["First", "Second"]
@@ -857,10 +858,10 @@ async def test_album_payload_preserves_separate_artist_credits() -> None:
     )
 
     payload = await provider._build_payload(album)
-    reference = provider._album_reference(payload)
+    reference = ShareLinkResolver._album_reference(payload)
 
     assert payload.artists == ["First", "Second"]
-    assert provider._matches_album_reference(payload, reference, album)
+    assert ShareLinkResolver._matches_album_reference(payload, reference, album)
 
 
 def test_name_only_album_is_not_reconstructed_as_a_builtin_mapping() -> None:
@@ -869,7 +870,7 @@ def test_name_only_album_is_not_reconstructed_as_a_builtin_mapping() -> None:
     payload = SharePayload(type="track", title="Track", artist="Artist", album="Album")
 
     item = provider._playlist_item_from_payload(payload)
-    reconstructed = provider._track_from_payload(payload)
+    reconstructed = ShareLinkResolver(provider.mass)._track_from_payload(payload)
 
     assert item.album is None
     assert reconstructed.album is None
@@ -1406,6 +1407,53 @@ async def test_import_shared_playlist_preserves_separate_artist_credits() -> Non
     shared_payload = SharePayload.from_base64(imported_item.path.removeprefix("share://track/"))
     assert shared_payload.artists == ["First", "Second"]
     assert [artist.name for artist in imported_item.artists] == ["First", "Second"]
+
+
+async def test_reshare_imported_unresolved_track_preserves_original_payload() -> None:
+    """An unresolved imported track retains IDs, album data, and links when re-shared."""
+    provider = _provider()
+    mass = _mass(provider)
+    mass.music.playlists.import_playlist = AsyncMock(return_value=MagicMock())
+    payload = SharePayload(
+        type="playlist",
+        title="Shared Mix",
+        tracks=[
+            TrackStub(
+                title="Track",
+                artist="Artist",
+                artists=["Artist"],
+                version="Live",
+                isrc=ISRC,
+                mbid="recording-mbid",
+                album="Album",
+                duration=218,
+                provider_refs={"spotify": "/track/original-track"},
+            )
+        ],
+    )
+
+    await provider.import_shared_playlist(payload.to_base64())
+
+    imported_m3u = mass.music.playlists.import_playlist.await_args.args[0]
+    imported_item = parse_m3u(imported_m3u)[0]
+    unresolved_track = construct_media_item_from_playlist_item(imported_item, mass)
+    assert isinstance(unresolved_track, Track)
+    assert unresolved_track.provider == "builtin"
+    assert unresolved_track.item_id == imported_item.path
+    assert (ExternalID.ISRC, ISRC) not in unresolved_track.external_ids
+
+    async def iter_playlist_tracks(
+        item_id: str, provider_instance_id_or_domain: str
+    ) -> AsyncGenerator[Track]:
+        assert item_id == "playlist"
+        assert provider_instance_id_or_domain == "builtin"
+        yield unresolved_track
+
+    mass.music.playlists.iter_tracks = MagicMock(side_effect=iter_playlist_tracks)
+    stubs = await provider._build_playlist_tracks(MagicMock(item_id="playlist", provider="builtin"))
+
+    assert payload.tracks is not None
+    assert stubs == payload.tracks
 
 
 async def test_import_shared_playlist_rejects_m3u_extension_delimiter() -> None:
