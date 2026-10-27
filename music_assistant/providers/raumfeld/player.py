@@ -2021,13 +2021,30 @@ class RaumfeldPlayer(Player):
         # A stop or another play command after this one cancels the restart (see
         # _changes_playback), also while it waits for the playback lock.
         self._flow_restart = self.mass.create_task(
-            self.mass.player_queues.play_index(
-                media.source_id, item.queue_item_id, seek_position=position
-            )
+            self._restart_flow(media.source_id, item.queue_item_id, position)
         )
         self._attr_playback_state = PlaybackState.PLAYING
         self.update_state()
         return True
+
+    async def _restart_flow(self, queue_id: str, queue_item_id: str, position: int) -> None:
+        """
+        Start the queue's flow again at an earlier position, unless a skip came first.
+
+        :param queue_id: The queue that plays the flow.
+        :param queue_item_id: The queue item to start.
+        :param position: The position (seconds) to start the item at.
+        """
+        async with self.mass.players.get_group_and_player_lock(queue_id, strict=True):
+            # Next and previous only schedule their play_index under the lock, and play_index
+            # cancels a scheduled one; a skip that took the lock before this restart wins.
+            task_id = f"queue_play_index_{queue_id}"
+            if task_id in self.mass._tracked_timers or self.mass.get_task(task_id):
+                self.logger.debug("%s skipped meanwhile, not starting earlier", self.room)
+                return
+            await self.mass.player_queues.play_index(
+                queue_id, queue_item_id, seek_position=position
+            )
 
     def _mark_play_started(self) -> None:
         """Record a play/resume command and switch to fast polling."""

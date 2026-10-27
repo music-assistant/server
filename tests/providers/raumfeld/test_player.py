@@ -2157,20 +2157,28 @@ def _flow_start(seek_position: int, duration: int = 259) -> tuple[RaumfeldPlayer
     item.streamdetails = MagicMock(seek_position=seek_position, duration=duration)
     queues = cast("MagicMock", player.mass.player_queues)
     queues.get.return_value = MagicMock(current_item=item, playback_speed=1.0)
-    queues.play_index = MagicMock()
+    queues.play_index = AsyncMock()
+    player.mass._tracked_timers = {}
+    cast("MagicMock", player.mass).get_task.return_value = None
     media = PlayerMedia(uri="library://track/1", source_id="raumfeld_bar")
     return player, media
+
+
+async def _run_restart(player: RaumfeldPlayer) -> None:
+    """Run the restart the player handed to MA as a task."""
+    await cast("MagicMock", player.mass.create_task).call_args.args[0]
 
 
 FLOW_START_URL = f"{BASE_URL}/flow/s/raumfeld_bar/q.flac"
 
 
-def test_a_flow_starting_in_the_last_seconds_of_a_track_starts_earlier() -> None:
+async def test_a_flow_starting_in_the_last_seconds_of_a_track_starts_earlier() -> None:
     """A flow left with 5 s of its first track is started 8 s before the end instead."""
     player, media = _flow_start(254)
 
     with patch.object(player, "update_state"):
         assert player._start_flow_earlier(media, FLOW_START_URL)
+    await _run_restart(player)
 
     # by item: the queue's current item can move back to the previous one meanwhile
     cast("MagicMock", player.mass.player_queues).play_index.assert_called_once_with(
@@ -2203,7 +2211,7 @@ def test_a_single_item_stream_starts_as_asked() -> None:
     assert not player._start_flow_earlier(media, f"{BASE_URL}/single/s/raumfeld_bar/q.flac")
 
 
-def test_the_least_of_the_first_track_scales_with_the_playback_speed() -> None:
+async def test_the_least_of_the_first_track_scales_with_the_playback_speed() -> None:
     """At 2x speed 8 s of audio take 16 s of the track, so 12 s left is too little."""
     player, media = _flow_start(247, duration=259)
     queue = cast("MagicMock", player.mass.player_queues).get.return_value
@@ -2213,6 +2221,7 @@ def test_the_least_of_the_first_track_scales_with_the_playback_speed() -> None:
 
     with patch.object(player, "update_state"):
         assert player._start_flow_earlier(media, FLOW_START_URL)
+    await _run_restart(player)
 
     cast("MagicMock", player.mass.player_queues).play_index.assert_called_once_with(
         "raumfeld_bar", "q2", seek_position=243
@@ -2226,6 +2235,25 @@ def test_a_flow_that_would_restart_at_zero_starts_as_asked() -> None:
     queue.current_item.extra_attributes["playback_speed"] = 1.2
 
     assert not player._start_flow_earlier(media, FLOW_START_URL)
+
+    cast("MagicMock", player.mass.player_queues).play_index.assert_not_called()
+
+
+@pytest.mark.parametrize("pending", ["timer", "task"])
+async def test_a_skip_ahead_of_the_restart_stands(pending: str) -> None:
+    """A next press that took the playback lock first is not undone by the restart."""
+    player, media = _flow_start(254)
+
+    with patch.object(player, "update_state"):
+        assert player._start_flow_earlier(media, FLOW_START_URL)
+    # next() ran first: its play_index waits as a timer, or already as a task
+    if pending == "timer":
+        player.mass._tracked_timers["queue_play_index_raumfeld_bar"] = MagicMock()
+    else:
+        cast("MagicMock", player.mass).get_task.side_effect = lambda task_id: (
+            MagicMock() if task_id == "queue_play_index_raumfeld_bar" else None
+        )
+    await _run_restart(player)
 
     cast("MagicMock", player.mass.player_queues).play_index.assert_not_called()
 
