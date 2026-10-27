@@ -577,7 +577,7 @@ class YandexYnisonProvider(PluginProvider):
                 if natural_end:
                     self.logger.info("Track %s finished, advancing to next", track_id)
                     baseline = self._ynison.navigation_baseline()
-                    completion = await self._signal_track_completion()
+                    completion = await self._signal_track_completion(baseline=baseline)
                     if completion == NavigationOutcome.RESTART:
                         playback.request_restart(0, RestartReason.REPEAT, grace=False)
                     elif completion == NavigationOutcome.SUPERSEDED:
@@ -1949,12 +1949,22 @@ class YandexYnisonProvider(PluginProvider):
         self,
         *,
         natural: bool = True,
+        baseline: NavigationBaseline | None = None,
     ) -> NavigationOutcome:
-        """Serialize navigation, including asynchronous RADIO replenishment."""
-        async with self._queue_navigation_lock:
-            return await self._complete_track(natural=natural)
+        """
+        Serialize navigation, including asynchronous RADIO replenishment.
 
-    async def _complete_track(self, *, natural: bool = True) -> NavigationOutcome:
+        :param natural: Whether playback reached the end rather than receiving
+            an explicit next command.
+        :param baseline: Playback the completion belongs to; defaults to the
+            playback found once the navigation lock is held.
+        """
+        async with self._queue_navigation_lock:
+            return await self._complete_track(natural=natural, baseline=baseline)
+
+    async def _complete_track(
+        self, *, natural: bool = True, baseline: NavigationBaseline | None = None
+    ) -> NavigationOutcome:
         """
         Signal that the current track finished playing.
 
@@ -1968,6 +1978,8 @@ class YandexYnisonProvider(PluginProvider):
 
         :param natural: Whether playback reached the end rather than receiving
             an explicit next command.
+        :param baseline: Playback the completion belongs to; defaults to the
+            current playback.
         :return: The published navigation outcome, or ``failed`` when navigation
             could not be completed.
         """
@@ -1977,7 +1989,8 @@ class YandexYnisonProvider(PluginProvider):
         self._playback.duration_ms = 0
         # The completion belongs to the playback seen now; a peer queue that
         # replaces it while the transport recovers must not receive it.
-        baseline = client.navigation_baseline()
+        if baseline is None:
+            baseline = client.navigation_baseline()
         if not await self._wait_for_ynison_connection(client):
             return NavigationOutcome.FAILED
         if not client.is_current_playback(baseline):

@@ -355,6 +355,7 @@ class YnisonClient:
         self._queue_lineage = 0
         self._navigation_version: int | None = None
         self._unadopted_navigation: int | None = None
+        self._navigation_status: dict[str, Any] | None = None
         self._confirmed_queue_version: int | None = None
         self._message_task: asyncio.Task[None] | None = None
         self._reconnect_task: asyncio.Task[None] | None = None
@@ -569,6 +570,14 @@ class YnisonClient:
             self._status_baseline = StatusBaseline(
                 progress_ms, duration_ms, paused, time.monotonic(), None
             )
+            if self._unadopted_navigation is not None and self._navigation_status is not None:
+                # Later queue edits republish this status, not the navigation's.
+                self._navigation_status = {
+                    **self._navigation_status,
+                    "progress_ms": str(progress_ms),
+                    "duration_ms": str(duration_ms),
+                    "paused": paused,
+                }
             track_id = self.state.current_track_id
             if track_id is not None:
                 self._status_watermarks.append(
@@ -676,18 +685,33 @@ class YnisonClient:
                 raise ResourceTemporarilyUnavailable("Ynison queue changed before command was sent")
             player_state = deepcopy(self.state.player_state)
             player_state["player_queue"] = self.queue_snapshot()
+            if self._unadopted_navigation is not None and self._navigation_status is not None:
+                # Until our navigation is adopted, its status is the newest one we sent.
+                player_state["status"] = deepcopy(self._navigation_status)
             if mutation(player_state) is False:
                 return None
             queue = player_state.get("player_queue", {})
             queue["version"] = make_version_block(self.device_id)
-            if navigation() if callable(navigation) else navigation:
+            previous = (
+                self._navigation_version,
+                self._unadopted_navigation,
+                self._navigation_status,
+            )
+            registered = navigation() if callable(navigation) else navigation
+            if registered:
                 self._navigation_version = int(queue["version"]["version"])
                 self._unadopted_navigation = self._navigation_version
+                self._navigation_status = deepcopy(player_state.get("status"))
             epoch = self._queue_epoch
             try:
                 await self._send_locked(self._player_state_message(player_state), strict=True)
             except YnisonSendError:
-                self._unadopted_navigation = None
+                if registered:
+                    (
+                        self._navigation_version,
+                        self._unadopted_navigation,
+                        self._navigation_status,
+                    ) = previous
                 raise
             if epoch != self._queue_epoch:
                 raise ResourceTemporarilyUnavailable("Ynison queue changed while command was sent")
@@ -915,6 +939,7 @@ class YnisonClient:
             and self.state.active_device_id == baseline.active_device_id
             and self.state.is_paused == baseline.paused
             and _current_playable_id(queue) == baseline.playable_id
+            and self._navigation_version == baseline.navigation_version
         )
 
     def _channel_ready(self) -> bool:
@@ -1373,7 +1398,16 @@ class YnisonClient:
                 if key == "status" and not self.state.status_is_relay:
                     # A relay keeps the anchor its position is extrapolated from.
                     self._remember_server_status(value)
+                    # A newer status supersedes the one our pending navigation sent.
+                    self._navigation_status = None
                 existing_ps[key] = value
+            if (
+                self.state.current_item_navigated
+                and "status" not in incoming_ps
+                and self._navigation_status is not None
+            ):
+                # A queue-only echo of our navigation starts where that navigation said.
+                existing_ps["status"] = deepcopy(self._navigation_status)
             self.state.last_update_is_echo = is_echo
         else:
             self.state.last_update_is_echo = False

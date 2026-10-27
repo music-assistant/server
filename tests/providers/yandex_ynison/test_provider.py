@@ -2616,9 +2616,14 @@ def _wire_queue_mutation(mock: MagicMock) -> None:
         if mutation(player_state) is False:
             return
         player_state["player_queue"]["version"] = make_version_block(mock.device_id)
+        previous = mock._navigation_version
         if navigation() if callable(navigation) else navigation:
             mock._navigation_version = int(player_state["player_queue"]["version"]["version"])
-        await mock.update_player_state(player_state=player_state, strict=True)
+        try:
+            await mock.update_player_state(player_state=player_state, strict=True)
+        except YnisonSendError:
+            mock._navigation_version = previous
+            raise
         pending = deepcopy(player_state["player_queue"])
 
     mock.mutate_player_state = AsyncMock(side_effect=mutate)
@@ -3375,10 +3380,13 @@ class TestEchoSuppression:
         echo = _make_ynison_state(current_playable_index=199, playable_list=playable)
         echo.last_update_is_echo = True
         echo.current_item_navigated = True
+        echo.player_state["status"]["progress_ms"] = 0
+        provider._playback.progress_ms = 70000
 
         await provider._handle_ynison_state(echo)
 
         assert provider._playback.restart_requested()
+        assert provider._playback.position_ms("track1") == 0
 
     async def test_trim_echo_during_the_send_keeps_the_track(self) -> None:
         """An echo of the trimmed queue that arrives while the edit is sent is not a skip."""
@@ -4408,7 +4416,7 @@ class TestNaturalEndDifferentiation:
     def _spy_signal(provider: YandexYnisonProvider) -> list[int]:
         calls: list[int] = []
 
-        async def _spy() -> None:
+        async def _spy(**_kwargs: Any) -> None:
             calls.append(1)
 
         _stub_attr(provider, "_signal_track_completion", _spy)
@@ -4500,7 +4508,7 @@ class TestNaturalEndDifferentiation:
         ynison = provider._ynison
         streamed: list[str] = []
 
-        async def superseded() -> str:
+        async def superseded(**_kwargs: Any) -> str:
             ynison.state.current_track_id = "peer1"
             return "superseded"
 
@@ -5172,6 +5180,26 @@ class TestTrackBoundaryRecovery:
         ):
             assert await provider._signal_track_completion() == "superseded"
 
+        client.update_player_state.assert_not_awaited()
+
+    async def test_completion_keeps_the_baseline_captured_at_track_end(self) -> None:
+        """A peer replacement while completion waits for the navigation lock supersedes it."""
+        provider = _make_provider()
+        client = _mock_ynison(
+            _make_ynison_state(playable_list=[{"playable_id": "t1"}, {"playable_id": "t2"}])
+        )
+        provider._ynison = client
+        baseline = client.navigation_baseline()
+        await provider._queue_navigation_lock.acquire()
+        completion = asyncio.create_task(provider._signal_track_completion(baseline=baseline))
+        await asyncio.sleep(0)
+        client.state = _make_ynison_state(
+            playable_list=[{"playable_id": "peer1"}, {"playable_id": "peer2"}]
+        )
+        client._queue_lineage += 1
+        provider._queue_navigation_lock.release()
+
+        assert await completion == "superseded"
         client.update_player_state.assert_not_awaited()
 
 
