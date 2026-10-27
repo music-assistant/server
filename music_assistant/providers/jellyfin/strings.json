@@ -34,10 +34,10 @@
     "quick_connect_approval": {
       "title": "Approve Music Assistant",
       "description": "Enter code {0} in Jellyfin Quick Connect to approve this connection."
-    },
-    "error": {
-      "quick_connect_timeout": "Quick Connect approval timed out. Try again."
     }
+  },
+  "errors": {
+    "quick_connect_timeout": "Quick Connect approval timed out. Try again."
   },
   "manifest": {
     "description": "Stream music from your self-hosted Jellyfin server."
