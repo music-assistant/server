@@ -101,13 +101,37 @@ class TestGetThumbImage:
     def test_returns_only_thumb(self) -> None:
         """A THUMB image is returned in isolation, dropping other image types."""
         ctrl = _controller()
-        thumb = MediaItemImage(type=ImageType.THUMB, path="thumb.jpg", provider="theaudiodb")
+        thumb = MediaItemImage(
+            type=ImageType.THUMB,
+            path="https://img/thumb.jpg",
+            provider="theaudiodb",
+            remotely_accessible=True,
+        )
         fanart = MediaItemImage(type=ImageType.FANART, path="fanart.jpg", provider="theaudiodb")
         metadata = MediaItemMetadata(images=UniqueList([fanart, thumb]))
         result = ctrl._get_thumb_image(metadata)
         assert result is not None
         assert result.images is not None
         assert list(result.images) == [thumb]
+
+    def test_local_thumb_is_served_through_the_image_proxy(self) -> None:
+        """A THUMB that is a local file is returned as its image proxy URL."""
+        ctrl = _controller()
+        ctrl.get_image_url = MagicMock(return_value="http://ma/imageproxy/abc")  # type: ignore[method-assign]
+        thumb = MediaItemImage(
+            type=ImageType.THUMB, path="Radiohead/folder.jpg", provider="local_metadata"
+        )
+        result = ctrl._get_thumb_image(MediaItemMetadata(images=UniqueList([thumb])))
+        assert result is not None
+        assert list(result.images or []) == [
+            MediaItemImage(
+                type=ImageType.THUMB,
+                path="http://ma/imageproxy/abc",
+                provider="library",
+                remotely_accessible=True,
+            )
+        ]
+        ctrl.get_image_url.assert_called_once_with(thumb, prefer_proxy=True)
 
     def test_returns_none_without_thumb(self) -> None:
         """Metadata with only non-THUMB images yields None."""

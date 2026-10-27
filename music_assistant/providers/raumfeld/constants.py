@@ -4,11 +4,12 @@ from __future__ import annotations
 
 import aiohttp
 from music_assistant_models.config_entries import ConfigEntry
+from music_assistant_models.enums import ConfigEntryType
 
 from music_assistant.constants import (
+    CONF_ENTRY_ENABLE_ICY_METADATA,
     CONF_ENTRY_FLOW_MODE,
     CONF_ENTRY_HTTP_PROFILE_FORCED_1,
-    CONF_ENTRY_ICY_METADATA_DEFAULT_FULL,
     create_sample_rates_config_entry,
 )
 
@@ -41,6 +42,14 @@ RENDERER_QUERY_TIMEOUT = 5
 # unreachable, and health-checks the host while connected.
 RECONNECT_INTERVAL = 30
 
+# How long (seconds) the host gets to answer a health check. hassfeld's own check allows
+# 3 s, which a host on a slow Wi-Fi link misses now and then.
+HOST_CHECK_TIMEOUT = 10
+
+# Failed health checks in a row before the host counts as lost. Losing it marks every room
+# unavailable and rebuilds the connection, too much for one slow answer.
+HOST_CHECK_FAILURES = 3
+
 # How often (seconds) the zones the host reports are compared with the groups Music Assistant
 # shows. The comparison reads hassfeld's in-memory model, so it costs no request.
 ZONE_WATCH_INTERVAL = 2
@@ -49,6 +58,13 @@ ZONE_WATCH_INTERVAL = 2
 # alone. A group change takes the host several steps (a room leaves one zone, joins the
 # next, a leader hands over), and mirroring one of the states in between would undo it.
 GROUP_SETTLE_TIME = 10
+
+# How long (seconds) the host gets at most to hook a joining room into the running stream
+# before that stream is restarted for the room, and how often (seconds) the room is asked
+# whether it plays yet. Restarting while the host still hooks the room in drops it, and the
+# host adds it back about ten seconds later, out of step (measured with a Connector room).
+JOIN_SETTLE_TIME = 5
+JOIN_SETTLE_INTERVAL = 0.5
 
 # Player id prefix so ids are namespaced and stable-ish per room.
 PLAYER_ID_PREFIX = "raumfeld"
@@ -69,6 +85,18 @@ BUTTON_ITEM_CACHE_TTL = 300
 CACHE_CATEGORY_BUTTON_ITEMS = 1
 SOURCE_LINE_IN = "line_in"
 
+# A room joining a group that plays hooks into the running stream a little behind the others
+# (measured with a Connector room, heard as a slight echo); grouping first and then playing
+# is in sync. With this on for the leader or any room of the group, the leader starts its
+# queue again where it is when a room joins.
+CONF_RESTART_ON_JOIN = "restart_on_join"
+CONF_ENTRY_RESTART_ON_JOIN = ConfigEntry(
+    key=CONF_RESTART_ON_JOIN,
+    type=ConfigEntryType.BOOLEAN,
+    default_value=False,
+    advanced=True,
+)
+
 # Per-player config entries (MA adds the flow sample-rate entry itself).
 PLAYER_CONFIG_ENTRIES = [
     # Flow mode on by default. The zone renderer has no SetNextAVTransportURI, so a stream
@@ -83,10 +111,11 @@ PLAYER_CONFIG_ENTRIES = [
     # relays the flow as one continuous connection.
     CONF_ENTRY_HTTP_PROFILE_FORCED_1,
     # ICY on by default. The stream never changes - it is one flow for the whole queue - so
-    # the ICY StreamTitle, which the host parses out of the relayed stream, is the only way
-    # the Raumfeld app can follow the queue. It carries the title only: the app's clock and
-    # duration do not follow along.
-    CONF_ENTRY_ICY_METADATA_DEFAULT_FULL,
+    # the ICY StreamTitle, which the host parses out of the relayed stream, is how the
+    # Raumfeld app follows the title of each track. "basic" rather than "full": the cover
+    # link "full" adds (StreamURL) is not used by the Raumfeld app, and "full" writes the
+    # stream in large blocks that a zone can run dry on at a track change.
+    ConfigEntry.from_dict({**CONF_ENTRY_ENABLE_ICY_METADATA.to_dict(), "default_value": "basic"}),
     # Sample rates, a choice per room. Up to 24-bit/96kHz plays on every model seen so far;
     # 176.4 and 192 kHz play on some (the One S) and drop out on others (a 1st generation
     # One M, and a Connector and Stereo Cubes in one setup). No renderer tells which
@@ -97,4 +126,5 @@ PLAYER_CONFIG_ENTRIES = [
         safe_max_sample_rate=96000,
         safe_max_bit_depth=24,
     ),
+    CONF_ENTRY_RESTART_ON_JOIN,
 ]

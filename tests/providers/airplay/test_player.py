@@ -21,7 +21,7 @@ from music_assistant_models.enums import (
 from music_assistant_models.errors import PlayerCommandFailed
 from music_assistant_models.media_items import AudioFormat
 
-from music_assistant.constants import CONF_SYNC_ADJUST
+from music_assistant.constants import CONF_PASSWORD, CONF_SYNC_ADJUST
 from music_assistant.controllers.streams.audio import StreamsAudio
 from music_assistant.models.player import AnnouncementFeature
 from music_assistant.providers.airplay.constants import (
@@ -30,7 +30,6 @@ from music_assistant.providers.airplay.constants import (
     CONF_ENABLE_HIRES,
     CONF_ENCRYPTION,
     CONF_IGNORE_VOLUME,
-    CONF_PASSWORD,
     CONF_PASSWORD_INVALID,
     CONF_RAOP_CREDENTIALS,
     CONF_STORED_VOLUME,

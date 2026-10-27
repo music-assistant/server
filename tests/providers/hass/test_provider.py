@@ -20,12 +20,11 @@ from music_assistant_models.errors import (
     UnsupportedFeaturedException,
 )
 
-from music_assistant.constants import CONF_LOG_LEVEL
+from music_assistant.constants import CONF_LOG_LEVEL, CONF_VERIFY_SSL
 from music_assistant.helpers.tts import TTSLanguageNotSupportedError
 from music_assistant.providers.hass import (
     CONF_AUTH_TOKEN,
     CONF_URL,
-    CONF_VERIFY_SSL,
     STATE_FETCH_BATCH_SIZE,
     HassRegistryEntity,
     HomeAssistantProvider,
