@@ -2508,6 +2508,7 @@ async def test_external_until_completes_on_awaitable(flow_mass: MusicAssistant) 
             url="https://example.com/device",
             step_id="device",
             expires_in=300,
+            copy_text="test_copy_text",
         )
         await session.finish({"token": result["token"]})
 
@@ -2519,6 +2520,7 @@ async def test_external_until_completes_on_awaitable(flow_mass: MusicAssistant) 
         assert step.type == FlowStepType.EXTERNAL
         assert step.step_id == "device"
         assert step.url == "https://example.com/device"
+        assert step.copy_text == "test_copy_text"
         session = flow_mass.config._setup_flows[step.flow_id].session
         # completion is driven by the awaitable resolving, not a browser callback
         release.set()
