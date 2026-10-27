@@ -239,8 +239,8 @@ async def test_quick_connect_setup_clears_password_credentials() -> None:
         captured.update(kwargs)
         return await awaitable
 
-    session.external_until = external_until  # type: ignore[method-assign]
     with (
+        mock.patch.object(session, "external_until", new=external_until),
         mock.patch.object(
             setup_flow,
             "initiate_quick_connect",
