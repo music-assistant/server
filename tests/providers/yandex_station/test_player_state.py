@@ -1106,6 +1106,37 @@ async def test_failed_transport_command_keeps_the_external_session(command: str)
     assert player._external_playing is True
 
 
+@pytest.mark.parametrize("command", ["pause", "stop"])
+async def test_failed_transport_command_ignores_the_stream_still_playing_meanwhile(
+    command: str,
+) -> None:
+    """
+    A rejected pause or stop restores the MA stream the Station kept playing.
+
+    The Station keeps reporting playing=True for the stream until the stop takes
+    effect; such a report must not look like new native playback that replaced it.
+    """
+    player = _make_player()
+    _disable_voice_control(player)
+
+    async def send(_command: dict[str, Any]) -> dict[str, Any]:
+        player._update_playback_state(playing=True, alice_state="IDLE")
+        return {"error": "timeout"}
+
+    player.glagol = cast("YandexGlagol", SimpleNamespace(send=send))
+    player._external_playing = True
+    vars(player)["_external_audio_client"] = True
+    player._external_play_confirmed = True
+    player._attr_playback_state = PlaybackState.PLAYING
+
+    with pytest.raises(PlayerCommandFailed):
+        await getattr(player, command)()
+
+    assert player._external_playing is True
+    assert vars(player)["_pause_stop_pending"] is False
+    assert player._attr_playback_state == PlaybackState.PLAYING
+
+
 async def test_native_pause_ignores_stale_playing_state_delivered_during_the_command() -> None:
     """
     A pause of native playback stays PAUSED through the reports sent while it is pending.

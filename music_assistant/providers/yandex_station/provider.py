@@ -458,7 +458,9 @@ class YandexStationProvider(PlayerProvider):
             # ``create_clientsession`` helper: the helper's connector +
             # ``_default_headers`` override broke Yandex Passport's session
             # refresh redirect chain (HTTP 400) on production stations.
-            self._http_session = ClientSession(cookie_jar=CookieJar(quote_cookie=False))
+            self._http_session = ClientSession(  # ma-allow: MA001 Passport needs an isolated CookieJar(quote_cookie=False)
+                cookie_jar=CookieJar(quote_cookie=False)
+            )
             self._passport_client = PassportClient(session=self._http_session)
 
             self._session = YandexSession(
@@ -512,7 +514,9 @@ class YandexStationProvider(PlayerProvider):
 
         creds = await self._resolve_borrowed_tokens()
 
-        self._http_session = ClientSession(cookie_jar=CookieJar(quote_cookie=False))
+        self._http_session = ClientSession(  # ma-allow: MA001 Passport needs an isolated CookieJar(quote_cookie=False)
+            cookie_jar=CookieJar(quote_cookie=False)
+        )
         self._passport_client = PassportClient(session=self._http_session)
         self._session = YandexSession(
             self._http_session,
