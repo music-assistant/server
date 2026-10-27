@@ -53,12 +53,12 @@ def _make_player(queue: SimpleNamespace) -> tuple[SnapCastPlayer, MagicMock]:
     return player, group
 
 
-def _queue(allow_seek: bool = True) -> SimpleNamespace:
+def _queue(allow_seek: bool = True, elapsed: float = 5.4) -> SimpleNamespace:
     return SimpleNamespace(
         queue_id="kitchen",
         active=True,
         state=PlaybackState.PLAYING,
-        corrected_elapsed_time=5.4,
+        corrected_elapsed_time=elapsed,
         current_item=SimpleNamespace(
             queue_item_id="item-1",
             streamdetails=SimpleNamespace(allow_seek=allow_seek, duration=180),
@@ -80,9 +80,14 @@ async def test_announcement_resumes_music_where_it_began() -> None:
 
 
 @pytest.mark.asyncio
-async def test_announcement_rejoins_unseekable_stream() -> None:
-    """A stream that cannot seek rejoins the live stream."""
-    player, group = _make_player(_queue(allow_seek=False))
+@pytest.mark.parametrize(
+    "queue",
+    [_queue(allow_seek=False), _queue(elapsed=181)],
+    ids=["unseekable", "position-past-item-end"],
+)
+async def test_announcement_rejoins_live_stream(queue: SimpleNamespace) -> None:
+    """Music that cannot be restarted at the clip's start rejoins the live stream."""
+    player, group = _make_player(queue)
 
     await player.play_announcement(PlayerMedia(uri="announce.mp3"))
 

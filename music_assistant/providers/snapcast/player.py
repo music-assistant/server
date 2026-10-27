@@ -347,11 +347,15 @@ class SnapCastPlayer(Player):
             if resume_queue and resume_queue.active and resume_queue.state == PlaybackState.PLAYING
             else None
         )
+        resume_pos = int(resume_queue.corrected_elapsed_time) if resume_queue else 0
+        # a position past the item's end means the queue has not caught up with the next track
         if resume_item and not (
-            (details := resume_item.streamdetails) and details.allow_seek and details.duration
+            (details := resume_item.streamdetails)
+            and details.allow_seek
+            and details.duration
+            and resume_pos < details.duration
         ):
             resume_item = None
-        resume_pos = int(resume_queue.corrected_elapsed_time) if resume_queue else 0
         # pin the music stream, else the idle timer stops it before the announcement ends
         if prev_stream:
             prev_stream.pin(self.player_id)
