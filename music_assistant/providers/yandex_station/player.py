@@ -38,6 +38,7 @@ from . import protobuf
 from .constants import (
     CONF_INTERCEPT_ENABLED,
     CONF_INTERCEPT_FEATURE_ENABLED,
+    CONF_INTERCEPT_MIRROR_VOLUME,
     CONF_INTERCEPT_TARGET,
     CONF_VOICE_CONTROL,
 )
@@ -315,6 +316,12 @@ class YandexStationPlayer(Player):
                 options=target_options,
                 required=False,
             ),
+            ConfigEntry(
+                key=CONF_INTERCEPT_MIRROR_VOLUME,
+                type=ConfigEntryType.BOOLEAN,
+                default_value=True,
+                required=False,
+            ),
         ]
 
     def update_connection(self, host: str, port: int) -> None:
@@ -562,6 +569,11 @@ class YandexStationPlayer(Player):
         """Configured target player_id for intercept playback (None when unset)."""
         value = self._config.get_value(CONF_INTERCEPT_TARGET)
         return str(value) if value else None
+
+    @property
+    def _intercept_mirror_volume(self) -> bool:
+        """Whether Station volume changes are copied to the intercept target."""
+        return bool(self._config.get_value(CONF_INTERCEPT_MIRROR_VOLUME, True))
 
     async def _delayed_resume(self) -> None:
         """Auto-resume MA queue after a voice command that didn't start native player."""
@@ -982,6 +994,10 @@ class YandexStationPlayer(Player):
         """
         Mirror Station volume changes to the intercept target player.
 
+        Skipped when the player's volume-mirror setting is off; the
+        self-mute bookkeeping below still runs so the Station volume is
+        restored correctly when the session ends.
+
         Targets without VOLUME_SET raise ``UnsupportedFeaturedException`` —
         we treat that as a no-op (matches the dropdown's documented
         relaxed-feature contract: only PLAY_MEDIA is required, the rest
@@ -1014,6 +1030,8 @@ class YandexStationPlayer(Player):
         ):
             self._station_muted_by_intercept = False
             self._saved_station_volume = target_vol
+        if not self._intercept_mirror_volume:
+            return
         if target_vol != self._last_mirrored_volume:
             try:
                 await self.mass.players.cmd_volume_set(target_id, target_vol)
