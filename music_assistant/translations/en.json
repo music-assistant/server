@@ -2404,6 +2404,8 @@
   "provider.sendspin.setup_flow.enter_token.description": "Paste the device's pairing token to set up a secure connection.",
   "provider.sendspin.setup_flow.enter_token.title": "Enter the pairing token",
   "provider.sendspin.setup_flow.select_method.title": "Pair this device",
+  "provider.sendspin.setup_flow.source_autostart.description": "This device can start playing its line-in on a player when a signal arrives, such as a record starting to play. You can change this later in the player settings.",
+  "provider.sendspin.setup_flow.source_autostart.title": "Play line-in automatically",
   "provider.sendspin.setup_flow.source_input.description": "This device can send its audio (such as a line-in) to Music Assistant. To use the input, the device must be paired.",
   "provider.sendspin.setup_flow.source_input.title": "Audio input available",
   "provider.sendspin_source.config_entries.target_latency.description": "How much source audio to buffer before playback starts. Higher values absorb network jitter at the cost of a longer input-to-speaker delay.",
