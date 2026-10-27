@@ -7,9 +7,9 @@ from music_assistant_models.config_entries import ConfigEntry
 from music_assistant_models.enums import ConfigEntryType
 
 from music_assistant.constants import (
+    CONF_ENTRY_ENABLE_ICY_METADATA,
     CONF_ENTRY_FLOW_MODE,
     CONF_ENTRY_HTTP_PROFILE_FORCED_1,
-    CONF_ENTRY_ICY_METADATA_DEFAULT_FULL,
     create_sample_rates_config_entry,
 )
 
@@ -111,10 +111,11 @@ PLAYER_CONFIG_ENTRIES = [
     # relays the flow as one continuous connection.
     CONF_ENTRY_HTTP_PROFILE_FORCED_1,
     # ICY on by default. The stream never changes - it is one flow for the whole queue - so
-    # the ICY StreamTitle, which the host parses out of the relayed stream, is the only way
-    # the Raumfeld app can follow the queue. It carries the title only: the app's clock and
-    # duration do not follow along.
-    CONF_ENTRY_ICY_METADATA_DEFAULT_FULL,
+    # the ICY StreamTitle, which the host parses out of the relayed stream, is how the
+    # Raumfeld app follows the title of each track. "basic" rather than "full": the cover
+    # link "full" adds (StreamURL) is not used by the Raumfeld app, and "full" writes the
+    # stream in large blocks that a zone can run dry on at a track change.
+    ConfigEntry.from_dict({**CONF_ENTRY_ENABLE_ICY_METADATA.to_dict(), "default_value": "basic"}),
     # Sample rates, a choice per room. Up to 24-bit/96kHz plays on every model seen so far;
     # 176.4 and 192 kHz play on some (the One S) and drop out on others (a 1st generation
     # One M, and a Connector and Stereo Cubes in one setup). No renderer tells which

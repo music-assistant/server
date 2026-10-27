@@ -1124,6 +1124,26 @@ class TestUnregisterCleanup:
 
         assert "set_members_other" in controller._player_command_locks
 
+    def test_state_update_after_unregister_is_not_signalled(self, mock_mass: MagicMock) -> None:
+        """A late state update of an unregistered player does not mark it available again."""
+        controller = PlayerController(mock_mass)
+        mock_mass.players = controller
+        provider = MockProvider("test_provider", instance_id="test", mass=mock_mass)
+        player = MockPlayer(provider, "player_1", "Player 1")
+        controller._players = {"player_1": player}
+        player.set_initialized()
+        player.update_state(signal_event=False)
+
+        player._attr_playback_state = PlaybackState.PLAYING
+        controller.trigger_player_update("player_1")
+        debounced_update = mock_mass.call_later.call_args
+        asyncio.run(controller.unregister("player_1"))
+        mock_mass.signal_event.reset_mock()
+        # the debounced update scheduled before the unregister still fires afterwards
+        debounced_update.args[1]()
+
+        mock_mass.signal_event.assert_not_called()
+
 
 class TestRegisterUnregisterRace:
     """Test registration that is interrupted by an unregister of the same player."""

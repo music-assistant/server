@@ -503,7 +503,8 @@ class SendspinBasePlayer(Player):
         as a side effect of the provider pairing calls;
         declining the audio input persists via the player config. Bridge/web players
         and unencrypted (legacy) connections have nothing to pair. A device another server
-        holds is dialed for the pairing.
+        holds is dialed for the pairing. A device whose line-in was allowed and can sense a
+        signal then picks where that line-in plays automatically.
 
         :param session: The setup flow session used to interact with the user.
         """
@@ -571,47 +572,44 @@ class SendspinBasePlayer(Player):
             await self._run_pin_pairing_flow(
                 session, provider, static=method == PAIR_METHOD_STATIC_PIN
             )
+        await self._run_source_autostart_step(session)
         await session.finish({})
 
     def _get_source_autostart_config_entries(self) -> list[ConfigEntry]:
-        """Return the line-in autostart entries, for source clients that can sense a signal."""
-        if not self._supports_line_sense():
+        """Return the line-in autostart entries for source clients, or a note when they cannot sense a signal."""
+        if "source" not in self._negotiated_families():
             return []
+        if not self._supports_line_sense():
+            return [ConfigEntry(key="source_autostart_unavailable", type=ConfigEntryType.LABEL)]
         # A source that is also a player defaults to playing on itself, which for a
         # protocol player means the visible player it belongs to.
-        own_target = self.protocol_parent_id or self.player_id
+        own_target = (
+            (self.protocol_parent_id or self.player_id)
+            if "player" in self._negotiated_families()
+            else None
+        )
         options = [
             ConfigValueOption(SOURCE_AUTOSTART_OFF),
+            # Lead with the device's own player, so the default sits at the top of the list.
+            # It is offered even while unavailable, as it is during the device's own setup.
+            *([ConfigValueOption(own_target, translation_key="this_device")] if own_target else []),
             *(
-                ConfigValueOption(
-                    player.player_id,
-                    title=None if player.player_id == own_target else player.display_name,
-                    translation_key="this_device" if player.player_id == own_target else None,
-                )
+                ConfigValueOption(player.player_id, title=player.display_name)
                 for player in sorted(
                     self.mass.players.all_players(False, False),
-                    # Lead with the device's own player, so the default sits at the top
-                    # of the list rather than alphabetically among every other player.
-                    key=lambda player: (
-                        player.player_id != own_target,
-                        player.display_name.lower(),
-                    ),
+                    key=lambda player: player.display_name.lower(),
                 )
                 # Only players that render audio, so lights, displays and other
                 # capture-only clients are not offered as somewhere to play a line-in.
-                if player.type in SOURCE_AUTOSTART_TARGET_TYPES
+                if player.type in SOURCE_AUTOSTART_TARGET_TYPES and player.player_id != own_target
             ),
         ]
-        valid = {option.value for option in options}
-        default = (
-            own_target if "player" in self._negotiated_families() and own_target in valid else None
-        )
         return [
             ConfigEntry(
                 key=CONF_SOURCE_AUTOSTART_TARGET,
                 type=ConfigEntryType.STRING,
                 options=options,
-                default_value=default or SOURCE_AUTOSTART_OFF,
+                default_value=own_target or SOURCE_AUTOSTART_OFF,
             ),
         ]
 
@@ -680,7 +678,9 @@ class SendspinBasePlayer(Player):
             )
         # A device with an audio input needs its own wording; the rest of the page is shared.
         step_id = "approve_device_source" if has_input else "approve_device"
-        values = await session.form(entries, step_id=step_id, last_step=True)
+        values = await session.form(
+            entries, step_id=step_id, last_step=not self._supports_line_sense()
+        )
         method = str(values.get(CONF_CONNECT_METHOD, options[0].value))
         if method == CONNECT_METHOD_PAIR:
             return True
@@ -690,6 +690,8 @@ class SendspinBasePlayer(Player):
                 self.player_id, CONF_SOURCE_INPUT_DECLINED, not allow_input
             )
         await provider.set_trusted_unpaired(self.player_id, enabled=True, allow_input=allow_input)
+        if allow_input:
+            await self._run_source_autostart_step(session)
         return False
 
     async def _run_source_input_step(self, session: SetupSession, *, offer_pair: bool) -> bool:
@@ -715,6 +717,21 @@ class SendspinBasePlayer(Player):
         )
         self.update_state()
         return True
+
+    async def _run_source_autostart_step(self, session: SetupSession) -> None:
+        """Ask where the line-in plays automatically, for a device that can sense a signal on it."""
+        if not self._supports_line_sense():
+            return
+        entry = self._get_source_autostart_config_entries()[0]
+        entry.value = session.context.values.get(CONF_SOURCE_AUTOSTART_TARGET)
+        values = await session.form([entry], step_id="source_autostart", last_step=True)
+        target = values[CONF_SOURCE_AUTOSTART_TARGET]
+        # Keep the default unstored, as the settings page does, so it follows the device's player.
+        self.mass.config.set_raw_player_config_value(
+            self.player_id,
+            CONF_SOURCE_AUTOSTART_TARGET,
+            None if target == entry.default_value else target,
+        )
 
     def _subscribe_client_callbacks(self) -> None:
         """Subscribe to client and group events for the currently bound client."""
