@@ -21,6 +21,7 @@ from music_assistant.constants import (
     CONF_USERNAME,
     CONF_VERIFY_SSL,
 )
+from music_assistant.controllers.cache import BYPASS_CACHE
 from music_assistant.controllers.music.media.base import AudiobookSyncDetails
 from music_assistant.models.music_provider import SYNC_RUN_STATE, SyncRunState
 from music_assistant.providers.bookorbit import SUPPORTED_FEATURES, BookOrbitProvider
@@ -544,10 +545,10 @@ async def test_get_audiobook_and_artist(
 
 
 @pytest.mark.asyncio
-async def test_get_artist_refreshes_edited_author_from_populated_catalog(
+async def test_get_artist_refreshes_edited_author_when_bypass_cache(
     provider: BookOrbitProvider, book_audiobook: dict[str, Any]
 ) -> None:
-    """refresh_item / get_artist must not return TTL-stale author metadata from `_catalog`."""
+    """refresh_item (BYPASS_CACHE) must not return TTL-stale author metadata from `_catalog`."""
     author_numeric_id = int(book_audiobook["authors"][0]["id"])
     author_id = f"{AUTHOR_PREFIX}{author_numeric_id}"
     await provider._refresh_catalog(force=True)
@@ -575,7 +576,15 @@ async def test_get_artist_refreshes_edited_author_from_populated_catalog(
         ]
     )
 
-    artist = await provider.get_artist(author_id)
+    # Without BYPASS_CACHE, reuse the TTL-fresh catalog (metadata scan / browse path).
+    stale = await provider.get_artist(author_id)
+    assert stale.name == "Old Name"
+
+    token = BYPASS_CACHE.set(True)
+    try:
+        artist = await provider.get_artist(author_id)
+    finally:
+        BYPASS_CACHE.reset(token)
     assert artist.name == "New Name"
 
 

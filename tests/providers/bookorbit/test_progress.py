@@ -231,6 +231,20 @@ async def test_stream_details_unknown_duration_when_part_missing(
 
 
 @pytest.mark.asyncio
+async def test_stream_details_unknown_duration_book_fetch_error_is_ma_error(
+    provider: BookOrbitProvider, book_multifile: dict[str, Any]
+) -> None:
+    """Duration fallback book fetch failures must be MA errors for multi-mapping fallback."""
+    incomplete = manifest_from_book(book_multifile)
+    incomplete["assets"][1]["durationMs"] = None
+    incomplete["totalDurationMs"] = incomplete["assets"][0]["durationMs"]
+    _client(provider).get_audiobook_manifest = AsyncMock(return_value=incomplete)
+    _client(provider).get_book = AsyncMock(side_effect=ClientError("connection reset"))
+    with pytest.raises(ProviderUnavailableError):
+        await provider.get_stream_details(str(book_multifile["id"]), MediaType.AUDIOBOOK)
+
+
+@pytest.mark.asyncio
 async def test_stream_session_revoked_after_on_streamed(
     provider: BookOrbitProvider, book_audiobook: dict[str, Any]
 ) -> None:

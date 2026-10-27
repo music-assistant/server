@@ -30,6 +30,7 @@ from music_assistant_models.media_items import (
 from music_assistant_models.streamdetails import MultiPartPath, StreamDetails
 
 from music_assistant.constants import CONF_PASSWORD, CONF_USERNAME, CONF_VERIFY_SSL
+from music_assistant.controllers.cache import BYPASS_CACHE
 from music_assistant.helpers.aiohttp_client import create_clientsession
 from music_assistant.helpers.datetime import utc
 from music_assistant.models.music_provider import SYNC_RUN_STATE, MusicProvider
@@ -337,8 +338,8 @@ class BookOrbitProvider(MusicProvider):
         """
         if not prov_artist_id.startswith((AUTHOR_PREFIX, NARRATOR_PREFIX)):
             raise MediaNotFoundError(f"Invalid BookOrbit artist id {prov_artist_id}")
-        # Explicit lookups (incl. music/refresh_item) must not return TTL-stale catalog data.
-        await self._refresh_catalog(force=True)
+        # Only force when core asks (music/refresh_item → get_provider_item(force_refresh=True)).
+        await self._refresh_catalog(force=BYPASS_CACHE.get())
         if artist := self._catalog_artists().get(prov_artist_id):
             return artist
         raise MediaNotFoundError(f"BookOrbit artist {prov_artist_id} not found")
@@ -845,7 +846,19 @@ class BookOrbitProvider(MusicProvider):
                 return round(float(total_ms) / 1000.0)
             return round(sum(int(asset["durationMs"]) for asset in assets) / 1000.0)
         # Partial measured totals understate length; prefer an authoritative book duration.
-        book = await self._get_book(item_id, fresh=True)
+        # Translate fetch failures like get_stream_details so core can try another mapping.
+        try:
+            book = await self._get_book(item_id, fresh=True)
+        except ClientResponseError as err:
+            if err.status == 404:
+                raise MediaNotFoundError(f"BookOrbit book {item_id} not found") from err
+            raise ProviderUnavailableError(
+                f"BookOrbit book {item_id} failed: HTTP {err.status}"
+            ) from err
+        except BookOrbitAuthError as err:
+            raise LoginFailed(f"Login to BookOrbit at {self.base_url} failed.") from err
+        except (ClientError, TimeoutError) as err:
+            raise ProviderUnavailableError(f"BookOrbit at {self.base_url} is unreachable.") from err
         parsed = parse_audiobook(
             book, provider_instance_id=self.instance_id, base_url=self.base_url
         ).duration
