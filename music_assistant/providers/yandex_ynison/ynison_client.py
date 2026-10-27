@@ -341,6 +341,7 @@ class YnisonClient:
         self._queue_epoch = 0
         self._queue_lineage = 0
         self._navigation_version: int | None = None
+        self._unadopted_navigation: int | None = None
         self._confirmed_queue_version: int | None = None
         self._message_task: asyncio.Task[None] | None = None
         self._reconnect_task: asyncio.Task[None] | None = None
@@ -405,6 +406,7 @@ class YnisonClient:
         self._stop_event.clear()
         if self._external_session and self._external_session.closed:
             raise ResourceTemporarilyUnavailable("Provided http_session is closed")
+        # ma-allow: MA001 standalone fallback only; the provider always passes mass.http_session
         self._session = self._external_session or aiohttp.ClientSession()
 
         try:
@@ -666,6 +668,7 @@ class YnisonClient:
             queue["version"] = make_version_block(self.device_id)
             if navigation:
                 self._navigation_version = int(queue["version"]["version"])
+                self._unadopted_navigation = self._navigation_version
             epoch = self._queue_epoch
             await self._send_locked(self._player_state_message(player_state), strict=True)
             if epoch != self._queue_epoch:
@@ -1273,6 +1276,7 @@ class YnisonClient:
         self._pending_queue = None
         self._pending_queue_until = 0.0
         self._last_queue_version = None
+        self._unadopted_navigation = None
         self._queue_epoch += 1
 
     def _accept_queue(self, queue: dict[str, Any], current: dict[str, Any] | None) -> bool:
@@ -1283,12 +1287,6 @@ class YnisonClient:
         """
         version = queue.get("version", {})
         number = str(version.get("version", ""))
-        self.state.current_item_kept = (
-            version.get("device_id") == self.device_id
-            and number != str(self._navigation_version)
-            and current is not None
-            and _current_playable_id(queue) == _current_playable_id(current)
-        )
         if version.get("device_id") != self.device_id:
             if queue != current:
                 self._queue_lineage += 1
@@ -1300,6 +1298,17 @@ class YnisonClient:
             if number.isdigit() and int(number) < self._last_queue_version:
                 return False
             self._pending_queue = None
+        # A later own edit carries a navigation whose own echo was skipped.
+        navigated = self._unadopted_navigation is not None and (
+            not number.isdigit() or int(number) >= self._unadopted_navigation
+        )
+        if navigated:
+            self._unadopted_navigation = None
+        self.state.current_item_kept = (
+            not navigated
+            and current is not None
+            and _current_playable_id(queue) == _current_playable_id(current)
+        )
         return True
 
     def _parse_state(self, data: dict[str, Any]) -> None:
@@ -1424,6 +1433,7 @@ class YnisonClient:
                             raise ResourceTemporarilyUnavailable(msg)  # noqa: TRY301 - handled by except below
                         self._session = self._external_session
                     else:
+                        # ma-allow: MA001 standalone fallback without mass.http_session
                         self._session = aiohttp.ClientSession()
 
                 host, ticket, session_id = await self._get_redirect_ticket()

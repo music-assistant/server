@@ -3335,6 +3335,23 @@ class TestQueueCommands:
         assert client.state.current_item_kept is False
         assert client.navigation_confirmed(baseline)
 
+    async def test_navigation_to_a_repeated_track_survives_an_option_edit(
+        self, client: YnisonClient
+    ) -> None:
+        """An option edit sent before the navigation echo does not hide the navigation."""
+        queue = client.state.player_state["player_queue"]
+        queue["playable_list"] = [{"playable_id": "x"}, {"playable_id": "x"}, {"playable_id": "y"}]
+        queue["current_playable_index"] = 0
+        assert await client.advance_queue(natural=True, duration_ms=9000) == "change"
+        navigation_echo = self._sent_queue()
+        await client.set_repeat_mode(RepeatMode.ALL)
+
+        client._parse_state({"player_state": {"player_queue": navigation_echo}})
+        client._parse_state({"player_state": {"player_queue": self._sent_queue()}})
+
+        assert client.state.current_index == 1
+        assert client.state.current_item_kept is False
+
     def test_estimated_progress_extrapolates_the_server_status(self, client: YnisonClient) -> None:
         """The server-known position advances with time while playing."""
         with patch(
