@@ -1819,12 +1819,12 @@ class RaumfeldPlayer(Player):
             forward_only
             and index is not None
             and self._announced_index is not None
-            and index < self._announced_index
+            and index == self._announced_index - 1
             and time.time() - self._announced_at < FLOW_ANNOUNCE_SETTLE_TIME
         ):
             # Right after a track that ends at once (playback resumed close to its end) the
             # queue goes back and forth between it and the next for a moment; the flow only
-            # goes back with a new play command, or at the end of a repeated queue.
+            # goes back with a new play command, or wraps at the end of a repeated queue.
             return
         self._announced_item_id = queue_item_id
         self._announced_index = index
@@ -1856,11 +1856,11 @@ class RaumfeldPlayer(Player):
         if not self._reading_is_current(generation) or url != self._flow_url:
             # a play or stop command replaced the flow meanwhile
             return
-        if not (plays_queue := await self._zone_plays_queue(self.raumfeld.host, zone)):
+        if not await self._zone_plays_queue(self.raumfeld.host, zone):
             # Zones merged in the Raumfeld app: until the groups are followed, the active zone
-            # can be one that plays another room's queue.
-            if plays_queue is None and self._announced_item_id == queue_item_id:
-                # it could not be told; a later reading tries again
+            # can be one that plays another room's queue. Or it is paused, or can't be read.
+            if self._announced_item_id == queue_item_id:
+                # a later reading tries again: the zone may play the queue again by then
                 self._announced_item_id = None
             return
         try:

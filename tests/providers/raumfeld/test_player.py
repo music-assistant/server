@@ -2258,13 +2258,18 @@ async def test_an_announcement_skips_a_zone_that_plays_another_queue(
     zone_command.assert_not_awaited()
 
 
-async def test_an_announcement_that_could_not_tell_the_queue_is_tried_again() -> None:
-    """A zone whose queue could not be read gets the track once a later reading can."""
+@pytest.mark.parametrize("plays_queue", [False, None], ids=["paused", "unknown"])
+async def test_an_announcement_the_zone_did_not_take_is_tried_again(
+    plays_queue: bool | None,
+) -> None:
+    """A zone that was paused, or whose queue could not be read, gets the track later."""
     player = _announcing_player()
     cast("MagicMock", player.mass.player_queues).player_media_from_queue_item = AsyncMock(
         return_value=PlayerMedia(uri="library://track/1", title="Buena", queue_item_id="q2")
     )
-    player._zone_plays_queue = AsyncMock(side_effect=[None, True])  # type: ignore[method-assign]
+    player._zone_plays_queue = AsyncMock(  # type: ignore[method-assign]
+        side_effect=[plays_queue, True]
+    )
     with (
         patch.object(player, "_active_zone", return_value=["Bar"]),
         patch.object(player, "_zone_command", AsyncMock()) as zone_command,
@@ -2561,6 +2566,18 @@ def test_a_queue_still_on_the_ended_track_after_a_while_announces_it_again() -> 
     player._announced_at -= 60
     player._maybe_announce_flow_item()
     assert player._announced_item_id == "q2"
+
+
+def test_a_repeated_queue_wrapping_right_after_a_short_last_track_is_announced() -> None:
+    """With crossfade there is no timer: the reading of the first track announces the wrap."""
+    player = _announcing_player()
+    player._announced_item_id = "q3"
+    player._announced_index = 2
+    player._announced_at = time.time()
+
+    player._start_flow_announcement("q1")
+
+    assert player._announced_item_id == "q1"
 
 
 def test_the_timer_announces_the_first_track_of_a_repeated_queue() -> None:
