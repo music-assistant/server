@@ -18,6 +18,8 @@ from music_assistant.providers.snapcast.ma_stream import SnapcastMAStream
 from music_assistant.providers.snapcast.provider import SnapCastProvider
 
 if TYPE_CHECKING:
+    from collections.abc import AsyncGenerator
+
     from .conftest import FakeSnapserver
 
 
@@ -143,6 +145,46 @@ async def test_streamer_pokes_players_when_playback_anchor_is_known(
     fake_provider.mass.call_later.assert_called_once_with(
         2.0, stream._snap_on_stream_update, task_id="snapcast_playback_started_music"
     )
+
+
+class _ConsumingFFMpeg(_FakeFFMpeg):
+    """FFMpeg stand-in that reads all of its input at once, like ffmpeg's -re burst."""
+
+    def __init__(self, audio_input: AsyncGenerator[bytes], **kwargs: Any) -> None:
+        self._audio_input = audio_input
+
+    async def wait(self) -> int:
+        async for _ in self._audio_input:
+            pass
+        return 0
+
+
+@pytest.mark.asyncio
+async def test_streamer_waits_until_clients_played_the_buffered_audio(
+    fake_provider: MagicMock,
+) -> None:
+    """A short clip is not cut off by switching the group away while clients still play it."""
+    fake_provider._use_builtin_server = True
+    fake_provider._snapcast_server_buffer_size = 1000
+    fake_provider._snapcast_server_host = "127.0.0.1"
+    fake_provider.mass.create_task.side_effect = asyncio.ensure_future
+    fake_provider.mass.closing = True
+
+    async def clip() -> AsyncGenerator[bytes]:
+        # 1.5 s of audio
+        yield b"\0" * int(DEFAULT_SNAPCAST_FORMAT.pcm_sample_size * 1.5)
+
+    fake_provider.mass.streams.get_stream = MagicMock(return_value=clip())
+    stream = _make_stream(fake_provider)
+    stream.snap_stream = MagicMock(identifier="clip-1", path="tcp://0.0.0.0:4953")
+
+    with patch("music_assistant.providers.snapcast.ma_stream.FFMpeg", _ConsumingFFMpeg):
+        task = asyncio.ensure_future(stream._streamer_task_impl())
+        await asyncio.sleep(0.2)
+        assert not task.done()
+
+        stream.request_stop_stream()
+        await asyncio.wait_for(task, 1)
 
 
 @pytest.mark.asyncio
