@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any, Self, cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import pytest
 from music_assistant_models.enums import ExternalID, ImageType, MediaType, PlaylistMatchPolicy
 from music_assistant_models.errors import (
     InvalidDataError,
@@ -571,14 +572,33 @@ async def test_confirmed_dead_stream_url_falls_through_to_matching() -> None:
     assert "| Retained | 1 |" not in report_markdown
 
 
-async def test_share_import_rejects_isrc_match_with_different_artist() -> None:
-    """A share entry without matcher ISRC cannot be replaced by a wrong artist."""
+@pytest.mark.parametrize(
+    ("candidate_artist", "metadata", "candidate_external_ids"),
+    [
+        (
+            "Different Artist",
+            {"media_type": "track", "name": "Song"},
+            {(ExternalID.ISRC, "USRC17607839")},
+        ),
+        (
+            "Requested Artist",
+            {"media_type": "track", "name": "Song", "mbid": "requested-recording"},
+            {(ExternalID.MB_RECORDING, "conflicting-recording")},
+        ),
+    ],
+)
+async def test_share_import_rejects_unconfirmed_track_match(
+    candidate_artist: str,
+    metadata: dict[str, str],
+    candidate_external_ids: set[tuple[ExternalID, str]],
+) -> None:
+    """Share import rejects mismatched artists and conflicting recording IDs."""
     provider = _make_provider(loaded_provider_domains={"builtin"})
     item = PlaylistItem(
         path="share://track/payload",
         title="Requested Artist - Song",
         length="218",
-        metadata={"media_type": "track", "name": "Song"},
+        metadata=metadata,
         artists=[ArtistInfo("Requested Artist", "", "", "")],
     )
     provider_any = _prepare(provider, generate_m3u("Shared", [item]))
@@ -587,14 +607,14 @@ async def test_share_import_rejects_isrc_match_with_different_artist() -> None:
         provider="catalog--1",
         name="Song",
         duration=218,
-        external_ids={(ExternalID.ISRC, "USRC17607839")},
+        external_ids=candidate_external_ids,
         provider_mappings=set(),
         artists=UniqueList(
             [
                 ItemMapping(
                     item_id="other-artist",
                     provider="catalog--1",
-                    name="Different Artist",
+                    name=candidate_artist,
                     media_type=MediaType.ARTIST,
                 )
             ]

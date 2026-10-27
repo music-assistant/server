@@ -90,6 +90,7 @@ def _track(
     version: str = "",
     duration: int = 218,
     external_ids: set[tuple[ExternalID, str]] | None = None,
+    provider_mappings: set[ProviderMapping] | None = None,
 ) -> Track:
     """Build a full-enough Track for exercising core comparison behavior."""
     return Track(
@@ -98,7 +99,16 @@ def _track(
         name=name,
         version=version,
         duration=duration,
-        provider_mappings=set(),
+        provider_mappings=provider_mappings
+        if provider_mappings is not None
+        else {
+            ProviderMapping(
+                item_id=item_id,
+                provider_domain="catalog",
+                provider_instance="catalog--1",
+                available=True,
+            )
+        },
         external_ids=external_ids or set(),
         artists=UniqueList(
             [
@@ -529,7 +539,14 @@ async def test_isrc_match_requires_all_artist_credits(
         name="Song",
         duration=218,
         external_ids={(ExternalID.ISRC, ISRC)},
-        provider_mappings=set(),
+        provider_mappings={
+            ProviderMapping(
+                item_id="candidate",
+                provider_domain="catalog",
+                provider_instance="catalog--1",
+                available=True,
+            )
+        },
         artists=UniqueList(
             [
                 Artist(item_id="one", provider="catalog--1", name="First", provider_mappings=set()),
@@ -1136,6 +1153,8 @@ async def test_import_shared_playlist_uses_existing_matching_importer() -> None:
         "media_type": "track",
         "name": "Track",
         "version": "Live",
+        "mbid": "recording-mbid",
+        "mb_track": "release-track-mbid",
     }
     assert imported_items[0].artists[0].name == "Artist"
     assert imported_items[0].album is None
@@ -1393,22 +1412,116 @@ async def test_preview_skips_full_track_hydration_for_matched_tracks() -> None:
     """A preview returns the matched Track without per-track audio-analysis hydration."""
     provider = _provider()
     mass = _mass(provider)
-    matched = Track(item_id="42", provider="library", name="Known", provider_mappings=set())
+    matched = Track(
+        item_id="42",
+        provider="library",
+        name="Known",
+        duration=218,
+        external_ids={(ExternalID.ISRC, ISRC)},
+        provider_mappings={
+            ProviderMapping(
+                item_id="42",
+                provider_domain="catalog",
+                provider_instance="catalog--1",
+                available=True,
+            )
+        },
+        artists=UniqueList(
+            [
+                Artist(
+                    item_id="artist",
+                    provider="catalog--1",
+                    name="Artist",
+                    provider_mappings=set(),
+                )
+            ]
+        ),
+    )
     controller = mass.music.get_controller.return_value
     controller.get_item_by_external_id = AsyncMock(return_value=matched)
     mass.music.tracks.get = AsyncMock()
     encoded = SharePayload(
         type="playlist",
         title="Playlist",
-        tracks=[TrackStub(title="Known", isrc=ISRC)],
+        tracks=[
+            TrackStub(title="Known", artist="Artist", artists=["Artist"], isrc=ISRC, duration=218)
+        ],
     ).to_base64()
 
     tracks = await provider.preview_shared_playlist(encoded)
 
     assert len(tracks) == 1
+    assert tracks[0].item_id == matched.item_id
     assert tracks[0].name == "Known"
     assert tracks[0].position == 1
     mass.music.tracks.get.assert_not_called()
+
+
+async def test_external_id_resolution_skips_unavailable_track_for_available_fallback() -> None:
+    """An unavailable library ID hit does not block a playable MBID result."""
+    provider = _provider()
+    mass = _mass(provider)
+    artist = Artist(
+        item_id="artist",
+        provider="catalog--1",
+        name="Artist",
+        provider_mappings=set(),
+    )
+    unavailable = Track(
+        item_id="unavailable-track",
+        provider="library",
+        name="Song",
+        duration=218,
+        external_ids={(ExternalID.ISRC, ISRC)},
+        provider_mappings={
+            ProviderMapping(
+                item_id="unavailable-track",
+                provider_domain="catalog",
+                provider_instance="catalog--unavailable",
+                available=False,
+            )
+        },
+        artists=UniqueList([artist]),
+    )
+    available = Track(
+        item_id="available-track",
+        provider="catalog--1",
+        name="Song",
+        duration=218,
+        external_ids={
+            (ExternalID.ISRC, ISRC),
+            (ExternalID.MB_RECORDING, "recording-mbid"),
+        },
+        provider_mappings={
+            ProviderMapping(
+                item_id="available-track",
+                provider_domain="catalog",
+                provider_instance="catalog--1",
+                available=True,
+            )
+        },
+        artists=UniqueList([artist]),
+    )
+    controller = mass.music.get_controller.return_value
+    controller.get_item_by_external_id = AsyncMock(side_effect=[unavailable, available])
+    mass.music.tracks.get = AsyncMock(return_value=available)
+    payload = SharePayload(
+        type="track",
+        title="Song",
+        artist="Artist",
+        artists=["Artist"],
+        isrc=ISRC,
+        mbid="recording-mbid",
+        duration=218,
+    )
+
+    result = await provider.resolve_share_link(payload.to_base64())
+
+    assert result is available
+    assert controller.get_item_by_external_id.await_count == 2
+    mass.music.tracks.get.assert_awaited_once_with(
+        available.item_id, available.provider, allow_update_metadata=False
+    )
 
 
 async def test_preview_only_resolves_the_requested_block() -> None:

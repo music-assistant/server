@@ -117,6 +117,7 @@ class ShareLinkResolver:
                 if media_type == MediaType.TRACK:
                     if (
                         not isinstance(item, Track)
+                        or not item.available
                         or track_reference is None
                         or compare_track_evidence(track_reference, item)
                         < TrackMatchConfidence.LIKELY
@@ -252,19 +253,18 @@ class ShareLinkResolver:
 
     @staticmethod
     def _playlist_item_from_payload(
-        payload: SharePayload, include_external_ids: bool = True
+        payload: SharePayload, include_isrc: bool = True
     ) -> PlaylistItem:
         """Convert a track share payload into the metadata form consumed by core."""
         metadata = {"media_type": MediaType.TRACK.value, "name": payload.title}
         if payload.version:
             metadata["version"] = payload.version
-        if include_external_ids:
-            if payload.isrc and is_valid_isrc(payload.isrc):
-                metadata["isrc"] = normalize_external_id(ExternalID.ISRC, payload.isrc)
-            if payload.mbid:
-                metadata["mbid"] = normalize_external_id(ExternalID.MB_RECORDING, payload.mbid)
-            if payload.mb_track:
-                metadata["mb_track"] = normalize_external_id(ExternalID.MB_TRACK, payload.mb_track)
+        if include_isrc and payload.isrc and is_valid_isrc(payload.isrc):
+            metadata["isrc"] = normalize_external_id(ExternalID.ISRC, payload.isrc)
+        if payload.mbid:
+            metadata["mbid"] = normalize_external_id(ExternalID.MB_RECORDING, payload.mbid)
+        if payload.mb_track:
+            metadata["mb_track"] = normalize_external_id(ExternalID.MB_TRACK, payload.mb_track)
         return PlaylistItem(
             path=f"share://track/{payload.to_base64()}",
             length=str(payload.duration) if payload.duration is not None else None,

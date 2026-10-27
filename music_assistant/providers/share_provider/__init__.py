@@ -306,7 +306,7 @@ class ShareProvider(PluginProvider):
                 provider_refs=track.provider_refs,
             )
             playlist_items.append(
-                self._playlist_item_from_payload(track_payload, include_external_ids=False)
+                self._playlist_item_from_payload(track_payload, include_isrc=False)
             )
         return await self.mass.music.playlists.import_playlist(
             generate_m3u(payload.title, playlist_items),
@@ -437,9 +437,9 @@ class ShareProvider(PluginProvider):
 
     @staticmethod
     def _playlist_item_from_payload(
-        payload: SharePayload, include_external_ids: bool = True
+        payload: SharePayload, include_isrc: bool = True
     ) -> PlaylistItem:
-        return ShareLinkResolver._playlist_item_from_payload(payload, include_external_ids)
+        return ShareLinkResolver._playlist_item_from_payload(payload, include_isrc)
 
     @staticmethod
     def _album_reference(payload: SharePayload) -> Album | ItemMapping:
