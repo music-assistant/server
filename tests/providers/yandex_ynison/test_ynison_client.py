@@ -924,6 +924,30 @@ class TestReportStatus:
         )
         assert client.state.status_is_relay is False
 
+    async def test_relay_keeps_the_extrapolation_anchor(self, client: YnisonClient) -> None:
+        """A relayed status does not restart the clock its position is extrapolated from."""
+        later = time.monotonic() + 60
+        with patch(
+            "music_assistant.providers.yandex_ynison.ynison_client.time.monotonic",
+            return_value=later,
+        ):
+            client._parse_state(
+                {
+                    "player_state": {
+                        "status": {
+                            "progress_ms": "10000",
+                            "duration_ms": "200000",
+                            "paused": False,
+                            "version": {"device_id": "peer", "version": "1", "timestamp_ms": "0"},
+                        }
+                    }
+                }
+            )
+            assert client.state.status_is_relay is True
+            assert await client.report_status(70000, 200000, paused=False) is False
+
+        assert self._sent() == []
+
     def test_frame_without_status_keeps_relay_marker(self, client: YnisonClient) -> None:
         """A frame that does not carry a status leaves the retained status stale."""
         client._parse_state({"devices": [{"info": {"device_id": "peer"}}]})

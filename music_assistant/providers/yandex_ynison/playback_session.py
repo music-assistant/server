@@ -64,6 +64,8 @@ class PlaybackSession:
         self.session_id: str | None = None
         self.track_id: str | None = None
         self.index = -1
+        # Leading items our own window trim removed, not yet confirmed by Ynison.
+        self.pending_index_shift = 0
         self.progress_ms = 0
         self.duration_ms = 0
         self.externally_paused = False
@@ -213,6 +215,21 @@ class PlaybackSession:
         """
         self.consumer_player_id = owner_player_id
         self.externally_paused = True
+
+    def follow_window_trim(self, track_id: str | None, index: int) -> None:
+        """
+        Move the cursor once Ynison reports the playing item at its trimmed index.
+
+        :param track_id: Current Ynison track.
+        :param index: Current Ynison playable index.
+        """
+        if not self.pending_index_shift or track_id != self.track_id:
+            return
+        if index == self.index - self.pending_index_shift:
+            self.index = index
+            self.pending_index_shift = 0
+        elif index != self.index:
+            self.pending_index_shift = 0
 
     def reset(self) -> None:
         """Drop the claim and progress and stop the stream."""

@@ -1352,7 +1352,7 @@ class TestYnisonStateHandling:
             new_callable=AsyncMock,
             side_effect=reconnect_with_peer_queue,
         ):
-            assert await provider._signal_track_completion() == "failed"
+            assert await provider._signal_track_completion() == "superseded"
 
         client.report_status.assert_not_awaited()
         client.update_player_state.assert_not_awaited()
@@ -3272,18 +3272,30 @@ class TestEchoSuppression:
 
         assert not provider._playback.restart_requested()
 
-    async def test_window_trim_moves_cursor_with_the_playing_item(self) -> None:
-        """A RADIO publication that trims the window keeps the cursor on the playing item."""
+    async def test_window_trim_moves_cursor_when_the_queue_is_adopted(self) -> None:
+        """A trim re-indexes the playing item only once Ynison reports the trimmed queue."""
         provider = _make_provider()
         await self._prime_same_track(provider)
+        playable = [{"playable_id": f"t{i}"} for i in range(200)]
+        playable[199] = {"playable_id": "track1"}
         provider._playback.index = 199
         provider._ynison = _mock_ynison()
         provider._ynison.publish_items = AsyncMock(return_value=10)
 
         await provider._update_queue_list([{"playable_id": "x"}])
 
-        assert provider._playback.index == 189
+        before_echo = _make_ynison_state(current_playable_index=199, playable_list=playable)
+        before_echo.status_is_relay = True
+        await provider._handle_ynison_state(before_echo)
         assert not provider._playback.restart_requested()
+
+        trimmed = [*playable[10:], {"playable_id": "x"}]
+        echo = _make_ynison_state(current_playable_index=189, playable_list=trimmed)
+        echo.last_update_is_echo = True
+        await provider._handle_ynison_state(echo)
+
+        assert not provider._playback.restart_requested()
+        assert provider._playback.index == 189
 
     async def test_peer_index_change_on_same_track_restarts(self) -> None:
         """A peer moving to another occurrence of the same track is a real change."""
@@ -4336,6 +4348,36 @@ class TestNaturalEndDifferentiation:
         wait.assert_not_awaited()
         assert client.update_player_state.await_count == 2
 
+    async def test_superseded_completion_streams_the_replacement_queue(self) -> None:
+        """A completion overtaken by a peer queue keeps the source on the new queue."""
+        provider = self._build()
+        assert provider._ynison is not None
+        ynison = provider._ynison
+        streamed: list[str] = []
+
+        async def superseded() -> str:
+            ynison.state.current_track_id = "peer1"
+            return "superseded"
+
+        async def decode(
+            track_id: str, *, seek_ms: int = 0, session_params: dict[str, Any] | None = None
+        ) -> Any:
+            del seek_ms, session_params
+            streamed.append(track_id)
+            yield b"\x00" * 4
+            if len(streamed) == 2:
+                provider._playback.request_stop(StopReason.CLEARED)
+
+        _stub_attr(provider, "_signal_track_completion", superseded)
+        _stub_attr(provider, "_stream_track", decode)
+        with patch.object(
+            provider, "_wait_for_track_change", side_effect=AssertionError("unexpected wait")
+        ):
+            await self._drive_to_exhaustion(provider)
+
+        assert streamed == ["track42", "peer1"]
+        assert provider._playback.stop_reason is StopReason.CLEARED
+
     async def test_track_change_during_chunk_loop_suppresses_signal(self) -> None:
         """
         A restart request set mid-stream → natural_end False → no signal.
@@ -4983,7 +5025,7 @@ class TestTrackBoundaryRecovery:
             "music_assistant.providers.yandex_ynison.provider.asyncio.sleep",
             new=AsyncMock(side_effect=replace_queue),
         ):
-            assert await provider._signal_track_completion() == "failed"
+            assert await provider._signal_track_completion() == "superseded"
 
         client.update_player_state.assert_not_awaited()
 

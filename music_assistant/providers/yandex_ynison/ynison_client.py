@@ -1199,7 +1199,8 @@ class YnisonClient:
                     self.state.status_is_relay = self._is_known_status(value)
                 if suppress_status and key == "status":
                     continue
-                if key == "status":
+                if key == "status" and not self.state.status_is_relay:
+                    # A relay keeps the anchor its position is extrapolated from.
                     self._remember_server_status(value)
                 existing_ps[key] = value
             self.state.last_update_is_echo = is_echo
