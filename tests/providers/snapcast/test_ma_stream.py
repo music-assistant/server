@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 import asyncio
-from typing import TYPE_CHECKING
-from unittest.mock import MagicMock
+from typing import TYPE_CHECKING, Any, Self
+from unittest.mock import MagicMock, patch
 
 import pytest
 from music_assistant_models.enums import ContentType
@@ -106,6 +106,43 @@ def test_external_transport_format_reads_uri_codec() -> None:
 
     assert output_format.content_type == ContentType.FLAC
     assert output_format.codec_type == ContentType.FLAC
+
+
+class _FakeFFMpeg:
+    """FFMpeg stand-in that exits immediately."""
+
+    def __init__(self, **kwargs: Any) -> None:
+        pass
+
+    async def __aenter__(self) -> Self:
+        return self
+
+    async def __aexit__(self, *args: object) -> None:
+        pass
+
+    async def wait(self) -> int:
+        return 0
+
+
+@pytest.mark.asyncio
+async def test_streamer_pokes_players_when_playback_anchor_is_known(
+    fake_provider: MagicMock,
+) -> None:
+    """The stream's players are refreshed once the server buffer delay has passed."""
+    fake_provider._use_builtin_server = True
+    fake_provider._snapcast_server_buffer_size = 2000
+    fake_provider._snapcast_server_host = "127.0.0.1"
+    fake_provider.mass.create_task.side_effect = asyncio.ensure_future
+    fake_provider.mass.closing = True
+    stream = _make_stream(fake_provider, name="music")
+    stream.snap_stream = MagicMock(identifier="music-1", path="tcp://0.0.0.0:4953")
+
+    with patch("music_assistant.providers.snapcast.ma_stream.FFMpeg", _FakeFFMpeg):
+        await stream._streamer_task_impl()
+
+    fake_provider.mass.call_later.assert_called_once_with(
+        2.0, stream._snap_on_stream_update, task_id="snapcast_playback_started_music"
+    )
 
 
 @pytest.mark.asyncio
