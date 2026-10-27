@@ -23,7 +23,7 @@
         "global": "Global"
       },
       "option_descriptions": {
-        "similar_artists": "Plays a similar artist of the last track's artist, picked the same way as playing that artist. With shuffle on, its tracks are shuffled into the queue.",
+        "similar_artists": "Plays a similar artist of the last track's artist, the same way as playing that artist.",
         "global": "Follow the Player Queues default."
       },
       "disabled_reasons": {

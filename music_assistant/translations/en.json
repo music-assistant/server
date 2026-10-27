@@ -738,7 +738,7 @@
   "core.player_queues.config_entries.autoplay_mode.disabled_reasons.similar_artists": "No music provider that can supply similar artists is currently available.",
   "core.player_queues.config_entries.autoplay_mode.label": "Autoplay source",
   "core.player_queues.config_entries.autoplay_mode.option_descriptions.global": "Follow the Player Queues default.",
-  "core.player_queues.config_entries.autoplay_mode.option_descriptions.similar_artists": "Plays a similar artist of the last track's artist, picked the same way as playing that artist. With shuffle on, its tracks are shuffled into the queue.",
+  "core.player_queues.config_entries.autoplay_mode.option_descriptions.similar_artists": "Plays a similar artist of the last track's artist, the same way as playing that artist.",
   "core.player_queues.config_entries.autoplay_mode.options.auto": "Automatic — similar tracks, falling back to your library",
   "core.player_queues.config_entries.autoplay_mode.options.global": "Global",
   "core.player_queues.config_entries.autoplay_mode.options.library": "Infinite mix from your library",
