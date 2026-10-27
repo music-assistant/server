@@ -44,6 +44,7 @@ def _make_player() -> YandexStationPlayer:
     vars(player)["_external_audio_client"] = False
     player._needs_replay = False
     vars(player)["_pause_stop_pending"] = False
+    vars(player)["_station_epoch"] = 0
     player._prev_alice_state = ""
     player._voice_resume_task = None
     player._alice_spoke = False
@@ -1103,6 +1104,85 @@ async def test_failed_transport_command_keeps_the_external_session(command: str)
     player._update_playback_state(playing=True, alice_state="IDLE")
     assert player._attr_playback_state == PlaybackState.PLAYING
     assert player._external_playing is True
+
+
+async def test_native_pause_ignores_stale_playing_state_delivered_during_the_command() -> None:
+    """
+    A pause of native playback stays PAUSED through the reports sent while it is pending.
+
+    A stale playing=True followed by the stopped state must not turn the pause into IDLE.
+    """
+    player = _make_player()
+    _disable_voice_control(player)
+
+    async def send(_command: dict[str, Any]) -> dict[str, Any]:
+        player._update_playback_state(playing=True, alice_state="IDLE")
+        player._update_playback_state(playing=False, alice_state="IDLE")
+        return {"status": "SUCCESS"}
+
+    player.glagol = cast("YandexGlagol", SimpleNamespace(send=send))
+    player._attr_playback_state = PlaybackState.PLAYING
+
+    await player.pause()
+
+    assert player._attr_playback_state == PlaybackState.PAUSED
+    assert player._needs_replay is False
+
+
+async def test_pause_ends_voice_interaction_finished_during_the_command() -> None:
+    """
+    An explicit pause wins over the auto-resume of a voice interaction.
+
+    Alice can finish speaking while the pause is pending; the auto-resume that
+    report schedules must not restart playback after the user's pause.
+    """
+    player = _make_player()
+    player._config = _VoiceControlConfig()  # type: ignore[assignment]
+    player._needs_replay = True
+    player._attr_playback_state = PlaybackState.PAUSED
+
+    async def send(_command: dict[str, Any]) -> dict[str, Any]:
+        player._alice_spoke = True
+        player._prev_alice_state = "SPEAKING"
+        player._update_playback_state(playing=False, alice_state="IDLE")
+        return {"status": "SUCCESS"}
+
+    player.glagol = cast("YandexGlagol", SimpleNamespace(send=send))
+
+    await player.pause()
+
+    assert player._voice_resume_task is None
+    assert player._attr_playback_state == PlaybackState.PAUSED
+
+
+async def test_failed_pause_keeps_playback_the_station_reported_meanwhile() -> None:
+    """
+    A pause that times out after the Station reported new playback keeps that playback.
+
+    The Station stopped and started its own playback while the command was pending,
+    so restoring the previous Music Assistant session would be obsolete.
+    """
+    player = _make_player()
+    _disable_voice_control(player)
+
+    async def send(_command: dict[str, Any]) -> dict[str, Any]:
+        player._update_playback_state(playing=False, alice_state="IDLE")
+        player._update_playback_state(playing=True, alice_state="IDLE")
+        return {"error": "timeout"}
+
+    player.glagol = cast("YandexGlagol", SimpleNamespace(send=send))
+    player._external_playing = True
+    vars(player)["_external_audio_client"] = True
+    player._external_play_confirmed = True
+    player._attr_playback_state = PlaybackState.PLAYING
+
+    with pytest.raises(PlayerCommandFailed):
+        await player.pause()
+
+    assert player._external_playing is False
+    assert player._needs_replay is False
+    assert vars(player)["_pause_stop_pending"] is False
+    assert player._attr_playback_state == PlaybackState.PLAYING
 
 
 async def test_pause_retains_legacy_radio_play_stop_workaround() -> None:

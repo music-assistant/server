@@ -190,6 +190,15 @@ class _SessionSnapshot:
     playback_state: PlaybackState
 
 
+@dataclass(frozen=True, slots=True)
+class _PendingCommand:
+    """A transport command sent to the Station and the session it replaced."""
+
+    generation: int
+    station_epoch: int
+    session: _SessionSnapshot
+
+
 class YandexStationPlayer(Player):
     """Represents a single Yandex Station smart speaker."""
 
@@ -223,9 +232,12 @@ class YandexStationPlayer(Player):
         self._external_stop_observed = False
         # Set after pause of external playback — play() must re-trigger queue
         self._needs_replay = False
-        # Set after pausing external playback until the Station reports it stopped.
+        # Set after a pause until the Station reports it stopped.
         # A playing=True update in between was sent before stop took effect.
         self._pause_stop_pending = False
+        # Counts Station reports that changed the playback session; a failed
+        # transport command restores its snapshot only if none arrived meanwhile.
+        self._station_epoch = 0
         # Track previous alice state to detect LISTENING→IDLE transitions
         self._prev_alice_state: str = ""
         # Timer for auto-resume after voice command
@@ -399,16 +411,13 @@ class YandexStationPlayer(Player):
 
     async def pause(self) -> None:
         """Pause playback."""
-        generation = self._external_play_generation + 1
-        snapshot = self._capture_session()
         was_external = self._external_playing
         legacy_stream = was_external and not self._external_audio_client
         # Glagol hands the state carried by the response frame to the player
         # before send() returns, so the pause is recorded before it is sent.
-        self._external_play_generation = generation
-        if was_external:
-            self._needs_replay = True
-            self._pause_stop_pending = True
+        command = self._begin_transport_command()
+        self._needs_replay = self._needs_replay or was_external
+        self._pause_stop_pending = True
         self._reset_external_session()
         self._cancel_voice_resume()
         self._attr_playback_state = PlaybackState.PAUSED
@@ -420,14 +429,12 @@ class YandexStationPlayer(Player):
             )
         else:
             result = await self.glagol.send({"command": "stop"})
-        self._finish_transport_command(result, "pause", generation, snapshot)
+        self._finish_transport_command(result, "pause", command)
 
     async def stop(self) -> None:
         """Stop playback."""
-        generation = self._external_play_generation + 1
-        snapshot = self._capture_session()
         legacy_stream = self._external_playing and not self._external_audio_client
-        self._external_play_generation = generation
+        command = self._begin_transport_command()
         self._reset_external_session()
         self._needs_replay = False
         self._pause_stop_pending = False
@@ -439,7 +446,7 @@ class YandexStationPlayer(Player):
             )
         else:
             result = await self.glagol.send({"command": "stop"})
-        self._finish_transport_command(result, "stop", generation, snapshot)
+        self._finish_transport_command(result, "stop", command)
 
     async def next_track(self) -> None:
         """Send NEXT command."""
@@ -702,32 +709,51 @@ class YandexStationPlayer(Player):
             playback_state=self._attr_playback_state,
         )
 
+    def _begin_transport_command(self) -> _PendingCommand:
+        """Claim a new playback generation for a transport command about to be sent."""
+        command = _PendingCommand(
+            generation=self._external_play_generation + 1,
+            station_epoch=self._station_epoch,
+            session=self._capture_session(),
+        )
+        self._external_play_generation = command.generation
+        return command
+
     def _finish_transport_command(
         self,
         result: dict[str, Any] | None,
-        command: str,
-        generation: int,
-        snapshot: _SessionSnapshot,
+        name: str,
+        command: _PendingCommand,
     ) -> None:
         """
         Publish a transport command whose state was applied before it was sent.
 
         If the Station rejected it, the previous session is restored unless a newer
-        command or Station event has replaced it meanwhile.
+        command or a Station report has changed the session meanwhile.
         """
+        current = self._external_play_generation == command.generation
         try:
-            _raise_if_failed(result, command)
+            _raise_if_failed(result, name)
         except PlayerCommandFailed:
-            if self._external_play_generation == generation:
-                self._external_playing = snapshot.external_playing
-                self._external_audio_client = snapshot.external_audio_client
-                self._external_media = snapshot.external_media
-                self._external_play_confirmed = snapshot.external_play_confirmed
-                self._external_stop_observed = snapshot.external_stop_observed
-                self._needs_replay = snapshot.needs_replay
-                self._pause_stop_pending = snapshot.pause_stop_pending
-                self._attr_playback_state = snapshot.playback_state
+            if current and self._station_epoch == command.station_epoch:
+                session = command.session
+                self._external_playing = session.external_playing
+                self._external_audio_client = session.external_audio_client
+                self._external_media = session.external_media
+                self._external_play_confirmed = session.external_play_confirmed
+                self._external_stop_observed = session.external_stop_observed
+                self._needs_replay = session.needs_replay
+                self._pause_stop_pending = session.pause_stop_pending
+                self._attr_playback_state = session.playback_state
+            elif current:
+                # The Station's reports describe the session now; no stop is coming.
+                self._pause_stop_pending = False
             raise
+        else:
+            if current:
+                # A voice interaction that ended while the command was pending
+                # must not auto-resume over the user's command.
+                self._cancel_voice_resume()
         finally:
             self.update_state()
 
@@ -1238,6 +1264,23 @@ class YandexStationPlayer(Player):
         native_track_id: str = "",
     ) -> None:
         """Update playback state from Glagol data."""
+        before = self._capture_session()
+        self._apply_playback_report(
+            playing, alice_state, external_media_matches, progress, duration, native_track_id
+        )
+        if self._capture_session() != before:
+            self._station_epoch += 1
+
+    def _apply_playback_report(
+        self,
+        playing: bool,
+        alice_state: str,
+        external_media_matches: bool | None = None,
+        progress: float = 0,
+        duration: float = 0,
+        native_track_id: str = "",
+    ) -> None:
+        """Apply one Station playback report to the player state."""
         if self._pause_stop_pending:
             if playing:
                 return
