@@ -35,6 +35,7 @@ from music_assistant.helpers.playlists import (
     ArtistInfo,
     PlaylistItem,
     construct_media_item_from_playlist_item,
+    generate_m3u,
     parse_m3u,
 )
 from music_assistant.providers.share_provider import (
@@ -361,6 +362,29 @@ async def test_import_shared_playlist_rejects_m3u_extension_delimiter(title: str
         await provider.import_shared_playlist(encoded)
 
     mass.music.playlists.import_playlist.assert_not_called()
+
+
+def test_trailing_pipe_corrupts_m3u_metadata_on_builtin_rewrite() -> None:
+    """The M3U rewrite loses the following metadata key after a trailing pipe."""
+    original = PlaylistItem(
+        path="share://track/payload",
+        title="Artist - Song| ",
+        metadata={"media_type": "track", "name": "Song| ", "mbid": "recording-mbid"},
+    )
+
+    first_parse = parse_m3u(generate_m3u("Mix", [original]))[0]
+    second_parse = parse_m3u(generate_m3u("Mix", [first_parse]))[0]
+
+    assert first_parse.metadata == {
+        "media_type": "track",
+        "name": "Song|",
+        "mbid": "recording-mbid",
+    }
+    assert second_parse.metadata == {
+        "media_type": "track",
+        "name": "Song",
+        "|mbid": "recording-mbid",
+    }
 
 
 async def test_playlist_payload_preserves_track_version_and_artist_credits() -> None:
