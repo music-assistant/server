@@ -48,7 +48,7 @@ from .constants import (
     MASS_APP_ID,
     SENDSPIN_CAST_APP_ID,
 )
-from .helpers import CastStatusListener, ChromecastInfo, disconnect_cast
+from .helpers import CastStatusListener, ChromecastInfo, disconnect_cast, http_profile_entry
 from .receiver_commands import MassCastCommandController
 
 if TYPE_CHECKING:
@@ -160,11 +160,13 @@ class ChromecastPlayer(Player):
         if self.type == PlayerType.GROUP:
             return [
                 *CAST_PLAYER_CONFIG_ENTRIES,
+                http_profile_entry(self.cast_info),
                 CONF_ENTRY_SAMPLE_RATES_CAST_GROUP,
             ]
 
         return [
             *CAST_PLAYER_CONFIG_ENTRIES,
+            http_profile_entry(self.cast_info),
             CONF_ENTRY_SAMPLE_RATES_CAST,
             CONF_ENTRY_DEFER_IDLE_VOLUME,
         ]
