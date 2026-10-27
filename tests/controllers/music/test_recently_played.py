@@ -249,3 +249,74 @@ async def test_recently_played_provider_filter_applied_before_limit(
     )
 
     assert {item.item_id for item in result} == {f"local-{i}" for i in range(5)}
+
+
+async def test_recently_played_merges_plays_of_one_library_item(
+    mass: MusicAssistant, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Plays logged under a library id and under a provider id it maps to are one entry."""
+    monkeypatch.setattr(mass.music, "get_active_provider_instances", lambda: ["ytmusic_1"])
+    await _add_provider_mapping(mass, item_id=1, provider_instance="ytmusic_1")
+    # item 1 was played from the library, then from a provider listing (logged under the
+    # provider id); the merge must happen before LIMIT so item 2 still makes the cut
+    await _add_playlog_track(mass, "1", timestamp=1000)
+    await _add_playlog_track(mass, "2", timestamp=2000)
+    await _add_playlog_track(mass, "ytmusic_1-1", timestamp=3000, provider="ytmusic_1")
+
+    result = await mass.music.recently_played(
+        limit=2, media_types=[MediaType.TRACK], userid="user-a"
+    )
+
+    assert [(item.provider, item.item_id) for item in result] == [
+        ("library", "1"),
+        ("library", "2"),
+    ]
+
+
+async def test_recently_played_keeps_provider_items_outside_the_library(
+    mass: MusicAssistant, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A provider play with no library mapping is returned under its own provider id."""
+    monkeypatch.setattr(mass.music, "get_active_provider_instances", lambda: ["ytmusic_1"])
+    await _add_provider_mapping(mass, item_id=1, provider_instance="ytmusic_1")
+    await _add_playlog_track(mass, "1", timestamp=1000)
+    await _add_playlog_track(mass, "ytmusic_1-9", timestamp=2000, provider="ytmusic_1")
+
+    result = await mass.music.recently_played(
+        limit=0, media_types=[MediaType.TRACK], userid="user-a"
+    )
+
+    assert [(item.provider, item.item_id) for item in result] == [
+        ("ytmusic_1", "ytmusic_1-9"),
+        ("library", "1"),
+    ]
+
+
+async def test_recently_played_merges_plays_across_pages(
+    mass: MusicAssistant, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Merging keeps reading rows until the limit is met, past the first page of rows."""
+    monkeypatch.setattr(
+        mass.music, "get_active_provider_instances", lambda: ["ytmusic_1", "ytmusic_2"]
+    )
+    # every item was played three times (from the library and from two providers), so
+    # 25 items need 75 rows, more than the 50 rows read at first
+    for item_id in range(1, 31):
+        timestamp = 1000 * item_id
+        await _add_playlog_track(mass, str(item_id), timestamp=timestamp)
+        for offset, provider_instance in enumerate(("ytmusic_1", "ytmusic_2"), start=1):
+            await _add_provider_mapping(mass, item_id=item_id, provider_instance=provider_instance)
+            await _add_playlog_track(
+                mass,
+                f"{provider_instance}-{item_id}",
+                timestamp=timestamp + offset,
+                provider=provider_instance,
+            )
+
+    result = await mass.music.recently_played(
+        limit=25, media_types=[MediaType.TRACK], userid="user-a"
+    )
+
+    assert [(item.provider, item.item_id) for item in result] == [
+        ("library", str(item_id)) for item_id in range(30, 5, -1)
+    ]
