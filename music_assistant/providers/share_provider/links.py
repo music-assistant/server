@@ -3,27 +3,11 @@
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
-from urllib.parse import quote, urlsplit
+from urllib.parse import urlsplit
 
 if TYPE_CHECKING:
     from music_assistant_models.media_items import MediaItemType
 
-PROVIDER_URL_SCHEMAS: dict[tuple[str, str], str] = {
-    ("spotify", "track"): "https://open.spotify.com/track/{id}",
-    ("spotify", "album"): "https://open.spotify.com/album/{id}",
-    ("spotify", "artist"): "https://open.spotify.com/artist/{id}",
-    ("tidal", "track"): "https://tidal.com/track/{id}",
-    ("tidal", "album"): "https://tidal.com/album/{id}",
-    ("tidal", "artist"): "https://tidal.com/artist/{id}",
-    ("qobuz", "track"): "https://open.qobuz.com/track/{id}",
-    ("qobuz", "album"): "https://open.qobuz.com/album/{id}",
-    ("qobuz", "artist"): "https://open.qobuz.com/artist/{id}",
-    ("ytmusic", "track"): "https://music.youtube.com/watch?v={id}",
-    ("ytmusic", "artist"): "https://music.youtube.com/channel/{id}",
-    ("deezer", "track"): "https://www.deezer.com/track/{id}",
-    ("deezer", "album"): "https://www.deezer.com/album/{id}",
-    ("deezer", "artist"): "https://www.deezer.com/artist/{id}",
-}
 PROVIDER_BASE_URLS: dict[str, str] = {
     "spotify": "https://open.spotify.com",
     "tidal": "https://tidal.com",
@@ -95,8 +79,8 @@ def is_valid_artwork_url(value: str) -> bool:
         return False
 
 
-def build_provider_links(item: MediaItemType, media_type: str) -> dict[str, str]:
-    """Build provider URLs from source mappings or known URL schemas."""
+def build_provider_links(item: MediaItemType) -> dict[str, str]:
+    """Return valid provider URLs already present on the item's mappings."""
     links: dict[str, str] = {}
     if not hasattr(item, "provider_mappings"):
         return links
@@ -105,24 +89,14 @@ def build_provider_links(item: MediaItemType, media_type: str) -> dict[str, str]
             mapping.provider_domain, mapping.url
         ):
             links[mapping.provider_domain] = mapping.url
-            continue
-        if (
-            mapping.provider_domain == "qobuz"
-            and media_type == "artist"
-            and not mapping.item_id.isdecimal()
-        ):
-            continue
-        schema = PROVIDER_URL_SCHEMAS.get((mapping.provider_domain, media_type))
-        if schema:
-            links[mapping.provider_domain] = schema.format(id=quote(mapping.item_id, safe=""))
     return links
 
 
-def build_provider_refs(item: MediaItemType, media_type: str) -> dict[str, str]:
+def build_provider_refs(item: MediaItemType) -> dict[str, str]:
     """Build compact provider path/query references for share payloads."""
     return {
         domain: compact_provider_ref(domain, url)
-        for domain, url in build_provider_links(item, media_type).items()
+        for domain, url in build_provider_links(item).items()
     }
 
 
@@ -131,12 +105,7 @@ def compact_provider_ref(domain: str, url: str) -> str:
     if not is_valid_provider_link(domain, url):
         return ""
     parsed = urlsplit(url)
-    path = parsed.path
-    if domain == "apple_music":
-        parts = path.split("/")
-        if len(parts) >= 5 and parts[2] == "album" and parts[-1].isdigit():
-            path = f"/{parts[1]}/album/{parts[-1]}"
-    return path + (f"?{parsed.query}" if parsed.query else "")
+    return parsed.path + (f"?{parsed.query}" if parsed.query else "")
 
 
 def expand_provider_ref(domain: str, value: str) -> str | None:
