@@ -1361,3 +1361,57 @@ async def test_player_config_entries_include_volume_mirror_toggle() -> None:
 
     assert entry.type == ConfigEntryType.BOOLEAN
     assert entry.default_value is True
+
+
+async def test_alice_request_keeps_target_paused_until_idle() -> None:
+    """
+    A voice request keeps the target paused and the Station audible until Alice is idle.
+
+    For "Алиса, сколько времени?" the Station reports LISTENING, then BUSY while the
+    request is processed and NONE while Alice speaks the answer. The Station must stay
+    unmuted and the target paused through BUSY and NONE; re-muting there would make the
+    answer inaudible and handing the track back would play the target over Alice.
+    """
+    player = _make_intercept_player()
+    player._intercept_active = True
+    player._saved_station_volume = 70
+    player._station_muted_by_intercept = True
+    player._last_intercepted_track_id = "X"
+    player._last_intercept_time = time.time()
+
+    prev = "IDLE"
+    for alice_state in ("LISTENING", "BUSY", "NONE"):
+        state, player_state, _ = _state(track_id="X", alice_state=alice_state)
+        await player._handle_intercept_tick(state, player_state, True, prev_alice_state=prev)
+        prev = alice_state
+
+    sent = [c.args[0] for c in player.glagol.send.await_args_list]
+    assert sent == [{"command": "setVolume", "volume": 0.7}]
+    assert player._station_muted_by_intercept is False
+    player.mass.players.cmd_pause.assert_awaited_once_with("target_player")
+    player.mass.player_queues.play_media.assert_not_awaited()
+
+    state, player_state, _ = _state(track_id="X", alice_state="IDLE", volume=0.7)
+    await player._handle_intercept_tick(state, player_state, True, prev_alice_state=prev)
+
+    sent = [c.args[0] for c in player.glagol.send.await_args_list]
+    assert {"command": "setVolume", "volume": 0.0} in sent
+    assert player._station_muted_by_intercept is True
+
+
+async def test_server_action_phrase_does_not_pause_target() -> None:
+    """A phrase spoken through a server action (aliceState NONE from IDLE) leaves the target playing."""
+    player = _make_intercept_player()
+    player._intercept_active = True
+    player._station_muted_by_intercept = True
+    player._last_intercepted_track_id = "X"
+    player._last_intercept_time = time.time()
+
+    prev = "IDLE"
+    for alice_state in ("NONE", "NONE", "IDLE"):
+        state, player_state, _ = _state(track_id="X", alice_state=alice_state, volume=0.0)
+        await player._handle_intercept_tick(state, player_state, True, prev_alice_state=prev)
+        prev = alice_state
+
+    player.mass.players.cmd_pause.assert_not_awaited()
+    player.glagol.send.assert_not_awaited()

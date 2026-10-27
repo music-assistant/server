@@ -9,8 +9,14 @@ import logging
 from typing import TYPE_CHECKING, Any, cast
 
 from aiohttp import ClientSession, CookieJar
+from music_assistant_models.auth import Scope
 from music_assistant_models.config_entries import ConfigEntry
 from music_assistant_models.enums import ConfigEntryType
+from music_assistant_models.errors import (
+    InsufficientPermissions,
+    InvalidDataError,
+    PlayerUnavailableError,
+)
 from ya_passport_auth import PassportClient, SecretStr
 from ya_passport_auth.ma import (
     BORROW_SOURCE_OWN,
@@ -20,9 +26,11 @@ from ya_passport_auth.ma import (
     KeySpec,
 )
 
+from music_assistant.controllers.webserver.helpers.auth_middleware import get_current_user
 from music_assistant.models.player_provider import PlayerProvider
 
 from .constants import (
+    CONF_ALICE_TEXT_COMMANDS,
     CONF_INTERCEPT_FEATURE_ENABLED,
     CONF_MUSIC_TOKEN,
     CONF_REFRESH_TOKEN,
@@ -37,6 +45,8 @@ from .quasar import YandexQuasar
 from .session import YandexSession
 
 if TYPE_CHECKING:
+    from collections.abc import Callable, Coroutine
+
     from music_assistant_models.config_entries import ProviderConfig
     from music_assistant_models.enums import ProviderFeature
     from music_assistant_models.provider import ProviderManifest
@@ -73,6 +83,7 @@ class YandexStationProvider(PlayerProvider):
         self._init_lock: asyncio.Lock = asyncio.Lock()
         self._cascade = self._build_cascade()
         self._borrow_source = self._build_borrow_source()
+        self._unregister_api_commands: list[Callable[[], None]] = []
 
     async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
         """
@@ -86,6 +97,14 @@ class YandexStationProvider(PlayerProvider):
             # When OFF, no per-player intercept setting takes effect.
             ConfigEntry(
                 key=CONF_INTERCEPT_FEATURE_ENABLED,
+                type=ConfigEntryType.BOOLEAN,
+                default_value=False,
+                required=False,
+            ),
+            # yandex_station/command can drive anything linked to the Yandex
+            # account (smart home, purchases), so it is opt-in.
+            ConfigEntry(
+                key=CONF_ALICE_TEXT_COMMANDS,
                 type=ConfigEntryType.BOOLEAN,
                 default_value=False,
                 required=False,
@@ -286,9 +305,61 @@ class YandexStationProvider(PlayerProvider):
         except Exception:
             _LOGGER.exception("Error processing mDNS discovery for %s", name)
 
+    async def loaded_in_mass(self) -> None:
+        """Register the provider's API commands once it is loaded."""
+        await super().loaded_in_mass()
+        commands: list[tuple[str, Callable[[str, str], Coroutine[Any, Any, None]]]] = [
+            ("yandex_station/say", self.say)
+        ]
+        if self.config.get_value(CONF_ALICE_TEXT_COMMANDS):
+            commands.append(("yandex_station/command", self.command))
+        for command, handler in commands:
+            self._unregister_api_commands.append(
+                self.mass.register_api_command(
+                    command, handler, required_scope=Scope.PLAYERS_CONTROL
+                )
+            )
+
     async def unload(self, is_removed: bool = False) -> None:
         """Clean up on provider unload."""
+        for unregister in self._unregister_api_commands:
+            unregister()
+        self._unregister_api_commands.clear()
         await self._cleanup_session()
+
+    async def say(self, player_id: str, text: str) -> None:
+        """
+        Make a Station say a phrase in Alice's voice.
+
+        :param player_id: The Yandex Station player to speak on.
+        :param text: The phrase to say.
+        """
+        await self._get_station(player_id, text).say(text)
+
+    async def command(self, player_id: str, text: str) -> None:
+        """
+        Hand a text request to Alice on a Station as if the user had spoken it.
+
+        :param player_id: The Yandex Station player that handles the request.
+        :param text: The request, e.g. "включи свет на кухне".
+        """
+        await self._get_station(player_id, text).send_command(text)
+
+    def _get_station(self, player_id: str, text: str) -> YandexStationPlayer:
+        """Return the addressed Station for an API command, validating its arguments."""
+        if not text.strip():
+            msg = "Text must not be empty"
+            raise InvalidDataError(msg)
+        player = self.mass.players.get_player(player_id)
+        if not isinstance(player, YandexStationPlayer):
+            msg = f"{player_id} is not a Yandex Station player"
+            raise PlayerUnavailableError(msg)
+        # Same per-user player restriction the core player commands enforce.
+        user = get_current_user()
+        if user and user.player_filter and player_id not in user.player_filter:
+            msg = f"{user.username} does not have access to player {player_id}"
+            raise InsufficientPermissions(msg)
+        return player
 
     # ── Credential cascade ────────────────────────────────────────────
 

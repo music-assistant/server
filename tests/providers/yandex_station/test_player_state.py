@@ -14,6 +14,7 @@ import base64
 import json
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, cast
+from unittest.mock import AsyncMock
 
 import pytest
 from music_assistant_models.enums import PlaybackState
@@ -42,6 +43,7 @@ def _make_player() -> YandexStationPlayer:
     vars(player)["_audio_client"] = False
     vars(player)["_external_audio_client"] = False
     player._needs_replay = False
+    vars(player)["_pause_stop_pending"] = False
     player._prev_alice_state = ""
     player._voice_resume_task = None
     player._alice_spoke = False
@@ -1004,6 +1006,48 @@ async def test_stop_uses_native_stop_for_audio_play_session() -> None:
     assert player._needs_replay is False
 
 
+async def test_pause_ignores_stale_playing_state_and_resumes_ma_queue() -> None:
+    """
+    A playing=True update sent just before the Station applies stop is stale.
+
+    It must not be taken for native playback: the player stays paused and play()
+    resumes the Music Assistant queue instead of the Station's own source.
+    """
+    player = _make_player()
+    _disable_voice_control(player)
+    commands: list[dict[str, Any]] = []
+
+    async def send(command: dict[str, Any]) -> dict[str, Any]:
+        commands.append(command)
+        return {"status": "SUCCESS"}
+
+    resume = AsyncMock()
+    player.glagol = cast("YandexGlagol", SimpleNamespace(send=send))
+    player.mass = cast(
+        "Any",
+        SimpleNamespace(
+            player_queues=SimpleNamespace(
+                get_active_queue=lambda _player_id: SimpleNamespace(queue_id="queue_1"),
+                resume=resume,
+            )
+        ),
+    )
+    player._external_playing = True
+    vars(player)["_external_audio_client"] = True
+    player._external_play_confirmed = True
+    player._attr_playback_state = PlaybackState.PLAYING
+
+    await player.pause()
+    player._update_playback_state(playing=True, alice_state="IDLE")
+    paused_state = player._attr_playback_state
+    player._update_playback_state(playing=False, alice_state="IDLE")
+    await player.play()
+
+    assert paused_state == PlaybackState.PAUSED
+    assert commands == [{"command": "stop"}]
+    resume.assert_awaited_once_with("queue_1")
+
+
 async def test_pause_retains_legacy_radio_play_stop_workaround() -> None:
     """Old firmware still needs its bypass stream replaced by an invalid URL."""
     player = _make_player()
@@ -1048,6 +1092,99 @@ def test_physical_pause_cancels_pending_voice_resume_task() -> None:
     assert cancelled is True
     assert player._voice_resume_task is None
     assert player._attr_playback_state == PlaybackState.PAUSED
+
+
+def test_wake_word_less_stop_with_voice_control_pauses_without_auto_resume() -> None:
+    """
+    "Стоп" without the wake word is a pause, not a voice interaction.
+
+    The Station handles about 25 commands locally without "Алиса", so aliceState stays
+    IDLE throughout. Voice control must not schedule its auto-resume for them.
+    """
+    player = _make_player()
+    player._config = _VoiceControlConfig()  # type: ignore[assignment]
+    player._external_playing = True
+    player._external_play_confirmed = True
+    player._attr_playback_state = PlaybackState.PLAYING
+    player._prev_alice_state = "IDLE"
+
+    player._update_playback_state(playing=False, alice_state="IDLE")
+    player._prev_alice_state = "IDLE"
+    player._update_playback_state(playing=False, alice_state="IDLE")
+
+    assert player._attr_playback_state == PlaybackState.PAUSED
+    assert player._external_playing is False
+    assert player._needs_replay is True
+    assert player._voice_resume_task is None
+
+
+def test_wake_word_less_volume_command_with_voice_control_keeps_playing() -> None:
+    """A volume command without the wake word changes volume only; the MA stream keeps playing."""
+    player = _make_player()
+    player._config = _VoiceControlConfig()  # type: ignore[assignment]
+    player._external_playing = True
+    player._external_play_confirmed = True
+    player._attr_playback_state = PlaybackState.PLAYING
+    player._prev_alice_state = "IDLE"
+    player._attr_volume_level = 40
+
+    player._attr_volume_level = 50
+    player._update_playback_state(playing=True, alice_state="IDLE")
+
+    assert player._attr_playback_state == PlaybackState.PLAYING
+    assert player._external_playing is True
+    assert player._needs_replay is False
+    assert player._voice_resume_task is None
+
+
+def test_server_action_speech_with_voice_control_keeps_external_session() -> None:
+    """
+    A phrase spoken through a server action (repeat_phrase) keeps the MA stream.
+
+    The Station reports aliceState NONE while it speaks and only ducks the music, so
+    playing stays True. Voice control must not treat this as a voice interaction: the
+    stream would otherwise be handed over to native playback and MA would lose it.
+    """
+    player = _make_player()
+    player._config = _VoiceControlConfig()  # type: ignore[assignment]
+    player._external_playing = True
+    player._external_play_confirmed = True
+    player._attr_playback_state = PlaybackState.PLAYING
+    player._prev_alice_state = "IDLE"
+
+    for alice_state in ("NONE", "NONE", "IDLE"):
+        player._update_playback_state(playing=True, alice_state=alice_state)
+        player._prev_alice_state = alice_state
+
+    assert player._attr_playback_state == PlaybackState.PLAYING
+    assert player._external_playing is True
+    assert player._needs_replay is False
+    assert player._voice_resume_task is None
+
+
+def test_voice_request_over_ducked_stream_keeps_external_session() -> None:
+    """
+    A voice request answered over the MA stream keeps the stream.
+
+    For a request such as "Алиса, сколько времени?" the Station only ducks the music
+    and keeps reporting playing=True through LISTENING, BUSY and the spoken answer.
+    Voice control must not pause the queue or hand the stream to native playback.
+    """
+    player = _make_player()
+    player._config = _VoiceControlConfig()  # type: ignore[assignment]
+    player._external_playing = True
+    player._external_play_confirmed = True
+    player._attr_playback_state = PlaybackState.PLAYING
+    player._prev_alice_state = "IDLE"
+
+    for alice_state in ("LISTENING", "BUSY", "NONE", "LISTENING", "IDLE"):
+        player._update_playback_state(playing=True, alice_state=alice_state)
+        player._prev_alice_state = alice_state
+        assert player._attr_playback_state == PlaybackState.PLAYING
+
+    assert player._external_playing is True
+    assert player._needs_replay is False
+    assert player._voice_resume_task is None
 
 
 def test_physical_pause_ignored_during_voice_interaction() -> None:

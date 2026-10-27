@@ -58,6 +58,12 @@ if TYPE_CHECKING:
 PROV_LOGGER_BASE = "music_assistant.Yandex Station"
 _LOGGER = logging.getLogger(f"{PROV_LOGGER_BASE}.player")
 
+# aliceState values outside a voice interaction. NONE is reported while the Station
+# speaks a server-action phrase (repeat_phrase): the music is only ducked.
+ALICE_IDLE_STATES = frozenset({"IDLE", "NONE", ""})
+# aliceState values that always belong to a voice interaction.
+ALICE_VOICE_STATES = frozenset({"LISTENING", "BUSY", "SPEAKING"})
+
 
 def _external_command(name: str, payload: dict[str, Any] | str | None = None) -> dict[str, Any]:
     """Build an externalCommandBypass command for Glagol."""
@@ -202,6 +208,9 @@ class YandexStationPlayer(Player):
         self._external_stop_observed = False
         # Set after pause of external playback — play() must re-trigger queue
         self._needs_replay = False
+        # Set after pausing external playback until the Station reports it stopped.
+        # A playing=True update in between was sent before stop took effect.
+        self._pause_stop_pending = False
         # Track previous alice state to detect LISTENING→IDLE transitions
         self._prev_alice_state: str = ""
         # Timer for auto-resume after voice command
@@ -223,7 +232,7 @@ class YandexStationPlayer(Player):
         self._intercept_lock: asyncio.Lock = asyncio.Lock()
         # True after we've issued cmd_pause(target) for the current Alice
         # interaction.  Prevents repeating the pause on every WS tick while
-        # Alice is still LISTENING/SPEAKING.  Cleared when alice goes IDLE.
+        # Alice is still active.  Cleared when alice goes IDLE.
         self._alice_active_pause_sent: bool = False
         # Saved Station volume captured ONCE at intercept-session start;
         # restored at session end (target unavailable, handoff failure,
@@ -361,6 +370,7 @@ class YandexStationPlayer(Player):
 
     async def play(self) -> None:
         """Resume playback, including a Music Assistant stream that was paused."""
+        self._pause_stop_pending = False
         # After external playback was paused, native "play" has nothing to
         # resume, so the MA queue is resumed instead.
         if self._needs_replay:
@@ -387,6 +397,7 @@ class YandexStationPlayer(Player):
         _raise_if_failed(result, "pause")
         if was_external:
             self._needs_replay = True
+            self._pause_stop_pending = True
         self._reset_external_session()
         self._cancel_voice_resume()
         self._attr_playback_state = PlaybackState.PAUSED
@@ -404,6 +415,7 @@ class YandexStationPlayer(Player):
         _raise_if_failed(result, "stop")
         self._reset_external_session()
         self._needs_replay = False
+        self._pause_stop_pending = False
         self._cancel_voice_resume()
         self._attr_playback_state = PlaybackState.IDLE
         self.update_state()
@@ -445,6 +457,7 @@ class YandexStationPlayer(Player):
         self._external_play_generation += 1
         generation = self._external_play_generation
         self._needs_replay = False
+        self._pause_stop_pending = False
         self._voice_pending_track_id = None
         _LOGGER.debug("[%s] play_media called: %s", self.player_id, media.title or media.uri)
         self._pending_play_generation = generation
@@ -533,6 +546,22 @@ class YandexStationPlayer(Player):
         finally:
             if saved_volume is not None:
                 await self.volume_set(saved_volume)
+
+    async def say(self, text: str) -> None:
+        """
+        Make the Station say a phrase in Alice's voice.
+
+        :param text: The phrase to say.
+        """
+        _raise_if_failed(await self.glagol.send_tts(text), "say")
+
+    async def send_command(self, text: str) -> None:
+        """
+        Hand a text request to Alice as if the user had spoken it.
+
+        :param text: The request, e.g. "включи свет на кухне".
+        """
+        _raise_if_failed(await self.glagol.send_text(text), "send_command")
 
     async def on_unload(self) -> None:
         """Clean up on player unload."""
@@ -658,7 +687,7 @@ class YandexStationPlayer(Player):
         if self._external_playing or not self._needs_replay:
             self._voice_pending_track_id = None
             return False
-        if alice_state not in ("IDLE", ""):
+        if alice_state not in ALICE_IDLE_STATES:
             # The source that was playing before Alice keeps reporting
             # playing=True while ducked; it is not a replacement.
             if alice_state == "SPEAKING":
@@ -717,7 +746,12 @@ class YandexStationPlayer(Player):
             track_id = (player_state.get("id") or "").strip()
             progress = int(player_state.get("progress") or 0)
             alice_state = state.get("aliceState", "")
-            alice_active = alice_state in ("LISTENING", "SPEAKING")
+            # A voice request goes LISTENING → BUSY → NONE while Alice speaks the
+            # answer. NONE alone (from IDLE) is a server-action phrase, which
+            # leaves the session untouched.
+            alice_active = alice_state in ALICE_VOICE_STATES or (
+                alice_state == "NONE" and self._alice_active_pause_sent
+            )
 
             # Alice activates → unmute Station so her TTS is audible (the
             # Station mixes Alice voice into the music output, so a vol=0
@@ -756,14 +790,14 @@ class YandexStationPlayer(Player):
                 return
 
             if not alice_active:
-                # Edge LISTENING/SPEAKING → IDLE: re-mute Station now that
+                # Edge from an Alice interaction → IDLE: re-mute Station now that
                 # Alice is done.  Without this, the Station would resume
                 # audible playback and double up with the target.  Same
                 # validation reason as the alice-unmute branch above:
                 # don't flip the flag unless the device confirms success.
                 if (
                     self._intercept_active
-                    and prev_alice_state in ("LISTENING", "SPEAKING")
+                    and (prev_alice_state in ALICE_VOICE_STATES or self._alice_active_pause_sent)
                     and not self._station_muted_by_intercept
                 ):
                     try:
@@ -1141,10 +1175,14 @@ class YandexStationPlayer(Player):
         native_track_id: str = "",
     ) -> None:
         """Update playback state from Glagol data."""
+        if self._pause_stop_pending:
+            if playing:
+                return
+            self._pause_stop_pending = False
         if (
             not self._external_playing
             and self._voice_control_enabled
-            and alice_state not in ("IDLE", "")
+            and alice_state not in ALICE_IDLE_STATES
             and self._pending_play_generation == self._external_play_generation
         ):
             self._handle_voice_interrupt(alice_state)
@@ -1155,7 +1193,9 @@ class YandexStationPlayer(Player):
         ):
             return
         if self._external_playing:
-            if self._voice_control_enabled and alice_state not in ("IDLE", ""):
+            # While Alice handles a request the Station usually only ducks the
+            # stream; it is interrupted only once the Station reports it stopped.
+            if self._voice_control_enabled and alice_state not in ALICE_IDLE_STATES and not playing:
                 self._handle_voice_interrupt(alice_state)
             elif playing:
                 if self._external_audio_client:
@@ -1167,7 +1207,7 @@ class YandexStationPlayer(Player):
                 self._attr_powered = True
             elif (
                 self._external_play_confirmed
-                and alice_state in ("IDLE", "")
+                and alice_state in ALICE_IDLE_STATES
                 and external_media_matches is not False
             ):
                 # Stream was playing, now stopped without voice trigger →
