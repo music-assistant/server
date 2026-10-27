@@ -20,7 +20,9 @@ from music_assistant_models.media_items import (
     Album,
     Artist,
     ItemMapping,
+    Playlist,
     ProviderMapping,
+    Radio,
     Track,
     UniqueList,
 )
@@ -554,6 +556,54 @@ async def test_core_search_rejects_reused_isrc_with_different_lead_artist() -> N
     assert result is None
 
 
+async def test_core_search_rejects_conflicting_featured_artist_credit() -> None:
+    """A shared ISRC cannot override a conflicting secondary artist credit."""
+    provider = _provider()
+    mass = _mass(provider)
+    candidate = Track(
+        item_id="reused-isrc",
+        provider="catalog--1",
+        name="Song",
+        duration=218,
+        external_ids={(ExternalID.ISRC, ISRC)},
+        provider_mappings={
+            ProviderMapping(
+                item_id="reused-isrc",
+                provider_domain="catalog",
+                provider_instance="catalog--1",
+                available=True,
+            )
+        },
+        artists=UniqueList(
+            [
+                Artist(
+                    item_id="first", provider="catalog--1", name="First", provider_mappings=set()
+                ),
+                Artist(
+                    item_id="other", provider="catalog--1", name="Other", provider_mappings=set()
+                ),
+            ]
+        ),
+    )
+    mass.music.get_controller.return_value.get_item_by_external_id = AsyncMock(return_value=None)
+    mass.music.tracks.enrich_provider_mappings = AsyncMock(
+        return_value=SimpleNamespace(matches=(_core_match(candidate, TrackMatchConfidence.LIKELY),))
+    )
+
+    result = await provider._resolve_media_item(
+        SharePayload(
+            type="track",
+            title="Song",
+            artist="First, Second",
+            artists=["First", "Second"],
+            isrc=ISRC,
+            duration=218,
+        )
+    )
+
+    assert result is None
+
+
 @pytest.mark.parametrize(("second_artist", "expected_match"), [("Second", True), ("Other", False)])
 async def test_isrc_match_requires_all_artist_credits(
     second_artist: str, expected_match: bool
@@ -1016,6 +1066,23 @@ async def test_playlist_export_includes_all_tracks_duplicates_and_mapped_album_n
     assert exported[500].title == "Track 500"
     assert all(track.album == "Album" for track in exported)
     _mass(provider).music.playlists.tracks.assert_awaited_once_with("playlist", "test", limit=0)
+
+
+@pytest.mark.parametrize("include_track", [False, True])
+async def test_playlist_export_rejects_unsupported_media_entries(include_track: bool) -> None:
+    """A playlist with unsupported entries is rejected rather than truncated."""
+    provider = _provider()
+    playlist_tracks: list[Track | Radio] = [_track(item_id="track")] if include_track else []
+    playlist_tracks.append(
+        Radio(item_id="radio", provider="builtin", name="Radio", provider_mappings=set())
+    )
+    _mass(provider).music.playlists.tracks = AsyncMock(return_value=playlist_tracks)
+    playlist = Playlist(
+        item_id="playlist", provider="builtin", name="Playlist", provider_mappings=set()
+    )
+
+    with pytest.raises(InvalidDataError, match="radio entries"):
+        await provider._build_payload(playlist)
 
 
 async def test_share_base_url_is_an_instance_config_option() -> None:
