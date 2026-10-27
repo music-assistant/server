@@ -212,7 +212,11 @@ class SnapCastPlayer(Player):
         ma_stream = self.active_snap_ma_stream
         await player_group.set_stream("default")
         if ma_stream:
-            ma_stream.request_stop_stream()
+            # a stream other groups still play (e.g. a universal group) stops once unused
+            if not any(
+                grp.stream == ma_stream.stream_id for grp in self.snap_provider._snapserver.groups
+            ):
+                ma_stream.request_stop_stream()
             return
 
         self.poke_player_update()
