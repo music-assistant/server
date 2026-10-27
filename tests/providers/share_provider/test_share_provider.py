@@ -11,7 +11,7 @@ from unittest.mock import AsyncMock, MagicMock, call, patch
 
 import pytest
 from music_assistant_models.auth import Scope
-from music_assistant_models.enums import ExternalID, MediaType, PlaylistMatchPolicy
+from music_assistant_models.enums import ExternalID, MediaType, PlaylistMatchPolicy, ProviderType
 from music_assistant_models.errors import (
     InvalidDataError,
     ProviderUnavailableError,
@@ -60,6 +60,7 @@ def _provider() -> ShareProvider:
     config.name = "Share Links"
     config.get_value.return_value = "GLOBAL"
     provider = ShareProvider(mass, manifest, config)
+    mass.config.get_provider_configs = AsyncMock(return_value=[])
     mass.music.tracks.enrich_provider_mappings = AsyncMock(return_value=SimpleNamespace(matches=()))
     return provider
 
@@ -236,21 +237,30 @@ async def test_resolve_skips_unrelated_barcode_album_and_tries_mbid() -> None:
     mass.music.search.assert_not_called()
 
 
-async def test_resolve_rejects_unrelated_isrc_match() -> None:
-    """An ISRC collision with unrelated track metadata is not accepted."""
+@pytest.mark.parametrize(
+    ("candidate_title", "candidate_artist"),
+    [("Different song", "Artist"), ("Shared song", "Other artist")],
+)
+async def test_resolve_rejects_unrelated_isrc_match(
+    candidate_title: str, candidate_artist: str
+) -> None:
+    """A matching ISRC and duration still require title and artist corroboration."""
     provider = _provider()
     mass = _mass(provider)
-    unrelated = Track(
+    unrelated = _track(
         item_id="wrong-track",
-        provider="library",
-        name="Different song",
-        provider_mappings=set(),
+        name=candidate_title,
+        artist=candidate_artist,
+        duration=218,
+        external_ids={(ExternalID.ISRC, ISRC)},
     )
     mass.music.get_controller.return_value.get_item_by_external_id = AsyncMock(
         return_value=unrelated
     )
     mass.music.tracks.get = AsyncMock()
-    payload = SharePayload(type="track", title="Shared song", isrc=ISRC)
+    payload = SharePayload(
+        type="track", title="Shared song", artist="Artist", isrc=ISRC, duration=218
+    )
 
     result = await provider._resolve_media_item(payload, allow_search=False)
 
@@ -463,11 +473,88 @@ async def test_track_resolution_uses_core_matcher_and_full_share_metadata() -> N
     assert core_track.name == "Track"
     assert core_track.version == "Live"
     assert core_track.duration == 218
-    assert core_track.album is not None
-    assert core_track.album.name == "Album"
+    assert core_track.album is None
     assert core_track.external_ids == {(ExternalID.ISRC, ISRC)}
     assert core_track.artists[0].name == "Artist"
     mass.music.search.assert_not_called()
+    enrichment_call = mass.music.tracks.enrich_provider_mappings.await_args
+    assert enrichment_call.kwargs["minimum_confidence"] == TrackMatchConfidence.LIKELY
+    assert enrichment_call.kwargs["provider_instance_ids"] == set()
+    assert enrichment_call.kwargs["search_non_streaming_without_mapping"] is True
+
+
+async def test_core_search_rejects_reused_isrc_with_different_artist() -> None:
+    """A Core ISRC hit still needs matching title and artist metadata in Share."""
+    provider = _provider()
+    mass = _mass(provider)
+    candidate = _track(
+        item_id="reused-isrc",
+        artist="Other Artist",
+        duration=218,
+        external_ids={(ExternalID.ISRC, ISRC)},
+    )
+    mass.music.get_controller.return_value.get_item_by_external_id = AsyncMock(return_value=None)
+    mass.music.tracks.enrich_provider_mappings = AsyncMock(
+        return_value=SimpleNamespace(matches=(_core_match(candidate, TrackMatchConfidence.LIKELY),))
+    )
+
+    assert (
+        await provider._resolve_media_item(
+            SharePayload(
+                type="track",
+                title="Track",
+                artist="Artist",
+                isrc=ISRC,
+                duration=218,
+            )
+        )
+        is None
+    )
+
+
+@pytest.mark.parametrize(("second_artist", "expected_match"), [("Second", True), ("Other", False)])
+async def test_isrc_match_requires_all_artist_credits(
+    second_artist: str, expected_match: bool
+) -> None:
+    """An ISRC hit is accepted only when every credited artist matches."""
+    provider = _provider()
+    mass = _mass(provider)
+    candidate = Track(
+        item_id="candidate",
+        provider="catalog--1",
+        name="Song",
+        duration=218,
+        external_ids={(ExternalID.ISRC, ISRC)},
+        provider_mappings=set(),
+        artists=UniqueList(
+            [
+                Artist(item_id="one", provider="catalog--1", name="First", provider_mappings=set()),
+                Artist(
+                    item_id="two",
+                    provider="catalog--1",
+                    name=second_artist,
+                    provider_mappings=set(),
+                ),
+            ]
+        ),
+    )
+    mass.music.get_controller.return_value.get_item_by_external_id = AsyncMock(
+        return_value=candidate
+    )
+    mass.music.tracks.get = AsyncMock(return_value=candidate)
+    payload = SharePayload(
+        type="track",
+        title="Song",
+        artist="First, Second",
+        artists=["First", "Second"],
+        duration=218,
+        isrc=ISRC,
+    )
+
+    result = await provider._resolve_media_item(payload, allow_search=False)
+
+    assert (result is candidate) is expected_match
+    assert mass.music.tracks.get.await_count == int(expected_match)
 
 
 async def test_track_resolution_returns_none_without_core_match() -> None:
@@ -548,6 +635,39 @@ async def test_playlist_preview_uses_core_track_matcher() -> None:
     core_track = mass.music.tracks.enrich_provider_mappings.await_args.args[0]
     assert core_track.duration == 218
     assert core_track.get_external_id(ExternalID.ISRC) == ISRC
+    mass.config.get_provider_configs.assert_awaited_once_with(provider_type=ProviderType.MUSIC)
+    enrichment_call = mass.music.tracks.enrich_provider_mappings.await_args
+    assert enrichment_call.kwargs["provider_instance_ids"] == set()
+    assert enrichment_call.kwargs["search_non_streaming_without_mapping"] is True
+
+
+async def test_search_provider_scope_filters_disabled_builtin_and_hidden_sources() -> None:
+    """Only enabled music providers visible to the caller enter Core search."""
+    provider = _provider()
+    mass = _mass(provider)
+    user = object()
+    mass.config.get_provider_configs = AsyncMock(
+        return_value=[
+            SimpleNamespace(instance_id="tidal--visible", domain="tidal", enabled=True),
+            SimpleNamespace(instance_id="jellyfin--visible", domain="jellyfin", enabled=True),
+            SimpleNamespace(instance_id="tidal--disabled", domain="tidal", enabled=False),
+            SimpleNamespace(instance_id="builtin", domain="builtin", enabled=True),
+        ]
+    )
+    with (
+        patch(
+            "music_assistant.providers.share_provider.get_current_user",
+            return_value=user,
+        ),
+        patch(
+            "music_assistant.providers.share_provider.visible_music_sources",
+            return_value=["tidal--visible", "jellyfin--visible"],
+        ),
+    ):
+        provider_instances = await provider._searchable_music_provider_instances()
+
+    assert provider_instances == {"tidal--visible", "jellyfin--visible"}
+    mass.config.get_provider_configs.assert_awaited_once_with(provider_type=ProviderType.MUSIC)
 
 
 async def test_build_album_payload_includes_barcode_mbid_and_provider_link() -> None:
@@ -588,6 +708,72 @@ async def test_build_track_payload_includes_duration_for_core_matching() -> None
     payload = await provider._build_payload(track)
 
     assert payload.duration == 218
+
+
+async def test_track_payload_preserves_separate_artist_credits() -> None:
+    """New individual-track shares preserve structured credits for Core matching."""
+    provider = _provider()
+    track = Track(
+        item_id="multi-artist",
+        provider="catalog--1",
+        name="Song",
+        duration=218,
+        provider_mappings=set(),
+        artists=UniqueList(
+            [
+                Artist(item_id="one", provider="catalog--1", name="First", provider_mappings=set()),
+                Artist(
+                    item_id="two", provider="catalog--1", name="Second", provider_mappings=set()
+                ),
+            ]
+        ),
+    )
+
+    payload = await provider._build_payload(track)
+    reconstructed = provider._track_from_payload(payload)
+
+    assert payload.artist == "First, Second"
+    assert payload.artists == ["First", "Second"]
+    assert [artist.name for artist in reconstructed.artists] == ["First", "Second"]
+
+
+async def test_album_payload_preserves_separate_artist_credits() -> None:
+    """Album payloads preserve artist credits as separate structured values."""
+    provider = _provider()
+    album = Album(
+        item_id="album",
+        provider="catalog--1",
+        name="Album",
+        version="Deluxe",
+        provider_mappings=set(),
+        artists=UniqueList(
+            [
+                Artist(item_id="one", provider="catalog--1", name="First", provider_mappings=set()),
+                Artist(
+                    item_id="two", provider="catalog--1", name="Second", provider_mappings=set()
+                ),
+            ]
+        ),
+    )
+
+    payload = await provider._build_payload(album)
+    reference = provider._album_reference(payload)
+
+    assert payload.artists == ["First", "Second"]
+    assert provider._matches_album_reference(payload, reference, album)
+
+
+def test_name_only_album_is_not_reconstructed_as_a_builtin_mapping() -> None:
+    """An album label stays share metadata rather than a fetchable builtin identity."""
+    provider = _provider()
+    payload = SharePayload(type="track", title="Track", artist="Artist", album="Album")
+
+    item = provider._playlist_item_from_payload(payload)
+    reconstructed = provider._track_from_payload(payload)
+
+    assert item.album is None
+    assert reconstructed.album is None
+    assert SharePayload.from_base64(item.path.removeprefix("share://track/")).album == "Album"
 
 
 async def test_album_search_requires_matching_edition() -> None:
@@ -888,7 +1074,7 @@ async def test_playlist_resolution_is_read_only() -> None:
     encoded = SharePayload(
         type="playlist",
         title="Playlist",
-        tracks=[TrackStub("Track", "Artist", ISRC)],
+        tracks=[TrackStub(title="Track", artist="Artist", isrc=ISRC)],
     ).to_base64()
 
     assert await provider.resolve_share_link(encoded) is None
@@ -950,8 +1136,8 @@ async def test_import_shared_playlist_uses_existing_matching_importer() -> None:
         "mb_track": "release-track-mbid",
     }
     assert imported_items[0].artists[0].name == "Artist"
-    assert imported_items[0].album is not None
-    assert imported_items[0].album.name == "Album"
+    assert imported_items[0].album is None
+    assert imported_track.album == "Album"
     shared_track = construct_media_item_from_playlist_item(imported_items[0], mass)
     shared_track_without_duration = construct_media_item_from_playlist_item(
         PlaylistItem(
@@ -989,6 +1175,33 @@ async def test_import_shared_playlist_uses_existing_matching_importer() -> None:
     )
 
 
+async def test_import_shared_playlist_preserves_separate_artist_credits() -> None:
+    """M3U import preserves the separate artist list in share metadata and items."""
+    provider = _provider()
+    mass = _mass(provider)
+    mass.music.playlists.import_playlist = AsyncMock(return_value=MagicMock())
+    payload = SharePayload(
+        type="playlist",
+        title="Shared Mix",
+        tracks=[
+            TrackStub(
+                title="Song",
+                artist="First, Second",
+                artists=["First", "Second"],
+                duration=218,
+            )
+        ],
+    )
+
+    await provider.import_shared_playlist(payload.to_base64())
+
+    m3u_data = mass.music.playlists.import_playlist.await_args.args[0]
+    imported_item = parse_m3u(m3u_data)[0]
+    shared_payload = SharePayload.from_base64(imported_item.path.removeprefix("share://track/"))
+    assert shared_payload.artists == ["First", "Second"]
+    assert [artist.name for artist in imported_item.artists] == ["First", "Second"]
+
+
 async def test_playlist_payload_preserves_track_version_and_artist_credits() -> None:
     """Playlist stubs retain version metadata and the track's artist credit string."""
     provider = _provider()
@@ -1024,6 +1237,7 @@ async def test_playlist_payload_preserves_track_version_and_artist_credits() -> 
 
     assert len(stubs) == 1
     assert stubs[0].artist == "First Artist, Second Artist"
+    assert stubs[0].artists == ["First Artist", "Second Artist"]
     assert stubs[0].version == "Acoustic"
 
 
@@ -1147,7 +1361,10 @@ async def test_preview_keeps_unmatched_and_duplicate_tracks_in_original_order() 
     assert tracks[1].artists[0].name == "Artist"
     assert tracks[1].album is not None
     assert tracks[1].album.name == "Album"
-    assert all(kwargs == {"hydrate_track": False} for _, kwargs in resolver.call_args_list)
+    assert all(
+        kwargs == {"hydrate_track": False, "search_provider_instance_ids": set()}
+        for _, kwargs in resolver.call_args_list
+    )
     assert resolver.await_count == 2
     _mass(provider).music.playlists.import_playlist.assert_not_called()
 

@@ -25,6 +25,7 @@ from music_assistant_models.enums import (
     ExternalID,
     MediaType,
     PlaylistMatchPolicy,
+    ProviderType,
 )
 from music_assistant_models.errors import (
     InvalidDataError,
@@ -38,11 +39,13 @@ from music_assistant_models.media_items import (
     UniqueList,
 )
 
+from music_assistant.controllers.webserver.helpers.auth_middleware import get_current_user
 from music_assistant.helpers.compare import (
     TrackMatchConfidence,
     compare_album,
     compare_artist,
     compare_track_evidence,
+    compare_track_title,
 )
 from music_assistant.helpers.external_ids import (
     is_valid_barcode,
@@ -50,12 +53,12 @@ from music_assistant.helpers.external_ids import (
     normalize_external_id,
 )
 from music_assistant.helpers.playlists import (
-    AlbumInfo,
     ArtistInfo,
     PlaylistItem,
     construct_media_item_from_playlist_item,
     generate_m3u,
 )
+from music_assistant.helpers.provider_access import visible_music_sources
 from music_assistant.models.music_provider import PROVIDER_FETCH_ERRORS
 from music_assistant.models.plugin import PluginProvider
 from music_assistant.providers.share_provider.links import (
@@ -207,13 +210,18 @@ class ShareProvider(PluginProvider):
             raise InvalidDataError("Invalid share payload") from err
         if payload.type != "playlist":
             raise InvalidDataError("Share payload is not a playlist")
+        search_provider_instance_ids = await self._searchable_music_provider_instances()
         semaphore = asyncio.Semaphore(2)
         resolved_by_payload: dict[str, asyncio.Task[Track | None]] = {}
 
         async def resolve_payload(track_payload: SharePayload) -> Track | None:
             async with semaphore:
                 try:
-                    item = await self._resolve_media_item(track_payload, hydrate_track=False)
+                    item = await self._resolve_media_item(
+                        track_payload,
+                        hydrate_track=False,
+                        search_provider_instance_ids=search_provider_instance_ids,
+                    )
                 except PROVIDER_FETCH_ERRORS as err:
                     LOGGER.debug(
                         "Could not resolve shared preview track %s: %s",
@@ -228,6 +236,7 @@ class ShareProvider(PluginProvider):
                 type="track",
                 title=stub.title,
                 artist=stub.artist,
+                artists=stub.artists,
                 version=stub.version,
                 album=stub.album,
                 isrc=stub.isrc,
@@ -249,6 +258,13 @@ class ShareProvider(PluginProvider):
             )
             if not isinstance(preview, Track):
                 raise InvalidDataError("Invalid shared track preview")
+            if track_payload.album:
+                preview.album = ItemMapping(
+                    item_id=track_payload.album,
+                    provider=self.instance_id,
+                    name=track_payload.album,
+                    media_type=MediaType.ALBUM,
+                )
             return replace(
                 preview,
                 item_id=f"share-preview://track/{encoded_track}",
@@ -297,6 +313,7 @@ class ShareProvider(PluginProvider):
                 type="track",
                 title=track.title,
                 artist=track.artist,
+                artists=track.artists,
                 version=track.version,
                 album=track.album,
                 isrc=track.isrc,
@@ -320,6 +337,7 @@ class ShareProvider(PluginProvider):
         """Build a SharePayload from a MediaItem."""
         media_type = item.media_type.value
         artist_str: str | None = None
+        artist_credits: list[str] | None = None
         version_str: str | None = None
         album_str: str | None = None
         isrc: str | None = None
@@ -341,11 +359,11 @@ class ShareProvider(PluginProvider):
             version_str = getattr(item, "version", None) or None
             if isinstance(item, Track):
                 duration = item.duration
+                artist_credits = [artist.name for artist in item.artists] or None
+                artist_str = ", ".join(artist_credits) if artist_credits else None
             isrc = item.get_external_id(ExternalID.ISRC)
             mbid = item.get_external_id(ExternalID.MB_RECORDING)
             mb_track = item.get_external_id(ExternalID.MB_TRACK)
-            if hasattr(item, "artist_str"):
-                artist_str = item.artist_str or None
             if hasattr(item, "album") and item.album:
                 album_str = item.album.name
             provider_refs = build_provider_refs(item)
@@ -358,8 +376,9 @@ class ShareProvider(PluginProvider):
             version_str = getattr(item, "version", None) or None
             mbid = item.get_external_id(ExternalID.MB_ALBUM)
             barcode = item.get_external_id(ExternalID.BARCODE)
-            if hasattr(item, "artist_str"):
-                artist_str = item.artist_str or None
+            if isinstance(item, Album):
+                artist_credits = [artist.name for artist in item.artists] or None
+                artist_str = ", ".join(artist_credits) if artist_credits else None
             provider_refs = build_provider_refs(item)
 
         elif item.media_type == MediaType.PLAYLIST:
@@ -369,6 +388,7 @@ class ShareProvider(PluginProvider):
             type=cast("Literal['track', 'album', 'artist', 'playlist']", media_type),
             title=item.name,
             artist=artist_str,
+            artists=artist_credits,
             version=version_str,
             album=album_str,
             isrc=isrc,
@@ -392,11 +412,8 @@ class ShareProvider(PluginProvider):
             result.append(
                 TrackStub(
                     title=track.name,
-                    artist=(
-                        ", ".join(artist.name for artist in track.artists)
-                        if track.artists
-                        else None
-                    ),
+                    artist=", ".join(artist.name for artist in track.artists) or None,
+                    artists=[artist.name for artist in track.artists] or None,
                     version=track.version or None,
                     isrc=track.get_external_id(ExternalID.ISRC),
                     mbid=track.get_external_id(ExternalID.MB_RECORDING),
@@ -417,6 +434,7 @@ class ShareProvider(PluginProvider):
         payload: SharePayload,
         allow_search: bool = True,
         hydrate_track: bool = True,
+        search_provider_instance_ids: set[str] | None = None,
     ) -> MediaItemType | None:
         """
         Resolve a shared track, album, or artist using known IDs before search.
@@ -428,7 +446,7 @@ class ShareProvider(PluginProvider):
         if item is not None or not allow_search:
             return item
         if media_type == MediaType.TRACK:
-            return await self._resolve_track_with_core(payload)
+            return await self._resolve_track_with_core(payload, search_provider_instance_ids)
         return await self._resolve_by_search(payload, media_type)
 
     async def _resolve_by_external_ids(
@@ -489,6 +507,10 @@ class ShareProvider(PluginProvider):
                         or track_reference is None
                         or compare_track_evidence(track_reference, item)
                         < TrackMatchConfidence.LIKELY
+                        or (
+                            external_id_type == ExternalID.ISRC
+                            and not self._isrc_candidate_corroborated(track_reference, item)
+                        )
                     ):
                         continue
                     if not hydrate_track:
@@ -512,8 +534,6 @@ class ShareProvider(PluginProvider):
     async def _resolve_by_search(
         self, payload: SharePayload, media_type: MediaType
     ) -> MediaItemType | None:
-        if media_type == MediaType.TRACK:
-            return await self._resolve_track_with_core(payload)
         query = f"{payload.artist} {payload.title}" if payload.artist else payload.title
         results = await self.mass.music.search(query, media_types=[media_type], limit=5)
         if media_type == MediaType.ALBUM:
@@ -533,14 +553,26 @@ class ShareProvider(PluginProvider):
         ]
         return artist_matches[0] if len(artist_matches) == 1 else None
 
-    async def _resolve_track_with_core(self, payload: SharePayload) -> Track | None:
+    async def _resolve_track_with_core(
+        self,
+        payload: SharePayload,
+        provider_instance_ids: set[str] | None = None,
+    ) -> Track | None:
         """Resolve a shared track through the core provider matcher."""
+        if provider_instance_ids is None:
+            provider_instance_ids = await self._searchable_music_provider_instances()
+        shared_track = self._track_from_payload(payload)
         enrichment = await self.mass.music.tracks.enrich_provider_mappings(
-            self._track_from_payload(payload),
+            shared_track,
             minimum_confidence=TrackMatchConfidence.LIKELY,
+            provider_instance_ids=provider_instance_ids,
+            search_non_streaming_without_mapping=True,
         )
         matches = [
-            match for match in enrichment.matches if match.confidence >= TrackMatchConfidence.LIKELY
+            match
+            for match in enrichment.matches
+            if match.confidence >= TrackMatchConfidence.LIKELY
+            and (not payload.isrc or self._isrc_candidate_corroborated(shared_track, match.track))
         ]
         if not matches:
             return None
@@ -557,6 +589,43 @@ class ShareProvider(PluginProvider):
             ),
         )
         return primary_match.track
+
+    @staticmethod
+    def _isrc_candidate_corroborated(base_track: Track, candidate: Track) -> bool:
+        """Require title and all credited artists to confirm an ISRC hit."""
+        if not compare_track_title(base_track.name, candidate.name):
+            return False
+        unmatched_candidates = list(candidate.artists)
+        if not base_track.artists or len(base_track.artists) != len(unmatched_candidates):
+            return False
+        for base_artist in base_track.artists:
+            matching_index = next(
+                (
+                    index
+                    for index, candidate_artist in enumerate(unmatched_candidates)
+                    if compare_artist(base_artist, candidate_artist) is True
+                ),
+                None,
+            )
+            if matching_index is None:
+                return False
+            unmatched_candidates.pop(matching_index)
+        return not unmatched_candidates
+
+    async def _searchable_music_provider_instances(self) -> set[str]:
+        """Return enabled, user-visible music providers that can search catalogs."""
+        user = get_current_user()
+        visible_sources = visible_music_sources(self.mass, user) if user else None
+        provider_configs = await self.mass.config.get_provider_configs(
+            provider_type=ProviderType.MUSIC
+        )
+        return {
+            config.instance_id
+            for config in provider_configs
+            if config.enabled
+            and config.domain != "builtin"
+            and (visible_sources is None or config.instance_id in visible_sources)
+        }
 
     def _track_from_payload(self, payload: SharePayload) -> Track:
         """Build the same metadata-backed Track shape used by playlist imports."""
@@ -585,13 +654,17 @@ class ShareProvider(PluginProvider):
             length=str(payload.duration) if payload.duration is not None else None,
             title=(f"{payload.artist} - {payload.title}" if payload.artist else payload.title),
             metadata=metadata,
-            artists=[ArtistInfo(payload.artist, "", "", "")] if payload.artist else [],
-            album=AlbumInfo(payload.album, "", "", "") if payload.album else None,
+            artists=[
+                ArtistInfo(artist, "", "", "")
+                for artist in (payload.artists or ([payload.artist] if payload.artist else []))
+            ],
+            album=None,
         )
 
     @staticmethod
     def _album_reference(payload: SharePayload) -> Album | ItemMapping:
         external_ids = set()
+        artist_names = payload.artists or ([payload.artist] if payload.artist else [])
         if payload.mbid:
             external_ids.add(
                 (ExternalID.MB_ALBUM, normalize_external_id(ExternalID.MB_ALBUM, payload.mbid))
@@ -600,7 +673,7 @@ class ShareProvider(PluginProvider):
             external_ids.add(
                 (ExternalID.BARCODE, normalize_external_id(ExternalID.BARCODE, payload.barcode))
             )
-        if not payload.artist:
+        if not artist_names:
             return ItemMapping(
                 item_id="share-payload",
                 provider="share_provider",
@@ -617,11 +690,12 @@ class ShareProvider(PluginProvider):
             artists=UniqueList(
                 [
                     ItemMapping(
-                        item_id=payload.artist,
+                        item_id=artist_name,
                         provider="share_provider",
-                        name=payload.artist,
+                        name=artist_name,
                         media_type=MediaType.ARTIST,
                     )
+                    for artist_name in artist_names
                 ]
             ),
             external_ids=external_ids,
@@ -639,7 +713,9 @@ class ShareProvider(PluginProvider):
                 reference,
                 candidate,
                 strict=bool(
-                    payload.artist and isinstance(reference, Album) and isinstance(candidate, Album)
+                    (payload.artists or payload.artist)
+                    and isinstance(reference, Album)
+                    and isinstance(candidate, Album)
                 ),
             )
             is True
