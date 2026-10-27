@@ -206,6 +206,26 @@ async def test_stop_ends_the_play_out_wait(fake_provider: MagicMock) -> None:
 
 
 @pytest.mark.asyncio
+async def test_closing_the_tracked_audio_closes_the_source(fake_provider: MagicMock) -> None:
+    """Closing the audio early (stop or restart) still runs the source's cleanup."""
+    closed = False
+
+    async def source() -> AsyncGenerator[bytes]:
+        nonlocal closed
+        try:
+            while True:
+                yield b"\0" * 4
+        finally:
+            closed = True
+
+    tracked = _make_stream(fake_provider)._track_sent_audio(source())
+    await anext(tracked)
+    await tracked.aclose()
+
+    assert closed
+
+
+@pytest.mark.asyncio
 async def test_register_uses_configured_sampleformat(
     fake_provider: MagicMock, fake_snapserver: FakeSnapserver
 ) -> None:

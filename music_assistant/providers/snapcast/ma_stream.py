@@ -15,7 +15,7 @@ import asyncio
 import random
 import time
 import urllib.parse
-from contextlib import suppress
+from contextlib import aclosing, suppress
 from typing import TYPE_CHECKING, cast
 
 from music_assistant_models.enums import ContentType
@@ -415,13 +415,14 @@ class SnapcastMAStream:
     async def _track_sent_audio(self, audio_source: AsyncGenerator[bytes]) -> AsyncGenerator[bytes]:
         """Pass the audio through, tracking when the clients will have played it."""
         bytes_per_second = self._provider.stream_audio_format.pcm_sample_size
-        async for chunk in audio_source:
-            # a source stall delays everything sent after it
-            earliest_start = time.time() + self._get_playback_delay()
-            self._played_out_at = max(self._played_out_at or 0.0, earliest_start) + (
-                len(chunk) / bytes_per_second
-            )
-            yield chunk
+        async with aclosing(audio_source):
+            async for chunk in audio_source:
+                # a source stall delays everything sent after it
+                earliest_start = time.time() + self._get_playback_delay()
+                self._played_out_at = max(self._played_out_at or 0.0, earliest_start) + (
+                    len(chunk) / bytes_per_second
+                )
+                yield chunk
 
     async def _wait_played_out(self) -> None:
         """Wait until the clients played all sent audio, or a stop is requested."""
