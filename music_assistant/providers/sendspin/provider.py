@@ -951,14 +951,7 @@ class SendspinProvider(PlayerProvider):
         """
         # The token names the client it belongs to, so this works on every transport,
         # including Ingress where the session carries no client id at all.
-        try:
-            client_id = decode_psk_token(pairing_token).client_id
-        except ValueError as err:
-            raise InvalidCommand(
-                "The pairing token is not valid",
-                translation_key="pairing_error_token_invalid",
-                translation_owner=self.translation_owner,
-            ) from err
+        client_id = self._client_id_from_token(pairing_token)
         player = await self._await_connected_client(client_id)
         if not player.is_web_player:
             raise InvalidCommand(f"Client {client_id} is not a built-in web player")
@@ -982,26 +975,34 @@ class SendspinProvider(PlayerProvider):
             and (record.owner is None or record.owner == owner)
         ):
             return
-        try:
-            await self.pair_with_token(client_id, pairing_token, owner=owner)
-        except (
-            SecurityActionError,
-            PairingError,
-            HandshakeAbortedError,
-            TimeoutError,
-            OSError,
-        ) as err:
-            # Report the reason without the request, which carries the pairing token.
-            alert = error_alert(err)
-            raise InvalidCommand(
-                f"Cannot pair web player {client_id}",
-                translation_key=alert.key,
-                translation_args=alert.params,
-                translation_owner=self.translation_owner,
-            ) from err
+        await self._pair_with_token_or_raise(client_id, pairing_token, owner=owner)
         # The handshake takes a moment, in which an eviction can have missed this record.
         if owner is not None and not await _owner_has_access(owner, self.mass.webserver.auth):
             await self._evict_pairings_for_owner(owner)
+
+    async def pair_device_with_token(self, pairing_token: str) -> None:
+        """
+        Pair any Sendspin device with this server from its pairing token.
+
+        The pairing is standalone, like one made through the player settings, so it is not
+        tied to the calling user. Calling it again for an already paired device is a no-op.
+
+        :param pairing_token: The device's version 0 pairing token.
+        """
+        client_id = self._client_id_from_token(pairing_token)
+        player = await self._await_connected_client(client_id)
+        security = player.api.connection_security
+        if security is None:
+            raise InvalidCommand(
+                f"Client {client_id} is connected without encryption and cannot be paired",
+                translation_key="pairing_error_unencrypted",
+                translation_owner=self.translation_owner,
+            )
+        record = await self.server_api.pairing_store.record_by_client_id(client_id)
+        # A record alone is not enough: the client can have lost its half of the pairing.
+        if security.psk_category is PskCategory.LONG_TERM and record is not None:
+            return
+        await self._pair_with_token_or_raise(client_id, pairing_token)
 
     def get_management_session(self, client_id: str) -> ManagementSession | None:
         """Return the client's management session, dropping one whose connection is gone."""
@@ -1102,6 +1103,13 @@ class SendspinProvider(PlayerProvider):
                 self.pair_web_player,
                 # Guests pair their own web player too, since party mode plays through Sendspin.
                 required_scope=Scope.PLAYERS_CONTROL,
+            )
+        )
+        self.unregister_cbs.append(
+            self.mass.register_api_command(
+                "sendspin/pair_with_token",
+                self.pair_device_with_token,
+                required_scope=Scope.CONFIG_PLAYERS_WRITE,
             )
         )
         # Pairings bound to a user's access must not outlive it (guest access switched
@@ -1640,8 +1648,45 @@ class SendspinProvider(PlayerProvider):
 
         player = await _poll_until(_registered_player, WEB_PLAYER_CONNECT_TIMEOUT)
         if player is None:
-            raise InvalidCommand(f"Client {client_id} did not register")
+            raise InvalidCommand(
+                f"Client {client_id} did not register",
+                translation_key="pairing_error_not_connected",
+                translation_owner=self.translation_owner,
+            )
         return player
+
+    def _client_id_from_token(self, pairing_token: str) -> str:
+        """Return the client id a pairing token names, refusing a token that does not decode."""
+        try:
+            return decode_psk_token(pairing_token).client_id
+        except ValueError as err:
+            raise InvalidCommand(
+                "The pairing token is not valid",
+                translation_key="pairing_error_token_invalid",
+                translation_owner=self.translation_owner,
+            ) from err
+
+    async def _pair_with_token_or_raise(
+        self, client_id: str, pairing_token: str, owner: str | None = None
+    ) -> None:
+        """Pair a client from its token, surfacing any failure as a translated InvalidCommand."""
+        try:
+            await self.pair_with_token(client_id, pairing_token, owner=owner)
+        except (
+            SecurityActionError,
+            PairingError,
+            HandshakeAbortedError,
+            TimeoutError,
+            OSError,
+        ) as err:
+            # Report the reason without the request, which carries the pairing token.
+            alert = error_alert(err)
+            raise InvalidCommand(
+                f"Cannot pair client {client_id}",
+                translation_key=alert.key,
+                translation_args=alert.params,
+                translation_owner=self.translation_owner,
+            ) from err
 
     async def _handle_client_added(self, client_id: str, event_version: int) -> None:  # noqa: PLR0915
         """Handle a new client connection asynchronously."""

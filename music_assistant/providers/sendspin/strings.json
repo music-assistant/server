@@ -276,6 +276,8 @@
     "pairing_error_no_pin_session": "The pairing attempt was interrupted. Please try again.",
     "pairing_error_token_invalid": "The pairing token is not valid. Make sure it was copied completely.",
     "pairing_error_token_mismatch": "The token was issued by a different device.",
+    "pairing_error_not_connected": "The device is not connected to Music Assistant. Make sure it is powered on and on the same network.",
+    "pairing_error_unencrypted": "This device is connected without encryption and cannot be paired.",
     "invalid_value": "Enter the complete pairing code."
   }
 }
