@@ -15,17 +15,19 @@ from music_assistant_models.errors import MediaNotFoundError, ProviderUnavailabl
 from music_assistant_models.media_items import Audiobook, ProviderMapping
 from yarl import URL
 
-from music_assistant.constants import CONF_ENTRY_LIBRARY_SYNC_DELETIONS
+from music_assistant.constants import (
+    CONF_ENTRY_LIBRARY_SYNC_DELETIONS,
+    CONF_PASSWORD,
+    CONF_USERNAME,
+    CONF_VERIFY_SSL,
+)
 from music_assistant.controllers.music.media.base import AudiobookSyncDetails
 from music_assistant.models.music_provider import SYNC_RUN_STATE, SyncRunState
 from music_assistant.providers.bookorbit import SUPPORTED_FEATURES, BookOrbitProvider
 from music_assistant.providers.bookorbit.constants import (
     CACHE_CATEGORY_LIBRARY_FINGERPRINTS,
     CACHE_KEY_LIBRARY_FINGERPRINTS,
-    CONF_PASSWORD,
     CONF_URL,
-    CONF_USERNAME,
-    CONF_VERIFY_SSL,
 )
 from music_assistant.providers.bookorbit.helpers import library_may_contain_audio
 from music_assistant.providers.bookorbit.parsers import AUTHOR_PREFIX, parse_audiobook

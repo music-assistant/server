@@ -10,14 +10,9 @@ from unittest import mock
 import pytest
 from music_assistant_models.enums import FlowStepType
 
+from music_assistant.constants import CONF_PASSWORD, CONF_USERNAME, CONF_VERIFY_SSL
 from music_assistant.models.setup_flow import SetupFlowContext, SetupFlowError, SetupSession
-from music_assistant.providers.bookorbit.constants import (
-    CONF_PASSWORD,
-    CONF_URL,
-    CONF_USERNAME,
-    CONF_VERIFY_SSL,
-    DOMAIN,
-)
+from music_assistant.providers.bookorbit.constants import CONF_URL, DOMAIN
 from music_assistant.providers.bookorbit.setup_flow import run_setup
 
 

@@ -23,9 +23,6 @@ STREAMDETAILS_EXPIRATION_S = 300
 DOMAIN = "bookorbit"
 
 CONF_URL = "url"
-CONF_USERNAME = "username"
-CONF_PASSWORD = "password"  # noqa: S105
-CONF_VERIFY_SSL = "verify_ssl"
 
 AUDIO_FORMATS = frozenset({"m4b", "mp3", "m4a", "opus", "ogg", "flac"})
 CATALOG_TTL_SEC = 15 * 60

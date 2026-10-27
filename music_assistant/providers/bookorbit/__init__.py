@@ -29,6 +29,7 @@ from music_assistant_models.media_items import (
 )
 from music_assistant_models.streamdetails import MultiPartPath, StreamDetails
 
+from music_assistant.constants import CONF_PASSWORD, CONF_USERNAME, CONF_VERIFY_SSL
 from music_assistant.helpers.aiohttp_client import create_clientsession
 from music_assistant.helpers.datetime import utc
 from music_assistant.models.music_provider import SYNC_RUN_STATE, MusicProvider
@@ -45,10 +46,7 @@ from .constants import (
     CACHE_KEY_LIBRARY_FINGERPRINTS,
     CATALOG_DETAIL_CONCURRENCY,
     CATALOG_TTL_SEC,
-    CONF_PASSWORD,
     CONF_URL,
-    CONF_USERNAME,
-    CONF_VERIFY_SSL,
     PART_STREAM_CHUNK_SIZE,
     PART_STREAM_HEADERS,
     PART_STREAM_TIMEOUT,
@@ -603,16 +601,10 @@ class BookOrbitProvider(MusicProvider):
             self._applied_mapping_details = {}
 
     def _commit_applied_mapping_details(self, skipped_ids: set[str]) -> None:
-        """
-        Record fingerprints for books that synced; keep prior values for failures.
-
-        Core catches per-item library-write errors, so a finished sync does not mean
-        every catalog book was applied. Skipped ids keep their previous fingerprint
-        (or stay absent) so the next sync retries them.
-
-        Prefer the snapshot captured in ``get_library_audiobooks`` for this sync so a
-        concurrent browse/search catalog refresh cannot mark newer versions applied.
-        """
+        """Record fingerprints for books that synced; keep prior values for failures."""
+        # Prefer the sync listing snapshot so a concurrent browse/search refresh cannot
+        # mark newer versions applied. Core catches per-item write errors, so skipped
+        # ids keep their previous fingerprint (or stay absent) for the next sync.
         source = self._sync_catalog_fingerprints
         if source is None:
             source = {
@@ -1016,18 +1008,13 @@ class BookOrbitProvider(MusicProvider):
         return book
 
     async def _book_with_playback_order(self, book: dict[str, Any]) -> dict[str, Any]:
-        """
-        Attach manifest ``sortOrder`` to multipart books.
-
-        Raises ``TypeError``/``ValueError`` when the manifest cannot establish order
-        (callers skip or map to ``MediaNotFoundError``). HTTP errors from the
-        manifest fetch propagate as ``ClientError``/``TimeoutError``.
-        """
+        """Attach manifest ``sortOrder`` to multipart books."""
         if len(_audio_files(book)) <= 1:
             return book
         # Do not cache/publish unordered BookDetail when the manifest is unavailable
         # or has no mappable assets: BookDetail omits sortOrder, so file-id order can
-        # invent wrong chapter offsets.
+        # invent wrong chapter offsets. TypeError/ValueError: callers skip or map to
+        # MediaNotFoundError. HTTP errors propagate as ClientError/TimeoutError.
         manifest = await self._client.get_audiobook_manifest(int(book["id"]))
         return book_with_manifest_playback_order(book, manifest)
 
