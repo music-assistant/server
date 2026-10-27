@@ -88,3 +88,15 @@ async def test_announcement_rejoins_unseekable_stream() -> None:
 
     player.mass.player_queues.play_index.assert_not_awaited()  # type: ignore[attr-defined]
     assert group.set_stream.await_args_list[-1].args == ("music",)
+
+
+@pytest.mark.asyncio
+async def test_announcement_rejoins_live_stream_when_item_left_queue() -> None:
+    """An item removed from the queue during the clip is not restarted."""
+    player, group = _make_player(_queue())
+    player.mass.player_queues.index_by_id.return_value = None  # type: ignore[attr-defined]
+
+    await player.play_announcement(PlayerMedia(uri="announce.mp3"))
+
+    player.mass.player_queues.play_index.assert_not_awaited()  # type: ignore[attr-defined]
+    assert group.set_stream.await_args_list[-1].args == ("music",)

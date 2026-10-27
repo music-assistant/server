@@ -11,7 +11,7 @@ from music_assistant_models.enums import IdentifierType, PlaybackState, PlayerFe
 from music_assistant_models.player import DeviceInfo, PlayerMedia
 from propcache import under_cached_property as cached_property
 
-from music_assistant.constants import ATTR_ANNOUNCEMENT_IN_PROGRESS, CONF_ENTRY_HTTP_PROFILE_HIDDEN
+from music_assistant.constants import CONF_ENTRY_HTTP_PROFILE_HIDDEN
 from music_assistant.helpers.util import is_valid_mac_address
 from music_assistant.models.player import Player
 from music_assistant.providers.snapcast.constants import (
@@ -389,7 +389,14 @@ class SnapCastPlayer(Player):
                 ) is None:
                     return
                 await leader_group.add_client(self.snap_client.identifier)
-            elif resume_queue and resume_item:
+            elif (
+                resume_queue
+                and resume_item
+                and self.mass.player_queues.index_by_id(
+                    resume_queue.queue_id, resume_item.queue_item_id
+                )
+                is not None
+            ):
                 await self.mass.player_queues.play_index(
                     resume_queue.queue_id, resume_item.queue_item_id, resume_pos
                 )
@@ -469,7 +476,7 @@ class SnapCastPlayer(Player):
         # which only moves on playback starts
         elapsed_time: float | None = None
         elapsed_time_last_updated: float | None = None
-        if self.extra_data.get(ATTR_ANNOUNCEMENT_IN_PROGRESS):
+        if self._announcement_clip_playing:
             # the music stream keeps playing under the clip, so its anchor stays valid
             elapsed_time = self._attr_elapsed_time
             elapsed_time_last_updated = self._attr_elapsed_time_last_updated

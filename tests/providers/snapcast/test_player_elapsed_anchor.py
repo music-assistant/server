@@ -21,6 +21,7 @@ def _make_player(ma_stream: MagicMock) -> SnapCastPlayer:
     player = SnapCastPlayer.__new__(SnapCastPlayer)
     player._last_tracked_state = None
     player._snap_ma_stream = None
+    player._announcement_clip_playing = False
     player._extra_data = {}
     player._is_alive = lambda: True  # type: ignore[method-assign]
     group = SimpleNamespace(stream="ma-stream", clients=[], name="group")
@@ -61,7 +62,7 @@ async def test_announcement_keeps_music_anchor() -> None:
     player = _make_player(music_stream)
     await player._process_snapcast_client_state()
 
-    player.extra_data[ATTR_ANNOUNCEMENT_IN_PROGRESS] = True
+    player._announcement_clip_playing = True
     player.snap_provider.get_snap_ma_stream.return_value = MagicMock(  # type: ignore[attr-defined]
         playback_started_at=2000.0
     )
@@ -69,3 +70,17 @@ async def test_announcement_keeps_music_anchor() -> None:
 
     assert player._attr_elapsed_time == 0
     assert player._attr_elapsed_time_last_updated == 1234.5
+
+
+@pytest.mark.asyncio
+async def test_music_restarted_after_clip_publishes_its_anchor() -> None:
+    """Once the clip ended, the restarted music stream's anchor is published right away."""
+    music_stream = MagicMock(playback_started_at=1234.5)
+    player = _make_player(music_stream)
+    await player._process_snapcast_client_state()
+
+    player.extra_data[ATTR_ANNOUNCEMENT_IN_PROGRESS] = True
+    music_stream.playback_started_at = 2000.0
+
+    assert await player._process_snapcast_client_state() is True
+    assert player._attr_elapsed_time_last_updated == 2000.0
