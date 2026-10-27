@@ -31,6 +31,7 @@ from music_assistant.controllers.config.helpers import _AUTH_ERROR_CODES
 from music_assistant.helpers.api import api_command
 from music_assistant.helpers.util import import_module_in_thread, load_provider_module
 from music_assistant.models.player import Player
+from music_assistant.models.recommendation_payload import _PAYLOAD_CACHE_KEY
 from music_assistant.models.setup_flow import (
     AbortFlow,
     FlowReason,
@@ -562,6 +563,12 @@ class SetupFlowMixin:
                 translation_args=getattr(err, "translation_args", None),
                 translation_owner=getattr(err, "translation_owner", None),
             ) from err
+        # what the provider cached was fetched with the previous credentials, which may
+        # belong to another account; the filter also matches the listings cached under
+        # the provider's item uris. Persistent entries are kept (they can hold data a
+        # provider depends on), except its recommendations, which are the account's own.
+        await self.mass.cache.clear(provider_filter=instance_id)
+        await self.mass.cache.delete(_PAYLOAD_CACHE_KEY, provider=instance_id)
         self.update_provider_last_error(instance_id, None)
         return {"instance_id": instance_id}
 

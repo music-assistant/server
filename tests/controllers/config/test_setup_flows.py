@@ -46,12 +46,14 @@ from music_assistant_models.translations import TRANSLATION_RESOLVER
 from music_assistant.constants import CONF_PLAYERS, CONF_PROVIDERS, ENCRYPT_SUFFIX
 from music_assistant.controllers.config.flows import SetupFlowAccess
 from music_assistant.controllers.music import MusicController
+from music_assistant.controllers.music.constants import CACHE_CATEGORY_LISTINGS
 from music_assistant.controllers.storage import StorageController
 from music_assistant.controllers.translations import TranslationController
 from music_assistant.controllers.webserver.helpers.auth_middleware import set_current_user
 from music_assistant.mass import MusicAssistant
 from music_assistant.models.music_provider import MusicProvider
 from music_assistant.models.player import LinkedOutputProtocol, Player, _state_fingerprint
+from music_assistant.models.recommendation_payload import _PAYLOAD_CACHE_KEY
 from music_assistant.models.setup_flow import (
     AbortFlow,
     SetupFlowContext,
@@ -133,6 +135,8 @@ async def flow_mass(mass_minimal: MusicAssistant) -> AsyncGenerator[MusicAssista
     )
     mass_minimal.players = MagicMock()
     mass_minimal.players.on_player_config_change = AsyncMock()
+    # a finished reconfigure clears the instance's cache
+    await mass_minimal.cache.setup(await mass_minimal.config.get_core_config("cache"))
     try:
         yield mass_minimal
     finally:
@@ -1458,6 +1462,61 @@ async def test_reconfigure_failure_restores_setup_data(flow_mass: MusicAssistant
     assert abort_step.reason == "still bad"
     raw_conf = flow_mass.config.get(f"{CONF_PROVIDERS}/{instance_id}")
     assert raw_conf["setup_data"] == original_setup_data
+
+
+@pytest.mark.parametrize("reload_fails", [False, True])
+async def test_reconfigure_clears_the_provider_cache(
+    flow_mass: MusicAssistant, reload_fails: bool
+) -> None:
+    """A reconfigure drops what the instance cached under its previous credentials."""
+    instance_id = f"{FAKE_DOMAIN}--a1b2c3d4"
+    other_instance_id = f"{FAKE_DOMAIN}--z9y8x7w6"
+    flow_mass.config.set(
+        f"{CONF_PROVIDERS}/{instance_id}",
+        {
+            "type": "music",
+            "domain": FAKE_DOMAIN,
+            "instance_id": instance_id,
+            "enabled": True,
+            "values": {},
+            "setup_data": {"token": flow_mass.config.encrypt_string("old-account")},
+        },
+    )
+    # a provider method's own entry, a listing the music controller cached under one of
+    # the instance's item uris, and an entry of another instance of the same provider
+    entries = {
+        "own": ("get_playlist_tracks.LM.0", instance_id, 0),
+        "listing": ("playlist_tracks", f"{instance_id}://playlist/LM", CACHE_CATEGORY_LISTINGS),
+        "other": ("get_playlist_tracks.LM.0", other_instance_id, 0),
+    }
+    for key, provider, category in entries.values():
+        await flow_mass.cache.set(key, [], provider=provider, category=category)
+    # persistent entries of the instance: its recommendations belong to the account, other
+    # persistent data (e.g. feedback a provider keeps) does not
+    persistent_entries = {
+        "recommendations": (_PAYLOAD_CACHE_KEY, instance_id, 0),
+        "persistent": ("track-1", instance_id, 99),
+    }
+    for key, provider, category in persistent_entries.values():
+        await flow_mass.cache.set(key, [], provider=provider, category=category, persistent=True)
+    entries |= persistent_entries
+
+    async def run_setup(session: SetupSession) -> None:
+        values = await session.form([ConfigEntry(key="token", type=ConfigEntryType.STRING)])
+        await session.finish(values)
+
+    load = AsyncMock(side_effect=LoginFailed("bad token") if reload_fails else None)
+    with _use_flow(flow_mass, run_setup), patch.object(flow_mass, "load_provider_config", load):
+        step = await flow_mass.config.reconfigure_provider(instance_id)
+        await flow_mass.config.submit_setup_flow(step.flow_id, {"token": "new-account"})
+
+    kept = {
+        name
+        for name, (key, provider, category) in entries.items()
+        if await flow_mass.cache.get(key, provider=provider, category=category) is not None
+    }
+    # a failed reload restores the previous credentials, so their cache stays valid
+    assert kept == (set(entries) if reload_fails else {"other", "persistent"})
 
 
 async def test_reconfigure_without_flow_module_aborts(flow_mass: MusicAssistant) -> None:
