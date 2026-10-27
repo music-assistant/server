@@ -11,7 +11,7 @@ from music_assistant_models.enums import IdentifierType, PlaybackState, PlayerFe
 from music_assistant_models.player import DeviceInfo, PlayerMedia
 from propcache import under_cached_property as cached_property
 
-from music_assistant.constants import ATTR_ANNOUNCEMENT_IN_PROGRESS, CONF_ENTRY_HTTP_PROFILE_HIDDEN
+from music_assistant.constants import CONF_ENTRY_HTTP_PROFILE_HIDDEN
 from music_assistant.helpers.util import is_valid_mac_address
 from music_assistant.models.player import Player
 from music_assistant.providers.snapcast.constants import (
@@ -75,6 +75,7 @@ class SnapCastPlayer(Player):
         self._attr_supported_sample_rates = [(stream_format.sample_rate, stream_format.bit_depth)]
 
         self._snap_ma_stream: SnapcastMAStream | None = None
+        self._announcement_clip_playing = False
 
         self._update_worker: asyncio.Task[None] | None = None
         self._poke_evt = asyncio.Event()
@@ -323,7 +324,7 @@ class SnapCastPlayer(Player):
 
         # if no announcement is playing we activate the stream now, otherwise it
         # will be activated by play_announcement when the announcement is over.
-        if not self.extra_data.get(ATTR_ANNOUNCEMENT_IN_PROGRESS):
+        if not self._announcement_clip_playing:
             player_group = await self.snap_provider.ensure_player_owned_group(self.player_id)
             assert player_group is not None  # for type checking
             await player_group.set_stream(ma_stream.stream_id)
@@ -338,6 +339,23 @@ class SnapCastPlayer(Player):
         orig_volume_level: int | None = self.volume_level
 
         prev_stream = self.active_snap_ma_stream
+        # the music keeps streaming unheard while the group plays the clip, so the queue
+        # restarts where the clip began instead of rejoining the live stream
+        resume_queue = None if was_synced_to else self.mass.player_queues.get(self.player_id)
+        resume_item = (
+            resume_queue.current_item
+            if resume_queue and resume_queue.active and resume_queue.state == PlaybackState.PLAYING
+            else None
+        )
+        resume_pos = int(resume_queue.corrected_elapsed_time) if resume_queue else 0
+        # a position past the item's end means the queue has not caught up with the next track
+        if resume_item and not (
+            (details := resume_item.streamdetails)
+            and details.allow_seek
+            and details.duration
+            and resume_pos < details.duration
+        ):
+            resume_item = None
         # pin the music stream, else the idle timer stops it before the announcement ends
         if prev_stream:
             prev_stream.pin(self.player_id)
@@ -351,6 +369,7 @@ class SnapCastPlayer(Player):
             if ma_stream is None or ma_stream.stream_id is None or player_group is None:
                 return
 
+            self._announcement_clip_playing = True
             await player_group.set_stream(ma_stream.stream_id)
 
             if self.snap_provider._use_builtin_server:
@@ -361,6 +380,7 @@ class SnapCastPlayer(Player):
 
             await ma_stream.start_stream()
             await ma_stream.wait_for_stopped()
+            self._announcement_clip_playing = False
 
             if self.volume_level == volume_level and orig_volume_level is not None:
                 await self.volume_set(orig_volume_level)
@@ -373,6 +393,17 @@ class SnapCastPlayer(Player):
                 ) is None:
                     return
                 await leader_group.add_client(self.snap_client.identifier)
+            elif (
+                resume_queue
+                and resume_item
+                and self.mass.player_queues.index_by_id(
+                    resume_queue.queue_id, resume_item.queue_item_id
+                )
+                is not None
+            ):
+                await self.mass.player_queues.play_index(
+                    resume_queue.queue_id, resume_item.queue_item_id, resume_pos
+                )
             else:
                 await player_group.set_stream(
                     prev_stream.stream_id
@@ -380,6 +411,7 @@ class SnapCastPlayer(Player):
                     else "default"
                 )
         finally:
+            self._announcement_clip_playing = False
             if prev_stream:
                 prev_stream.unpin(self.player_id)
                 self.snap_provider.update_stream_usage()
@@ -448,7 +480,7 @@ class SnapCastPlayer(Player):
         # which only moves on playback starts
         elapsed_time: float | None = None
         elapsed_time_last_updated: float | None = None
-        if self.extra_data.get(ATTR_ANNOUNCEMENT_IN_PROGRESS):
+        if self._announcement_clip_playing:
             # the music stream keeps playing under the clip, so its anchor stays valid
             elapsed_time = self._attr_elapsed_time
             elapsed_time_last_updated = self._attr_elapsed_time_last_updated
