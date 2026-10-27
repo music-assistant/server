@@ -8,11 +8,10 @@ import socket
 import urllib.parse
 from asyncio import TaskGroup
 from collections.abc import AsyncGenerator
-from types import MethodType
 from typing import TYPE_CHECKING
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
-from aiojellyfin import Connection, NotFound, authenticate_by_name
+from aiojellyfin import Connection, NotFound
 from aiojellyfin import MediaLibrary as JellyMediaLibrary
 from aiojellyfin.session import SessionConfiguration
 from music_assistant_models.enums import MediaType, ProviderFeature, StreamType
@@ -102,9 +101,23 @@ class JellyfinConnection(Connection):
         return f"{self.base_url}{url}?{urllib.parse.urlencode(params)}"
 
 
-def _use_current_url_authentication(client: Connection) -> None:
-    """Update a connection to use Jellyfin's supported URL auth parameter."""
-    client._build_url = MethodType(JellyfinConnection._build_url, client)
+async def authenticate_by_name(
+    session_config: SessionConfiguration, username: str, password: str
+) -> JellyfinConnection:
+    """Authenticate with a username and password and return the Jellyfin connection."""
+    base_url = session_config.url.rstrip("/")
+    async with session_config.session.post(
+        f"{base_url}/Users/AuthenticateByName",
+        json={"Username": username, "Pw": password},
+        headers={
+            "Content-Type": "application/json",
+            "User-Agent": session_config.user_agent,
+            "Authorization": session_config.authentication_header(),
+        },
+        raise_for_status=True,
+    ) as response:
+        result = await response.json()
+    return JellyfinConnection(session_config, result["User"]["Id"], result["AccessToken"])
 
 
 async def initiate_quick_connect(session_config: SessionConfiguration) -> tuple[str, str]:
@@ -124,7 +137,7 @@ async def initiate_quick_connect(session_config: SessionConfiguration) -> tuple[
 
 async def authenticate_with_quick_connect(
     session_config: SessionConfiguration, secret: str
-) -> Connection:
+) -> JellyfinConnection:
     """Wait for Quick Connect approval and return the authenticated Jellyfin connection."""
     base_url = session_config.url.rstrip("/")
     headers = {
@@ -151,7 +164,7 @@ async def authenticate_with_quick_connect(
         raise_for_status=True,
     ) as response:
         result = await response.json()
-    return Connection(session_config, result["User"]["Id"], result["AccessToken"])
+    return JellyfinConnection(session_config, result["User"]["Id"], result["AccessToken"])
 
 
 class JellyfinProvider(MusicProvider):
@@ -200,19 +213,17 @@ class JellyfinProvider(MusicProvider):
 
         try:
             if access_token := self.get_setup_value(CONF_ACCESS_TOKEN):
-                client = Connection(
+                self._client = JellyfinConnection(
                     session_config,
                     str(self.get_setup_value(CONF_USER_ID)),
                     str(access_token),
                 )
             else:
-                client = await authenticate_by_name(
+                self._client = await authenticate_by_name(
                     session_config,
                     username,
                     str(self.get_setup_value(CONF_PASSWORD) or ""),
                 )
-            _use_current_url_authentication(client)
-            self._client = client
         except Exception as err:
             raise LoginFailed(f"Authentication failed: {err}") from err
 

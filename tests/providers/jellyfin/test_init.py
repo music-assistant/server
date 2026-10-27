@@ -16,6 +16,8 @@ from music_assistant.models.setup_flow import SetupFlowContext, SetupSession
 from music_assistant.providers.jellyfin import (
     CONF_ACCESS_TOKEN,
     CONF_USER_ID,
+    JellyfinConnection,
+    authenticate_by_name,
     authenticate_with_quick_connect,
     initiate_quick_connect,
     setup_flow,
@@ -39,10 +41,10 @@ async def jellyfin_provider(mass: MusicAssistant) -> AsyncGenerator[ProviderConf
     async for _, track in get_fixtures_dir("tracks", "jellyfin"):
         f.add_json_bytes(track)
 
-    authenticate_by_name = f.to_authenticate_by_name()
+    f_authenticate_by_name = f.to_authenticate_by_name()
 
     with mock.patch(
-        "music_assistant.providers.jellyfin.authenticate_by_name", authenticate_by_name
+        "music_assistant.providers.jellyfin.authenticate_by_name", f_authenticate_by_name
     ):
         async with wait_for_sync_completion(mass):
             config = await mass.config._create_provider_instance(
@@ -122,10 +124,43 @@ async def test_quick_connect_authentication() -> None:
         client = await authenticate_with_quick_connect(session_config, secret)
 
     assert code == "123456"
+    assert isinstance(client, JellyfinConnection)
     assert client._user_id == "user-id"
     assert client._access_token == "access-token"
     assert http_session.get.call_count == 2
     assert http_session.post.call_args_list[1].kwargs["json"] == {"Secret": "secret"}
+
+
+async def test_password_authentication() -> None:
+    """Test password login returns a connection that authenticates URLs with ApiKey."""
+    http_session = mock.MagicMock(spec=ClientSession)
+    response = mock.MagicMock()
+    response.json = mock.AsyncMock(
+        return_value={"User": {"Id": "user-id"}, "AccessToken": "access-token"}
+    )
+    context = mock.MagicMock()
+    context.__aenter__ = mock.AsyncMock(return_value=response)
+    context.__aexit__ = mock.AsyncMock(return_value=None)
+    http_session.post.return_value = context
+    session_config = SessionConfiguration(
+        session=cast("ClientSession", http_session),
+        url="https://jellyfin.example",
+        app_name="Music Assistant",
+        app_version="1.0",
+        device_name="test device",
+        device_id="test-device-id",
+    )
+
+    client = await authenticate_by_name(session_config, "user", "password")
+
+    assert isinstance(client, JellyfinConnection)
+    assert client._user_id == "user-id"
+    assert http_session.post.call_args.args[0] == (
+        "https://jellyfin.example/Users/AuthenticateByName"
+    )
+    assert http_session.post.call_args.kwargs["json"] == {"Username": "user", "Pw": "password"}
+    assert "ApiKey=access-token" in client.audio_url("track-1")
+    assert "api_key" not in client.audio_url("track-1")
 
 
 def _setup_flow_session(
