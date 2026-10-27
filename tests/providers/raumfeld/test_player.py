@@ -23,6 +23,7 @@ from music_assistant.providers.raumfeld.player import (
     PLAYING_POLL_INTERVAL,
     ZONE_CREATE_ATTEMPTS,
     RaumfeldPlayer,
+    _changes_playback,
     _map_transport_state,
     _near_track_end,
 )
@@ -323,6 +324,7 @@ async def test_unload_cancels_its_timers() -> None:
     assert {call.args[0] for call in mass.cancel_timer.call_args_list} == {
         "raumfeld_advance_test",
         "external_pause_raumfeld_test",
+        "raumfeld_announce_next_raumfeld_test",
     }
     assert player._advance_armed is False
     assert player._next_media is None
@@ -2095,6 +2097,341 @@ async def test_a_play_mode_change_after_ma_took_over_is_refused() -> None:
     external.assert_not_awaited()
 
 
+FLOW_URL = f"{BASE_URL}/flow/session1/raumfeld_bar/item1.flac"
+
+
+def _announcing_player(current_item_id: str = "q2") -> RaumfeldPlayer:
+    """Build a player that plays its queue as a flow stream, settled on the zone."""
+    player = _flow_player()
+    player._player_id = "raumfeld_bar"
+    player.room = "Bar"
+    player.logger = MagicMock()
+    player._flow_url = FLOW_URL
+    player._attr_active_source = "raumfeld_bar"
+    player._attr_playback_state = PlaybackState.PLAYING
+    player._play_started_at = 0.0
+    # a room in no other room's zone
+    player._provider = MagicMock()
+    cast("MagicMock", player.mass.players).iter_players.return_value = []
+    player._zone_plays_queue = AsyncMock(return_value=True)  # type: ignore[method-assign]
+    indexes = {"q1": 0, "q2": 1, "q3": 2}
+    cast("MagicMock", player.mass.player_queues).index_by_id.side_effect = (
+        lambda _queue_id, item_id: indexes.get(item_id)
+    )
+    cast("MagicMock", player.mass.player_queues).get.return_value = MagicMock(
+        current_item=MagicMock(queue_item_id=current_item_id, duration=200),
+        next_item=MagicMock(queue_item_id="q3"),
+        corrected_elapsed_time=10.0,
+        playback_speed=1.0,
+        crossfade_enabled=False,
+        smart_fades_active=False,
+    )
+    return player
+
+
+def test_a_flow_url_of_the_room_queue_is_recognised() -> None:
+    """Only the room's own queue played as a flow stream counts as its flow."""
+    player = _flow_player()
+    player._player_id = "raumfeld_bar"
+    assert player._is_queue_flow(FLOW_URL)
+    assert not player._is_queue_flow(f"{BASE_URL}/single/session1/raumfeld_bar/item1.flac")
+    assert not player._is_queue_flow(f"{BASE_URL}/flow/session1/raumfeld_bank/item1.flac")
+    assert not player._is_queue_flow("http://radio.example.com/live.mp3")
+
+
+def test_a_new_track_of_the_flow_is_announced_once() -> None:
+    """MA reaching the next track of the flow announces it to the zone, only once."""
+    player = _announcing_player()
+
+    player._maybe_announce_flow_item()
+    player._maybe_announce_flow_item()
+
+    assert player._announced_item_id == "q2"
+    assert cast("MagicMock", player.mass.create_task).call_count == 1
+
+
+def test_the_next_track_is_announced_when_the_current_one_ends() -> None:
+    """Near the end of a track, the next one is announced at the moment the zone reaches it."""
+    player = _announcing_player()
+    queue = cast("MagicMock", player.mass.player_queues).get.return_value
+    queue.corrected_elapsed_time = 188.0
+
+    player._maybe_announce_flow_item()
+
+    timer = cast("MagicMock", player.mass.call_later)
+    timer.assert_called_once()
+    assert timer.call_args.args[0] == pytest.approx(12.0)
+    assert timer.call_args.args[2] == "q3"
+    assert timer.call_args.kwargs["task_id"] == "raumfeld_announce_next_raumfeld_bar"
+
+    # the timer fires: the next track is announced, the one that ended is not announced
+    # again while the queue still lags, and the next one not again once MA reaches it
+    player._announce_upcoming("q3", "q2")
+    player._maybe_announce_flow_item()
+    assert player._announced_item_id == "q3"
+    queue.current_item = MagicMock(queue_item_id="q3", duration=300)
+    queue.corrected_elapsed_time = 1.0
+    player._maybe_announce_flow_item()
+
+    assert player._announced_item_id == "q3"
+    assert cast("MagicMock", player.mass.create_task).call_count == 2
+
+
+def test_the_queue_going_back_for_a_moment_is_not_announced() -> None:
+    """A queue that goes back to the previous track for a moment does not bring its cover back."""
+    player = _announcing_player()
+    queue = cast("MagicMock", player.mass.player_queues).get.return_value
+
+    player._maybe_announce_flow_item()
+    queue.current_item = MagicMock(queue_item_id="q1", duration=1)
+    player._maybe_announce_flow_item()
+
+    assert player._announced_item_id == "q2"
+    assert cast("MagicMock", player.mass.create_task).call_count == 1
+
+    # a repeated queue that starts over later is announced as usual
+    player._announced_at -= 60
+    player._maybe_announce_flow_item()
+
+    assert player._announced_item_id == "q1"
+
+
+def test_the_next_track_is_timed_at_the_playback_speed() -> None:
+    """At half speed the time left of a track takes twice as long to play."""
+    player = _announcing_player()
+    queue = cast("MagicMock", player.mass.player_queues).get.return_value
+    queue.corrected_elapsed_time = 190.0
+    queue.playback_speed = 0.5
+
+    player._maybe_announce_flow_item()
+
+    timer = cast("MagicMock", player.mass.call_later)
+    assert timer.call_args.args[0] == pytest.approx(20.0)
+
+
+def test_a_timer_firing_after_another_source_took_over_announces_nothing() -> None:
+    """A station button that took over from the queue gets no announcement of the queue."""
+    player = _announcing_player()
+    player._attr_active_source = "station_button_1"
+
+    player._announce_upcoming("q3", "q2")
+
+    assert player._announced_item_id is None
+    cast("MagicMock", player.mass.create_task).assert_not_called()
+
+
+async def test_an_announcement_for_a_replaced_flow_is_not_sent() -> None:
+    """A play command that ran while the announcement was prepared stops it."""
+    player = _announcing_player()
+    queues = cast("MagicMock", player.mass.player_queues)
+
+    async def media_while_a_play_runs(_item: object) -> PlayerMedia:
+        player._playback_generation += 1
+        return PlayerMedia(uri="library://track/1", title="Buena", queue_item_id="q2")
+
+    queues.player_media_from_queue_item = AsyncMock(side_effect=media_while_a_play_runs)
+    with (
+        patch.object(player, "_active_zone", return_value=["Bar"]),
+        patch.object(player, "_zone_command", AsyncMock()) as zone_command,
+    ):
+        await player._announce_flow_item(FLOW_URL, "q2", 0)
+
+    zone_command.assert_not_awaited()
+
+
+@pytest.mark.parametrize("plays_queue", [False, None])
+async def test_an_announcement_skips_a_zone_that_plays_another_queue(
+    plays_queue: bool | None,
+) -> None:
+    """A zone merged in the app, before the groups are followed, gets no announcement."""
+    player = _announcing_player()
+    cast("MagicMock", player.mass.player_queues).player_media_from_queue_item = AsyncMock(
+        return_value=PlayerMedia(uri="library://track/1", title="Buena", queue_item_id="q2")
+    )
+    player._zone_plays_queue = AsyncMock(return_value=plays_queue)  # type: ignore[method-assign]
+    with (
+        patch.object(player, "_active_zone", return_value=["Bar", "Kitchen"]),
+        patch.object(player, "_zone_command", AsyncMock()) as zone_command,
+    ):
+        await player._announce_flow_item(FLOW_URL, "q2", 0)
+
+    zone_command.assert_not_awaited()
+
+
+@pytest.mark.parametrize("plays_queue", [False, None], ids=["paused", "unknown"])
+async def test_an_announcement_the_zone_did_not_take_is_tried_again(
+    plays_queue: bool | None,
+) -> None:
+    """A zone that was paused, or whose queue could not be read, gets the track later."""
+    player = _announcing_player()
+    cast("MagicMock", player.mass.player_queues).player_media_from_queue_item = AsyncMock(
+        return_value=PlayerMedia(uri="library://track/1", title="Buena", queue_item_id="q2")
+    )
+    player._zone_plays_queue = AsyncMock(  # type: ignore[method-assign]
+        side_effect=[plays_queue, True]
+    )
+    with (
+        patch.object(player, "_active_zone", return_value=["Bar"]),
+        patch.object(player, "_zone_command", AsyncMock()) as zone_command,
+    ):
+        player._start_flow_announcement("q2")
+        await cast("MagicMock", player.mass.create_task).call_args.args[0]
+        zone_command.assert_not_awaited()
+
+        player._start_flow_announcement("q2")
+        await cast("MagicMock", player.mass.create_task).call_args.args[0]
+
+    zone_command.assert_awaited_once()
+
+
+def test_a_clock_that_moved_back_drops_the_timer() -> None:
+    """A reading far from the end drops a timer set from an earlier, later reading."""
+    player = _announcing_player()
+
+    player._maybe_announce_flow_item()
+
+    cast("MagicMock", player.mass.cancel_timer).assert_called_with(
+        "raumfeld_announce_next_raumfeld_bar"
+    )
+    cast("MagicMock", player.mass.call_later).assert_not_called()
+
+
+def test_no_timer_is_set_while_tracks_fade_into_each_other() -> None:
+    """A fade moves the boundary, so the next track waits for MA to move the media on."""
+    player = _announcing_player()
+    queue = cast("MagicMock", player.mass.player_queues).get.return_value
+    queue.corrected_elapsed_time = 188.0
+    queue.smart_fades_active = True
+
+    player._maybe_announce_flow_item()
+
+    cast("MagicMock", player.mass.call_later).assert_not_called()
+
+
+def test_a_room_that_joined_another_zone_announces_nothing() -> None:
+    """A room merged into another room's zone leaves the announcements to that room."""
+    player = _announcing_player()
+    with patch.object(
+        RaumfeldPlayer, "synced_to", new_callable=PropertyMock, return_value="raumfeld_bank"
+    ):
+        player._announce_upcoming("q3", "q2")
+
+    assert player._announced_item_id is None
+    cast("MagicMock", player.mass.create_task).assert_not_called()
+
+
+def test_a_track_that_ended_is_announced_again_once_the_queue_caught_up() -> None:
+    """A repeated queue that comes back to the track the timer passed announces it again."""
+    player = _announcing_player()
+    queue = cast("MagicMock", player.mass.player_queues).get.return_value
+    player._announce_upcoming("q3", "q2")
+    queue.current_item = MagicMock(queue_item_id="q3", duration=300)
+    player._maybe_announce_flow_item()
+    assert player._passed_item_id is None
+
+    # repeat-all comes back to q2 later, with fades on and so no timer
+    player._announced_at -= 60
+    queue.smart_fades_active = True
+    queue.current_item = MagicMock(queue_item_id="q2", duration=200)
+    player._maybe_announce_flow_item()
+
+    assert player._announced_item_id == "q2"
+
+
+async def test_a_command_that_changes_playback_cancels_an_announcement_on_its_way() -> None:
+    """A stop or another source stops an announcement that is still waiting on the zone."""
+    player = _announcing_player()
+    player._announced_item_id = "q2"
+    task = MagicMock()
+    task.done.return_value = False
+    cast("MagicMock", player.mass).get_task.return_value = task
+
+    command = _changes_playback(AsyncMock())
+
+    await command(player)
+
+    task.cancel.assert_called()
+    assert player._announced_item_id is None
+
+
+def test_no_timer_is_set_far_from_the_end_of_a_track() -> None:
+    """Far from the end of a track the next poll sets the timer, with a fresher position."""
+    player = _announcing_player()
+
+    player._maybe_announce_flow_item()
+
+    cast("MagicMock", player.mass.call_later).assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "change",
+    ["starting", "external_source", "paused", "no_flow"],
+)
+def test_no_track_is_announced_outside_a_settled_flow(change: str) -> None:
+    """Nothing is announced while the zone starts, plays something else or does not play."""
+    player = _announcing_player()
+    if change == "starting":
+        player._play_started_at = time.time()
+    elif change == "external_source":
+        player._attr_active_source = "tunein"
+    elif change == "paused":
+        player._attr_playback_state = PlaybackState.PAUSED
+    else:
+        player._flow_url = None
+
+    player._maybe_announce_flow_item()
+
+    assert player._announced_item_id is None
+    cast("MagicMock", player.mass.create_task).assert_not_called()
+
+
+async def test_the_announcement_describes_the_track_on_the_same_flow_url() -> None:
+    """The zone gets the track's title, artist, album and cover, on the flow url it plays."""
+    player = _announcing_player()
+    media = PlayerMedia(
+        uri="library://track/1",
+        title="Buena",
+        artist="Morphine",
+        album="Cure for Pain",
+        image_url="http://mass.local:8097/imageproxy/cover.jpg",
+        duration=198,
+        queue_item_id="q2",
+    )
+    cast("MagicMock", player.mass.player_queues).player_media_from_queue_item = AsyncMock(
+        return_value=media
+    )
+    with (
+        patch.object(player, "_active_zone", return_value=["Bar"]),
+        patch.object(player, "_zone_command", AsyncMock()) as zone_command,
+    ):
+        await player._announce_flow_item(FLOW_URL, "q2", 0)
+
+    zone_command.assert_awaited_once()
+    args, kwargs = zone_command.call_args
+    assert args == (["Bar"], "BendAVTransportURI")
+    assert kwargs["CurrentURI"] == FLOW_URL
+    didl = kwargs["CurrentURIMetaData"]
+    assert "Buena" in didl
+    assert "Morphine" in didl
+    assert "Cure for Pain" in didl
+    assert "cover.jpg" in didl
+
+
+async def test_a_refused_announcement_leaves_playback_alone() -> None:
+    """A zone that refuses the announcement only costs the track description."""
+    player = _announcing_player()
+    cast("MagicMock", player.mass.player_queues).player_media_from_queue_item = AsyncMock(
+        return_value=PlayerMedia(uri="library://track/1", title="Buena", queue_item_id="q2")
+    )
+    with (
+        patch.object(player, "_active_zone", return_value=["Bar"]),
+        patch.object(
+            player, "_zone_command", AsyncMock(side_effect=PlayerCommandFailed("refused"))
+        ),
+    ):
+        await player._announce_flow_item(FLOW_URL, "q2", 0)
+
+
 def test_a_room_that_is_gone_is_not_polled() -> None:
     """A room the host no longer lists is not read until it is back."""
     player = RaumfeldPlayer.__new__(RaumfeldPlayer)
@@ -2138,3 +2475,133 @@ async def test_a_poll_answered_after_the_room_went_away_is_not_applied() -> None
         await player._poll_zone(MagicMock(), ["Bar"])
 
     assert player._attr_playback_state == PlaybackState.IDLE
+
+
+def test_new_media_on_the_player_announces_the_flow_track() -> None:
+    """MA moving the player's current media on is what announces the next track."""
+    player = _announcing_player()
+
+    player.on_player_media_updated()
+
+    assert player._announced_item_id == "q2"
+
+
+def test_a_source_that_takes_over_from_the_flow_drops_its_announcements() -> None:
+    """A station button pressed on the speaker ends the flow's announcements, also on their way."""
+    player = _announcing_player()
+    player._advance_armed = False
+    player._next_media = None
+    player._static_sources = []
+
+    with patch.object(player, "update_state"):
+        player._set_external(_RADIO_META, "Stop", None, via_room=False)
+
+    assert player._flow_url is None
+    mass = cast("MagicMock", player.mass)
+    mass.cancel_task.assert_called_with("raumfeld_announce_raumfeld_bar")
+    mass.cancel_timer.assert_any_call("raumfeld_announce_next_raumfeld_bar")
+
+
+async def test_the_poll_announces_after_applying_its_reading() -> None:
+    """The announcement reads the queue's position only once the poll's reading is applied."""
+    player = _announcing_player()
+    player._advance_armed = False
+    order: list[str] = []
+    with (
+        patch.object(player, "update_state", side_effect=lambda: order.append("state")),
+        patch.object(
+            player, "_maybe_announce_flow_item", side_effect=lambda: order.append("announce")
+        ),
+        patch.object(player, "_update_volume", AsyncMock()),
+        patch.object(
+            player,
+            "_read_transport",
+            AsyncMock(return_value={"CurrentTransportState": "PLAYING"}),
+        ),
+        patch.object(player, "_read_position", AsyncMock(return_value=None)),
+        patch.object(player, "_follows_or_held", return_value=False),
+        patch.object(player, "_active_zone", return_value=["Bar"]),
+    ):
+        await player._poll_zone(MagicMock(), ["Bar"])
+
+    assert order == ["state", "announce"]
+
+
+async def test_line_in_taking_over_from_the_flow_drops_its_announcements() -> None:
+    """The room's Line-In started on the speaker ends the flow's announcements as well."""
+    player = _announcing_player()
+    player._line_in = ("http://192.168.1.42:8888/linein.wav", "Line-in")
+    player._external_source = None
+    with patch.object(player, "_clear_external"), patch.object(player, "set_current_media"):
+        await player._update_zone_source(
+            {"TrackURI": "http://192.168.1.42:8888/linein.wav"}, ["Bar"], 0
+        )
+
+    assert player._flow_url is None
+    cast("MagicMock", player.mass).cancel_task.assert_called_with("raumfeld_announce_raumfeld_bar")
+
+
+def test_a_timer_firing_during_a_command_announces_nothing() -> None:
+    """A track reached while a stop is under way is not taken as announced."""
+    player = _announcing_player()
+    player._playback_changes = 1
+
+    player._announce_upcoming("q3", "q2")
+
+    assert player._announced_item_id is None
+    cast("MagicMock", player.mass.create_task).assert_not_called()
+
+
+def test_a_queue_still_on_the_ended_track_after_a_while_announces_it_again() -> None:
+    """A track the timer took as ended but that still plays (a repeat) gets its cover back."""
+    player = _announcing_player()
+    player._announce_upcoming("q3", "q2")
+    assert player._announced_item_id == "q3"
+
+    # the queue lags right after the timer: the ended track is not announced again
+    player._maybe_announce_flow_item()
+    assert player._announced_item_id == "q3"
+
+    # still on it well after that: it really plays
+    player._announced_at -= 60
+    player._maybe_announce_flow_item()
+    assert player._announced_item_id == "q2"
+
+
+def test_a_repeated_queue_wrapping_right_after_a_short_last_track_is_announced() -> None:
+    """With crossfade there is no timer: the reading of the first track announces the wrap."""
+    player = _announcing_player()
+    player._announced_item_id = "q3"
+    player._announced_index = 2
+    player._announced_at = time.time()
+
+    player._start_flow_announcement("q1")
+
+    assert player._announced_item_id == "q1"
+
+
+def test_a_two_item_repeated_queue_wrapping_is_announced() -> None:
+    """In a queue of two the wrap to the first goes back one, yet it is no rollback."""
+    player = _announcing_player()
+    queue = cast("MagicMock", player.mass.player_queues).get.return_value
+    queue.items = 2
+    queue.repeat_mode = RepeatMode.ALL
+    player._announced_item_id = "q2"
+    player._announced_index = 1
+    player._announced_at = time.time()
+
+    player._start_flow_announcement("q1")
+
+    assert player._announced_item_id == "q1"
+
+
+def test_the_timer_announces_the_first_track_of_a_repeated_queue() -> None:
+    """At the end of a repeated queue the timer's track comes first, however short the last."""
+    player = _announcing_player()
+    player._announced_item_id = "q3"
+    player._announced_index = 2
+    player._announced_at = time.time()
+
+    player._announce_upcoming("q1", "q3")
+
+    assert player._announced_item_id == "q1"
