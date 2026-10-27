@@ -5,6 +5,8 @@ from __future__ import annotations
 import asyncio
 import base64
 import dataclasses
+from collections.abc import Iterator
+from contextlib import contextmanager
 from types import SimpleNamespace
 from typing import Any
 from unittest import mock
@@ -15,6 +17,7 @@ from ya_passport_auth import InvalidCredentialsError
 from ya_passport_auth.ma import BORROW_SOURCE_OWN
 
 from music_assistant.models.setup_flow import AbortFlow, StepExpiredError
+from music_assistant.providers.yandex_smarthome import setup_flow
 from music_assistant.providers.yandex_smarthome.constants import (
     CONF_AUTH_X_TOKEN,
     CONF_CLOUD_CONNECTION_TOKEN,
@@ -351,21 +354,33 @@ def _direct_collected() -> dict[str, Any]:
     }
 
 
-async def _provision_direct(session: Any, create: Any) -> Any:
-    """Run direct-mode provisioning with the skill pipeline replaced by ``create``."""
+@contextmanager
+def _fake_skill_pipeline(create: Any) -> Iterator[None]:
+    """Replace the skill pipeline and its collaborators with ``create``."""
     with (
         mock.patch(f"{_SETUP_FLOW}.make_authenticator"),
         mock.patch(f"{_SETUP_FLOW}.auto_create_skill", side_effect=create),
         mock.patch(f"{_SETUP_FLOW}.load_default_logo_bytes", return_value=b"logo"),
         mock.patch(f"{_SETUP_FLOW}._borrowed_x_token", return_value="borrowed-token"),
     ):
-        return await _provision_skill(
-            session,
-            _direct_collected(),
-            connection_type=CONNECTION_TYPE_DIRECT,
-            skill_name="Test",
-            ym_instance="linked-account",
-        )
+        yield
+
+
+async def _run_direct_provisioning(session: Any, *, skill_name: str = "Test") -> Any:
+    """Run direct-mode provisioning against an already faked skill pipeline."""
+    return await _provision_skill(
+        session,
+        _direct_collected(),
+        connection_type=CONNECTION_TYPE_DIRECT,
+        skill_name=skill_name,
+        ym_instance="linked-account",
+    )
+
+
+async def _provision_direct(session: Any, create: Any) -> Any:
+    """Run direct-mode provisioning with the skill pipeline replaced by ``create``."""
+    with _fake_skill_pipeline(create):
+        return await _run_direct_provisioning(session)
 
 
 async def test_direct_provisioning_serves_backend_while_skill_deploys() -> None:
@@ -410,6 +425,7 @@ async def test_direct_provisioning_reuses_routes_of_a_running_instance() -> None
 
 async def test_concurrent_direct_provisioning_keeps_routes_until_last_flow_exits() -> None:
     """A flow finishing first must not pull the routes from under a still-deploying one."""
+    real_pipeline = vars(setup_flow)["auto_create_skill"]
     first = _fake_session()
     second = _fake_session()
     second.mass = first.mass
@@ -419,29 +435,32 @@ async def test_concurrent_direct_provisioning_keeps_routes_until_last_flow_exits
     first_done = asyncio.Event()
     served_after_first_done: set[tuple[str, str]] = set()
 
-    async def _first_create(**_: Any) -> Any:
-        first_deploying.set()
-        await second_deploying.wait()
-        return _done_artifacts("first-skill")
-
-    async def _second_create(**_: Any) -> Any:
-        second_deploying.set()
-        await first_done.wait()
-        served_after_first_done.update(routes)
-        return _done_artifacts("second-skill")
+    async def _create(*, skill_name: str, **_: Any) -> Any:
+        if skill_name == "first":
+            first_deploying.set()
+            await second_deploying.wait()
+        else:
+            second_deploying.set()
+            await first_done.wait()
+            served_after_first_done.update(routes)
+        return _done_artifacts(f"{skill_name}-skill")
 
     async def _run_first() -> Any:
         try:
-            return await _provision_direct(first, _first_create)
+            return await _run_direct_provisioning(first, skill_name="first")
         finally:
             first_done.set()
 
     async def _run_second() -> Any:
         await first_deploying.wait()
-        return await _provision_direct(second, _second_create)
+        return await _run_direct_provisioning(second, skill_name="second")
 
-    second_id, first_id = await asyncio.gather(_run_second(), _run_first())
+    # one patch scope for both flows: interleaved per-flow scopes would restore each
+    # other's mocks and leak them into later tests
+    with _fake_skill_pipeline(_create):
+        second_id, first_id = await asyncio.gather(_run_second(), _run_first())
     assert (first_id, second_id) == ("first-skill", "second-skill")
+    assert vars(setup_flow)["auto_create_skill"] is real_pipeline
     assert (DIRECT_API_BASE_PATH, "HEAD") in served_after_first_done
     assert routes == {}
 
