@@ -210,9 +210,14 @@ class SnapCastPlayer(Player):
         """Send STOP command to given player."""
         player_group = await self.snap_provider.ensure_player_owned_group(self.player_id)
         assert player_group is not None  # for type checking
+        ma_stream = self.active_snap_ma_stream
         await player_group.set_stream("default")
-        if ma_stream := self.active_snap_ma_stream:
-            ma_stream.request_stop_stream()
+        if ma_stream:
+            # a stream other groups still play (e.g. a universal group) stops once unused
+            if not any(
+                grp.stream == ma_stream.stream_id for grp in self.snap_provider._snapserver.groups
+            ):
+                ma_stream.request_stop_stream()
             return
 
         self.poke_player_update()
