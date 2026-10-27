@@ -125,3 +125,15 @@ def test_healthy_clears_server_ladder(policy: ReconnectPolicy) -> None:
     policy.on_transport_failure()
 
     assert policy.next_delay() == 1.0
+
+
+def test_unconsumed_go_away_is_pending(policy: ReconnectPolicy) -> None:
+    """A go-away stays pending until a wait has been taken for it."""
+    observed = [policy.go_away_pending]
+    policy.on_server_error("500140000", grpc_code=14, go_away=3600.0, ladder="")
+    observed.append(policy.go_away_pending)
+    delay = policy.next_delay()
+    observed.append(policy.go_away_pending)
+
+    assert delay == 3600.0
+    assert observed == [False, True, False]

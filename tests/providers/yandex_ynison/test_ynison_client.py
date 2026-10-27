@@ -2124,6 +2124,33 @@ class TestMessageLoop:
 
         assert await self._record_reconnect_delays(client, 3) == [3600.0, 1.0, 5.0]
 
+    async def test_go_away_defers_a_reconnect_already_waiting(self, client: YnisonClient) -> None:
+        """A go-away that arrives while a reconnect waits holds that dial for its window."""
+        client._session = MagicMock()
+        client._session.closed = False
+        client._policy.on_transport_failure()
+        sleeps: list[float] = []
+        dials: list[list[float]] = []
+
+        async def record_sleep(delay: float) -> None:
+            sleeps.append(delay)
+            if len(sleeps) == 1:
+                client._apply_error_frame(_fixture("go_away_throttle.json")["error"])
+
+        async def dial() -> None:
+            dials.append(list(sleeps))
+            client._stop_event.set()
+            raise ConnectionError("down")
+
+        with (
+            patch(SLEEP_PATH, new_callable=AsyncMock, side_effect=record_sleep),
+            patch.object(client, "_get_redirect_ticket", new_callable=AsyncMock, side_effect=dial),
+        ):
+            await client._reconnect()
+        client._stop_event.clear()
+
+        assert dials == [[1.0, 3600.0]]
+
     async def test_drop_after_healthy_state_is_a_transport_failure(
         self, client: YnisonClient
     ) -> None:

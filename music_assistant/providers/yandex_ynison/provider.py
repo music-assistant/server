@@ -73,6 +73,7 @@ from .streaming import (
     make_pcm_format,
 )
 from .ynison_client import (
+    NavigationBaseline,
     YnisonClient,
     YnisonDeviceInfo,
     YnisonSendError,
@@ -1900,11 +1901,11 @@ class YandexYnisonProvider(PluginProvider):
         *,
         natural: bool,
         duration: int,
+        baseline: NavigationBaseline,
     ) -> Literal["change", "restart", "stop", "failed", "radio"]:
-        """Decide and publish navigation against the current serialized queue base."""
+        """Decide and publish navigation for the playback captured in ``baseline``."""
         if not (client := self._ynison):
             return "failed"
-        baseline = client.navigation_baseline()
         for attempt in range(2):
             if not await self._wait_for_ynison_connection(client):
                 return "failed"
@@ -1964,10 +1965,18 @@ class YandexYnisonProvider(PluginProvider):
         :return: The published navigation outcome, or ``failed`` when navigation
             could not be completed.
         """
-        if not self._ynison:
+        if not (client := self._ynison):
             return "failed"
         duration = self._best_duration_ms()
         self._playback.duration_ms = 0
+        # The completion belongs to the playback seen now; a peer queue that
+        # replaces it while the transport recovers must not receive it.
+        baseline = client.navigation_baseline()
+        if (
+            not await self._wait_for_ynison_connection(client)
+            or client.navigation_baseline() != baseline
+        ):
+            return "failed"
 
         # 1. Report that playback reached the end.
         # Echo tracking is handled by the client's status watermarks.
@@ -1987,7 +1996,9 @@ class YandexYnisonProvider(PluginProvider):
                 exc_info=True,
             )
 
-        outcome = await self._advance_queue_navigation(natural=natural, duration=duration)
+        outcome = await self._advance_queue_navigation(
+            natural=natural, duration=duration, baseline=baseline
+        )
         if outcome != "radio":
             self._prefetched_list = None
             return outcome

@@ -1328,6 +1328,35 @@ class TestYnisonStateHandling:
 
         assert await provider._signal_track_completion() == "failed"
 
+    async def test_completion_is_dropped_when_peer_replaces_queue_during_reconnect(
+        self,
+    ) -> None:
+        """A finished track is not reported against a queue that replaced it meanwhile."""
+        provider = _make_provider()
+        state = _make_ynison_state(
+            current_playable_index=0,
+            playable_list=[{"playable_id": "t1"}, {"playable_id": "t2"}],
+        )
+        client = _mock_ynison(state, connected=False)
+        provider._ynison = client
+
+        async def reconnect_with_peer_queue(_delay: float) -> None:
+            client.state.player_state["player_queue"] = {
+                "current_playable_index": 0,
+                "playable_list": [{"playable_id": "peer1"}, {"playable_id": "peer2"}],
+            }
+            client.connected = True
+
+        with patch(
+            "music_assistant.providers.yandex_ynison.provider.asyncio.sleep",
+            new_callable=AsyncMock,
+            side_effect=reconnect_with_peer_queue,
+        ):
+            assert await provider._signal_track_completion() == "failed"
+
+        client.report_status.assert_not_awaited()
+        client.update_player_state.assert_not_awaited()
+
     async def test_signal_track_completion_no_send_full_state(self) -> None:
         """Track completion never sends full state reset."""
         provider = _make_provider()

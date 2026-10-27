@@ -83,6 +83,11 @@ class ReconnectPolicy:
         self._go_away = 0.0
         self._retryable = True
 
+    @property
+    def go_away_pending(self) -> bool:
+        """Return whether a go-away window has not been waited for yet."""
+        return bool(self._go_away)
+
     def next_delay(self) -> float:
         """Return the wait in seconds before the next attempt and advance the ladder."""
         if self._go_away:

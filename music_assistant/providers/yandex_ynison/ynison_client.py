@@ -1271,6 +1271,9 @@ class YnisonClient:
 
             if self._stop_event.is_set():
                 return
+            if self._policy.go_away_pending:
+                # A go-away arrived during this wait; dialing now would land in its window.
+                continue
 
             attempt += 1
             try:
