@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from typing import Any, cast
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from music_assistant_models.auth import Scope
@@ -174,32 +174,28 @@ async def test_api_say_rejects_blank_text() -> None:
     _send_mock(player).assert_not_awaited()
 
 
-async def test_api_say_rejects_player_outside_user_filter() -> None:
-    """A user limited to other players cannot address this Station."""
+async def test_api_say_rejects_player_the_core_denies() -> None:
+    """A user the core does not allow on the Station cannot address it."""
     player = _make_player()
     provider = _make_provider({"station_1": player})
-    user = MagicMock(username="guest", player_filter=["other_player"])
+    get_state = cast("MagicMock", provider.mass.players.get_player_state)
+    get_state.side_effect = InsufficientPermissions("guest does not have access")
 
-    with (
-        patch(
-            "music_assistant.providers.yandex_station.provider.get_current_user", return_value=user
-        ),
-        pytest.raises(InsufficientPermissions),
-    ):
+    with pytest.raises(InsufficientPermissions):
         await provider.say("station_1", "Привет")
+    with pytest.raises(InsufficientPermissions):
+        await provider.command("station_1", "сколько времени")
 
+    get_state.assert_called_with("station_1")
     _send_mock(player).assert_not_awaited()
 
 
-async def test_api_say_allows_player_in_user_filter() -> None:
-    """A user whose filter includes the Station can use it."""
+async def test_api_say_runs_when_the_core_allows_the_user() -> None:
+    """The command runs once the core allows the calling user on the Station."""
     player = _make_player()
     provider = _make_provider({"station_1": player})
-    user = MagicMock(username="member", player_filter=["station_1"])
 
-    with patch(
-        "music_assistant.providers.yandex_station.provider.get_current_user", return_value=user
-    ):
-        await provider.say("station_1", "Привет")
+    await provider.say("station_1", "Привет")
 
+    cast("MagicMock", provider.mass.players.get_player_state).assert_called_once_with("station_1")
     _send_mock(player).assert_awaited_once()

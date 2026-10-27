@@ -7,6 +7,7 @@ import base64
 import json
 import logging
 import time
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 from urllib.parse import urlsplit
 
@@ -173,6 +174,20 @@ def _update_form(name: str, **kwargs: str) -> dict[str, Any]:
             },
         },
     }
+
+
+@dataclass(frozen=True, slots=True)
+class _SessionSnapshot:
+    """Playback session state restored when the Station rejects a transport command."""
+
+    external_playing: bool
+    external_audio_client: bool
+    external_media: PlayerMedia | None
+    external_play_confirmed: bool
+    external_stop_observed: bool
+    needs_replay: bool
+    pause_stop_pending: bool
+    playback_state: PlaybackState
 
 
 class YandexStationPlayer(Player):
@@ -384,41 +399,47 @@ class YandexStationPlayer(Player):
 
     async def pause(self) -> None:
         """Pause playback."""
-        self._external_play_generation += 1
+        generation = self._external_play_generation + 1
+        snapshot = self._capture_session()
         was_external = self._external_playing
-        # audio_client sessions pause with the native stop command; legacy
-        # bypass sessions only stop when an invalid radio URL replaces them.
-        if was_external and not self._external_audio_client:
-            result = await self.glagol.send(
-                _external_command("radio_play", {"streamUrl": "http://0.0.0.0/stop.flac"})
-            )
-        else:
-            result = await self.glagol.send({"command": "stop"})
-        _raise_if_failed(result, "pause")
+        legacy_stream = was_external and not self._external_audio_client
+        # Glagol hands the state carried by the response frame to the player
+        # before send() returns, so the pause is recorded before it is sent.
+        self._external_play_generation = generation
         if was_external:
             self._needs_replay = True
             self._pause_stop_pending = True
         self._reset_external_session()
         self._cancel_voice_resume()
         self._attr_playback_state = PlaybackState.PAUSED
-        self.update_state()
-
-    async def stop(self) -> None:
-        """Stop playback."""
-        self._external_play_generation += 1
-        if self._external_playing and not self._external_audio_client:
+        # audio_client sessions pause with the native stop command; legacy
+        # bypass sessions only stop when an invalid radio URL replaces them.
+        if legacy_stream:
             result = await self.glagol.send(
                 _external_command("radio_play", {"streamUrl": "http://0.0.0.0/stop.flac"})
             )
         else:
             result = await self.glagol.send({"command": "stop"})
-        _raise_if_failed(result, "stop")
+        self._finish_transport_command(result, "pause", generation, snapshot)
+
+    async def stop(self) -> None:
+        """Stop playback."""
+        generation = self._external_play_generation + 1
+        snapshot = self._capture_session()
+        legacy_stream = self._external_playing and not self._external_audio_client
+        self._external_play_generation = generation
         self._reset_external_session()
         self._needs_replay = False
         self._pause_stop_pending = False
         self._cancel_voice_resume()
         self._attr_playback_state = PlaybackState.IDLE
-        self.update_state()
+        if legacy_stream:
+            result = await self.glagol.send(
+                _external_command("radio_play", {"streamUrl": "http://0.0.0.0/stop.flac"})
+            )
+        else:
+            result = await self.glagol.send({"command": "stop"})
+        self._finish_transport_command(result, "stop", generation, snapshot)
 
     async def next_track(self) -> None:
         """Send NEXT command."""
@@ -667,6 +688,48 @@ class YandexStationPlayer(Player):
             else:
                 _LOGGER.debug("[%s] Silent voice command — staying paused", self.player_id)
                 self._needs_replay = True
+
+    def _capture_session(self) -> _SessionSnapshot:
+        """Capture the playback session state a transport command replaces."""
+        return _SessionSnapshot(
+            external_playing=self._external_playing,
+            external_audio_client=self._external_audio_client,
+            external_media=self._external_media,
+            external_play_confirmed=self._external_play_confirmed,
+            external_stop_observed=self._external_stop_observed,
+            needs_replay=self._needs_replay,
+            pause_stop_pending=self._pause_stop_pending,
+            playback_state=self._attr_playback_state,
+        )
+
+    def _finish_transport_command(
+        self,
+        result: dict[str, Any] | None,
+        command: str,
+        generation: int,
+        snapshot: _SessionSnapshot,
+    ) -> None:
+        """
+        Publish a transport command whose state was applied before it was sent.
+
+        If the Station rejected it, the previous session is restored unless a newer
+        command or Station event has replaced it meanwhile.
+        """
+        try:
+            _raise_if_failed(result, command)
+        except PlayerCommandFailed:
+            if self._external_play_generation == generation:
+                self._external_playing = snapshot.external_playing
+                self._external_audio_client = snapshot.external_audio_client
+                self._external_media = snapshot.external_media
+                self._external_play_confirmed = snapshot.external_play_confirmed
+                self._external_stop_observed = snapshot.external_stop_observed
+                self._needs_replay = snapshot.needs_replay
+                self._pause_stop_pending = snapshot.pause_stop_pending
+                self._attr_playback_state = snapshot.playback_state
+            raise
+        finally:
+            self.update_state()
 
     def _reset_external_session(self) -> None:
         """Forget the current external (MA-streamed) playback session."""

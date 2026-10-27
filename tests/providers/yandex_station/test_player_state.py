@@ -1048,6 +1048,63 @@ async def test_pause_ignores_stale_playing_state_and_resumes_ma_queue() -> None:
     resume.assert_awaited_once_with("queue_1")
 
 
+async def test_pause_handles_stopped_state_delivered_with_the_response() -> None:
+    """
+    The Station's stopped state can arrive in the frame that answers stop.
+
+    Glagol hands that frame's state to the player before pause() resumes, so pause()
+    must have recorded the pause before it awaited the command. Otherwise the guard
+    against stale playing updates is set after its clearing update has already passed,
+    and native playback started next would be ignored.
+    """
+    player = _make_player()
+    _disable_voice_control(player)
+
+    async def send(_command: dict[str, Any]) -> dict[str, Any]:
+        player._update_playback_state(playing=False, alice_state="IDLE")
+        return {"status": "SUCCESS"}
+
+    player.glagol = cast("YandexGlagol", SimpleNamespace(send=send))
+    player._external_playing = True
+    vars(player)["_external_audio_client"] = True
+    player._external_play_confirmed = True
+    player._attr_playback_state = PlaybackState.PLAYING
+
+    await player.pause()
+    paused_state = player._attr_playback_state
+    player._update_playback_state(playing=True, alice_state="IDLE")
+
+    assert paused_state == PlaybackState.PAUSED
+    assert player._attr_playback_state == PlaybackState.PLAYING
+
+
+@pytest.mark.parametrize("command", ["pause", "stop"])
+async def test_failed_transport_command_keeps_the_external_session(command: str) -> None:
+    """A pause or stop the Station rejects leaves the MA stream as it was."""
+    player = _make_player()
+    _disable_voice_control(player)
+
+    async def send(_command: dict[str, Any]) -> dict[str, Any]:
+        return {"error": "timeout"}
+
+    player.glagol = cast("YandexGlagol", SimpleNamespace(send=send))
+    player._external_playing = True
+    vars(player)["_external_audio_client"] = True
+    player._external_play_confirmed = True
+    player._attr_playback_state = PlaybackState.PLAYING
+
+    with pytest.raises(PlayerCommandFailed):
+        await getattr(player, command)()
+
+    assert player._external_playing is True
+    assert player._needs_replay is False
+    assert vars(player)["_pause_stop_pending"] is False
+    assert player._attr_playback_state == PlaybackState.PLAYING
+    player._update_playback_state(playing=True, alice_state="IDLE")
+    assert player._attr_playback_state == PlaybackState.PLAYING
+    assert player._external_playing is True
+
+
 async def test_pause_retains_legacy_radio_play_stop_workaround() -> None:
     """Old firmware still needs its bypass stream replaced by an invalid URL."""
     player = _make_player()

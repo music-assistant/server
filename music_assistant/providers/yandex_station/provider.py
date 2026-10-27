@@ -13,7 +13,6 @@ from music_assistant_models.auth import Scope
 from music_assistant_models.config_entries import ConfigEntry
 from music_assistant_models.enums import ConfigEntryType
 from music_assistant_models.errors import (
-    InsufficientPermissions,
     InvalidDataError,
     PlayerUnavailableError,
 )
@@ -26,7 +25,6 @@ from ya_passport_auth.ma import (
     KeySpec,
 )
 
-from music_assistant.controllers.webserver.helpers.auth_middleware import get_current_user
 from music_assistant.models.player_provider import PlayerProvider
 
 from .constants import (
@@ -350,15 +348,13 @@ class YandexStationProvider(PlayerProvider):
         if not text.strip():
             msg = "Text must not be empty"
             raise InvalidDataError(msg)
+        # The core decides whether the calling user may use the player; it
+        # raises InsufficientPermissions under the same rules as its own commands.
+        self.mass.players.get_player_state(player_id)
         player = self.mass.players.get_player(player_id)
         if not isinstance(player, YandexStationPlayer):
             msg = f"{player_id} is not a Yandex Station player"
             raise PlayerUnavailableError(msg)
-        # Same per-user player restriction the core player commands enforce.
-        user = get_current_user()
-        if user and user.player_filter and player_id not in user.player_filter:
-            msg = f"{user.username} does not have access to player {player_id}"
-            raise InsufficientPermissions(msg)
         return player
 
     # ── Credential cascade ────────────────────────────────────────────
