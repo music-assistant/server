@@ -137,12 +137,10 @@ class SnapcastMAStream:
         """
         if self._streaming_started_at is None:
             return None
-        if self._provider._use_builtin_server:
-            buffer_ms = self._provider._snapcast_server_buffer_size
-            if time.time() - self._streaming_started_at < buffer_ms / 1000.0:
-                return None
-            return self._streaming_started_at + buffer_ms / 1000.0
-        return self._streaming_started_at
+        started_at = self._streaming_started_at + self._get_playback_delay()
+        if time.time() < started_at:
+            return None
+        return started_at
 
     async def setup(self) -> None:
         """
@@ -371,6 +369,12 @@ class SnapcastMAStream:
                 wait_ffmpeg = self._mass.create_task(ffmpeg_proc.wait())
                 wait_stop = self._mass.create_task(self._stop_streamer_evt.wait())
                 self._streaming_started_at = time.time()
+                # the playback anchor only becomes known after the server buffer delay
+                self._mass.call_later(
+                    self._get_playback_delay(),
+                    self._snap_on_stream_update,
+                    task_id=f"snapcast_playback_started_{self.stream_name}",
+                )
                 self._streamer_started_evt.set()
                 self._is_streaming = True
 
@@ -772,3 +776,9 @@ class SnapcastMAStream:
         await self._socket_server.stop()
         self._socket_server = None
         self._logger.debug("Stopped socket server for queue %s", self._cntrl_queue_id)
+
+    def _get_playback_delay(self) -> float:
+        """Return the delay in seconds between streaming start and playback at the clients."""
+        if self._provider._use_builtin_server:
+            return self._provider._snapcast_server_buffer_size / 1000.0
+        return 0.0
