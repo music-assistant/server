@@ -172,6 +172,64 @@ async def test_playback_locks_take_a_group_before_the_players_it_may_capture(
     assert lock_keys == ["playback_z", "playback_b"]
 
 
+def _add_group_holding(controller: PlayerController, player_id: str) -> None:
+    """Add group "g" to the controller and let it capture the given player."""
+    provider = controller._players["z"].provider
+    group = MockPlayer(provider, "g", "Other group", player_type=PlayerType.GROUP)
+    group.set_initialized()
+    group.update_state(signal_event=False)
+    controller._players["g"] = group
+    controller._players[player_id].state.active_group = "g"
+
+
+async def test_playback_locks_take_every_group_before_a_member_another_group_holds(
+    mock_mass: MagicMock,
+) -> None:
+    """
+    A target group is locked before a player captured by another group, whatever their ids.
+
+    A start on the target group that captures that player holds the group while it waits
+    for the player, so taking the player first would lock the group out until its timeout.
+    """
+    controller = _controller_with_synced_pair(mock_mass)
+    _add_group_holding(controller, "b")
+    lock_keys = _spy_on_lock_order(controller)
+
+    async with controller.get_playback_locks("b", "z"):
+        pass
+
+    assert lock_keys == ["playback_g", "playback_z", "playback_b"]
+
+
+async def test_playback_locks_follow_a_player_grouped_while_they_wait(
+    mock_mass: MagicMock,
+) -> None:
+    """A player captured by a group while its lock is awaited is held with that group's lock."""
+    controller = _controller_with_synced_pair(mock_mass)
+    release = asyncio.Event()
+
+    async def _hold() -> None:
+        async with controller.get_player_lock("b", PlayerLockPurpose.PLAYBACK):
+            await release.wait()
+
+    async def _transfer() -> None:
+        async with controller.get_playback_locks("b", strict=True):
+            assert controller._player_command_locks["playback_g"].locked()
+            assert controller._player_command_locks["playback_b"].locked()
+
+    holder = asyncio.create_task(_hold())
+    await asyncio.sleep(0)
+    transfer = asyncio.create_task(_transfer())
+    await asyncio.sleep(0)
+    _add_group_holding(controller, "b")
+    release.set()
+    await holder
+    await transfer
+
+    for player_id in ("b", "g"):
+        assert not controller._player_command_locks[f"playback_{player_id}"].locked()
+
+
 async def test_playback_locks_hand_back_a_players_locks_early(mock_mass: MagicMock) -> None:
     """Releasing one player frees its own lock and its leader's, and keeps the others' held."""
     controller = _controller_with_synced_pair(mock_mass)
