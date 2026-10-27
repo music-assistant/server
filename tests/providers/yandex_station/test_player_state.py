@@ -1,11 +1,13 @@
 """
-Tests for YandexStationPlayer state transitions during external playback.
+Tests for YandexStationPlayer state transitions driven by the Station's reports.
 
-Covers physical pause detection: when the user presses pause on the speaker
-while MA is streaming via ``radio_play``, Glagol reports ``playing=False`` with
-``aliceState="IDLE"``. The player must propagate ``PlaybackState.PAUSED`` to MA
-instead of silently holding the optimistic PLAYING state.
+Covers Music Assistant streams (startup, completion, a stop on the speaker),
+the Station's own playback, transport commands and voice control.
 """
+# Mypy resolves this package through the installed Music Assistant, whose bundled
+# copy of the provider lags this repository, and MagicMock stands in for the core
+# controllers. The disabled codes cover both.
+# mypy: disable-error-code="attr-defined,method-assign,call-arg,assignment,comparison-overlap"
 
 from __future__ import annotations
 
@@ -14,13 +16,18 @@ import base64
 import json
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, cast
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-from music_assistant_models.enums import PlaybackState
+from music_assistant_models.enums import PlaybackState, PlayerFeature
 from music_assistant_models.errors import PlayerCommandFailed
 
-from music_assistant.providers.yandex_station.player import YandexStationPlayer
+from music_assistant.providers.yandex_station.alice import AliceTracker
+from music_assistant.providers.yandex_station.player import (
+    STATION_SOURCE_ID,
+    VOICE_RESUME_DELAY,
+    YandexStationPlayer,
+)
 from music_assistant.providers.yandex_station.protobuf import loads
 
 if TYPE_CHECKING:
@@ -36,27 +43,20 @@ def _make_player() -> YandexStationPlayer:
     player._external_playing = False
     player._external_media = None
     vars(player)["_external_play_generation"] = 0
-    vars(player)["_pending_play_generation"] = None
-    vars(player)["_voice_pending_track_id"] = None
     player._external_play_confirmed = False
     vars(player)["_external_stop_observed"] = False
     vars(player)["_audio_client"] = False
     vars(player)["_external_audio_client"] = False
-    player._needs_replay = False
-    vars(player)["_pause_stop_pending"] = False
-    vars(player)["_station_epoch"] = 0
-    player._prev_alice_state = ""
-    player._voice_resume_task = None
-    player._alice_spoke = False
-    vars(player)["_voice_interaction_active"] = False
+    player._alice = AliceTracker()
+    player._voice_interrupted = False
     player._pre_voice_volume = 0
+    player._station_track_id = ""
     player._intercept_active = False
     player._last_intercepted_track_id = None
     player._last_intercept_time = 0.0
     player._last_mirrored_volume = None
     player._last_progress = 0
     player._last_progress_wall = 0.0
-    player._alice_active_pause_sent = False
     vars(player)["_station_unmuted_for_phrase"] = False
     player._saved_station_volume = None
     player._station_muted_by_intercept = False
@@ -64,9 +64,34 @@ def _make_player() -> YandexStationPlayer:
     player._attr_powered = False
     player._attr_volume_level = 0
     player._attr_current_media = None
+    player._attr_active_source = None
+    player._attr_supported_features = {PlayerFeature.PAUSE}
+    player.mass = MagicMock()
+    _disable_voice_control(player)
     object.__setattr__(player, "set_current_media", lambda **_kwargs: None)
     object.__setattr__(player, "update_state", lambda: None)
     return player
+
+
+def _report(
+    player: YandexStationPlayer,
+    *,
+    playing: bool,
+    alice_state: str = "IDLE",
+    external_media_matches: bool | None = None,
+    progress: float = 0,
+    duration: float = 0,
+    native_track_id: str = "",
+) -> None:
+    """Feed one Station report through Alice's tracker, as the WebSocket handler does."""
+    player._update_playback_state(
+        playing,
+        player._alice.feed(alice_state),
+        external_media_matches,
+        progress,
+        duration,
+        native_track_id,
+    )
 
 
 class _StubConfig:
@@ -75,7 +100,7 @@ class _StubConfig:
 
 
 def _disable_voice_control(player: YandexStationPlayer) -> None:
-    player._config = _StubConfig()  # type: ignore[assignment]
+    player._config = _StubConfig()
 
 
 def _make_play_media_player(
@@ -92,14 +117,8 @@ def _make_play_media_player(
         return "http://192.168.10.229:8097/single/session/queue/item/test_player.flac"
 
     player = _make_player()
-    provider = cast(
-        "PlayerProvider",
-        SimpleNamespace(
-            mass=SimpleNamespace(streams=SimpleNamespace(resolve_stream_url=resolve_stream_url))
-        ),
-    )
-    player._provider = provider
-    player.mass = provider.mass
+    player.mass.streams = SimpleNamespace(resolve_stream_url=resolve_stream_url)
+    player._provider = cast("PlayerProvider", SimpleNamespace(mass=player.mass))
     player.glagol = cast("YandexGlagol", SimpleNamespace(send=send))
     return player, commands
 
@@ -174,8 +193,8 @@ async def test_audio_play_from_idle_confirms_on_first_playing_state() -> None:
     )
 
     await player.play_media(media)
-    update_playback_state = cast("Any", player._update_playback_state)
-    update_playback_state(
+    _report(
+        player,
         playing=True,
         alice_state="IDLE",
         external_media_matches=True,
@@ -229,7 +248,8 @@ async def test_audio_play_attributes_state_while_command_is_pending() -> None:
 
 @pytest.mark.parametrize(
     ("progress", "expected_state"),
-    [(30, PlaybackState.PAUSED), (180, PlaybackState.IDLE)],
+    [(30, PlaybackState.IDLE), (180, PlaybackState.IDLE)],
+    ids=["stopped", "finished"],
 )
 async def test_terminal_state_during_pending_play_command_is_preserved(
     progress: int, expected_state: PlaybackState
@@ -376,7 +396,7 @@ async def test_late_stream_resolution_preserves_newer_request(audio_client: bool
 
 @pytest.mark.parametrize(
     ("command", "expected_state"),
-    [("pause", PlaybackState.PAUSED), ("stop", PlaybackState.IDLE)],
+    [("pause", PlaybackState.IDLE), ("stop", PlaybackState.IDLE)],
 )
 async def test_transport_command_discards_pending_stream_resolution(
     command: str, expected_state: PlaybackState
@@ -432,7 +452,7 @@ async def test_station_interruption_discards_pending_stream_resolution(
     """A URL resolved after a physical pause or Alice interruption must not start playback."""
     player, commands = _make_play_media_player([{"status": "SUCCESS"}])
     if voice_control:
-        player._config = _VoiceControlConfig()  # type: ignore[assignment]
+        player._config = _VoiceControlConfig()
     else:
         _disable_voice_control(player)
     player._external_playing = True
@@ -460,348 +480,34 @@ async def test_station_interruption_discards_pending_stream_resolution(
     task = asyncio.create_task(player.play_media(media))
     try:
         await asyncio.wait_for(resolution_started.wait(), 1)
-        player._update_playback_state(playing=False, alice_state=alice_state)
+        _report(player, playing=False, alice_state=alice_state)
     finally:
         release_resolution.set()
         await task
 
     assert commands == []
     assert published_media == []
-    assert player._attr_playback_state == PlaybackState.PAUSED
+    assert player._attr_playback_state == PlaybackState.IDLE
     assert player._external_media is None
-    assert player._needs_replay is True
-
-
-@pytest.mark.parametrize(
-    ("station_playing", "initial_state"),
-    [(False, PlaybackState.IDLE), (True, PlaybackState.PLAYING)],
-    ids=["idle", "native_playback"],
-)
-async def test_voice_activation_discards_pending_resolution_without_external_session(
-    station_playing: bool, initial_state: PlaybackState
-) -> None:
-    """Alice activation cancels a pending request even before any external session exists."""
-    player, commands = _make_play_media_player([{"status": "SUCCESS"}])
-    player._config = _VoiceControlConfig()  # type: ignore[assignment]
-    player._attr_playback_state = initial_state
-    media = cast(
-        "PlayerMedia",
-        SimpleNamespace(uri="next", title="Next Track", artist="", duration=180, image_url=None),
-    )
-    resolution_started = asyncio.Event()
-    release_resolution = asyncio.Event()
-    published_media: list[str] = []
-    object.__setattr__(
-        player,
-        "set_current_media",
-        lambda **kwargs: published_media.append(kwargs["uri"]),
-    )
-
-    async def resolve_stream_url(_player_id: str, _media: PlayerMedia) -> str:
-        resolution_started.set()
-        await release_resolution.wait()
-        return "http://192.168.1.2:8097/next.wav"
-
-    object.__setattr__(player.mass.streams, "resolve_stream_url", resolve_stream_url)
-    task = asyncio.create_task(player.play_media(media))
-    try:
-        await asyncio.wait_for(resolution_started.wait(), 1)
-        player._update_playback_state(playing=station_playing, alice_state="LISTENING")
-    finally:
-        release_resolution.set()
-        await task
-
-    assert commands == []
-    assert published_media == []
-    assert player._attr_playback_state == PlaybackState.PAUSED
-    assert player._needs_replay is True
+    assert player._voice_interrupted is voice_control
 
 
 async def test_voice_activation_without_pending_request_keeps_native_state() -> None:
     """Alice activation with no pending request leaves an idle station untouched."""
     player = _make_player()
-    player._config = _VoiceControlConfig()  # type: ignore[assignment]
+    player._config = _VoiceControlConfig()
 
-    player._update_playback_state(playing=False, alice_state="LISTENING")
+    _report(player, playing=False, alice_state="LISTENING")
 
     assert player._attr_playback_state == PlaybackState.IDLE
-    assert player._needs_replay is False
-
-
-async def _interrupt_pending_play_with_voice(
-    player: YandexStationPlayer,
-    commands: list[dict[str, Any]],
-    *,
-    playing: bool,
-    track_id: str,
-) -> None:
-    """Start play_media, activate Alice while its URL resolves, then let it finish."""
-    media = cast(
-        "PlayerMedia",
-        SimpleNamespace(uri="next", title="Next Track", artist="", duration=180, image_url=None),
-    )
-    resolution_started = asyncio.Event()
-    release_resolution = asyncio.Event()
-
-    async def resolve_stream_url(_player_id: str, _media: PlayerMedia) -> str:
-        resolution_started.set()
-        await release_resolution.wait()
-        return "http://192.168.1.2:8097/next.wav"
-
-    object.__setattr__(player.mass.streams, "resolve_stream_url", resolve_stream_url)
-    task = asyncio.create_task(player.play_media(media))
-    try:
-        await asyncio.wait_for(resolution_started.wait(), 1)
-        _voice_tick(player, playing=playing, alice_state="LISTENING", track_id=track_id)
-    finally:
-        release_resolution.set()
-        await task
-    assert commands == []
+    assert player._voice_interrupted is False
 
 
 def _voice_tick(
     player: YandexStationPlayer, *, playing: bool, alice_state: str, track_id: str
 ) -> None:
     """Feed one Glagol state update, tracking the previous Alice state like the WS loop."""
-    update_playback_state = cast("Any", player._update_playback_state)
-    update_playback_state(playing=playing, alice_state=alice_state, native_track_id=track_id)
-    player._prev_alice_state = alice_state
-
-
-async def test_voice_interaction_over_native_playback_resumes_pending_request() -> None:
-    """
-    Ducked native playback during Alice does not cancel the pending MA request.
-
-    The station keeps reporting the same Yandex track with ``playing=True``
-    through LISTENING and SPEAKING; once Alice is idle again, MA resumes the
-    requested item instead of accepting the pre-existing source.
-    """
-    player, commands = _make_play_media_player([])
-    player._config = _VoiceControlConfig()  # type: ignore[assignment]
-    player._attr_playback_state = PlaybackState.PLAYING
-    await _interrupt_pending_play_with_voice(player, commands, playing=True, track_id="yandex-1")
-
-    try:
-        _voice_tick(player, playing=True, alice_state="LISTENING", track_id="yandex-1")
-        _voice_tick(player, playing=True, alice_state="SPEAKING", track_id="yandex-1")
-        assert player._needs_replay is True
-        assert player._attr_playback_state == PlaybackState.PAUSED
-
-        _voice_tick(player, playing=True, alice_state="IDLE", track_id="yandex-1")
-        resume_task = player._voice_resume_task
-        assert resume_task is not None
-
-        _voice_tick(player, playing=True, alice_state="IDLE", track_id="yandex-1")
-        assert player._voice_resume_task is resume_task
-        assert not resume_task.cancelled()
-        assert player._needs_replay is True
-        assert player._attr_playback_state == PlaybackState.PAUSED
-    finally:
-        if player._voice_resume_task is not None:
-            player._voice_resume_task.cancel()
-
-
-async def test_native_track_requested_through_alice_replaces_pending_request() -> None:
-    """A different Yandex track after the interaction means the user asked Alice for it."""
-    player, commands = _make_play_media_player([])
-    player._config = _VoiceControlConfig()  # type: ignore[assignment]
-    player._attr_playback_state = PlaybackState.PLAYING
-    await _interrupt_pending_play_with_voice(player, commands, playing=True, track_id="yandex-1")
-
-    _voice_tick(player, playing=True, alice_state="SPEAKING", track_id="yandex-1")
-    _voice_tick(player, playing=True, alice_state="IDLE", track_id="yandex-2")
-
-    assert player._needs_replay is False
-    assert player._voice_resume_task is None
-    assert player._attr_playback_state == PlaybackState.PLAYING
-
-
-async def test_voice_interaction_from_idle_resumes_pending_request() -> None:
-    """An idle station resumes the pending MA request after Alice answers."""
-    player, commands = _make_play_media_player([])
-    player._config = _VoiceControlConfig()  # type: ignore[assignment]
-    await _interrupt_pending_play_with_voice(player, commands, playing=False, track_id="")
-
-    try:
-        _voice_tick(player, playing=False, alice_state="SPEAKING", track_id="")
-        _voice_tick(player, playing=False, alice_state="IDLE", track_id="")
-
-        assert player._voice_resume_task is not None
-        assert player._needs_replay is True
-        assert player._attr_playback_state == PlaybackState.PAUSED
-    finally:
-        if player._voice_resume_task is not None:
-            player._voice_resume_task.cancel()
-
-
-async def test_voice_answer_over_native_playback_keeps_pending_request() -> None:
-    """
-    Alice's answer does not hand the pending MA request over to the ducked native track.
-
-    A real Station reports a request as LISTENING, BUSY, NONE while Alice answers,
-    LISTENING, then IDLE, with ``playing=True`` throughout; MA resumes its request
-    once Alice is idle again.
-    """
-    player, commands = _make_play_media_player([])
-    player._config = _VoiceControlConfig()  # type: ignore[assignment]
-    player._attr_playback_state = PlaybackState.PLAYING
-    await _interrupt_pending_play_with_voice(player, commands, playing=True, track_id="yandex-1")
-
-    try:
-        for alice_state in ("BUSY", "NONE", "LISTENING"):
-            _voice_tick(player, playing=True, alice_state=alice_state, track_id="yandex-1")
-            assert player._needs_replay is True, alice_state
-            assert player._attr_playback_state == PlaybackState.PAUSED, alice_state
-
-        _voice_tick(player, playing=True, alice_state="IDLE", track_id="yandex-1")
-        assert player._voice_resume_task is not None
-        assert player._needs_replay is True
-        assert player._attr_playback_state == PlaybackState.PAUSED
-    finally:
-        if player._voice_resume_task is not None:
-            player._voice_resume_task.cancel()
-
-
-async def test_server_action_phrase_after_pause_does_not_resume() -> None:
-    """A ``say`` phrase after a voice interaction ended does not auto-resume a paused stream."""
-    player = _make_player()
-    player._config = _VoiceControlConfig()  # type: ignore[assignment]
-    player._needs_replay = True
-    player._alice_spoke = True
-    player._attr_playback_state = PlaybackState.PAUSED
-
-    _voice_tick(player, playing=False, alice_state="NONE", track_id="")
-    _voice_tick(player, playing=False, alice_state="IDLE", track_id="")
-
-    assert player._voice_resume_task is None
-    assert player._needs_replay is True
-    assert player._attr_playback_state == PlaybackState.PAUSED
-
-
-@pytest.mark.parametrize("command", ["pause", "stop"])
-async def test_cancelled_transport_command_keeps_the_external_session(command: str) -> None:
-    """A pause or stop cancelled while it awaits the Station leaves the MA stream as it was."""
-    player = _make_player()
-    _disable_voice_control(player)
-
-    async def send(_command: dict[str, Any]) -> dict[str, Any]:
-        raise asyncio.CancelledError
-
-    player.glagol = cast("YandexGlagol", SimpleNamespace(send=send))
-    player._external_playing = True
-    vars(player)["_external_audio_client"] = True
-    player._external_play_confirmed = True
-    player._attr_playback_state = PlaybackState.PLAYING
-
-    with pytest.raises(asyncio.CancelledError):
-        await getattr(player, command)()
-
-    assert player._external_playing is True
-    assert vars(player)["_pause_stop_pending"] is False
-    assert player._attr_playback_state == PlaybackState.PLAYING
-
-
-def _send_failing(player: YandexStationPlayer, outcome: str, *reports: dict[str, Any]) -> None:
-    """Make the next command deliver ``reports`` while pending, then time out or be cancelled."""
-
-    async def send(_command: dict[str, Any]) -> dict[str, Any]:
-        for report in reports:
-            _voice_tick(player, **report)
-        if outcome == "cancelled":
-            raise asyncio.CancelledError
-        return {"error": "timeout"}
-
-    player.glagol = cast("YandexGlagol", SimpleNamespace(send=send))
-
-
-async def _run_failing_command(player: YandexStationPlayer, command: str, outcome: str) -> None:
-    expected: type[BaseException] = (
-        asyncio.CancelledError if outcome == "cancelled" else PlayerCommandFailed
-    )
-    with pytest.raises(expected):
-        await getattr(player, command)()
-
-
-@pytest.mark.parametrize("outcome", ["timeout", "cancelled"])
-@pytest.mark.parametrize("command", ["pause", "stop"])
-async def test_failed_transport_command_keeps_the_voice_interaction(
-    command: str, outcome: str
-) -> None:
-    """
-    A pause or stop that does not reach the Station leaves Alice's interaction running.
-
-    The pending request is resumed once Alice has answered, as without the command.
-    """
-    player, commands = _make_play_media_player([])
-    player._config = _VoiceControlConfig()  # type: ignore[assignment]
-    player._attr_playback_state = PlaybackState.PLAYING
-    await _interrupt_pending_play_with_voice(player, commands, playing=True, track_id="yandex-1")
-    _send_failing(player, outcome)
-
-    try:
-        await _run_failing_command(player, command, outcome)
-
-        assert player._needs_replay is True
-        assert player._attr_playback_state == PlaybackState.PAUSED
-        _voice_tick(player, playing=True, alice_state="NONE", track_id="yandex-1")
-        _voice_tick(player, playing=True, alice_state="IDLE", track_id="yandex-1")
-        assert player._voice_resume_task is not None
-        assert player._attr_playback_state == PlaybackState.PAUSED
-    finally:
-        if player._voice_resume_task is not None:
-            player._voice_resume_task.cancel()
-
-
-@pytest.mark.parametrize("outcome", ["timeout", "cancelled"])
-@pytest.mark.parametrize("command", ["pause", "stop"])
-async def test_failed_transport_command_keeps_a_scheduled_voice_resume(
-    command: str, outcome: str
-) -> None:
-    """A pause or stop that does not reach the Station keeps the auto-resume Alice's answer scheduled."""
-    player, commands = _make_play_media_player([])
-    player._config = _VoiceControlConfig()  # type: ignore[assignment]
-    player._attr_playback_state = PlaybackState.PLAYING
-    await _interrupt_pending_play_with_voice(player, commands, playing=True, track_id="yandex-1")
-    _voice_tick(player, playing=True, alice_state="NONE", track_id="yandex-1")
-    _voice_tick(player, playing=True, alice_state="IDLE", track_id="yandex-1")
-    assert player._voice_resume_task is not None
-    _send_failing(player, outcome)
-
-    try:
-        await _run_failing_command(player, command, outcome)
-
-        assert player._voice_resume_task is not None
-        assert not player._voice_resume_task.cancelled()
-        assert player._needs_replay is True
-        _voice_tick(player, playing=True, alice_state="IDLE", track_id="yandex-1")
-        assert player._attr_playback_state == PlaybackState.PAUSED
-    finally:
-        if player._voice_resume_task is not None:
-            player._voice_resume_task.cancel()
-
-
-@pytest.mark.parametrize("outcome", ["timeout", "cancelled"])
-@pytest.mark.parametrize("command", ["pause", "stop"])
-async def test_failed_transport_command_keeps_a_paused_stream_the_station_confirmed(
-    command: str, outcome: str
-) -> None:
-    """
-    A paused MA stream stays resumable after a pause or stop that does not reach the Station.
-
-    The Station's stopped report only confirms what it already did; it is not a
-    change that makes the previous session obsolete.
-    """
-    player = _make_player()
-    _disable_voice_control(player)
-    player._needs_replay = True
-    player._attr_playback_state = PlaybackState.PAUSED
-    _send_failing(player, outcome, {"playing": False, "alice_state": "IDLE", "track_id": ""})
-
-    await _run_failing_command(player, command, outcome)
-
-    assert player._attr_playback_state == PlaybackState.PAUSED
-    assert player._needs_replay is True
-    assert vars(player)["_pause_stop_pending"] is False
+    _report(player, playing=playing, alice_state=alice_state, native_track_id=track_id)
 
 
 @pytest.mark.parametrize("audio_client", [False, True])
@@ -946,23 +652,6 @@ async def test_play_media_falls_back_to_legacy_radio_play() -> None:
 # ── External playback: physical pause detection ────────────────────
 
 
-def test_physical_pause_during_external_playback_sets_paused() -> None:
-    """Pressing pause on the speaker must flip MA state to PAUSED."""
-    player = _make_player()
-    _disable_voice_control(player)
-    player._external_playing = True
-    player._external_play_confirmed = True  # stream has been observed playing
-    player._attr_playback_state = PlaybackState.PLAYING
-
-    player._update_playback_state(playing=False, alice_state="IDLE")
-
-    assert player._attr_playback_state == PlaybackState.PAUSED
-    assert player._external_playing is False
-    assert player._external_media is None
-    assert player._external_play_confirmed is False
-    assert player._needs_replay is True
-
-
 def test_external_startup_window_stays_playing_until_confirmed() -> None:
     """
     Before the station starts fetching the stream, playing=False is expected.
@@ -975,11 +664,10 @@ def test_external_startup_window_stays_playing_until_confirmed() -> None:
     player._external_play_confirmed = False  # station hasn't confirmed yet
     player._attr_playback_state = PlaybackState.PLAYING
 
-    player._update_playback_state(playing=False, alice_state="IDLE")
+    _report(player, playing=False, alice_state="IDLE")
 
     assert player._attr_playback_state == PlaybackState.PLAYING
     assert player._external_playing is True
-    assert player._needs_replay is False
 
 
 def test_stale_native_playing_does_not_confirm_external_playback() -> None:
@@ -989,7 +677,7 @@ def test_stale_native_playing_does_not_confirm_external_playback() -> None:
     player._external_playing = True
     player._external_play_confirmed = False
 
-    player._update_playback_state(playing=True, alice_state="IDLE")
+    _report(player, playing=True, alice_state="IDLE")
 
     assert player._external_play_confirmed is False
     assert player._attr_playback_state == PlaybackState.PLAYING
@@ -1002,8 +690,8 @@ def test_external_playing_confirms_after_native_stop_is_observed() -> None:
     _disable_voice_control(player)
     player._external_playing = True
 
-    player._update_playback_state(playing=False, alice_state="IDLE")
-    player._update_playback_state(playing=True, alice_state="IDLE")
+    _report(player, playing=False, alice_state="IDLE")
+    _report(player, playing=True, alice_state="IDLE")
 
     assert player._external_play_confirmed is True
 
@@ -1045,7 +733,6 @@ def test_audio_play_ignores_stale_state_during_track_handoff() -> None:
     update(title="New Track", playing=False)
     assert player._external_playing is True
     assert player._external_media is requested_media
-    assert player._needs_replay is False
 
     update(title="New Track", playing=True)
 
@@ -1059,9 +746,8 @@ def test_audio_play_requires_a_state_boundary_before_title_confirmation() -> Non
     _disable_voice_control(player)
     player._external_playing = True
     vars(player)["_external_audio_client"] = True
-    update_playback_state = cast("Any", player._update_playback_state)
-
-    update_playback_state(
+    _report(
+        player,
         playing=True,
         alice_state="IDLE",
         external_media_matches=True,
@@ -1069,12 +755,14 @@ def test_audio_play_requires_a_state_boundary_before_title_confirmation() -> Non
 
     assert player._external_play_confirmed is False
 
-    update_playback_state(
+    _report(
+        player,
         playing=False,
         alice_state="IDLE",
         external_media_matches=True,
     )
-    update_playback_state(
+    _report(
+        player,
         playing=True,
         alice_state="IDLE",
         external_media_matches=True,
@@ -1091,9 +779,8 @@ def test_audio_play_end_of_track_sets_idle_without_replay() -> None:
     player._external_play_confirmed = True
     vars(player)["_external_audio_client"] = True
     player._attr_playback_state = PlaybackState.PLAYING
-    update_playback_state = cast("Any", player._update_playback_state)
-
-    update_playback_state(
+    _report(
+        player,
         playing=False,
         alice_state="IDLE",
         external_media_matches=True,
@@ -1103,7 +790,6 @@ def test_audio_play_end_of_track_sets_idle_without_replay() -> None:
 
     assert player._attr_playback_state == PlaybackState.IDLE
     assert player._external_playing is False
-    assert player._needs_replay is False
 
 
 def test_audio_play_uses_reported_progress() -> None:
@@ -1139,410 +825,342 @@ def test_audio_play_uses_reported_progress() -> None:
     assert player._attr_elapsed_time == 12.5
 
 
-async def test_pause_uses_native_stop_for_audio_play_session() -> None:
-    """The invalid radio URL workaround must not be used on current firmware."""
-    player = _make_player()
+# ── Transport: the Station's reports decide the state ─────────────────
+
+
+def _media(uri: str = "yandex_music://track/1", title: str = "Track") -> PlayerMedia:
+    return cast(
+        "PlayerMedia",
+        SimpleNamespace(uri=uri, title=title, artist="Artist", duration=180, image_url=None),
+    )
+
+
+def _start_confirmed_stream(player: YandexStationPlayer, *, audio_client: bool = True) -> None:
+    """Put the player in a Music Assistant stream the Station confirmed playing."""
+    player._start_external_session(_media(), audio_client=audio_client)
+    player._external_play_confirmed = True
+    player._attr_playback_state = PlaybackState.PLAYING
+
+
+def _record_commands(
+    player: YandexStationPlayer, outcome: str = "success", *reports: dict[str, Any]
+) -> list[dict[str, Any]]:
+    """Answer commands with ``outcome`` after delivering ``reports`` while they are pending."""
     commands: list[dict[str, Any]] = []
 
     async def send(command: dict[str, Any]) -> dict[str, Any]:
         commands.append(command)
+        for report in reports:
+            _report(player, **report)
+        if outcome == "cancelled":
+            raise asyncio.CancelledError
+        if outcome == "timeout":
+            return {"error": "timeout"}
         return {"status": "SUCCESS"}
 
     player.glagol = cast("YandexGlagol", SimpleNamespace(send=send))
-    player._external_playing = True
-    vars(player)["_external_audio_client"] = True
-
-    await player.pause()
-
-    assert commands == [{"command": "stop"}]
-    assert vars(player)["_external_audio_client"] is False
-    assert player._needs_replay is True
+    return commands
 
 
-async def test_stop_uses_native_stop_for_audio_play_session() -> None:
-    """Stopping audio_play must address the native audio client."""
+async def test_pause_is_advertised_only_while_no_ma_stream_plays() -> None:
+    """The Station cannot pause an MA stream, so the core stops it instead."""
+    player, _ = _make_play_media_player([{"status": "SUCCESS"}])
+    vars(player)["_audio_client"] = True
+
+    await player.play_media(_media())
+
+    assert PlayerFeature.PAUSE not in player._attr_supported_features
+    assert player._attr_active_source == player.player_id
+
+    player._external_play_confirmed = True
+    _report(player, playing=False, external_media_matches=True, progress=30, duration=180)
+
+    assert PlayerFeature.PAUSE in player._attr_supported_features
+    assert player._external_playing is False
+
+
+def test_stream_stopped_on_the_speaker_is_left_to_the_core() -> None:
+    """
+    A stream the user stops on the Station is gone; the player reports IDLE.
+
+    The core resumes the queue on the next play. A next track MA was preparing
+    must not start either.
+    """
     player = _make_player()
-    commands: list[dict[str, Any]] = []
+    _start_confirmed_stream(player)
 
-    async def send(command: dict[str, Any]) -> dict[str, Any]:
-        commands.append(command)
-        return {"status": "SUCCESS"}
+    _report(player, playing=False, external_media_matches=True, progress=30, duration=180)
 
-    player.glagol = cast("YandexGlagol", SimpleNamespace(send=send))
-    player._external_playing = True
-    vars(player)["_external_audio_client"] = True
+    assert player._attr_playback_state == PlaybackState.IDLE
+    assert player._external_playing is False
+    assert vars(player)["_external_play_generation"] == 1
+
+
+def test_finished_stream_lets_the_queue_advance() -> None:
+    """A stream that played to its end does not drop the next track MA prepares."""
+    player = _make_player()
+    _start_confirmed_stream(player)
+
+    _report(player, playing=False, external_media_matches=True, progress=180, duration=180)
+
+    assert player._attr_playback_state == PlaybackState.IDLE
+    assert vars(player)["_external_play_generation"] == 0
+
+
+@pytest.mark.parametrize(
+    ("audio_client", "expected_command"),
+    [(True, "stop"), (False, "radio_play")],
+    ids=["audio_play", "legacy_radio_play"],
+)
+@pytest.mark.parametrize("command", ["pause", "stop"])
+async def test_ma_stream_stops_with_the_firmware_stop_command(
+    command: str, audio_client: bool, expected_command: str
+) -> None:
+    """pause() and stop() end an MA stream; legacy firmware needs an invalid radio URL."""
+    player = _make_player()
+    _start_confirmed_stream(player, audio_client=audio_client)
+    commands = _record_commands(player)
+
+    await getattr(player, command)()
+
+    assert len(commands) == 1
+    if expected_command == "stop":
+        assert commands[0] == {"command": "stop"}
+    else:
+        name, payload = _decode_directive(commands[0])
+        assert name == "radio_play"
+        assert payload["streamUrl"] == "http://0.0.0.0/stop.flac"
+    assert player._attr_playback_state == PlaybackState.IDLE
+    assert player._external_playing is False
+    assert PlayerFeature.PAUSE in player._attr_supported_features
+
+
+@pytest.mark.parametrize("outcome", ["timeout", "cancelled"])
+@pytest.mark.parametrize("command", ["pause", "stop"])
+async def test_command_that_does_not_reach_the_station_changes_nothing(
+    command: str, outcome: str
+) -> None:
+    """A rejected or cancelled stop leaves the stream the Station keeps playing."""
+    player = _make_player()
+    _start_confirmed_stream(player)
+    _record_commands(player, outcome, {"playing": True, "external_media_matches": True})
+
+    with pytest.raises(PlayerCommandFailed if outcome == "timeout" else asyncio.CancelledError):
+        await getattr(player, command)()
+
+    assert player._external_playing is True
+    assert player._attr_playback_state == PlaybackState.PLAYING
+    assert PlayerFeature.PAUSE not in player._attr_supported_features
+
+
+async def test_stop_confirmed_with_the_response_ends_the_stream_once() -> None:
+    """A stopped report delivered with the response and the response agree on IDLE."""
+    player = _make_player()
+    _start_confirmed_stream(player)
+    _record_commands(
+        player,
+        "success",
+        {"playing": False, "external_media_matches": True, "progress": 30, "duration": 180},
+    )
 
     await player.stop()
 
-    assert commands == [{"command": "stop"}]
-    assert vars(player)["_external_audio_client"] is False
-    assert player._needs_replay is False
+    assert player._attr_playback_state == PlaybackState.IDLE
+    assert player._external_playing is False
 
 
-async def test_pause_ignores_stale_playing_state_and_resumes_ma_queue() -> None:
-    """
-    A playing=True update sent just before the Station applies stop is stale.
-
-    It must not be taken for native playback: the player stays paused and play()
-    resumes the Music Assistant queue instead of the Station's own source.
-    """
+def test_native_playback_is_reported_as_the_station_source() -> None:
+    """The Station's own playback takes over from the MA queue and can be paused."""
     player = _make_player()
-    _disable_voice_control(player)
-    commands: list[dict[str, Any]] = []
 
-    async def send(command: dict[str, Any]) -> dict[str, Any]:
-        commands.append(command)
-        return {"status": "SUCCESS"}
+    _report(player, playing=True, native_track_id="yandex-1")
 
-    resume = AsyncMock()
-    player.glagol = cast("YandexGlagol", SimpleNamespace(send=send))
-    player.mass = cast(
-        "Any",
-        SimpleNamespace(
-            player_queues=SimpleNamespace(
-                get_active_queue=lambda _player_id: SimpleNamespace(queue_id="queue_1"),
-                resume=resume,
-            )
-        ),
-    )
-    player._external_playing = True
-    vars(player)["_external_audio_client"] = True
-    player._external_play_confirmed = True
-    player._attr_playback_state = PlaybackState.PLAYING
+    assert player._attr_playback_state == PlaybackState.PLAYING
+    assert player._attr_active_source == STATION_SOURCE_ID
 
-    await player.pause()
-    player._update_playback_state(playing=True, alice_state="IDLE")
-    paused_state = player._attr_playback_state
-    player._update_playback_state(playing=False, alice_state="IDLE")
+    _report(player, playing=False, native_track_id="yandex-1")
+
+    assert player._attr_playback_state == PlaybackState.PAUSED
+
+
+async def test_play_resumes_the_station_without_touching_the_queue() -> None:
+    """Resuming an MA queue is the core's decision, not the player's."""
+    player = _make_player()
+    commands = _record_commands(player)
+
     await player.play()
 
-    assert paused_state == PlaybackState.PAUSED
-    assert commands == [{"command": "stop"}]
-    resume.assert_awaited_once_with("queue_1")
+    assert commands == [{"command": "play"}]
+    player.mass.player_queues.resume.assert_not_called()
 
 
-async def test_pause_handles_stopped_state_delivered_with_the_response() -> None:
-    """
-    The Station's stopped state can arrive in the frame that answers stop.
-
-    Glagol hands that frame's state to the player before pause() resumes, so pause()
-    must have recorded the pause before it awaited the command. Otherwise the guard
-    against stale playing updates is set after its clearing update has already passed,
-    and native playback started next would be ignored.
-    """
+async def test_native_stop_sets_idle() -> None:
+    """stop() of the Station's own playback leaves it idle, not paused."""
     player = _make_player()
-    _disable_voice_control(player)
+    _report(player, playing=True, native_track_id="yandex-1")
+    _record_commands(player, "success", {"playing": False, "native_track_id": "yandex-1"})
 
-    async def send(_command: dict[str, Any]) -> dict[str, Any]:
-        player._update_playback_state(playing=False, alice_state="IDLE")
-        return {"status": "SUCCESS"}
+    await player.stop()
 
-    player.glagol = cast("YandexGlagol", SimpleNamespace(send=send))
-    player._external_playing = True
-    vars(player)["_external_audio_client"] = True
-    player._external_play_confirmed = True
-    player._attr_playback_state = PlaybackState.PLAYING
-
-    await player.pause()
-    paused_state = player._attr_playback_state
-    player._update_playback_state(playing=True, alice_state="IDLE")
-
-    assert paused_state == PlaybackState.PAUSED
-    assert player._attr_playback_state == PlaybackState.PLAYING
+    assert player._attr_playback_state == PlaybackState.IDLE
 
 
-@pytest.mark.parametrize("command", ["pause", "stop"])
-async def test_failed_transport_command_keeps_the_external_session(command: str) -> None:
-    """A pause or stop the Station rejects leaves the MA stream as it was."""
+# ── Voice control ─────────────────────────────────────────────────────
+
+
+def _enable_voice_control(player: YandexStationPlayer) -> None:
+    player._config = _VoiceControlConfig()
+
+
+def test_voice_request_over_ducked_stream_keeps_the_stream() -> None:
+    """Alice only ducks the stream while she answers; the session stays."""
     player = _make_player()
-    _disable_voice_control(player)
-
-    async def send(_command: dict[str, Any]) -> dict[str, Any]:
-        return {"error": "timeout"}
-
-    player.glagol = cast("YandexGlagol", SimpleNamespace(send=send))
-    player._external_playing = True
-    vars(player)["_external_audio_client"] = True
-    player._external_play_confirmed = True
-    player._attr_playback_state = PlaybackState.PLAYING
-
-    with pytest.raises(PlayerCommandFailed):
-        await getattr(player, command)()
-
-    assert player._external_playing is True
-    assert player._needs_replay is False
-    assert vars(player)["_pause_stop_pending"] is False
-    assert player._attr_playback_state == PlaybackState.PLAYING
-    player._update_playback_state(playing=True, alice_state="IDLE")
-    assert player._attr_playback_state == PlaybackState.PLAYING
-    assert player._external_playing is True
-
-
-@pytest.mark.parametrize("command", ["pause", "stop"])
-async def test_failed_transport_command_ignores_the_stream_still_playing_meanwhile(
-    command: str,
-) -> None:
-    """
-    A rejected pause or stop restores the MA stream the Station kept playing.
-
-    The Station keeps reporting playing=True for the stream until the stop takes
-    effect; such a report must not look like new native playback that replaced it.
-    """
-    player = _make_player()
-    _disable_voice_control(player)
-
-    async def send(_command: dict[str, Any]) -> dict[str, Any]:
-        player._update_playback_state(playing=True, alice_state="IDLE")
-        return {"error": "timeout"}
-
-    player.glagol = cast("YandexGlagol", SimpleNamespace(send=send))
-    player._external_playing = True
-    vars(player)["_external_audio_client"] = True
-    player._external_play_confirmed = True
-    player._attr_playback_state = PlaybackState.PLAYING
-
-    with pytest.raises(PlayerCommandFailed):
-        await getattr(player, command)()
-
-    assert player._external_playing is True
-    assert vars(player)["_pause_stop_pending"] is False
-    assert player._attr_playback_state == PlaybackState.PLAYING
-
-
-async def test_native_pause_ignores_stale_playing_state_delivered_during_the_command() -> None:
-    """
-    A pause of native playback stays PAUSED through the reports sent while it is pending.
-
-    A stale playing=True followed by the stopped state must not turn the pause into IDLE.
-    """
-    player = _make_player()
-    _disable_voice_control(player)
-
-    async def send(_command: dict[str, Any]) -> dict[str, Any]:
-        player._update_playback_state(playing=True, alice_state="IDLE")
-        player._update_playback_state(playing=False, alice_state="IDLE")
-        return {"status": "SUCCESS"}
-
-    player.glagol = cast("YandexGlagol", SimpleNamespace(send=send))
-    player._attr_playback_state = PlaybackState.PLAYING
-
-    await player.pause()
-
-    assert player._attr_playback_state == PlaybackState.PAUSED
-    assert player._needs_replay is False
-
-
-async def test_pause_ends_voice_interaction_finished_during_the_command() -> None:
-    """
-    An explicit pause wins over the auto-resume of a voice interaction.
-
-    Alice can finish speaking while the pause is pending; the auto-resume that
-    report schedules must not restart playback after the user's pause.
-    """
-    player = _make_player()
-    player._config = _VoiceControlConfig()  # type: ignore[assignment]
-    player._needs_replay = True
-    player._attr_playback_state = PlaybackState.PAUSED
-
-    async def send(_command: dict[str, Any]) -> dict[str, Any]:
-        player._alice_spoke = True
-        player._prev_alice_state = "SPEAKING"
-        player._update_playback_state(playing=False, alice_state="IDLE")
-        return {"status": "SUCCESS"}
-
-    player.glagol = cast("YandexGlagol", SimpleNamespace(send=send))
-
-    await player.pause()
-
-    assert player._voice_resume_task is None
-    assert player._attr_playback_state == PlaybackState.PAUSED
-
-
-async def test_failed_pause_keeps_playback_the_station_reported_meanwhile() -> None:
-    """
-    A pause that times out after the Station reported new playback keeps that playback.
-
-    The Station stopped and started its own playback while the command was pending,
-    so restoring the previous Music Assistant session would be obsolete.
-    """
-    player = _make_player()
-    _disable_voice_control(player)
-
-    async def send(_command: dict[str, Any]) -> dict[str, Any]:
-        player._update_playback_state(playing=False, alice_state="IDLE")
-        player._update_playback_state(playing=True, alice_state="IDLE")
-        return {"error": "timeout"}
-
-    player.glagol = cast("YandexGlagol", SimpleNamespace(send=send))
-    player._external_playing = True
-    vars(player)["_external_audio_client"] = True
-    player._external_play_confirmed = True
-    player._attr_playback_state = PlaybackState.PLAYING
-
-    with pytest.raises(PlayerCommandFailed):
-        await player.pause()
-
-    assert player._external_playing is False
-    assert player._needs_replay is False
-    assert vars(player)["_pause_stop_pending"] is False
-    assert player._attr_playback_state == PlaybackState.PLAYING
-
-
-async def test_pause_retains_legacy_radio_play_stop_workaround() -> None:
-    """Old firmware still needs its bypass stream replaced by an invalid URL."""
-    player = _make_player()
-    commands: list[dict[str, Any]] = []
-
-    async def send(command: dict[str, Any]) -> dict[str, Any]:
-        commands.append(command)
-        return {"status": "SUCCESS"}
-
-    player.glagol = cast("YandexGlagol", SimpleNamespace(send=send))
-    player._external_playing = True
-
-    await player.pause()
-
-    name, payload = _decode_directive(commands[0])
-    assert name == "radio_play"
-    assert payload == {"streamUrl": "http://0.0.0.0/stop.flac"}
-
-
-def test_physical_pause_cancels_pending_voice_resume_task() -> None:
-    """
-    A pending auto-resume from a prior voice interaction must be cancelled.
-
-    Without this, the task could wake up after the user physically paused and
-    resume MA queue playback unexpectedly.
-    """
-    cancelled = False
-
-    class _FakeTask:
-        def cancel(self) -> None:
-            nonlocal cancelled
-            cancelled = True
-
-    player = _make_player()
-    _disable_voice_control(player)
-    player._external_playing = True
-    player._external_play_confirmed = True
-    player._voice_resume_task = _FakeTask()  # type: ignore[assignment]
-
-    player._update_playback_state(playing=False, alice_state="IDLE")
-
-    assert cancelled is True
-    assert player._voice_resume_task is None
-    assert player._attr_playback_state == PlaybackState.PAUSED
-
-
-def test_wake_word_less_stop_with_voice_control_pauses_without_auto_resume() -> None:
-    """
-    "Стоп" without the wake word is a pause, not a voice interaction.
-
-    The Station handles about 25 commands locally without "Алиса", so aliceState stays
-    IDLE throughout. Voice control must not schedule its auto-resume for them.
-    """
-    player = _make_player()
-    player._config = _VoiceControlConfig()  # type: ignore[assignment]
-    player._external_playing = True
-    player._external_play_confirmed = True
-    player._attr_playback_state = PlaybackState.PLAYING
-    player._prev_alice_state = "IDLE"
-
-    player._update_playback_state(playing=False, alice_state="IDLE")
-    player._prev_alice_state = "IDLE"
-    player._update_playback_state(playing=False, alice_state="IDLE")
-
-    assert player._attr_playback_state == PlaybackState.PAUSED
-    assert player._external_playing is False
-    assert player._needs_replay is True
-    assert player._voice_resume_task is None
-
-
-def test_wake_word_less_volume_command_with_voice_control_keeps_playing() -> None:
-    """A volume command without the wake word changes volume only; the MA stream keeps playing."""
-    player = _make_player()
-    player._config = _VoiceControlConfig()  # type: ignore[assignment]
-    player._external_playing = True
-    player._external_play_confirmed = True
-    player._attr_playback_state = PlaybackState.PLAYING
-    player._prev_alice_state = "IDLE"
-    player._attr_volume_level = 40
-
-    player._attr_volume_level = 50
-    player._update_playback_state(playing=True, alice_state="IDLE")
-
-    assert player._attr_playback_state == PlaybackState.PLAYING
-    assert player._external_playing is True
-    assert player._needs_replay is False
-    assert player._voice_resume_task is None
-
-
-def test_server_action_speech_with_voice_control_keeps_external_session() -> None:
-    """
-    A phrase spoken through a server action (repeat_phrase) keeps the MA stream.
-
-    The Station reports aliceState NONE while it speaks and only ducks the music, so
-    playing stays True. Voice control must not treat this as a voice interaction: the
-    stream would otherwise be handed over to native playback and MA would lose it.
-    """
-    player = _make_player()
-    player._config = _VoiceControlConfig()  # type: ignore[assignment]
-    player._external_playing = True
-    player._external_play_confirmed = True
-    player._attr_playback_state = PlaybackState.PLAYING
-    player._prev_alice_state = "IDLE"
-
-    for alice_state in ("NONE", "NONE", "IDLE"):
-        player._update_playback_state(playing=True, alice_state=alice_state)
-        player._prev_alice_state = alice_state
-
-    assert player._attr_playback_state == PlaybackState.PLAYING
-    assert player._external_playing is True
-    assert player._needs_replay is False
-    assert player._voice_resume_task is None
-
-
-def test_voice_request_over_ducked_stream_keeps_external_session() -> None:
-    """
-    A voice request answered over the MA stream keeps the stream.
-
-    For a request such as "Алиса, сколько времени?" the Station only ducks the music
-    and keeps reporting playing=True through LISTENING, BUSY and the spoken answer.
-    Voice control must not pause the queue or hand the stream to native playback.
-    """
-    player = _make_player()
-    player._config = _VoiceControlConfig()  # type: ignore[assignment]
-    player._external_playing = True
-    player._external_play_confirmed = True
-    player._attr_playback_state = PlaybackState.PLAYING
-    player._prev_alice_state = "IDLE"
+    _enable_voice_control(player)
+    _start_confirmed_stream(player)
 
     for alice_state in ("LISTENING", "BUSY", "NONE", "LISTENING", "IDLE"):
-        player._update_playback_state(playing=True, alice_state=alice_state)
-        player._prev_alice_state = alice_state
-        assert player._attr_playback_state == PlaybackState.PLAYING
+        _report(player, playing=True, alice_state=alice_state, external_media_matches=True)
 
     assert player._external_playing is True
-    assert player._needs_replay is False
-    assert player._voice_resume_task is None
-
-
-def test_physical_pause_ignored_during_voice_interaction() -> None:
-    """
-    Alice speaking/listening must not be treated as a physical pause.
-
-    Voice control is disabled here, so the fallthrough branch must keep PLAYING
-    (voice handling itself is tested elsewhere).
-    """
-    player = _make_player()
-    _disable_voice_control(player)
-    player._external_playing = True
-    player._external_play_confirmed = True
-
-    player._update_playback_state(playing=False, alice_state="LISTENING")
-
-    # With voice control disabled, non-IDLE alice during external playback
-    # falls through to the startup/pause branch. Since alice != IDLE, we skip
-    # the physical-pause branch — state stays optimistically PLAYING.
     assert player._attr_playback_state == PlaybackState.PLAYING
+    player.mass.call_later.assert_not_called()
+
+
+def test_voice_request_that_stops_the_stream_resumes_it_after_the_answer() -> None:
+    """The stream Alice stopped is resumed through the core once she has answered."""
+    player = _make_player()
+    _enable_voice_control(player)
+    _start_confirmed_stream(player)
+
+    _report(player, playing=False, alice_state="LISTENING")
+
+    assert player._attr_playback_state == PlaybackState.IDLE
+    assert player._external_playing is False
+    assert vars(player)["_external_play_generation"] == 1
+
+    for alice_state in ("BUSY", "NONE", "LISTENING", "IDLE"):
+        _report(player, playing=False, alice_state=alice_state)
+
+    player.mass.call_later.assert_called_once_with(
+        VOICE_RESUME_DELAY,
+        player._resume_after_voice,
+        task_id=player._voice_resume_task_id,
+    )
+
+
+async def test_resume_after_voice_resumes_the_ma_queue_through_the_core() -> None:
+    """The auto-resume asks the core to resume this player's queue."""
+    player = _make_player()
+    player.mass.players.cmd_resume = AsyncMock()
+
+    await player._resume_after_voice()
+
+    player.mass.players.cmd_resume.assert_awaited_once_with(
+        player.player_id, source=player.player_id
+    )
+
+
+def test_silent_voice_request_leaves_the_stream_stopped() -> None:
+    """A request Alice did not answer, such as "Alice, stop", does not resume."""
+    player = _make_player()
+    _enable_voice_control(player)
+    _start_confirmed_stream(player)
+
+    for alice_state in ("LISTENING", "BUSY", "IDLE"):
+        _report(player, playing=False, alice_state=alice_state)
+
+    player.mass.call_later.assert_not_called()
+    assert player._voice_interrupted is False
+
+
+def test_track_alice_was_asked_for_replaces_the_stream() -> None:
+    """Native playback that starts during the request means Alice was asked for it."""
+    player = _make_player()
+    _enable_voice_control(player)
+    _start_confirmed_stream(player)
+
+    _report(player, playing=False, alice_state="LISTENING")
+    _report(player, playing=True, alice_state="NONE", native_track_id="yandex-2")
+    _report(player, playing=True, alice_state="IDLE", native_track_id="yandex-2")
+
+    player.mass.call_later.assert_not_called()
+    assert player._attr_active_source == STATION_SOURCE_ID
+
+
+def test_wake_word_less_stop_leaves_the_stream_stopped() -> None:
+    """A "стоп" without the wake word never leaves IDLE: a plain stop, no resume."""
+    player = _make_player()
+    _enable_voice_control(player)
+    _start_confirmed_stream(player)
+
+    _report(player, playing=False, external_media_matches=True, progress=30, duration=180)
+
+    assert player._attr_playback_state == PlaybackState.IDLE
+    assert player._voice_interrupted is False
+
+
+def test_server_action_phrase_keeps_the_stream() -> None:
+    """A phrase spoken through ``say`` only ducks the stream."""
+    player = _make_player()
+    _enable_voice_control(player)
+    _start_confirmed_stream(player)
+
+    for alice_state in ("NONE", "NONE", "IDLE"):
+        _report(player, playing=True, alice_state=alice_state, external_media_matches=True)
+
     assert player._external_playing is True
+    player.mass.call_later.assert_not_called()
+
+
+def test_stop_on_the_speaker_during_a_phrase_ends_the_stream() -> None:
+    """A phrase is not a request: a stop reported meanwhile is a plain stop."""
+    player = _make_player()
+    _enable_voice_control(player)
+    _start_confirmed_stream(player)
+
+    _report(player, playing=False, alice_state="NONE", progress=30, duration=180)
+
+    assert player._external_playing is False
+    assert player._voice_interrupted is False
+
+
+async def test_alice_request_defers_a_pending_play_media() -> None:
+    """
+    A track MA asks for while Alice handles a request starts once she is done.
+
+    The Station keeps its own track ducked through the request; that track
+    continuing is not a new one Alice was asked for.
+    """
+    player, commands = _make_play_media_player([{"status": "SUCCESS"}])
+    _enable_voice_control(player)
+    _report(player, playing=True, native_track_id="yandex-1")
+    _report(player, playing=True, alice_state="LISTENING", native_track_id="yandex-1")
+
+    await player.play_media(_media())
+
+    assert commands == []
+    for alice_state in ("BUSY", "NONE", "LISTENING", "IDLE"):
+        _report(player, playing=True, alice_state=alice_state, native_track_id="yandex-1")
+
+    player.mass.call_later.assert_called_once()
+
+
+@pytest.mark.parametrize("command", ["play", "pause", "stop"])
+@pytest.mark.parametrize("outcome", ["success", "timeout"])
+async def test_transport_command_cancels_the_auto_resume(command: str, outcome: str) -> None:
+    """The user's command supersedes the auto-resume after Alice, whatever its outcome."""
+    player = _make_player()
+    _enable_voice_control(player)
+    _start_confirmed_stream(player)
+    _report(player, playing=False, alice_state="LISTENING")
+    _record_commands(player, outcome)
+
+    try:
+        await getattr(player, command)()
+    except PlayerCommandFailed:
+        assert outcome == "timeout"
+
+    player.mass.cancel_timer.assert_called_with(player._voice_resume_task_id)
+    for alice_state in ("NONE", "IDLE"):
+        _report(player, playing=False, alice_state=alice_state)
+    player.mass.call_later.assert_not_called()
