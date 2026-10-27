@@ -259,14 +259,19 @@ class ShareProvider(PluginProvider):
             )
 
         tracks = payload.tracks or []
-        return list(
-            await asyncio.gather(
-                *(
-                    resolve_track(offset + index, stub)
-                    for index, stub in enumerate(tracks[offset : offset + limit])
-                )
-            )
-        )
+        resolve_tasks = [
+            asyncio.create_task(resolve_track(offset + index, stub))
+            for index, stub in enumerate(tracks[offset : offset + limit])
+        ]
+        try:
+            return list(await asyncio.gather(*resolve_tasks))
+        finally:
+            resolution_tasks = list(resolved_by_payload.values())
+            for task in (*resolve_tasks, *resolution_tasks):
+                if not task.done():
+                    task.cancel()
+            if resolve_tasks or resolution_tasks:
+                await asyncio.gather(*resolve_tasks, *resolution_tasks, return_exceptions=True)
 
     async def import_shared_playlist(self, encoded: str) -> Playlist:
         """Import a playlist after the caller has confirmed the operation."""
@@ -316,7 +321,7 @@ class ShareProvider(PluginProvider):
                 *metadata.values(),
                 *(artist.name for artist in playlist_item.artists),
             )
-            if any(FIELD_SEPARATOR in value for value in m3u_values):
+            if any(FIELD_SEPARATOR in value or value.endswith("|") for value in m3u_values):
                 raise InvalidDataError("Share track metadata contains an unsupported M3U delimiter")
             playlist_items.append(playlist_item)
         return await self.mass.music.playlists.import_playlist(
