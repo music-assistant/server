@@ -25,7 +25,11 @@ from music_assistant_models.media_items import (
     UniqueList,
 )
 
-from music_assistant.helpers.compare import TrackMatchConfidence, compare_track
+from music_assistant.helpers.compare import (
+    TrackMatchConfidence,
+    compare_track,
+    compare_track_evidence,
+)
 from music_assistant.helpers.playlists import (
     AlbumInfo,
     ArtistInfo,
@@ -656,11 +660,11 @@ async def test_search_provider_scope_filters_disabled_builtin_and_hidden_sources
     )
     with (
         patch(
-            "music_assistant.providers.share_provider.get_current_user",
+            "music_assistant.providers.share_provider.resolver.get_current_user",
             return_value=user,
         ),
         patch(
-            "music_assistant.providers.share_provider.visible_music_sources",
+            "music_assistant.providers.share_provider.resolver.visible_music_sources",
             return_value=["tidal--visible", "jellyfin--visible"],
         ),
     ):
@@ -1127,13 +1131,11 @@ async def test_import_shared_playlist_uses_existing_matching_importer() -> None:
     decoded_playlist = SharePayload.from_base64(encoded)
     assert decoded_playlist.tracks is not None
     assert decoded_playlist.tracks[0].duration == 218
+    assert imported_track.isrc == ISRC
     assert imported_items[0].metadata == {
         "media_type": "track",
         "name": "Track",
         "version": "Live",
-        "isrc": ISRC,
-        "mbid": "recording-mbid",
-        "mb_track": "release-track-mbid",
     }
     assert imported_items[0].artists[0].name == "Artist"
     assert imported_items[0].album is None
@@ -1153,6 +1155,7 @@ async def test_import_shared_playlist_uses_existing_matching_importer() -> None:
         item_id="catalog-track",
         provider="catalog--1",
         name="Track",
+        version="Live",
         duration=218,
         external_ids={(ExternalID.ISRC, ISRC)},
         provider_mappings=set(),
@@ -1241,8 +1244,8 @@ async def test_playlist_payload_preserves_track_version_and_artist_credits() -> 
     assert stubs[0].version == "Acoustic"
 
 
-async def test_import_isrc_only_track_matches_when_duration_is_preserved() -> None:
-    """ISRC-only SAME_RECORDING matching needs the original track duration."""
+async def test_import_isrc_only_track_requires_title_and_artist_corroboration() -> None:
+    """Share import keeps the ISRC in its URI but not the lossy matcher metadata."""
     provider = _provider()
     mass = _mass(provider)
     mass.music.playlists.import_playlist = AsyncMock(return_value=MagicMock())
@@ -1277,11 +1280,28 @@ async def test_import_isrc_only_track_matches_when_duration_is_preserved() -> No
 
     assert isinstance(shared_track, Track)
     assert isinstance(shared_item_without_duration, Track)
-    assert not shared_track.external_ids.intersection(
-        {(ExternalID.MB_RECORDING, "recording-mbid"), (ExternalID.MB_TRACK, "release-track-mbid")}
+    assert not shared_track.external_ids
+    assert compare_track_evidence(catalog_track, shared_track) >= TrackMatchConfidence.LIKELY
+    assert (
+        compare_track_evidence(catalog_track, shared_item_without_duration)
+        < TrackMatchConfidence.LIKELY
     )
-    assert compare_track(catalog_track, shared_track)
-    assert not compare_track(catalog_track, shared_item_without_duration)
+
+    wrong_artist_track = replace(
+        catalog_track,
+        artists=UniqueList(
+            [
+                Artist(
+                    item_id="other-artist",
+                    provider="catalog--1",
+                    name="Different Artist",
+                    provider_mappings=set(),
+                )
+            ]
+        ),
+    )
+    wrong_artist_track.external_ids.add((ExternalID.ISRC, ISRC))
+    assert compare_track_evidence(wrong_artist_track, shared_track) == TrackMatchConfidence.NO_MATCH
 
 
 async def test_import_shared_playlist_rejects_non_playlist_payload() -> None:
