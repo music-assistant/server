@@ -497,8 +497,37 @@ async def test_track_resolution_uses_core_matcher_and_full_share_metadata() -> N
     assert enrichment_call.kwargs["search_non_streaming_without_mapping"] is True
 
 
-async def test_core_search_rejects_reused_isrc_with_different_artist() -> None:
-    """A Core ISRC hit still needs matching title and artist metadata in Share."""
+async def test_core_search_accepts_matching_artist_with_featured_credit_drift() -> None:
+    """Core ISRC matches tolerate services that omit a featured artist credit."""
+    provider = _provider()
+    mass = _mass(provider)
+    candidate = _track(
+        item_id="reused-isrc",
+        artist="Artist",
+        duration=218,
+        external_ids={(ExternalID.ISRC, ISRC)},
+    )
+    mass.music.get_controller.return_value.get_item_by_external_id = AsyncMock(return_value=None)
+    mass.music.tracks.enrich_provider_mappings = AsyncMock(
+        return_value=SimpleNamespace(matches=(_core_match(candidate, TrackMatchConfidence.LIKELY),))
+    )
+
+    result = await provider._resolve_media_item(
+        SharePayload(
+            type="track",
+            title="Track",
+            artist="Artist, Featured Artist",
+            artists=["Artist", "Featured Artist"],
+            isrc=ISRC,
+            duration=218,
+        )
+    )
+
+    assert result is candidate
+
+
+async def test_core_search_rejects_reused_isrc_with_different_lead_artist() -> None:
+    """A reused ISRC cannot override a different primary artist in Core search."""
     provider = _provider()
     mass = _mass(provider)
     candidate = _track(
@@ -512,18 +541,17 @@ async def test_core_search_rejects_reused_isrc_with_different_artist() -> None:
         return_value=SimpleNamespace(matches=(_core_match(candidate, TrackMatchConfidence.LIKELY),))
     )
 
-    assert (
-        await provider._resolve_media_item(
-            SharePayload(
-                type="track",
-                title="Track",
-                artist="Artist",
-                isrc=ISRC,
-                duration=218,
-            )
+    result = await provider._resolve_media_item(
+        SharePayload(
+            type="track",
+            title="Track",
+            artist="Artist",
+            isrc=ISRC,
+            duration=218,
         )
-        is None
     )
+
+    assert result is None
 
 
 @pytest.mark.parametrize(("second_artist", "expected_match"), [("Second", True), ("Other", False)])
@@ -869,6 +897,56 @@ async def test_artist_search_does_not_choose_between_homonyms() -> None:
     )
 
     assert await provider._resolve_media_item(SharePayload(type="artist", title="Artist")) is None
+
+
+async def test_album_search_collapses_matches_with_the_same_mbid() -> None:
+    """Cross-provider album results with the same MusicBrainz ID are one match."""
+    provider = _provider()
+    album = Album(
+        item_id="album-one",
+        provider="catalog-one",
+        name="Album",
+        external_ids={(ExternalID.MB_ALBUM, "shared-album-mbid")},
+        provider_mappings=set(),
+        artists=UniqueList(
+            [
+                Artist(
+                    item_id="artist-one",
+                    provider="catalog-one",
+                    name="Artist",
+                    provider_mappings=set(),
+                )
+            ]
+        ),
+    )
+    duplicate = replace(album, item_id="album-two", provider="catalog-two")
+    _mass(provider).music.search = AsyncMock(
+        return_value=MagicMock(albums=[album, duplicate], tracks=[], artists=[])
+    )
+
+    result = await provider._resolve_media_item(SharePayload(type="album", title="Album"))
+
+    assert result is album
+
+
+async def test_artist_search_collapses_matches_with_the_same_mbid() -> None:
+    """Cross-provider artist results with the same MusicBrainz ID are one match."""
+    provider = _provider()
+    artist = Artist(
+        item_id="artist-one",
+        provider="catalog-one",
+        name="Artist",
+        external_ids={(ExternalID.MB_ARTIST, "shared-artist-mbid")},
+        provider_mappings=set(),
+    )
+    duplicate = replace(artist, item_id="artist-two", provider="catalog-two")
+    _mass(provider).music.search = AsyncMock(
+        return_value=MagicMock(artists=[artist, duplicate], albums=[], tracks=[])
+    )
+
+    result = await provider._resolve_media_item(SharePayload(type="artist", title="Artist"))
+
+    assert result is artist
 
 
 @pytest.mark.parametrize("use_barcode", [False, True])
@@ -1616,22 +1694,34 @@ def test_payload_rejects_invalid_playlist_track_duration(duration: object) -> No
         SharePayload.from_base64(encoded)
 
 
-@pytest.mark.parametrize(
-    ("field", "value", "error"),
-    [
-        (
-            "provider_refs",
-            {"spotify": "https://evil.example/track/1"},
-            "Invalid share provider references",
-        ),
-        ("art_ref", "x:evil.example:/art.jpg", "Invalid share artwork reference"),
-    ],
-)
-def test_payload_rejects_unsafe_urls(field: str, value: object, error: str) -> None:
-    """Share payloads cannot impersonate providers or load unsafe artwork."""
+def test_payload_drops_invalid_optional_links_and_artwork() -> None:
+    """A malformed optional ref does not invalidate otherwise usable share data."""
     encoded = base64.urlsafe_b64encode(
-        json.dumps({"type": "track", "title": "Track", field: value}).encode()
+        json.dumps(
+            {
+                "type": "playlist",
+                "title": "Playlist",
+                "art_ref": "x:evil.example:/art.jpg",
+                "provider_refs": {
+                    "spotify": "/playlist/123",
+                    "unknown": "/playlist/456",
+                },
+                "tracks": [
+                    {
+                        "title": "Track",
+                        "provider_refs": {
+                            "tidal": "/track/123",
+                            "unknown": "/track/456",
+                        },
+                    }
+                ],
+            }
+        ).encode()
     ).decode()
 
-    with pytest.raises(ValueError, match=error):
-        SharePayload.from_base64(encoded)
+    payload = SharePayload.from_base64(encoded)
+
+    assert payload.art_ref is None
+    assert payload.provider_refs == {"spotify": "/playlist/123"}
+    assert payload.tracks is not None
+    assert payload.tracks[0].provider_refs == {"tidal": "/track/123"}
