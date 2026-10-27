@@ -240,8 +240,9 @@ Two distinct refill paths share the same "running low" trigger:
   per-queue configured mode, owned by `autoplay.py`: similar tracks (seeded from the enqueued items),
   an infinite library mix (genre-biased, least-played), a chosen playlist, similar artists, or an
   automatic mode that tries similar first and falls back to the library mix. The similar artists
-  mode plays an artist similar to the last track's artist that has no track in the queue yet, the
-  same way as playing that artist. The mode is read from the per-queue config;
+  mode adds an artist similar to the last track's artist that has no track in the queue yet,
+  picked the same way as playing that artist. It doesn't touch shuffle: with shuffle on, its tracks
+  are shuffled into the queue like any added item. The mode is read from the per-queue config;
   the playlist for playlist-mode is a per-queue config value. A podcast episode or audiobook instead
   continues with its own successor — the next episode of the podcast, the next book in the collection
   — resolved by `media_resolver.py`, and simply ends the queue when there is none. Live sources
