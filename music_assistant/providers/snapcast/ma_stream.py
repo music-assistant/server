@@ -15,7 +15,7 @@ import asyncio
 import random
 import time
 import urllib.parse
-from contextlib import suppress
+from contextlib import aclosing, suppress
 from typing import TYPE_CHECKING, cast
 
 from music_assistant_models.enums import ContentType
@@ -35,6 +35,8 @@ from .constants import (
 )
 
 if TYPE_CHECKING:
+    from collections.abc import AsyncGenerator
+
     from music_assistant_models.player import PlayerMedia
 
     from music_assistant.helpers.dsp import ComplexFilter
@@ -98,6 +100,7 @@ class SnapcastMAStream:
         self._restart_requested: bool = False
         self._stop_requested: bool = False
         self._streaming_started_at: float | None = None
+        self._played_out_at: float | None = None
         self._output_plan: AudioOutputPlan | None = None
 
         self._socket_server: SnapcastSocketServer | None = None
@@ -332,6 +335,7 @@ class SnapcastMAStream:
             raise RuntimeError("The path to stream to is not set")
 
         self._logger.debug("Start streaming to %s", stream_path)
+        self._played_out_at = None
         self._stop_streamer_evt.clear()
         self._streamer_started_evt.clear()
         if self._filter_settings_owner:
@@ -348,14 +352,16 @@ class SnapcastMAStream:
         stream_format = self._provider.stream_audio_format
         # ffmpeg reads this pipeline at 1x (-re) and snapserver only holds ~1 second,
         # so buffer here to give the source room to hiccup without starving the server
-        audio_source = buffered(
-            self._mass.streams.get_stream(
-                self.media,
-                stream_format,
-                self._filter_settings_owner,
-            ),
-            buffer_size=30,
-            min_buffer_before_yield=1,
+        audio_source = self._track_sent_audio(
+            buffered(
+                self._mass.streams.get_stream(
+                    self.media,
+                    stream_format,
+                    self._filter_settings_owner,
+                ),
+                buffer_size=30,
+                min_buffer_before_yield=1,
+            )
         )
         try:
             async with FFMpeg(
@@ -393,6 +399,8 @@ class SnapcastMAStream:
                 for t in pending:
                     t.cancel()
                 await asyncio.gather(*pending, return_exceptions=True)
+                # switching the group away drops the audio the clients still have buffered
+                await self._wait_played_out()
         except asyncio.CancelledError:
             self._logger.debug("Snapcast stream %s cancelled", self.stream_name)
             raise
@@ -403,6 +411,27 @@ class SnapcastMAStream:
             self._is_streaming = False
             self._logger.debug("Finished streaming to %s", stream_path)
             await self._wait_stream_idle()
+
+    async def _track_sent_audio(self, audio_source: AsyncGenerator[bytes]) -> AsyncGenerator[bytes]:
+        """Pass the audio through, tracking when the clients will have played it."""
+        bytes_per_second = self._provider.stream_audio_format.pcm_sample_size
+        async with aclosing(audio_source):
+            async for chunk in audio_source:
+                # a source stall delays everything sent after it
+                earliest_start = time.time() + self._get_playback_delay()
+                self._played_out_at = max(self._played_out_at or 0.0, earliest_start) + (
+                    len(chunk) / bytes_per_second
+                )
+                yield chunk
+
+    async def _wait_played_out(self) -> None:
+        """Wait until the clients played all sent audio, or a stop is requested."""
+        if self._played_out_at is None:
+            return
+        if (remaining := self._played_out_at - time.time()) <= 0:
+            return
+        with suppress(TimeoutError):
+            await asyncio.wait_for(self._stop_streamer_evt.wait(), remaining)
 
     async def _wait_stream_idle(self) -> None:
         """Wait for the Snapcast stream to become idle after streaming ends."""
