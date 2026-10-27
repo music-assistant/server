@@ -68,10 +68,10 @@ if TYPE_CHECKING:
     from music_assistant_models.provider import ProviderManifest
 
 CONF_URL = "url"
-CONF_ACCESS_TOKEN = "access_token" # noqa: S105 - config key
+CONF_ACCESS_TOKEN = "access_token"  # noqa: S105 - config key
 CONF_USER_ID = "user_id"
 CONF_DEVICE_ID = "device_id"
-AUTH_METHOD_PASSWORD = "password" # noqa: S105 - config key
+AUTH_METHOD_PASSWORD = "password"  # noqa: S105 - config key
 AUTH_METHOD_QUICK_CONNECT = "quick_connect"
 SUPPORTED_FEATURES = {
     ProviderFeature.LIBRARY_ARTISTS,
