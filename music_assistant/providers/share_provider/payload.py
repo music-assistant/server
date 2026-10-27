@@ -99,10 +99,8 @@ class SharePayload:
         if share_duration is not None and (type(share_duration) is not int or share_duration < 0):
             raise ValueError("Invalid share track duration")
         art_ref = data.get("art_ref")
-        if art_ref is not None and (
-            not isinstance(art_ref, str) or expand_artwork_ref(art_ref) is None
-        ):
-            raise ValueError("Invalid share artwork reference")
+        if not isinstance(art_ref, str) or expand_artwork_ref(art_ref) is None:
+            art_ref = None
         provider_refs = _validated_provider_refs(
             data.get("provider_refs"), "Invalid share provider references"
         )
@@ -182,9 +180,9 @@ def _validated_provider_refs(value: object, error_message: str) -> dict[str, str
         if not isinstance(domain, str) or not isinstance(ref, str):
             raise TypeError(error_message)
         if expand_provider_ref(domain, ref) is None:
-            raise ValueError(error_message)
+            continue
         refs[domain] = ref
-    return refs
+    return refs or None
 
 
 def _drop_none(value: object) -> object:

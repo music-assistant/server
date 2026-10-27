@@ -158,14 +158,24 @@ class ShareLinkResolver:
                 if isinstance(item, Album)
                 and self._matches_album_reference(payload, album_reference, item)
             ]
-            return album_matches[0] if len(album_matches) == 1 else None
+            unique_albums: dict[tuple[str, str], Album] = {}
+            for album in album_matches:
+                mbid = album.get_external_id(ExternalID.MB_ALBUM)
+                key = ("mbid", mbid) if mbid else ("item", f"{album.provider}:{album.item_id}")
+                unique_albums.setdefault(key, album)
+            return next(iter(unique_albums.values())) if len(unique_albums) == 1 else None
         artist_reference = self._artist_reference(payload)
         artist_matches = [
             item
             for item in results.artists or []
             if isinstance(item, Artist) and compare_artist(artist_reference, item) is True
         ]
-        return artist_matches[0] if len(artist_matches) == 1 else None
+        unique_artists: dict[tuple[str, str], Artist] = {}
+        for artist in artist_matches:
+            mbid = artist.get_external_id(ExternalID.MB_ARTIST)
+            key = ("mbid", mbid) if mbid else ("item", f"{artist.provider}:{artist.item_id}")
+            unique_artists.setdefault(key, artist)
+        return next(iter(unique_artists.values())) if len(unique_artists) == 1 else None
 
     async def _resolve_track_with_core(
         self,
@@ -186,7 +196,10 @@ class ShareLinkResolver:
             match
             for match in enrichment.matches
             if match.confidence >= TrackMatchConfidence.LIKELY
-            and (not payload.isrc or self._isrc_candidate_corroborated(shared_track, match.track))
+            and (
+                not payload.isrc
+                or self._core_isrc_candidate_corroborated(shared_track, match.track)
+            )
         ]
         if not matches:
             return None
@@ -203,6 +216,16 @@ class ShareLinkResolver:
             ),
         )
         return primary_match.track
+
+    @staticmethod
+    def _core_isrc_candidate_corroborated(base_track: Track, candidate: Track) -> bool:
+        """Require matching title and lead artist for Core ISRC matches."""
+        return (
+            compare_track_title(base_track.name, candidate.name)
+            and bool(base_track.artists)
+            and bool(candidate.artists)
+            and compare_artist(base_track.artists[0], candidate.artists[0]) is True
+        )
 
     @staticmethod
     def _isrc_candidate_corroborated(base_track: Track, candidate: Track) -> bool:
