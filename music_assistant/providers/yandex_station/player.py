@@ -7,7 +7,7 @@ import base64
 import json
 import logging
 import time
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 from urllib.parse import urlsplit
 
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption
@@ -119,6 +119,14 @@ def _parse_yandex_track_id(raw: str) -> str:
     album suffix so the value is consumable by the yandex_music music provider.
     """
     return raw.split(":", 1)[0].strip()
+
+
+def _cover_url(extra: dict[str, Any] | None) -> str | None:
+    """Return the image URL for a cover template the Station reports, if any."""
+    cover = (extra or {}).get("coverURI")
+    if not isinstance(cover, str) or not cover:
+        return None
+    return "https://" + cover.removeprefix("https://").replace("%%", "400x400")
 
 
 def _reports_handed_stream(player_state: dict[str, Any]) -> bool | None:
@@ -1105,6 +1113,20 @@ class YandexStationPlayer(Player):
 
     # ── State updates from Glagol WebSocket ──────────────────────
 
+    def _station_track_uri(self, player_state: dict[str, Any]) -> tuple[str, MediaType]:
+        """
+        Return the URI and media type for the Station's own playback.
+
+        A track becomes an item of the linked Yandex Music instance, which shares the
+        Station's account, so the core can add it to favorites; anything else keeps
+        the reported id.
+        """
+        reported_id = str(player_state.get("id") or "")
+        instance = cast("YandexStationProvider", self.provider).linked_music_instance
+        if instance and reported_id and player_state.get("type") == "Track":
+            return f"{instance}://track/{_parse_yandex_track_id(reported_id)}", MediaType.TRACK
+        return reported_id, MediaType.UNKNOWN
+
     def _update_playback_state(
         self,
         playing: bool,
@@ -1298,11 +1320,14 @@ class YandexStationPlayer(Player):
             subtitle = player_state.get("subtitle")
 
             if title or playing:
+                uri, media_type = self._station_track_uri(player_state)
                 self.set_current_media(
-                    uri=player_state.get("id", ""),
+                    uri=uri,
+                    media_type=media_type,
                     title=title or "",
                     artist=subtitle or "",
                     duration=int(duration) if duration else None,
+                    image_url=_cover_url(extra),
                 )
             elif not playing:
                 self._attr_current_media = None

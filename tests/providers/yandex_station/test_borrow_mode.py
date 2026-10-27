@@ -330,3 +330,22 @@ class TestBorrowSilentReauth:
         assert await provider._silent_reauth() is True
 
         assert sorted(owner.reads) == ["token", "x_token"]
+
+
+class TestLinkedMusicInstance:
+    """The linked instance names the Station's own tracks as Yandex Music items."""
+
+    def test_loaded_linked_instance(self) -> None:
+        """A loaded linked instance is the one tracks are named after."""
+        provider = _borrow_provider(_ym_owner("music", "x"))
+        assert provider.linked_music_instance == "ym-1"
+
+    def test_linked_instance_not_loaded(self) -> None:
+        """A linked instance that is not loaded names nothing."""
+        provider = _borrow_provider(None)
+        assert provider.linked_music_instance is None
+
+    def test_own_login_has_no_linked_instance(self) -> None:
+        """The provider's own login shares no account with an instance."""
+        provider = _make_provider({CONF_YM_INSTANCE: BORROW_SOURCE_OWN})
+        assert provider.linked_music_instance is None

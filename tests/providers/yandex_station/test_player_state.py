@@ -19,7 +19,7 @@ from typing import TYPE_CHECKING, Any, cast
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-from music_assistant_models.enums import PlaybackState, PlayerFeature
+from music_assistant_models.enums import MediaType, PlaybackState, PlayerFeature
 from music_assistant_models.errors import PlayerCommandFailed
 
 from music_assistant.providers.yandex_station.alice import AliceTracker
@@ -118,7 +118,9 @@ def _make_play_media_player(
 
     player = _make_player()
     player.mass.streams = SimpleNamespace(resolve_stream_url=resolve_stream_url)
-    player._provider = cast("PlayerProvider", SimpleNamespace(mass=player.mass))
+    player._provider = cast(
+        "PlayerProvider", SimpleNamespace(mass=player.mass, linked_music_instance=None)
+    )
     player.glagol = cast("YandexGlagol", SimpleNamespace(send=send))
     return player, commands
 
@@ -714,7 +716,9 @@ def _station_report(player: YandexStationPlayer, *, track_id: str, playing: bool
 def test_audio_play_over_station_playback_is_confirmed_by_its_empty_track_id() -> None:
     """The Station's own track keeps its id until our stream, with an empty id, starts."""
     player = _make_player()
-    player._provider = cast("PlayerProvider", SimpleNamespace(config=_StubConfig()))
+    player._provider = cast(
+        "PlayerProvider", SimpleNamespace(config=_StubConfig(), linked_music_instance=None)
+    )
     player._attr_playback_state = PlaybackState.PLAYING
     player._start_external_session(_media(), audio_client=True)
 
@@ -736,7 +740,9 @@ def test_audio_play_after_another_ma_stream_needs_a_stopped_report() -> None:
     old stream still playing cannot confirm it, and its end is not a user stop.
     """
     player = _make_player()
-    player._provider = cast("PlayerProvider", SimpleNamespace(config=_StubConfig()))
+    player._provider = cast(
+        "PlayerProvider", SimpleNamespace(config=_StubConfig(), linked_music_instance=None)
+    )
     _start_confirmed_stream(player)
     player._start_external_session(_media("yandex_music://track/2", "Next"), audio_client=True)
 
@@ -775,7 +781,9 @@ def test_audio_play_uses_reported_progress() -> None:
     """Current firmware progress replaces the legacy optimistic clock."""
     player = _make_player()
     _disable_voice_control(player)
-    player._provider = cast("PlayerProvider", SimpleNamespace(config=_StubConfig()))
+    player._provider = cast(
+        "PlayerProvider", SimpleNamespace(config=_StubConfig(), linked_music_instance=None)
+    )
     player._external_playing = True
     vars(player)["_external_audio_client"] = True
     player._external_media = cast(
@@ -1154,7 +1162,9 @@ def test_station_playback_that_replaces_the_stream_ends_it() -> None:
     Station's own playback takes over.
     """
     player = _make_player()
-    player._provider = cast("PlayerProvider", SimpleNamespace(config=_StubConfig()))
+    player._provider = cast(
+        "PlayerProvider", SimpleNamespace(config=_StubConfig(), linked_music_instance=None)
+    )
     _start_confirmed_stream(player)
 
     _station_report(player, track_id="", playing=True)
@@ -1170,7 +1180,9 @@ def test_station_playback_that_replaces_the_stream_ends_it() -> None:
 def test_report_without_a_track_id_keeps_the_stream() -> None:
     """A report that does not name a track says nothing about the source."""
     player = _make_player()
-    player._provider = cast("PlayerProvider", SimpleNamespace(config=_StubConfig()))
+    player._provider = cast(
+        "PlayerProvider", SimpleNamespace(config=_StubConfig(), linked_music_instance=None)
+    )
     _start_confirmed_stream(player)
 
     player._on_glagol_update(
@@ -1189,7 +1201,9 @@ async def test_stream_reports_after_a_stop_are_not_station_playback() -> None:
     must stay IDLE on the MA queue so play resumes the queue.
     """
     player = _make_player()
-    player._provider = cast("PlayerProvider", SimpleNamespace(config=_StubConfig()))
+    player._provider = cast(
+        "PlayerProvider", SimpleNamespace(config=_StubConfig(), linked_music_instance=None)
+    )
     vars(player)["_audio_client"] = True
     _start_confirmed_stream(player)
     _record_commands(player)
@@ -1201,3 +1215,110 @@ async def test_stream_reports_after_a_stop_are_not_station_playback() -> None:
 
     assert player._attr_playback_state == PlaybackState.IDLE
     assert player._attr_active_source == player.player_id
+
+
+# ── The Station's own track as a Yandex Music item (spec 0004) ────────
+
+
+def _report_station_track(
+    player: YandexStationPlayer,
+    *,
+    track_id: str,
+    track_type: str = "Track",
+    cover: str | None = "avatars.yandex.net/get-music-content/1/abc/%%",
+) -> dict[str, Any]:
+    """Feed a report of the Station's own track and return the published current media."""
+    published: dict[str, Any] = {}
+    object.__setattr__(player, "set_current_media", lambda **kwargs: published.update(kwargs))
+    extra = {"coverURI": cover} if cover is not None else {}
+    player._on_glagol_update(
+        {
+            "state": {
+                "playing": True,
+                "aliceState": "IDLE",
+                "playerState": {
+                    "id": track_id,
+                    "type": track_type,
+                    "title": "Двор",
+                    "subtitle": "Пилот",
+                    "duration": 194,
+                    "extra": extra,
+                },
+            }
+        }
+    )
+    return published
+
+
+def _with_linked_music_instance(player: YandexStationPlayer, instance: str | None) -> None:
+    player._provider = cast(
+        "PlayerProvider",
+        SimpleNamespace(config=_StubConfig(), linked_music_instance=instance),
+    )
+
+
+@pytest.mark.parametrize("track_id", ["20934579", "20934579:3046143"])
+def test_station_track_is_a_linked_yandex_music_item(track_id: str) -> None:
+    """With a linked Yandex Music instance the track is that instance's item."""
+    player = _make_player()
+    _with_linked_music_instance(player, "yandex_music--sNU5Q6nm")
+
+    media = _report_station_track(player, track_id=track_id)
+
+    assert media["uri"] == "yandex_music--sNU5Q6nm://track/20934579"
+    assert media["media_type"] == MediaType.TRACK
+    assert media["title"] == "Двор"
+    assert media["artist"] == "Пилот"
+
+
+def test_station_track_without_a_linked_instance_keeps_the_reported_id() -> None:
+    """With its own login the provider knows no instance that shares the account."""
+    player = _make_player()
+    _with_linked_music_instance(player, None)
+
+    media = _report_station_track(player, track_id="20934579")
+
+    assert media["uri"] == "20934579"
+    assert media["media_type"] == MediaType.UNKNOWN
+
+
+def test_station_radio_is_not_mapped_to_a_track() -> None:
+    """Only a reported Track names a Yandex Music track."""
+    player = _make_player()
+    _with_linked_music_instance(player, "yandex_music--sNU5Q6nm")
+
+    media = _report_station_track(player, track_id="user:onyourwave", track_type="FmRadio")
+
+    assert media["uri"] == "user:onyourwave"
+    assert media["media_type"] == MediaType.UNKNOWN
+
+
+def test_station_track_cover_is_an_https_image_url() -> None:
+    """The reported cover template becomes an image URL with a concrete size."""
+    player = _make_player()
+    _with_linked_music_instance(player, None)
+
+    media = _report_station_track(player, track_id="20934579")
+
+    assert media["image_url"] == ("https://avatars.yandex.net/get-music-content/1/abc/400x400")
+
+
+def test_station_track_without_a_cover_has_no_image() -> None:
+    """A report without a cover publishes no image."""
+    player = _make_player()
+    _with_linked_music_instance(player, None)
+
+    media = _report_station_track(player, track_id="20934579", cover=None)
+
+    assert media["image_url"] is None
+
+
+def test_ma_stream_keeps_the_requested_media() -> None:
+    """While an MA stream plays, its report never replaces the requested item."""
+    player = _make_player()
+    _with_linked_music_instance(player, "yandex_music--sNU5Q6nm")
+    _start_confirmed_stream(player)
+
+    media = _report_station_track(player, track_id="")
+
+    assert media["uri"] == "yandex_music://track/1"
