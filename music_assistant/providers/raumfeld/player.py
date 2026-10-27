@@ -1821,6 +1821,7 @@ class RaumfeldPlayer(Player):
             and self._announced_index is not None
             and index == self._announced_index - 1
             and time.time() - self._announced_at < FLOW_ANNOUNCE_SETTLE_TIME
+            and not self._wraps_repeated_queue(index)
         ):
             # Right after a track that ends at once (playback resumed close to its end) the
             # queue goes back and forth between it and the next for a moment; the flow only
@@ -1833,6 +1834,20 @@ class RaumfeldPlayer(Player):
             self._announce_flow_item(self._flow_url, queue_item_id, self._playback_generation),
             task_id=self._announce_task_id,
             abort_existing=True,
+        )
+
+    def _wraps_repeated_queue(self, index: int) -> bool:
+        """
+        Return whether going to this index is the wrap of a repeated queue after its last track.
+
+        :param index: The queue index that plays now.
+        """
+        queue = self.mass.player_queues.get(self.player_id)
+        return (
+            queue is not None
+            and queue.repeat_mode == RepeatMode.ALL
+            and index == 0
+            and self._announced_index == queue.items - 1
         )
 
     async def _announce_flow_item(self, url: str, queue_item_id: str, generation: int) -> None:

@@ -2580,6 +2580,21 @@ def test_a_repeated_queue_wrapping_right_after_a_short_last_track_is_announced()
     assert player._announced_item_id == "q1"
 
 
+def test_a_two_item_repeated_queue_wrapping_is_announced() -> None:
+    """In a queue of two the wrap to the first goes back one, yet it is no rollback."""
+    player = _announcing_player()
+    queue = cast("MagicMock", player.mass.player_queues).get.return_value
+    queue.items = 2
+    queue.repeat_mode = RepeatMode.ALL
+    player._announced_item_id = "q2"
+    player._announced_index = 1
+    player._announced_at = time.time()
+
+    player._start_flow_announcement("q1")
+
+    assert player._announced_item_id == "q1"
+
+
 def test_the_timer_announces_the_first_track_of_a_repeated_queue() -> None:
     """At the end of a repeated queue the timer's track comes first, however short the last."""
     player = _announcing_player()
