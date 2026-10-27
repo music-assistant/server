@@ -100,8 +100,7 @@ class SnapcastMAStream:
         self._restart_requested: bool = False
         self._stop_requested: bool = False
         self._streaming_started_at: float | None = None
-        self._audio_started_at: float | None = None
-        self._audio_sent_bytes = 0
+        self._played_out_at: float | None = None
         self._output_plan: AudioOutputPlan | None = None
 
         self._socket_server: SnapcastSocketServer | None = None
@@ -336,6 +335,7 @@ class SnapcastMAStream:
             raise RuntimeError("The path to stream to is not set")
 
         self._logger.debug("Start streaming to %s", stream_path)
+        self._played_out_at = None
         self._stop_streamer_evt.clear()
         self._streamer_started_evt.clear()
         if self._filter_settings_owner:
@@ -412,25 +412,22 @@ class SnapcastMAStream:
             self._logger.debug("Finished streaming to %s", stream_path)
             await self._wait_stream_idle()
 
-    async def _track_sent_audio(
-        self, audio_source: AsyncGenerator[bytes]
-    ) -> AsyncGenerator[bytes]:
-        """Pass the audio through, recording when it started and how much was sent."""
-        self._audio_started_at = None
-        self._audio_sent_bytes = 0
+    async def _track_sent_audio(self, audio_source: AsyncGenerator[bytes]) -> AsyncGenerator[bytes]:
+        """Pass the audio through, tracking when the clients will have played it."""
+        bytes_per_second = self._provider.stream_audio_format.pcm_sample_size
         async for chunk in audio_source:
-            if self._audio_started_at is None:
-                self._audio_started_at = time.time()
-            self._audio_sent_bytes += len(chunk)
+            # a source stall delays everything sent after it
+            earliest_start = time.time() + self._get_playback_delay()
+            self._played_out_at = max(self._played_out_at or 0.0, earliest_start) + (
+                len(chunk) / bytes_per_second
+            )
             yield chunk
 
     async def _wait_played_out(self) -> None:
         """Wait until the clients played all sent audio, or a stop is requested."""
-        if self._audio_started_at is None:
+        if self._played_out_at is None:
             return
-        sent_seconds = self._audio_sent_bytes / self._provider.stream_audio_format.pcm_sample_size
-        played_out_at = self._audio_started_at + self._get_playback_delay() + sent_seconds
-        if (remaining := played_out_at - time.time()) <= 0:
+        if (remaining := self._played_out_at - time.time()) <= 0:
             return
         with suppress(TimeoutError):
             await asyncio.wait_for(self._stop_streamer_evt.wait(), remaining)
