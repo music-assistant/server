@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
-import asyncio
 import base64
 import json
 from dataclasses import replace
+from types import SimpleNamespace
 from typing import Literal, cast
 from unittest.mock import AsyncMock, MagicMock, call, patch
 
@@ -15,11 +15,17 @@ from music_assistant_models.enums import ExternalID, MediaType, PlaylistMatchPol
 from music_assistant_models.errors import (
     InvalidDataError,
     ProviderUnavailableError,
-    RetriesExhausted,
 )
-from music_assistant_models.media_items import Album, Artist, ItemMapping, Track, UniqueList
+from music_assistant_models.media_items import (
+    Album,
+    Artist,
+    ItemMapping,
+    ProviderMapping,
+    Track,
+    UniqueList,
+)
 
-from music_assistant.helpers.compare import compare_track
+from music_assistant.helpers.compare import TrackMatchConfidence, compare_track
 from music_assistant.helpers.playlists import (
     AlbumInfo,
     ArtistInfo,
@@ -31,10 +37,6 @@ from music_assistant.providers.share_provider import (
     SharePayload,
     ShareProvider,
     TrackStub,
-)
-from music_assistant.providers.share_provider.enrichment import (
-    ShareLinkEnricher,
-    _ShareHTTPClient,
 )
 from music_assistant.providers.share_provider.links import (
     build_provider_links,
@@ -58,12 +60,54 @@ def _provider() -> ShareProvider:
     config.name = "Share Links"
     config.get_value.return_value = "GLOBAL"
     provider = ShareProvider(mass, manifest, config)
-    provider._link_enricher = ShareLinkEnricher(mass, config.instance_id)
+    mass.music.tracks.enrich_provider_mappings = AsyncMock(return_value=SimpleNamespace(matches=()))
     return provider
 
 
 def _mass(provider: ShareProvider) -> MagicMock:
     return cast("MagicMock", provider.mass)
+
+
+def _core_match(track: Track, confidence: TrackMatchConfidence) -> SimpleNamespace:
+    """Build a minimal core enrichment match for a provider track."""
+    mapping = ProviderMapping(
+        item_id=track.item_id,
+        provider_domain=track.provider.split("--", maxsplit=1)[0],
+        provider_instance=track.provider,
+    )
+    return SimpleNamespace(track=track, confidence=confidence, mapping=mapping)
+
+
+def _track(
+    item_id: str = "track",
+    name: str = "Track",
+    artist: str = "Artist",
+    version: str = "",
+    duration: int = 218,
+    external_ids: set[tuple[ExternalID, str]] | None = None,
+) -> Track:
+    """Build a full-enough Track for exercising core comparison behavior."""
+    return Track(
+        item_id=item_id,
+        provider="catalog--1",
+        name=name,
+        version=version,
+        duration=duration,
+        provider_mappings=set(),
+        external_ids=external_ids or set(),
+        artists=UniqueList(
+            [
+                Artist(
+                    item_id="artist",
+                    provider="catalog--1",
+                    name=artist,
+                    provider_mappings=set(),
+                )
+            ]
+            if artist
+            else []
+        ),
+    )
 
 
 @pytest.mark.parametrize(
@@ -104,13 +148,29 @@ async def test_resolve_uses_controller_external_id_before_search(
     """Resolve matching media types through the shared controller contract."""
     provider = _provider()
     controller = _mass(provider).music.get_controller.return_value
-    item: Album | Track | MagicMock
+    item: Album | Artist | Track | MagicMock
     if media_type == MediaType.ALBUM:
-        item = Album(item_id="item", provider="library", name="Item", provider_mappings=set())
+        item = Album(
+            item_id="item",
+            provider="library",
+            name="Item",
+            provider_mappings=set(),
+            external_ids={(expected_type, expected_id)},
+        )
     elif media_type == MediaType.TRACK:
-        item = Track(item_id="item", provider="library", name="Item", provider_mappings=set())
+        item = _track(
+            item_id="item",
+            name="Item",
+            external_ids={(expected_type, expected_id)},
+        )
     else:
-        item = MagicMock()
+        item = Artist(
+            item_id="item",
+            provider="library",
+            name="Item",
+            provider_mappings=set(),
+            external_ids={(expected_type, expected_id)},
+        )
     controller.get_item_by_external_id = AsyncMock(return_value=item)
     _mass(provider).music.tracks.get = AsyncMock(return_value=item)
     encoded = SharePayload(
@@ -120,9 +180,11 @@ async def test_resolve_uses_controller_external_id_before_search(
         mbid=external_ids.get("mbid"),
         mb_track=external_ids.get("mb_track"),
         barcode=external_ids.get("barcode"),
+        artist="Artist" if media_type == MediaType.TRACK else None,
+        duration=218 if media_type == MediaType.TRACK else None,
     ).to_base64()
 
-    result = await provider.resolve_share_link(encoded)
+    result = await provider.resolve_share_link(encoded, allow_search=False)
 
     assert result is item
     controller.get_item_by_external_id.assert_awaited_once_with(expected_id, expected_type)
@@ -139,7 +201,9 @@ async def test_resolve_without_search_returns_none_after_id_miss(lookup_failure:
         return_value=None,
         side_effect=ProviderUnavailableError("provider offline") if lookup_failure else None,
     )
-    encoded = SharePayload(type="track", title="Track", isrc=ISRC).to_base64()
+    encoded = SharePayload(
+        type="track", title="Track", artist="Artist", isrc=ISRC, duration=218
+    ).to_base64()
 
     assert await provider.resolve_share_link(encoded, allow_search=False) is None
     mass.music.search.assert_not_called()
@@ -194,35 +258,55 @@ async def test_resolve_rejects_unrelated_isrc_match() -> None:
     mass.music.tracks.get.assert_not_called()
 
 
+async def test_legacy_isrc_share_without_duration_is_not_resolved() -> None:
+    """A legacy ISRC without duration is insufficient identity evidence."""
+    provider = _provider()
+    mass = _mass(provider)
+    candidate = _track(external_ids={(ExternalID.ISRC, ISRC)})
+    mass.music.get_controller.return_value.get_item_by_external_id = AsyncMock(
+        return_value=candidate
+    )
+    result = await provider._resolve_media_item(
+        SharePayload(type="track", title="Track", artist="Artist", isrc=ISRC),
+        allow_search=False,
+    )
+
+    assert result is None
+    mass.music.tracks.get.assert_not_called()
+
+
 async def test_resolve_skips_conflicting_isrc_recording_id_and_tries_mbid() -> None:
     """A conflicting recording ID on an ISRC hit does not hide a valid MBID match."""
     provider = _provider()
     mass = _mass(provider)
-    conflicting = Track(
+    conflicting = _track(
         item_id="conflicting-track",
-        provider="library",
         name="Shared song",
-        provider_mappings=set(),
-        external_ids={(ExternalID.MB_RECORDING, "recording-other")},
+        external_ids={(ExternalID.ISRC, ISRC), (ExternalID.MB_RECORDING, "recording-other")},
     )
-    matching = Track(
+    matching = _track(
         item_id="matching-track",
-        provider="library",
         name="Shared song",
-        provider_mappings=set(),
         external_ids={(ExternalID.MB_RECORDING, "recording-shared")},
     )
     controller = mass.music.get_controller.return_value
     controller.get_item_by_external_id = AsyncMock(side_effect=[conflicting, matching])
     mass.music.tracks.get = AsyncMock(return_value=matching)
-    payload = SharePayload(type="track", title="Shared song", isrc=ISRC, mbid="recording-shared")
+    payload = SharePayload(
+        type="track",
+        title="Shared song",
+        artist="Artist",
+        isrc=ISRC,
+        mbid="recording-shared",
+        duration=218,
+    )
 
     result = await provider._resolve_media_item(payload, allow_search=False)
 
     assert result is matching
     assert controller.get_item_by_external_id.await_count == 2
     mass.music.tracks.get.assert_awaited_once_with(
-        "matching-track", "library", allow_update_metadata=False
+        "matching-track", "catalog--1", allow_update_metadata=False
     )
 
 
@@ -230,11 +314,13 @@ async def test_resolve_without_search_returns_id_match() -> None:
     """ID matches include full track and album details without text search."""
     provider = _provider()
     mass = _mass(provider)
-    item = Track(item_id="source-id", provider="source--1", name="Track", provider_mappings=set())
+    item = _track(item_id="source-id")
     full_item = MagicMock()
     mass.music.tracks.get = AsyncMock(return_value=full_item)
     mass.music.get_controller.return_value.get_item_by_external_id = AsyncMock(return_value=item)
-    encoded = SharePayload(type="track", title="Track", isrc=ISRC).to_base64()
+    encoded = SharePayload(
+        type="track", title="Track", artist="Artist", isrc=ISRC, duration=218
+    ).to_base64()
 
     assert await provider.resolve_share_link(encoded, allow_search=False) is full_item
     mass.music.tracks.get.assert_awaited_once_with(
@@ -267,14 +353,22 @@ async def test_resolve_keeps_release_track_id_match_despite_version_label_drift(
     """A release-specific MusicBrainz ID is stronger than provider version labels."""
     provider = _provider()
     mass = _mass(provider)
-    id_match = MagicMock(item_id="release-track", provider="catalog--1", version="Studio")
-    full_track = MagicMock(version="Studio")
+    id_match = _track(
+        item_id="release-track",
+        version="Studio",
+        external_ids={(ExternalID.MB_TRACK, "release-track-mbid")},
+    )
+    full_track = _track(item_id="release-track", version="Studio")
     mass.music.get_controller.return_value.get_item_by_external_id = AsyncMock(
         return_value=id_match
     )
     mass.music.tracks.get = AsyncMock(return_value=full_track)
     payload = SharePayload(
-        type="track", title="Track", version="Live", mb_track="release-track-mbid"
+        type="track",
+        title="Track",
+        artist="Artist",
+        version="Live",
+        mb_track="release-track-mbid",
     )
 
     assert await provider._resolve_media_item(payload, allow_search=False) is full_track
@@ -288,9 +382,19 @@ async def test_resolve_rejects_version_mismatch_for_recording_id() -> None:
     provider = _provider()
     mass = _mass(provider)
     mass.music.get_controller.return_value.get_item_by_external_id = AsyncMock(
-        return_value=MagicMock(item_id="recording", provider="catalog--1", version="Studio")
+        return_value=_track(
+            item_id="recording",
+            version="Studio",
+            external_ids={(ExternalID.MB_RECORDING, "recording-mbid")},
+        )
     )
-    payload = SharePayload(type="track", title="Track", version="Live", mbid="recording-mbid")
+    payload = SharePayload(
+        type="track",
+        title="Track",
+        artist="Artist",
+        version="Live",
+        mbid="recording-mbid",
+    )
 
     assert await provider._resolve_media_item(payload, allow_search=False) is None
     mass.music.tracks.get.assert_not_called()
@@ -301,12 +405,17 @@ async def test_resolve_unversioned_track_rejects_versioned_recording_id() -> Non
     provider = _provider()
     mass = _mass(provider)
     mass.music.get_controller.return_value.get_item_by_external_id = AsyncMock(
-        return_value=MagicMock(item_id="live-recording", provider="catalog--1", version="Live")
+        return_value=_track(
+            item_id="live-recording",
+            version="Live",
+            external_ids={(ExternalID.ISRC, ISRC)},
+        )
     )
 
     assert (
         await provider._resolve_media_item(
-            SharePayload(type="track", title="Track", isrc=ISRC), allow_search=False
+            SharePayload(type="track", title="Track", artist="Artist", isrc=ISRC),
+            allow_search=False,
         )
         is None
     )
@@ -318,190 +427,127 @@ async def test_resolve_skips_id_match_when_full_track_details_are_unavailable() 
     provider = _provider()
     mass = _mass(provider)
     mass.music.get_controller.return_value.get_item_by_external_id = AsyncMock(
-        return_value=Track(
-            item_id="source-id", provider="source--1", name="Track", provider_mappings=set()
-        )
+        return_value=_track(item_id="source-id", external_ids={(ExternalID.ISRC, ISRC)})
     )
     mass.music.tracks.get = AsyncMock(side_effect=ProviderUnavailableError("offline"))
-    encoded = SharePayload(type="track", title="Track", isrc=ISRC).to_base64()
+    encoded = SharePayload(
+        type="track", title="Track", artist="Artist", isrc=ISRC, duration=218
+    ).to_base64()
 
     assert await provider.resolve_share_link(encoded, allow_search=False) is None
     mass.music.tracks.get.assert_awaited_once()
     mass.music.search.assert_not_called()
 
 
-@pytest.mark.parametrize("media_type", [MediaType.TRACK, MediaType.ALBUM, MediaType.ARTIST])
-@pytest.mark.parametrize("include_match", [False, True])
-async def test_text_search_ignores_unrelated_first_result(
-    media_type: MediaType, include_match: bool
-) -> None:
-    """Search fallback returns a metadata match, not merely the first result."""
+async def test_track_resolution_uses_core_matcher_and_full_share_metadata() -> None:
+    """Core matching receives the complete metadata available in the share payload."""
     provider = _provider()
     mass = _mass(provider)
-    first = MagicMock()
-    first.name = "Unrelated result"
-    first.artist_str = "Artist"
-    matching = MagicMock()
-    matching.name = "Shared title"
-    matching.artist_str = "Artist"
-    field = {MediaType.TRACK: "tracks", MediaType.ALBUM: "albums", MediaType.ARTIST: "artists"}[
-        media_type
-    ]
-    results = MagicMock(tracks=[], albums=[], artists=[])
-    setattr(results, field, [first, *([matching] if include_match else [])])
-    mass.music.search = AsyncMock(return_value=results)
-    payload = SharePayload(
-        type=cast("Literal['track', 'album', 'artist']", media_type.value),
-        title="Shared title",
-        artist="Artist" if media_type is not MediaType.ARTIST else None,
-    )
-
-    result = await provider._resolve_media_item(payload)
-
-    assert result is (matching if include_match else None)
-
-
-@pytest.mark.parametrize(
-    ("media_type", "results_field"), [(MediaType.TRACK, "tracks"), (MediaType.ALBUM, "albums")]
-)
-async def test_text_search_prefers_exact_title_over_earlier_fuzzy_match(
-    media_type: MediaType, results_field: str
-) -> None:
-    """Exact title matches outrank earlier fuzzy candidates from global search."""
-    provider = _provider()
-    fuzzy = MagicMock()
-    fuzzy.name = "Song 1"
-    fuzzy.artist_str = "Artist"
-    fuzzy.version = ""
-    exact = MagicMock()
-    exact.name = "Song 2"
-    exact.artist_str = "Artist"
-    exact.version = ""
-    results = MagicMock(tracks=[], albums=[], artists=[])
-    setattr(results, results_field, [fuzzy, exact])
-    _mass(provider).music.search = AsyncMock(return_value=results)
-    payload = SharePayload(
-        type=cast("Literal['track', 'album']", media_type.value),
-        title="Song 2",
-        artist="Artist",
-    )
-
-    assert await provider._resolve_media_item(payload) is exact
-
-
-async def test_resolve_matches_comma_and_slash_artist_credits() -> None:
-    """Text resolution accepts equivalent multi-artist credit separators."""
-    provider = _provider()
-    candidate = MagicMock()
-    candidate.name = "Song"
-    candidate.artist_str = "Drake/Future"
-    candidate.version = ""
-    _mass(provider).music.search = AsyncMock(
-        return_value=MagicMock(tracks=[candidate], albums=[], artists=[])
-    )
-
-    result = await provider._resolve_media_item(
-        SharePayload(type="track", title="Song", artist="Drake, Future")
-    )
-
-    assert result is candidate
-
-
-async def test_resolve_falls_back_to_search_after_external_id_miss() -> None:
-    """A provider-agnostic title search remains the fallback when IDs do not match."""
-    provider = _provider()
-    mass = _mass(provider)
-    controller = mass.music.get_controller.return_value
-    controller.get_item_by_external_id = AsyncMock(return_value=None)
-    item = MagicMock()
-    item.name = "Track"
-    item.artist_str = "Artist"
-    mass.music.search = AsyncMock(return_value=MagicMock(tracks=[item], albums=[], artists=[]))
-    encoded = SharePayload(type="track", title="Track", artist="Artist", isrc=ISRC).to_base64()
-
-    result = await provider.resolve_share_link(encoded)
-
-    assert result is item
-    mass.music.search.assert_awaited_once_with(
-        "Artist Track", media_types=[MediaType.TRACK], limit=5
-    )
-
-
-async def test_resolve_search_rejects_different_track_version() -> None:
-    """Search fallback does not substitute a studio recording for a live share."""
-    provider = _provider()
-    mass = _mass(provider)
+    matched = _track(item_id="matched", version="Live")
     mass.music.get_controller.return_value.get_item_by_external_id = AsyncMock(return_value=None)
-    studio = MagicMock(name="studio")
-    studio.name = "Track"
-    studio.artist_str = "Artist"
-    studio.version = "Studio"
-    mass.music.search = AsyncMock(return_value=MagicMock(tracks=[studio], albums=[], artists=[]))
-
-    result = await provider._resolve_media_item(
-        SharePayload(type="track", title="Track", artist="Artist", version="Live")
+    mass.music.tracks.enrich_provider_mappings = AsyncMock(
+        return_value=SimpleNamespace(matches=(_core_match(matched, TrackMatchConfidence.LIKELY),))
+    )
+    payload = SharePayload(
+        type="track",
+        title="Track",
+        artist="Artist",
+        version="Live",
+        album="Album",
+        isrc=ISRC,
+        duration=218,
     )
 
-    assert result is None
+    assert await provider._resolve_media_item(payload) is matched
+    core_track = mass.music.tracks.enrich_provider_mappings.await_args.args[0]
+    assert core_track.name == "Track"
+    assert core_track.version == "Live"
+    assert core_track.duration == 218
+    assert core_track.album is not None
+    assert core_track.album.name == "Album"
+    assert core_track.external_ids == {(ExternalID.ISRC, ISRC)}
+    assert core_track.artists[0].name == "Artist"
+    mass.music.search.assert_not_called()
 
 
-async def test_resolve_unversioned_track_rejects_versioned_search_result() -> None:
-    """Search fallback must not select an explicitly versioned recording."""
+async def test_track_resolution_returns_none_without_core_match() -> None:
+    """A failed or ambiguous core enrichment never opens an arbitrary candidate."""
     provider = _provider()
-    live = MagicMock()
-    live.name = "Track"
-    live.artist_str = "Artist"
-    live.version = "Live"
-    _mass(provider).music.search = AsyncMock(
-        return_value=MagicMock(tracks=[live], albums=[], artists=[])
-    )
+    mass = _mass(provider)
+    payload = SharePayload(type="track", title="Track", artist="Artist")
 
-    result = await provider._resolve_media_item(
-        SharePayload(type="track", title="Track", artist="Artist")
-    )
-
-    assert result is None
+    assert await provider._resolve_media_item(payload) is None
+    mass.music.tracks.enrich_provider_mappings.assert_awaited_once()
 
 
-async def test_unversioned_track_search_accepts_standard_candidate() -> None:
-    """An unversioned share may resolve to a standard, unversioned search result."""
+async def test_track_resolution_rejects_core_loose_match() -> None:
+    """Core loose title matches are insufficient to open a shared track."""
     provider = _provider()
-    standard = MagicMock()
-    standard.name = "Track"
-    standard.artist_str = "Artist"
-    standard.version = ""
-    _mass(provider).music.search = AsyncMock(
-        return_value=MagicMock(tracks=[standard], albums=[], artists=[])
+    mass = _mass(provider)
+    candidate = _track(item_id="loose")
+    mass.music.get_controller.return_value.get_item_by_external_id = AsyncMock(return_value=None)
+    mass.music.tracks.enrich_provider_mappings = AsyncMock(
+        return_value=SimpleNamespace(matches=(_core_match(candidate, TrackMatchConfidence.LOOSE),))
     )
 
     assert (
         await provider._resolve_media_item(
             SharePayload(type="track", title="Track", artist="Artist")
         )
-        is standard
+        is None
+    )
+    assert (
+        mass.music.tracks.enrich_provider_mappings.await_args.kwargs["minimum_confidence"]
+        == TrackMatchConfidence.LIKELY
     )
 
 
-async def test_resolve_falls_back_to_search_after_external_id_provider_failure() -> None:
-    """A provider lookup failure does not block the global text-search fallback."""
+async def test_track_resolution_selects_highest_core_confidence() -> None:
+    """The best confidence tier wins, with deterministic mapping selection."""
     provider = _provider()
     mass = _mass(provider)
-    controller = mass.music.get_controller.return_value
-    controller.get_item_by_external_id = AsyncMock(
-        side_effect=ProviderUnavailableError("provider offline")
+    lower = _track(item_id="lower", artist="Artist")
+    higher = _track(item_id="higher", artist="Artist")
+    mass.music.tracks.enrich_provider_mappings = AsyncMock(
+        return_value=SimpleNamespace(
+            matches=(
+                _core_match(lower, TrackMatchConfidence.LIKELY),
+                _core_match(higher, TrackMatchConfidence.EXACT),
+            )
+        )
     )
-    item = MagicMock()
-    item.name = "Track"
-    item.artist_str = "Artist"
-    mass.music.search = AsyncMock(return_value=MagicMock(tracks=[item], albums=[], artists=[]))
-    encoded = SharePayload(type="track", title="Track", artist="Artist", isrc=ISRC).to_base64()
 
-    result = await provider.resolve_share_link(encoded)
-
-    assert result is item
-    mass.music.search.assert_awaited_once_with(
-        "Artist Track", media_types=[MediaType.TRACK], limit=5
+    assert (
+        await provider._resolve_media_item(
+            SharePayload(type="track", title="Track", artist="Artist")
+        )
+        is higher
     )
+
+
+async def test_playlist_preview_uses_core_track_matcher() -> None:
+    """Preview matching uses the same Core evidence path as share resolution."""
+    provider = _provider()
+    mass = _mass(provider)
+    matched = _track(item_id="matched", external_ids={(ExternalID.ISRC, ISRC)})
+    mass.music.get_controller.return_value.get_item_by_external_id = AsyncMock(return_value=None)
+    mass.music.tracks.enrich_provider_mappings = AsyncMock(
+        return_value=SimpleNamespace(matches=(_core_match(matched, TrackMatchConfidence.LIKELY),))
+    )
+    encoded = SharePayload(
+        type="playlist",
+        title="Playlist",
+        tracks=[TrackStub(title="Track", artist="Artist", isrc=ISRC, duration=218)],
+    ).to_base64()
+
+    preview = await provider.preview_shared_playlist(encoded)
+
+    assert len(preview) == 1
+    assert preview[0].item_id == "matched"
+    assert preview[0].position == 1
+    core_track = mass.music.tracks.enrich_provider_mappings.await_args.args[0]
+    assert core_track.duration == 218
+    assert core_track.get_external_id(ExternalID.ISRC) == ISRC
 
 
 async def test_build_album_payload_includes_barcode_mbid_and_provider_link() -> None:
@@ -513,7 +559,13 @@ async def test_build_album_payload_includes_barcode_mbid_and_provider_link() -> 
     album.version = "Deluxe"
     album.artist_str = "Artist"
     album.image = None
-    album.provider_mappings = [MagicMock(provider_domain="spotify", item_id="album/123")]
+    album.provider_mappings = [
+        MagicMock(
+            provider_domain="spotify",
+            item_id="album/123",
+            url="https://open.spotify.com/album/album%2F123",
+        )
+    ]
     album.get_external_id.side_effect = {
         ExternalID.MB_ALBUM: "album-mbid",
         ExternalID.BARCODE: BARCODE,
@@ -528,26 +580,88 @@ async def test_build_album_payload_includes_barcode_mbid_and_provider_link() -> 
     assert payload.provider_refs == {"spotify": "/album/album%2F123"}
 
 
-async def test_album_search_prefers_matching_version_and_allows_unknown_version() -> None:
-    """Album fallback selects the requested edition, treating absent versions as unknown."""
+async def test_build_track_payload_includes_duration_for_core_matching() -> None:
+    """New individual-track shares include duration as matching evidence."""
     provider = _provider()
-    standard = MagicMock()
-    standard.name = "Album"
-    standard.artist_str = "Artist"
-    standard.version = "Standard"
-    deluxe = MagicMock()
-    deluxe.name = "Album"
-    deluxe.artist_str = "Artist"
-    deluxe.version = "Deluxe"
+    track = _track(item_id="track", duration=218)
+
+    payload = await provider._build_payload(track)
+
+    assert payload.duration == 218
+
+
+async def test_album_search_requires_matching_edition() -> None:
+    """Album search uses core comparison and rejects unknown or different editions."""
+    provider = _provider()
+    standard = Album(
+        item_id="standard",
+        provider="catalog--1",
+        name="Album",
+        version="Standard",
+        provider_mappings=set(),
+        artists=UniqueList(
+            [
+                Artist(
+                    item_id="artist", provider="catalog--1", name="Artist", provider_mappings=set()
+                )
+            ]
+        ),
+    )
+    deluxe = replace(standard, item_id="deluxe", version="Deluxe")
     results = MagicMock(tracks=[], albums=[standard, deluxe], artists=[])
     _mass(provider).music.search = AsyncMock(return_value=results)
     payload = SharePayload(type="album", title="Album", artist="Artist", version="Deluxe")
 
     assert await provider._resolve_media_item(payload) is deluxe
 
-    deluxe.version = ""
-    results.albums = [deluxe]
-    assert await provider._resolve_media_item(payload) is deluxe
+    results.albums = [replace(deluxe, version="")]
+    assert await provider._resolve_media_item(payload) is None
+
+
+async def test_album_search_does_not_choose_between_duplicate_core_matches() -> None:
+    """Duplicate albums with equal core evidence remain unresolved."""
+    provider = _provider()
+    album = Album(
+        item_id="album-one",
+        provider="catalog--1",
+        name="Album",
+        provider_mappings=set(),
+        artists=UniqueList(
+            [
+                Artist(
+                    item_id="artist", provider="catalog--1", name="Artist", provider_mappings=set()
+                )
+            ]
+        ),
+    )
+    duplicate = replace(album, item_id="album-two")
+    _mass(provider).music.search = AsyncMock(
+        return_value=MagicMock(albums=[album, duplicate], tracks=[], artists=[])
+    )
+
+    assert (
+        await provider._resolve_media_item(
+            SharePayload(type="album", title="Album", artist="Artist")
+        )
+        is None
+    )
+
+
+async def test_artist_search_does_not_choose_between_homonyms() -> None:
+    """Artists with the same name but no matching ID remain unresolved."""
+    provider = _provider()
+    artist = Artist(
+        item_id="artist-one",
+        provider="catalog--1",
+        name="Artist",
+        provider_mappings=set(),
+    )
+    homonym = replace(artist, item_id="artist-two")
+    _mass(provider).music.search = AsyncMock(
+        return_value=MagicMock(artists=[artist, homonym], albums=[], tracks=[])
+    )
+
+    assert await provider._resolve_media_item(SharePayload(type="artist", title="Artist")) is None
 
 
 @pytest.mark.parametrize("use_barcode", [False, True])
@@ -627,328 +741,6 @@ async def test_share_base_url_is_an_instance_config_option() -> None:
     assert entries[0].default_value == "https://share.music-assistant.io"
 
 
-@pytest.mark.parametrize(("status", "retry_after"), [(429, "37"), (503, None)])
-async def test_external_http_service_throttles_transient_statuses(
-    status: int, retry_after: str | None
-) -> None:
-    """Transient service failures are retried and rate-limit cooldown is shared."""
-    mass = MagicMock()
-    response = MagicMock(status=status, headers={"Retry-After": retry_after} if retry_after else {})
-    response.json = AsyncMock(return_value={})
-    request_context = MagicMock()
-    request_context.__aenter__ = AsyncMock(return_value=response)
-    request_context.__aexit__ = AsyncMock(return_value=False)
-    client = _ShareHTTPClient(mass, "Deezer")
-    client.throttler.retry_attempts = 1
-    with (
-        patch.object(
-            mass.http_session,
-            "get",
-            MagicMock(return_value=request_context),
-        ) as get_request,
-        patch.object(
-            client.throttler.throttler,
-            "acquire",
-            AsyncMock(return_value=0),
-        ),
-        pytest.raises(RetriesExhausted),
-    ):
-        await client.get_json("https://api.deezer.com/test")
-
-    get_request.assert_called_once()
-    if status == 429:
-        assert client.throttler.cooldown_remaining >= 36
-
-
-async def test_apple_music_accepts_text_javascript_json_response() -> None:
-    """ITunes search JSON remains readable when served with its text/javascript MIME type."""
-    mass = MagicMock()
-    result = {"resultCount": 0, "results": []}
-    response = MagicMock(status=200, headers={"Content-Type": "text/javascript"})
-    response.json = AsyncMock(return_value=result)
-    request_context = MagicMock()
-    request_context.__aenter__ = AsyncMock(return_value=response)
-    request_context.__aexit__ = AsyncMock(return_value=False)
-    client = _ShareHTTPClient(mass, "Apple Music")
-
-    with (
-        patch.object(mass.http_session, "get", MagicMock(return_value=request_context)),
-        patch.object(client.throttler.throttler, "acquire", AsyncMock(return_value=0)),
-    ):
-        assert await client.get_json("https://itunes.apple.com/search") == result
-
-    response.json.assert_awaited_once_with(content_type=None)
-
-
-async def test_deezer_quota_json_error_is_rate_limited() -> None:
-    """Treat Deezer's quota error response as a rate limit even with HTTP 200."""
-    mass = MagicMock()
-    response = MagicMock(status=200, headers={})
-    response.json = AsyncMock(return_value={"error": {"code": 4, "message": "Quota exceeded"}})
-    request_context = MagicMock()
-    request_context.__aenter__ = AsyncMock(return_value=response)
-    request_context.__aexit__ = AsyncMock(return_value=False)
-    client = _ShareHTTPClient(mass, "Deezer")
-    client.throttler.retry_attempts = 1
-
-    with (
-        patch.object(mass.http_session, "get", MagicMock(return_value=request_context)),
-        patch.object(client.throttler.throttler, "acquire", AsyncMock(return_value=0)),
-        pytest.raises(RetriesExhausted),
-    ):
-        await client.get_json("https://api.deezer.com/test")
-
-    assert client.throttler.cooldown_remaining > 0
-
-
-@pytest.mark.parametrize(
-    ("method_name", "arguments"),
-    [
-        ("_get_deezer_track_url", (ISRC, "Song", "Artist", None)),
-        ("_search_deezer_track_url", ('track:"Song"', "Song", "Artist", None)),
-        ("_get_apple_music_track_url", ("Artist Song", "Song", "Artist", None)),
-        ("_get_apple_music_track_url_by_id", ("12345",)),
-    ],
-)
-async def test_transient_http_failures_are_not_cached(
-    method_name: str, arguments: tuple[str, ...]
-) -> None:
-    """A temporary service outage is retried on the next cached lookup."""
-    provider = _provider()
-    mass = _mass(provider)
-    mass.cache.get_with_freshness = AsyncMock(return_value=(None, False, False))
-    mass.cache.set = AsyncMock()
-    mass.create_task = lambda coro, **_kwargs: asyncio.create_task(coro)
-    response = MagicMock(status=503, headers={})
-    context = MagicMock()
-    context.__aenter__ = AsyncMock(return_value=response)
-    context.__aexit__ = AsyncMock(return_value=False)
-    provider._link_enricher._deezer_client = _ShareHTTPClient(mass, "Deezer")
-    provider._link_enricher._apple_music_client = _ShareHTTPClient(mass, "Apple Music")
-    provider._link_enricher._deezer_client.throttler.retry_attempts = 1
-    provider._link_enricher._apple_music_client.throttler.retry_attempts = 1
-    method = getattr(provider._link_enricher, method_name)
-
-    with (
-        patch.object(mass.http_session, "get", MagicMock(return_value=context)) as http_get,
-        patch.object(
-            provider._link_enricher._deezer_client.throttler.throttler,
-            "acquire",
-            AsyncMock(return_value=0),
-        ),
-        patch.object(
-            provider._link_enricher._apple_music_client.throttler.throttler,
-            "acquire",
-            AsyncMock(return_value=0),
-        ),
-    ):
-        for _ in range(2):
-            with pytest.raises(RetriesExhausted):
-                await method(*arguments)
-
-    await asyncio.sleep(0)
-    assert http_get.call_count == 2
-    mass.cache.set.assert_not_called()
-
-
-async def test_track_share_returns_when_optional_enrichment_times_out() -> None:
-    """A third-party link timeout does not block generating the share payload."""
-    provider = _provider()
-    track = Track(item_id="track", provider="library", name="Song", provider_mappings=set())
-
-    async def wait_forever(*_args: object, **_kwargs: object) -> None:
-        await asyncio.Future()
-
-    enrich = AsyncMock(side_effect=wait_forever)
-    with (
-        patch(
-            "music_assistant.providers.share_provider.SHARE_LINK_ENRICHMENT_TIMEOUT",
-            0.001,
-        ),
-        patch.object(provider._link_enricher, "enrich", new=enrich),
-    ):
-        payload = await provider._build_payload(track)
-
-    assert payload.title == "Song"
-    assert payload.provider_refs is None
-    enrich.assert_awaited_once()
-
-
-@pytest.mark.parametrize("include_match", [False, True])
-async def test_ytmusic_enrichment_rejects_unrelated_search_results(include_match: bool) -> None:
-    """YouTube Music links are only included after matching title and artist."""
-    provider = _provider()
-    wrong_title = MagicMock(name="wrong")
-    wrong_title.name = "Different song"
-    wrong_title.artist_str = "Artist"
-    wrong_title.version = ""
-    wrong_title.provider_mappings = [MagicMock(provider_domain="ytmusic", item_id="wrong")]
-    wrong_artist = MagicMock()
-    wrong_artist.name = "Song"
-    wrong_artist.artist_str = "Other performer"
-    wrong_artist.version = ""
-    wrong_artist.provider_mappings = [MagicMock(provider_domain="ytmusic", item_id="wrong-artist")]
-    match = MagicMock()
-    match.name = "Song"
-    match.artist_str = "Artist"
-    match.version = ""
-    match.provider_mappings = [MagicMock(provider_domain="ytmusic", item_id="correct")]
-    fuzzy_match = MagicMock()
-    fuzzy_match.name = "Sog"
-    fuzzy_match.artist_str = "Artist"
-    fuzzy_match.version = ""
-    fuzzy_match.provider_mappings = [MagicMock(provider_domain="ytmusic", item_id="fuzzy")]
-    results = [wrong_title, wrong_artist, *([fuzzy_match, match] if include_match else [])]
-    _mass(provider).music.search = AsyncMock(return_value=MagicMock(tracks=results))
-    refs = {"deezer": "/track/1", "apple_music": "/album/1?i=2"}
-
-    await provider._link_enricher.enrich(refs, None, "Song", "Artist")
-
-    if include_match:
-        assert refs["ytmusic"] == "/watch?v=correct"
-    else:
-        assert "ytmusic" not in refs
-
-
-@pytest.mark.parametrize(
-    ("candidate_title", "candidate_version", "expected_link"),
-    [
-        ("Song", "Live", None),
-        ("Song (Live)", "", None),
-        ("Song", "", "/watch?v=candidate"),
-    ],
-)
-async def test_ytmusic_enrichment_requires_version_match_for_unversioned_share(
-    candidate_title: str, candidate_version: str, expected_link: str | None
-) -> None:
-    """Unversioned shares only use unversioned YouTube Music candidates."""
-    provider = _provider()
-    candidate = MagicMock()
-    candidate.name = candidate_title
-    candidate.artist_str = "Artist"
-    candidate.version = candidate_version
-    candidate.provider_mappings = [MagicMock(provider_domain="ytmusic", item_id="candidate")]
-    _mass(provider).music.search = AsyncMock(
-        return_value=MagicMock(tracks=[candidate], albums=[], artists=[])
-    )
-    refs = {"deezer": "/track/1", "apple_music": "/album/1?i=2"}
-
-    await provider._link_enricher.enrich(refs, None, "Song", "Artist")
-
-    assert refs.get("ytmusic") == expected_link
-
-
-async def test_ytmusic_enrichment_accepts_equivalent_multi_artist_credits() -> None:
-    """Strict normalized artist credits match despite comma/slash formatting."""
-    provider = _provider()
-    candidate = MagicMock()
-    candidate.name = "Song"
-    candidate.artist_str = "Drake/Future"
-    candidate.version = ""
-    candidate.provider_mappings = [MagicMock(provider_domain="ytmusic", item_id="candidate")]
-    _mass(provider).music.search = AsyncMock(
-        return_value=MagicMock(tracks=[candidate], albums=[], artists=[])
-    )
-    refs = {"deezer": "/track/1", "apple_music": "/album/1?i=2"}
-
-    await provider._link_enricher.enrich(refs, None, "Song", "Drake, Future")
-
-    assert refs["ytmusic"] == "/watch?v=candidate"
-
-
-@pytest.mark.parametrize(
-    ("result", "expected_url"),
-    [
-        (
-            {
-                "trackName": "Song (Live)",
-                "artistName": "Artist",
-                "trackViewUrl": "https://music.apple.com/live",
-            },
-            "https://music.apple.com/live",
-        ),
-        (
-            {
-                "title": "Song (Live)",
-                "artist": {"name": "Artist"},
-                "title_version": "Live",
-                "link": "https://www.deezer.com/live",
-            },
-            "https://www.deezer.com/live",
-        ),
-    ],
-)
-def test_link_enrichment_normalizes_service_title_and_version(
-    result: dict[str, object], expected_url: str
-) -> None:
-    """Raw Deezer and iTunes title/version shapes match normalized share metadata."""
-    assert ShareLinkEnricher._find_matching_track_url([result], "Song", "Artist", "Live") == (
-        expected_url
-    )
-
-
-def test_link_enrichment_rejects_known_different_service_version() -> None:
-    """A known studio result must not supply the link for a live recording."""
-    result = {
-        "trackName": "Song (Studio)",
-        "artistName": "Artist",
-        "trackViewUrl": "https://music.apple.com/studio",
-    }
-
-    assert ShareLinkEnricher._find_matching_track_url([result], "Song", "Artist", "Live") is None
-
-
-def test_link_enrichment_accepts_equivalent_multi_artist_credits() -> None:
-    """Punctuation differences do not discard a matching multi-artist service link."""
-    result = {
-        "trackName": "Song",
-        "artistName": "Drake & Future",
-        "trackViewUrl": "https://music.apple.com/song",
-    }
-
-    assert (
-        ShareLinkEnricher._find_matching_track_url([result], "Song", "Drake/Future")
-        == "https://music.apple.com/song"
-    )
-
-
-@pytest.mark.parametrize(
-    ("result", "expected_url"),
-    [
-        (
-            {
-                "trackName": "Song (Live)",
-                "artistName": "Artist",
-                "trackViewUrl": "https://music.apple.com/live",
-            },
-            None,
-        ),
-        (
-            {
-                "trackName": "Song",
-                "title_version": "Live",
-                "artistName": "Artist",
-                "link": "https://www.deezer.com/live",
-            },
-            None,
-        ),
-        (
-            {
-                "trackName": "Song",
-                "artistName": "Artist",
-                "trackViewUrl": "https://music.apple.com/standard",
-            },
-            "https://music.apple.com/standard",
-        ),
-    ],
-)
-def test_link_enrichment_requires_version_match_for_unversioned_share(
-    result: dict[str, str], expected_url: str | None
-) -> None:
-    """Unversioned shares reject known service versions but accept unknown ones."""
-    assert ShareLinkEnricher._find_matching_track_url([result], "Song", "Artist") == expected_url
-
-
 @pytest.mark.parametrize(
     "url",
     [
@@ -976,7 +768,7 @@ def test_build_provider_links_keeps_apple_music_canonical_url() -> None:
         )
     ]
 
-    assert build_provider_links(item, "track") == {
+    assert build_provider_links(item) == {
         "apple_music": "https://music.apple.com/us/album/album-name/987654321?i=123456789"
     }
 
@@ -990,23 +782,27 @@ def test_build_provider_refs_omits_provider_hosts() -> None:
             item_id="123456789",
             url="https://music.apple.com/at/album/a-little-bit-off/1487244856?i=1487244862",
         ),
-        MagicMock(provider_domain="spotify", item_id="track-id", url=None),
+        MagicMock(
+            provider_domain="spotify",
+            item_id="track-id",
+            url="https://open.spotify.com/track/track-id",
+        ),
     ]
 
-    assert build_provider_refs(item, "track") == {
-        "apple_music": "/at/album/1487244856?i=1487244862",
+    assert build_provider_refs(item) == {
+        "apple_music": "/at/album/a-little-bit-off/1487244856?i=1487244862",
         "spotify": "/track/track-id",
     }
 
 
-def test_build_provider_links_skips_qobuz_artist_name_mapping() -> None:
-    """Qobuz artist links require numeric catalog IDs, not performer names."""
+def test_build_provider_links_uses_only_mapping_urls() -> None:
+    """Mappings without a provider URL do not get a guessed link."""
     item = MagicMock()
     item.provider_mappings = [
         MagicMock(provider_domain="qobuz", item_id="Example Performer", url=None),
         MagicMock(provider_domain="qobuz", item_id="12345", url=None),
     ]
-    assert build_provider_links(item, "artist") == {"qobuz": "https://open.qobuz.com/artist/12345"}
+    assert build_provider_links(item) == {}
 
     item.provider_mappings = [
         MagicMock(
@@ -1015,7 +811,7 @@ def test_build_provider_links_skips_qobuz_artist_name_mapping() -> None:
             url="https://open.qobuz.com/artist/54321",
         ),
     ]
-    assert build_provider_links(item, "artist") == {"qobuz": "https://open.qobuz.com/artist/54321"}
+    assert build_provider_links(item) == {"qobuz": "https://open.qobuz.com/artist/54321"}
 
 
 def test_payload_uses_compact_provider_and_artwork_refs_without_version_field() -> None:
@@ -1039,8 +835,7 @@ def test_payload_uses_compact_provider_and_artwork_refs_without_version_field() 
                             url=apple_url,
                         )
                     ]
-                ),
-                "track",
+                )
             )["apple_music"]
         },
     )
@@ -1073,8 +868,8 @@ def test_playlist_payload_omits_null_track_fields() -> None:
     assert decoded["tracks"] == [{"title": "Unversioned track"}]
 
 
-def test_build_provider_links_ignores_non_apple_mapping_urls() -> None:
-    """Only canonical Apple Music URLs are accepted from mapping.url."""
+def test_build_provider_links_ignores_invalid_mapping_urls() -> None:
+    """Provider mappings only expose URLs on their approved HTTPS host."""
     item = MagicMock()
     item.provider_mappings = [
         MagicMock(
@@ -1084,58 +879,7 @@ def test_build_provider_links_ignores_non_apple_mapping_urls() -> None:
         )
     ]
 
-    assert build_provider_links(item, "track") == {}
-
-
-async def test_enrich_prefers_apple_music_catalog_id_lookup() -> None:
-    """The Apple source track ID reaches the payload's canonical URL lookup."""
-    provider = _provider()
-    apple_url = "https://music.apple.com/us/album/example/987654321?i=123456789"
-    track = MagicMock()
-    track.media_type = MediaType.TRACK
-    track.name = "A Little Bit Off"
-    track.version = ""
-    track.artist_str = "Five Finger Death Punch"
-    track.album = None
-    track.image = None
-    track.provider_mappings = [
-        MagicMock(provider_domain="apple_music", item_id="123456789", url=None)
-    ]
-    track.get_external_id.return_value = None
-    mass = _mass(provider)
-    mass.music.search = AsyncMock(return_value=MagicMock(tracks=[]))
-
-    with (
-        patch.object(
-            provider._link_enricher,
-            "_get_deezer_track_url",
-            new_callable=AsyncMock,
-            return_value=None,
-        ),
-        patch.object(
-            provider._link_enricher,
-            "_search_deezer_track_url",
-            new_callable=AsyncMock,
-            return_value=None,
-        ),
-        patch.object(
-            provider._link_enricher,
-            "_get_apple_music_track_url_by_id",
-            new_callable=AsyncMock,
-            return_value=apple_url,
-        ) as apple_id_lookup,
-        patch.object(
-            provider._link_enricher,
-            "_get_apple_music_track_url",
-            new_callable=AsyncMock,
-            return_value=None,
-        ) as apple_search,
-    ):
-        payload = await provider._build_payload(track)
-
-        assert payload.provider_refs == {"apple_music": "/us/album/987654321?i=123456789"}
-        apple_id_lookup.assert_awaited_once_with("123456789")
-        apple_search.assert_not_awaited()
+    assert build_provider_links(item) == {}
 
 
 async def test_playlist_resolution_is_read_only() -> None:
@@ -1403,10 +1147,8 @@ async def test_preview_keeps_unmatched_and_duplicate_tracks_in_original_order() 
     assert tracks[1].artists[0].name == "Artist"
     assert tracks[1].album is not None
     assert tracks[1].album.name == "Album"
-    assert all(
-        kwargs == {"allow_search": False, "hydrate_track": False}
-        for _, kwargs in resolver.call_args_list
-    )
+    assert all(kwargs == {"hydrate_track": False} for _, kwargs in resolver.call_args_list)
+    assert resolver.await_count == 2
     _mass(provider).music.playlists.import_playlist.assert_not_called()
 
 
@@ -1487,6 +1229,24 @@ def test_payload_does_not_require_a_version_field() -> None:
     ).decode()
 
     assert SharePayload.from_base64(encoded).title == "Track"
+
+
+def test_track_payload_roundtrips_optional_duration() -> None:
+    """Individual-track payloads preserve their optional duration."""
+    payload = SharePayload(type="track", title="Track", duration=218)
+
+    assert SharePayload.from_base64(payload.to_base64()).duration == 218
+
+
+@pytest.mark.parametrize("duration", [True, -1, "218", 1.5])
+def test_payload_rejects_invalid_track_duration(duration: object) -> None:
+    """Individual-track duration must be a nonnegative integer."""
+    encoded = base64.urlsafe_b64encode(
+        json.dumps({"type": "track", "title": "Track", "duration": duration}).encode()
+    ).decode()
+
+    with pytest.raises(ValueError, match="Invalid share track duration"):
+        SharePayload.from_base64(encoded)
 
 
 @pytest.mark.parametrize("duration", [True, -1, "218", 1.5])

@@ -51,6 +51,7 @@ class SharePayload:
     provider_refs: dict[str, str] | None = None
     tracks: list[TrackStub] | None = None
     version: str | None = None
+    duration: int | None = None
 
     def to_base64(self) -> str:
         """Encode payload as URL-safe base64 JSON."""
@@ -83,6 +84,9 @@ class SharePayload:
             value = data.get(field_name)
             if value is not None and not isinstance(value, str):
                 raise ValueError(f"Invalid share payload field: {field_name}")
+        share_duration = data.get("duration")
+        if share_duration is not None and (type(share_duration) is not int or share_duration < 0):
+            raise ValueError("Invalid share track duration")
         art_ref = data.get("art_ref")
         if art_ref is not None and (
             not isinstance(art_ref, str) or expand_artwork_ref(art_ref) is None
@@ -106,8 +110,10 @@ class SharePayload:
                     for key in optional_fields
                 ):
                     raise ValueError("Invalid share playlist track metadata")
-                duration = raw_track.get("duration")
-                if duration is not None and (type(duration) is not int or duration < 0):
+                track_duration = raw_track.get("duration")
+                if track_duration is not None and (
+                    type(track_duration) is not int or track_duration < 0
+                ):
                     raise ValueError("Invalid share playlist track duration")
                 tracks.append(
                     TrackStub(
@@ -118,7 +124,7 @@ class SharePayload:
                         mbid=raw_track.get("mbid"),
                         mb_track=raw_track.get("mb_track"),
                         album=raw_track.get("album"),
-                        duration=duration,
+                        duration=track_duration,
                         provider_refs=_validated_provider_refs(
                             raw_track.get("provider_refs"),
                             "Invalid share playlist provider references",
@@ -138,6 +144,7 @@ class SharePayload:
             art_ref=art_ref,
             provider_refs=provider_refs,
             tracks=tracks,
+            duration=share_duration,
         )
 
 
