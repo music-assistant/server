@@ -65,9 +65,9 @@ async def run_setup(session: SetupSession) -> None:
         return
 
     errors: dict[str, str | SetupFlowError] | None = None
-    setup_data = dict(session.context.setup_data)
-    setup_data.pop(CONF_ACCESS_TOKEN, None)
-    setup_data.pop(CONF_USER_ID, None)
+    setup_data: dict[str, ConfigValueType] = dict(session.context.setup_data)
+    setup_data[CONF_ACCESS_TOKEN] = None
+    setup_data[CONF_USER_ID] = None
     while True:
         entries = [
             replace(entry, value=setup_data.get(entry.key, entry.value)) for entry in _ENTRIES
@@ -85,8 +85,8 @@ async def _run_quick_connect(session: SetupSession) -> None:
     """Connect to Jellyfin through its Quick Connect device flow."""
     errors: dict[str, str] | None = None
     setup_data: dict[str, ConfigValueType] = dict(session.context.setup_data)
-    setup_data.pop(CONF_USERNAME, None)
-    setup_data.pop(CONF_PASSWORD, None)
+    setup_data[CONF_USERNAME] = None
+    setup_data[CONF_PASSWORD] = None
     while True:
         entries = [
             replace(entry, value=setup_data.get(entry.key, entry.value))

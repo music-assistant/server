@@ -215,6 +215,8 @@ async def test_password_setup_clears_quick_connect_credentials() -> None:
         CONF_USERNAME: "user",
         CONF_PASSWORD: "password",
         "verify_ssl": True,
+        CONF_ACCESS_TOKEN: None,
+        CONF_USER_ID: None,
     }
 
 
@@ -256,6 +258,8 @@ async def test_quick_connect_setup_clears_password_credentials() -> None:
 
     assert captured["copy_text"] == "123456"
     assert collected == {
+        CONF_USERNAME: None,
+        CONF_PASSWORD: None,
         "url": "https://jellyfin.example",
         "verify_ssl": True,
         CONF_ACCESS_TOKEN: "new-token",
