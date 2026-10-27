@@ -48,7 +48,13 @@ from .constants import (
     MASS_APP_ID,
     SENDSPIN_CAST_APP_ID,
 )
-from .helpers import CastStatusListener, ChromecastInfo, disconnect_cast
+from .helpers import (
+    CastStatusListener,
+    ChromecastInfo,
+    disconnect_cast,
+    http_profile_entry,
+    is_google_device,
+)
 from .receiver_commands import MassCastCommandController
 
 if TYPE_CHECKING:
@@ -83,7 +89,7 @@ class ChromecastPlayer(Player):
             player_type = PlayerType.STEREO_PAIR
         elif cast_info.is_audio_group:
             player_type = PlayerType.GROUP
-        elif self._is_google_device(cast_info):
+        elif is_google_device(cast_info):
             # Google devices (Chromecast, Nest, Google Home) have native Cast support
             player_type = PlayerType.PLAYER
         else:
@@ -160,11 +166,13 @@ class ChromecastPlayer(Player):
         if self.type == PlayerType.GROUP:
             return [
                 *CAST_PLAYER_CONFIG_ENTRIES,
+                http_profile_entry(self.cast_info),
                 CONF_ENTRY_SAMPLE_RATES_CAST_GROUP,
             ]
 
         return [
             *CAST_PLAYER_CONFIG_ENTRIES,
+            http_profile_entry(self.cast_info),
             CONF_ENTRY_SAMPLE_RATES_CAST,
             CONF_ENTRY_DEFER_IDLE_VOLUME,
         ]
@@ -451,21 +459,6 @@ class ChromecastPlayer(Player):
         self.mass.create_task(
             update_flow_metadata(), task_name=f"cast_flow_metadata_{self.player_id}"
         )
-
-    @staticmethod
-    def _is_google_device(cast_info: ChromecastInfo) -> bool:
-        """
-        Check if a device is a Google device with native Cast support.
-
-        Google devices (Chromecast, Nest, Google Home) have native Cast support
-        and should be exposed as PlayerType.PLAYER. Non-Google devices with Cast
-        support should be exposed as PlayerType.PROTOCOL.
-        """
-        if not cast_info.manufacturer:
-            # If no manufacturer, check model name for Google devices
-            model = cast_info.model_name.lower() if cast_info.model_name else ""
-            return any(google in model for google in ("chromecast", "google", "nest", "home"))
-        return cast_info.manufacturer.lower() in ("google", "google inc.")
 
     async def _launch_app(self) -> None:
         """Launch the configured Media Receiver App on a Chromecast."""
