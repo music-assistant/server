@@ -49,6 +49,7 @@ def _make_provider(player: SendspinBasePlayer | None) -> SendspinProvider:
     provider._held_unapproved = set()
     provider._held_paired = set()
     provider._unencrypted_clients = set()
+    provider._hass_auto_pairer = Mock()
     return provider
 
 
