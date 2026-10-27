@@ -10,6 +10,7 @@ from music_assistant_models.enums import ContentType, ExternalID, ImageType, Med
 from music_assistant_models.errors import InvalidDataError
 from music_assistant_models.media_items import (
     Album,
+    Audiobook,
     AudioFormat,
     AudioMetadata,
     ItemMapping,
@@ -1138,6 +1139,41 @@ def test_media_item_to_playlist_item_omits_multi_domain_mb_track() -> None:
 
     assert playlist_item.metadata is not None
     assert "mb_track" not in playlist_item.metadata
+
+
+def test_media_item_to_playlist_item_audiobook_with_item_mapping_authors() -> None:
+    """Library audiobooks carry authors/narrators as ItemMapping, exported by name."""
+    audiobook = Audiobook(
+        item_id="1",
+        provider="library",
+        name="Book 1",
+        provider_mappings={
+            ProviderMapping(
+                item_id="book_1", provider_domain="audible", provider_instance="audible_1"
+            )
+        },
+        authors=UniqueList(
+            [
+                ItemMapping(
+                    media_type=MediaType.ARTIST, item_id="1", provider="library", name="Author 1"
+                ),
+                "Author 2",
+            ]
+        ),
+        narrators=UniqueList(
+            [
+                ItemMapping(
+                    media_type=MediaType.ARTIST, item_id="2", provider="library", name="Narrator 1"
+                )
+            ]
+        ),
+    )
+
+    playlist_item = media_item_to_playlist_item(audiobook)
+
+    assert playlist_item.metadata is not None
+    assert playlist_item.metadata["authors"] == "Author 1; Author 2"
+    assert playlist_item.metadata["narrators"] == "Narrator 1"
 
 
 def test_media_item_to_playlist_item_omits_multi_instance_same_domain_mb_track() -> None:
