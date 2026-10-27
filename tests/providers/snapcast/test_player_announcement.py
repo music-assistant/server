@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING, cast
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-from music_assistant_models.enums import MediaType, PlaybackState
+from music_assistant_models.enums import PlaybackState
 from music_assistant_models.player import PlayerMedia
 
 from music_assistant.providers.snapcast.player import SnapCastPlayer
@@ -53,13 +53,16 @@ def _make_player(queue: SimpleNamespace) -> tuple[SnapCastPlayer, MagicMock]:
     return player, group
 
 
-def _queue(media_type: MediaType = MediaType.TRACK) -> SimpleNamespace:
+def _queue(allow_seek: bool = True) -> SimpleNamespace:
     return SimpleNamespace(
         queue_id="kitchen",
         active=True,
         state=PlaybackState.PLAYING,
         corrected_elapsed_time=5.4,
-        current_item=SimpleNamespace(queue_item_id="item-1", media_type=media_type),
+        current_item=SimpleNamespace(
+            queue_item_id="item-1",
+            streamdetails=SimpleNamespace(allow_seek=allow_seek, duration=180),
+        ),
     )
 
 
@@ -77,9 +80,9 @@ async def test_announcement_resumes_music_where_it_began() -> None:
 
 
 @pytest.mark.asyncio
-async def test_announcement_rejoins_live_radio() -> None:
-    """Radio cannot seek, so it rejoins the live stream."""
-    player, group = _make_player(_queue(MediaType.RADIO))
+async def test_announcement_rejoins_unseekable_stream() -> None:
+    """A stream that cannot seek rejoins the live stream."""
+    player, group = _make_player(_queue(allow_seek=False))
 
     await player.play_announcement(PlayerMedia(uri="announce.mp3"))
 

@@ -7,7 +7,7 @@ from contextlib import suppress
 from typing import TYPE_CHECKING, TypedDict, cast
 
 from music_assistant_models.config_entries import ConfigEntry
-from music_assistant_models.enums import IdentifierType, MediaType, PlaybackState, PlayerFeature
+from music_assistant_models.enums import IdentifierType, PlaybackState, PlayerFeature
 from music_assistant_models.player import DeviceInfo, PlayerMedia
 from propcache import under_cached_property as cached_property
 
@@ -55,9 +55,6 @@ class TrackedPlayerState(TypedDict, total=False):
     grp_name: str
     grp_member_ids: list[str]
     grp_member_avail: list[bool]
-
-
-SEEKABLE_MEDIA_TYPES = {MediaType.TRACK, MediaType.AUDIOBOOK, MediaType.PODCAST_EPISODE}
 
 
 class SnapCastPlayer(Player):
@@ -350,7 +347,9 @@ class SnapCastPlayer(Player):
             if resume_queue and resume_queue.active and resume_queue.state == PlaybackState.PLAYING
             else None
         )
-        if resume_item and resume_item.media_type not in SEEKABLE_MEDIA_TYPES:
+        if resume_item and not (
+            (details := resume_item.streamdetails) and details.allow_seek and details.duration
+        ):
             resume_item = None
         resume_pos = int(resume_queue.corrected_elapsed_time) if resume_queue else 0
         # pin the music stream, else the idle timer stops it before the announcement ends
