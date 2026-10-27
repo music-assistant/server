@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
+from types import SimpleNamespace
+from typing import Any, cast
 from unittest.mock import AsyncMock
 
 import pytest
@@ -13,6 +16,7 @@ from aiosendspin.noise.trust_store import PskCategory
 from music_assistant_models.auth import Scope, User, UserRole
 from music_assistant_models.errors import InvalidCommand
 
+import music_assistant.providers.sendspin.provider as provider_module
 from music_assistant.controllers.webserver.helpers.auth_middleware import set_current_user
 
 from .test_server_start import _make_provider as _make_loadable_provider
@@ -156,4 +160,60 @@ async def test_pair_with_token_requires_the_player_config_scope() -> None:
         for call in mass.register_api_command.call_args_list
     }
     assert scopes["sendspin/pair_with_token"] == Scope.CONFIG_PLAYERS_WRITE
+    assert scopes["sendspin/is_paired"] == Scope.CONFIG_PLAYERS_READ
     await provider.unload()
+
+
+def _with_connection_security(
+    api: _WebPlayerServerApi, psk_category: PskCategory | None
+) -> _WebPlayerServerApi:
+    security = None if psk_category is None else SimpleNamespace(psk_category=psk_category)
+    cast("Any", api._client).connection_security = security
+    return api
+
+
+async def test_is_paired_for_a_connected_long_term_pairing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A stored pairing the live connection authenticates with counts as paired."""
+    api = _with_connection_security(_WebPlayerServerApi(paired=True), PskCategory.LONG_TERM)
+    provider, _refreshed = _make_web_provider(api, monkeypatch)
+    assert await provider.is_paired(_CLIENT_ID) is True
+
+
+async def test_is_paired_rejects_a_client_that_lost_its_pairing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A stored pairing the connected client no longer holds its half of is not paired."""
+    api = _with_connection_security(_WebPlayerServerApi(paired=True), PskCategory.SENTINEL)
+    provider, _refreshed = _make_web_provider(api, monkeypatch)
+    assert await provider.is_paired(_CLIENT_ID) is False
+
+
+async def test_is_paired_rejects_an_unencrypted_connection(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A client connected without encryption is not paired, whatever the store holds."""
+    api = _with_connection_security(_WebPlayerServerApi(paired=True), None)
+    provider, _refreshed = _make_web_provider(api, monkeypatch)
+    assert await provider.is_paired(_CLIENT_ID) is False
+
+
+async def test_is_paired_trusts_the_record_of_a_disconnected_client(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A client that has not connected yet is answered from the store, without waiting."""
+    api = _WebPlayerServerApi(paired=True, connected=False)
+    provider, _refreshed = _make_web_provider(api, monkeypatch)
+    # Any wait for the connection would hit this timeout instead of returning.
+    monkeypatch.setattr(provider_module, "WEB_PLAYER_CONNECT_TIMEOUT", 60.0)
+    async with asyncio.timeout(1):
+        assert await provider.is_paired(_CLIENT_ID) is True
+
+
+async def test_is_paired_for_an_unknown_client(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A client without a stored pairing is not paired, connected or not."""
+    api = _WebPlayerServerApi(paired=False)
+    provider, _refreshed = _make_web_provider(api, monkeypatch)
+    monkeypatch.setattr(api, "get_client", lambda _client_id: None)
+    assert await provider.is_paired(_CLIENT_ID) is False
