@@ -7,7 +7,7 @@ from contextlib import suppress
 from typing import TYPE_CHECKING, TypedDict, cast
 
 from music_assistant_models.config_entries import ConfigEntry
-from music_assistant_models.enums import IdentifierType, PlaybackState, PlayerFeature
+from music_assistant_models.enums import IdentifierType, MediaType, PlaybackState, PlayerFeature
 from music_assistant_models.player import DeviceInfo, PlayerMedia
 from propcache import under_cached_property as cached_property
 
@@ -57,6 +57,9 @@ class TrackedPlayerState(TypedDict, total=False):
     grp_member_avail: list[bool]
 
 
+SEEKABLE_MEDIA_TYPES = {MediaType.TRACK, MediaType.AUDIOBOOK, MediaType.PODCAST_EPISODE}
+
+
 class SnapCastPlayer(Player):
     """SnapCastPlayer."""
 
@@ -75,6 +78,7 @@ class SnapCastPlayer(Player):
         self._attr_supported_sample_rates = [(stream_format.sample_rate, stream_format.bit_depth)]
 
         self._snap_ma_stream: SnapcastMAStream | None = None
+        self._announcement_clip_playing = False
 
         self._update_worker: asyncio.Task[None] | None = None
         self._poke_evt = asyncio.Event()
@@ -323,7 +327,7 @@ class SnapCastPlayer(Player):
 
         # if no announcement is playing we activate the stream now, otherwise it
         # will be activated by play_announcement when the announcement is over.
-        if not self.extra_data.get(ATTR_ANNOUNCEMENT_IN_PROGRESS):
+        if not self._announcement_clip_playing:
             player_group = await self.snap_provider.ensure_player_owned_group(self.player_id)
             assert player_group is not None  # for type checking
             await player_group.set_stream(ma_stream.stream_id)
@@ -338,6 +342,17 @@ class SnapCastPlayer(Player):
         orig_volume_level: int | None = self.volume_level
 
         prev_stream = self.active_snap_ma_stream
+        # the music keeps streaming unheard while the group plays the clip, so the queue
+        # restarts where the clip began instead of rejoining the live stream
+        resume_queue = None if was_synced_to else self.mass.player_queues.get(self.player_id)
+        resume_item = (
+            resume_queue.current_item
+            if resume_queue and resume_queue.active and resume_queue.state == PlaybackState.PLAYING
+            else None
+        )
+        if resume_item and resume_item.media_type not in SEEKABLE_MEDIA_TYPES:
+            resume_item = None
+        resume_pos = int(resume_queue.corrected_elapsed_time) if resume_queue else 0
         # pin the music stream, else the idle timer stops it before the announcement ends
         if prev_stream:
             prev_stream.pin(self.player_id)
@@ -351,6 +366,7 @@ class SnapCastPlayer(Player):
             if ma_stream is None or ma_stream.stream_id is None or player_group is None:
                 return
 
+            self._announcement_clip_playing = True
             await player_group.set_stream(ma_stream.stream_id)
 
             if self.snap_provider._use_builtin_server:
@@ -361,6 +377,7 @@ class SnapCastPlayer(Player):
 
             await ma_stream.start_stream()
             await ma_stream.wait_for_stopped()
+            self._announcement_clip_playing = False
 
             if self.volume_level == volume_level and orig_volume_level is not None:
                 await self.volume_set(orig_volume_level)
@@ -373,6 +390,10 @@ class SnapCastPlayer(Player):
                 ) is None:
                     return
                 await leader_group.add_client(self.snap_client.identifier)
+            elif resume_queue and resume_item:
+                await self.mass.player_queues.play_index(
+                    resume_queue.queue_id, resume_item.queue_item_id, resume_pos
+                )
             else:
                 await player_group.set_stream(
                     prev_stream.stream_id
@@ -380,6 +401,7 @@ class SnapCastPlayer(Player):
                     else "default"
                 )
         finally:
+            self._announcement_clip_playing = False
             if prev_stream:
                 prev_stream.unpin(self.player_id)
                 self.snap_provider.update_stream_usage()
