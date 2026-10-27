@@ -198,8 +198,8 @@ class JellyfinProvider(MusicProvider):
             self.get_setup_value(CONF_DEVICE_ID)
             or hashlib.sha256(f"{self.mass.server_id}+{username}".encode()).hexdigest()
         )
-        verify_ssl = bool(self.get_setup_value(CONF_VERIFY_SSL))
-        http_session = self.mass.http_session if verify_ssl else self.mass.http_session_no_ssl
+        self._verify_ssl = bool(self.get_setup_value(CONF_VERIFY_SSL))
+        http_session = self.mass.http_session if self._verify_ssl else self.mass.http_session_no_ssl
 
         session_config = SessionConfiguration(
             session=http_session,
