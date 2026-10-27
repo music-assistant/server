@@ -26,6 +26,7 @@ class TrackStub:
 
     title: str
     artist: str | None = None
+    artists: list[str] | None = None
     isrc: str | None = None
     mbid: str | None = None
     mb_track: str | None = None
@@ -42,6 +43,7 @@ class SharePayload:
     type: Literal["track", "album", "artist", "playlist"]
     title: str
     artist: str | None = None
+    artists: list[str] | None = None
     album: str | None = None
     isrc: str | None = None
     mbid: str | None = None
@@ -84,6 +86,15 @@ class SharePayload:
             value = data.get(field_name)
             if value is not None and not isinstance(value, str):
                 raise ValueError(f"Invalid share payload field: {field_name}")
+        raw_artists = data.get("artists")
+        if raw_artists is not None and (
+            not isinstance(raw_artists, list)
+            or any(not isinstance(artist, str) or not artist.strip() for artist in raw_artists)
+        ):
+            raise ValueError("Invalid share artist credits")
+        payload_artists = (
+            [artist.strip() for artist in raw_artists] if raw_artists is not None else None
+        )
         share_duration = data.get("duration")
         if share_duration is not None and (type(share_duration) is not int or share_duration < 0):
             raise ValueError("Invalid share track duration")
@@ -110,6 +121,17 @@ class SharePayload:
                     for key in optional_fields
                 ):
                     raise ValueError("Invalid share playlist track metadata")
+                raw_artists = raw_track.get("artists")
+                if raw_artists is not None and (
+                    not isinstance(raw_artists, list)
+                    or any(
+                        not isinstance(artist, str) or not artist.strip() for artist in raw_artists
+                    )
+                ):
+                    raise ValueError("Invalid share playlist artist credits")
+                track_artists = (
+                    [artist.strip() for artist in raw_artists] if raw_artists is not None else None
+                )
                 track_duration = raw_track.get("duration")
                 if track_duration is not None and (
                     type(track_duration) is not int or track_duration < 0
@@ -119,6 +141,7 @@ class SharePayload:
                     TrackStub(
                         title=raw_track["title"],
                         artist=raw_track.get("artist"),
+                        artists=track_artists,
                         version=raw_track.get("version"),
                         isrc=raw_track.get("isrc"),
                         mbid=raw_track.get("mbid"),
@@ -135,6 +158,7 @@ class SharePayload:
             type=data["type"],
             title=data["title"],
             artist=data.get("artist"),
+            artists=payload_artists,
             version=data.get("version"),
             album=data.get("album"),
             isrc=data.get("isrc"),
