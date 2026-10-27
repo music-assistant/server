@@ -1785,9 +1785,37 @@ class TestYnisonStateHandling:
             current_playable_index=1,
             playable_list=[{"playable_id": "same"}, {"playable_id": "same"}],
         )
-        provider._ynison = _mock_ynison(state)
+        client = YnisonClient(
+            SecretStr("test"), YnisonDeviceInfo("dev1", "Test"), AsyncMock(), MagicMock()
+        )
+        client.state = state
+        baseline = client.navigation_baseline()
+        provider._ynison = client
+        client._navigation_version = 2
+        client._confirmed_queue_version = 2
 
-        assert await provider._wait_for_track_change(("same", 0), timeout=0.1)
+        assert await provider._wait_for_track_change("same", baseline, timeout=0.1)
+
+    async def test_trim_echo_does_not_end_the_wait_for_navigation(self) -> None:
+        """A shifted index of the finished track is a trim, not the published navigation."""
+        provider = _make_provider()
+        client = YnisonClient(
+            SecretStr("test"), YnisonDeviceInfo("dev1", "Test"), AsyncMock(), MagicMock()
+        )
+        client.state = _make_ynison_state(
+            current_playable_index=5,
+            playable_list=[{"playable_id": f"t{i}"} for i in range(5)] + [{"playable_id": "done"}],
+        )
+        baseline = client.navigation_baseline()
+        client._navigation_version = 2
+        client.state.player_state["player_queue"] = {
+            "current_playable_index": 3,
+            "playable_list": [{"playable_id": f"t{i}"} for i in range(2, 5)]
+            + [{"playable_id": "done"}],
+        }
+        provider._ynison = client
+
+        assert not await provider._wait_for_track_change("done", baseline, timeout=0.1)
 
 
 # ------------------------------------------------------------------
@@ -2573,8 +2601,13 @@ def _wire_queue_mutation(mock: MagicMock) -> None:
 
     mock.queue_snapshot.side_effect = snapshot
     mock.queue_generation = 0
+    mock._queue_lineage = 0
+    mock._navigation_version = None
+    mock._confirmed_queue_version = None
 
-    async def mutate(mutation: Any, *, expected_generation: int | None = None) -> None:
+    async def mutate(
+        mutation: Any, *, expected_generation: int | None = None, navigation: bool = False
+    ) -> None:
         nonlocal pending
         if expected_generation is not None and expected_generation != mock.queue_generation:
             raise ResourceTemporarilyUnavailable("Ynison queue changed")
@@ -2583,6 +2616,8 @@ def _wire_queue_mutation(mock: MagicMock) -> None:
         if mutation(player_state) is False:
             return
         player_state["player_queue"]["version"] = make_version_block(mock.device_id)
+        if navigation:
+            mock._navigation_version = int(player_state["player_queue"]["version"]["version"])
         await mock.update_player_state(player_state=player_state, strict=True)
         pending = deepcopy(player_state["player_queue"])
 
@@ -2594,6 +2629,8 @@ def _wire_queue_mutation(mock: MagicMock) -> None:
         "go_to_index",
         "publish_items",
         "is_current_playback",
+        "navigation_confirmed",
+        "_matches_baseline",
         "set_repeat_mode",
         "set_shuffle",
     ):
@@ -2612,6 +2649,7 @@ def _mock_ynison(
     mock.state = state or _make_ynison_state()
     mock.device_id = device_id
     mock.report_status = AsyncMock()
+    mock.estimated_progress_ms.side_effect = lambda: mock.state.progress_ms
     mock.update_player_state = AsyncMock()
 
     _wire_queue_mutation(mock)
@@ -3309,12 +3347,7 @@ class TestEchoSuppression:
         playable[199] = {"playable_id": "track1"}
         provider._playback.index = 199
         provider._ynison = _mock_ynison()
-
-        async def publish(_items: Any, **kwargs: Any) -> int:
-            kwargs["on_trim"](10)
-            return 10
-
-        provider._ynison.publish_items = AsyncMock(side_effect=publish)
+        provider._ynison.publish_items = AsyncMock(return_value=10)
 
         await provider._update_queue_list([{"playable_id": "x"}])
 
@@ -3326,6 +3359,7 @@ class TestEchoSuppression:
         trimmed = [*playable[10:], {"playable_id": "x"}]
         echo = _make_ynison_state(current_playable_index=189, playable_list=trimmed)
         echo.last_update_is_echo = True
+        echo.current_item_kept = True
         await provider._handle_ynison_state(echo)
 
         assert not provider._playback.restart_requested()
@@ -3340,10 +3374,10 @@ class TestEchoSuppression:
         trimmed = [{"playable_id": f"t{i}"} for i in range(10, 199)]
         trimmed += [{"playable_id": "track1"}, {"playable_id": "x"}]
 
-        async def publish(_items: Any, **kwargs: Any) -> int:
-            kwargs["on_trim"](10)
+        async def publish(_items: Any, **_kwargs: Any) -> int:
             echo = _make_ynison_state(current_playable_index=189, playable_list=trimmed)
             echo.last_update_is_echo = True
+            echo.current_item_kept = True
             await provider._handle_ynison_state(echo)
             return 10
 
@@ -3353,25 +3387,31 @@ class TestEchoSuppression:
 
         assert not provider._playback.restart_requested()
         assert provider._playback.index == 189
-        assert provider._playback.pending_index_shift == 0
 
-    async def test_failed_trim_publication_forgets_the_shift(self) -> None:
+    async def test_failed_trim_publication_keeps_the_cursor(self) -> None:
         """A trim that never reached Ynison leaves the cursor as it was."""
         provider = _make_provider()
         await self._prime_same_track(provider)
         provider._playback.index = 199
         provider._ynison = _mock_ynison()
-
-        async def publish(_items: Any, **kwargs: Any) -> int:
-            kwargs["on_trim"](10)
-            raise YnisonSendError("down")
-
-        provider._ynison.publish_items = AsyncMock(side_effect=publish)
+        provider._ynison.publish_items = AsyncMock(side_effect=YnisonSendError("down"))
 
         await provider._update_queue_list([{"playable_id": "x"}])
 
-        assert provider._playback.pending_index_shift == 0
         assert provider._playback.index == 199
+
+    async def test_pause_without_a_local_stream_extrapolates_the_server_position(self) -> None:
+        """Pause on a track this source is not streaming sends the server's current estimate."""
+        provider = _make_provider()
+        provider._playback.duration_ms = 120000
+        state = _make_ynison_state(progress_ms=10000, duration_ms=120000, paused=False)
+        mock_yn = _mock_ynison(state)
+        mock_yn.estimated_progress_ms.side_effect = lambda: 40000
+        provider._ynison = mock_yn
+
+        await provider._on_pause()
+
+        assert mock_yn.report_status.await_args.kwargs["progress_ms"] == 40000
 
     async def test_pause_after_track_change_sends_the_new_track_start(self) -> None:
         """Before the stream starts the new track, pause reports where that track starts."""

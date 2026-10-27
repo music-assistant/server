@@ -25,6 +25,7 @@ from music_assistant.providers.yandex_ynison.constants import (
     YNISON_ORIGIN,
 )
 from music_assistant.providers.yandex_ynison.ynison_client import (
+    StatusBaseline,
     YnisonClient,
     YnisonDeviceInfo,
     YnisonSendError,
@@ -3305,20 +3306,42 @@ class TestQueueCommands:
         )
         assert self._sent_queue()["current_playable_index"] == 1
 
-    async def test_trim_reports_the_shift_before_sending(self, client: YnisonClient) -> None:
-        """The window trim is announced before the edit leaves, so its echo cannot outrun it."""
+    async def test_own_trim_echo_keeps_the_current_item(self, client: YnisonClient) -> None:
+        """The echo of our window trim moves the index but keeps the same item current."""
         queue = client.state.player_state["player_queue"]
         queue["playable_list"] = [{"playable_id": f"t{i}"} for i in range(200)]
         queue["current_playable_index"] = 199
-        sent_before: list[int] = []
-
-        def on_trim(dropped: int) -> None:
-            sent_before.append(self.mock_ws.send_str.await_count)
-            assert dropped == 1
-
         items = [*queue["playable_list"], {"playable_id": "n"}]
-        assert await client.publish_items(items, on_trim=on_trim) == 1
-        assert sent_before == [0]
+        assert await client.publish_items(items) == 1
+
+        client._parse_state({"player_state": {"player_queue": self._sent_queue()}})
+
+        assert client.state.current_index == 198
+        assert client.state.current_item_kept is True
+
+    async def test_navigation_echo_during_the_send_is_navigation(
+        self, client: YnisonClient
+    ) -> None:
+        """Navigation is registered before it is sent, so an early echo is recognised."""
+        baseline = client.navigation_baseline()
+
+        async def echo_while_sending(raw: str) -> None:
+            queue = json.loads(raw)["update_player_state"]["player_state"]["player_queue"]
+            client._parse_state({"player_state": {"player_queue": queue}})
+
+        self.mock_ws.send_str.side_effect = echo_while_sending
+        assert await client.advance_queue(natural=True, duration_ms=9000) == "change"
+
+        assert client.state.current_item_kept is False
+        assert client.navigation_confirmed(baseline)
+
+    def test_estimated_progress_extrapolates_the_server_status(self, client: YnisonClient) -> None:
+        """The server-known position advances with time while playing."""
+        with patch(
+            "music_assistant.providers.yandex_ynison.ynison_client.time.monotonic",
+            return_value=time.monotonic() + 3,
+        ):
+            assert 2900 <= client.estimated_progress_ms() <= 3100
 
     def test_peer_queue_is_not_the_current_playback(self, client: YnisonClient) -> None:
         """A queue from another device replaces the playback a decision was made for."""
@@ -3338,6 +3361,62 @@ class TestQueueCommands:
         )
 
         assert not client.is_current_playback(baseline)
+
+    async def test_option_edit_does_not_adopt_a_peer_queue(self, client: YnisonClient) -> None:
+        """A peer queue stays foreign after our repeat edit re-publishes it."""
+        baseline = client.navigation_baseline()
+        client._parse_state(
+            {
+                "player_state": {
+                    "player_queue": {
+                        "current_playable_index": 0,
+                        "playable_list": [{"playable_id": "t0"}, {"playable_id": "p1"}],
+                        "options": {"repeat_mode": "NONE"},
+                        "entity_type": "VARIOUS",
+                        "version": {"device_id": "peer", "version": "2", "timestamp_ms": "0"},
+                    }
+                }
+            }
+        )
+        await client.set_repeat_mode(RepeatMode.ALL)
+
+        assert not client.is_current_playback(baseline)
+        with pytest.raises(ResourceTemporarilyUnavailable):
+            await client.advance_queue(natural=True, duration_ms=9000, baseline=baseline)
+
+    async def test_navigation_is_confirmed_by_its_own_echo(self, client: YnisonClient) -> None:
+        """An older own queue echo, such as a window trim, does not confirm navigation."""
+        baseline = client.navigation_baseline()
+        assert await client.advance_queue(natural=True, duration_ms=9000) == "change"
+        sent = self._sent_queue()
+        version = int(sent["version"]["version"])
+        assert not client.navigation_confirmed(baseline)
+
+        older = {**sent, "current_playable_index": 0}
+        older["version"] = {**sent["version"], "version": str(version - 1)}
+        client._parse_state({"player_state": {"player_queue": older}})
+        assert not client.navigation_confirmed(baseline)
+
+        client._parse_state({"player_state": {"player_queue": sent}})
+        assert client.navigation_confirmed(baseline)
+
+    def test_peer_queue_settles_a_pending_navigation(self, client: YnisonClient) -> None:
+        """Another device replacing the queue ends the wait for our navigation."""
+        baseline = client.navigation_baseline()
+        client._parse_state(
+            {
+                "player_state": {
+                    "player_queue": {
+                        "current_playable_index": 0,
+                        "playable_list": [{"playable_id": "p0"}],
+                        "entity_type": "VARIOUS",
+                        "version": {"device_id": "peer", "version": "2", "timestamp_ms": "0"},
+                    }
+                }
+            }
+        )
+
+        assert client.navigation_confirmed(baseline)
 
     async def test_go_to_index_with_items_keeps_window(self, client: YnisonClient) -> None:
         """Appending items while moving keeps the 200-item window around the target."""
@@ -3376,3 +3455,27 @@ class TestQueueCommands:
         sent = self._sent_queue()
         assert sent["options"]["repeat_mode"] == "ALL"
         assert sent["shuffle_optional"]["playable_indices"][0] == 0
+
+
+class TestStatusBaseline:
+    """The newest server-known status and the questions asked of it."""
+
+    def test_playing_status_extrapolates_and_paused_does_not(self) -> None:
+        """A playing position advances with time; a paused one stays."""
+        playing = StatusBaseline(10000, 200000, False, anchor=100.0, version=None)
+        paused = StatusBaseline(10000, 200000, True, anchor=100.0, version=None)
+
+        assert playing.expected_progress_ms(160.0) == 70000
+        assert paused.expected_progress_ms(160.0) == 10000
+
+    def test_matches_within_the_dedup_window_only(self) -> None:
+        """A candidate within two seconds of the extrapolation adds nothing."""
+        baseline = StatusBaseline(10000, 200000, False, anchor=100.0, version=None)
+
+        assert baseline.matches(71500, 200000, False, now=160.0)
+        assert not baseline.matches(73000, 200000, False, now=160.0)
+        assert not baseline.matches(70000, 200000, True, now=160.0)
+
+    def test_unreadable_status_has_no_baseline(self) -> None:
+        """A status with a non-numeric position cannot anchor deduplication."""
+        assert StatusBaseline.from_status({"progress_ms": "x"}, anchor=0.0) is None

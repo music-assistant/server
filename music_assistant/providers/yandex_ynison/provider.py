@@ -65,7 +65,13 @@ from .constants import (
 from .credential_source import YandexMusicCredentialSource
 from .playback_session import PlaybackSession, RestartReason, StopReason
 from .protocols import YandexMusicProviderLike
-from .queue_model import RADIO_ENTITY_TYPES, YnisonQueueView, radio_items, repeat_from_ynison
+from .queue_model import (
+    RADIO_ENTITY_TYPES,
+    NavigationOutcome,
+    YnisonQueueView,
+    radio_items,
+    repeat_from_ynison,
+)
 from .streaming import (
     PCM_LOSSLESS_PARAMS,
     PCM_LOSSY_PARAMS,
@@ -570,16 +576,17 @@ class YandexYnisonProvider(PluginProvider):
                 )
                 if natural_end:
                     self.logger.info("Track %s finished, advancing to next", track_id)
-                    old_index = self._ynison.state.current_index
+                    baseline = self._ynison.navigation_baseline()
                     completion = await self._signal_track_completion()
-                    if completion == "restart":
+                    if completion == NavigationOutcome.RESTART:
                         playback.request_restart(0, RestartReason.REPEAT, grace=False)
-                    elif completion == "superseded":
+                    elif completion == NavigationOutcome.SUPERSEDED:
                         # Another device changed playback meanwhile; follow its state.
                         pass
-                    elif completion in ("stop", "failed") or not await self._wait_for_track_change(
-                        (track_id, old_index)
-                    ):
+                    elif completion in (
+                        NavigationOutcome.STOP,
+                        NavigationOutcome.FAILED,
+                    ) or not await self._wait_for_track_change(track_id, baseline):
                         playback.request_stop(StopReason.QUEUE_END)
                         break
 
@@ -670,19 +677,20 @@ class YandexYnisonProvider(PluginProvider):
         self._playback.release(owner_player_id, stream_session_id)
 
     async def _wait_for_track_change(
-        self, old_track: str | tuple[str, int], timeout: float = 30.0
+        self,
+        old_track_id: str,
+        baseline: NavigationBaseline | None = None,
+        timeout: float = 30.0,
     ) -> bool:
         """
         Wait for Ynison to report a different track, ignoring echoes.
 
         After _signal_track_completion sends update_playing_status, Ynison
         echoes back the same track with updated progress.  Only return True
-        once current_track_id actually differs from old_track_id.
+        once current_track_id actually differs from old_track_id, or, with a
+        ``baseline``, once the navigation published after it has settled. A
+        shifted index alone may be our own window trim, so it is not proof.
         """
-        if isinstance(old_track, tuple):
-            old_track_id, old_index = old_track
-        else:
-            old_track_id, old_index = old_track, None
         deadline = time.monotonic() + timeout
         while not self._playback.stop_requested():
             # Check state BEFORE consuming the wake-up.  Ynison may have already
@@ -692,13 +700,10 @@ class YandexYnisonProvider(PluginProvider):
             # Check is race-free: no await between the read and clear() below.
             # None means empty/unreadable queue — treat as "not advanced."
             if self._ynison:
-                state = self._ynison.state
-                current = state.current_track_id
-                current_index = state.current_index
-                if current is not None and (
-                    current != old_track_id
-                    or (old_index is not None and current_index != old_index)
-                ):
+                current = self._ynison.state.current_track_id
+                if current is not None and current != old_track_id:
+                    return True
+                if baseline is not None and self._ynison.navigation_confirmed(baseline):
                     return True
             self._playback.consume_restart()
             remaining = deadline - time.monotonic()
@@ -1147,7 +1152,9 @@ class YandexYnisonProvider(PluginProvider):
         significant_change = False
         new_track = state.current_track_id
         new_index = state.current_index
-        self._playback.follow_window_trim(new_track, new_index)
+        if state.current_item_kept and new_track == self._playback.track_id:
+            # Our own trim re-indexed the playing item; it is the same occurrence.
+            self._playback.index = new_index
         if new_track and (
             new_track != self._playback.track_id
             or (self._playback.index >= 0 and new_index != self._playback.index)
@@ -1155,7 +1162,6 @@ class YandexYnisonProvider(PluginProvider):
             self.logger.info("Track changed: %s -> %s", self._playback.track_id, new_track)
             self._playback.track_id = new_track
             self._playback.index = new_index
-            self._playback.pending_index_shift = 0
             # The grace window ignores stale echoed progress after the change.
             self._playback.request_restart(state.progress_ms, RestartReason.TRACK_CHANGE)
             significant_change = True
@@ -1224,8 +1230,9 @@ class YandexYnisonProvider(PluginProvider):
             meta.duration = best_duration // 1000
         # Only update elapsed from Ynison when NOT actively streaming —
         # during streaming, _sync_progress provides byte-accurate progress.
-        if state.progress_ms is not None and not self._playback.owner_player_id:
-            meta.elapsed_time = state.progress_ms // 1000
+        if not self._playback.owner_player_id:
+            progress = self._ynison.estimated_progress_ms() if self._ynison else state.progress_ms
+            meta.elapsed_time = progress // 1000
             meta.elapsed_time_last_updated = time.time()
 
         # Extract track info from player state if available
@@ -1808,17 +1815,12 @@ class YandexYnisonProvider(PluginProvider):
             raise PlayerCommandFailed("Ynison WebSocket disconnected")
         return self._ynison
 
-    def _current_progress_ms(self, state: YnisonState) -> int:
+    def _current_progress_ms(self, client: YnisonClient) -> int:
         """Return the position of the current Ynison track, preferring our own stream."""
         # Status is published only on change, so the server sample can be far
         # behind the position this source has streamed.
-        if self._playback.owner_player_id and self._playback.track_id == state.current_track_id:
-            # Until the stream starts a requested item, its start is the position.
-            if self._playback.restart_requested():
-                return self._playback.restart_at_ms
-            if self._playback.progress_ms >= 0:
-                return self._playback.progress_ms
-        return state.progress_ms
+        position = self._playback.position_ms(client.state.current_track_id)
+        return position if position is not None else client.estimated_progress_ms()
 
     async def _on_play(self) -> None:
         """Handle play command — send resume to Ynison."""
@@ -1827,7 +1829,7 @@ class YandexYnisonProvider(PluginProvider):
             return
         try:
             await client.report_status(
-                progress_ms=self._current_progress_ms(client.state),
+                progress_ms=self._current_progress_ms(client),
                 duration_ms=self._best_duration_ms(),
                 paused=False,
                 strict=True,
@@ -1843,7 +1845,7 @@ class YandexYnisonProvider(PluginProvider):
             return
         try:
             await client.report_status(
-                progress_ms=self._current_progress_ms(client.state),
+                progress_ms=self._current_progress_ms(client),
                 duration_ms=self._best_duration_ms(),
                 paused=True,
                 strict=True,
@@ -1907,25 +1909,25 @@ class YandexYnisonProvider(PluginProvider):
         natural: bool,
         duration: int,
         baseline: NavigationBaseline,
-    ) -> Literal["change", "restart", "stop", "failed", "superseded", "radio"]:
+    ) -> NavigationOutcome:
         """Decide and publish navigation for the playback captured in ``baseline``."""
         if not (client := self._ynison):
-            return "failed"
+            return NavigationOutcome.FAILED
         for attempt in range(2):
             if not await self._wait_for_ynison_connection(client):
-                return "failed"
+                return NavigationOutcome.FAILED
             try:
                 return await client.advance_queue(
                     natural=natural, duration_ms=duration, baseline=baseline
                 )
             except ResourceTemporarilyUnavailable:
                 self.logger.info("Queue navigation superseded by a playback change")
-                return "superseded"
+                return NavigationOutcome.SUPERSEDED
             except YnisonSendError:
                 self.logger.warning("Queue navigation transport failure", exc_info=True)
                 if attempt == 0:
                     await asyncio.sleep(1)
-        return "failed"
+        return NavigationOutcome.FAILED
 
     async def _wait_for_ynison_connection(self, client: YnisonClient) -> bool:
         """Wait at most ten seconds for the same client's transport to recover."""
@@ -1946,14 +1948,12 @@ class YandexYnisonProvider(PluginProvider):
         self,
         *,
         natural: bool = True,
-    ) -> Literal["change", "restart", "stop", "failed", "superseded"]:
+    ) -> NavigationOutcome:
         """Serialize navigation, including asynchronous RADIO replenishment."""
         async with self._queue_navigation_lock:
             return await self._complete_track(natural=natural)
 
-    async def _complete_track(
-        self, *, natural: bool = True
-    ) -> Literal["change", "restart", "stop", "failed", "superseded"]:
+    async def _complete_track(self, *, natural: bool = True) -> NavigationOutcome:
         """
         Signal that the current track finished playing.
 
@@ -1971,16 +1971,16 @@ class YandexYnisonProvider(PluginProvider):
             could not be completed.
         """
         if not (client := self._ynison):
-            return "failed"
+            return NavigationOutcome.FAILED
         duration = self._best_duration_ms()
         self._playback.duration_ms = 0
         # The completion belongs to the playback seen now; a peer queue that
         # replaces it while the transport recovers must not receive it.
         baseline = client.navigation_baseline()
         if not await self._wait_for_ynison_connection(client):
-            return "failed"
+            return NavigationOutcome.FAILED
         if not client.is_current_playback(baseline):
-            return "superseded"
+            return NavigationOutcome.SUPERSEDED
 
         # 1. Report that playback reached the end.
         # Echo tracking is handled by the client's status watermarks.
@@ -2003,7 +2003,7 @@ class YandexYnisonProvider(PluginProvider):
         outcome = await self._advance_queue_navigation(
             natural=natural, duration=duration, baseline=baseline
         )
-        if outcome != "radio":
+        if outcome != NavigationOutcome.RADIO:
             self._prefetched_list = None
             return outcome
         queue = self._ynison.queue_snapshot()
@@ -2028,7 +2028,7 @@ class YandexYnisonProvider(PluginProvider):
             else:
                 expanded = await self._replenish_radio_queue(entity_id, entity_type, playable_list)
             if self._ynison.queue_generation != generation:
-                return "superseded"
+                return NavigationOutcome.SUPERSEDED
             expanded_next_index = len(playable_list)
             if expanded and expanded_next_index < len(expanded):
                 if await self._advance_queue_index(
@@ -2036,8 +2036,8 @@ class YandexYnisonProvider(PluginProvider):
                     expanded_list=expanded,
                     expected_generation=generation,
                 ):
-                    return "change"
-                return "failed"
+                    return NavigationOutcome.CHANGE
+                return NavigationOutcome.FAILED
             if expanded:
                 self.logger.warning(
                     "Expanded queue has %d items but next_index=%d — re-fetching",
@@ -2051,8 +2051,8 @@ class YandexYnisonProvider(PluginProvider):
                         expanded_list=fresh,
                         expected_generation=generation,
                     ):
-                        return "change"
-                    return "failed"
+                        return NavigationOutcome.CHANGE
+                    return NavigationOutcome.FAILED
                 self.logger.warning("Still cannot advance after re-fetch")
             else:
                 self.logger.warning(
@@ -2060,8 +2060,8 @@ class YandexYnisonProvider(PluginProvider):
                     entity_id,
                     entity_type,
                 )
-            return "failed"
-        return "failed"
+            return NavigationOutcome.FAILED
+        return NavigationOutcome.FAILED
 
     async def _replenish_radio_queue(
         self,
@@ -2169,33 +2169,18 @@ class YandexYnisonProvider(PluginProvider):
         """
         if not self._ynison or not self._ynison.connected:
             return
-        registered = 0
-
-        def register_trim(dropped: int) -> None:
-            # The playing item moves down once Ynison reports the trimmed queue;
-            # registered before the send so an early echo is recognised.
-            nonlocal registered
-            if self._playback.index >= 0:
-                self._playback.pending_index_shift += dropped
-                registered = dropped
-
         try:
-            await self._ynison.publish_items(
-                expanded_list, expected_generation=expected_generation, on_trim=register_trim
-            )
+            await self._ynison.publish_items(expanded_list, expected_generation=expected_generation)
         except YnisonSendError, ResourceTemporarilyUnavailable:
             self.logger.warning("RADIO queue update dropped", exc_info=True)
-            self._playback.pending_index_shift = max(
-                0, self._playback.pending_index_shift - registered
-            )
 
     async def _on_next(self) -> None:
         """Handle next track command — signal track end so Yandex advances."""
         await self._require_connected_ynison()
         outcome = await self._signal_track_completion(natural=False)
-        if outcome in ("failed", "superseded"):
+        if outcome in (NavigationOutcome.FAILED, NavigationOutcome.SUPERSEDED):
             raise PlayerCommandFailed("Ynison queue advance failed")
-        if outcome == "restart":
+        if outcome == NavigationOutcome.RESTART:
             self._playback.request_restart(0, RestartReason.REPEAT, grace=False)
 
     async def _on_previous(self) -> None:

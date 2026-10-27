@@ -5,7 +5,8 @@ from __future__ import annotations
 import random
 import time
 from collections.abc import Mapping, Sequence
-from typing import Any, Literal
+from enum import StrEnum
+from typing import Any
 
 from music_assistant_models.enums import RepeatMode
 
@@ -16,7 +17,19 @@ QUEUE_WINDOW = 200
 # Entity types whose queue end is replenished by the active device.
 RADIO_ENTITY_TYPES = frozenset({"RADIO"})
 
-QueueOutcome = Literal["change", "restart", "stop", "radio", "failed"]
+
+class NavigationOutcome(StrEnum):
+    """Result of a queue navigation request."""
+
+    CHANGE = "change"
+    RESTART = "restart"
+    STOP = "stop"
+    # A RADIO queue reached its end and needs more items before it can advance.
+    RADIO = "radio"
+    # Another device changed playback before the navigation could apply.
+    SUPERSEDED = "superseded"
+    FAILED = "failed"
+
 
 _REPEAT_TO_YNISON = {RepeatMode.OFF: "NONE", RepeatMode.ONE: "ONE", RepeatMode.ALL: "ALL"}
 _REPEAT_FROM_YNISON = {wire: mode for mode, wire in _REPEAT_TO_YNISON.items()}
@@ -108,7 +121,7 @@ def repeat_from_ynison(queue: Mapping[str, Any]) -> RepeatMode:
 
 def plan_navigation(
     player_state: dict[str, Any], *, natural: bool, duration_ms: int, device_id: str
-) -> QueueOutcome:
+) -> NavigationOutcome:
     """
     Advance a player state to the next logical item, honouring repeat.
 
@@ -128,15 +141,19 @@ def plan_navigation(
     else:
         next_index = view.next_index(wrap=repeat == RepeatMode.ALL and not radio)
     if next_index is None and radio:
-        return "radio"
+        return NavigationOutcome.RADIO
     status = dict(player_state.get("status", {}))
     if next_index is None:
         status.update(progress_ms=str(duration_ms), duration_ms=str(duration_ms), paused=True)
-        outcome: QueueOutcome = "stop"
+        outcome = NavigationOutcome.STOP
     else:
         queue["current_playable_index"] = next_index
         status.update(progress_ms="0", duration_ms="0", paused=False)
-        outcome = "restart" if next_index == view.current_index else "change"
+        outcome = (
+            NavigationOutcome.RESTART
+            if next_index == view.current_index
+            else NavigationOutcome.CHANGE
+        )
     status["version"] = make_version_block(device_id)
     player_state["status"] = status
     return outcome
