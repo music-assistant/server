@@ -66,6 +66,7 @@ def _make_intercept_player(
     player._last_progress_wall = 0.0
     player._intercept_lock = asyncio.Lock()
     player._alice_active_pause_sent = False
+    vars(player)["_station_unmuted_for_phrase"] = False
     player._saved_station_volume = None
     player._station_muted_by_intercept = False
     player._prev_alice_state = ""
@@ -1415,3 +1416,59 @@ async def test_server_action_phrase_does_not_pause_target() -> None:
 
     player.mass.players.cmd_pause.assert_not_awaited()
     player.glagol.send.assert_not_awaited()
+
+
+async def test_server_action_phrase_unmutes_station_without_pausing_target() -> None:
+    """
+    A phrase spoken through a server action is audible on a muted Station.
+
+    Some firmware ties Alice's speech to the Station volume, so the Station is
+    unmuted for the phrase and muted again once Alice is idle; the target keeps
+    playing throughout.
+    """
+    player = _make_intercept_player()
+    player._intercept_active = True
+    player._saved_station_volume = 70
+    player._station_muted_by_intercept = True
+    player._last_intercepted_track_id = "X"
+    player._last_intercept_time = time.time()
+
+    prev = "IDLE"
+    for alice_state in ("NONE", "NONE"):
+        state, player_state, _ = _state(track_id="X", alice_state=alice_state, volume=0.0)
+        await player._handle_intercept_tick(state, player_state, True, prev_alice_state=prev)
+        prev = alice_state
+
+    sent = [c.args[0] for c in player.glagol.send.await_args_list]
+    assert sent == [{"command": "setVolume", "volume": 0.7}]
+    assert player._station_muted_by_intercept is False
+
+    state, player_state, _ = _state(track_id="X", alice_state="IDLE", volume=0.7)
+    await player._handle_intercept_tick(state, player_state, True, prev_alice_state=prev)
+
+    sent = [c.args[0] for c in player.glagol.send.await_args_list]
+    assert sent[-1] == {"command": "setVolume", "volume": 0.0}
+    assert player._station_muted_by_intercept is True
+    player.mass.players.cmd_pause.assert_not_awaited()
+    player.mass.player_queues.play_media.assert_not_awaited()
+
+
+async def test_station_unmuted_by_user_is_not_muted_after_a_phrase() -> None:
+    """A phrase does not mute a Station the user unmuted during the session."""
+    player = _make_intercept_player()
+    player._intercept_active = True
+    player._saved_station_volume = 70
+    player._station_muted_by_intercept = False
+    player._last_intercepted_track_id = "X"
+    player._last_intercept_time = time.time()
+    player._last_mirrored_volume = 30
+
+    prev = "IDLE"
+    for alice_state in ("NONE", "IDLE"):
+        state, player_state, _ = _state(track_id="X", alice_state=alice_state, volume=0.3)
+        await player._handle_intercept_tick(state, player_state, True, prev_alice_state=prev)
+        prev = alice_state
+
+    sent = [c.args[0] for c in player.glagol.send.await_args_list]
+    assert {"command": "setVolume", "volume": 0.0} not in sent
+    assert player._station_muted_by_intercept is False

@@ -57,6 +57,7 @@ def _make_player() -> YandexStationPlayer:
     player._last_progress = 0
     player._last_progress_wall = 0.0
     player._alice_active_pause_sent = False
+    vars(player)["_station_unmuted_for_phrase"] = False
     player._saved_station_volume = None
     player._station_muted_by_intercept = False
     player._attr_playback_state = PlaybackState.IDLE
@@ -698,6 +699,109 @@ async def test_cancelled_transport_command_keeps_the_external_session(command: s
     assert player._external_playing is True
     assert vars(player)["_pause_stop_pending"] is False
     assert player._attr_playback_state == PlaybackState.PLAYING
+
+
+def _send_failing(player: YandexStationPlayer, outcome: str, *reports: dict[str, Any]) -> None:
+    """Make the next command deliver ``reports`` while pending, then time out or be cancelled."""
+
+    async def send(_command: dict[str, Any]) -> dict[str, Any]:
+        for report in reports:
+            _voice_tick(player, **report)
+        if outcome == "cancelled":
+            raise asyncio.CancelledError
+        return {"error": "timeout"}
+
+    player.glagol = cast("YandexGlagol", SimpleNamespace(send=send))
+
+
+async def _run_failing_command(player: YandexStationPlayer, command: str, outcome: str) -> None:
+    expected: type[BaseException] = (
+        asyncio.CancelledError if outcome == "cancelled" else PlayerCommandFailed
+    )
+    with pytest.raises(expected):
+        await getattr(player, command)()
+
+
+@pytest.mark.parametrize("outcome", ["timeout", "cancelled"])
+@pytest.mark.parametrize("command", ["pause", "stop"])
+async def test_failed_transport_command_keeps_the_voice_interaction(
+    command: str, outcome: str
+) -> None:
+    """
+    A pause or stop that does not reach the Station leaves Alice's interaction running.
+
+    The pending request is resumed once Alice has answered, as without the command.
+    """
+    player, commands = _make_play_media_player([])
+    player._config = _VoiceControlConfig()  # type: ignore[assignment]
+    player._attr_playback_state = PlaybackState.PLAYING
+    await _interrupt_pending_play_with_voice(player, commands, playing=True, track_id="yandex-1")
+    _send_failing(player, outcome)
+
+    try:
+        await _run_failing_command(player, command, outcome)
+
+        assert player._needs_replay is True
+        assert player._attr_playback_state == PlaybackState.PAUSED
+        _voice_tick(player, playing=True, alice_state="NONE", track_id="yandex-1")
+        _voice_tick(player, playing=True, alice_state="IDLE", track_id="yandex-1")
+        assert player._voice_resume_task is not None
+        assert player._attr_playback_state == PlaybackState.PAUSED
+    finally:
+        if player._voice_resume_task is not None:
+            player._voice_resume_task.cancel()
+
+
+@pytest.mark.parametrize("outcome", ["timeout", "cancelled"])
+@pytest.mark.parametrize("command", ["pause", "stop"])
+async def test_failed_transport_command_keeps_a_scheduled_voice_resume(
+    command: str, outcome: str
+) -> None:
+    """A pause or stop that does not reach the Station keeps the auto-resume Alice's answer scheduled."""
+    player, commands = _make_play_media_player([])
+    player._config = _VoiceControlConfig()  # type: ignore[assignment]
+    player._attr_playback_state = PlaybackState.PLAYING
+    await _interrupt_pending_play_with_voice(player, commands, playing=True, track_id="yandex-1")
+    _voice_tick(player, playing=True, alice_state="NONE", track_id="yandex-1")
+    _voice_tick(player, playing=True, alice_state="IDLE", track_id="yandex-1")
+    assert player._voice_resume_task is not None
+    _send_failing(player, outcome)
+
+    try:
+        await _run_failing_command(player, command, outcome)
+
+        assert player._voice_resume_task is not None
+        assert not player._voice_resume_task.cancelled()
+        assert player._needs_replay is True
+        _voice_tick(player, playing=True, alice_state="IDLE", track_id="yandex-1")
+        assert player._attr_playback_state == PlaybackState.PAUSED
+    finally:
+        if player._voice_resume_task is not None:
+            player._voice_resume_task.cancel()
+
+
+@pytest.mark.parametrize("outcome", ["timeout", "cancelled"])
+@pytest.mark.parametrize("command", ["pause", "stop"])
+async def test_failed_transport_command_keeps_a_paused_stream_the_station_confirmed(
+    command: str, outcome: str
+) -> None:
+    """
+    A paused MA stream stays resumable after a pause or stop that does not reach the Station.
+
+    The Station's stopped report only confirms what it already did; it is not a
+    change that makes the previous session obsolete.
+    """
+    player = _make_player()
+    _disable_voice_control(player)
+    player._needs_replay = True
+    player._attr_playback_state = PlaybackState.PAUSED
+    _send_failing(player, outcome, {"playing": False, "alice_state": "IDLE", "track_id": ""})
+
+    await _run_failing_command(player, command, outcome)
+
+    assert player._attr_playback_state == PlaybackState.PAUSED
+    assert player._needs_replay is True
+    assert vars(player)["_pause_stop_pending"] is False
 
 
 @pytest.mark.parametrize("audio_client", [False, True])

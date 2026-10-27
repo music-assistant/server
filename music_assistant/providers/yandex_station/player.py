@@ -7,7 +7,7 @@ import base64
 import json
 import logging
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any
 from urllib.parse import urlsplit
 
@@ -188,6 +188,9 @@ class _SessionSnapshot:
     needs_replay: bool
     pause_stop_pending: bool
     playback_state: PlaybackState
+    voice_interaction_active: bool
+    voice_pending_track_id: str | None
+    voice_resume_scheduled: bool
 
 
 @dataclass(frozen=True, slots=True)
@@ -264,6 +267,8 @@ class YandexStationPlayer(Player):
         # interaction.  Prevents repeating the pause on every WS tick while
         # Alice is still active.  Cleared when alice goes IDLE.
         self._alice_active_pause_sent: bool = False
+        # Set while the Station is unmuted for a standalone server-action phrase.
+        self._station_unmuted_for_phrase: bool = False
         # Saved Station volume captured ONCE at intercept-session start;
         # restored at session end (target unavailable, handoff failure,
         # provider unload, etc.).  Also used to unmute Station for Alice
@@ -678,6 +683,9 @@ class YandexStationPlayer(Player):
             needs_replay=self._needs_replay,
             pause_stop_pending=self._pause_stop_pending,
             playback_state=self._attr_playback_state,
+            voice_interaction_active=self._voice_interaction_active,
+            voice_pending_track_id=self._voice_pending_track_id,
+            voice_resume_scheduled=self._voice_resume_task is not None,
         )
 
     def _begin_transport_command(self) -> _PendingCommand:
@@ -770,6 +778,10 @@ class YandexStationPlayer(Player):
             self._needs_replay = session.needs_replay
             self._pause_stop_pending = session.pause_stop_pending
             self._attr_playback_state = session.playback_state
+            self._voice_interaction_active = session.voice_interaction_active
+            self._voice_pending_track_id = session.voice_pending_track_id
+            if session.voice_resume_scheduled and self._voice_resume_task is None:
+                self._voice_resume_task = asyncio.create_task(self._delayed_resume())
         else:
             # The Station's reports describe the session now; no stop is coming.
             self._pause_stop_pending = False
@@ -874,43 +886,33 @@ class YandexStationPlayer(Player):
             # BEFORE awaiting cmd_pause so two concurrent ticks racing on
             # the lock both see it after the first wins.
             if self._intercept_active and alice_active:
-                if self._station_muted_by_intercept and self._saved_station_volume is not None:
-                    # YandexGlagol.send() reports failures via {"error": ...}
-                    # rather than raising, so a naive try/except wouldn't
-                    # catch a timeout or transport error and we'd flip the
-                    # mute flag while the Station is still actually muted
-                    # (and Alice's reply would be inaudible).  Validate the
-                    # result via _raise_if_failed and only mutate state if
-                    # the device confirmed success.
-                    try:
-                        result = await self.glagol.send(
-                            {
-                                "command": "setVolume",
-                                "volume": self._saved_station_volume / 100,
-                            }
-                        )
-                        _raise_if_failed(result, "alice-unmute")
-                        self._station_muted_by_intercept = False
-                        # Pre-set mirror baseline so the next state-update
-                        # tick (with the new non-zero Station volume) doesn't
-                        # spuriously bounce that volume to the target.
-                        self._last_mirrored_volume = self._saved_station_volume
-                    except Exception as exc:
-                        _LOGGER.debug("[%s] alice-unmute failed: %s", self.player_id, exc)
+                await self._unmute_station_for_alice()
                 if not self._alice_active_pause_sent:
                     self._alice_active_pause_sent = True
                     await self._pause_target(clear_session=False, clear_debounce=True)
+                return
+
+            if self._intercept_active and alice_state == "NONE":
+                # A standalone server-action phrase: some firmware ties Alice's
+                # speech to the Station volume, so unmute it for the phrase but
+                # leave the target playing.
+                if self._station_muted_by_intercept:
+                    self._station_unmuted_for_phrase = await self._unmute_station_for_alice()
                 return
 
             if not alice_active:
                 # Edge from an Alice interaction → IDLE: re-mute Station now that
                 # Alice is done.  Without this, the Station would resume
                 # audible playback and double up with the target.  Same
-                # validation reason as the alice-unmute branch above:
+                # validation reason as in _unmute_station_for_alice():
                 # don't flip the flag unless the device confirms success.
                 if (
                     self._intercept_active
-                    and (prev_alice_state in ALICE_VOICE_STATES or self._alice_active_pause_sent)
+                    and (
+                        prev_alice_state in ALICE_VOICE_STATES
+                        or self._alice_active_pause_sent
+                        or self._station_unmuted_for_phrase
+                    )
                     and not self._station_muted_by_intercept
                 ):
                     try:
@@ -920,6 +922,7 @@ class YandexStationPlayer(Player):
                     except Exception as exc:
                         _LOGGER.debug("[%s] alice-remute failed: %s", self.player_id, exc)
                 self._alice_active_pause_sent = False
+                self._station_unmuted_for_phrase = False
 
             # Physical pause / "Алиса, пауза" / end-of-queue on a Station
             # with an active intercept session: mirror the pause to the
@@ -946,6 +949,31 @@ class YandexStationPlayer(Player):
                 if self._intercept_active:
                     await self._maybe_mirror_seek(progress)
                     await self._maybe_mirror_volume(state.get("volume"))
+
+    async def _unmute_station_for_alice(self) -> bool:
+        """
+        Restore the Station volume the intercept session muted, so Alice is audible.
+
+        Returns True if the Station confirmed the new volume.
+        """
+        if not self._station_muted_by_intercept or self._saved_station_volume is None:
+            return False
+        # YandexGlagol.send() reports failures via {"error": ...} rather than
+        # raising, so the result is validated before the mute flag is cleared;
+        # otherwise a timeout would leave the Station muted and Alice inaudible.
+        try:
+            result = await self.glagol.send(
+                {"command": "setVolume", "volume": self._saved_station_volume / 100}
+            )
+            _raise_if_failed(result, "alice-unmute")
+        except Exception as exc:
+            _LOGGER.debug("[%s] alice-unmute failed: %s", self.player_id, exc)
+            return False
+        self._station_muted_by_intercept = False
+        # Pre-set the mirror baseline so the next state update (with the new
+        # non-zero Station volume) doesn't bounce that volume to the target.
+        self._last_mirrored_volume = self._saved_station_volume
+        return True
 
     async def _maybe_intercept_locked(self, track_id: str) -> None:
         """
@@ -1292,7 +1320,10 @@ class YandexStationPlayer(Player):
         self._apply_playback_report(
             playing, alice_state, external_media_matches, progress, duration, native_track_id
         )
-        if self._capture_session() != before:
+        after = self._capture_session()
+        # A stopped report that only clears the pending-stop guard confirms the
+        # command's own state; it does not make the session it replaced obsolete.
+        if replace(after, pause_stop_pending=False) != replace(before, pause_stop_pending=False):
             self._station_epoch += 1
 
     def _apply_playback_report(
