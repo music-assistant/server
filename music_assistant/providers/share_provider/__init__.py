@@ -393,7 +393,9 @@ class ShareProvider(PluginProvider):
             playlist.item_id, playlist.provider, limit=0
         ):
             if not isinstance(track, Track):
-                continue
+                raise InvalidDataError(
+                    f"Sharing playlists containing {track.media_type.value} entries is not supported"
+                )
             result.append(
                 TrackStub(
                     title=track.name,

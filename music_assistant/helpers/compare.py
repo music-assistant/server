@@ -662,7 +662,7 @@ def compare_track_evidence(
         return TrackMatchConfidence.NO_MATCH
 
     title_matches = compare_track_title(base_item.name, compare_item.name)
-    artists_match = _track_artist_credits_match(base_item, compare_item)
+    artists_match = compare_track_artist_credits(base_item, compare_item)
     versions_match = compare_version(base_version, compare_version_value)
     same_album = (
         isinstance(base_album, Album)
@@ -1242,7 +1242,7 @@ def _track_version(track: Track) -> str:
     return version
 
 
-def _track_artist_credits_match(base_track: Track, compare_track: Track) -> bool:
+def compare_track_artist_credits(base_track: Track, compare_track: Track) -> bool:
     """Return whether credited artists agree or one provider omitted credits."""
     if not base_track.artists or not compare_track.artists:
         return False
