@@ -2606,7 +2606,7 @@ def _wire_queue_mutation(mock: MagicMock) -> None:
     mock._confirmed_queue_version = None
 
     async def mutate(
-        mutation: Any, *, expected_generation: int | None = None, navigation: bool = False
+        mutation: Any, *, expected_generation: int | None = None, navigation: Any = False
     ) -> None:
         nonlocal pending
         if expected_generation is not None and expected_generation != mock.queue_generation:
@@ -2616,7 +2616,7 @@ def _wire_queue_mutation(mock: MagicMock) -> None:
         if mutation(player_state) is False:
             return
         player_state["player_queue"]["version"] = make_version_block(mock.device_id)
-        if navigation:
+        if navigation() if callable(navigation) else navigation:
             mock._navigation_version = int(player_state["player_queue"]["version"]["version"])
         await mock.update_player_state(player_state=player_state, strict=True)
         pending = deepcopy(player_state["player_queue"])
@@ -3364,6 +3364,21 @@ class TestEchoSuppression:
 
         assert not provider._playback.restart_requested()
         assert provider._playback.index == 189
+
+    async def test_confirmed_navigation_to_the_same_track_and_index_restarts(self) -> None:
+        """Navigation that a trim leaves at the same track and index still starts a new item."""
+        provider = _make_provider()
+        await self._prime_same_track(provider)
+        provider._playback.index = 199
+        playable = [{"playable_id": f"t{i}"} for i in range(1, 199)]
+        playable += [{"playable_id": "track1"}, {"playable_id": "track1"}]
+        echo = _make_ynison_state(current_playable_index=199, playable_list=playable)
+        echo.last_update_is_echo = True
+        echo.current_item_navigated = True
+
+        await provider._handle_ynison_state(echo)
+
+        assert provider._playback.restart_requested()
 
     async def test_trim_echo_during_the_send_keeps_the_track(self) -> None:
         """An echo of the trimmed queue that arrives while the edit is sent is not a skip."""

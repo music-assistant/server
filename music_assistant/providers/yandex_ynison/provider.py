@@ -1156,7 +1156,8 @@ class YandexYnisonProvider(PluginProvider):
             # Our own trim re-indexed the playing item; it is the same occurrence.
             self._playback.index = new_index
         if new_track and (
-            new_track != self._playback.track_id
+            state.current_item_navigated
+            or new_track != self._playback.track_id
             or (self._playback.index >= 0 and new_index != self._playback.index)
         ):
             self.logger.info("Track changed: %s -> %s", self._playback.track_id, new_track)

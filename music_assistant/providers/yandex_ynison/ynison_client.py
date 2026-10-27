@@ -86,6 +86,16 @@ def _local_time(epoch: float) -> str:
     return datetime.fromtimestamp(epoch, tz=UTC).astimezone().strftime("%Y-%m-%d %H:%M:%S")
 
 
+def _same_playback(queue: dict[str, Any], current: dict[str, Any] | None) -> bool:
+    """Return whether ``queue`` differs from ``current`` only in its playback options."""
+    ignored = {"version", "options", "shuffle_optional"}
+    if current is None:
+        return False
+    return {k: v for k, v in queue.items() if k not in ignored} == {
+        k: v for k, v in current.items() if k not in ignored
+    }
+
+
 def _current_playable_id(queue: dict[str, Any]) -> Any:
     """Return the playable id at the current index of a queue, or ``None``."""
     playables = queue.get("playable_list") or []
@@ -255,6 +265,9 @@ class YnisonState:
     # kept the current item (an append, window trim or option change), so a
     # shifted index is the same occurrence, not navigation.
     current_item_kept: bool = False
+    # True iff the most recent update was the echo of our own navigation, so
+    # the current item is a new occurrence even with the same track and index.
+    current_item_navigated: bool = False
 
     @property
     def current_track_id(self) -> str | None:
@@ -644,7 +657,7 @@ class YnisonClient:
         mutation: Callable[[dict[str, Any]], bool | None],
         *,
         expected_generation: int | None = None,
-        navigation: bool = False,
+        navigation: bool | Callable[[], bool] = False,
     ) -> int | None:
         """
         Serialize a queue change against the latest successfully sent queue.
@@ -652,8 +665,9 @@ class YnisonClient:
         :param mutation: Synchronous edit of a private complete player-state copy.
             Return ``False`` to leave the queue unchanged without publishing.
         :param expected_generation: Queue generation that an asynchronous result belongs to.
-        :param navigation: Whether the edit moves the current item; it is registered
-            before sending so that an early echo is recognised as navigation.
+        :param navigation: Whether the edit moves the current item, or a callable that
+            decides it after ``mutation`` ran; it is registered before sending so that
+            an early echo is recognised as navigation.
         :return: Version of the published queue, or ``None`` when nothing was sent.
         """
         requested_epoch = self._queue_epoch if expected_generation is None else expected_generation
@@ -666,11 +680,15 @@ class YnisonClient:
                 return None
             queue = player_state.get("player_queue", {})
             queue["version"] = make_version_block(self.device_id)
-            if navigation:
+            if navigation() if callable(navigation) else navigation:
                 self._navigation_version = int(queue["version"]["version"])
                 self._unadopted_navigation = self._navigation_version
             epoch = self._queue_epoch
-            await self._send_locked(self._player_state_message(player_state), strict=True)
+            try:
+                await self._send_locked(self._player_state_message(player_state), strict=True)
+            except YnisonSendError:
+                self._unadopted_navigation = None
+                raise
             if epoch != self._queue_epoch:
                 raise ResourceTemporarilyUnavailable("Ynison queue changed while command was sent")
             self._pending_queue = deepcopy(queue)
@@ -761,7 +779,10 @@ class YnisonClient:
             )
             return False if outcome == NavigationOutcome.RADIO else None
 
-        await self.mutate_player_state(mutate, navigation=True)
+        # Repeating the same item restarts it locally; only a move is navigation.
+        await self.mutate_player_state(
+            mutate, navigation=lambda: outcome == NavigationOutcome.CHANGE
+        )
         return outcome
 
     async def go_to_index(
@@ -1288,7 +1309,10 @@ class YnisonClient:
         version = queue.get("version", {})
         number = str(version.get("version", ""))
         if version.get("device_id") != self.device_id:
-            if queue != current:
+            if queue != current and _same_playback(queue, current):
+                # A peer option edit keeps the playback; it only replaces our queue base.
+                self._pending_queue = None
+            elif queue != current:
                 self._queue_lineage += 1
                 self._reset_pending_queue()
             return True
@@ -1304,6 +1328,7 @@ class YnisonClient:
         )
         if navigated:
             self._unadopted_navigation = None
+        self.state.current_item_navigated = navigated
         self.state.current_item_kept = (
             not navigated
             and current is not None
@@ -1325,6 +1350,7 @@ class YnisonClient:
         # absent from the update.
         incoming_ps = data.get("player_state")
         self.state.current_item_kept = False
+        self.state.current_item_navigated = False
         # A frame without a status keeps the retained one, which is already known.
         self.state.status_is_relay = not (isinstance(incoming_ps, dict) and "status" in incoming_ps)
         if incoming_ps is not None:
@@ -1375,9 +1401,10 @@ class YnisonClient:
         queue_len = len(queue.get("playable_list", []))
         entity_type = queue.get("entity_type", "")
 
-        if (old_track != new_track or old_index != new_index) and not (
-            incoming_ps and "status" in incoming_ps
-        ):
+        item_changed = self.state.current_item_navigated or (
+            (old_track != new_track or old_index != new_index) and not self.state.current_item_kept
+        )
+        if item_changed and not (incoming_ps and "status" in incoming_ps):
             # A new item without its own status must not inherit the old baseline.
             self._status_baseline = None
         if old_track != new_track or old_index != new_index:

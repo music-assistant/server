@@ -3379,6 +3379,66 @@ class TestQueueCommands:
 
         assert not client.is_current_playback(baseline)
 
+    def test_peer_option_edit_keeps_the_current_playback(self, client: YnisonClient) -> None:
+        """A peer repeat or shuffle change does not replace the playback a decision was made for."""
+        baseline = client.navigation_baseline()
+        queue = deepcopy(client.state.player_state["player_queue"])
+        queue["options"] = {"repeat_mode": "ONE"}
+        queue["version"] = {"device_id": "peer", "version": "2", "timestamp_ms": "0"}
+
+        generation = client.queue_generation
+
+        client._parse_state({"player_state": {"player_queue": queue}})
+
+        assert client.is_current_playback(baseline)
+        assert client.queue_generation == generation
+
+    async def test_own_navigation_echo_is_flagged(self, client: YnisonClient) -> None:
+        """The echo of our navigation reports a new occurrence even when it looks unchanged."""
+        assert await client.advance_queue(natural=True, duration_ms=9000) == "change"
+
+        client._parse_state({"player_state": {"player_queue": self._sent_queue()}})
+
+        assert client.state.current_item_navigated is True
+        assert client.state.current_item_kept is False
+
+    async def test_failed_navigation_send_is_not_adopted_later(self, client: YnisonClient) -> None:
+        """Navigation that never reached Ynison does not turn a later own edit into a skip."""
+        self.mock_ws.send_str.side_effect = aiohttp.ClientError("down")
+        with pytest.raises(YnisonSendError):
+            await client.advance_queue(natural=True, duration_ms=9000)
+        self.mock_ws.send_str.side_effect = None
+        await client.set_repeat_mode(RepeatMode.ALL)
+
+        client._parse_state({"player_state": {"player_queue": self._sent_queue()}})
+
+        assert client.state.current_item_navigated is False
+        assert client.state.current_item_kept is True
+
+    async def test_repeat_one_echo_is_not_navigation(self, client: YnisonClient) -> None:
+        """Repeating the same item restarts it locally, so its echo is not a new occurrence."""
+        client.state.player_state["player_queue"]["options"] = {"repeat_mode": "ONE"}
+        assert await client.advance_queue(natural=True, duration_ms=9000) == "restart"
+
+        client._parse_state({"player_state": {"player_queue": self._sent_queue()}})
+
+        assert client.state.current_item_navigated is False
+
+    async def test_own_trim_echo_keeps_the_status_baseline(self, client: YnisonClient) -> None:
+        """A known position repeated after our window trim is still a relay."""
+        queue = client.state.player_state["player_queue"]
+        queue["playable_list"] = [{"playable_id": f"t{i}"} for i in range(200)]
+        queue["current_playable_index"] = 199
+        status = {"progress_ms": "10000", "duration_ms": "200000", "paused": False}
+        client._parse_state({"player_state": {"status": dict(status)}})
+        await client.publish_items([*queue["playable_list"], {"playable_id": "n"}])
+
+        client._parse_state({"player_state": {"player_queue": self._sent_queue()}})
+        assert client.state.current_item_kept is True
+        client._parse_state({"player_state": {"status": dict(status)}})
+
+        assert client.state.status_is_relay is True
+
     async def test_option_edit_does_not_adopt_a_peer_queue(self, client: YnisonClient) -> None:
         """A peer queue stays foreign after our repeat edit re-publishes it."""
         baseline = client.navigation_baseline()
