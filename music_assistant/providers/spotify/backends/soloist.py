@@ -143,6 +143,9 @@ _MAX_LEAD_TRIM_MS: Final[int] = int(_MAX_LEAD_TRIM_S * 1000)
 _RUN_CUSHION_S: Final[float] = 10.0
 # how close to its target a position report has to come to confirm a seek
 _SEEK_CONFIRM_GRACE_MS: Final[int] = 3000
+# At its item's end the engine reports a pause (rewound to 0:00) and exits a moment
+# later. A pause it outlives by this long came from the Spotify app or Web API.
+_EXTERNAL_PAUSE_GRACE_S: Final[float] = 2.0
 
 # The sink renders exact-zero padding while the engine idles between items, and the
 # item-change event arrives after those frames landed in the outgoing item's channel.
@@ -643,6 +646,8 @@ class _SingleTrackRun:
         self._engine_exited = False
         self._teardown_done = False
         self._engine_playing = False
+        self._engine_paused = False
+        self._pause_watch: asyncio.Task[None] | None = None
         self._sink_running = False
         self._sink_lock = asyncio.Lock()
         # the engine reported it is playing this run's uri
@@ -792,11 +797,12 @@ class _SingleTrackRun:
 
     # ---- internals ----
 
-    def _spawn_task(self, coro: object) -> None:
+    def _spawn_task(self, coro: object) -> asyncio.Task[None]:
         """Track a run-scoped task so stop() can cancel and join it."""
         task: asyncio.Task[None] = asyncio.create_task(coro)  # type: ignore[arg-type]
         task.add_done_callback(self._task_done)
         self._tasks.append(task)
+        return task
 
     def _task_done(self, task: asyncio.Task[None]) -> None:
         """Fail the run when one of its tasks died of an unexpected error."""
@@ -1216,6 +1222,10 @@ class _SingleTrackRun:
                 self._observe_position(data.position.position_ms)
             playing = data.status == "playing"
             self._engine_playing = playing
+            was_paused, self._engine_paused = self._engine_paused, data.status == "paused"
+            # the engine repeats a pause across events: act on the transition only
+            if self._engine_paused and not was_paused:
+                self._observe_external_pause()
             if self._started.is_set() and self._reader is not None:
                 # pause silence stays out of the delivered PCM; the cushion gate
                 # takes priority over resuming
@@ -1259,6 +1269,37 @@ class _SingleTrackRun:
         self._fail(
             "Spotify is already streaming somewhere else - an account "
             "can only play in one place at a time"
+        )
+
+    def _observe_external_pause(self) -> None:
+        """Stop the queue once a pause proves to come from outside Music Assistant."""
+        if not self._item_live():
+            return
+        # a pause taken back and repeated gets a fresh grace, not the old deadline
+        if self._pause_watch is not None:
+            self._pause_watch.cancel()
+        self._pause_watch = self._spawn_task(self._stop_queue_if_still_paused())
+
+    async def _stop_queue_if_still_paused(self) -> None:
+        """Stop the queue when the engine neither resumed nor exited after a pause."""
+        await asyncio.sleep(_EXTERNAL_PAUSE_GRACE_S)
+        if not self._engine_paused or not self._item_live() or (queue_id := self.queue_id) is None:
+            return
+        # only the Spotify app or Web API pauses a live engine, and a paused engine
+        # stalls the stream; a stop keeps the resume position, so play restarts at it
+        self.logger.info("Spotify paused %s, stopping queue %s", self.spotify_uri, queue_id)
+        self.mass.create_task(self.mass.player_queues.stop(queue_id))
+
+    def _item_live(self) -> bool:
+        """Return whether this run is still delivering its item."""
+        return (
+            # still starting up (or seeking): no audio has been released yet
+            self._reader is not None
+            and not self._stopped
+            and not self._item_over
+            and not self._engine_exited
+            and not self._delivery_done
+            and self._error is None
         )
 
     def _observe_position(self, position_ms: int) -> None:

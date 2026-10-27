@@ -43,7 +43,7 @@ jobs:
         # Pin an exact patch (not .python-version's "3.14") so the interpreter is
         # identical across runs and CodSpeed's instruction counts stay comparable;
         # check-latest is omitted so a new 3.14.x can't silently change the runtime.
-        uses: actions/setup-python@v7.0.0
+        uses: actions/setup-python@v7.1.0
         with:
           python-version: "3.14.6"
 
@@ -62,7 +62,7 @@ jobs:
         run: uv pip install --system --index-strategy unsafe-best-match . .[test] -r requirements_all.txt
 
       - name: Run benchmarks
-        uses: CodSpeedHQ/action@821a40cd6c80e3cfe387caf55668287addd808da  # v5.5.0
+        uses: CodSpeedHQ/action@78102a468f96d8e0ccb92d0ec49425753fc42062  # v5.6.0
         with:
           mode: simulation
           # tests/benchmarks/ holds only deterministic pure-function benchmarks, so their

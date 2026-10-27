@@ -148,18 +148,22 @@ class MediaResolver:
         Return the playable tracks for a media item, honoring the user's selection preferences.
 
         Resolves an umbrella media item (artist, album, genre, playlist, finite radio) to the
-        tracks that playing it would enqueue; a track resolves to itself, other types to an
-        empty list.
+        tracks that playing it would enqueue, and a dynamic radio to its next batch; a track
+        resolves to itself, other types to an empty list.
 
         :param media_item: The media item to resolve to playable tracks.
         """
         if media_item.media_type == MediaType.TRACK:
             return [cast("Track", media_item)]
         if media_item.media_type == MediaType.RADIO:
-            if is_finite_radio(media_item):
-                radio_tracks = await self.mass.music.radio.tracks(media_item)
-                return [track for track in radio_tracks if track.available]
-            return []
+            radio = cast("Radio", media_item)
+            if radio.is_dynamic:
+                radio_tracks = await self.mass.music.radio.dynamic_tracks(radio)
+            elif is_finite_radio(radio):
+                radio_tracks = await self.mass.music.radio.tracks(radio)
+            else:
+                return []
+            return [track for track in radio_tracks if track.available]
         if media_item.media_type == MediaType.ALBUM:
             return await self.get_album_tracks(cast("Album", media_item), None)
         if media_item.media_type == MediaType.ARTIST:
