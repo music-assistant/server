@@ -9,6 +9,7 @@ from aiohttp import client_exceptions
 from music_assistant_models.enums import ContentType, ExternalID, ImageType, MediaType
 from music_assistant_models.errors import InvalidDataError
 from music_assistant_models.media_items import (
+    Audiobook,
     AudioFormat,
     ItemMapping,
     MediaItemImage,
@@ -1364,3 +1365,38 @@ async def test_fetch_playlist_reads_only_the_head_of_the_body() -> None:
     # the entry sits past the read limit, so nothing is left to parse
     with pytest.raises(InvalidDataError, match="Empty playlist"):
         await fetch_playlist(mass, "http://example.com/station.m3u")
+
+
+def test_media_item_to_playlist_item_audiobook_with_item_mapping_authors() -> None:
+    """Library audiobooks carry authors/narrators as ItemMapping, exported by name."""
+    audiobook = Audiobook(
+        item_id="1",
+        provider="library",
+        name="Book 1",
+        provider_mappings={
+            ProviderMapping(
+                item_id="book_1", provider_domain="audible", provider_instance="audible_1"
+            )
+        },
+        authors=UniqueList(
+            [
+                ItemMapping(
+                    media_type=MediaType.ARTIST, item_id="1", provider="library", name="Author 1"
+                ),
+                "Author 2",
+            ]
+        ),
+        narrators=UniqueList(
+            [
+                ItemMapping(
+                    media_type=MediaType.ARTIST, item_id="2", provider="library", name="Narrator 1"
+                )
+            ]
+        ),
+    )
+
+    playlist_item = media_item_to_playlist_item(audiobook)
+
+    assert playlist_item.metadata is not None
+    assert playlist_item.metadata["authors"] == "Author 1; Author 2"
+    assert playlist_item.metadata["narrators"] == "Narrator 1"
