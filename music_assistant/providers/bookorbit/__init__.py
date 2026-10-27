@@ -6,6 +6,7 @@ import asyncio
 import time
 import uuid
 from dataclasses import dataclass
+from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
 from aiohttp import ClientError, ClientResponseError, DummyCookieJar, web
@@ -81,7 +82,6 @@ from .progress import (
 
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator, Callable, Iterable, Sequence
-    from datetime import datetime
 
     from music_assistant_models.config_entries import ProviderConfig
     from music_assistant_models.media_items import Artist, ItemMapping, MediaItemType
@@ -121,6 +121,27 @@ def _session_id_from_streamdetails(streamdetails: StreamDetails) -> str | None:
         if isinstance(session_id, str) and session_id:
             return session_id
     return None
+
+
+def _playback_captured_at_ts(value: Any) -> float | None:
+    """Parse a BookOrbit ``capturedAt`` ISO timestamp to seconds, or ``None``."""
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        return datetime.fromisoformat(value).timestamp()
+    except ValueError:
+        return None
+
+
+def _remote_playback_supersedes(state: dict[str, Any] | None, report_captured_at: str) -> bool:
+    """Return whether remote playback state is at least as new as this report."""
+    if not state:
+        return False
+    remote_ts = _playback_captured_at_ts(state.get("capturedAt"))
+    report_ts = _playback_captured_at_ts(report_captured_at)
+    if remote_ts is None or report_ts is None:
+        return False
+    return remote_ts >= report_ts
 
 
 def _book_series(book: dict[str, Any]) -> list[tuple[str, str]]:
@@ -500,12 +521,18 @@ class BookOrbitProvider(MusicProvider):
             return
         generation = self._progress_generation.get(book_id, 0) + 1
         self._progress_generation[book_id] = generation
+        # Stamp before waiting on the lock or any BookOrbit I/O so 409 retries can
+        # discard this write if another client saved a newer capturedAt meanwhile.
+        captured_at = utc().isoformat().replace("+00:00", "Z")
         try:
             async with self._progress_lock_for(book_id):
                 if self._progress_generation.get(book_id) != generation:
                     return  # a newer report superseded this one while waiting
                 await self._sync_playback_state(
-                    book_id, position=position, fully_played=fully_played
+                    book_id,
+                    position=position,
+                    fully_played=fully_played,
+                    captured_at=captured_at,
                 )
         except (ClientError, TimeoutError, BookOrbitAuthError, MediaNotFoundError) as err:
             self.logger.warning("Updating BookOrbit progress of %s failed: %s", prov_item_id, err)
@@ -648,7 +675,12 @@ class BookOrbitProvider(MusicProvider):
         return None
 
     async def _sync_playback_state(
-        self, book_id: int, *, position: int, fully_played: bool
+        self,
+        book_id: int,
+        *,
+        position: int,
+        fully_played: bool,
+        captured_at: str,
     ) -> None:
         """Write an absolute Music Assistant position to BookOrbit playback state."""
         manifest = await self._client.get_audiobook_manifest(book_id)
@@ -658,11 +690,14 @@ class BookOrbitProvider(MusicProvider):
                 book_id, position=position, fully_played=fully_played
             )
             return
-        captured_at = utc().isoformat().replace("+00:00", "Z")
         operation_id = str(uuid.uuid4())
         last_err: ClientResponseError | None = None
         for _attempt in range(3):
             state = await self._client.get_playback_state(book_id)
+            # Match BookOrbit client: drop this write if remote progress is newer.
+            if _remote_playback_supersedes(state, captured_at):
+                self.logger.debug("Discarding superseded BookOrbit progress write for %s", book_id)
+                return
             base_revision = (
                 int(state["revision"]) if state and state.get("revision") is not None else 0
             )
@@ -679,7 +714,7 @@ class BookOrbitProvider(MusicProvider):
             except ClientResponseError as err:
                 last_err = err
                 if err.status == 409:
-                    continue  # concurrent writer; reload baseRevision and retry
+                    continue  # concurrent writer; reload state and maybe discard
                 if err.status == 412:
                     # Manifest changed; rebuild asset/offset from a fresh manifest.
                     manifest = await self._client.get_audiobook_manifest(book_id)

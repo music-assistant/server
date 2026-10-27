@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import UTC
+from datetime import UTC, datetime
 from typing import Any, cast
 from unittest.mock import AsyncMock, Mock, patch
 
@@ -567,6 +567,40 @@ async def test_on_played_retries_playback_state_conflict(
     )
     assert client.put_playback_state.await_count == 2
     assert client.put_playback_state.await_args.kwargs["base_revision"] == 4
+
+
+@pytest.mark.asyncio
+async def test_on_played_discards_when_remote_captured_at_newer_after_409(
+    provider: BookOrbitProvider, book_multifile: dict[str, Any]
+) -> None:
+    """After 409, do not retry with a stale position if remote capturedAt is newer."""
+    conflict = ClientResponseError(
+        request_info=Mock(real_url=URL("http://bo/x")),
+        history=(),
+        status=409,
+        message="conflict",
+    )
+    report_time = datetime(2026, 10, 27, 12, 0, 0, tzinfo=UTC)
+    client = _client(provider)
+    client.get_playback_state = AsyncMock(
+        side_effect=[
+            {"revision": 1, "capturedAt": "2026-10-27T11:59:00.000Z"},
+            # Newer than the patched report stamp (and than "now" if the patch misses).
+            {"revision": 2, "capturedAt": "2099-01-01T00:00:00.000Z"},
+        ]
+    )
+    client.put_playback_state = AsyncMock(side_effect=[conflict])
+    with patch("music_assistant.providers.bookorbit.__init__.utc", return_value=report_time):
+        await provider.on_played(
+            MediaType.AUDIOBOOK,
+            str(book_multifile["id"]),
+            fully_played=False,
+            position=10,
+            media_item=Mock(),
+            is_playing=False,
+        )
+    assert client.put_playback_state.await_count == 1
+    assert client.get_playback_state.await_count == 2
 
 
 @pytest.mark.asyncio
