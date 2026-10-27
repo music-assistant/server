@@ -184,27 +184,35 @@ class SnapcastMAStream:
         """
         Start streaming the configured media to the Snapcast source.
 
+        If the stream is still stopping after a stop request, this waits until that run has
+        finished, so a group attached afterwards does not hear its leftover audio.
+
         Raises:
             RuntimeError: If the streamer task is already running.
         """
         await self.setup()
+        stopping_task: asyncio.Task[None] | None = None
         async with self._lifecycle_lock:
             if self._streamer_task and not self._streamer_task.done():
                 if not allow_restart:
                     raise RuntimeError("streamer already running")
                 if self._stop_requested or self._stop_streamer_evt.is_set():
+                    if not self._restart_requested:
+                        stopping_task = self._streamer_task
                     # stop in flight; _on_streamer_done will start the fresh run
                     self._restart_requested = True
                 else:
                     self._restart_if_running()
-                return
-
-            self._stop_requested = False
-            self._restart_requested = False
-            self._stop_streamer_evt.clear()
-            self._streamer_started_evt.clear()
-            self._streamer_task = self._mass.create_task(self._streamer_task_impl())
-            self._streamer_task.add_done_callback(self._on_streamer_done)
+            else:
+                self._stop_requested = False
+                self._restart_requested = False
+                self._stop_streamer_evt.clear()
+                self._streamer_started_evt.clear()
+                self._streamer_task = self._mass.create_task(self._streamer_task_impl())
+                self._streamer_task.add_done_callback(self._on_streamer_done)
+        if stopping_task:
+            # snapserver plays the stopped run's buffered audio until that run has finished
+            await asyncio.wait({stopping_task})
 
     async def wait_for_started(self, timeout_sec: float | None = None) -> None:
         """
