@@ -6,7 +6,7 @@ from unittest.mock import MagicMock, patch
 from uuid import uuid4
 
 import pytest
-from pychromecast.const import CAST_TYPE_AUDIO, CAST_TYPE_GROUP
+from pychromecast.const import CAST_TYPE_AUDIO, CAST_TYPE_CHROMECAST, CAST_TYPE_GROUP
 
 from music_assistant.constants import CONF_HTTP_PROFILE
 from music_assistant.providers.chromecast.helpers import ChromecastInfo, http_profile_entry
@@ -14,7 +14,10 @@ from music_assistant.providers.chromecast.player import ChromecastPlayer
 
 
 def _info(
-    model_name: str, cast_type: str = CAST_TYPE_AUDIO, is_multichannel_group: bool = False
+    model_name: str,
+    cast_type: str = CAST_TYPE_AUDIO,
+    is_multichannel_group: bool = False,
+    manufacturer: str | None = "Google Inc.",
 ) -> ChromecastInfo:
     """Build the info of a Cast device of the given model."""
     return ChromecastInfo(
@@ -26,6 +29,7 @@ def _info(
         port=8009,
         cast_type=cast_type,
         is_multichannel_group=is_multichannel_group,
+        manufacturer=manufacturer,
     )
 
 
@@ -39,11 +43,16 @@ def _info(
             _info("Google Cast Group", CAST_TYPE_GROUP, is_multichannel_group=True),
             "no_content_length",
         ),
+        (
+            _info("SHIELD Android TV", CAST_TYPE_CHROMECAST, manufacturer="NVIDIA"),
+            "no_content_length",
+        ),
+        (_info("Google Nest Hub", CAST_TYPE_CHROMECAST), "forced_content_length"),
     ],
-    ids=["nest-mini", "home-speaker", "group", "stereo-pair"],
+    ids=["nest-mini", "home-speaker", "group", "stereo-pair", "android-tv", "nest-hub"],
 )
 def test_http_profile_default_follows_model(cast_info: ChromecastInfo, expected: str) -> None:
-    """Groups, stereo pairs and a Google Home Speaker default to no Content-Length."""
+    """Groups, stereo pairs, Android TV and a Google Home Speaker default to no Content-Length."""
     assert http_profile_entry(cast_info).default_value == expected
 
 

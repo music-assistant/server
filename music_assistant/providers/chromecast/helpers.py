@@ -12,7 +12,7 @@ from typing import TYPE_CHECKING, Any, Final, cast
 from uuid import UUID
 
 from pychromecast import dial
-from pychromecast.const import CAST_TYPE_GROUP
+from pychromecast.const import CAST_TYPE_CHROMECAST, CAST_TYPE_GROUP
 from pychromecast.models import HostServiceInfo
 
 from music_assistant.constants import (
@@ -302,6 +302,21 @@ def without_ipv6_host_services(cast_info: CastInfo) -> CastInfo:
     return replace(cast_info, services=reachable)
 
 
+def is_google_device(cast_info: ChromecastInfo) -> bool:
+    """
+    Check if a device is a Google device with native Cast support.
+
+    Google devices (Chromecast, Nest, Google Home) have native Cast support
+    and should be exposed as PlayerType.PLAYER. Non-Google devices with Cast
+    support should be exposed as PlayerType.PROTOCOL.
+    """
+    if not cast_info.manufacturer:
+        # If no manufacturer, check model name for Google devices
+        model = cast_info.model_name.lower() if cast_info.model_name else ""
+        return any(google in model for google in ("chromecast", "google", "nest", "home"))
+    return cast_info.manufacturer.lower() in ("google", "google inc.")
+
+
 def http_profile_entry(cast_info: ChromecastInfo) -> ConfigEntry:
     """
     Return the HTTP profile config entry with the default that suits this Cast device.
@@ -312,7 +327,11 @@ def http_profile_entry(cast_info: ChromecastInfo) -> ConfigEntry:
         # members only arrive with the first cast status, after the config defaults
         # are fixed at registration, so a group can't follow its members' models
         return CONF_ENTRY_HTTP_PROFILE_DEFAULT_2
-    if cast_info.model_name in NO_CONTENT_LENGTH_MODELS:
+    if cast_info.model_name in NO_CONTENT_LENGTH_MODELS or (
+        # non-Google video receivers run Android TV, whose Cast receiver ends
+        # streams at ~24 MiB with a Content-Length (support#6748)
+        cast_info.cast_type == CAST_TYPE_CHROMECAST and not is_google_device(cast_info)
+    ):
         return CONF_ENTRY_HTTP_PROFILE_DEFAULT_2
     return CONF_ENTRY_HTTP_PROFILE_DEFAULT_3
 
