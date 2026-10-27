@@ -441,17 +441,23 @@ class SnapCastPlayer(Player):
 
         # flow mode: elapsed time is estimated upstream from the last updated timestamp,
         # which only moves on playback starts
-        snap_ma_stream = self.active_snap_ma_stream
+        elapsed_time: float | None = None
+        elapsed_time_last_updated: float | None = None
+        if self.extra_data.get(ATTR_ANNOUNCEMENT_IN_PROGRESS):
+            # the music stream keeps playing under the clip, so its anchor stays valid
+            elapsed_time = self._attr_elapsed_time
+            elapsed_time_last_updated = self._attr_elapsed_time_last_updated
+        elif snap_ma_stream := self.active_snap_ma_stream:
+            elapsed_time = 0
+            elapsed_time_last_updated = snap_ma_stream.playback_started_at
 
         curr_state: TrackedPlayerState = {
             "_attr_name": self.snap_client.friendly_name,
             "_attr_volume_level": self.snap_client.volume,
             "_attr_volume_muted": self.snap_client.muted,
             "_attr_available": self._is_alive(),
-            "_attr_elapsed_time": 0 if snap_ma_stream else None,
-            "_attr_elapsed_time_last_updated": (
-                snap_ma_stream.playback_started_at if snap_ma_stream else None
-            ),
+            "_attr_elapsed_time": elapsed_time,
+            "_attr_elapsed_time_last_updated": elapsed_time_last_updated,
             "connected": self.snap_client.connected,
             "stream_id": snap_group.stream,
             "stream_status": snap_stream.status if snap_stream is not None else None,
