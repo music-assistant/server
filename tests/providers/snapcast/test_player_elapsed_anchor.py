@@ -40,12 +40,7 @@ def _make_player(ma_stream: MagicMock) -> SnapCastPlayer:
 
 @pytest.mark.asyncio
 async def test_playback_anchor_becoming_known_triggers_update() -> None:
-    """
-    Regression: the anchor must be published once the stream's buffer delay has passed.
-
-    Without it the elapsed time stays unanchored for the whole flow stream and the
-    queue index never advances.
-    """
+    """The anchor is published once it becomes known, so the queue index can advance."""
     ma_stream = MagicMock(playback_started_at=None)
     player = _make_player(ma_stream)
 

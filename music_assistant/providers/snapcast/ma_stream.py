@@ -369,7 +369,7 @@ class SnapcastMAStream:
                 wait_ffmpeg = self._mass.create_task(ffmpeg_proc.wait())
                 wait_stop = self._mass.create_task(self._stop_streamer_evt.wait())
                 self._streaming_started_at = time.time()
-                # the playback anchor only becomes known after the server buffer delay
+                # refresh the players once playback_started_at is known (after the server buffer)
                 self._mass.call_later(
                     self._get_playback_delay(),
                     self._snap_on_stream_update,
