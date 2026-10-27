@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import json
+from collections.abc import AsyncGenerator
 from dataclasses import replace
 from types import SimpleNamespace
 from typing import Literal, cast
@@ -1056,7 +1057,16 @@ async def test_playlist_export_includes_all_tracks_duplicates_and_mapped_album_n
         for index in range(501)
     ]
     tracks.append(tracks[0])
-    _mass(provider).music.playlists.tracks = AsyncMock(return_value=tracks)
+
+    async def iter_playlist_tracks(
+        item_id: str, provider_instance_id_or_domain: str
+    ) -> AsyncGenerator[Track]:
+        assert item_id == "playlist"
+        assert provider_instance_id_or_domain == "test"
+        for track in tracks:
+            yield track
+
+    _mass(provider).music.playlists.iter_tracks = MagicMock(side_effect=iter_playlist_tracks)
     playlist = MagicMock(item_id="playlist", provider="test")
 
     exported = await provider._build_playlist_tracks(playlist)
@@ -1065,7 +1075,27 @@ async def test_playlist_export_includes_all_tracks_duplicates_and_mapped_album_n
     assert exported[-1].title == exported[0].title
     assert exported[500].title == "Track 500"
     assert all(track.album == "Album" for track in exported)
-    _mass(provider).music.playlists.tracks.assert_awaited_once_with("playlist", "test", limit=0)
+    _mass(provider).music.playlists.iter_tracks.assert_called_once_with("playlist", "test")
+
+
+async def test_playlist_export_fails_when_a_later_page_fails() -> None:
+    """A failed later playlist page cannot produce a truncated share."""
+    provider = _provider()
+    first_track = _track(item_id="first-track")
+
+    async def iter_playlist_tracks(
+        item_id: str, provider_instance_id_or_domain: str
+    ) -> AsyncGenerator[Track]:
+        assert item_id == "playlist"
+        assert provider_instance_id_or_domain == "catalog--1"
+        yield first_track
+        raise ProviderUnavailableError("later page failed")
+
+    _mass(provider).music.playlists.iter_tracks = MagicMock(side_effect=iter_playlist_tracks)
+    playlist = MagicMock(item_id="playlist", provider="catalog--1")
+
+    with pytest.raises(ProviderUnavailableError, match="later page failed"):
+        await provider._build_playlist_tracks(playlist)
 
 
 @pytest.mark.parametrize("include_track", [False, True])
@@ -1076,7 +1106,16 @@ async def test_playlist_export_rejects_unsupported_media_entries(include_track: 
     playlist_tracks.append(
         Radio(item_id="radio", provider="builtin", name="Radio", provider_mappings=set())
     )
-    _mass(provider).music.playlists.tracks = AsyncMock(return_value=playlist_tracks)
+
+    async def iter_playlist_tracks(
+        item_id: str, provider_instance_id_or_domain: str
+    ) -> AsyncGenerator[Track | Radio]:
+        assert item_id == "playlist"
+        assert provider_instance_id_or_domain == "builtin"
+        for item in playlist_tracks:
+            yield item
+
+    _mass(provider).music.playlists.iter_tracks = MagicMock(side_effect=iter_playlist_tracks)
     playlist = Playlist(
         item_id="playlist", provider="builtin", name="Playlist", provider_mappings=set()
     )
@@ -1369,6 +1408,22 @@ async def test_import_shared_playlist_preserves_separate_artist_credits() -> Non
     assert [artist.name for artist in imported_item.artists] == ["First", "Second"]
 
 
+async def test_import_shared_playlist_rejects_m3u_extension_delimiter() -> None:
+    """A share title cannot inject structured metadata through the M3U separator."""
+    provider = _provider()
+    mass = _mass(provider)
+    encoded = SharePayload(
+        type="playlist",
+        title="Shared Mix",
+        tracks=[TrackStub(title="Song||isrc=USRC17607839", artist="Artist")],
+    ).to_base64()
+
+    with pytest.raises(InvalidDataError, match="unsupported M3U delimiter"):
+        await provider.import_shared_playlist(encoded)
+
+    mass.music.playlists.import_playlist.assert_not_called()
+
+
 async def test_playlist_payload_preserves_track_version_and_artist_credits() -> None:
     """Playlist stubs retain version metadata and the track's artist credit string."""
     provider = _provider()
@@ -1397,7 +1452,15 @@ async def test_playlist_payload_preserves_track_version_and_artist_credits() -> 
         ),
     )
     mass = _mass(provider)
-    mass.music.playlists.tracks = AsyncMock(return_value=[track])
+
+    async def iter_playlist_tracks(
+        item_id: str, provider_instance_id_or_domain: str
+    ) -> AsyncGenerator[Track]:
+        assert item_id == "playlist"
+        assert provider_instance_id_or_domain == "catalog--1"
+        yield track
+
+    mass.music.playlists.iter_tracks = MagicMock(side_effect=iter_playlist_tracks)
     playlist = MagicMock(item_id="playlist", provider="catalog--1")
 
     stubs = await provider._build_playlist_tracks(playlist)

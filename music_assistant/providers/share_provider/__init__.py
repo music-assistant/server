@@ -37,6 +37,7 @@ from music_assistant_models.media_items import (
 )
 
 from music_assistant.helpers.playlists import (
+    FIELD_SEPARATOR,
     PlaylistItem,
     construct_media_item_from_playlist_item,
     generate_m3u,
@@ -305,9 +306,17 @@ class ShareProvider(PluginProvider):
                 duration=track.duration,
                 provider_refs=track.provider_refs,
             )
-            playlist_items.append(
-                self._playlist_item_from_payload(track_payload, include_isrc=False)
+            playlist_item = self._playlist_item_from_payload(track_payload, include_isrc=False)
+            metadata = playlist_item.metadata or {}
+            m3u_values = (
+                playlist_item.title or "",
+                *metadata.keys(),
+                *metadata.values(),
+                *(artist.name for artist in playlist_item.artists),
             )
+            if any(FIELD_SEPARATOR in value for value in m3u_values):
+                raise InvalidDataError("Share track metadata contains an unsupported M3U delimiter")
+            playlist_items.append(playlist_item)
         return await self.mass.music.playlists.import_playlist(
             generate_m3u(payload.title, playlist_items),
             library_matching=True,
@@ -389,8 +398,8 @@ class ShareProvider(PluginProvider):
     async def _build_playlist_tracks(self, playlist: MediaItemType) -> list[TrackStub]:
         """Fetch and serialize playlist tracks as minimal stubs (no provider links)."""
         result: list[TrackStub] = []
-        for track in await self.mass.music.playlists.tracks(
-            playlist.item_id, playlist.provider, limit=0
+        async for track in self.mass.music.playlists.iter_tracks(
+            playlist.item_id, playlist.provider
         ):
             if not isinstance(track, Track):
                 raise InvalidDataError(
