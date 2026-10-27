@@ -1178,3 +1178,26 @@ def test_report_without_a_track_id_keeps_the_stream() -> None:
     )
 
     assert player._external_playing is True
+
+
+async def test_stream_reports_after_a_stop_are_not_station_playback() -> None:
+    """
+    Reports of the stopped stream that arrive late do not start the Station's source.
+
+    Recorded on a Station: after a successful stop the Station still sent two
+    playing=True reports with an empty track id, then playing=False. The player
+    must stay IDLE on the MA queue so play resumes the queue.
+    """
+    player = _make_player()
+    player._provider = cast("PlayerProvider", SimpleNamespace(config=_StubConfig()))
+    vars(player)["_audio_client"] = True
+    _start_confirmed_stream(player)
+    _record_commands(player)
+
+    await player.stop()
+    _station_report(player, track_id="", playing=True)
+    _station_report(player, track_id="", playing=True)
+    _station_report(player, track_id="", playing=False)
+
+    assert player._attr_playback_state == PlaybackState.IDLE
+    assert player._attr_active_source == player.player_id

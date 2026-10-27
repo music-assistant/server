@@ -59,6 +59,8 @@ def _make_intercept_player(
     player._player_id = "yandex_station_1"
     player._external_playing = external_playing
     player._external_media = None
+    vars(player)["_audio_client"] = False
+    vars(player)["_external_audio_client"] = False
     player._intercept_active = False
     player._last_intercepted_track_id = None
     player._last_intercept_time = 0.0

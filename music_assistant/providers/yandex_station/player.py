@@ -1165,6 +1165,11 @@ class YandexStationPlayer(Player):
                 self._external_stop_observed = True
                 self._attr_playback_state = PlaybackState.PLAYING
                 self._attr_powered = True
+        elif playing and stream_reported:
+            # A stream handed to the Station outside a session is one that already
+            # ended, still reported for a moment after the stop; it is not the
+            # Station's own playback.
+            _LOGGER.debug("[%s] Ignoring a report of an ended MA stream", self.player_id)
         elif playing:
             if (
                 self._attr_playback_state != PlaybackState.PLAYING
@@ -1220,9 +1225,10 @@ class YandexStationPlayer(Player):
         playing = state.get("playing", False)
         extra = player_state.get("extra", {})
 
+        # Firmware without audio_client reports no track id for its streams.
         stream_reported = (
             _reports_handed_stream(player_state)
-            if self._external_playing and self._external_audio_client
+            if self._audio_client or self._external_audio_client
             else None
         )
 
