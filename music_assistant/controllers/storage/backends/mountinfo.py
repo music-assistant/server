@@ -22,8 +22,8 @@ from music_assistant.controllers.storage.models import StorageKind
 
 MOUNTINFO_PATH: Final[str] = "/proc/self/mountinfo"
 
-# filesystems that can hold a music collection: never the container root (overlay) or a
-# pseudo filesystem (tmpfs, proc, sysfs, cgroup, devpts, squashfs, ...)
+# filesystems that can hold a music collection: never a pseudo filesystem (tmpfs, proc, sysfs,
+# cgroup, devpts, squashfs, ...)
 MEDIA_FSTYPES: Final[frozenset[str]] = frozenset(
     {
         "ext2",
@@ -54,6 +54,12 @@ MEDIA_FSTYPES: Final[frozenset[str]] = frozenset(
 )
 MEDIA_FSTYPE_PREFIX: Final[str] = "fuse."
 AUTOMOUNT_FSTYPE: Final[str] = "autofs"
+# the container root is an overlay, but so is a merged folder of the host mapped in as a volume;
+# outside a container, overlays are the root filesystems of the containers it runs
+OVERLAY_FSTYPE: Final[str] = "overlay"
+# last folder of the root of a container (docker and podman, containerd), which shows up in a
+# container when a host folder holding the container storage is mapped in
+CONTAINER_ROOT_FOLDERS: Final[frozenset[str]] = frozenset({"merged", "rootfs"})
 NETWORK_FSTYPES: Final[frozenset[str]] = frozenset({"cifs", "smb3", "nfs", "nfs4"})
 REMOVABLE_FSTYPES: Final[frozenset[str]] = frozenset(
     {"vfat", "exfat", "ntfs", "ntfs3", "hfsplus", "iso9660", "udf"}
@@ -130,7 +136,11 @@ def parse_mountinfo(
             kind=_classify(mountpoint, fstype, in_container, supervisor),
         )
         for mountpoint, (fstype, read_only) in mounts.items()
-        if (_is_media_fstype(fstype) or fstype == AUTOMOUNT_FSTYPE)
+        if (
+            _is_media_fstype(fstype)
+            or fstype == AUTOMOUNT_FSTYPE
+            or (fstype == OVERLAY_FSTYPE and in_container and not _is_container_root(mountpoint))
+        )
         and mountpoint != "/"
         and not any(is_within(mountpoint, path) for path in excluded)
     ]
@@ -226,6 +236,11 @@ def _parse_line(line: str) -> tuple[str, str, bool] | None:
 def _is_media_fstype(fstype: str) -> bool:
     """Return whether a filesystem type can hold a music collection."""
     return fstype in MEDIA_FSTYPES or fstype.startswith(MEDIA_FSTYPE_PREFIX)
+
+
+def _is_container_root(mountpoint: str) -> bool:
+    """Return whether an overlay mount is the root filesystem of a container."""
+    return mountpoint.rsplit("/", 1)[-1] in CONTAINER_ROOT_FOLDERS
 
 
 def _classify(mountpoint: str, fstype: str, in_container: bool, supervisor: bool) -> StorageKind:
