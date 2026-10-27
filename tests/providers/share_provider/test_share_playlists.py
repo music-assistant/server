@@ -339,7 +339,7 @@ async def test_reshare_imported_unresolved_track_preserves_original_payload() ->
     assert stubs == payload.tracks
 
 
-@pytest.mark.parametrize("title", ["Song||isrc=USRC17607839", "Song|"])
+@pytest.mark.parametrize("title", ["Song||isrc=USRC17607839", "Song|", "Song| "])
 async def test_import_shared_playlist_rejects_m3u_extension_delimiter(title: str) -> None:
     """A share title cannot corrupt structured metadata through the M3U separator."""
     provider = _provider()
