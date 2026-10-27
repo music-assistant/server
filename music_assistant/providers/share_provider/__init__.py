@@ -313,15 +313,14 @@ class ShareProvider(PluginProvider):
             )
             playlist_item = self._playlist_item_from_payload(track_payload, include_isrc=False)
             metadata = playlist_item.metadata or {}
-            # M3U uses this separator to distinguish metadata fields, so untrusted values could
-            # otherwise inject matching identifiers into the imported track.
+            # M3U parsing trims fields before splitting, so even whitespace after a pipe is unsafe.
             m3u_values = (
                 playlist_item.title or "",
                 *metadata.keys(),
                 *metadata.values(),
                 *(artist.name for artist in playlist_item.artists),
             )
-            if any(FIELD_SEPARATOR in value or value.endswith("|") for value in m3u_values):
+            if any(FIELD_SEPARATOR in value or value.strip().endswith("|") for value in m3u_values):
                 raise InvalidDataError("Share track metadata contains an unsupported M3U delimiter")
             playlist_items.append(playlist_item)
         return await self.mass.music.playlists.import_playlist(
