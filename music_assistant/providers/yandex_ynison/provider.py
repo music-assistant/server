@@ -1812,12 +1812,12 @@ class YandexYnisonProvider(PluginProvider):
         """Return the position of the current Ynison track, preferring our own stream."""
         # Status is published only on change, so the server sample can be far
         # behind the position this source has streamed.
-        if (
-            self._playback.owner_player_id
-            and self._playback.track_id == state.current_track_id
-            and self._playback.progress_ms >= 0
-        ):
-            return self._playback.progress_ms
+        if self._playback.owner_player_id and self._playback.track_id == state.current_track_id:
+            # Until the stream starts a requested item, its start is the position.
+            if self._playback.restart_requested():
+                return self._playback.restart_at_ms
+            if self._playback.progress_ms >= 0:
+                return self._playback.progress_ms
         return state.progress_ms
 
     async def _on_play(self) -> None:
@@ -1979,7 +1979,7 @@ class YandexYnisonProvider(PluginProvider):
         baseline = client.navigation_baseline()
         if not await self._wait_for_ynison_connection(client):
             return "failed"
-        if client.navigation_baseline() != baseline:
+        if not client.is_current_playback(baseline):
             return "superseded"
 
         # 1. Report that playback reached the end.
@@ -2169,16 +2169,25 @@ class YandexYnisonProvider(PluginProvider):
         """
         if not self._ynison or not self._ynison.connected:
             return
+        registered = 0
+
+        def register_trim(dropped: int) -> None:
+            # The playing item moves down once Ynison reports the trimmed queue;
+            # registered before the send so an early echo is recognised.
+            nonlocal registered
+            if self._playback.index >= 0:
+                self._playback.pending_index_shift += dropped
+                registered = dropped
+
         try:
-            dropped = await self._ynison.publish_items(
-                expanded_list, expected_generation=expected_generation
+            await self._ynison.publish_items(
+                expanded_list, expected_generation=expected_generation, on_trim=register_trim
             )
         except YnisonSendError, ResourceTemporarilyUnavailable:
             self.logger.warning("RADIO queue update dropped", exc_info=True)
-            return
-        if dropped and self._playback.index >= 0:
-            # The playing item moves down once Ynison reports the trimmed queue.
-            self._playback.pending_index_shift += dropped
+            self._playback.pending_index_shift = max(
+                0, self._playback.pending_index_shift - registered
+            )
 
     async def _on_next(self) -> None:
         """Handle next track command — signal track end so Yandex advances."""

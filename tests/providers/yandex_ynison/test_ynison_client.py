@@ -3293,6 +3293,52 @@ class TestQueueCommands:
         ):
             await client.advance_queue(natural=True, duration_ms=9000)
 
+    async def test_advance_follows_our_own_append(self, client: YnisonClient) -> None:
+        """Navigation decided before our own append still advances the same item."""
+        baseline = client.navigation_baseline()
+        items = [*client.state.player_state["player_queue"]["playable_list"], {"playable_id": "n"}]
+        await client.publish_items(items)
+
+        assert client.is_current_playback(baseline)
+        assert await client.advance_queue(natural=True, duration_ms=9000, baseline=baseline) == (
+            "change"
+        )
+        assert self._sent_queue()["current_playable_index"] == 1
+
+    async def test_trim_reports_the_shift_before_sending(self, client: YnisonClient) -> None:
+        """The window trim is announced before the edit leaves, so its echo cannot outrun it."""
+        queue = client.state.player_state["player_queue"]
+        queue["playable_list"] = [{"playable_id": f"t{i}"} for i in range(200)]
+        queue["current_playable_index"] = 199
+        sent_before: list[int] = []
+
+        def on_trim(dropped: int) -> None:
+            sent_before.append(self.mock_ws.send_str.await_count)
+            assert dropped == 1
+
+        items = [*queue["playable_list"], {"playable_id": "n"}]
+        assert await client.publish_items(items, on_trim=on_trim) == 1
+        assert sent_before == [0]
+
+    def test_peer_queue_is_not_the_current_playback(self, client: YnisonClient) -> None:
+        """A queue from another device replaces the playback a decision was made for."""
+        baseline = client.navigation_baseline()
+        client._parse_state(
+            {
+                "player_state": {
+                    "player_queue": {
+                        "current_playable_index": 0,
+                        "playable_list": [{"playable_id": "t0"}, {"playable_id": "p1"}],
+                        "options": {"repeat_mode": "NONE"},
+                        "entity_type": "VARIOUS",
+                        "version": {"device_id": "peer", "version": "2", "timestamp_ms": "0"},
+                    }
+                }
+            }
+        )
+
+        assert not client.is_current_playback(baseline)
+
     async def test_go_to_index_with_items_keeps_window(self, client: YnisonClient) -> None:
         """Appending items while moving keeps the 200-item window around the target."""
         queue = client.state.player_state["player_queue"]

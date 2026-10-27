@@ -1357,6 +1357,34 @@ class TestYnisonStateHandling:
         client.report_status.assert_not_awaited()
         client.update_player_state.assert_not_awaited()
 
+    async def test_completion_follows_a_radio_append_during_reconnect(self) -> None:
+        """Our own RADIO append while the transport recovers does not supersede completion."""
+        provider = _make_provider()
+        state = _make_ynison_state(
+            current_playable_index=0,
+            playable_list=[{"playable_id": "t1"}, {"playable_id": "t2"}],
+        )
+        client = _mock_ynison(state, connected=False)
+        provider._ynison = client
+
+        async def reconnect_after_append(_delay: float) -> None:
+            if not client.connected:
+                client.connected = True
+                queue = client.queue_snapshot()
+                await client.publish_items([*queue["playable_list"], {"playable_id": "t3"}])
+
+        with patch(
+            "music_assistant.providers.yandex_ynison.provider.asyncio.sleep",
+            new_callable=AsyncMock,
+            side_effect=reconnect_after_append,
+        ):
+            assert await provider._signal_track_completion() == "change"
+
+        client.report_status.assert_awaited_once()
+        sent = client.update_player_state.await_args.kwargs["player_state"]["player_queue"]
+        assert sent["current_playable_index"] == 1
+        assert len(sent["playable_list"]) == 3
+
     async def test_signal_track_completion_no_send_full_state(self) -> None:
         """Track completion never sends full state reset."""
         provider = _make_provider()
@@ -2565,6 +2593,7 @@ def _wire_queue_mutation(mock: MagicMock) -> None:
         "advance_queue",
         "go_to_index",
         "publish_items",
+        "is_current_playback",
         "set_repeat_mode",
         "set_shuffle",
     ):
@@ -3280,7 +3309,12 @@ class TestEchoSuppression:
         playable[199] = {"playable_id": "track1"}
         provider._playback.index = 199
         provider._ynison = _mock_ynison()
-        provider._ynison.publish_items = AsyncMock(return_value=10)
+
+        async def publish(_items: Any, **kwargs: Any) -> int:
+            kwargs["on_trim"](10)
+            return 10
+
+        provider._ynison.publish_items = AsyncMock(side_effect=publish)
 
         await provider._update_queue_list([{"playable_id": "x"}])
 
@@ -3296,6 +3330,62 @@ class TestEchoSuppression:
 
         assert not provider._playback.restart_requested()
         assert provider._playback.index == 189
+
+    async def test_trim_echo_during_the_send_keeps_the_track(self) -> None:
+        """An echo of the trimmed queue that arrives while the edit is sent is not a skip."""
+        provider = _make_provider()
+        await self._prime_same_track(provider)
+        provider._playback.index = 199
+        provider._ynison = _mock_ynison()
+        trimmed = [{"playable_id": f"t{i}"} for i in range(10, 199)]
+        trimmed += [{"playable_id": "track1"}, {"playable_id": "x"}]
+
+        async def publish(_items: Any, **kwargs: Any) -> int:
+            kwargs["on_trim"](10)
+            echo = _make_ynison_state(current_playable_index=189, playable_list=trimmed)
+            echo.last_update_is_echo = True
+            await provider._handle_ynison_state(echo)
+            return 10
+
+        provider._ynison.publish_items = AsyncMock(side_effect=publish)
+
+        await provider._update_queue_list([{"playable_id": "x"}])
+
+        assert not provider._playback.restart_requested()
+        assert provider._playback.index == 189
+        assert provider._playback.pending_index_shift == 0
+
+    async def test_failed_trim_publication_forgets_the_shift(self) -> None:
+        """A trim that never reached Ynison leaves the cursor as it was."""
+        provider = _make_provider()
+        await self._prime_same_track(provider)
+        provider._playback.index = 199
+        provider._ynison = _mock_ynison()
+
+        async def publish(_items: Any, **kwargs: Any) -> int:
+            kwargs["on_trim"](10)
+            raise YnisonSendError("down")
+
+        provider._ynison.publish_items = AsyncMock(side_effect=publish)
+
+        await provider._update_queue_list([{"playable_id": "x"}])
+
+        assert provider._playback.pending_index_shift == 0
+        assert provider._playback.index == 199
+
+    async def test_pause_after_track_change_sends_the_new_track_start(self) -> None:
+        """Before the stream starts the new track, pause reports where that track starts."""
+        provider = _make_provider()
+        await self._prime_same_track(provider)
+        provider._playback.progress_ms = 70000
+        state = _make_ynison_state(progress_ms=0, playable_list=[{"playable_id": "track2"}])
+        provider._ynison = _mock_ynison(state)
+
+        await provider._handle_ynison_state(state)
+        assert provider._playback.restart_requested()
+        await provider._on_pause()
+
+        assert provider._ynison.report_status.await_args.kwargs["progress_ms"] == 0
 
     async def test_peer_index_change_on_same_track_restarts(self) -> None:
         """A peer moving to another occurrence of the same track is a real change."""

@@ -95,6 +95,36 @@ def _navigation_identity(queue: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _current_playable_id(queue: dict[str, Any]) -> Any:
+    """Return the playable id at the current index of a queue, or ``None``."""
+    playables = queue.get("playable_list") or []
+    index = queue.get("current_playable_index", -1)
+    if isinstance(index, int) and 0 <= index < len(playables):
+        return playables[index].get("playable_id")
+    return None
+
+
+def _keeps_navigation_target(
+    expected: dict[str, Any], queue: dict[str, Any], device_id: str
+) -> bool:
+    """
+    Return whether ``queue`` still holds the item a navigation decision was made for.
+
+    Besides an unchanged queue, this accepts our own append or window trim of the
+    same entity, which keeps the same item current at a possibly shifted index.
+    """
+    identity = _navigation_identity(queue)
+    if identity == expected:
+        return True
+    return (
+        (queue.get("version") or {}).get("device_id") == device_id
+        and identity.get("entity_id") == expected.get("entity_id")
+        and identity.get("entity_type") == expected.get("entity_type")
+        and _current_playable_id(identity) is not None
+        and _current_playable_id(identity) == _current_playable_id(expected)
+    )
+
+
 def normalize_player_state_timestamps(player_state: dict[str, Any]) -> None:
     """
     Coerce Ynison timestamp fields to strings in-place.
@@ -587,6 +617,21 @@ class YnisonClient:
             paused=self.state.is_paused,
         )
 
+    def is_current_playback(self, baseline: NavigationBaseline) -> bool:
+        """
+        Return whether navigation decided for ``baseline`` still applies.
+
+        Our own appends and window trims keep it valid; a queue from another
+        device, an active-device change or a pause change do not.
+
+        :param baseline: Playback captured with :meth:`navigation_baseline`.
+        """
+        return (
+            self.state.active_device_id == baseline.active_device_id
+            and self.state.is_paused == baseline.paused
+            and _keeps_navigation_target(baseline.queue, self.queue_snapshot(), self.device_id)
+        )
+
     async def advance_queue(
         self,
         *,
@@ -613,7 +658,9 @@ class YnisonClient:
         def mutate(player_state: dict[str, Any]) -> bool | None:
             nonlocal outcome
             if (
-                _navigation_identity(player_state["player_queue"]) != expected.queue
+                not _keeps_navigation_target(
+                    expected.queue, player_state["player_queue"], self.device_id
+                )
                 or self.state.active_device_id != expected.active_device_id
                 or self.state.is_paused != expected.paused
             ):
@@ -649,13 +696,19 @@ class YnisonClient:
         await self.mutate_player_state(mutate, expected_generation=expected_generation)
 
     async def publish_items(
-        self, items: list[dict[str, Any]], *, expected_generation: int | None = None
+        self,
+        items: list[dict[str, Any]],
+        *,
+        expected_generation: int | None = None,
+        on_trim: Callable[[int], None] | None = None,
     ) -> int | None:
         """
         Publish an appended playable list without moving, while this device is active.
 
         :param items: Current playables followed by appended ones.
         :param expected_generation: Queue generation the items were fetched for.
+        :param on_trim: Called with the number of leading items the window drops,
+            before the edit is sent, so its echo cannot arrive first.
         :return: Leading items dropped by the window (the current index moved down
             by that much), or ``None`` when another device is active and nothing
             was sent.
@@ -669,6 +722,8 @@ class YnisonClient:
         def mutate(player_state: dict[str, Any]) -> None:
             nonlocal dropped
             dropped = replace_items(player_state, items)
+            if dropped and on_trim is not None:
+                on_trim(dropped)
 
         await self.mutate_player_state(mutate, expected_generation=expected_generation)
         return dropped
