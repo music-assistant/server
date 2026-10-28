@@ -297,6 +297,21 @@ async def test_unloading_instance_with_a_stale_payload_writes_nothing() -> None:
 
 
 @pytest.mark.asyncio
+async def test_forced_refresh_on_an_unloading_instance_writes_nothing() -> None:
+    """A forced refresh through an unloading instance fetches without writing the payload."""
+    payload = _make_payload()
+    fetch = AsyncMock(return_value=payload)
+    provider = _PayloadProvider(fetch)
+    cast("Any", provider).unloading = True
+
+    assert await provider._refresh_recommendation_payload() == payload
+    await _drain_background(provider)
+
+    assert not provider.background_tasks
+    assert _PAYLOAD_CACHE_KEY not in provider._cache_store
+
+
+@pytest.mark.asyncio
 async def test_unknown_item_id_returns_empty() -> None:
     """An item_id not present in the payload yields an empty UniqueList."""
     fetch = AsyncMock(return_value=_make_payload())

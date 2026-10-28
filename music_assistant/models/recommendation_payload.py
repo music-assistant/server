@@ -157,6 +157,9 @@ class RecommendationPayloadMixin(_MixinBase):
         cached payload is known to be outdated (e.g. after detecting rotated backend ids).
         Subsequent _recommendation_payload calls serve the refreshed payload.
         """
+        if getattr(self, "unloading", False):
+            # as in _recommendation_payload: no shared refresh, no write
+            return await self._fetch_recommendation_payload()
         task = self._schedule_recommendation_refresh()
         return await join_task(task)
 
