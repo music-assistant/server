@@ -139,6 +139,11 @@ class WiimPlayer(Player):
         # the coordinator would then have to refuse.
         return self._native_groups.is_unknown_leader_follower(self.player_id)
 
+    @property
+    def poll_interval(self) -> int:
+        """Return the poll interval in seconds, short while playing to keep the position fresh."""
+        return 5 if self.playback_state == PlaybackState.PLAYING else 30
+
     def is_native_group_compatible(self, other: Player) -> bool:
         """Only reachable coordinator-approved peers of either backend group natively."""
         return other.player_id in self.can_group_with
@@ -186,7 +191,6 @@ class WiimPlayer(Player):
         self._attr_source_list.append(PASSIVE_SOURCES[SOURCE_SPOTIFY])
         self._attr_source_list.append(PASSIVE_SOURCES[SOURCE_UNKNOWN])
         self._attr_needs_poll = True
-        self._attr_poll_interval = 5
 
     async def poll(self) -> None:
         """Poll player for transport state and position updates."""
@@ -194,7 +198,6 @@ class WiimPlayer(Player):
         await self._refresh_device_status()
         # slow, TTL-gated re-read of the native slave list (no busy polling loop)
         await self._native_groups.refresh_leader(self)
-        self._attr_poll_interval = 5 if self._attr_playback_state == PlaybackState.PLAYING else 30
 
     async def on_unload(self) -> None:
         """Handle logic when the player is unloaded from the Player controller."""
