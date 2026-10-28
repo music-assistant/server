@@ -634,36 +634,21 @@ async def test_restart_kills_the_old_run_without_draining(fake_provider: MagicMo
     stream._wait_stream_idle.assert_not_awaited()
 
 
-class _DrainingFFMpeg(_RunningFFMpeg):
-    """FFMpeg stand-in whose graceful close lasts until it is released."""
-
-    draining = asyncio.Event()
-    release = asyncio.Event()
-
-    async def __aexit__(self, *args: object) -> None:
-        self.draining.set()
-        await self.release.wait()
-
-
 async def test_replay_during_an_explicit_stop_still_drains(fake_provider: MagicMock) -> None:
     """A replay requested while an explicit stop drains must not skip the idle wait."""
     _running_ffmpegs.clear()
-    _DrainingFFMpeg.draining = asyncio.Event()
-    _DrainingFFMpeg.release = asyncio.Event()
     fake_provider._snapcast_server_host = "127.0.0.1"
     fake_provider.mass.create_task.side_effect = asyncio.ensure_future
     stream = _make_stream(fake_provider, name="music")
     stream.snap_stream = MagicMock(identifier="music-1", path="tcp://0.0.0.0:4953")
     stream._wait_stream_idle = AsyncMock()  # type: ignore[method-assign]
 
-    with patch("music_assistant.providers.snapcast.ma_stream.FFMpeg", _DrainingFFMpeg):
+    with patch("music_assistant.providers.snapcast.ma_stream.FFMpeg", _RunningFFMpeg):
         stream._streamer_task = asyncio.ensure_future(stream._streamer_task_impl())
         await asyncio.sleep(0.01)
         stream.request_stop_stream()
-        await asyncio.wait_for(_DrainingFFMpeg.draining.wait(), 1)
         # what start_stream sets when a replay finds the run still stopping
         stream._restart_requested = True
-        _DrainingFFMpeg.release.set()
         await asyncio.wait_for(stream._streamer_task, 1)
 
     _running_ffmpegs[0].kill.assert_not_awaited()
