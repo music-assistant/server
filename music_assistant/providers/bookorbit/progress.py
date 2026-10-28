@@ -64,9 +64,18 @@ def build_progress_update(
     """
     if not audio_files:
         return None
-    _require_known_file_durations(audio_files)
-    total = sum(_duration(f) for f in audio_files)
     position = max(float(position), 0.0)
+    # Single-file books can complete/reset via percentage without a measured duration.
+    if any(file.get("durationSeconds") is None for file in audio_files):
+        if len(audio_files) != 1:
+            raise ValueError("BookOrbit audio file has unknown duration")
+        only = audio_files[0]
+        return ProgressUpdate(
+            percentage=FULLY_PLAYED_PERCENTAGE if fully_played else 0.0,
+            current_file_id=int(only["id"]),
+            position_seconds=position,
+        )
+    total = sum(_duration(f) for f in audio_files)
     if fully_played or (total and position >= total):
         last = audio_files[-1]
         return ProgressUpdate(
@@ -106,6 +115,10 @@ def build_playback_state_update(
         return None
     position_ms = max(int(float(position) * 1000), 0)
     if len(assets) == 1 and assets[0].get("durationMs") is None:
+        # PUT playback-state has no completion flag, so mark-played / reset must use
+        # the legacy percentage endpoint. Ordinary mid-book seeks can still send positionMs.
+        if fully_played or position_ms <= 0:
+            return None
         return PlaybackStateUpdate(
             asset_id=str(assets[0]["assetId"]),
             position_ms=position_ms,

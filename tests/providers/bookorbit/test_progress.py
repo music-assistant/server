@@ -112,6 +112,23 @@ def test_update_unknown_duration_raises(book_multifile: dict[str, Any]) -> None:
         build_progress_update(files, position=10, fully_played=False)
 
 
+def test_update_single_file_unknown_duration_complete_and_reset(
+    book_audiobook: dict[str, Any],
+) -> None:
+    """Single-file legacy updates can complete or clear without a measured duration."""
+    files = _audio_files(book_audiobook)
+    files[0]["durationSeconds"] = None
+    done = build_progress_update(files, position=12.5, fully_played=True)
+    assert done is not None
+    assert done.percentage == 100.0
+    assert done.current_file_id == int(files[0]["id"])
+    assert done.position_seconds == pytest.approx(12.5)
+    reset = build_progress_update(files, position=0, fully_played=False)
+    assert reset is not None
+    assert reset.percentage == 0.0
+    assert reset.position_seconds == 0.0
+
+
 def test_resume_unknown_preceding_duration_raises(book_multifile: dict[str, Any]) -> None:
     """Legacy resume must not invent an absolute position across unknown parts."""
     files = _audio_files(book_multifile)
@@ -381,6 +398,21 @@ def test_playback_state_update_declines_missing_asset_duration(
     manifest = manifest_from_book(book_multifile)
     manifest["assets"][1]["durationMs"] = None
     assert build_playback_state_update(manifest, position=150.5, fully_played=False) is None
+
+
+def test_playback_state_update_single_asset_without_duration(
+    book_audiobook: dict[str, Any],
+) -> None:
+    """Ordinary single-asset seeks send positionMs; complete/reset fall back to legacy."""
+    manifest = manifest_from_book(book_audiobook)
+    manifest["assets"][0]["durationMs"] = None
+    manifest["totalDurationMs"] = None
+    mid = build_playback_state_update(manifest, position=42.5, fully_played=False)
+    assert mid is not None
+    assert mid.asset_id == manifest["assets"][0]["assetId"]
+    assert mid.position_ms == 42_500
+    assert build_playback_state_update(manifest, position=42.5, fully_played=True) is None
+    assert build_playback_state_update(manifest, position=0, fully_played=False) is None
 
 
 def test_parse_resume_from_playback_state(book_multifile: dict[str, Any]) -> None:
@@ -687,6 +719,33 @@ async def test_on_played_ignores_other_media(provider: BookOrbitProvider) -> Non
     await provider.on_played(MediaType.TRACK, "1", False, 5, Mock())
     _client(provider).put_playback_state.assert_not_awaited()
     _client(provider).upsert_audio_progress.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_on_played_complete_without_duration_uses_legacy(
+    provider: BookOrbitProvider, book_audiobook: dict[str, Any]
+) -> None:
+    """Mark-played with an unknown single-asset duration must set legacy percentage 100."""
+    client = _client(provider)
+    manifest = manifest_from_book(book_audiobook)
+    manifest["assets"][0]["durationMs"] = None
+    manifest["totalDurationMs"] = None
+    book = dict(book_audiobook)
+    book["files"] = [{**_audio_files(book)[0], "durationSeconds": None}]
+    client.get_audiobook_manifest = AsyncMock(return_value=manifest)
+    client.get_book = AsyncMock(return_value=book)
+    client.get_playback_state = AsyncMock(return_value=None)
+    await provider.on_played(
+        MediaType.AUDIOBOOK,
+        str(book_audiobook["id"]),
+        fully_played=True,
+        position=12,
+        media_item=Mock(),
+        is_playing=False,
+    )
+    client.put_playback_state.assert_not_awaited()
+    client.upsert_audio_progress.assert_awaited_once()
+    assert client.upsert_audio_progress.await_args.kwargs["percentage"] == 100.0
 
 
 @pytest.mark.asyncio
