@@ -87,6 +87,7 @@ mass = "music_assistant.__main__:main"
 # "speaches" is the name of a self-hostable OpenAI-compatible speech server
 # "overal" is a Dutch word ("everywhere") in a VRT MAX station tagline
 # translations/*.json are machine-translated locale files (Lokalise); foreign words aren't typos
+# listenbrainz/sample_playlist.json is a captured API response with original titles
 # tidal fixtures are captured API responses; foreign album/track titles aren't typos
 # instructions/*.instructions.md quotes reviewer comments verbatim (incl. their original typos)
 ignore-words-list = "provid,hass,followings,childs,explict,additionals,commitish,nam,connexion,claus,childrens,speaches,overal,"
@@ -94,6 +95,7 @@ skip = """*.js,*.svg,\
 .github/instructions/music-assistant-standards.instructions.md,\
 music_assistant/helpers/resources/countries.json,\
 music_assistant/helpers/resources/genres/genre_mapping.json,\
+music_assistant/providers/listenbrainz/sample_playlist.json,\
 music_assistant/providers/sonic_analysis/vendored_clap/**,\
 music_assistant/translations/*.json,\
 tests/providers/tidal/fixtures/**,\
