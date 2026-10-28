@@ -57,9 +57,6 @@ AUTOMOUNT_FSTYPE: Final[str] = "autofs"
 # the container root is an overlay, but so is a merged folder of the host mapped in as a volume;
 # outside a container, overlays are the root filesystems of the containers it runs
 OVERLAY_FSTYPE: Final[str] = "overlay"
-# last folder of the root of a container (docker and podman, containerd), which shows up in a
-# container when a host folder holding the container storage is mapped in
-CONTAINER_ROOT_FOLDERS: Final[frozenset[str]] = frozenset({"merged", "rootfs"})
 NETWORK_FSTYPES: Final[frozenset[str]] = frozenset({"cifs", "smb3", "nfs", "nfs4"})
 REMOVABLE_FSTYPES: Final[frozenset[str]] = frozenset(
     {"vfat", "exfat", "ntfs", "ntfs3", "hfsplus", "iso9660", "udf"}
@@ -91,6 +88,13 @@ CONTAINER_RESERVED_PATHS: Final[tuple[str, ...]] = (
 SUPERVISOR_MEDIA_PATH: Final[str] = "/media"
 
 _OCTAL_ESCAPE = re.compile(r"\\([0-7]{3})")
+# the root of a container in the container storage of docker, podman and CRI-O, containerd and
+# k3s, and docker with the containerd image store; it shows up in a container when a host folder
+# holding that storage is mapped in, while a media volume can be named merged or rootfs as well
+_CONTAINER_ROOT = re.compile(
+    r"/(?:overlay2?/[^/]+/merged|io\.containerd\.runtime\.[^/]+/[^/]+/[^/]+/rootfs"
+    r"|rootfs/overlayfs/[^/]+)$"
+)
 
 
 @dataclass(frozen=True)
@@ -240,7 +244,7 @@ def _is_media_fstype(fstype: str) -> bool:
 
 def _is_container_root(mountpoint: str) -> bool:
     """Return whether an overlay mount is the root filesystem of a container."""
-    return mountpoint.rsplit("/", 1)[-1] in CONTAINER_ROOT_FOLDERS
+    return _CONTAINER_ROOT.search(mountpoint) is not None
 
 
 def _classify(mountpoint: str, fstype: str, in_container: bool, supervisor: bool) -> StorageKind:

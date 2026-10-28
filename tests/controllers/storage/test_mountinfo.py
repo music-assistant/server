@@ -129,11 +129,26 @@ def test_docker_with_an_overlay_volume() -> None:
         "/mnt/user/system/docker/overlay2/0123abcd/merged",
         "/host/home/user/.local/share/containers/storage/overlay/0123abcd/merged",
         "/host/run/containerd/io.containerd.runtime.v2.task/moby/0123abcd/rootfs",
+        "/host/var/lib/containers/storage/overlay/0123abcd/merged",
+        "/host/run/k3s/containerd/io.containerd.runtime.v2.task/k8s.io/0123abcd/rootfs",
+        "/host/docker/rootfs/overlayfs/0123abcd",
     ],
 )
 def test_container_roots_in_a_volume_are_no_location(mountpoint: str) -> None:
     """The roots of other containers, in a host folder mapped in as a volume, hold no media."""
     assert _parse(_line(mountpoint, "overlay"), in_container=True) == {}
+
+
+@pytest.mark.parametrize(
+    "mountpoint", ["/merged", "/media/merged", "/rootfs", "/pool/overlay/merged"]
+)
+def test_overlay_volume_named_like_a_container_root(mountpoint: str) -> None:
+    """An overlay volume is a location even when its folder has the name of a container root."""
+    assert _parse(_line(mountpoint, "overlay"), in_container=True) == {
+        mountpoint: MediaMount(
+            mountpoint, "overlay", read_only=False, kind=StorageKind.CONTAINER_VOLUME
+        )
+    }
 
 
 def test_overlay_outside_a_container_is_no_location() -> None:
