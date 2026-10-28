@@ -200,8 +200,8 @@ async def test_apply_returns_false_without_remote_progress() -> None:
 
 
 @pytest.mark.asyncio
-async def test_apply_transport_error_returns_none() -> None:
-    """Transport errors are logged and reported as unknown (None), not absent."""
+async def test_apply_transport_error_returns_false() -> None:
+    """Transport errors are logged and treated as no usable progress."""
     mass = _mass()
     with patch(
         "music_assistant.providers.bookorbit.playlog_sync.resolve_remote_progress_seconds",
@@ -214,7 +214,7 @@ async def test_apply_transport_error_returns_none() -> None:
             book_id=1,
             guard=InboundProgressGuard(),
         )
-    assert has is None
+    assert has is False
 
 
 @pytest.mark.asyncio
@@ -258,55 +258,3 @@ async def test_sync_playlog_discards_cleared_progress() -> None:
     assert mass.music.mark_item_unplayed.await_args.kwargs == {
         "provider_instance_id": "bookorbit--test"
     }
-
-
-@pytest.mark.asyncio
-async def test_sync_playlog_does_not_unplay_on_fetch_failure() -> None:
-    """A transport failure must not be treated as cleared remote progress."""
-    mass = Mock()
-    mass.music.get_playlog_provider_item_ids = AsyncMock(return_value=[(MediaType.AUDIOBOOK, "5")])
-    mass.music.get_library_item_by_prov_id = AsyncMock(return_value=Mock(name="book"))
-    mass.music.mark_item_unplayed = AsyncMock()
-    mass.music.mark_item_played = AsyncMock()
-    with patch(
-        "music_assistant.providers.bookorbit.playlog_sync.resolve_remote_progress_seconds",
-        new=AsyncMock(side_effect=ClientError("boom")),
-    ):
-        await sync_playlog(
-            mass=mass,
-            provider_instance_id="bookorbit--test",
-            client=Mock(),
-            book_ids={5},
-            guard=InboundProgressGuard(),
-        )
-    mass.music.mark_item_unplayed.assert_not_awaited()
-
-
-@pytest.mark.asyncio
-async def test_sync_playlog_isolates_unexpected_book_failure() -> None:
-    """An unexpected error for one book neither aborts the batch nor discards it."""
-    mass = Mock()
-    mass.music.get_playlog_provider_item_ids = AsyncMock(
-        return_value=[(MediaType.AUDIOBOOK, "5"), (MediaType.AUDIOBOOK, "9")]
-    )
-    mass.music.get_library_item_by_prov_id = AsyncMock(return_value=Mock(name="book"))
-    mass.music.mark_item_unplayed = AsyncMock()
-    mass.music.mark_item_played = AsyncMock()
-
-    async def fake_resolve(_client: Any, book_id: int) -> tuple[bool, int] | None:
-        if book_id == 5:
-            raise RuntimeError("unexpected")
-        return None
-
-    with patch(
-        "music_assistant.providers.bookorbit.playlog_sync.resolve_remote_progress_seconds",
-        new=AsyncMock(side_effect=fake_resolve),
-    ):
-        await sync_playlog(
-            mass=mass,
-            provider_instance_id="bookorbit--test",
-            client=Mock(),
-            book_ids={5, 9},
-            guard=InboundProgressGuard(),
-        )
-    mass.music.mark_item_unplayed.assert_awaited_once()

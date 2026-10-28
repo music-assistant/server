@@ -84,20 +84,19 @@ async def apply_book_progress(
     client: Any,
     book_id: int,
     guard: InboundProgressGuard,
-) -> bool | None:
+) -> bool:
     """
     Pull one book's BookOrbit progress into the MA playlog.
 
     :returns: True if BookOrbit still has progress for this book (even when the
-        stamp was skipped because it is too short or guarded); False when
-        confirmed absent, unusable or zero-and-not-finished; None when the
-        fetch failed (transport error), in which case callers must not discard.
+        stamp was skipped because it is too short or guarded), False when absent
+        or unusable.
     """
     try:
         resolved = await resolve_remote_progress_seconds(client, book_id)
     except (ClientError, TimeoutError, LoginFailed, OSError) as err:
         LOGGER.warning("BookOrbit progress fetch for %s failed: %s", book_id, err)
-        return None
+        return False
     if resolved is None:
         return False
     fully_played, seconds_played = resolved
@@ -139,31 +138,24 @@ async def sync_playlog(
         return
     sem = asyncio.Semaphore(max(1, concurrency))
     remote_with_progress: set[str] = set()
-    confirmed_absent: set[str] = set()
 
     async def _one(book_id: int) -> None:
         async with sem:
-            try:
-                has_progress = await apply_book_progress(
-                    mass,
-                    provider_instance_id=provider_instance_id,
-                    client=client,
-                    book_id=book_id,
-                    guard=guard,
-                )
-            except Exception:
-                LOGGER.exception("BookOrbit playlog sync for book %s failed", book_id)
-                return
-            if has_progress is True:
+            if await apply_book_progress(
+                mass,
+                provider_instance_id=provider_instance_id,
+                client=client,
+                book_id=book_id,
+                guard=guard,
+            ):
                 remote_with_progress.add(str(book_id))
-            elif has_progress is False:
-                confirmed_absent.add(str(book_id))
 
     await asyncio.gather(*(_one(book_id) for book_id in candidates))
 
     playlog = await mass.music.get_playlog_provider_item_ids(provider_instance_id)
+    candidate_ids = {str(book_id) for book_id in candidates}
     for media_type, item_id in playlog:
-        if media_type != MediaType.AUDIOBOOK or item_id not in confirmed_absent:
+        if media_type != MediaType.AUDIOBOOK or item_id not in candidate_ids:
             continue
         if item_id in remote_with_progress:
             continue
