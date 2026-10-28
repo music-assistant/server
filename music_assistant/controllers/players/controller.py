@@ -2068,6 +2068,10 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         if not player.initialized.is_set():
             return
 
+        # a debounced update can still run on a player that was unregistered meanwhile
+        if self._players.get(player_id) is not player:
+            return
+
         # The current_media position anchor only changes on discrete events
         # (play/pause/seek/track change/buffer correction), so a change set holding
         # only anchor keys represents a position correction rather than a regular
