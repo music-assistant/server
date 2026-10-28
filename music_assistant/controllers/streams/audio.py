@@ -3186,6 +3186,9 @@ class StreamsAudio:
                         await asyncio.sleep(0)
                 crossfade_buffer = bytearray()
 
+                if _superseded():
+                    # the tail flush above yields, so a stop can land between the two checks
+                    return
                 # update duration details based on the actual pcm data we sent
                 # this also accounts for crossfade and silence stripping
                 seconds_streamed = bytes_written / pcm_sample_size
