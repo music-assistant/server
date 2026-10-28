@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, TypedDict, cast
 
 from music_assistant_models.config_entries import ConfigEntry
 from music_assistant_models.enums import IdentifierType, PlaybackState, PlayerFeature
+from music_assistant_models.errors import MusicAssistantError
 from music_assistant_models.player import DeviceInfo, PlayerMedia
 from propcache import under_cached_property as cached_property
 
@@ -556,6 +557,11 @@ class SnapCastPlayer(Player):
         ):
             self.snap_provider.update_stream_usage()
 
+        if prev_state.get("_attr_available") and not curr_state["_attr_available"]:
+            # the snapserver keeps an MA stream playing without clients, so nothing else
+            # ends the queue; stop it while the player still accepts the command
+            await self._stop_playing_queue()
+
         # apply changed attrs
         for key, value in changed_attrs.items():
             setattr(self, key, value)
@@ -648,3 +654,14 @@ class SnapCastPlayer(Player):
             for ma_id in self._get_player_ids_of_curr_group()
             if (ma_player := self.mass.players.get_player(ma_id))
         ]
+
+    async def _stop_playing_queue(self) -> None:
+        """Stop this player's own queue if it is playing."""
+        queue = self.mass.player_queues.get(self.player_id)
+        if not queue or not queue.active or queue.state != PlaybackState.PLAYING:
+            return
+        try:
+            await self.mass.player_queues.stop(self.player_id)
+        except MusicAssistantError as err:
+            # an error escaping here would end the player's state update worker
+            self.logger.warning("Failed to stop the queue of %s: %s", self.display_name, err)
