@@ -131,11 +131,14 @@ def output_pacing_args(profile: PacingProfile = PacingProfile.DEFAULT) -> list[s
 
 
 # Time to keep the flow stream response open after the last audio byte of a queue.
-# Players buffer a few seconds ahead of what they actually render; some of them drop
-# that buffer the moment the connection is closed, cutting off the end of the queue.
-# Holding the (idle) connection open gives them time to play it out first. Kept below
-# the webserver shutdown timeout so a lead-out never stalls a restart of the server.
+# Players buffer ahead of what they actually render; some of them drop that buffer the
+# moment the connection is closed, cutting off the end of the queue. Holding the (idle)
+# connection open gives them time to play it out first. The flow stream is paced a little
+# above playback speed, so over a whole album that buffer grows to tens of seconds: the
+# hold covers how far the player was behind the stream at its end, plus this margin.
 FLOW_STREAM_LEAD_OUT_SECONDS: Final[int] = 8
+# Upper bound for that hold, for a player whose reported position stalled
+FLOW_STREAM_LEAD_OUT_MAX_SECONDS: Final[int] = 180
 
 
 # Configuration keys
