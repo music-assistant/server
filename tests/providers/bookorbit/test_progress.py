@@ -14,6 +14,7 @@ from music_assistant_models.errors import LoginFailed, MediaNotFoundError, Provi
 from yarl import URL
 
 from music_assistant.providers.bookorbit import BookOrbitProvider
+from music_assistant.providers.bookorbit.constants import STREAMDETAILS_EXPIRATION_S
 from music_assistant.providers.bookorbit.parsers import _audio_files
 from music_assistant.providers.bookorbit.progress import (
     build_playback_state_update,
@@ -215,10 +216,10 @@ async def test_stream_details_unknown_duration_book_fetch_error_is_ma_error(
 
 
 @pytest.mark.asyncio
-async def test_stream_session_revoked_after_on_streamed(
+async def test_stream_session_survives_on_streamed_for_seek_reuse(
     provider: BookOrbitProvider, book_audiobook: dict[str, Any]
 ) -> None:
-    """Proxy grants stay valid during playback and are revoked when the stream ends."""
+    """on_streamed must not revoke grants: seek/stop-resume reuses the same part URLs."""
     details = await provider.get_stream_details(str(book_audiobook["id"]), MediaType.AUDIOBOOK)
     assert isinstance(details.data, dict)
     session_id = details.data["session_id"]
@@ -226,33 +227,28 @@ async def test_stream_session_revoked_after_on_streamed(
     book_id = str(book_audiobook["id"])
     assert provider._stream_session_allows(session_id, book_id, asset["assetId"])
     await provider.on_stream_started(details)
-    assert provider._stream_session_allows(session_id, book_id, asset["assetId"])
+    assert session_id in provider._active_stream_sessions
     await provider.on_streamed(details)
-    assert not provider._stream_session_allows(session_id, book_id, asset["assetId"])
-    # Cached streamdetails must not keep serving the revoked part URLs.
-    assert details.expiration == 0
+    assert session_id not in provider._active_stream_sessions
+    # Grant stays so the reused buffer can open the next part.
+    assert provider._stream_session_allows(session_id, book_id, asset["assetId"])
 
 
 @pytest.mark.asyncio
-async def test_stream_session_reresolves_after_on_streamed(
+async def test_stream_session_idle_timeout_revokes_grant(
     provider: BookOrbitProvider, book_audiobook: dict[str, Any]
 ) -> None:
-    """Stop/seek that ends a consumer must re-resolve rather than reuse dead part URLs."""
-    first = await provider.get_stream_details(str(book_audiobook["id"]), MediaType.AUDIOBOOK)
-    assert isinstance(first.data, dict)
-    first_session = first.data["session_id"]
-    await provider.on_stream_started(first)
-    await provider.on_streamed(first)
-    assert first.expiration == 0
-    second = await provider.get_stream_details(str(book_audiobook["id"]), MediaType.AUDIOBOOK)
-    assert isinstance(second.data, dict)
-    second_session = second.data["session_id"]
-    assert second_session != first_session
-    assert second.expiration > 0
+    """Inactive grants expire after STREAMDETAILS_EXPIRATION_S without part access."""
+    details = await provider.get_stream_details(str(book_audiobook["id"]), MediaType.AUDIOBOOK)
+    assert isinstance(details.data, dict)
+    session_id = details.data["session_id"]
     asset = manifest_from_book(book_audiobook)["assets"][0]
     book_id = str(book_audiobook["id"])
-    assert not provider._stream_session_allows(first_session, book_id, asset["assetId"])
-    assert provider._stream_session_allows(second_session, book_id, asset["assetId"])
+    await provider.on_stream_started(details)
+    await provider.on_streamed(details)
+    grant = provider._stream_sessions[session_id]
+    grant.last_access_at -= STREAMDETAILS_EXPIRATION_S + 1
+    assert not provider._stream_session_allows(session_id, book_id, asset["assetId"])
 
 
 @pytest.mark.asyncio
@@ -570,6 +566,9 @@ async def test_on_played_discards_when_remote_captured_at_newer_after_409(
             is_playing=False,
         )
     assert client.put_playback_state.await_count == 1
+    assert client.put_playback_state.await_args.kwargs["captured_at"] == (
+        report_time.isoformat().replace("+00:00", "Z")
+    )
     assert client.get_playback_state.await_count == 2
 
 
@@ -693,7 +692,8 @@ async def test_part_request_only_serves_assets_of_the_book(
     )
     client.open_file.assert_awaited_once()
     await provider.on_streamed(details)
+    # Grant survives on_streamed so seek/resume can still fetch parts.
     assert (
         await status(f"session_id={session_id}&book_id={book_id}&asset_id={assets[0]['assetId']}")
-        == 404
+        == 502
     )

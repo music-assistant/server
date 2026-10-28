@@ -106,13 +106,14 @@ SUPPORTED_FEATURES = {
 }
 
 
-@dataclass(slots=True, frozen=True)
+@dataclass(slots=True)
 class _StreamGrant:
-    """Proxy access for one get_stream_details resolution until playback ends."""
+    """Proxy access for one get_stream_details resolution until idle timeout."""
 
     book_id: str
     asset_ids: frozenset[str]
     created_at: float
+    last_access_at: float
 
 
 def _people(entries: Any) -> list[dict[str, Any]]:
@@ -493,17 +494,15 @@ class BookOrbitProvider(MusicProvider):
 
     async def on_streamed(self, streamdetails: StreamDetails) -> None:
         """
-        Revoke proxy access when a stream consumer ends.
+        Mark the proxied stream session inactive when a stream consumer ends.
 
-        Also expires the streamdetails so seek/reconnect cannot reuse part URLs after
-        the grant is gone (MA may keep unexpired streamdetails on the queue item).
+        Do not revoke the grant here: skip-back and stop/resume can reuse the same
+        buffer and part URLs (``buffer.is_valid``). Grants expire after an idle
+        timeout refreshed by each part request, and are cleared on unload.
         """
         if (session_id := _session_id_from_streamdetails(streamdetails)) is None:
             return
         self._active_stream_sessions.discard(session_id)
-        self._stream_sessions.pop(session_id, None)
-        # Force re-resolution: cached details would otherwise keep serving dead part URLs.
-        streamdetails.expiration = 0
 
     async def get_resume_position(
         self, item_id: str, media_type: MediaType
@@ -933,10 +932,12 @@ class BookOrbitProvider(MusicProvider):
         """Create a proxy session for assets from a fresh get_stream_details call."""
         self._prune_stream_sessions()
         session_id = uuid.uuid4().hex
+        now = time.monotonic()
         self._stream_sessions[session_id] = _StreamGrant(
             book_id=book_id,
             asset_ids=frozenset(asset_ids),
-            created_at=time.monotonic(),
+            created_at=now,
+            last_access_at=now,
         )
         return session_id
 
@@ -944,16 +945,20 @@ class BookOrbitProvider(MusicProvider):
         """Return whether the proxy may serve this asset for the given session."""
         self._prune_stream_sessions()
         grant = self._stream_sessions.get(session_id)
-        return grant is not None and grant.book_id == book_id and asset_id in grant.asset_ids
+        if grant is None or grant.book_id != book_id or asset_id not in grant.asset_ids:
+            return False
+        # Refresh idle timer so long/multipart playback keeps the grant alive.
+        grant.last_access_at = time.monotonic()
+        return True
 
     def _prune_stream_sessions(self) -> None:
-        """Drop never-started sessions whose streamdetails would already have expired."""
+        """Drop idle sessions that are not mid-playback."""
         now = time.monotonic()
         stale = [
             session_id
             for session_id, grant in self._stream_sessions.items()
             if session_id not in self._active_stream_sessions
-            and now - grant.created_at >= STREAMDETAILS_EXPIRATION_S
+            and now - grant.last_access_at >= STREAMDETAILS_EXPIRATION_S
         ]
         for session_id in stale:
             del self._stream_sessions[session_id]
