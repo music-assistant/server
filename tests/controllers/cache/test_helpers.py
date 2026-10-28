@@ -448,6 +448,34 @@ async def test_unloading_provider_fetches_alone_and_stores_nothing(
     assert not await _get_row(cache_controller, "fetch.a")
 
 
+async def test_unload_during_the_lookup_shares_and_stores_nothing(
+    cache_controller: CacheController, provider: _FakeProvider
+) -> None:
+    """Test that a call the unload overtook in the cache lookup fetches alone."""
+    provider.result = "value"
+    provider.gate.clear()
+    lookup = cache_controller.get_with_freshness
+
+    async def _unloaded_during_lookup(*args: Any, **kwargs: Any) -> Any:
+        found = await lookup(*args, **kwargs)
+        provider.unloading = True
+        return found
+
+    with patch.object(cache_controller, "get_with_freshness", _unloaded_during_lookup):
+        task = asyncio.create_task(provider.fetch("a"))
+        await _wait_for_flight(provider)
+    # the instance that replaced the unloaded one asks for the same key
+    replacement = _FakeProvider(cache_controller.mass)
+    replacement.result = "other account"
+    replaced = asyncio.create_task(replacement.fetch("a"))
+    await asyncio.sleep(0.05)
+    provider.gate.set()
+    assert await task == "value"
+    assert await replaced == "other account"
+    await _wait_for_stored(cache_controller, "fetch.a")
+    assert (await _get_row(cache_controller, "fetch.a"))["data"] == '"other account"'
+
+
 async def test_cancelled_caller_leaves_the_others_untouched(
     cache_controller: CacheController, provider: _FakeProvider
 ) -> None:

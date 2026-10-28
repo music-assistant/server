@@ -131,6 +131,9 @@ def use_cache(
                 base_class=base_class,
                 include_expired=allow_expired_cache,
             )
+            if getattr(self, "unloading", False):
+                # the unload overtook the lookup, which may have found the next instance's entry
+                return await func(self, *args, **kwargs)
             # a found value counts as a hit, except a None that this call opted out of
             # caching (cache_none=False) which is treated as a miss and re-fetched
             cache_hit = found and (cache_none or cachedata is not None)
