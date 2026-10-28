@@ -1668,8 +1668,12 @@ async def test_artist_identity_merges_the_library_artists_sharing_a_followed_id(
     """An artist that followed a merge is merged with the library artists holding the new id."""
     enrichment = _enrichment(_musicbrainz_answering_with(MBID))
     artist = _merged_artist({(ExternalID.MB_ARTIST, OTHER_MBID)})
+    _stored_item(enrichment, _merged_artist({(ExternalID.MB_ARTIST, OTHER_MBID)}))
 
     await enrichment._update_artist_metadata(artist, force_refresh=True)
+
+    _stored_ids(enrichment).assert_awaited_once_with("1", {(ExternalID.MB_ARTIST, MBID)})
+    _logger(enrichment).warning.assert_not_called()
 
     artists = _mass(enrichment).music.artists
     artists.merge_library_artists_by_mbid.assert_awaited_once_with(1, MBID)
