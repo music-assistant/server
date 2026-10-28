@@ -19,12 +19,19 @@ import base64
 import binascii
 import json
 import logging
-from typing import TYPE_CHECKING, TypeGuard
+from typing import TYPE_CHECKING, Any, TypeGuard
+from urllib.parse import urlsplit
 
 from fastmcp.server.auth import TokenVerifier
 from fastmcp.server.auth.auth import AccessToken
+from starlette.responses import JSONResponse
+from starlette.routing import Route
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
+    from starlette.requests import Request
+
     from music_assistant.mass import MusicAssistant
 
     from .token_identity import TokenIdentityRegistry
@@ -126,6 +133,7 @@ class MASTokenVerifier(TokenVerifier):
         public_resource_uri: str | None = None,
         enforce_audience: bool = False,
         identity_registry: TokenIdentityRegistry | None = None,
+        resource_metadata: Callable[[], dict[str, Any]] | None = None,
     ) -> None:
         """
         Bind the verifier to a MusicAssistant instance.
@@ -143,6 +151,9 @@ class MASTokenVerifier(TokenVerifier):
             migrate gracefully once MA-side issues audience-bound tokens.
         :param identity_registry: Shared bounded token-identity registry. A
             private registry is created when omitted.
+        :param resource_metadata: Builds the RFC 9728 protected resource metadata
+            document for ``public_resource_uri``. When given, 401 responses name
+            its URL in ``WWW-Authenticate``.
         """
         # ``base_url`` is optional on TokenVerifier — passing ``None`` is
         # equivalent to not setting it. Forward verbatim so FastMCP can later
@@ -150,6 +161,7 @@ class MASTokenVerifier(TokenVerifier):
         super().__init__(base_url=base_url)
         self._mass = mass
         self._public_resource_uri = public_resource_uri
+        self._resource_metadata = resource_metadata
         self._enforce_audience = enforce_audience
         self._audience_mismatch_reported = False
         if identity_registry is None:
@@ -220,6 +232,32 @@ class MASTokenVerifier(TokenVerifier):
             expires_at=None,
             resource=self._public_resource_uri,
         )
+
+    def get_routes(self, mcp_path: str | None = None) -> list[Route]:
+        """
+        Return the protected resource metadata route for FastMCP's HTTP app.
+
+        :param mcp_path: Path the MCP endpoint is mounted at.
+        """
+        if self._resource_metadata is None or not self._public_resource_uri:
+            return []
+        build_document = self._resource_metadata
+
+        async def metadata(_request: Request) -> JSONResponse:
+            return JSONResponse(build_document(), headers={"Cache-Control": "no-store"})
+
+        # FastMCP only names a metadata URL in its 401 challenge when the auth
+        # provider contributes a route at that path. MA's webserver answers the
+        # public URL (mount_well_known); the bridge forwards only the MCP mount
+        # to this app, so this route declares the document rather than serving it.
+        resource_path = urlsplit(self._public_resource_uri).path.rstrip("/")
+        return [
+            Route(
+                f"/.well-known/oauth-protected-resource{resource_path}",
+                endpoint=metadata,
+                methods=["GET"],
+            )
+        ]
 
     def _check_audience(self, token: str) -> bool:
         """
