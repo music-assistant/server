@@ -88,9 +88,12 @@ async def cached_listing[ItemT: MediaItem](
     if narrowed_to is not None:
         key += f".{','.join(sorted(narrowed_to))}"
     entry = f"{uri}|{key}"
+    # taken before the first lookup: the assembly runs against the providers the caller
+    # resolved, so an invalidation from here on, even one met while waiting, overtakes it
+    generation = _generation(uri)
     while (items := await _read(mass, uri, key, item_type)) is None:
         if (fill := _fills.get(entry)) is None:
-            assembled = await _assemble(mass, entry, uri, key, assemble, expiration)
+            assembled = await _assemble(mass, entry, uri, key, generation, assemble, expiration)
             # the request that assembles the listing sees the state a cached one would carry
             return cast("list[ItemT]", await _with_favorites(mass, assembled))
         # a concurrent request is assembling the listing: what it keeps is read on the next
@@ -174,13 +177,14 @@ async def _assemble(
     entry: str,
     uri: str,
     key: str,
+    generation: int,
     assemble: Callable[[], Awaitable[Listing[Any]]],
     expiration: int,
 ) -> list[Any]:
     """Assemble a listing in the calling task and keep it, for the requests waiting on it too."""
     fill = _fills[entry] = asyncio.get_running_loop().create_future()
     try:
-        assembled = await _fill(mass, uri, key, assemble, expiration)
+        assembled = await _fill(mass, uri, key, generation, assemble, expiration)
     except asyncio.CancelledError:
         fill.cancel()
         raise
@@ -199,11 +203,11 @@ async def _fill(
     mass: MusicAssistant,
     uri: str,
     key: str,
+    generation: int,
     assemble: Callable[[], Awaitable[Listing[Any]]],
     expiration: int,
 ) -> Listing[Any]:
-    """Assemble a listing and keep it, unless it is incomplete or an invalidation overtook it."""
-    generation = _generation(uri)
+    """Assemble a listing and keep it, unless incomplete or invalidated since `generation`."""
     assembled = await assemble()
     if assembled.complete and _generation(uri) == generation:
         # the items are serialized off the event loop, as the cache does for provider results

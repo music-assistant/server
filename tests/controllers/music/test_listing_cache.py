@@ -332,6 +332,32 @@ async def test_a_provider_invalidation_drops_its_listings_and_overtakes_assembli
     assert assemble.await_count == 3
 
 
+async def test_a_provider_invalidation_during_the_lookup_overtakes_the_assembly(
+    mass: MusicAssistant,
+) -> None:
+    """A reconfigure finishing during the cache lookup keeps the old account's listing out."""
+    uri = create_uri(MediaType.ALBUM, "spotify_1", "looked_up")
+    looking_up, release = asyncio.Event(), asyncio.Event()
+    get = mass.cache.get
+
+    async def _slow_get(*args: Any, **kwargs: Any) -> Any:
+        looking_up.set()
+        await release.wait()
+        return await get(*args, **kwargs)
+
+    # the assembly runs against the provider the request resolved before the reconfigure
+    assemble = AsyncMock(return_value=Listing([create_track("spotify_1", "old_account")]))
+    with patch.object(mass.cache, "get", _slow_get):
+        in_flight = asyncio.create_task(_album_tracks(mass, uri, assemble))
+        await looking_up.wait()
+        await invalidate_provider_listings(mass, "spotify_1")
+        release.set()
+        assert [track.item_id for track in await in_flight] == ["old_account"]
+
+    assemble.return_value = Listing([create_track("spotify_1", "new_account")])
+    assert [track.item_id for track in await _album_tracks(mass, uri, assemble)] == ["new_account"]
+
+
 async def test_an_invalidation_during_the_write_wins(mass: MusicAssistant) -> None:
     """A listing written while its container is invalidated is not left behind."""
     album = create_album("spotify_1", "edited_while_written")
