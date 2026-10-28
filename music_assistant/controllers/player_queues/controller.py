@@ -25,6 +25,7 @@ from music_assistant_models.enums import (
     ListingType,
     MediaType,
     PlaybackState,
+    PlayerFeature,
     PlayerType,
     QueueOption,
     RepeatMode,
@@ -2146,15 +2147,22 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
             and queue.state == PlaybackState.PAUSED
             and not self.has_lost_paused_stream(queue_id)
         ):
-            # forward the actual play/unpause command to the player,
-            # holding the action until the player confirms it resumed playback
+            # forward the actual play/unpause command to the player that renders the audio
+            # (its active output protocol, if any), like pause does, holding the action
+            # until that player confirms it resumed playback
+            target_player = (
+                self.mass.players._get_control_target(
+                    queue_player, PlayerFeature.PAUSE, require_active=True
+                )
+                or queue_player
+            )
             async with self.mass.players.wait_for_player_update(
-                queue_id,
+                target_player.player_id,
                 attribute_name="playback_state",
                 attribute_value=PlaybackState.PLAYING,
                 timeout=PLAYBACK_START_TIMEOUT,
             ):
-                await queue_player.play()
+                await target_player.play()
             return
         # player is not paused, perform resume instead
         await self.resume(queue_id)
