@@ -42,8 +42,8 @@ def _item(item_id: str) -> QueueItem:
     return queue_item
 
 
-def _controller(items: list[QueueItem]) -> PlayerQueuesController:
-    """Build a bare controller holding one playing queue with the given items."""
+def _controller(items: list[QueueItem]) -> tuple[PlayerQueuesController, MagicMock]:
+    """Build a bare controller holding one playing queue, and its mass mock."""
     ctrl = PlayerQueuesController.__new__(PlayerQueuesController)
     ctrl.logger = MagicMock()
     ctrl._queue_data = {
@@ -51,25 +51,26 @@ def _controller(items: list[QueueItem]) -> PlayerQueuesController:
     }
     ctrl._managed_pool = MagicMock()
     ctrl._set_transitioning = MagicMock()  # type: ignore[method-assign]
-    ctrl.mass = MagicMock()
+    mass = MagicMock()
 
     def _close_coro(target: Any, *_args: Any, **_kwargs: Any) -> None:
         # nothing runs the scheduled coroutines here
         if hasattr(target, "close"):
             target.close()
 
-    ctrl.mass.create_task = MagicMock(side_effect=_close_coro)
-    return ctrl
+    mass.create_task = MagicMock(side_effect=_close_coro)
+    ctrl.mass = mass
+    return ctrl, mass
 
 
 def test_removal_cancels_the_pending_next_track_work() -> None:
     """The preload, enqueue-next and prepare work of a removed queue is cancelled."""
-    ctrl = _controller([_item("current"), _item("next")])
+    ctrl, mass = _controller([_item("current"), _item("next")])
 
     ctrl.on_player_remove(QUEUE_ID, permanent=False)
 
-    cancelled_tasks = {call.args[0] for call in ctrl.mass.cancel_task.call_args_list}
-    cancelled_timers = {call.args[0] for call in ctrl.mass.cancel_timer.call_args_list}
+    cancelled_tasks = {call.args[0] for call in mass.cancel_task.call_args_list}
+    cancelled_timers = {call.args[0] for call in mass.cancel_timer.call_args_list}
     assert {
         f"preload_next_item_{QUEUE_ID}",
         f"enqueue_next_item_{QUEUE_ID}",
@@ -82,7 +83,7 @@ def test_removal_releases_the_queue_audio() -> None:
     """Every buffer and the crossfade handover of a removed queue are released."""
     items = [_item("current"), _item("next")]
     buffers = [item.streamdetails.buffer for item in items if item.streamdetails]
-    ctrl = _controller(items)
+    ctrl, mass = _controller(items)
 
     ctrl.on_player_remove(QUEUE_ID, permanent=False)
 
@@ -92,4 +93,4 @@ def test_removal_releases_the_queue_audio() -> None:
         assert item.streamdetails.buffer is None
         assert buffer is not None
         buffer.clear.assert_called_once()
-    ctrl.mass.streams.audio.clear_crossfade_handover.assert_called_once_with(QUEUE_ID)
+    mass.streams.audio.clear_crossfade_handover.assert_called_once_with(QUEUE_ID)
