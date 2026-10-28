@@ -300,8 +300,9 @@ class SnapCastPlayer(Player):
 
         # some caller require instant state updates before returning
         async with self._state_update_lock:
-            if await self._process_snapcast_client_state():
-                self.update_state()
+            call_update = await self._process_snapcast_client_state()
+        if call_update:
+            await self._publish_state()
 
         self.snap_provider._update_group_callbacks(poke=True)
 
@@ -447,7 +448,7 @@ class SnapCastPlayer(Player):
                     async with self._state_update_lock:
                         call_update = await self._process_snapcast_client_state()
                     if call_update:
-                        self.update_state()
+                        await self._publish_state()
                 except KeyError, AttributeError, TypeError, ValueError:
                     # a failed update must not kill this worker (state would freeze)
                     self.logger.exception(
@@ -557,11 +558,6 @@ class SnapCastPlayer(Player):
         ):
             self.snap_provider.update_stream_usage()
 
-        if prev_state.get("_attr_available") and not curr_state["_attr_available"]:
-            # the snapserver keeps an MA stream playing without clients, so nothing else
-            # ends the queue; stop it while the player still accepts the command
-            await self._stop_playing_queue()
-
         # apply changed attrs
         for key, value in changed_attrs.items():
             setattr(self, key, value)
@@ -655,8 +651,18 @@ class SnapCastPlayer(Player):
             if (ma_player := self.mass.players.get_player(ma_id))
         ]
 
+    async def _publish_state(self) -> None:
+        """Publish the processed state, stopping the queue first if the client dropped."""
+        if self.state.available and not self._attr_available:
+            # stopped before publishing, as an unavailable player rejects it
+            await self._stop_playing_queue()
+        self.update_state()
+
     async def _stop_playing_queue(self) -> None:
-        """Stop this player's own queue if it is playing."""
+        """Stop this player's own queue if it plays on the snapclient."""
+        # the snapserver keeps an MA stream playing without clients, unlike other outputs
+        if self.active_output_protocol not in (None, "native"):
+            return
         queue = self.mass.player_queues.get(self.player_id)
         if not queue or not queue.active or queue.state != PlaybackState.PLAYING:
             return

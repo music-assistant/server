@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, cast
 from unittest.mock import AsyncMock, MagicMock
@@ -26,6 +27,13 @@ def _make_player(queue_active: bool) -> SnapCastPlayer:
     player._extra_data = {}
     player._attr_available = True
     player._is_alive = lambda: True  # type: ignore[method-assign]
+    player._Player__attr_active_output_protocol = None  # type: ignore[attr-defined]
+    player._poke_evt = asyncio.Event()
+    player._state_update_lock = asyncio.Lock()
+    player._state = SimpleNamespace(available=True)  # type: ignore[assignment]
+    player.update_state = lambda: setattr(  # type: ignore[misc,assignment]
+        player, "_state", SimpleNamespace(available=player._attr_available)
+    )
     group = SimpleNamespace(stream="ma-stream", clients=[], name="group")
     player.snap_client = cast(
         "SnapclientProto",
@@ -46,6 +54,13 @@ def _make_player(queue_active: bool) -> SnapCastPlayer:
     return player
 
 
+async def _process_update(player: SnapCastPlayer) -> None:
+    player.poke_player_update()
+    worker = asyncio.create_task(player._player_update_worker())
+    await asyncio.sleep(0)
+    worker.cancel()
+
+
 def _drop_client(player: SnapCastPlayer) -> None:
     player._is_alive = lambda: False  # type: ignore[method-assign]
     player.snap_client.connected = False  # type: ignore[misc]
@@ -55,27 +70,40 @@ def _drop_client(player: SnapCastPlayer) -> None:
 async def test_dropped_client_stops_its_playing_queue() -> None:
     """A playing player whose client drops stops its queue while it can still be stopped."""
     player = _make_player(queue_active=True)
-    await player._process_snapcast_client_state()
+    await _process_update(player)
     available_at_stop: list[bool] = []
     player.mass.player_queues.stop.side_effect = lambda _: available_at_stop.append(  # type: ignore[attr-defined]
-        player._attr_available
+        player.state.available
     )
 
     _drop_client(player)
-    await player._process_snapcast_client_state()
+    await _process_update(player)
 
     player.mass.player_queues.stop.assert_awaited_once_with(player.player_id)  # type: ignore[attr-defined]
     assert available_at_stop == [True]
-    assert player._attr_available is False
+    assert player.state.available is False
 
 
 @pytest.mark.asyncio
 async def test_dropped_group_member_leaves_queue_alone() -> None:
     """A dropped member has no active queue of its own, so the leader keeps playing."""
     player = _make_player(queue_active=False)
-    await player._process_snapcast_client_state()
+    await _process_update(player)
 
     _drop_client(player)
-    await player._process_snapcast_client_state()
+    await _process_update(player)
+
+    player.mass.player_queues.stop.assert_not_awaited()  # type: ignore[attr-defined]
+
+
+@pytest.mark.asyncio
+async def test_dropped_client_leaves_other_output_protocol_alone() -> None:
+    """Playback through another output protocol does not depend on the snapclient."""
+    player = _make_player(queue_active=True)
+    player._Player__attr_active_output_protocol = "sendspin-kitchen"  # type: ignore[attr-defined]
+    await _process_update(player)
+
+    _drop_client(player)
+    await _process_update(player)
 
     player.mass.player_queues.stop.assert_not_awaited()  # type: ignore[attr-defined]
