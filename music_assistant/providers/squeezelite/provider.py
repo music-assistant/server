@@ -178,6 +178,8 @@ class SqueezelitePlayerProvider(PlayerProvider):
             slimclient = self.slimproto.get_player(event.player_id)
             if not slimclient:
                 return  # should not happen, but guard anyways
+            # a reconnect before the old socket closed is not reported as a disconnect
+            self._release_from_sync_leader(event.player_id)
             player = SqueezelitePlayer(self, event.player_id, slimclient)
             self.mass.create_task(player.setup())
             return
@@ -188,6 +190,7 @@ class SqueezelitePlayerProvider(PlayerProvider):
 
         # Handle player disconnect
         if event.type == SlimEventType.PLAYER_DISCONNECTED:
+            self._release_from_sync_leader(player.player_id)
             self.mass.create_task(self.mass.players.unregister(player.player_id))
             return
 
@@ -262,3 +265,14 @@ class SqueezelitePlayerProvider(PlayerProvider):
                 # race condition
                 break
         return resp
+
+    def _release_from_sync_leader(self, player_id: str) -> None:
+        """Drop a player whose connection ended from the group of its sync leader."""
+        # a reconnect registers a fresh player, so the leader must let go of the old
+        # one or it keeps listing a member that is no longer part of its stream
+        if (
+            (player := self.mass.players.get_player(player_id))
+            and (leader_id := player.synced_to)
+            and (leader := self.mass.players.get_player(leader_id))
+        ):
+            cast("SqueezelitePlayer", leader).remove_disconnected_member(player_id)
