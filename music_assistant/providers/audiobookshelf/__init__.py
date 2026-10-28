@@ -117,7 +117,13 @@ from music_assistant_models.media_items import (
 from music_assistant_models.media_items.media_item import RecommendationFolder
 from music_assistant_models.streamdetails import MultiPartPath, StreamDetails
 
-from music_assistant.constants import PLAYBACK_REPORT_INTERVAL_SECONDS, PlaylistPlayableItem
+from music_assistant.constants import (
+    CONF_PASSWORD,
+    CONF_USERNAME,
+    CONF_VERIFY_SSL,
+    PLAYBACK_REPORT_INTERVAL_SECONDS,
+    PlaylistPlayableItem,
+)
 from music_assistant.controllers.cache import use_cache
 from music_assistant.helpers.datetime import from_utc_timestamp
 from music_assistant.models.music_provider import MusicProvider
@@ -142,10 +148,7 @@ from .constants import (
     CONF_API_TOKEN,
     CONF_HIDE_EMPTY_PODCASTS,
     CONF_OLD_TOKEN,
-    CONF_PASSWORD,
     CONF_URL,
-    CONF_USERNAME,
-    CONF_VERIFY_SSL,
     PART_STREAM_CHUNK_SIZE,
     PART_STREAM_HEADERS,
     PART_STREAM_TIMEOUT,

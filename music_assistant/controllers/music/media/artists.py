@@ -1880,7 +1880,13 @@ class ArtistsController(MediaControllerBase[Artist]):
             update = self.artist_from_item_mapping(update)
             metadata = cur_item.metadata
         else:
-            metadata = metadata_for_update(cur_item.metadata, update.metadata, overwrite)
+            metadata = metadata_for_update(
+                cur_item.metadata,
+                update.metadata,
+                overwrite,
+                cur_item.provider_mappings,
+                update.provider_mappings,
+            )
         cur_item.external_ids.update(update.external_ids)
         # enforce various artists name + id
         mbid = cur_item.mbid

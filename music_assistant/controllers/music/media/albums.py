@@ -847,7 +847,13 @@ class AlbumsController(MediaControllerBase[Album]):
         """Update existing record in the database."""
         db_id = int(item_id)  # ensure integer
         cur_item = await self.get_library_item(db_id)
-        metadata = metadata_for_update(cur_item.metadata, update.metadata, overwrite)
+        metadata = metadata_for_update(
+            cur_item.metadata,
+            update.metadata,
+            overwrite,
+            cur_item.provider_mappings,
+            update.provider_mappings,
+        )
         if getattr(update, "album_type", AlbumType.UNKNOWN) != AlbumType.UNKNOWN:
             album_type = update.album_type
         else:
