@@ -89,7 +89,12 @@ class YandexStationProvider(PlayerProvider):
         if self._borrow_source is None:
             return None
         instance_id = self._borrow_source.instance_id
-        return instance_id if self.mass.get_provider(instance_id) is not None else None
+        # Look up the exact instance: for an unavailable one the core falls back to
+        # another instance of the domain, which may be a different account.
+        linked = self.mass.get_provider(instance_id, return_unavailable=True)
+        if linked is None or linked.instance_id != instance_id or not linked.available:
+            return None
+        return instance_id
 
     async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
         """

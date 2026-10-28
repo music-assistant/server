@@ -407,7 +407,9 @@ class YandexStationPlayer(Player):
         The Station cannot pause a Music Assistant stream, so the player only advertises
         pausing while none plays and the core stops such a stream instead.
         """
-        if self._external_playing:
+        if self._external_playing or self._voice.holds_playback:
+            # A stream Alice stopped is gone from the Station like a playing one;
+            # pausing it is stopping it, so play resumes its queue afterwards.
             await self.stop()
             return
         self._end_voice_interruption()
@@ -470,7 +472,7 @@ class YandexStationPlayer(Player):
 
     async def play_media(self, media: PlayerMedia) -> None:
         """Play media using the directive supported by the station firmware."""
-        if self._voice.phase == VoiceRecoveryPhase.RESUMING:
+        if self._voice.resuming:
             # The resume after Alice asked the core for this stream. If the Station
             # started its own playback meanwhile, that playback stands.
             if self._voice.drops_resumed_stream:

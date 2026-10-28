@@ -1520,3 +1520,47 @@ def test_silent_stop_after_a_volume_request_does_not_resume() -> None:
     player.mass.call_later.assert_called_once()
     assert player._voice.phase == VoiceRecoveryPhase.NONE
     assert player._attr_playback_state == PlaybackState.IDLE
+
+
+# ── Copilot round 8 ──────────────────────────────────────────────────
+
+
+async def test_pause_while_the_music_waits_for_alice_stops_it() -> None:
+    """
+    Pausing a stream Alice stopped is stopping it: the player reports IDLE.
+
+    The stream is gone from the Station, so after the pause the core's play must
+    resume the queue (a player that is not paused) instead of a native play.
+    """
+    player = _make_player()
+    _answered_interruption(player)
+    _record_commands(player)
+
+    await player.pause()
+
+    assert player._attr_playback_state == PlaybackState.IDLE
+    assert player._voice.phase == VoiceRecoveryPhase.NONE
+    player.mass.cancel_timer.assert_called_with(player._voice_resume_task_id)
+
+
+async def test_silent_request_during_a_running_resume_drops_its_stream() -> None:
+    """
+    "Alice, stop" that finishes while the core prepares the resumed item wins.
+
+    The stream the running resume asks for is dropped and the music stays stopped.
+    """
+    player, commands = _make_play_media_player([{"status": "SUCCESS"}])
+    _answered_interruption(player)
+
+    async def cmd_resume(_player_id: str, source: str | None = None) -> None:
+        for alice_state in ("LISTENING", "BUSY", "IDLE"):
+            _report(player, playing=False, alice_state=alice_state)
+        await player.play_media(MediaItem(uri="ma://track/1", title="T", source_id=source))
+
+    player.mass.players.cmd_resume = AsyncMock(side_effect=cmd_resume)
+
+    await player._resume_after_voice()
+
+    assert commands == []
+    assert player._external_playing is False
+    assert player._voice.phase == VoiceRecoveryPhase.NONE

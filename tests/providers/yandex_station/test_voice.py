@@ -68,13 +68,13 @@ def test_resume_runs_for_the_owning_queue() -> None:
     recovery.request_ended(spoke=True, volume=40)
 
     source = recovery.start_resume()
-    phase_while_resuming = recovery.phase
+    resuming = recovery.resuming
     holds_while_resuming = recovery.holds_playback
     recovery.finish_resume()
 
     assert source == "queue_1"
-    assert (phase_while_resuming, holds_while_resuming) == (VoiceRecoveryPhase.RESUMING, False)
-    assert recovery.phase == VoiceRecoveryPhase.NONE
+    assert (resuming, holds_while_resuming) == (True, False)
+    assert recovery.resuming is False
 
 
 def test_cancel_before_the_resume_runs_drops_it() -> None:
@@ -101,3 +101,38 @@ def test_cancel_while_resuming_marks_the_stream_superseded() -> None:
 
     assert (before_cancel, after_cancel, recovery.drops_resumed_stream) == (False, True, False)
     assert recovery.phase == VoiceRecoveryPhase.NONE
+
+
+def test_new_request_during_a_running_resume_supersedes_it_and_decides() -> None:
+    """
+    "Alice, stop" while the core runs the resume overrules it.
+
+    The running resume's stream is dropped, and the new request's end decides:
+    a silent one leaves the music stopped.
+    """
+    recovery = _awaiting()
+    recovery.request_ended(spoke=True, volume=40)
+    recovery.start_resume()
+
+    took_over_timer = recovery.request_started(volume=40)
+    phase_during_request = recovery.phase
+    resumes = recovery.request_ended(spoke=False, volume=40)
+
+    assert took_over_timer is False
+    assert phase_during_request == VoiceRecoveryPhase.AWAITING_ANSWER
+    assert resumes is False
+    assert recovery.drops_resumed_stream is True
+
+
+def test_answered_request_during_a_running_resume_lets_it_play() -> None:
+    """A question Alice answers during the running resume ends up resuming anyway."""
+    recovery = _awaiting()
+    recovery.request_ended(spoke=True, volume=40)
+    recovery.start_resume()
+    recovery.request_started(volume=40)
+    recovery.request_ended(spoke=True, volume=40)
+
+    source = recovery.start_resume()
+
+    assert source is None
+    assert recovery.drops_resumed_stream is False
