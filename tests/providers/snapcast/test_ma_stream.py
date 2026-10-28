@@ -596,6 +596,27 @@ async def test_restart_of_a_running_stream_does_not_wait(fake_provider: MagicMoc
     stream._streamer_task.cancel()
 
 
+async def test_restart_drops_the_playback_anchor_of_the_old_run(
+    fake_provider: MagicMock,
+) -> None:
+    """
+    Regression: a restarted stream must not report when the replaced run started.
+
+    The group can be put on the stream before the old run has finished, so players would
+    anchor their elapsed time to the old run's start.
+    """
+    fake_provider._snapcast_server_buffer_size = 1000
+    stream = _make_stream(fake_provider)
+    stream._setup_done = True
+    stream._streamer_task = asyncio.ensure_future(asyncio.sleep(10))
+    stream._streaming_started_at = time.time() - 20
+
+    await stream.start_stream(allow_restart=True)
+
+    assert stream.playback_started_at is None
+    stream._streamer_task.cancel()
+
+
 def test_releasing_the_pin_schedules_the_stop_again(fake_provider: MagicMock) -> None:
     """A stream that stays unused after its pin is released is stopped as usual."""
     stream = _displaced_stream(fake_provider)
