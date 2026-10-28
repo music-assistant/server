@@ -38,6 +38,32 @@ def _as_user(user: User | None) -> Iterator[None]:
         set_current_user(None)
 
 
+@contextmanager
+def _frozen_now(timestamp: str) -> Iterator[None]:
+    """Pin the current time used for period boundaries and series ends to a UTC instant."""
+    with patch(
+        "music_assistant.controllers.statistics.base.time.time",
+        return_value=datetime.fromisoformat(timestamp).replace(tzinfo=UTC).timestamp(),
+    ):
+        yield
+
+
+async def _insert_plays(mass: MusicAssistant, user: User, timestamps: tuple[str, ...]) -> None:
+    """Insert completed track plays at the given UTC instants."""
+    for index, timestamp in enumerate(timestamps):
+        await mass.music.database.insert(
+            DB_TABLE_PLAY_HISTORY,
+            {
+                "item_id": f"track-{index}",
+                "provider": "test-provider",
+                "media_type": MediaType.TRACK.value,
+                "userid": user.user_id,
+                "name": f"Track {index}",
+                "timestamp": datetime.fromisoformat(timestamp).replace(tzinfo=UTC).timestamp(),
+            },
+        )
+
+
 async def test_statistics_api_registration_is_unchanged(mass: MusicAssistant) -> None:
     """All statistics mixins retain their registered commands, parameters and scopes."""
     expected_parameters = {
@@ -1014,7 +1040,7 @@ async def test_weekly_plays_use_monday_dates_across_year_boundaries(
             },
         )
 
-    with _as_user(user):
+    with _as_user(user), _frozen_now("2027-01-04T00:00:00"):
         results = await mass.statistics.get_plays_over_time(period="all_time", granularity="week")
 
     assert [(point.timestamp, point.value) for point in results] == [
@@ -1039,7 +1065,7 @@ async def test_monthly_plays_sum_daily_buckets(mass: MusicAssistant) -> None:
             },
         )
 
-    with _as_user(user):
+    with _as_user(user), _frozen_now("2026-09-01T00:00:00"):
         results = await mass.statistics.get_plays_over_time(period="all_time", granularity="month")
 
     assert [(point.timestamp, point.value) for point in results] == [
@@ -1123,7 +1149,7 @@ async def test_play_buckets_follow_iana_timezone(
             },
         )
 
-    with _as_user(user):
+    with _as_user(user), _frozen_now(timestamps[-1]):
         results = await mass.statistics.get_plays_over_time(
             period="all_time", granularity=granularity, timezone=timezone
         )
@@ -1174,7 +1200,7 @@ async def test_statistics_and_heatmap_are_timezone_scoped(mass: MusicAssistant) 
         },
     )
 
-    with _as_user(user):
+    with _as_user(user), _frozen_now("2027-01-03T23:30:00"):
         utc_series = await mass.statistics.get_plays_over_time(period="all_time")
         local_series = await mass.statistics.get_plays_over_time(
             period="all_time", timezone="Europe/Berlin"
@@ -1320,6 +1346,158 @@ async def test_plays_over_time_does_not_inherit_default_query_limit(
 
     assert get_rows.await_args is not None
     assert get_rows.await_args.kwargs["limit"] == 0
+
+
+@pytest.mark.parametrize(
+    ("timezone", "now", "plays", "expected"),
+    [
+        (
+            "Europe/Berlin",
+            "2027-01-15T10:20:00",
+            ("2027-01-14T22:59:00", "2027-01-15T08:10:00", "2027-01-15T08:50:00"),
+            [(f"2027-01-15 {hour:02d}:00:00", 2 if hour == 9 else 0) for hour in range(12)],
+        ),
+        (
+            "Europe/Berlin",
+            "2027-03-28T05:30:00",
+            ("2027-03-28T00:30:00",),
+            [
+                (f"2027-03-28 {hour:02d}:00:00", 1 if hour == 1 else 0)
+                for hour in (0, 1, 3, 4, 5, 6, 7)
+            ],
+        ),
+        (
+            "Europe/Berlin",
+            "2027-10-31T05:30:00",
+            ("2027-10-31T00:30:00", "2027-10-31T01:30:00"),
+            [(f"2027-10-31 {hour:02d}:00:00", 2 if hour == 2 else 0) for hour in range(7)],
+        ),
+        (
+            "UTC",
+            "2027-01-15T03:20:00",
+            ("2027-01-15T02:00:00",),
+            [(f"2027-01-15 {hour:02d}:00:00", 1 if hour == 2 else 0) for hour in range(4)],
+        ),
+    ],
+)
+async def test_today_series_fills_every_local_hour(
+    mass: MusicAssistant,
+    timezone: str,
+    now: str,
+    plays: tuple[str, ...],
+    expected: list[tuple[str, int]],
+) -> None:
+    """Today has a bucket for each local hour since midnight, across daylight-saving changes."""
+    user = await mass.webserver.auth.create_user("statistics-today-series")
+    await _insert_plays(mass, user, plays)
+
+    with _as_user(user), _frozen_now(now):
+        results = await mass.statistics.get_plays_over_time(
+            period="today", granularity="hour", timezone=timezone
+        )
+
+    assert [(point.timestamp, point.value) for point in results] == expected
+
+
+@pytest.mark.parametrize("timezone", ["UTC", "Europe/Berlin"])
+async def test_rolling_week_series_spans_eight_calendar_days(
+    mass: MusicAssistant, timezone: str
+) -> None:
+    """A 7-day window starting mid-day fills every calendar day it touches through today."""
+    user = await mass.webserver.auth.create_user("statistics-week-series")
+    await _insert_plays(
+        mass, user, ("2027-01-08T09:00:00", "2027-01-08T12:00:00", "2027-01-12T12:00:00")
+    )
+
+    with _as_user(user), _frozen_now("2027-01-15T10:00:00"):
+        results = await mass.statistics.get_plays_over_time(
+            period="week", granularity="day", timezone=timezone
+        )
+
+    assert [(point.timestamp, point.value) for point in results] == [
+        ("2027-01-08", 1),
+        ("2027-01-09", 0),
+        ("2027-01-10", 0),
+        ("2027-01-11", 0),
+        ("2027-01-12", 1),
+        ("2027-01-13", 0),
+        ("2027-01-14", 0),
+        ("2027-01-15", 0),
+    ]
+
+
+async def test_rolling_series_steps_days_and_weeks_across_daylight_saving(
+    mass: MusicAssistant,
+) -> None:
+    """Day and week buckets step by calendar date, so a clock change neither skips nor repeats."""
+    user = await mass.webserver.auth.create_user("statistics-dst-days")
+    await _insert_plays(mass, user, ("2027-03-27T12:00:00",))
+
+    with _as_user(user), _frozen_now("2027-03-30T10:00:00"):
+        days = await mass.statistics.get_plays_over_time(
+            period="week", granularity="day", timezone="Europe/Berlin"
+        )
+        weeks = await mass.statistics.get_plays_over_time(
+            period="month", granularity="week", timezone="Europe/Berlin"
+        )
+
+    assert [point.timestamp for point in days] == [f"2027-03-{day:02d}" for day in range(23, 31)]
+    assert [(point.timestamp, point.value) for point in weeks] == [
+        ("2027-02-22", 0),
+        ("2027-03-01", 0),
+        ("2027-03-08", 0),
+        ("2027-03-15", 0),
+        ("2027-03-22", 1),
+        ("2027-03-29", 0),
+    ]
+
+
+@pytest.mark.parametrize("timezone", ["UTC", "Europe/Berlin"])
+async def test_all_time_series_fills_months_from_first_play(
+    mass: MusicAssistant, timezone: str
+) -> None:
+    """All-time months run from the first month with plays through the current month."""
+    user = await mass.webserver.auth.create_user("statistics-all-time-series")
+    await _insert_plays(mass, user, ("2026-11-10T12:00:00", "2027-02-03T12:00:00"))
+
+    with _as_user(user), _frozen_now("2027-04-15T12:00:00"):
+        results = await mass.statistics.get_plays_over_time(
+            period="all_time", granularity="month", timezone=timezone
+        )
+
+    assert [(point.timestamp, point.value) for point in results] == [
+        ("2026-11", 1),
+        ("2026-12", 0),
+        ("2027-01", 0),
+        ("2027-02", 1),
+        ("2027-03", 0),
+        ("2027-04", 0),
+    ]
+
+
+@pytest.mark.parametrize("timezone", ["UTC", "Europe/Berlin"])
+@pytest.mark.parametrize(
+    ("period", "granularity"),
+    [("today", "hour"), ("week", "day"), ("year", "week"), ("all_time", "month")],
+)
+async def test_series_is_empty_without_plays_in_period(
+    mass: MusicAssistant, timezone: str, period: str, granularity: str
+) -> None:
+    """No plays in the period returns no buckets, so clients can show their empty state."""
+    user = await mass.webserver.auth.create_user("statistics-empty-series")
+    with _as_user(user), _frozen_now("2027-01-15T10:00:00"):
+        empty_history = await mass.statistics.get_plays_over_time(
+            period=period, granularity=granularity, timezone=timezone
+        )
+    await _insert_plays(mass, user, ("2020-01-01T12:00:00",))
+    with _as_user(user), _frozen_now("2027-01-15T10:00:00"):
+        older_history = await mass.statistics.get_plays_over_time(
+            period=period, granularity=granularity, timezone=timezone
+        )
+
+    assert empty_history == []
+    if period != "all_time":
+        assert older_history == []
 
 
 async def test_plays_over_time_rejects_unsupported_parameters(mass: MusicAssistant) -> None:
