@@ -41,6 +41,9 @@ def _fake_controller() -> MagicMock:
         side_effect=lambda qid: d.queue if (d := fake._queue_data.get(qid)) else None
     )
     fake.mass.players._handle_cmd_stop = AsyncMock()
+    fake._cancel_pending_playback = partial(
+        PlayerQueuesController._cancel_pending_playback, cast("PlayerQueuesController", fake)
+    )
 
     def _close_coro(target: Any, **_kwargs: Any) -> None:
         # the cleanup is handed to create_task as a coroutine; nothing awaits it here
