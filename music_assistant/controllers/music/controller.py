@@ -1098,6 +1098,10 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             is not None
         ):
             return page
+        # resolved anew with no wait before the cached listing takes its generation, as a
+        # reconfigure during the lookup above reloads the instance
+        if (browse_prov := self.mass.get_provider(provider_instance)) is None:
+            return _listed(prepend_items, [])
         if (
             isinstance(browse_prov, MusicProvider)
             and browse_prov.is_streaming_provider

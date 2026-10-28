@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -26,6 +27,7 @@ from music_assistant_models.media_items import (
 )
 
 from music_assistant.controllers.music.constants import BROWSE_CACHE_EXPIRATION
+from music_assistant.controllers.music.listing_cache import invalidate_provider_listings
 from music_assistant.models.music_provider import MusicProvider
 from music_assistant.models.plugin import PluginProvider
 
@@ -219,6 +221,35 @@ async def test_local_folder_is_browsed_every_time(mass: MusicAssistant) -> None:
         for _ in range(2):
             assert _names(await mass.music.browse(PATH, search="zeb")) == ["..", "Zebra"]
     assert provider.browse.await_count == 2
+
+
+async def test_a_reconfigure_during_the_library_page_lookup_keeps_the_old_account_out(
+    mass: MusicAssistant,
+) -> None:
+    """A folder is browsed on the instance a reconfigure during the library lookup reloaded."""
+    path = "qobuz_1://tracks"
+    old, new = (_real_provider(mass, _LibraryProvider) for _ in range(2))
+    current = {"provider": old}
+    looking_up, release = asyncio.Event(), asyncio.Event()
+
+    async def _page(*_args: Any, **_kwargs: Any) -> None:
+        looking_up.set()
+        await release.wait()
+
+    with (
+        patch.object(mass, "get_provider", side_effect=lambda _: current["provider"]),
+        patch.object(mass.music, "_library_folder_page", _page),
+        patch.object(old, "browse", AsyncMock(return_value=[_folder("Old")])),
+        patch.object(new, "browse", AsyncMock(return_value=[_folder("New")])),
+    ):
+        in_flight = asyncio.create_task(mass.music.browse(path))
+        await looking_up.wait()
+        # the reconfigure clears the instance's listings and loads it anew
+        await invalidate_provider_listings(mass, "qobuz_1")
+        current["provider"] = new
+        release.set()
+        await in_flight
+        assert _names(await mass.music.browse(path)) == ["..", "New"]
 
 
 # a library folder, and the root of a provider whose only folder it is, which lists its items
