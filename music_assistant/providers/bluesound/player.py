@@ -398,7 +398,13 @@ class BluesoundPlayer(Player):
                 self._attr_volume_level = 100
             else:
                 self._attr_volume_level = self.sync_status.volume
-        self._attr_volume_muted = self.status.mute
+        # a follower reports its leader's status, so take its own mute from the
+        # sync status, which only carries a mute volume while the player is muted
+        self._attr_volume_muted = (
+            self.sync_status.mute_volume is not None
+            if self.sync_status.leader
+            else self.status.mute
+        )
 
         self.logger.debug(
             f"Volume from sync_status: {self.sync_status.volume}, from status: {self.status.volume}"
