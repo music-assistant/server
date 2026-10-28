@@ -37,6 +37,8 @@ _fills: dict[str, asyncio.Future[Exception | None]] = {}
 # how often the listings of a container were dropped: a fill only keeps what it assembled
 # while that number stood still
 _generations: dict[str, int] = {}
+# the same for all the containers of a provider instance, whose uris start with its id
+_provider_generations: dict[str, int] = {}
 
 
 @dataclass(slots=True)
@@ -124,6 +126,24 @@ async def invalidate_listings(mass: MusicAssistant, item: MediaItem | ItemMappin
         await mass.cache.delete(None, category=CACHE_CATEGORY_LISTINGS, provider=uri)
 
 
+async def invalidate_provider_listings(mass: MusicAssistant, provider_instance: str) -> None:
+    """
+    Drop the cached listings of every container of a provider instance.
+
+    :param mass: The MusicAssistant instance.
+    :param provider_instance: The provider instance whose containers changed.
+    """
+    _provider_generations[provider_instance] = _provider_generations.get(provider_instance, 0) + 1
+    await mass.cache.clear(
+        category_filter=CACHE_CATEGORY_LISTINGS, provider_filter=f"{provider_instance}://"
+    )
+
+
+def _generation(uri: str) -> int:
+    """Return how often the listings of a container were dropped, by itself or with its source."""
+    return _generations.get(uri, 0) + _provider_generations.get(uri.partition("://")[0], 0)
+
+
 async def _read(mass: MusicAssistant, uri: str, key: str, item_type: Any) -> list[Any] | None:
     """Return a cached listing carrying the calling user's favorites, None when there is none."""
     cached = await mass.cache.get(
@@ -179,9 +199,9 @@ async def _fill(
     expiration: int,
 ) -> Listing[Any]:
     """Assemble a listing and keep it, unless it is incomplete or an invalidation overtook it."""
-    generation = _generations.get(uri, 0)
+    generation = _generation(uri)
     assembled = await assemble()
-    if assembled.complete and _generations.get(uri, 0) == generation:
+    if assembled.complete and _generation(uri) == generation:
         # the items are serialized off the event loop, as the cache does for provider results
         await mass.cache.set(
             key,
@@ -190,7 +210,7 @@ async def _fill(
             provider=uri,
             category=CACHE_CATEGORY_LISTINGS,
         )
-        if _generations.get(uri, 0) != generation:
+        if _generation(uri) != generation:
             # an invalidation ran while the entry was being written
             await mass.cache.delete(key, category=CACHE_CATEGORY_LISTINGS, provider=uri)
     return assembled

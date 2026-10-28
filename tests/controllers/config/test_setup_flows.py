@@ -26,6 +26,7 @@ from music_assistant_models.enums import (
     ConfigEntryType,
     EventType,
     FlowStepType,
+    ListingType,
     MediaType,
     PlayerType,
     ProviderFeature,
@@ -41,7 +42,11 @@ from music_assistant_models.errors import (
     ProviderUnavailableError,
     SetupFailedError,
 )
-from music_assistant_models.media_items import ProviderMapping, RecommendationFolder
+from music_assistant_models.media_items import (
+    BrowseFolder,
+    ProviderMapping,
+    RecommendationFolder,
+)
 from music_assistant_models.player import OutputProtocol
 from music_assistant_models.provider import ProviderManifest
 from music_assistant_models.translations import TRANSLATION_RESOLVER
@@ -52,6 +57,7 @@ from music_assistant.controllers.cache.constants import BYPASS_CACHE
 from music_assistant.controllers.config.flows import SetupFlowAccess
 from music_assistant.controllers.music import MusicController
 from music_assistant.controllers.music.constants import CACHE_CATEGORY_LISTINGS
+from music_assistant.controllers.music.listing_cache import Listing, cached_listing
 from music_assistant.controllers.storage import StorageController
 from music_assistant.controllers.translations import TranslationController
 from music_assistant.controllers.webserver.helpers.auth_middleware import set_current_user
@@ -1702,6 +1708,37 @@ async def test_the_previous_instance_neither_stores_nor_shares_a_fetch(
         await asyncio.sleep(0.1)
 
     assert await flow_mass.cache.get("get_liked", provider=instance_id) == ["new-account-liked"]
+
+
+async def test_reconfigure_drops_a_listing_assembled_for_the_previous_account(
+    flow_mass: MusicAssistant,
+) -> None:
+    """A listing assembled across the reconfigure is not kept for the new account."""
+    with _use_account_provider():
+        instance_id = await _load_account_provider(flow_mass, "old-account")
+        uri = f"{instance_id}://playlist/LM"
+        fetched, release = asyncio.Event(), asyncio.Event()
+
+        async def assemble() -> Listing[Any]:
+            # the old account's tracks are in, the rest of the assembly is not
+            fetched.set()
+            await release.wait()
+            return Listing([BrowseFolder(item_id="old", provider=instance_id, path="old", name="old")])
+
+        in_flight = asyncio.create_task(
+            cached_listing(
+                flow_mass, ListingType.PLAYLIST_TRACKS, uri, assemble, item_type=BrowseFolder
+            )
+        )
+        await fetched.wait()
+        await _reconfigure_account(flow_mass, instance_id, "new-account")
+        release.set()
+        await in_flight
+
+    cached = await flow_mass.cache.get(
+        ListingType.PLAYLIST_TRACKS.value, provider=uri, category=CACHE_CATEGORY_LISTINGS
+    )
+    assert cached is None
 
 
 async def test_reconfigure_records_a_failed_cache_clear(flow_mass: MusicAssistant) -> None:

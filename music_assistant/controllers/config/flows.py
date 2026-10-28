@@ -29,6 +29,7 @@ from music_assistant_models.setup_flow import SetupFlowStep
 from music_assistant.constants import CONF_PLAYERS, CONF_PROVIDERS
 from music_assistant.controllers.cache.helpers import cancel_cache_tasks
 from music_assistant.controllers.config.helpers import _AUTH_ERROR_CODES
+from music_assistant.controllers.music.listing_cache import invalidate_provider_listings
 from music_assistant.helpers.api import api_command
 from music_assistant.helpers.util import import_module_in_thread, load_provider_module
 from music_assistant.models.music_provider import CACHE_CATEGORY_PREV_LIBRARY_IDS
@@ -585,6 +586,8 @@ class SetupFlowMixin:
         # a fetch still running for the previous account would store its result after the
         # clear, or hand it to the reloaded instance asking for the same thing
         await cancel_cache_tasks(instance_id)
+        # a listing still being assembled from the previous account's items is not kept
+        await invalidate_provider_listings(self.mass, instance_id)
         # the library snapshots stay: the next sync compares with them to take the previous
         # account's items out of the library
         library_snapshots = {

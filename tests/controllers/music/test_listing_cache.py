@@ -23,6 +23,7 @@ from music_assistant.controllers.music.listing_cache import (
     Listing,
     cached_listing,
     invalidate_listings,
+    invalidate_provider_listings,
 )
 from music_assistant.mass import MusicAssistant
 
@@ -297,6 +298,38 @@ async def test_an_assembly_overtaken_by_an_invalidation_is_not_kept(mass: MusicA
     assert [track.item_id for track in await in_flight] == ["before"]
     await _album_tracks(mass, uri, assemble)
     assert assemble.await_count == 2
+
+
+async def test_a_provider_invalidation_drops_its_listings_and_overtakes_assemblies(
+    mass: MusicAssistant,
+) -> None:
+    """Dropping a provider instance's listings reaches the ones being assembled, not others."""
+    kept_uri = create_uri(MediaType.ALBUM, "spotify_2", "untouched")
+    cached_uri = create_uri(MediaType.ALBUM, "spotify_1", "cached")
+    uri = create_uri(MediaType.ALBUM, "spotify_1", "assembling")
+    assembling, release = asyncio.Event(), asyncio.Event()
+
+    async def _assemble() -> Listing[Track]:
+        assembling.set()
+        await release.wait()
+        return Listing([create_track("spotify_1", "before")])
+
+    assemble = AsyncMock(return_value=Listing([create_track("spotify_1", "kept")]))
+    for other in (kept_uri, cached_uri):
+        await _album_tracks(mass, other, assemble)
+    slow = AsyncMock(side_effect=_assemble)
+    in_flight = asyncio.create_task(_album_tracks(mass, uri, slow))
+    await assembling.wait()
+    await invalidate_provider_listings(mass, "spotify_1")
+    release.set()
+
+    assert [track.item_id for track in await in_flight] == ["before"]
+    await _album_tracks(mass, uri, slow)
+    assert slow.await_count == 2
+    for other in (kept_uri, cached_uri):
+        await _album_tracks(mass, other, assemble)
+    # only the other instance's listing was still cached
+    assert assemble.await_count == 3
 
 
 async def test_an_invalidation_during_the_write_wins(mass: MusicAssistant) -> None:
