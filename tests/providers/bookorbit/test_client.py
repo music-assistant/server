@@ -670,3 +670,21 @@ async def test_get_cover_returns_bytes_or_none(aiohttp_client: Any) -> None:
     bo.access_token = "t"
     assert await bo.get_cover(f"{bo.base_url}/api/v1/books/5/cover?t=1") == b"\x89PNG"
     assert await bo.get_cover(f"{bo.base_url}/api/v1/books/404/cover") is None
+
+
+@pytest.mark.asyncio
+async def test_get_continue_listening_book_ids(aiohttp_client: Any) -> None:
+    """Continue-listening scroller returns book card ids."""
+
+    async def scroller(request: web.Request) -> web.Response:
+        assert request.query.get("limit") == "50"
+        return web.json_response(
+            {"books": [{"id": 11}, {"id": 22}], "total": 2},
+        )
+
+    app = web.Application()
+    app.router.add_get("/api/v1/dashboard/scrollers/continue-listening", scroller)
+    client = await aiohttp_client(app)
+    bo = _make(client)
+    bo.access_token = "t"
+    assert await bo.get_continue_listening_book_ids(50) == [11, 22]
