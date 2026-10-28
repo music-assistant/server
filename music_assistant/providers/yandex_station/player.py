@@ -30,6 +30,7 @@ from music_assistant_models.player import PlayerSource
 from music_assistant.constants import (
     CONF_ENTRY_HTTP_PROFILE_DEFAULT_3,
     CONF_ENTRY_PREFER_WAV_FOR_LIVE_SOURCES_DEFAULT_ENABLED,
+    EXTERNAL_PAUSE_IDLE_TIMEOUT,
     create_output_codec_config_entry,
 )
 from music_assistant.helpers.config_entries import PLAYBACK_TARGET_TYPES
@@ -221,6 +222,11 @@ class YandexStationPlayer(Player):
         # request ends it decides whether the stream is resumed.
         self._voice_interrupted = False
         self._pre_voice_volume: int = 0
+        # Set while the auto-resume after that request is scheduled.
+        self._voice_resume_pending = False
+        # The queue that owned the stream Alice stopped or delayed (a group's
+        # queue when the Station plays a group stream); it is the one resumed.
+        self._voice_resume_source: str | None = None
         # Track id of the Station's own playback in the last report.
         self._station_track_id = ""
 
@@ -276,6 +282,8 @@ class YandexStationPlayer(Player):
         # The Station reports exactly when it plays on its own, so that playback
         # takes over from the Music Assistant queue.
         self._attr_trusts_reported_source = True
+        # A paused Station source stops overriding the MA queue after a while.
+        self._attr_external_pause_idle_timeout = EXTERNAL_PAUSE_IDLE_TIMEOUT
         self._attr_device_info = DeviceInfo(
             model=device_info.get("quasar_info", {}).get("platform", "unknown"),
             manufacturer="Yandex",
@@ -471,8 +479,10 @@ class YandexStationPlayer(Player):
         if self._voice_control_enabled and self._alice.activity == AliceActivity.REQUEST:
             # Alice is handling a request; start the queue once she is done.
             _LOGGER.debug("[%s] Alice active — deferring play_media", self.player_id)
-            self._voice_interrupted = True
-            self._pre_voice_volume = self._attr_volume_level or 0
+            self._wait_for_voice_request(media.source_id)
+            if self._attr_playback_state != PlaybackState.PLAYING:
+                self._attr_playback_state = PlaybackState.PAUSED
+                self.update_state()
             return
         _LOGGER.debug("[%s] Stream URL resolved (length=%d)", self.player_id, len(stream_url))
 
@@ -501,13 +511,7 @@ class YandexStationPlayer(Player):
         self._attr_powered = True
         self._attr_elapsed_time = 0
         self._attr_elapsed_time_last_updated = time.time()
-        self.set_current_media(
-            uri=media.uri or "",
-            title=media.title or "",
-            artist=media.artist or "",
-            duration=media.duration or None,
-            image_url=media.image_url or None,
-        )
+        self._publish_media(media)
         self.update_state()
 
     async def play_announcement(
@@ -644,9 +648,21 @@ class YandexStationPlayer(Player):
         _LOGGER.debug("[%s] Alice stopped the MA stream", self.player_id)
         # The next track MA is preparing must not start over Alice either.
         self._external_play_generation += 1
+        source = self._external_media.source_id if self._external_media else None
         self._end_external_session()
-        self._attr_playback_state = PlaybackState.IDLE
+        # Paused, not idle: the core passes a user's stop or pause on to the player
+        # only while it is not idle, and that command must cancel the auto-resume.
+        self._attr_playback_state = PlaybackState.PAUSED
+        self._wait_for_voice_request(source)
+
+    def _wait_for_voice_request(self, source: str | None) -> None:
+        """
+        Let the end of the current Alice request decide whether playback resumes.
+
+        :param source: The queue that owned the stream, or None for this player's queue.
+        """
         self._voice_interrupted = True
+        self._voice_resume_source = source or self.player_id
         self._pre_voice_volume = self._attr_volume_level or 0
 
     def _finish_voice_interruption(self, spoke: bool) -> None:
@@ -662,21 +678,34 @@ class YandexStationPlayer(Player):
         volume_changed = (self._attr_volume_level or 0) != self._pre_voice_volume
         if not (spoke or volume_changed):
             _LOGGER.debug("[%s] Silent voice command — staying stopped", self.player_id)
+            if self._attr_playback_state == PlaybackState.PAUSED:
+                self._attr_playback_state = PlaybackState.IDLE
             return
         _LOGGER.debug("[%s] Voice command ended — scheduling auto-resume", self.player_id)
+        self._voice_resume_pending = True
         self.mass.call_later(
             VOICE_RESUME_DELAY, self._resume_after_voice, task_id=self._voice_resume_task_id
         )
 
+    def _defer_voice_resume_to_new_request(self) -> None:
+        """Hand a scheduled auto-resume over to an Alice request that just started."""
+        _LOGGER.debug("[%s] New Alice request — it decides the auto-resume", self.player_id)
+        self.mass.cancel_timer(self._voice_resume_task_id)
+        self._voice_resume_pending = False
+        self._voice_interrupted = True
+
     def _end_voice_interruption(self) -> None:
         """Drop a pending auto-resume after Alice; something else now decides playback."""
         self._voice_interrupted = False
+        self._voice_resume_pending = False
         self.mass.cancel_timer(self._voice_resume_task_id)
 
     async def _resume_after_voice(self) -> None:
         """Resume the Music Assistant queue Alice's request stopped or delayed."""
+        self._voice_resume_pending = False
+        source = self._voice_resume_source or self.player_id
         try:
-            await self.mass.players.cmd_resume(self.player_id, source=self.player_id)
+            await self.mass.players.cmd_resume(self.player_id, source=source)
         except (PlayerCommandFailed, PlayerUnavailableError) as exc:
             _LOGGER.warning("[%s] Resume after voice command failed: %s", self.player_id, exc)
 
@@ -1113,6 +1142,28 @@ class YandexStationPlayer(Player):
 
     # ── State updates from Glagol WebSocket ──────────────────────
 
+    def _publish_media(self, media: PlayerMedia) -> None:
+        """
+        Publish what the player plays as its current media.
+
+        The core's setter merges into the previous media and keeps fields it is
+        given empty, so a different item starts from a clean slate instead of
+        inheriting the previous item's type or cover.
+        """
+        current = self._attr_current_media
+        self.set_current_media(
+            uri=media.uri or "",
+            media_type=media.media_type,
+            title=media.title,
+            artist=media.artist,
+            album=media.album,
+            image_url=media.image_url,
+            duration=media.duration,
+            source_id=media.source_id,
+            queue_item_id=media.queue_item_id,
+            clear_all=current is None or current.uri != (media.uri or ""),
+        )
+
     def _station_track_uri(self, player_state: dict[str, Any]) -> tuple[str, MediaType]:
         """
         Return the URI and media type for the Station's own playback.
@@ -1208,6 +1259,8 @@ class YandexStationPlayer(Player):
             # Native stop and pause are the same command; play resumes either.
             self._attr_playback_state = PlaybackState.PAUSED
 
+        if alice.started and alice.activity == AliceActivity.REQUEST and self._voice_resume_pending:
+            self._defer_voice_resume_to_new_request()
         if alice.ended == AliceActivity.REQUEST and self._voice_interrupted:
             self._finish_voice_interruption(alice.spoke)
 
@@ -1304,13 +1357,7 @@ class YandexStationPlayer(Player):
             if self._external_audio_client and stream_reported is not False:
                 self._attr_elapsed_time = progress
                 self._attr_elapsed_time_last_updated = time.time()
-            self.set_current_media(
-                uri=self._external_media.uri or "",
-                title=self._external_media.title or "",
-                artist=self._external_media.artist or "",
-                duration=self._external_media.duration or None,
-                image_url=self._external_media.image_url or None,
-            )
+            self._publish_media(self._external_media)
         else:
             self._attr_elapsed_time = progress
             self._attr_elapsed_time_last_updated = time.time()
@@ -1321,13 +1368,16 @@ class YandexStationPlayer(Player):
 
             if title or playing:
                 uri, media_type = self._station_track_uri(player_state)
-                self.set_current_media(
-                    uri=uri,
-                    media_type=media_type,
-                    title=title or "",
-                    artist=subtitle or "",
-                    duration=int(duration) if duration else None,
-                    image_url=_cover_url(extra),
+                self._publish_media(
+                    PlayerMedia(
+                        uri=uri,
+                        media_type=media_type,
+                        title=title or None,
+                        artist=subtitle or None,
+                        duration=int(duration) if duration else None,
+                        image_url=_cover_url(extra),
+                        source_id=STATION_SOURCE_ID,
+                    )
                 )
             elif not playing:
                 self._attr_current_media = None

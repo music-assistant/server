@@ -21,6 +21,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from music_assistant_models.enums import MediaType, PlaybackState, PlayerFeature
 from music_assistant_models.errors import PlayerCommandFailed
+from music_assistant_models.player import PlayerMedia as MediaItem
 
 from music_assistant.providers.yandex_station.alice import AliceTracker
 from music_assistant.providers.yandex_station.player import (
@@ -50,6 +51,8 @@ def _make_player() -> YandexStationPlayer:
     player._alice = AliceTracker()
     player._voice_interrupted = False
     player._pre_voice_volume = 0
+    vars(player)["_voice_resume_pending"] = False
+    vars(player)["_voice_resume_source"] = None
     player._station_track_id = ""
     player._intercept_active = False
     player._last_intercepted_track_id = None
@@ -158,15 +161,12 @@ async def test_play_media_uses_audio_play_without_preliminary_stop() -> None:
     """Current firmware receives audio_play directly so it can replace the source."""
     player, commands = _make_play_media_player([{"status": "SUCCESS"}])
     vars(player)["_audio_client"] = True
-    media = cast(
-        "PlayerMedia",
-        SimpleNamespace(
-            uri="yandex_music://track/1",
-            title="Track",
-            artist="Artist",
-            duration=180,
-            image_url=None,
-        ),
+    media = MediaItem(
+        uri="yandex_music://track/1",
+        title="Track",
+        artist="Artist",
+        duration=180,
+        image_url=None,
     )
 
     await player.play_media(media)
@@ -183,15 +183,12 @@ async def test_audio_play_from_idle_confirms_on_first_playing_state() -> None:
     player, _ = _make_play_media_player([{"status": "SUCCESS"}])
     _disable_voice_control(player)
     vars(player)["_audio_client"] = True
-    media = cast(
-        "PlayerMedia",
-        SimpleNamespace(
-            uri="yandex_music://track/1",
-            title="Track",
-            artist="Artist",
-            duration=180,
-            image_url=None,
-        ),
+    media = MediaItem(
+        uri="yandex_music://track/1",
+        title="Track",
+        artist="Artist",
+        duration=180,
+        image_url=None,
     )
 
     await player.play_media(media)
@@ -212,15 +209,12 @@ async def test_audio_play_attributes_state_while_command_is_pending() -> None:
     object.__setattr__(player._provider, "config", _StubConfig())
     vars(player)["_audio_client"] = True
     player._attr_playback_state = PlaybackState.PLAYING
-    media = cast(
-        "PlayerMedia",
-        SimpleNamespace(
-            uri="yandex_music://track/2",
-            title="New Track",
-            artist="Artist",
-            duration=180,
-            image_url=None,
-        ),
+    media = MediaItem(
+        uri="yandex_music://track/2",
+        title="New Track",
+        artist="Artist",
+        duration=180,
+        image_url=None,
     )
 
     async def send_with_stale_updates(_payload: dict[str, Any]) -> dict[str, Any]:
@@ -261,15 +255,12 @@ async def test_terminal_state_during_pending_play_command_is_preserved(
     _disable_voice_control(player)
     object.__setattr__(player._provider, "config", _StubConfig())
     vars(player)["_audio_client"] = True
-    media = cast(
-        "PlayerMedia",
-        SimpleNamespace(
-            uri="yandex_music://track/3",
-            title="Requested Track",
-            artist="Artist",
-            duration=180,
-            image_url=None,
-        ),
+    media = MediaItem(
+        uri="yandex_music://track/3",
+        title="Requested Track",
+        artist="Artist",
+        duration=180,
+        image_url=None,
     )
 
     async def send_with_pause(_payload: dict[str, Any]) -> dict[str, Any]:
@@ -302,25 +293,19 @@ async def test_terminal_state_during_pending_play_command_is_preserved(
 async def test_late_play_command_response_preserves_newer_request(first_fails: bool) -> None:
     """A late response cannot publish or clear a newer playback request."""
     player, _ = _make_play_media_player([{"status": "SUCCESS"}])
-    first_media = cast(
-        "PlayerMedia",
-        SimpleNamespace(
-            uri="yandex_music://track/old",
-            title="Old Track",
-            artist="Artist",
-            duration=180,
-            image_url=None,
-        ),
+    first_media = MediaItem(
+        uri="yandex_music://track/old",
+        title="Old Track",
+        artist="Artist",
+        duration=180,
+        image_url=None,
     )
-    new_media = cast(
-        "PlayerMedia",
-        SimpleNamespace(
-            uri="yandex_music://track/new",
-            title="New Track",
-            artist="Artist",
-            duration=180,
-            image_url=None,
-        ),
+    new_media = MediaItem(
+        uri="yandex_music://track/new",
+        title="New Track",
+        artist="Artist",
+        duration=180,
+        image_url=None,
     )
     first_started = asyncio.Event()
     release_first = asyncio.Event()
@@ -359,14 +344,8 @@ async def test_late_stream_resolution_preserves_newer_request(audio_client: bool
     """A superseded URL resolution cannot send or publish the older track."""
     player, commands = _make_play_media_player([{"status": "SUCCESS"}] * 2)
     vars(player)["_audio_client"] = audio_client
-    first_media = cast(
-        "PlayerMedia",
-        SimpleNamespace(uri="old", title="Old Track", artist="", duration=180, image_url=None),
-    )
-    new_media = cast(
-        "PlayerMedia",
-        SimpleNamespace(uri="new", title="New Track", artist="", duration=180, image_url=None),
-    )
+    first_media = MediaItem(uri="old", title="Old Track", artist="", duration=180, image_url=None)
+    new_media = MediaItem(uri="new", title="New Track", artist="", duration=180, image_url=None)
     first_started = asyncio.Event()
     release_first = asyncio.Event()
     published_media: list[str] = []
@@ -406,10 +385,7 @@ async def test_transport_command_discards_pending_stream_resolution(
 ) -> None:
     """A URL resolved after pause or stop must not restart playback."""
     player, commands = _make_play_media_player([{"status": "SUCCESS"}] * 2)
-    media = cast(
-        "PlayerMedia",
-        SimpleNamespace(uri="track", title="Track", artist="", duration=180, image_url=None),
-    )
+    media = MediaItem(uri="track", title="Track", artist="", duration=180, image_url=None)
     resolution_started = asyncio.Event()
     release_resolution = asyncio.Event()
     published_media: list[str] = []
@@ -461,10 +437,7 @@ async def test_station_interruption_discards_pending_stream_resolution(
     player._external_playing = True
     player._external_play_confirmed = True
     player._attr_playback_state = PlaybackState.PLAYING
-    media = cast(
-        "PlayerMedia",
-        SimpleNamespace(uri="next", title="Next Track", artist="", duration=180, image_url=None),
-    )
+    media = MediaItem(uri="next", title="Next Track", artist="", duration=180, image_url=None)
     resolution_started = asyncio.Event()
     release_resolution = asyncio.Event()
     published_media: list[str] = []
@@ -490,7 +463,10 @@ async def test_station_interruption_discards_pending_stream_resolution(
 
     assert commands == []
     assert published_media == []
-    assert player._attr_playback_state == PlaybackState.IDLE
+    # Alice's interruption waits for her answer as paused, so a user's stop reaches us.
+    assert player._attr_playback_state == (
+        PlaybackState.PAUSED if voice_control else PlaybackState.IDLE
+    )
     assert player._external_media is None
     assert player._voice_interrupted is voice_control
 
@@ -518,15 +494,12 @@ async def test_cancelled_play_command_clears_active_external_media(audio_client:
     """Cancelling a pending send clears its media and propagates cancellation."""
     player, _ = _make_play_media_player([])
     vars(player)["_audio_client"] = audio_client
-    media = cast(
-        "PlayerMedia",
-        SimpleNamespace(
-            uri="yandex_music://track/cancelled",
-            title="Cancelled Track",
-            artist="Artist",
-            duration=180,
-            image_url=None,
-        ),
+    media = MediaItem(
+        uri="yandex_music://track/cancelled",
+        title="Cancelled Track",
+        artist="Artist",
+        duration=180,
+        image_url=None,
     )
     send_started = asyncio.Event()
     published_media: list[str] = []
@@ -560,25 +533,19 @@ async def test_cancelled_old_play_command_preserves_newer_request() -> None:
     """Cancelling an older pending send cannot clear its successful replacement."""
     player, _ = _make_play_media_player([])
     vars(player)["_audio_client"] = True
-    first_media = cast(
-        "PlayerMedia",
-        SimpleNamespace(
-            uri="yandex_music://track/old",
-            title="Old Track",
-            artist="Artist",
-            duration=180,
-            image_url=None,
-        ),
+    first_media = MediaItem(
+        uri="yandex_music://track/old",
+        title="Old Track",
+        artist="Artist",
+        duration=180,
+        image_url=None,
     )
-    new_media = cast(
-        "PlayerMedia",
-        SimpleNamespace(
-            uri="yandex_music://track/new",
-            title="New Track",
-            artist="Artist",
-            duration=180,
-            image_url=None,
-        ),
+    new_media = MediaItem(
+        uri="yandex_music://track/new",
+        title="New Track",
+        artist="Artist",
+        duration=180,
+        image_url=None,
     )
     first_started = asyncio.Event()
     published_media: list[str] = []
@@ -617,7 +584,7 @@ async def test_invalid_stream_url_leaves_no_external_session() -> None:
         return "http://[::1/item.flac"
 
     object.__setattr__(player.mass.streams, "resolve_stream_url", resolve_stream_url)
-    media = cast("PlayerMedia", SimpleNamespace(uri="track", title="Track", artist=None))
+    media = MediaItem(uri="track", title="Track", artist=None)
 
     with pytest.raises(ValueError, match="IPv6"):
         await player.play_media(media)
@@ -631,15 +598,12 @@ async def test_invalid_stream_url_leaves_no_external_session() -> None:
 async def test_play_media_falls_back_to_legacy_radio_play() -> None:
     """Old firmware keeps the legacy payload and does not receive a native stop."""
     player, commands = _make_play_media_player([{"status": "ERROR"}])
-    media = cast(
-        "PlayerMedia",
-        SimpleNamespace(
-            uri="yandex_music://track/1",
-            title="Track",
-            artist="Artist",
-            duration=180,
-            image_url=None,
-        ),
+    media = MediaItem(
+        uri="yandex_music://track/1",
+        title="Track",
+        artist="Artist",
+        duration=180,
+        image_url=None,
     )
 
     with pytest.raises(PlayerCommandFailed, match="radio_play"):
@@ -786,15 +750,12 @@ def test_audio_play_uses_reported_progress() -> None:
     )
     player._external_playing = True
     vars(player)["_external_audio_client"] = True
-    player._external_media = cast(
-        "PlayerMedia",
-        SimpleNamespace(
-            uri="yandex_music://track/1",
-            title="Track",
-            artist="Artist",
-            duration=180,
-            image_url=None,
-        ),
+    player._external_media = MediaItem(
+        uri="yandex_music://track/1",
+        title="Track",
+        artist="Artist",
+        duration=180,
+        image_url=None,
     )
     player._attr_elapsed_time = 0
 
@@ -816,10 +777,7 @@ def test_audio_play_uses_reported_progress() -> None:
 
 
 def _media(uri: str = "yandex_music://track/1", title: str = "Track") -> PlayerMedia:
-    return cast(
-        "PlayerMedia",
-        SimpleNamespace(uri=uri, title=title, artist="Artist", duration=180, image_url=None),
-    )
+    return MediaItem(uri=uri, title=title, artist="Artist", duration=180, image_url=None)
 
 
 def _start_confirmed_stream(player: YandexStationPlayer, *, audio_client: bool = True) -> None:
@@ -1021,7 +979,7 @@ def test_voice_request_that_stops_the_stream_resumes_it_after_the_answer() -> No
 
     _report(player, playing=False, alice_state="LISTENING")
 
-    assert player._attr_playback_state == PlaybackState.IDLE
+    assert player._attr_playback_state == PlaybackState.PAUSED
     assert player._external_playing is False
     assert vars(player)["_external_play_generation"] == 1
 
@@ -1322,3 +1280,145 @@ def test_ma_stream_keeps_the_requested_media() -> None:
     media = _report_station_track(player, track_id="")
 
     assert media["uri"] == "yandex_music://track/1"
+
+
+# ── Copilot round 6: voice resume ownership and media replacement ────
+
+
+def test_new_alice_request_takes_over_a_scheduled_resume() -> None:
+    """
+    A second request right after Alice answered decides whether playback resumes.
+
+    "Alice, what time is it?" schedules the resume; "Alice, stop" within the delay
+    cancels it instead of being overruled by the earlier answer.
+    """
+    player = _make_player()
+    _enable_voice_control(player)
+    _start_confirmed_stream(player)
+    for alice_state in ("LISTENING", "NONE", "IDLE"):
+        _report(player, playing=False, alice_state=alice_state)
+    player.mass.call_later.assert_called_once()
+
+    for alice_state in ("LISTENING", "BUSY", "IDLE"):
+        _report(player, playing=False, alice_state=alice_state)
+
+    player.mass.cancel_timer.assert_called_with(player._voice_resume_task_id)
+    player.mass.call_later.assert_called_once()
+    assert player._attr_playback_state == PlaybackState.IDLE
+
+
+def test_answered_second_request_still_resumes() -> None:
+    """A second request Alice answers keeps the resume, scheduled after it ends."""
+    player = _make_player()
+    _enable_voice_control(player)
+    _start_confirmed_stream(player)
+    for alice_state in ("LISTENING", "NONE", "IDLE", "LISTENING", "NONE", "IDLE"):
+        _report(player, playing=False, alice_state=alice_state)
+
+    assert player.mass.call_later.call_count == 2
+    assert vars(player)["_voice_resume_pending"] is True
+
+
+def test_stream_stopped_by_alice_waits_paused_for_her_answer() -> None:
+    """
+    The player reports PAUSED while the resume is pending.
+
+    The core passes stop and pause on to a player only while it is not idle; that
+    command is what cancels the resume.
+    """
+    player = _make_player()
+    _enable_voice_control(player)
+    _start_confirmed_stream(player)
+
+    for alice_state in ("LISTENING", "NONE", "IDLE"):
+        _report(player, playing=False, alice_state=alice_state)
+
+    assert player._attr_playback_state == PlaybackState.PAUSED
+
+
+@pytest.mark.parametrize("command", ["pause", "stop"])
+async def test_users_command_during_the_pending_resume_cancels_it(command: str) -> None:
+    """The user's pause or stop while the resume is pending cancels it."""
+    player = _make_player()
+    _enable_voice_control(player)
+    _start_confirmed_stream(player)
+    for alice_state in ("LISTENING", "NONE", "IDLE"):
+        _report(player, playing=False, alice_state=alice_state)
+    _record_commands(player)
+
+    await getattr(player, command)()
+
+    player.mass.cancel_timer.assert_called_with(player._voice_resume_task_id)
+    assert vars(player)["_voice_resume_pending"] is False
+
+
+async def test_resume_after_voice_resumes_the_queue_that_owned_the_stream() -> None:
+    """A group stream is resumed through the group's queue, not the Station's own."""
+    player = _make_player()
+    _enable_voice_control(player)
+    player.mass.players.cmd_resume = AsyncMock()
+    player._start_external_session(
+        MediaItem(uri="ma://track/1", title="T", source_id="universal_group_1"),
+        audio_client=True,
+    )
+    player._external_play_confirmed = True
+    player._attr_playback_state = PlaybackState.PLAYING
+    _report(player, playing=False, alice_state="LISTENING")
+
+    await player._resume_after_voice()
+
+    player.mass.players.cmd_resume.assert_awaited_once_with(
+        player.player_id, source="universal_group_1"
+    )
+
+
+def test_station_radio_after_a_track_starts_from_clean_media() -> None:
+    """
+    A different item replaces the current media instead of merging into it.
+
+    The core's setter keeps the previous type and cover when it gets an unknown
+    type or no image, so a new URI must clear the media.
+    """
+    player = _make_player()
+    _with_linked_music_instance(player, "yandex_music--sNU5Q6nm")
+    calls: list[dict[str, Any]] = []
+
+    def set_current_media(**kwargs: Any) -> None:
+        calls.append(kwargs)
+        player._attr_current_media = MediaItem(uri=kwargs["uri"])
+
+    object.__setattr__(player, "set_current_media", set_current_media)
+
+    _report_station_track_real(player, track_id="20934579")
+    _report_station_track_real(player, track_id="20934579")
+    _report_station_track_real(player, track_id="user:onyourwave", track_type="FmRadio", cover=None)
+
+    assert [call["clear_all"] for call in calls] == [True, False, True]
+    assert calls[-1]["media_type"] == MediaType.UNKNOWN
+    assert calls[-1]["image_url"] is None
+
+
+def _report_station_track_real(
+    player: YandexStationPlayer,
+    *,
+    track_id: str,
+    track_type: str = "Track",
+    cover: str | None = "avatars.yandex.net/get-music-content/1/abc/%%",
+) -> None:
+    extra = {"coverURI": cover} if cover is not None else {}
+    player._on_glagol_update(
+        {
+            "state": {
+                "playing": True,
+                "aliceState": "IDLE",
+                "playerState": {
+                    "id": track_id,
+                    "type": track_type,
+                    "title": "T",
+                    "subtitle": "A",
+                    "duration": 100,
+                    "extra": extra,
+                },
+            }
+        }
+    )
