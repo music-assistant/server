@@ -259,13 +259,23 @@ async def test_a_missing_endpoint_reports_the_bad_base_url() -> None:
     assert exc_info.value.translation_owner == "provider.listenbrainz_scrobble"
 
 
+@pytest.mark.parametrize(
+    ("error", "error_name"),
+    [
+        (aiohttp.ClientConnectionError(), "ClientConnectionError"),
+        (TimeoutError(), "TimeoutError"),
+    ],
+    ids=["connection-error", "timeout"],
+)
 async def test_an_unreachable_custom_service_logs_the_setup_failure(
+    error: Exception,
+    error_name: str,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     """An unreachable custom server leaves a useful diagnostic in the log."""
     provider = _provider(
         {CONF_USER_TOKEN: "token", CONF_API_BASE_URL: "https://lb.example.com"},
-        http_session=_FakeSession(error=aiohttp.ClientConnectionError()),
+        http_session=_FakeSession(error=error),
     )
 
     with pytest.raises(SetupFailedError) as exc_info:
@@ -274,7 +284,7 @@ async def test_an_unreachable_custom_service_logs_the_setup_failure(
     assert exc_info.value.translation_key == "connection_failed"
     assert exc_info.value.translation_owner == "provider.listenbrainz_scrobble"
     assert "Unable to validate ListenBrainz token at https://lb.example.com" in caplog.text
-    assert "ClientConnectionError" in caplog.text
+    assert error_name in caplog.text
 
 
 async def test_a_malformed_response_fails_setup() -> None:
