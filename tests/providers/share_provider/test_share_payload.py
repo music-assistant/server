@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import json
+from typing import cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -28,10 +29,39 @@ from music_assistant.providers.share_provider.links import (
     compact_artwork_ref,
     expand_artwork_ref,
     expand_provider_ref,
+    is_valid_provider_link,
 )
 from music_assistant.providers.share_provider.resolver import ShareLinkResolver
 
 from .helpers import BARCODE, _mass, _provider, _track
+
+
+@pytest.mark.parametrize(
+    ("configured_base_url", "expected_base_url"),
+    [
+        (None, "https://share.music-assistant.io"),
+        ("https://shares.example", "https://shares.example"),
+    ],
+)
+async def test_generate_share_link_encodes_payload_in_fragment(
+    configured_base_url: str | None, expected_base_url: str
+) -> None:
+    """Generated share links use the configured/default base and contain a decodable payload."""
+    provider = _provider()
+    mass = _mass(provider)
+    track = _track(item_id="track", name="Song")
+    mass.music.get_item_by_uri = AsyncMock(return_value=track)
+    cast("MagicMock", provider.config).get_value.return_value = configured_base_url
+
+    link = await provider.generate_share_link("catalog--1://track/track")
+
+    base_url, separator, encoded_payload = link.partition("#")
+    assert separator
+    assert base_url == f"{expected_base_url}/"
+    payload = SharePayload.from_base64(encoded_payload)
+    assert payload.type == "track"
+    assert payload.title == "Song"
+    mass.music.get_item_by_uri.assert_awaited_once_with("catalog--1://track/track")
 
 
 async def test_generate_share_link_rejects_oversized_playlist() -> None:
@@ -307,6 +337,20 @@ def test_build_provider_links_ignores_invalid_mapping_urls() -> None:
     ]
 
     assert build_provider_links(item) == {}
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "http://open.spotify.com/track/1",
+        "https://open.spotify.com.evil.com/track/1",
+        "https://user@open.spotify.com/track/1",
+        "https://user:password@open.spotify.com/track/1",
+    ],
+)
+def test_provider_links_reject_http_lookalike_hosts_and_userinfo(url: str) -> None:
+    """Provider URLs must use the exact HTTPS host without userinfo."""
+    assert not is_valid_provider_link("spotify", url)
 
 
 async def test_payload_rejects_unsupported_media_types() -> None:
