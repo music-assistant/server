@@ -4,16 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import (
-    AsyncGenerator,
-    Awaitable,
-    Callable,
-    Coroutine,
-    Iterable,
-    Mapping,
-    Sequence,
-)
-from contextlib import suppress
+from collections.abc import Awaitable, Callable, Coroutine, Iterable, Mapping, Sequence
+from contextlib import aclosing, suppress
 from copy import deepcopy
 from datetime import datetime
 from itertools import zip_longest
@@ -1206,10 +1198,8 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             )
         else:
             provider_clause = f"p.provider IN {available_providers_str}"
-        # the playlog keys a play by the id the caller referenced, so one library item can
-        # have a row under its library id and another under a provider id (e.g. a playlist
-        # played from the library and from a provider's recommendations); resolve provider
-        # rows to the library item they map to and keep only the newest row per item
+        # a play is logged under the id it was started from, so resolve provider rows to the
+        # library item they map to; one item can otherwise show up twice
         entry_item_id = "COALESCE(CAST(l.item_id AS TEXT), p.item_id)"
         entry_provider = "CASE WHEN l.item_id IS NULL THEN p.provider ELSE 'library' END"
         query = (
@@ -1237,7 +1227,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         query += "ORDER BY p.timestamp DESC, p.rowid DESC"
         result: list[ItemMapping] = []
         available_providers = ("library", *get_global_cache_value("available_providers", []))
-        async for db_row in self._iter_newest_playlog_entries(query, params, limit):
+        for db_row in await self._get_newest_playlog_entries(query, params, limit):
             provider = db_row["entry_provider"]
             result.append(
                 ItemMapping.from_dict(
@@ -2122,14 +2112,13 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         :param userid: The user ID to mark the item as unplayed for (instead of the current user).
         :param provider_instance_id: The provider instance reporting the change, whose user it is.
         """
-        # the playlog is keyed by the identity the caller referenced, not the resolved one
         reference = media_item
         media_item = await self._resolve_playlog_item(media_item)
-        params = {
-            "item_id": reference.item_id,
-            "provider": reference.provider,
-            "media_type": media_item.media_type.value,
-        }
+        # one item can be logged under its library id and its provider ids, and
+        # recently_played lists those as one entry, so clear the plays under each of them
+        aliases = await self._get_playlog_aliases(
+            media_item.media_type, reference.item_id, reference.provider
+        )
         # try to figure out the user that triggered the action
         user: User | None = None
         if userid:
@@ -2151,11 +2140,30 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             # NOTE: if no user was found, we will alter the playlog for all users
             user_ids = [user.user_id for user in await self.mass.webserver.auth.list_users()]
         for user_id in user_ids:
-            params["userid"] = user_id
-            await self.database.delete(DB_TABLE_MEDIA_PROGRESS, params)
-        self._signal_playlog_updated(
-            reference, fully_played=False, seconds_played=0, userid=user.user_id if user else None
-        )
+            for item_id, provider in aliases:
+                await self.database.delete(
+                    DB_TABLE_MEDIA_PROGRESS,
+                    {
+                        "item_id": item_id,
+                        "provider": provider,
+                        "media_type": media_item.media_type.value,
+                        "userid": user_id,
+                    },
+                )
+        for item_id, provider in aliases:
+            alias = (
+                reference
+                if (item_id, provider) == (reference.item_id, reference.provider)
+                else ItemMapping(
+                    item_id=item_id,
+                    provider=provider,
+                    media_type=media_item.media_type,
+                    name=media_item.name,
+                )
+            )
+            self._signal_playlog_updated(
+                alias, fully_played=False, seconds_played=0, userid=user.user_id if user else None
+            )
 
         # forward to provider(s) to sync resume state (e.g. for audiobooks)
         await self._forward_play_report(
@@ -3143,29 +3151,25 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             sound_effects=visible_items(self.mass, results.sound_effects, user),
         )
 
-    async def _iter_newest_playlog_entries(
+    async def _get_newest_playlog_entries(
         self, query: str, params: dict[str, Any], limit: int
-    ) -> AsyncGenerator[Mapping[str, Any]]:
-        """Yield the newest playlog row of each entry, up to limit entries (0 for all)."""
-        # read the newest rows a page at a time, so the index can still stop the scan early
+    ) -> list[Mapping[str, Any]]:
+        """Return the newest playlog row of each entry, up to limit entries (0 for all)."""
+        # the limit counts entries rather than rows, so it can't go into the query; the
+        # cursor is closed as soon as enough entries are found
+        entries: list[Mapping[str, Any]] = []
         seen: set[tuple[str, str, str]] = set()
-        page_size = max(limit * 2, 50) if limit else 0
-        offset = 0
-        while True:
-            db_rows = await self.mass.music.database.get_rows_from_query(
-                query, params=params or None, limit=page_size, offset=offset
-            )
-            for db_row in db_rows:
+        db_rows = self.mass.music.database.iter_rows_from_query(query, params or None)
+        async with aclosing(db_rows):
+            async for db_row in db_rows:
                 entry = (db_row["media_type"], db_row["entry_provider"], db_row["entry_item_id"])
                 if entry in seen:
                     continue
                 seen.add(entry)
-                yield db_row
-                if len(seen) == limit:
-                    return
-            if not page_size or len(db_rows) < page_size:
-                return
-            offset += page_size
+                entries.append(db_row)
+                if len(entries) == limit:
+                    break
+        return entries
 
     async def _search_shareable_url(self, search_query: str) -> SearchResults | None:
         """
@@ -3804,6 +3808,48 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             ):
                 return owner
         return None
+
+    async def _get_playlog_aliases(
+        self, media_type: MediaType, item_id: str, provider: str
+    ) -> list[tuple[str, str]]:
+        """
+        Return the (item_id, provider) keys a play of the given item can be logged under.
+
+        The given key comes first, followed by the library item it maps to (if any) and the
+        library item's provider mappings.
+
+        :param media_type: The media type of the item.
+        :param item_id: The item id the item is referenced by.
+        :param provider: The provider (instance) the item is referenced by.
+        """
+        aliases = [(item_id, provider)]
+        if provider == "library":
+            library_id = item_id
+        elif mapping := await self.database.get_row(
+            DB_TABLE_PROVIDER_MAPPINGS,
+            {
+                "media_type": media_type.value,
+                "provider_instance": provider,
+                "provider_item_id": item_id,
+            },
+        ):
+            library_id = str(mapping["item_id"])
+        else:
+            return aliases
+        for alias in [
+            (library_id, "library"),
+            *(
+                (str(row["provider_item_id"]), row["provider_instance"])
+                for row in await self.database.get_rows(
+                    DB_TABLE_PROVIDER_MAPPINGS,
+                    {"media_type": media_type.value, "item_id": library_id},
+                    limit=0,
+                )
+            ),
+        ]:
+            if alias not in aliases:
+                aliases.append(alias)
+        return aliases
 
     async def _resolve_playlog_item(self, media_item: MediaItemType | ItemMapping) -> MediaItemType:
         """
