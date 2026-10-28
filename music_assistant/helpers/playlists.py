@@ -904,10 +904,16 @@ def media_item_to_playlist_item(full_item: MediaItem) -> PlaylistItem:
         "media_type": full_item.media_type.value,
         "name": full_item.name,
     }
-    if hasattr(full_item, "authors") and full_item.authors:
-        metadata["authors"] = "; ".join(full_item.authors)
-    if hasattr(full_item, "narrators") and full_item.narrators:
-        metadata["narrators"] = "; ".join(full_item.narrators)
+    if isinstance(full_item, Audiobook) and full_item.authors:
+        metadata["authors"] = "; ".join(
+            author.name if isinstance(author, Artist | ItemMapping) else author
+            for author in full_item.authors
+        )
+    if isinstance(full_item, Audiobook) and full_item.narrators:
+        metadata["narrators"] = "; ".join(
+            narrator.name if isinstance(narrator, Artist | ItemMapping) else narrator
+            for narrator in full_item.narrators
+        )
     if full_item.version:
         metadata["version"] = full_item.version
     if isrc := _unambiguous_external_id(full_item, ExternalID.ISRC):

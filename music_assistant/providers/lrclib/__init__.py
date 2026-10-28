@@ -12,11 +12,15 @@ from typing import TYPE_CHECKING, Any, cast
 from aiohttp import ClientError
 from music_assistant_models.config_entries import ConfigEntry
 from music_assistant_models.enums import ConfigEntryType, ProviderFeature
-from music_assistant_models.errors import ResourceTemporarilyUnavailable
+from music_assistant_models.errors import RateLimited, ResourceTemporarilyUnavailable
 from music_assistant_models.media_items import MediaItemMetadata, Track
 
 from music_assistant.controllers.cache import use_cache
-from music_assistant.helpers.throttle_retry import ThrottlerManager, throttle_with_retries
+from music_assistant.helpers.throttle_retry import (
+    ThrottlerManager,
+    parse_retry_after,
+    throttle_with_retries,
+)
 from music_assistant.models.metadata_provider import MetadataProvider
 
 if TYPE_CHECKING:
@@ -63,12 +67,15 @@ class LrclibProvider(MetadataProvider):
         self.api_url = self.config.get_value(CONF_API_URL)
 
         # Only use strict throttling if using the default API
+        # Background scans get a single attempt: metadata enrichment retries the track later.
         if self.api_url == DEFAULT_API_URL:
-            self.throttler = ThrottlerManager(rate_limit=1, period=30)
+            self.throttler = ThrottlerManager(
+                rate_limit=1, period=30, low_priority_retry_attempts=1
+            )
             self.logger.debug("Using default API with standard throttling (1 request per 30s)")
         else:
             # Less strict throttling for custom API endpoint
-            self.throttler = ThrottlerManager(rate_limit=1, period=1)
+            self.throttler = ThrottlerManager(rate_limit=1, period=1, low_priority_retry_attempts=1)
             self.logger.debug("Using custom API endpoint: %s (throttling disabled)", self.api_url)
 
     async def get_track_metadata(self, track: Track) -> MediaItemMetadata | None:
@@ -158,9 +165,16 @@ class LrclibProvider(MetadataProvider):
                 # 204/404 mean there are genuinely no lyrics for this track
                 if response.status in (204, 404):
                     return None
+                if response.status == 429:
+                    raise RateLimited(
+                        "LRCLIB rate limit",
+                        backoff_time=parse_retry_after(response.headers.get("Retry-After")),
+                    )
                 response.raise_for_status()
                 return cast("dict[str, Any]", await response.json())
         except (ClientError, TimeoutError, JSONDecodeError) as err:
             # any other failure (5xx, network, malformed json) is transient — surface it as
             # ResourceTemporarilyUnavailable so callers degrade instead of caching "no lyrics"
-            raise ResourceTemporarilyUnavailable("LRCLIB request failed") from err
+            # str() of a bare TimeoutError is empty
+            msg = f"LRCLIB request failed: {str(err) or type(err).__name__}"
+            raise ResourceTemporarilyUnavailable(msg) from err

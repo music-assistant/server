@@ -398,7 +398,25 @@ class SqueezelitePlayer(Player):
         ):
             # restart stream session if it was already playing
             # for now, we dont support late joining into an existing stream
-            self.mass.create_task(self.mass.players.cmd_resume(self.player_id))
+            # a back-to-back restart reads the position of the one before it, so the newest wins
+            self.mass.create_task(
+                self.mass.players.cmd_resume(self.player_id),
+                task_id=f"squeezelite_regroup_resume_{self.player_id}",
+                abort_existing=True,
+            )
+
+    def remove_disconnected_member(self, player_id: str) -> None:
+        """
+        Remove a group member whose slimproto connection dropped.
+
+        :param player_id: The player id of the disconnected member.
+        """
+        if player_id not in self._attr_group_members:
+            return
+        self._attr_group_members.remove(player_id)
+        if self._attr_group_members == [self.player_id]:
+            self._attr_group_members.clear()
+        self.update_state()
 
     def handle_slim_event(self, event: SlimEvent) -> None:
         """Handle player event from slimproto server."""

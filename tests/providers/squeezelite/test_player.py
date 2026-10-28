@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import AsyncIterator
 from unittest.mock import AsyncMock, MagicMock, PropertyMock, patch
 
 import pytest
-from music_assistant_models.enums import MediaType, RepeatMode
+from aioslimproto.models import PlayerState as SlimPlayerState
+from music_assistant_models.enums import MediaType, PlaybackState, RepeatMode
 from music_assistant_models.player import PlayerMedia
 
 from music_assistant.constants import (
@@ -241,3 +243,38 @@ async def test_grouped_play_media_passes_per_member_mime_type() -> None:
     flac_client, mp3_client = clients
     assert flac_client.play_url.call_args.kwargs["mime_type"] == "audio/flac"
     assert mp3_client.play_url.call_args.kwargs["mime_type"] == "audio/mpeg"
+
+
+async def test_regroup_supersedes_pending_resume() -> None:
+    """A member removed and re-added while the leader is busy restarts the leader once."""
+    player, mass = _player_with_mocked_mass()
+    player._player_id = "leader"
+    player._attr_group_members = ["leader", "member"]
+    player._attr_playback_state = PlaybackState.PLAYING
+    use_real_create_task(mass)
+    member = MagicMock()
+    member.player_id = "member"
+    member.state = SlimPlayerState.STOPPED
+    mass.players.get_player.return_value = member
+    # the playback lock an announcement holds on the leader while it plays
+    leader_busy = asyncio.Event()
+    resumed: list[str] = []
+
+    async def _cmd_resume(player_id: str) -> None:
+        await leader_busy.wait()
+        resumed.append(player_id)
+
+    mass.players.cmd_resume = _cmd_resume
+
+    with (
+        patch.object(SqueezelitePlayer, "synced_to", new_callable=PropertyMock, return_value=None),
+        patch.object(SqueezelitePlayer, "state", new_callable=PropertyMock),
+        patch.object(player, "_get_sync_clients", return_value=[member]),
+        patch.object(player, "update_state"),
+    ):
+        await player.set_members(player_ids_to_remove=["member"])
+        await player.set_members(player_ids_to_add=["member"])
+        leader_busy.set()
+        await asyncio.gather(*mass._tracked_tasks.values(), return_exceptions=True)
+
+    assert resumed == ["leader"]
