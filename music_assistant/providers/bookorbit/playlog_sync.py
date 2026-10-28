@@ -11,7 +11,7 @@ from typing import Any
 
 from aiohttp import ClientError
 from music_assistant_models.enums import MediaType
-from music_assistant_models.errors import LoginFailed
+from music_assistant_models.errors import InvalidDataError, LoginFailed
 
 from music_assistant.constants import PLAYBACK_REPORT_INTERVAL_SECONDS
 from music_assistant.providers.bookorbit.helpers import book_with_manifest_playback_order
@@ -55,27 +55,33 @@ async def resolve_remote_progress_seconds(client: Any, book_id: int) -> tuple[bo
     """
     Resolve BookOrbit progress to (fully_played, seconds_played).
 
-    :returns: Tuple when usable progress exists; ``None`` when absent or unusable.
-    May raise transport errors from the client; conversion failures return ``None``.
+    :returns: Tuple when usable progress exists; ``None`` when playback-state and
+        legacy audio-progress are both absent.
+    :raises TypeError, ValueError, KeyError, InvalidDataError: When remote progress
+        exists but cannot be converted (callers must treat as unknown, not absent).
+    May also raise transport errors from the client.
     """
-    try:
-        state = await client.get_playback_state(book_id)
-        if state:
-            manifest = await client.get_audiobook_manifest(book_id)
-            fully_played, position_ms, _ = parse_resume_position_from_playback_state(
-                manifest, state
-            )
-            return fully_played, position_ms // 1000
-        progress = await client.get_audio_progress(book_id)
-        if not progress:
-            return None
+    state = await client.get_playback_state(book_id)
+    if state:
         manifest = await client.get_audiobook_manifest(book_id)
-        book = await client.get_book(book_id)
-        book = book_with_manifest_playback_order(book, manifest)
-        fully_played, position_ms, _ = parse_resume_position(_audio_files(book), progress)
+        fully_played, position_ms, _ = parse_resume_position_from_playback_state(manifest, state)
         return fully_played, position_ms // 1000
-    except TypeError, ValueError, KeyError:
+    progress = await client.get_audio_progress(book_id)
+    if not progress:
         return None
+    manifest = await client.get_audiobook_manifest(book_id)
+    book = await client.get_book(book_id)
+    book = book_with_manifest_playback_order(book, manifest)
+    fully_played, position_ms, _ = parse_resume_position(_audio_files(book), progress)
+    return fully_played, position_ms // 1000
+
+
+def _local_progress_matches(library_item: Any, *, fully_played: bool, seconds_played: int) -> bool:
+    """Return True when the library item already reflects this remote progress."""
+    local_fully = bool(getattr(library_item, "fully_played", False))
+    resume_ms = getattr(library_item, "resume_position_ms", None)
+    local_seconds = int(resume_ms // 1000) if isinstance(resume_ms, int) else 0
+    return local_fully == fully_played and local_seconds == seconds_played
 
 
 async def apply_book_progress(
@@ -90,9 +96,10 @@ async def apply_book_progress(
     Pull one book's BookOrbit progress into the MA playlog.
 
     :returns: True if BookOrbit still has progress for this book (even when the
-        stamp was skipped because it is too short or guarded); False when
-        confirmed absent, unusable or zero-and-not-finished; None when the
-        fetch failed (transport error), in which case callers must not discard.
+        stamp was skipped because it is too short, guarded, or unchanged); False
+        when both remote progress endpoints are empty (or zero-and-not-finished)
+        and an inbound clear is allowed; None when the outcome is unknown
+        (transport/conversion failure or outbound cool-down blocking a clear).
     :raises LoginFailed: When re-authentication fails; callers should abort the batch.
     """
     try:
@@ -102,11 +109,15 @@ async def apply_book_progress(
     except (ClientError, TimeoutError, OSError) as err:
         LOGGER.warning("BookOrbit progress fetch for %s failed: %s", book_id, err)
         return None
-    if resolved is None:
+    except (TypeError, ValueError, KeyError, InvalidDataError) as err:
+        LOGGER.warning("BookOrbit progress for %s is unusable: %s", book_id, err)
+        return None
+    if resolved is None or (not resolved[0] and resolved[1] <= 0):
+        # Confirmed absent / zero: never clear during an outbound cool-down.
+        if not guard.allow_inbound(book_id):
+            return None
         return False
     fully_played, seconds_played = resolved
-    if not fully_played and seconds_played <= 0:
-        return False
     if not fully_played and seconds_played < PLAYBACK_REPORT_INTERVAL_SECONDS:
         return True
     if not guard.allow_inbound(book_id):
@@ -117,6 +128,10 @@ async def apply_book_progress(
         provider_instance_id_or_domain=provider_instance_id,
     )
     if library_item is None:
+        return True
+    if _local_progress_matches(
+        library_item, fully_played=fully_played, seconds_played=seconds_played
+    ):
         return True
     await mass.music.mark_item_played(
         library_item,
@@ -186,6 +201,14 @@ async def sync_playlog(
         if media_type != MediaType.AUDIOBOOK or item_id not in confirmed_absent:
             continue
         if item_id in remote_with_progress:
+            continue
+        try:
+            book_id = int(item_id)
+        except ValueError:
+            continue
+        # Recheck immediately before clearing: an outbound write may have started
+        # after apply_book_progress decided the remote was empty.
+        if not guard.allow_inbound(book_id):
             continue
         try:
             library_item = await mass.music.get_library_item_by_prov_id(
