@@ -877,18 +877,20 @@ class TestPollRefreshesTransportState:
         self, mock_provider: MagicMock, mock_wiim_device: MagicMock
     ) -> None:
         """Playback that starts between idle polls must not wait out the idle poll interval."""
+        stream_url = "http://192.168.1.80:8097/single/abc/queue/item/uuid:test.flac"
+        mock_provider.mass.streams.resolve_stream_url = AsyncMock(return_value=stream_url)
         player = self._make_player(mock_provider, mock_wiim_device)
         await player.poll()
         assert player.poll_interval == 30
         mock_wiim_device.play_mode = SOURCE_NETWORK
-        mock_wiim_device.current_media = MagicMock(uri="http://ma/stream", position=0, duration=10)
 
         async def _report_playing(**_: Any) -> None:
+            mock_wiim_device.current_media = MagicMock(uri=stream_url)
             mock_wiim_device.playing_status = PlayingStatus.PLAYING
 
         mock_wiim_device.async_play = AsyncMock(side_effect=_report_playing)
 
-        await player.play()
+        await player.play_media(PlayerMedia(uri="library://track/1", title="Short Track"))
 
         assert player.poll_interval == 5
 
