@@ -7,7 +7,7 @@ from collections.abc import AsyncGenerator
 from contextlib import suppress
 from types import SimpleNamespace
 from typing import Any, cast
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from music_assistant_models.enums import ContentType, MediaType, ProviderType, StreamType
@@ -1201,6 +1201,131 @@ async def test_get_media_stream_leaves_other_streams_alone(
     assert "-skip_initial_bytes" not in args
     assert "-fflags" not in args
     assert args[: len(input_args)] == input_args
+
+
+def _radio_runs(
+    *runs: tuple[bytes, ...],
+) -> tuple[Any, list[str]]:
+    """Build a _get_media_stream stand-in whose runs each yield their chunks, then fail."""
+    opened_paths: list[str] = []
+
+    async def _fake_media_stream(
+        streamdetails: StreamDetails, *_args: Any, **_kwargs: Any
+    ) -> AsyncGenerator[bytes]:
+        run_index = len(opened_paths)
+        opened_paths.append(cast("str", streamdetails.path))
+        for chunk in runs[run_index] if run_index < len(runs) else ():
+            yield chunk
+        raise AudioError("Server returned 4XX Client Error (433)")
+
+    return _fake_media_stream, opened_paths
+
+
+def _radio_refresh_setup(
+    monkeypatch: pytest.MonkeyPatch, *runs: tuple[bytes, ...]
+) -> tuple[StreamsAudio, StreamDetails, AsyncMock, list[str]]:
+    """Wire a controller whose radio provider hands out a fresh url on every request."""
+    monkeypatch.setattr(audio_mod, "RADIO_RESTART_DELAY", 0)
+    provider = _limited_provider()
+    fresh = StreamDetails(
+        provider=provider.instance_id,
+        item_id="s12345",
+        audio_format=AudioFormat(content_type=ContentType.UNKNOWN),
+        media_type=MediaType.RADIO,
+        stream_type=StreamType.HTTP,
+        path="http://test.invalid/fresh.m3u8",
+    )
+    get_stream_details = AsyncMock(return_value=fresh)
+    monkeypatch.setattr(provider, "get_stream_details", get_stream_details)
+    audio = _make_audio_controller()
+    cast("MagicMock", audio.mass).get_provider.return_value = provider
+
+    async def _resolve_radio_stream(url: str) -> tuple[str, StreamType]:
+        return url.replace("fresh", "fresh-resolved"), StreamType.HLS
+
+    monkeypatch.setattr(audio, "resolve_radio_stream", _resolve_radio_stream)
+    fake_media_stream, opened_paths = _radio_runs(*runs)
+    monkeypatch.setattr(audio, "_get_media_stream", fake_media_stream)
+    streamdetails = StreamDetails(
+        provider=provider.instance_id,
+        item_id="s12345",
+        audio_format=AudioFormat(content_type=ContentType.UNKNOWN),
+        media_type=MediaType.RADIO,
+        stream_type=StreamType.HLS,
+        path="http://test.invalid/expired.m3u8",
+    )
+    return audio, streamdetails, get_stream_details, opened_paths
+
+
+@pytest.mark.asyncio
+async def test_radio_stream_continues_on_fresh_stream_details_after_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A radio stream that fails mid-play asks its provider for a fresh url and plays on."""
+    audio, streamdetails, get_stream_details, opened_paths = _radio_refresh_setup(
+        monkeypatch, (b"first",), (b"second",)
+    )
+    stream = audio.get_media_stream(streamdetails, _make_pcm_format())
+
+    chunks = [await anext(stream), await anext(stream)]
+    await stream.aclose()
+
+    assert chunks == [b"first", b"second"]
+    get_stream_details.assert_awaited_once_with("s12345", MediaType.RADIO)
+    assert opened_paths == [
+        "http://test.invalid/expired.m3u8",
+        "http://test.invalid/fresh-resolved.m3u8",
+    ]
+    assert streamdetails.path == "http://test.invalid/fresh-resolved.m3u8"
+    assert streamdetails.stream_type == StreamType.HLS
+
+
+@pytest.mark.asyncio
+async def test_radio_stream_failing_before_audio_raises_without_refresh(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A radio stream that never played surfaces its error without asking the provider again."""
+    audio, streamdetails, get_stream_details, opened_paths = _radio_refresh_setup(monkeypatch)
+
+    with pytest.raises(AudioError):
+        await _drain(audio.get_media_stream(streamdetails, _make_pcm_format()))
+
+    get_stream_details.assert_not_awaited()
+    assert opened_paths == ["http://test.invalid/expired.m3u8"]
+
+
+@pytest.mark.asyncio
+async def test_radio_stream_gives_up_once_refreshed_streams_keep_failing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A radio stream that keeps failing soon after starting raises once the budget is spent."""
+    audio, streamdetails, get_stream_details, opened_paths = _radio_refresh_setup(
+        monkeypatch, (b"first",)
+    )
+
+    with pytest.raises(AudioError):
+        await _drain(audio.get_media_stream(streamdetails, _make_pcm_format()))
+
+    assert get_stream_details.await_count == audio_mod.RADIO_MAX_FAILED_RESTARTS
+    assert len(opened_paths) == audio_mod.RADIO_MAX_FAILED_RESTARTS + 1
+
+
+@pytest.mark.asyncio
+async def test_radio_stream_keeps_restarting_after_long_runs(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A radio stream that fails only after long runs restarts beyond the budget."""
+    pcm_format = _make_pcm_format()
+    long_run = b"\0" * (audio_mod.RADIO_RESTART_MIN_PLAYTIME * pcm_format.pcm_sample_size)
+    runs = [(long_run,)] * (audio_mod.RADIO_MAX_FAILED_RESTARTS + 2)
+    audio, streamdetails, get_stream_details, _ = _radio_refresh_setup(monkeypatch, *runs)
+    stream = audio.get_media_stream(streamdetails, pcm_format)
+
+    chunks = [await anext(stream) for _ in runs]
+    await stream.aclose()
+
+    assert chunks == [long_run] * len(runs)
+    assert get_stream_details.await_count == len(runs) - 1
 
 
 @pytest.mark.asyncio

@@ -243,6 +243,12 @@ RADIO_MIRROR_FAILOVER_ERRORS = (
     InvalidDataError,
 )
 
+# Signed radio urls expire, so a failing station restarts on fresh stream details. Runs
+# shorter than the minimum playtime count toward the limit so its provider is not hammered.
+RADIO_MAX_FAILED_RESTARTS = 3
+RADIO_RESTART_MIN_PLAYTIME = 60
+RADIO_RESTART_DELAY = 1.0
+
 
 @dataclass
 class CrossfadeHandover:
@@ -751,6 +757,9 @@ class StreamsAudio:
         """
         Get audio stream for given media details as raw PCM.
 
+        A radio station that fails after it played is restarted on fresh stream details
+        from its provider, which are updated in place.
+
         :param streamdetails: Details of the stream to fetch.
         :param pcm_format: Target PCM format the consumer expects.
         :param seek_position: Seek offset in seconds (only honoured when the
@@ -764,7 +773,12 @@ class StreamsAudio:
             on the providing music provider, or None to wait without a timeout.
         :raises ProviderStreamLimitError: If the provider has no free slot within the timeout.
         """
-        media_stream = self._get_media_stream(
+        get_stream = (
+            self._get_restarting_radio_media_stream
+            if streamdetails.media_type == MediaType.RADIO
+            else self._get_media_stream
+        )
+        media_stream = get_stream(
             streamdetails,
             pcm_format,
             seek_position,
@@ -3763,23 +3777,7 @@ class StreamsAudio:
                 self._fill_in_mapping_audio_format(media_item, streamdetails)
 
             # work out how to handle radio stream
-            if (
-                streamdetails.stream_type in (StreamType.ICY, StreamType.HLS, StreamType.HTTP)
-                and streamdetails.media_type == MediaType.RADIO
-                and isinstance(streamdetails.path, str)
-            ):
-                resolved_url, stream_type = await self.resolve_radio_stream(streamdetails.path)
-                streamdetails.path = resolved_url
-                streamdetails.stream_type = stream_type
-                # Set up metadata monitoring callback for HLS radio streams, if not already set
-                if (
-                    stream_type == StreamType.HLS
-                    and not streamdetails.stream_metadata_update_callback
-                ):
-                    streamdetails.stream_metadata_update_callback = partial(
-                        self._update_hls_radio_metadata
-                    )
-                    streamdetails.stream_metadata_update_interval = 5
+            await self._resolve_radio_stream_details(streamdetails)
 
         # providers report an unknown duration as either None or 0
         if not streamdetails.duration:
@@ -4719,6 +4717,87 @@ class StreamsAudio:
                 ffmpeg_proc.returncode,
                 streamdetails.uri,
             )
+
+    async def _get_restarting_radio_media_stream(
+        self,
+        streamdetails: StreamDetails,
+        pcm_format: AudioFormat,
+        seek_position: int,
+        filter_params: list[str] | None,
+        chunk_seconds: float,
+    ) -> AsyncGenerator[bytes]:
+        """Stream a radio station as raw PCM, restarting it on fresh stream details when it fails."""
+        played = False
+        failed_restarts = 0
+        while True:
+            run_bytes = 0
+            try:
+                if played:
+                    await self._refresh_radio_stream_details(streamdetails)
+                async with aclosing(
+                    self._get_media_stream(
+                        streamdetails, pcm_format, seek_position, filter_params, chunk_seconds
+                    )
+                ) as media_stream:
+                    async for chunk in media_stream:
+                        played = True
+                        run_bytes += len(chunk)
+                        yield chunk
+                return
+            except ProviderStreamLimitError:
+                raise
+            except (MusicAssistantError, aiohttp.ClientError, TimeoutError) as err:
+                if not played:
+                    raise
+                if run_bytes / pcm_format.pcm_sample_size >= RADIO_RESTART_MIN_PLAYTIME:
+                    failed_restarts = 0
+                failed_restarts += 1
+                if failed_restarts > RADIO_MAX_FAILED_RESTARTS:
+                    raise
+                self.logger.warning(
+                    "Radio stream %s failed (%s), restarting on fresh stream details (%d/%d)",
+                    streamdetails.uri,
+                    err,
+                    failed_restarts,
+                    RADIO_MAX_FAILED_RESTARTS,
+                )
+            await asyncio.sleep(RADIO_RESTART_DELAY)
+
+    async def _refresh_radio_stream_details(self, streamdetails: StreamDetails) -> None:
+        """Point radio stream details at a fresh stream from the provider that issued them."""
+        # pin the exact instance, see _resolve_media_stream_source
+        provider = self.mass.get_provider(streamdetails.provider, return_unavailable=True)
+        if provider is None or not provider.available:
+            raise ProviderUnavailableError(
+                f"Provider {streamdetails.provider} for stream is no longer available"
+            )
+        stream_prov = cast("AudioStreamMixin", provider)
+        with request_priority(RequestPriority.HIGH):
+            fresh = await stream_prov.get_stream_details(
+                streamdetails.item_id, streamdetails.media_type
+            )
+        await self._resolve_radio_stream_details(fresh)
+        # updated in place: the queue item holds these details, metadata callback included
+        streamdetails.path = fresh.path
+        streamdetails.stream_type = fresh.stream_type
+        streamdetails.audio_format = fresh.audio_format
+        streamdetails.data = fresh.data
+
+    async def _resolve_radio_stream_details(self, streamdetails: StreamDetails) -> None:
+        """Resolve the playable url and stream type of radio stream details in place."""
+        if not (
+            streamdetails.stream_type in (StreamType.ICY, StreamType.HLS, StreamType.HTTP)
+            and streamdetails.media_type == MediaType.RADIO
+            and isinstance(streamdetails.path, str)
+        ):
+            return
+        resolved_url, stream_type = await self.resolve_radio_stream(streamdetails.path)
+        streamdetails.path = resolved_url
+        streamdetails.stream_type = stream_type
+        # Set up metadata monitoring callback for HLS radio streams, if not already set
+        if stream_type == StreamType.HLS and not streamdetails.stream_metadata_update_callback:
+            streamdetails.stream_metadata_update_callback = partial(self._update_hls_radio_metadata)
+            streamdetails.stream_metadata_update_interval = 5
 
     def _report_crossfade_mode(
         self,
