@@ -121,11 +121,7 @@ class ListenBrainzScrobbleProvider(PluginProvider):
                         api_base_url,
                         response.status,
                     )
-                    raise InvalidToken(
-                        "ListenBrainz rejected the user token",
-                        translation_key="token_rejected",
-                        translation_owner="provider.listenbrainz_scrobble",
-                    )
+                    raise InvalidToken("ListenBrainz rejected the user token")
                 if response.status == 404:
                     self.logger.warning("ListenBrainz endpoint was not found at %s", url)
                     raise SetupFailedError(

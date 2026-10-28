@@ -241,8 +241,8 @@ async def test_an_unauthorized_response_reports_an_invalid_token() -> None:
     with pytest.raises(InvalidToken, match="rejected the user token") as exc_info:
         await provider.handle_async_init()
 
-    assert exc_info.value.translation_key == "token_rejected"
-    assert exc_info.value.translation_owner == "provider.listenbrainz_scrobble"
+    assert exc_info.value.translation_key == "invalid_token"
+    assert exc_info.value.translation_owner is None
 
 
 async def test_a_missing_endpoint_reports_the_bad_base_url() -> None:

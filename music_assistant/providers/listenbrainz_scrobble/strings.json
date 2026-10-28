@@ -11,8 +11,7 @@
   "errors": {
     "connection_failed": "Could not connect to the ListenBrainz server. Please check the Base URL and confirm that the server is running and reachable.",
     "endpoint_not_found": "The ListenBrainz endpoint was not found. Please check the Base URL and try again.",
-    "token_invalid": "Your ListenBrainz user token is no longer valid. Please reconfigure this plugin to resume scrobbling.",
-    "token_rejected": "The ListenBrainz server rejected the user token. Please check the token and try again."
+    "token_invalid": "Your ListenBrainz user token is no longer valid. Please reconfigure this plugin to resume scrobbling."
   },
   "manifest": {
     "description": "Scrobbles your listening history to ListenBrainz — an open, community-driven alternative to Last.fm."
