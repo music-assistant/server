@@ -15,6 +15,7 @@ from music_assistant.constants import PLAYBACK_REPORT_INTERVAL_SECONDS
 from music_assistant.providers.bookorbit import BookOrbitProvider
 from music_assistant.providers.bookorbit.playlog_sync import (
     InboundProgressGuard,
+    PlaylogProgressMemory,
     apply_book_progress,
     resolve_remote_progress_seconds,
     sync_playlog,
@@ -269,8 +270,31 @@ async def test_apply_conversion_error_returns_none() -> None:
 
 
 @pytest.mark.asyncio
-async def test_apply_stamps_even_when_library_hydrate_matches() -> None:
-    """Always stamp provider playlog; hydrated resume may belong to another user."""
+async def test_apply_skips_unchanged_progress_via_memory() -> None:
+    """Identical last-applied progress does not re-stamp the playlog timestamp."""
+    mass = _mass()
+    seconds = max(PLAYBACK_REPORT_INTERVAL_SECONDS, 60)
+    memory = PlaylogProgressMemory()
+    memory.note_progress(1, False, seconds)
+    with patch(
+        "music_assistant.providers.bookorbit.playlog_sync.resolve_remote_progress_seconds",
+        new=AsyncMock(return_value=(False, seconds)),
+    ):
+        has = await apply_book_progress(
+            mass,
+            provider_instance_id="bookorbit--test",
+            client=Mock(),
+            book_id=1,
+            guard=InboundProgressGuard(),
+            memory=memory,
+        )
+    assert has is True
+    mass.music.mark_item_played.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_apply_stamps_when_library_hydrate_matches_but_memory_empty() -> None:
+    """Do not trust hydrated resume fields; stamp until memory records provider progress."""
     mass = _mass()
     seconds = max(PLAYBACK_REPORT_INTERVAL_SECONDS, 60)
     library_item = Mock(name="book", fully_played=False, resume_position_ms=seconds * 1000)
@@ -285,9 +309,37 @@ async def test_apply_stamps_even_when_library_hydrate_matches() -> None:
             client=Mock(),
             book_id=1,
             guard=InboundProgressGuard(),
+            memory=PlaylogProgressMemory(),
         )
     assert has is True
     mass.music.mark_item_played.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_resolve_skips_manifest_when_playback_state_unchanged(
+    book_audiobook: dict[str, Any],
+) -> None:
+    """Unchanged playback-state fingerprint reuses memory without a manifest fetch."""
+    book_id = int(book_audiobook["id"])
+    seconds = max(PLAYBACK_REPORT_INTERVAL_SECONDS, 60)
+    memory = PlaylogProgressMemory()
+    memory.note_progress(book_id, False, seconds)
+    client = _client_with_state(book_audiobook, seconds * 1000, 10.0)
+    state = await client.get_playback_state(book_id)
+    memory.note_remote_fp(
+        book_id,
+        (
+            "state",
+            state["assetId"],
+            state["positionMs"],
+            state["percentage"],
+            state["completed"],
+        ),
+    )
+    client.get_audiobook_manifest = AsyncMock()
+    result = await resolve_remote_progress_seconds(client, book_id, memory=memory)
+    assert result == (False, seconds)
+    client.get_audiobook_manifest.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -327,7 +379,7 @@ async def test_sync_playlog_discards_cleared_progress() -> None:
     mass.music.mark_item_unplayed = AsyncMock()
     mass.music.mark_item_played = AsyncMock()
 
-    async def fake_resolve(_client: Any, book_id: int) -> tuple[bool, int] | None:
+    async def fake_resolve(_client: Any, book_id: int, **_kwargs: Any) -> tuple[bool, int] | None:
         if book_id == 9:
             return (False, 120)
         return None
@@ -566,7 +618,7 @@ async def test_sync_playlog_isolates_unexpected_book_failure() -> None:
     mass.music.mark_item_unplayed = AsyncMock()
     mass.music.mark_item_played = AsyncMock()
 
-    async def fake_resolve(_client: Any, book_id: int) -> tuple[bool, int] | None:
+    async def fake_resolve(_client: Any, book_id: int, **_kwargs: Any) -> tuple[bool, int] | None:
         if book_id == 5:
             raise RuntimeError("unexpected")
         return None
@@ -597,16 +649,20 @@ async def test_provider_sync_playlog_uses_playlog_and_continue_listening(
         return_value=[(MediaType.AUDIOBOOK, "1"), (MediaType.PODCAST_EPISODE, "2")]
     )
     client.get_continue_listening_book_ids = AsyncMock(return_value=[3])
-    with patch(
-        "music_assistant.providers.bookorbit.sync_playlog",
-        new_callable=AsyncMock,
-    ) as sync_mock:
+    with (
+        patch(
+            "music_assistant.providers.bookorbit.sync_playlog",
+            new_callable=AsyncMock,
+        ) as sync_mock,
+        patch.object(provider, "_save_playlog_progress_memory", new_callable=AsyncMock),
+    ):
         await provider._sync_playlog_from_bookorbit()
     assert sync_mock.await_count == 1
     assert sync_mock.await_args is not None
     kwargs = sync_mock.await_args.kwargs
     assert set(kwargs["book_ids"]) == {1, 3}
     assert kwargs["guard"] is provider._inbound_progress_guard
+    assert kwargs["memory"] is provider._playlog_progress_memory
 
 
 @pytest.mark.asyncio
@@ -624,13 +680,17 @@ async def test_provider_sync_playlog_swallows_errors(provider: BookOrbitProvider
 
 
 @pytest.mark.asyncio
-async def test_on_played_notes_inbound_guard(
+async def test_on_played_notes_inbound_guard_and_progress_memory(
     provider: BookOrbitProvider, book_multifile: dict[str, Any]
 ) -> None:
-    """Outbound play reports block inbound playlog apply briefly."""
+    """Outbound play reports arm cool-down and record sent progress for skip-stamps."""
     provider._inbound_progress_guard = InboundProgressGuard()
+    provider._playlog_progress_memory = PlaylogProgressMemory()
     book_id = int(book_multifile["id"])
-    with patch.object(provider, "_sync_playback_state", new_callable=AsyncMock):
+    with (
+        patch.object(provider, "_sync_playback_state", new_callable=AsyncMock),
+        patch.object(provider, "_save_playlog_progress_memory", new_callable=AsyncMock) as save,
+    ):
         await provider.on_played(
             MediaType.AUDIOBOOK,
             str(book_id),
@@ -639,6 +699,8 @@ async def test_on_played_notes_inbound_guard(
             media_item=Mock(),
         )
     assert provider._inbound_progress_guard.allow_inbound(book_id) is False
+    assert provider._playlog_progress_memory.matches_progress(book_id, False, 150)
+    save.assert_awaited_once()
 
 
 @pytest.mark.asyncio
@@ -657,18 +719,19 @@ async def test_sync_library_audiobook_syncs_playlog(provider: BookOrbitProvider)
 
 
 @pytest.mark.asyncio
-async def test_playlog_poll_loop_syncs_default_candidates(
+async def test_playlog_poll_loop_uses_continue_listening_candidates(
     provider: BookOrbitProvider,
 ) -> None:
-    """Each poll tick runs the default playlog candidate sync."""
+    """Each poll tick syncs continue-listening ids only, not the full playlog."""
     sync_mock = AsyncMock(side_effect=asyncio.CancelledError)
     with (
         patch("music_assistant.providers.bookorbit.asyncio.sleep", AsyncMock()),
+        patch.object(provider, "_playlog_poll_candidate_book_ids", AsyncMock(return_value={3, 7})),
         patch.object(provider, "_sync_playlog_from_bookorbit", sync_mock),
         pytest.raises(asyncio.CancelledError),
     ):
         await provider._playlog_poll_loop()
-    sync_mock.assert_awaited_once_with()
+    sync_mock.assert_awaited_once_with({3, 7})
 
 
 @pytest.mark.asyncio

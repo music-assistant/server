@@ -55,14 +55,105 @@ class InboundProgressGuard:
         return int(time.time() * 1000)
 
 
+@dataclass
+class PlaylogProgressMemory:
+    """
+    Last progress applied inbound or sent outbound, plus remote fingerprints.
+
+    Used to skip no-op ``mark_item_played`` calls (which would refresh the playlog
+    timestamp) and to skip manifest fetches when the remote payload is unchanged.
+    """
+
+    _progress: dict[int, tuple[bool, int]] = field(default_factory=dict)
+    _remote_fp: dict[int, tuple[Any, ...]] = field(default_factory=dict)
+
+    def note_progress(self, book_id: int, fully_played: bool, seconds_played: int) -> None:
+        """Record progress that was applied to the playlog or sent to BookOrbit."""
+        self._progress[book_id] = (fully_played, int(seconds_played))
+
+    def matches_progress(self, book_id: int, fully_played: bool, seconds_played: int) -> bool:
+        """Return True when ``book_id`` already has this progress recorded."""
+        return self._progress.get(book_id) == (fully_played, int(seconds_played))
+
+    def get_progress(self, book_id: int) -> tuple[bool, int] | None:
+        """Return the last recorded progress for ``book_id``, if any."""
+        return self._progress.get(book_id)
+
+    def note_remote_fp(self, book_id: int, fingerprint: tuple[Any, ...]) -> None:
+        """Record the remote playback-state / legacy-progress fingerprint."""
+        self._remote_fp[book_id] = fingerprint
+
+    def matches_remote_fp(self, book_id: int, fingerprint: tuple[Any, ...]) -> bool:
+        """Return True when the remote payload fingerprint is unchanged."""
+        return self._remote_fp.get(book_id) == fingerprint
+
+    def clear(self, book_id: int) -> None:
+        """Drop recorded progress and fingerprint for ``book_id``."""
+        self._progress.pop(book_id, None)
+        self._remote_fp.pop(book_id, None)
+
+    def export_progress(self) -> dict[str, list[bool | int]]:
+        """Serialize progress entries for ``mass.cache``."""
+        return {
+            str(book_id): [fully_played, seconds_played]
+            for book_id, (fully_played, seconds_played) in self._progress.items()
+        }
+
+    def load_progress(self, raw: dict[str, Any]) -> None:
+        """Restore progress entries previously exported to ``mass.cache``."""
+        loaded: dict[int, tuple[bool, int]] = {}
+        for key, value in raw.items():
+            try:
+                book_id = int(key)
+                if (
+                    not isinstance(value, list | tuple)
+                    or len(value) != 2
+                    or not isinstance(value[1], int | float)
+                ):
+                    continue
+                loaded[book_id] = (bool(value[0]), int(value[1]))
+            except TypeError, ValueError:
+                continue
+        self._progress = loaded
+
+
+def _playback_state_fingerprint(state: dict[str, Any]) -> tuple[Any, ...]:
+    """Fingerprint playback-state fields that affect absolute resume position."""
+    return (
+        "state",
+        state.get("assetId"),
+        state.get("positionMs"),
+        state.get("percentage"),
+        state.get("completed"),
+    )
+
+
+def _legacy_progress_fingerprint(progress: dict[str, Any]) -> tuple[Any, ...]:
+    """Fingerprint legacy audio-progress fields that affect absolute resume position."""
+    return (
+        "legacy",
+        progress.get("currentFileId"),
+        progress.get("positionSeconds"),
+        progress.get("percentage"),
+    )
+
+
 def _remote_has_progress(resolved: tuple[bool, int] | None) -> TypeGuard[tuple[bool, int]]:
     """Return True when remote progress is finished or has a positive position."""
     return resolved is not None and (resolved[0] or resolved[1] > 0)
 
 
-async def resolve_remote_progress_seconds(client: Any, book_id: int) -> tuple[bool, int] | None:
+async def resolve_remote_progress_seconds(
+    client: Any,
+    book_id: int,
+    *,
+    memory: PlaylogProgressMemory | None = None,
+) -> tuple[bool, int] | None:
     """
     Resolve BookOrbit progress to (fully_played, seconds_played).
+
+    When ``memory`` has a matching remote fingerprint and cached progress, returns
+    that cached progress without fetching the manifest or book detail.
 
     :returns: Tuple when usable progress exists; ``None`` when playback-state and
         legacy audio-progress are both absent.
@@ -77,17 +168,35 @@ async def resolve_remote_progress_seconds(client: Any, book_id: int) -> tuple[bo
     """
     state = await client.get_playback_state(book_id)
     if state:
+        fingerprint = _playback_state_fingerprint(state)
+        if memory and memory.matches_remote_fp(book_id, fingerprint):
+            cached = memory.get_progress(book_id)
+            if cached is not None:
+                return cached
         manifest = await client.get_audiobook_manifest(book_id)
         fully_played, position_ms, _ = parse_resume_position_from_playback_state(manifest, state)
-        return fully_played, position_ms // 1000
+        resolved = (fully_played, position_ms // 1000)
+        if memory:
+            memory.note_remote_fp(book_id, fingerprint)
+        return resolved
     progress = await client.get_audio_progress(book_id)
     if not progress:
+        if memory:
+            memory.clear(book_id)
         return None
+    fingerprint = _legacy_progress_fingerprint(progress)
+    if memory and memory.matches_remote_fp(book_id, fingerprint):
+        cached = memory.get_progress(book_id)
+        if cached is not None:
+            return cached
     manifest = await client.get_audiobook_manifest(book_id)
     book = await client.get_book(book_id)
     book = book_with_manifest_playback_order(book, manifest)
     fully_played, position_ms, _ = parse_resume_position(_audio_files(book), progress)
-    return fully_played, position_ms // 1000
+    resolved = (fully_played, position_ms // 1000)
+    if memory:
+        memory.note_remote_fp(book_id, fingerprint)
+    return resolved
 
 
 async def apply_book_progress(
@@ -97,19 +206,20 @@ async def apply_book_progress(
     client: Any,
     book_id: int,
     guard: InboundProgressGuard,
+    memory: PlaylogProgressMemory | None = None,
 ) -> bool | None:
     """
     Pull one book's BookOrbit progress into the MA playlog.
 
     :returns: True if BookOrbit still has progress for this book (even when the
-        stamp was skipped because it is too short or guarded); False when both
-        remote progress endpoints are empty (or zero-and-not-finished) and an
-        inbound clear is allowed; None when the outcome is unknown
+        stamp was skipped because it is too short, guarded, or unchanged); False
+        when both remote progress endpoints are empty (or zero-and-not-finished)
+        and an inbound clear is allowed; None when the outcome is unknown
         (transport/conversion failure or outbound cool-down blocking a clear).
     :raises LoginFailed: When re-authentication fails; callers should abort the batch.
     """
     try:
-        resolved = await resolve_remote_progress_seconds(client, book_id)
+        resolved = await resolve_remote_progress_seconds(client, book_id, memory=memory)
     except LoginFailed:
         raise
     except (ClientError, TimeoutError, OSError) as err:
@@ -120,11 +230,15 @@ async def apply_book_progress(
         return None
     if not _remote_has_progress(resolved):
         # Confirmed absent / zero: never clear during an outbound cool-down.
+        if memory:
+            memory.clear(book_id)
         if not guard.allow_inbound(book_id):
             return None
         return False
     fully_played, seconds_played = resolved
     if not fully_played and seconds_played < PLAYBACK_REPORT_INTERVAL_SECONDS:
+        return True
+    if memory and memory.matches_progress(book_id, fully_played, seconds_played):
         return True
     if not guard.allow_inbound(book_id):
         return True
@@ -136,9 +250,9 @@ async def apply_book_progress(
     if library_item is None:
         return True
     # Recheck after the await: an outbound MA report may have started during lookup.
-    # Do not skip stamps by comparing hydrated library resume fields: without a
-    # session user those fields can reflect another user's playlog row.
     if not guard.allow_inbound(book_id):
+        return True
+    if memory and memory.matches_progress(book_id, fully_played, seconds_played):
         return True
     await mass.music.mark_item_played(
         library_item,
@@ -147,6 +261,8 @@ async def apply_book_progress(
         user_initiated=False,
         provider_instance_id=provider_instance_id,
     )
+    if memory:
+        memory.note_progress(book_id, fully_played, seconds_played)
     return True
 
 
@@ -158,6 +274,7 @@ async def _discard_cleared_playlog_entry(
     item_id: str,
     book_id: int,
     guard: InboundProgressGuard,
+    memory: PlaylogProgressMemory | None = None,
 ) -> bool:
     """
     Unplay one playlog entry when remote progress is still confirmed absent.
@@ -182,7 +299,7 @@ async def _discard_cleared_playlog_entry(
             return True
         # Re-resolve: remote may have regained progress since the apply pass.
         try:
-            resolved = await resolve_remote_progress_seconds(client, book_id)
+            resolved = await resolve_remote_progress_seconds(client, book_id, memory=memory)
         except LoginFailed as err:
             LOGGER.warning(
                 "BookOrbit authentication failed during playlog discard; "
@@ -209,6 +326,8 @@ async def _discard_cleared_playlog_entry(
         if not guard.allow_inbound(book_id):
             return True
         await mass.music.mark_item_unplayed(library_item, provider_instance_id=provider_instance_id)
+        if memory:
+            memory.clear(book_id)
     except Exception:
         LOGGER.warning("BookOrbit playlog discard for book %s failed", item_id, exc_info=True)
     return True
@@ -221,6 +340,7 @@ async def sync_playlog(
     client: Any,
     book_ids: Iterable[int],
     guard: InboundProgressGuard,
+    memory: PlaylogProgressMemory | None = None,
     concurrency: int = 8,
 ) -> None:
     """Apply BookOrbit progress for ``book_ids`` and unplay cleared candidates."""
@@ -244,6 +364,7 @@ async def sync_playlog(
                     client=client,
                     book_id=book_id,
                     guard=guard,
+                    memory=memory,
                 )
             except LoginFailed as err:
                 if not auth_failed:
@@ -284,5 +405,6 @@ async def sync_playlog(
             item_id=item_id,
             book_id=book_id,
             guard=guard,
+            memory=memory,
         ):
             return
