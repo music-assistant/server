@@ -39,6 +39,12 @@ CACHE_KEY_LIBRARY_FINGERPRINTS = "audiobook_mapping_details_v2"
 CACHE_EXPIRATION_LIBRARY_FINGERPRINTS = 86400 * 365
 # Batch size for browse-time library lookups by provider item id.
 BROWSE_LIBRARY_BATCH_SIZE = 200
+# How often to pull BookOrbit progress into the MA playlog between full library syncs.
+PLAYLOG_POLL_INTERVAL_SEC = 10 * 60
+# Bound concurrent playback-state fetches during playlog sync / poll.
+PLAYLOG_SYNC_CONCURRENCY = 8
+# BookOrbit dashboard scroller max per request (DASHBOARD_SCROLLER_MAX_LIMIT).
+CONTINUE_LISTENING_LIMIT = 50
 
 API_PREFIX = "/api/v1"
 
