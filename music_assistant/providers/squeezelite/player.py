@@ -398,7 +398,7 @@ class SqueezelitePlayer(Player):
         ):
             # restart stream session if it was already playing
             # for now, we dont support late joining into an existing stream
-            # a back-to-back restart would read the position of the one before it, so the newest wins
+            # a back-to-back restart reads the position of the one before it, so the newest wins
             self.mass.create_task(
                 self.mass.players.cmd_resume(self.player_id),
                 task_id=f"squeezelite_regroup_resume_{self.player_id}",
