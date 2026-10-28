@@ -872,6 +872,26 @@ class TestPollRefreshesTransportState:
 
         mock_wiim_device.async_update_http_status.assert_not_awaited()
 
+    @pytest.mark.asyncio
+    async def test_playback_started_while_idle_is_polled_at_playing_rate(
+        self, mock_provider: MagicMock, mock_wiim_device: MagicMock
+    ) -> None:
+        """Playback that starts between idle polls must not wait out the idle poll interval."""
+        player = self._make_player(mock_provider, mock_wiim_device)
+        await player.poll()
+        assert player.poll_interval == 30
+        mock_wiim_device.play_mode = SOURCE_NETWORK
+        mock_wiim_device.current_media = MagicMock(uri="http://ma/stream", position=0, duration=10)
+
+        async def _report_playing(**_: Any) -> None:
+            mock_wiim_device.playing_status = PlayingStatus.PLAYING
+
+        mock_wiim_device.async_play = AsyncMock(side_effect=_report_playing)
+
+        await player.play()
+
+        assert player.poll_interval == 5
+
 
 class TestSetMembersDelegation:
     """The official player delegates grouping to the shared coordinator."""
