@@ -907,6 +907,41 @@ class TestStalePositionOnNewStream:
         assert player._attr_elapsed_time == 150
 
     @pytest.mark.asyncio
+    async def test_playing_at_its_start_lets_a_later_app_seek_through(
+        self, mock_provider: MagicMock, mock_wiim_device: MagicMock, clock: _FakeClock
+    ) -> None:
+        """A stream reported playing at 0 s is being played, so an app seek is not stale."""
+        player, device_media = await self._seek_stream(mock_provider, mock_wiim_device)
+        mock_wiim_device.playing_status = PlayingStatus.PLAYING
+
+        clock.advance(1)
+        device_media.position = 0
+        await player._sync_position()
+
+        clock.advance(1)
+        device_media.position = 150
+        await player._sync_position()
+
+        assert player._attr_elapsed_time == 150
+
+    @pytest.mark.asyncio
+    async def test_loading_at_its_start_keeps_the_time_check(
+        self, mock_provider: MagicMock, mock_wiim_device: MagicMock, clock: _FakeClock
+    ) -> None:
+        """A stream still loading at 0 s is not yet played, so a stale read stays ignored."""
+        player, device_media = await self._seek_stream(mock_provider, mock_wiim_device)
+
+        clock.advance(0.4)
+        device_media.position = 0
+        await player._sync_position()
+
+        clock.advance(0.4)
+        device_media.position = 7
+        await player._sync_position()
+
+        assert player._attr_elapsed_time == 0
+
+    @pytest.mark.asyncio
     async def test_short_stream_reported_at_its_end_keeps_the_time_check(
         self, mock_provider: MagicMock, mock_wiim_device: MagicMock, clock: _FakeClock
     ) -> None:

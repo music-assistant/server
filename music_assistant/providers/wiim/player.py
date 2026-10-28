@@ -637,7 +637,7 @@ class WiimPlayer(Player):
         media = self.device.current_media
         if (
             media is not None
-            and media.position
+            and media.position is not None
             and self._ma_stream_sent is not None
             and media.uri == self._ma_stream_sent[0]
         ):
@@ -647,8 +647,11 @@ class WiimPlayer(Player):
                 self._update_ma_state_from_sdk_cache()
                 return
             # Once it plays our stream, its own clock and seeks (e.g. from the app) may run ahead.
-            # A report at the stream's end (below) is not yet playing it.
-            if media.position != media.duration:
+            # A report at the stream's end (below) is not yet playing it, nor is one at its start
+            # while it still loads.
+            if media.position != media.duration and (
+                media.position or self.device.playing_status == PlayingStatus.PLAYING
+            ):
                 self._ma_stream_sent = None
         # Right after taking our stream the device briefly reports it as being at its end.
         if (
