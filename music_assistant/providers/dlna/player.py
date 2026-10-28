@@ -110,6 +110,8 @@ class DLNAPlayer(Player):
         # the position the device keeps reporting although it is playing, if it does so
         self._stuck_position: float | None = None
         self._last_reported_position: float | None = None
+        # whether the device's position moved since the track started
+        self._position_advanced = False
         # when the device's position was last read: by a poll, or by its timestamp
         self._position_read_at: float | None = None
         self._last_position_stamp: datetime | None = None
@@ -288,7 +290,7 @@ class DLNAPlayer(Player):
         self.set_current_media(uri=url, clear_all=True)
         self._stuck_position = self._last_reported_position = None
         self._pause_command_position = self._clock_at_pause = None
-        self._seeked_while_paused = False
+        self._seeked_while_paused = self._position_advanced = False
         self._attr_playback_state = PlaybackState.PLAYING
         self._attr_elapsed_time = 0
         self._attr_elapsed_time_last_updated = time.time()
@@ -703,10 +705,12 @@ class DLNAPlayer(Player):
         position = self.device.media_position
         read_at = self._fresh_report_time()
         # a playing device that reports the same position again (e.g. re-sends its 00:00:00)
-        # keeps the time it was first reported, so a position that does not advance falls
-        # behind MA's clock however often it is reported (unless MA moved it meanwhile)
+        # keeps the time it was first reported, so a position that never advances falls
+        # behind MA's clock however often it is reported (unless MA moved it meanwhile). One
+        # that advanced before is re-anchored, as it may just be buffering.
         repeated = (
-            position is not None
+            not self._position_advanced
+            and position is not None
             and position == self._last_reported_position == self._attr_elapsed_time
             and prev_playback_state == PlaybackState.PLAYING == playback_state
             and not uri_changed
@@ -717,11 +721,12 @@ class DLNAPlayer(Player):
         if prev_playback_state == PlaybackState.PLAYING != playback_state:
             # MA's clock at the pause, to judge a report that only arrives once paused
             self._clock_at_pause = self._paused_clock(now)
-        if uri_changed or playback_state == PlaybackState.IDLE:
+        new_media = uri_changed or playback_state == PlaybackState.IDLE
+        if new_media:
             # what the device reported about the previous track no longer applies
             self._stuck_position = self._last_reported_position = None
             self._clock_at_pause = None
-            self._seeked_while_paused = False
+            self._seeked_while_paused = self._position_advanced = False
             # (also on a device without a position, which starts over once it plays again)
             self._attr_elapsed_time = 0.0
             self._attr_elapsed_time_last_updated = now
@@ -731,6 +736,8 @@ class DLNAPlayer(Player):
         self._position_read_at = None
         if position is not None:
             self._last_reported_position = position
+        if moved and not new_media:
+            self._position_advanced = True
 
         if (
             position is None

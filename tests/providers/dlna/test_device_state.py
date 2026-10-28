@@ -608,6 +608,63 @@ async def test_placeholder_position_restamped_while_playing_is_recognised(
     assert player.elapsed_time == 12.0
 
 
+@pytest.mark.parametrize("pause", [False, True])
+async def test_normal_device_that_stalls_while_restamping_is_followed(
+    monkeypatch: pytest.MonkeyPatch, pause: bool
+) -> None:
+    """A device whose position advanced and then stalls (e.g. buffering) stays where it is."""
+    player, device, clock = await _start(monkeypatch, 0)
+    for position in (10, 20, 30):
+        clock.now += 10
+        device.media_position = position
+        device.media_position_updated_at = _stamp(clock)
+        await player.set_dynamic_attributes()
+    # the device re-sends 30 with a fresh timestamp while it buffers
+    for _ in range(3):
+        clock.now += 5
+        device.media_position_updated_at = _stamp(clock)
+        await _set_state(player, device, TransportState.PLAYING)
+
+    assert player.corrected_elapsed_time == 30.0
+    assert player._stuck_position is None
+
+    if pause:
+        await _set_state(player, device, TransportState.PAUSED_PLAYBACK)
+
+        assert player.elapsed_time == 30.0
+
+        clock.now += 20
+        await _set_state(player, device, TransportState.PLAYING)
+    clock.now += 3
+    device.media_position = 33
+    device.media_position_updated_at = _stamp(clock)
+    await _set_state(player, device, TransportState.PLAYING)
+
+    assert player.corrected_elapsed_time == 33.0
+
+
+async def test_placeholder_position_restamped_after_a_track_change_is_recognised(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A device that advanced on its last track and re-sends 00:00:00 on the next one."""
+    player, device, clock = await _start(monkeypatch, 0)
+    clock.now += 10
+    device.media_position = 10
+    device.media_position_updated_at = _stamp(clock)
+    await player.set_dynamic_attributes()
+    device.current_track_uri = "http://192.168.1.10/other.mp3"
+    device.media_position = 0
+    await player.set_dynamic_attributes()
+    for _ in range(3):
+        clock.now += 4
+        device.media_position_updated_at = _stamp(clock)
+        await player.set_dynamic_attributes()
+    await _set_state(player, device, TransportState.PAUSED_PLAYBACK)
+
+    assert player._stuck_position == 0
+    assert player.elapsed_time == 12.0
+
+
 async def test_position_of_a_player_found_while_playing_keeps_its_own_anchor() -> None:
     """Without having seen playback start, the timestamp the device reports is all there is."""
     player = await _updated_player(media_position=200, media_position_updated_at=REPORTED_AT)
