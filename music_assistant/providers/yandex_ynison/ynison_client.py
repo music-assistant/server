@@ -12,7 +12,7 @@ from collections import deque
 from collections.abc import Awaitable, Callable
 from contextlib import suppress
 from copy import deepcopy
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
@@ -103,6 +103,13 @@ def _current_playable_id(queue: dict[str, Any]) -> Any:
     if isinstance(index, int) and 0 <= index < len(playables):
         return playables[index].get("playable_id")
     return None
+
+
+def _author(block: Any) -> Any:
+    """Return the device that authored a versioned state block, or ``None``."""
+    if not isinstance(block, dict):
+        return None
+    return (block.get("version") or {}).get("device_id")
 
 
 def normalize_player_state_timestamps(player_state: dict[str, Any]) -> None:
@@ -737,6 +744,17 @@ class YnisonClient:
             paused=self.state.is_paused,
             navigation_version=self._navigation_version,
         )
+
+    def pending_navigation_baseline(self) -> NavigationBaseline | None:
+        """
+        Return a baseline that settles with our sent but not yet adopted navigation.
+
+        :return: ``None`` when no navigation of ours awaits its echo.
+        """
+        if self._unadopted_navigation is None or time.monotonic() >= self._pending_queue_until:
+            return None
+        # Settles once Ynison confirms our latest navigation, or another device takes over.
+        return replace(self.navigation_baseline(), navigation_version=None)
 
     def is_current_playback(self, baseline: NavigationBaseline) -> bool:
         """
@@ -1379,36 +1397,7 @@ class YnisonClient:
         # A frame without a status keeps the retained one, which is already known.
         self.state.status_is_relay = not (isinstance(incoming_ps, dict) and "status" in incoming_ps)
         if incoming_ps is not None:
-            # Normalize timestamp fields before storing: Ynison rejects int
-            # `status.progress_ms`/`duration_ms`/`version.*` on outbound
-            # messages, and stored state is round-tripped via send_full_state
-            # (on reconnect) and update_player_state (on queue edits).
-            normalize_player_state_timestamps(incoming_ps)
-            is_echo, suppress_status = self._classify_state_as_echo(incoming_ps)
-            existing_ps = self.state.player_state
-            for key, value in incoming_ps.items():
-                if key == "player_queue" and not self._accept_queue(
-                    value, existing_ps.get("player_queue")
-                ):
-                    continue
-                if key == "status":
-                    self.state.status_is_relay = self._is_known_status(value)
-                if suppress_status and key == "status":
-                    continue
-                if key == "status" and not self.state.status_is_relay:
-                    # A relay keeps the anchor its position is extrapolated from.
-                    self._remember_server_status(value)
-                    # A newer status supersedes the one our pending navigation sent.
-                    self._navigation_status = None
-                existing_ps[key] = value
-            if (
-                self.state.current_item_navigated
-                and "status" not in incoming_ps
-                and self._navigation_status is not None
-            ):
-                # A queue-only echo of our navigation starts where that navigation said.
-                existing_ps["status"] = deepcopy(self._navigation_status)
-            self.state.last_update_is_echo = is_echo
+            self._apply_player_state(incoming_ps)
         else:
             self.state.last_update_is_echo = False
         incoming_status_author = (
@@ -1535,6 +1524,44 @@ class YnisonClient:
         if self._session and not self._external_session:
             await self._session.close()
         self._session = None
+
+    def _apply_player_state(self, incoming_ps: dict[str, Any]) -> None:
+        """Replace the retained player state blocks with the accepted ones of a frame."""
+        # Normalize timestamp fields before storing: Ynison rejects int
+        # `status.progress_ms`/`duration_ms`/`version.*` on outbound
+        # messages, and stored state is round-tripped via send_full_state
+        # (on reconnect) and update_player_state (on queue edits).
+        normalize_player_state_timestamps(incoming_ps)
+        is_echo, suppress_status = self._classify_state_as_echo(incoming_ps)
+        existing_ps = self.state.player_state
+        obsolete = "player_queue" in incoming_ps and not self._accept_queue(
+            incoming_ps["player_queue"], existing_ps.get("player_queue")
+        )
+        for key, value in incoming_ps.items():
+            if key == "player_queue" and obsolete:
+                continue
+            if key == "status" and obsolete and _author(value) == self.device_id:
+                # Our status from an obsolete echo is as old as its queue.
+                self.state.status_is_relay = True
+                continue
+            if key == "status":
+                self.state.status_is_relay = self._is_known_status(value)
+            if suppress_status and key == "status":
+                continue
+            if key == "status" and not self.state.status_is_relay:
+                # A relay keeps the anchor its position is extrapolated from.
+                self._remember_server_status(value)
+                # A newer status supersedes the one our pending navigation sent.
+                self._navigation_status = None
+            existing_ps[key] = value
+        if (
+            self.state.current_item_navigated
+            and "status" not in incoming_ps
+            and self._navigation_status is not None
+        ):
+            # A queue-only echo of our navigation starts where that navigation said.
+            existing_ps["status"] = deepcopy(self._navigation_status)
+        self.state.last_update_is_echo = is_echo
 
     def _player_state_message(self, player_state: dict[str, Any]) -> dict[str, Any]:
         """Build a complete queue update envelope."""

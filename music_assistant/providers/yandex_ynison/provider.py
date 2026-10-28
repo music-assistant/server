@@ -574,10 +574,19 @@ class YandexYnisonProvider(PluginProvider):
                     and not self._ynison.state.is_paused
                     and self._ynison.state.current_track_id == track_id
                 )
-                if natural_end:
+                if natural_end and self._ynison is not None:
                     self.logger.info("Track %s finished, advancing to next", track_id)
-                    baseline = self._ynison.navigation_baseline()
-                    completion = await self._signal_track_completion(baseline=baseline)
+                    client = self._ynison
+                    baseline = client.navigation_baseline()
+                    completion = NavigationOutcome.SUPERSEDED
+                    if client.pending_navigation_baseline() is None:
+                        completion = await self._signal_track_completion(baseline=baseline)
+                    if completion == NavigationOutcome.SUPERSEDED and (
+                        pending := client.pending_navigation_baseline()
+                    ):
+                        # Our own Next left this item before its end; follow that
+                        # navigation instead of advancing past the item it chose.
+                        completion, baseline = NavigationOutcome.CHANGE, pending
                     if completion == NavigationOutcome.RESTART:
                         playback.request_restart(0, RestartReason.REPEAT, grace=False)
                     elif completion == NavigationOutcome.SUPERSEDED:
@@ -693,21 +702,24 @@ class YandexYnisonProvider(PluginProvider):
         """
         deadline = time.monotonic() + timeout
         while not self._playback.stop_requested():
-            # Check state BEFORE consuming the wake-up.  Ynison may have already
-            # advanced between _signal_track_completion() returning and this
-            # method running; clearing first would drop the set() that went
-            # with the state update, leaving us to wait until timeout.
-            # Check is race-free: no await between the read and clear() below.
+            # Check state BEFORE waiting.  Ynison may have already advanced
+            # between _signal_track_completion() returning and this method
+            # running.  The check is race-free: wait_update() only drops
+            # wake-ups from before it is called, and nothing awaits in between.
             # None means empty/unreadable queue — treat as "not advanced."
             if self._ynison:
                 current = self._ynison.state.current_track_id
                 if current is not None and current != old_track_id:
                     return True
                 if baseline is not None and self._ynison.navigation_confirmed(baseline):
+                    if self._playback.restart_reason is None:
+                        # A peer queue kept this item; resume where Ynison has it.
+                        self._playback.request_restart(
+                            self._ynison.estimated_progress_ms(), RestartReason.TRACK_CHANGE
+                        )
                     return True
-            self._playback.consume_restart()
             remaining = deadline - time.monotonic()
-            if remaining <= 0 or not await self._playback.wait_restart(remaining):
+            if remaining <= 0 or not await self._playback.wait_update(remaining):
                 break
         self.logger.info("No new track from Ynison after completion, stopping stream")
         return False
@@ -1053,6 +1065,8 @@ class YandexYnisonProvider(PluginProvider):
 
     async def _handle_ynison_state(self, state: YnisonState) -> None:
         """Handle state update from Ynison."""
+        # A stream waiting for navigation to settle re-checks after any frame.
+        self._playback.notify_update()
         is_our_device = state.active_device_id == self._device_id
 
         # Detailed queue logging for diagnostics

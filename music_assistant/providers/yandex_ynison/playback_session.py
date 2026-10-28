@@ -59,6 +59,7 @@ class PlaybackSession:
         """
         self._clock = clock
         self._restart = asyncio.Event()
+        self._update = asyncio.Event()
         self.owner_player_id: str | None = None
         self.consumer_player_id: str | None = None
         self.session_id: str | None = None
@@ -143,6 +144,7 @@ class PlaybackSession:
         if grace:
             self.grace_until = self._clock() + ECHO_GRACE_PERIOD
         self._restart.set()
+        self._update.set()
 
     def seed_start(self, at_ms: int) -> None:
         """
@@ -178,6 +180,24 @@ class PlaybackSession:
             return False
         return True
 
+    def notify_update(self) -> None:
+        """Wake a stream waiting in :meth:`wait_update` after Ynison state changed."""
+        self._update.set()
+
+    async def wait_update(self, timeout: float) -> bool:
+        """
+        Wait for a Ynison state update, a restart or a stop requested after this call.
+
+        :param timeout: Maximum seconds to wait.
+        :return: ``False`` on timeout.
+        """
+        self._update.clear()
+        try:
+            await asyncio.wait_for(self._update.wait(), timeout=timeout)
+        except TimeoutError:
+            return False
+        return True
+
     def in_grace(self) -> bool:
         """Return whether inbound progress drift is still treated as an echo."""
         return self._clock() < self.grace_until
@@ -189,6 +209,7 @@ class PlaybackSession:
         :param reason: Why the stream ends.
         """
         self.stop_reason = reason
+        self._update.set()
 
     def begin_stream(self) -> None:
         """Start a new stream; an earlier stop request no longer applies."""

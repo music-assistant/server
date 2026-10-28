@@ -130,6 +130,27 @@ async def test_wait_restart_times_out(session: PlaybackSession) -> None:
     assert await session.wait_restart(0.01) is False
 
 
+async def test_wait_update_wakes_on_state_restart_and_stop(session: PlaybackSession) -> None:
+    """A stream waiting on Ynison wakes for a state update, a restart or a stop."""
+    for wake in (
+        session.notify_update,
+        lambda: session.request_restart(0, RestartReason.TRACK_CHANGE),
+        lambda: session.request_stop(StopReason.CLEARED),
+    ):
+        waiter = asyncio.create_task(session.wait_update(1.0))
+        await asyncio.sleep(0)
+        wake()
+
+        assert await waiter is True
+
+
+async def test_wait_update_ignores_earlier_updates(session: PlaybackSession) -> None:
+    """Only an update after the wait starts wakes it; the caller already saw earlier state."""
+    session.notify_update()
+
+    assert await session.wait_update(0.01) is False
+
+
 def test_consume_restart_clears_request(session: PlaybackSession) -> None:
     """Consuming the wake-up keeps the requested position."""
     session.request_restart(3000, RestartReason.TRACK_CHANGE)

@@ -3502,6 +3502,80 @@ class TestQueueCommands:
 
         assert client.state.progress_ms == 50000
 
+    async def test_obsolete_own_echo_does_not_revert_the_navigation_start(
+        self, client: YnisonClient
+    ) -> None:
+        """An own echo older than our navigation keeps the position that navigation sent."""
+        client._parse_state(
+            {
+                "player_state": {
+                    "status": {"progress_ms": "70000", "duration_ms": "200000", "paused": False}
+                }
+            }
+        )
+        await client.set_repeat_mode(RepeatMode.ALL)
+        option_edit = json.loads(self.mock_ws.send_str.call_args.args[0])
+        # Next reports the end of the current item before navigating, as completion does.
+        assert await client.update_playing_status(200000, 200000, paused=False, strict=True)
+        assert await client.advance_queue(natural=False, duration_ms=200000) == "change"
+        navigation_echo = self._sent_queue()
+
+        # Ynison versions the status of a full-state echo with our device id.
+        stale = option_edit["update_player_state"]["player_state"]
+        stale["status"]["version"] = stale["player_queue"]["version"]
+
+        client._parse_state({"player_state": stale})
+        client._parse_state({"player_state": {"player_queue": navigation_echo}})
+
+        assert client.state.current_item_navigated is True
+        assert client.state.progress_ms == 0
+
+    async def test_peer_status_in_an_obsolete_echo_is_kept(self, client: YnisonClient) -> None:
+        """A peer command delivered with our obsolete queue still applies."""
+        await client.set_repeat_mode(RepeatMode.ALL)
+        option_edit = self._sent_queue()
+        await client.set_repeat_mode(RepeatMode.OFF)
+        peer_version = {"device_id": "peer", "version": "9", "timestamp_ms": "0"}
+
+        client._parse_state(
+            {
+                "player_state": {
+                    "player_queue": option_edit,
+                    "status": {
+                        "progress_ms": "50000",
+                        "duration_ms": "200000",
+                        "paused": True,
+                        "version": peer_version,
+                    },
+                }
+            }
+        )
+
+        queue = client.state.player_state["player_queue"]
+        assert queue["options"]["repeat_mode"] == "NONE"
+        assert (client.state.progress_ms, client.state.is_paused) == (50000, True)
+
+    async def test_pending_navigation_baseline_settles_with_its_echo(
+        self, client: YnisonClient
+    ) -> None:
+        """Our sent navigation is pending until Ynison adopts it, and never past the queue TTL."""
+        assert client.pending_navigation_baseline() is None
+        assert await client.advance_queue(natural=False, duration_ms=9000) == "change"
+
+        pending = client.pending_navigation_baseline()
+        assert pending is not None
+        assert not client.navigation_confirmed(pending)
+        with patch(
+            "music_assistant.providers.yandex_ynison.ynison_client.time.monotonic",
+            return_value=time.monotonic() + 31,
+        ):
+            assert client.pending_navigation_baseline() is None
+
+        client._parse_state({"player_state": {"player_queue": self._sent_queue()}})
+
+        assert client.pending_navigation_baseline() is None
+        assert client.navigation_confirmed(pending)
+
     async def test_own_navigation_supersedes_an_earlier_baseline(
         self, client: YnisonClient
     ) -> None:

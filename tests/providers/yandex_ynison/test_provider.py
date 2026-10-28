@@ -2656,6 +2656,7 @@ def _mock_ynison(
     mock.report_status = AsyncMock()
     mock.estimated_progress_ms.side_effect = lambda: mock.state.progress_ms
     mock.update_player_state = AsyncMock()
+    mock.pending_navigation_baseline.return_value = None
 
     _wire_queue_mutation(mock)
     return mock
@@ -3306,6 +3307,50 @@ class TestEchoSuppression:
         provider._playback.owner_player_id = "player1"
         provider._playback.progress_ms = 1000
         provider._playback.grace_until = 0.0  # grace expired
+
+    async def test_peer_queue_keeping_the_finished_item_ends_the_completion_wait(self) -> None:
+        """A peer queue that keeps the item settles the wait and resumes where Ynison is."""
+        provider = _make_provider()
+        await self._prime_same_track(provider)
+        client = YnisonClient(
+            SecretStr("test"),
+            YnisonDeviceInfo(provider._device_id, "Test"),
+            AsyncMock(),
+            MagicMock(),
+        )
+        client.state = _make_ynison_state(
+            playable_list=[{"playable_id": "track1"}, {"playable_id": "t2"}]
+        )
+        provider._ynison = client
+        provider._playback.index = 0
+        provider._playback.progress_ms = 119000
+        baseline = client.navigation_baseline()
+        waiter = asyncio.create_task(provider._wait_for_track_change("track1", baseline, 1.0))
+        await asyncio.sleep(0)
+        peer = {"device_id": "peer", "version": "2", "timestamp_ms": "0"}
+
+        client._parse_state(
+            {
+                "player_state": {
+                    "player_queue": {
+                        "current_playable_index": 0,
+                        "playable_list": [{"playable_id": "track1"}, {"playable_id": "p2"}],
+                        "version": peer,
+                    },
+                    "status": {
+                        "progress_ms": "119000",
+                        "duration_ms": "120000",
+                        "paused": False,
+                        "version": peer,
+                    },
+                }
+            }
+        )
+        await provider._handle_ynison_state(client.state)
+
+        assert await waiter is True
+        start, _reason = provider._playback.take_start()
+        assert 119000 <= start < 120000
 
     async def test_echo_suppresses_seek_detection(self) -> None:
         """last_update_is_echo=True makes large drift ignored."""
@@ -4409,6 +4454,7 @@ class TestNaturalEndDifferentiation:
         ynison.state.current_track_id = "track42"
         ynison.state.player_state = {"status": {"paused": False}}
         ynison.report_status = AsyncMock()
+        ynison.pending_navigation_baseline.return_value = None
         provider._ynison = ynison
         return provider
 
@@ -4500,6 +4546,64 @@ class TestNaturalEndDifferentiation:
             await self._drive_to_exhaustion(provider)
         wait.assert_not_awaited()
         assert client.update_player_state.await_count == 2
+
+    async def test_next_just_before_the_end_is_not_advanced_again(self) -> None:
+        """The end of an item that Next already left waits for that Next instead of skipping."""
+        provider = self._build()
+        client = YnisonClient(
+            SecretStr("test"),
+            YnisonDeviceInfo(provider._device_id, "Test"),
+            AsyncMock(),
+            MagicMock(),
+        )
+        client.state = _make_ynison_state(
+            playable_list=[{"playable_id": "t0"}, {"playable_id": "t1"}, {"playable_id": "t2"}]
+        )
+        socket = MagicMock(closed=False, send_str=AsyncMock())
+        client._ws = socket
+        client._connected = True
+        provider._ynison = client
+        streamed: list[str] = []
+        echoes: list[asyncio.Task[None]] = []
+
+        def sent_indexes() -> list[int]:
+            messages = [json.loads(call.args[0]) for call in socket.send_str.await_args_list]
+            return [
+                m["update_player_state"]["player_state"]["player_queue"]["current_playable_index"]
+                for m in messages
+                if "player_queue" in m.get("update_player_state", {}).get("player_state", {})
+            ]
+
+        async def deliver_echo() -> None:
+            await asyncio.sleep(0.05)
+            messages = [json.loads(call.args[0]) for call in socket.send_str.await_args_list]
+            next_queue = next(
+                m["update_player_state"]["player_state"]["player_queue"]
+                for m in messages
+                if "player_queue" in m.get("update_player_state", {}).get("player_state", {})
+            )
+            client._parse_state({"player_state": {"player_queue": next_queue}})
+            await provider._handle_ynison_state(client.state)
+
+        async def decode(
+            track_id: str, *, seek_ms: int = 0, session_params: dict[str, Any] | None = None
+        ) -> Any:
+            del seek_ms, session_params
+            streamed.append(track_id)
+            if len(streamed) == 1:
+                # Next lands after the decoder's last chunk, before its echo.
+                await provider._on_next()
+                echoes.append(asyncio.create_task(deliver_echo()))
+            yield b"\x00" * 4
+            if len(streamed) == 2:
+                provider._playback.request_stop(StopReason.CLEARED)
+
+        _stub_attr(provider, "_stream_track", decode)
+        await self._drive_to_exhaustion(provider)
+        await asyncio.gather(*echoes)
+
+        assert streamed == ["t0", "t1"]
+        assert sent_indexes() == [1]
 
     async def test_superseded_completion_streams_the_replacement_queue(self) -> None:
         """A completion overtaken by a peer queue keeps the source on the new queue."""
