@@ -1061,6 +1061,7 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         self._set_transitioning(queue_id, True)
         try:
             queue_data = self._queue_data[queue_id]
+            queue_data.playback_starts += 1
             queue = queue_data.queue
             queue.resume_pos = 0
             # A queue picked up from its end plays its items over from the start, so a resume point
@@ -1103,7 +1104,6 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
             self.mass.streams.audio.clear_crossfade_handover(queue_id)
             # always update session id when we start a new playback session
             queue_data.session_id = shortuuid.random(length=8)
-            queue_data.playback_starts += 1
             self.mass.streams.audio_processing.start_session(
                 queue_id,
                 queue_data.session_id,

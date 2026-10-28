@@ -638,6 +638,49 @@ async def test_settle_task_skips_finish_when_the_queue_vanishes_during_fetch() -
     tracker._finish_queue.assert_not_called()
 
 
+async def test_settle_task_skips_finish_when_playback_starts_during_a_failed_fetch() -> None:
+    """A failed dynamic fetch must not end a queue the user started playing meanwhile."""
+    tracker = _tracker()
+    tracker._queue_data["q1"].userid = None
+    prev_state, new_state = _stop_states(
+        SimpleNamespace(media_type=MediaType.TRACK, streamdetails=None, duration=3600)
+    )
+    queue = cast(
+        "PlayerQueue",
+        SimpleNamespace(
+            queue_id="q1",
+            next_item=None,
+            flow_mode=False,
+            state=PlaybackState.IDLE,
+            current_index=None,
+            display_name="Q1",
+        ),
+    )
+    PlaybackTrackerMixin._handle_end_of_queue(tracker, queue, prev_state, new_state)
+    settle_coro = tracker.mass.create_task.call_args.args[0]
+
+    async def _fetch_while_playback_starts(*_args: Any, **_kwargs: Any) -> list[Track]:
+        tracker._queue_data["q1"].playback_starts += 1
+        raise ProviderUnavailableError("provider unloaded")
+
+    tracker._media_resolver.get_dynamic_source_tracks = AsyncMock(
+        side_effect=_fetch_while_playback_starts
+    )
+    with (
+        patch(
+            "music_assistant.controllers.player_queues.playback_tracker.asyncio.sleep",
+            AsyncMock(),
+        ),
+        patch(
+            "music_assistant.controllers.player_queues.playback_tracker.find_dynamic_source",
+            return_value=MagicMock(),
+        ),
+    ):
+        await settle_coro
+
+    tracker._finish_queue.assert_not_called()
+
+
 def _prov_track(item_id: str) -> Track:
     """Build a track of the Spotify instance the dynamic source below lists."""
     return Track(

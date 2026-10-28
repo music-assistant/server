@@ -517,12 +517,13 @@ class PlaybackTrackerMixin(_PlayerQueuesBase):
         playback_starts = queue_data.playback_starts
 
         async def _settle_or_resume_delayed() -> None:
+            expected_starts = playback_starts
             for _ in range(5):
                 await asyncio.sleep(1)
                 if self._queue_data.get(queue.queue_id) is not queue_data:
                     # the queue was removed or re-registered while we waited
                     return
-                if queue_data.playback_starts != playback_starts:
+                if queue_data.playback_starts != expected_starts:
                     # a new playback started, which the player may not report as playing yet
                     return
                 if queue.state != PlaybackState.IDLE:
@@ -564,7 +565,7 @@ class PlaybackTrackerMixin(_PlayerQueuesBase):
                     if self._queue_data.get(queue.queue_id) is not queue_data:
                         # the queue was removed or re-registered while tracks were fetched
                         return
-                    if queue_data.playback_starts != playback_starts:
+                    if queue_data.playback_starts != expected_starts:
                         return
                     if dynamic_tracks:
                         queue_items = [
@@ -591,6 +592,8 @@ class PlaybackTrackerMixin(_PlayerQueuesBase):
                                     queue.queue_id, next_item.queue_item_id
                                 )
                                 if next_index is not None:
+                                    # this start is our own, so a failed one still settles below
+                                    expected_starts += 1
                                     await self.play_index(queue.queue_id, next_index)
                                     return
                 except MusicAssistantError as err:
@@ -602,6 +605,8 @@ class PlaybackTrackerMixin(_PlayerQueuesBase):
                     )
             if self._queue_data.get(queue.queue_id) is not queue_data:
                 # the queue was removed or re-registered while the source was fetched
+                return
+            if queue_data.playback_starts != expected_starts:
                 return
             self._finish_queue(queue, prev_item)
 
