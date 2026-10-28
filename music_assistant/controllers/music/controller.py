@@ -2139,10 +2139,14 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         else:
             # NOTE: if no user was found, we will alter the playlog for all users
             user_ids = [user.user_id for user in await self.mass.webserver.auth.list_users()]
+        # the given item always gets an event so the UI updates it; its other aliases
+        # only when a play was actually cleared under them (they may be private links)
+        cleared = {(reference.item_id, reference.provider)}
         for user_id in user_ids:
             for item_id, provider in aliases:
-                await self.database.delete(
-                    DB_TABLE_MEDIA_PROGRESS,
+                cursor = await self.database.execute(
+                    f"DELETE FROM {DB_TABLE_MEDIA_PROGRESS} WHERE item_id = :item_id "
+                    "AND provider = :provider AND media_type = :media_type AND userid = :userid",
                     {
                         "item_id": item_id,
                         "provider": provider,
@@ -2150,7 +2154,15 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
                         "userid": user_id,
                     },
                 )
+                try:
+                    if cursor.rowcount > 0:
+                        cleared.add((item_id, provider))
+                finally:
+                    await cursor.close()
+        await self.database.commit()
         for item_id, provider in aliases:
+            if (item_id, provider) not in cleared:
+                continue
             alias = (
                 reference
                 if (item_id, provider) == (reference.item_id, reference.provider)
