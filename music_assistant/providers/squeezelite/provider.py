@@ -188,6 +188,12 @@ class SqueezelitePlayerProvider(PlayerProvider):
 
         # Handle player disconnect
         if event.type == SlimEventType.PLAYER_DISCONNECTED:
+            # a reconnect registers a fresh player, so the leader must let go of the old
+            # one or it keeps listing a member that is no longer part of its stream
+            if (leader_id := player.synced_to) and (
+                leader := self.mass.players.get_player(leader_id)
+            ):
+                cast("SqueezelitePlayer", leader).remove_disconnected_member(player.player_id)
             self.mass.create_task(self.mass.players.unregister(player.player_id))
             return
 
