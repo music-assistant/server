@@ -4,14 +4,6 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass, field
-from typing import Any
-
-from music_assistant.providers.bookorbit.helpers import book_with_manifest_playback_order
-from music_assistant.providers.bookorbit.parsers import _audio_files
-from music_assistant.providers.bookorbit.progress import (
-    parse_resume_position,
-    parse_resume_position_from_playback_state,
-)
 
 
 @dataclass
@@ -39,29 +31,3 @@ class InboundProgressGuard:
 
     def _now_ms(self) -> int:
         return int(time.time() * 1000)
-
-
-async def resolve_remote_progress_seconds(client: Any, book_id: int) -> tuple[bool, int] | None:
-    """
-    Resolve BookOrbit progress to (fully_played, seconds_played).
-
-    :returns: Tuple when usable progress exists; ``None`` when absent or unusable.
-    May raise transport errors from the client; conversion failures return ``None``.
-    """
-    try:
-        manifest = await client.get_audiobook_manifest(book_id)
-        state = await client.get_playback_state(book_id)
-        if state:
-            fully_played, position_ms, _ = parse_resume_position_from_playback_state(
-                manifest, state
-            )
-            return fully_played, position_ms // 1000
-        book = await client.get_book(book_id)
-        book = book_with_manifest_playback_order(book, manifest)
-        progress = await client.get_audio_progress(book_id)
-        if not progress:
-            return None
-        fully_played, position_ms, _ = parse_resume_position(_audio_files(book), progress)
-        return fully_played, position_ms // 1000
-    except TypeError, ValueError, KeyError:
-        return None
