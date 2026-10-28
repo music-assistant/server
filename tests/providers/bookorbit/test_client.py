@@ -7,9 +7,9 @@ from unittest.mock import patch
 
 import pytest
 from aiohttp import ClientResponseError, ClientSession, DummyCookieJar, web
+from music_assistant_models.errors import LoginFailed
 
 from music_assistant.providers.bookorbit.client import (
-    BookOrbitAuthError,
     BookOrbitClient,
     BookOrbitIncompleteError,
 )
@@ -64,7 +64,7 @@ async def test_login_credential_errors_are_auth_errors(aiohttp_client: Any, stat
     app.router.add_post("/api/v1/auth/login", login)
     client = await aiohttp_client(app)
 
-    with pytest.raises(BookOrbitAuthError, match=str(status)):
+    with pytest.raises(LoginFailed, match=str(status)):
         await _make(client).login()
 
 

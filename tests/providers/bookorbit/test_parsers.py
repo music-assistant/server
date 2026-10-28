@@ -4,6 +4,7 @@ from typing import Any
 
 import pytest
 from music_assistant_models.enums import ArtistType, ImageType, MediaType
+from music_assistant_models.errors import InvalidDataError
 
 from music_assistant.providers.bookorbit.helpers import book_with_manifest_playback_order
 from music_assistant.providers.bookorbit.parsers import (
@@ -249,7 +250,7 @@ def test_book_with_manifest_playback_order_requires_mappable_assets(
     book_multifile: dict[str, Any],
 ) -> None:
     """Unmappable manifests must not fall back to unordered BookDetail."""
-    with pytest.raises(ValueError, match="no mappable playback assets"):
+    with pytest.raises(InvalidDataError, match="no mappable playback assets"):
         book_with_manifest_playback_order(
             book_multifile,
             {"assets": [{"assetId": "a1", "fileId": 99999, "sequence": 0}]},
@@ -260,7 +261,7 @@ def test_book_with_manifest_playback_order_requires_all_audio_assets(
     book_multifile: dict[str, Any],
 ) -> None:
     """Partial manifest mapping must not invent leftover audio file order."""
-    with pytest.raises(ValueError, match="missing playback assets"):
+    with pytest.raises(InvalidDataError, match="missing playback assets"):
         book_with_manifest_playback_order(
             book_multifile,
             {"assets": [{"assetId": "a1", "fileId": 772, "sequence": 0, "durationMs": 200500}]},

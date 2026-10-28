@@ -7,7 +7,7 @@ import time
 import uuid
 from dataclasses import dataclass
 from datetime import datetime
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, NoReturn
 
 from aiohttp import ClientError, ClientResponseError, DummyCookieJar, web
 from music_assistant_models.enums import (
@@ -18,9 +18,11 @@ from music_assistant_models.enums import (
     StreamType,
 )
 from music_assistant_models.errors import (
+    InvalidDataError,
     LoginFailed,
     MediaNotFoundError,
     ProviderUnavailableError,
+    ResourceTemporarilyUnavailable,
 )
 from music_assistant_models.media_items import (
     Audiobook,
@@ -36,7 +38,7 @@ from music_assistant.helpers.aiohttp_client import create_clientsession
 from music_assistant.helpers.datetime import utc
 from music_assistant.models.music_provider import SYNC_RUN_STATE, MusicProvider
 
-from .client import BookOrbitAuthError, BookOrbitClient, BookOrbitIncompleteError
+from .client import BookOrbitClient, BookOrbitIncompleteError
 from .constants import (
     AIOHTTP_TIMEOUT,
     BROWSE_ITEMS_TO_PATH,
@@ -144,6 +146,33 @@ def _remote_playback_supersedes(state: dict[str, Any] | None, report_captured_at
     return remote_ts >= report_ts
 
 
+def _reraise_bookorbit_error(
+    err: BaseException,
+    *,
+    base_url: str,
+    not_found_message: str | None = None,
+) -> NoReturn:
+    """
+    Translate BookOrbit HTTP/transport failures into Music Assistant errors.
+
+    Re-raises ``err`` unchanged when it is already an MA error or unrelated.
+    """
+    if isinstance(err, ClientResponseError):
+        if err.status == 404 and not_found_message is not None:
+            raise MediaNotFoundError(not_found_message) from err
+        if err.status == 429:
+            raise ResourceTemporarilyUnavailable(
+                f"BookOrbit at {base_url} is rate limited.",
+                backoff_time=30,
+            ) from err
+        raise ProviderUnavailableError(
+            f"BookOrbit at {base_url} failed: HTTP {err.status}"
+        ) from err
+    if isinstance(err, (ClientError, TimeoutError)):
+        raise ProviderUnavailableError(f"BookOrbit at {base_url} is unreachable.") from err
+    raise err
+
+
 def _book_series(book: dict[str, Any]) -> list[tuple[str, str]]:
     """Return (series id, series name) of a book."""
     memberships = book.get("seriesMemberships") or []
@@ -241,12 +270,12 @@ class BookOrbitProvider(MusicProvider):
         )
         try:
             await self._client.login()
-        except BookOrbitAuthError as err:
+        except LoginFailed:
             await self._client.close()
-            raise LoginFailed(f"Login to BookOrbit at {self.base_url} failed.") from err
-        except (ClientError, TimeoutError) as err:
+            raise
+        except Exception as err:
             await self._client.close()
-            raise ProviderUnavailableError(f"BookOrbit at {self.base_url} is unreachable.") from err
+            _reraise_bookorbit_error(err, base_url=self.base_url)
         except asyncio.CancelledError:
             # MA may cancel init before the client's longer HTTP timeout; close the
             # owned session because the provider is not registered for unload yet.
@@ -280,7 +309,7 @@ class BookOrbitProvider(MusicProvider):
             return path
         try:
             return await self._client.get_cover(path)
-        except (ClientError, BookOrbitAuthError) as err:
+        except (ClientError, TimeoutError, LoginFailed) as err:
             self.logger.debug("Fetching BookOrbit cover %s failed: %s", path, err)
             return None
 
@@ -367,23 +396,17 @@ class BookOrbitProvider(MusicProvider):
 
     async def get_audiobook(self, prov_audiobook_id: str) -> Audiobook:
         """Return a single audiobook by BookOrbit book id."""
-        try:
-            book_id = int(prov_audiobook_id)
-            book = await self._client.get_book(book_id)
-        except ValueError as err:
-            raise MediaNotFoundError(f"Invalid BookOrbit book id {prov_audiobook_id}") from err
-        except ClientResponseError as err:
-            if err.status == 404:
-                raise MediaNotFoundError(f"BookOrbit book {prov_audiobook_id} not found") from err
-            raise
+        book = await self._get_book(prov_audiobook_id, fresh=True)
         if not _audio_files(book):
             raise MediaNotFoundError(f"BookOrbit book {prov_audiobook_id} has no audio files")
         try:
             book = await self._book_with_playback_order(book)
-        except (TypeError, ValueError) as err:
+        except InvalidDataError as err:
             raise MediaNotFoundError(
                 f"BookOrbit book {prov_audiobook_id} has an unusable audio file list"
             ) from err
+        except Exception as err:
+            _reraise_bookorbit_error(err, base_url=self.base_url)
         return parse_audiobook(book, provider_instance_id=self.instance_id, base_url=self.base_url)
 
     async def get_stream_details(self, item_id: str, media_type: MediaType) -> StreamDetails:
@@ -401,17 +424,12 @@ class BookOrbitProvider(MusicProvider):
             raise MediaNotFoundError(f"Invalid BookOrbit book id {item_id}") from err
         try:
             manifest = await self._client.get_audiobook_manifest(book_id)
-        except ClientResponseError as err:
-            if err.status == 404:
-                raise MediaNotFoundError(f"BookOrbit audiobook {item_id} not found") from err
-            # Non-404 HTTP errors must be MA errors so core can try another mapping.
-            raise ProviderUnavailableError(
-                f"BookOrbit manifest for {item_id} failed: HTTP {err.status}"
-            ) from err
-        except BookOrbitAuthError as err:
-            raise LoginFailed(f"Login to BookOrbit at {self.base_url} failed.") from err
-        except (ClientError, TimeoutError) as err:
-            raise ProviderUnavailableError(f"BookOrbit at {self.base_url} is unreachable.") from err
+        except Exception as err:
+            _reraise_bookorbit_error(
+                err,
+                base_url=self.base_url,
+                not_found_message=f"BookOrbit audiobook {item_id} not found",
+            )
         assets = sorted(
             (a for a in (manifest.get("assets") or []) if a.get("assetId")),
             key=lambda asset: int(asset.get("sequence") or 0),
@@ -493,14 +511,17 @@ class BookOrbitProvider(MusicProvider):
             # so MusicController can use its saved position.
             return parse_resume_position(_audio_files(book), progress)
         except (
-            BookOrbitAuthError,
+            LoginFailed,
             ClientError,
             TimeoutError,
             MediaNotFoundError,
-            TypeError,
+            ProviderUnavailableError,
+            ResourceTemporarilyUnavailable,
+            InvalidDataError,
             ValueError,
         ) as err:
-            # Auth failures must not abort playback prep; core only suppresses NotImplementedError.
+            # Auth/transport failures must not abort playback prep; core only suppresses
+            # NotImplementedError.
             raise NotImplementedError from err
 
     async def on_played(
@@ -534,7 +555,14 @@ class BookOrbitProvider(MusicProvider):
                     fully_played=fully_played,
                     captured_at=captured_at,
                 )
-        except (ClientError, TimeoutError, BookOrbitAuthError, MediaNotFoundError) as err:
+        except (
+            ClientError,
+            TimeoutError,
+            LoginFailed,
+            MediaNotFoundError,
+            ProviderUnavailableError,
+            ResourceTemporarilyUnavailable,
+        ) as err:
             self.logger.warning("Updating BookOrbit progress of %s failed: %s", prov_item_id, err)
 
     async def browse(self, path: str) -> Sequence[MediaItemType | ItemMapping | BrowseFolder]:
@@ -746,7 +774,7 @@ class BookOrbitProvider(MusicProvider):
         try:
             manifest = await self._client.get_audiobook_manifest(book_id)
             book = book_with_manifest_playback_order(book, manifest)
-        except (ClientResponseError, TypeError, ValueError) as err:
+        except (ClientResponseError, TimeoutError, InvalidDataError) as err:
             self.logger.debug(
                 "BookOrbit manifest unavailable for legacy progress of %s: %s", book_id, err
             )
@@ -779,10 +807,12 @@ class BookOrbitProvider(MusicProvider):
             return await self._client.get_book(int(item_id))
         except ValueError as err:
             raise MediaNotFoundError(f"Invalid BookOrbit book id {item_id}") from err
-        except ClientResponseError as err:
-            if err.status == 404:
-                raise MediaNotFoundError(f"BookOrbit book {item_id} not found") from err
-            raise
+        except Exception as err:
+            _reraise_bookorbit_error(
+                err,
+                base_url=self.base_url,
+                not_found_message=f"BookOrbit book {item_id} not found",
+            )
 
     async def _handle_part_request(self, request: web.Request) -> web.StreamResponse:
         """Proxy one audiobook asset to the player with auth and Range support."""
@@ -801,7 +831,7 @@ class BookOrbitProvider(MusicProvider):
                 range_header=request.headers.get("Range"),
                 timeout=PART_STREAM_TIMEOUT,
             )
-        except (ClientError, BookOrbitAuthError, TimeoutError) as err:
+        except (ClientError, LoginFailed, TimeoutError) as err:
             self.logger.warning(
                 "Requesting asset %s of book %s from BookOrbit failed: %s",
                 asset_id,
@@ -881,19 +911,8 @@ class BookOrbitProvider(MusicProvider):
                 return round(float(total_ms) / 1000.0)
             return round(sum(int(asset["durationMs"]) for asset in assets) / 1000.0)
         # Partial measured totals understate length; prefer an authoritative book duration.
-        # Translate fetch failures like get_stream_details so core can try another mapping.
-        try:
-            book = await self._get_book(item_id, fresh=True)
-        except ClientResponseError as err:
-            if err.status == 404:
-                raise MediaNotFoundError(f"BookOrbit book {item_id} not found") from err
-            raise ProviderUnavailableError(
-                f"BookOrbit book {item_id} failed: HTTP {err.status}"
-            ) from err
-        except BookOrbitAuthError as err:
-            raise LoginFailed(f"Login to BookOrbit at {self.base_url} failed.") from err
-        except (ClientError, TimeoutError) as err:
-            raise ProviderUnavailableError(f"BookOrbit at {self.base_url} is unreachable.") from err
+        # `_get_book` already maps transport/auth failures to MA errors.
+        book = await self._get_book(item_id, fresh=True)
         parsed = parse_audiobook(
             book, provider_instance_id=self.instance_id, base_url=self.base_url
         ).duration
@@ -950,15 +969,11 @@ class BookOrbitProvider(MusicProvider):
             for author in await self._client.list_authors():
                 if isinstance(author, dict) and "id" in author:
                     author_meta[int(author["id"])] = author
-        except BookOrbitAuthError as err:
-            raise LoginFailed(f"Login to BookOrbit at {self.base_url} failed.") from err
         except BookOrbitIncompleteError as err:
             # Partial catalog/author lists must not drive sync deletions or bio clears.
             raise ProviderUnavailableError(str(err)) from err
-        except ClientResponseError:
-            raise
-        except ClientError as err:
-            raise ProviderUnavailableError(f"BookOrbit at {self.base_url} is unreachable.") from err
+        except Exception as err:
+            _reraise_bookorbit_error(err, base_url=self.base_url)
         self._catalog = catalog
         self._catalog_detail_failed_ids = failed_ids
         self._library_names = library_names
@@ -977,10 +992,10 @@ class BookOrbitProvider(MusicProvider):
         ) -> tuple[str, dict[str, Any] | None, Exception | None]:
             try:
                 book = await self._get_book_detail(book_id, card, semaphore)
-            except (ClientError, TimeoutError, TypeError, ValueError) as err:
+            except (ClientError, TimeoutError, InvalidDataError, ValueError) as err:
                 # Per-book only: ClientError covers HTTP (incl. ClientResponseError);
-                # TimeoutError for stalled fetches; TypeError/ValueError for a bad id,
-                # missing/invalid manifest, or unusable multipart file list.
+                # TimeoutError for stalled fetches; InvalidDataError for a bad manifest
+                # or unusable multipart file list; ValueError for a bad id / no audio.
                 self.logger.warning("BookOrbit book detail %s failed: %s", book_id, err)
                 # Only record skips inside an active library sync (deletion protection).
                 if SYNC_RUN_STATE.get() is not None:
@@ -1061,7 +1076,7 @@ class BookOrbitProvider(MusicProvider):
             return book
         # Do not cache/publish unordered BookDetail when the manifest is unavailable
         # or has no mappable assets: BookDetail omits sortOrder, so file-id order can
-        # invent wrong chapter offsets. TypeError/ValueError: callers skip or map to
+        # invent wrong chapter offsets. InvalidDataError: callers skip or map to
         # MediaNotFoundError. HTTP errors propagate as ClientError/TimeoutError.
         manifest = await self._client.get_audiobook_manifest(int(book["id"]))
         return book_with_manifest_playback_order(book, manifest)

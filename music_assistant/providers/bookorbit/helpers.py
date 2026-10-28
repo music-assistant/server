@@ -5,6 +5,8 @@ from __future__ import annotations
 import re
 from typing import Any
 
+from music_assistant_models.errors import InvalidDataError
+
 from music_assistant.providers.bookorbit.constants import AUDIO_FORMATS, BrowsePaths
 
 # Match BookOrbit packages/types series-index.ts.
@@ -33,18 +35,18 @@ def book_with_manifest_playback_order(book: dict[str, Any], manifest: Any) -> di
     Return a book copy whose files carry ``sortOrder`` from the manifest sequence.
 
     BookDetail omits ``sortOrder``; playback order lives on the audiobook manifest.
-    Raises ``ValueError`` when the manifest cannot establish a playback order so
+    Raises ``InvalidDataError`` when the manifest cannot establish a playback order so
     callers do not cache or publish unordered multipart BookDetail.
     """
     if not isinstance(manifest, dict):
-        raise TypeError("BookOrbit manifest is missing or invalid")
+        raise InvalidDataError("BookOrbit manifest is missing or invalid")
     by_id = {
         int(file["id"]): dict(file)
         for file in (book.get("files") or [])
         if isinstance(file, dict) and file.get("id") is not None
     }
     if not by_id:
-        raise ValueError("BookOrbit book has no files to order from the manifest")
+        raise InvalidDataError("BookOrbit book has no files to order from the manifest")
     assets = sorted(
         (asset for asset in (manifest.get("assets") or []) if asset.get("assetId")),
         key=lambda asset: int(asset.get("sequence") or 0),
@@ -63,11 +65,11 @@ def book_with_manifest_playback_order(book: dict[str, Any], manifest: Any) -> di
         ordered.append(file)
         seen.add(fid)
     if not ordered:
-        raise ValueError("BookOrbit manifest has no mappable playback assets")
+        raise InvalidDataError("BookOrbit manifest has no mappable playback assets")
     # Partial mapping invents chapter/progress offsets; require every audio part.
     audio_ids = {fid for fid, file in by_id.items() if is_audio_format(file.get("format"))}
     if not audio_ids <= seen:
-        raise ValueError("BookOrbit manifest is missing playback assets for some audio files")
+        raise InvalidDataError("BookOrbit manifest is missing playback assets for some audio files")
     for fid, file in by_id.items():
         if fid not in seen:
             ordered.append(file)

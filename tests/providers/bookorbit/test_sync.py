@@ -474,7 +474,7 @@ async def test_refresh_catalog_author_list_failure_preserves_author_meta(
         )
     )
     provider._catalog_refreshed_at = 0.0
-    with pytest.raises(ClientResponseError):
+    with pytest.raises(ProviderUnavailableError):
         await provider._refresh_catalog(force=True)
     assert provider._author_meta is previous_meta
 

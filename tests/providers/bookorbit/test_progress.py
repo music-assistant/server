@@ -14,7 +14,6 @@ from music_assistant_models.errors import LoginFailed, MediaNotFoundError, Provi
 from yarl import URL
 
 from music_assistant.providers.bookorbit import SUPPORTED_FEATURES, BookOrbitProvider
-from music_assistant.providers.bookorbit.client import BookOrbitAuthError
 from music_assistant.providers.bookorbit.parsers import _audio_files
 from music_assistant.providers.bookorbit.progress import (
     build_playback_state_update,
@@ -312,7 +311,7 @@ async def test_stream_details_auth_error_is_login_failed(
     provider: BookOrbitProvider, book_audiobook: dict[str, Any]
 ) -> None:
     """Manifest auth failures must surface as LoginFailed for multi-mapping fallback."""
-    _client(provider).get_audiobook_manifest.side_effect = BookOrbitAuthError("login rejected")
+    _client(provider).get_audiobook_manifest.side_effect = LoginFailed("login rejected")
     with pytest.raises(LoginFailed):
         await provider.get_stream_details(str(book_audiobook["id"]), MediaType.AUDIOBOOK)
 
@@ -431,7 +430,7 @@ async def test_get_resume_position_auth_error_falls_back(
     provider: BookOrbitProvider, book_multifile: dict[str, Any]
 ) -> None:
     """Auth failures during resume must defer to MA, not abort playback prep."""
-    _client(provider).get_audiobook_manifest.side_effect = BookOrbitAuthError("login rejected")
+    _client(provider).get_audiobook_manifest.side_effect = LoginFailed("login rejected")
     with pytest.raises(NotImplementedError):
         await provider.get_resume_position(str(book_multifile["id"]), MediaType.AUDIOBOOK)
 

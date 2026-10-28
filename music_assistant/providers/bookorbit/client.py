@@ -13,6 +13,7 @@ from aiohttp import (
     ClientTimeout,
     DummyCookieJar,
 )
+from music_assistant_models.errors import LoginFailed
 
 from music_assistant.helpers.aiohttp_client import create_clientsession
 from music_assistant.providers.bookorbit.constants import (
@@ -33,10 +34,6 @@ REFRESH_COOKIE = "refresh_token"
 QUERY_PAGE_SIZE = 100
 QUERY_MAX_PAGES = 1000  # safety bound against a server that ignores paging
 _ITEM_KEYS = ("items", "content", "data", "books", "results")
-
-
-class BookOrbitAuthError(Exception):
-    """Raised when authentication against BookOrbit fails."""
 
 
 class BookOrbitIncompleteError(Exception):
@@ -121,7 +118,7 @@ class BookOrbitClient:
         :param method: HTTP method.
         :param path: Absolute path or URL under the BookOrbit API.
         :returns: Parsed JSON, response bytes, or ``None``.
-        :raises BookOrbitAuthError: If authentication still fails after retry.
+        :raises LoginFailed: If authentication still fails after retry.
         """
         await self._ensure_token()
         token = self.access_token
@@ -131,7 +128,7 @@ class BookOrbitClient:
         await self._reauthenticate(token)
         status, data = await self._send(method, path, **kwargs)
         if status == 401:
-            raise BookOrbitAuthError(f"{method} {path}: HTTP 401 after re-authentication")
+            raise LoginFailed(f"{method} {path}: HTTP 401 after re-authentication")
         return data
 
     async def list_libraries(self) -> list[dict[str, Any]]:
@@ -293,7 +290,7 @@ class BookOrbitClient:
         :param range_header: Optional HTTP Range header value.
         :param timeout: Optional request timeout override.
         :returns: Open aiohttp response.
-        :raises BookOrbitAuthError: If authentication still fails after retry.
+        :raises LoginFailed: If authentication still fails after retry.
         """
         await self._ensure_token()
         extra = {"Range": range_header} if range_header else None
@@ -308,9 +305,7 @@ class BookOrbitClient:
             resp.release()
             if attempt == 0:
                 await self._reauthenticate(token)
-        raise BookOrbitAuthError(
-            f"audiobook {book_id} asset {asset_id}: HTTP 401 after re-authentication"
-        )
+        raise LoginFailed(f"audiobook {book_id} asset {asset_id}: HTTP 401 after re-authentication")
 
     async def _ensure_token(self) -> None:
         """Ensure an access token is available before a request."""
@@ -337,7 +332,7 @@ class BookOrbitClient:
         ) as resp:
             # Only credential failures are permanent; 429/5xx must stay retryable.
             if resp.status in {401, 403}:
-                raise BookOrbitAuthError(f"BookOrbit login failed: HTTP {resp.status}")
+                raise LoginFailed(f"BookOrbit login failed: HTTP {resp.status}")
             if resp.status >= 400:
                 raise ClientResponseError(
                     resp.request_info,
@@ -348,7 +343,7 @@ class BookOrbitClient:
             data = await resp.json()
             token = data.get("accessToken") if isinstance(data, dict) else None
             if not token:
-                raise BookOrbitAuthError("BookOrbit login response has no accessToken")
+                raise LoginFailed("BookOrbit login response has no accessToken")
             self.access_token = token
             self._capture_refresh_cookie(resp)
 
