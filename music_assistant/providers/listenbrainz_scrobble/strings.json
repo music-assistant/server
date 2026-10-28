@@ -5,11 +5,13 @@
     },
     "api_base_url": {
       "label": "Base URL",
-      "description": "URL for listenbrainz endpoint. Leave blank to default to the public listenbrainz API."
+      "description": "Base URL of the ListenBrainz API. Music Assistant appends /1 to API requests, do not include it. Leave blank to use the public ListenBrainz API."
     }
   },
   "errors": {
-    "token_invalid": "Your ListenBrainz user token is no longer valid. Please reconfigure this plugin to resume scrobbling."
+    "endpoint_not_found": "The ListenBrainz endpoint was not found. Please check the Base URL and try again.",
+    "token_invalid": "Your ListenBrainz user token is no longer valid. Please reconfigure this plugin to resume scrobbling.",
+    "token_rejected": "The ListenBrainz server rejected the user token. Please check the token and try again."
   },
   "manifest": {
     "description": "Scrobbles your listening history to ListenBrainz — an open, community-driven alternative to Last.fm."
