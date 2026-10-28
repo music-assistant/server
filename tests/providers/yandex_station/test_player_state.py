@@ -1806,3 +1806,49 @@ async def test_request_after_a_station_takeover_does_not_revive_the_resume() -> 
     player.mass.call_later.assert_not_called()
     assert player._attr_active_source == STATION_SOURCE_ID
     assert player._voice.phase == VoiceRecoveryPhase.NONE
+
+
+# ── Copilot round 13 ─────────────────────────────────────────────────
+
+
+async def test_pause_while_the_resume_prepares_the_queue_stops() -> None:
+    """
+    Pausing while the automatic resume prepares its item is stopping, as during the wait.
+
+    The stream Alice stopped is still gone; a native pause would leave the player
+    paused, and the next play would send a native play that cannot bring it back.
+    """
+    player, _ = _make_play_media_player([])
+    _answered_interruption(player)
+    commands = _record_commands(player)
+
+    async def cmd_resume(_player_id: str, source: str | None = None) -> None:
+        await player.pause()
+        await player.play_media(MediaItem(uri="ma://track/1", title="T", source_id=source))
+
+    player.mass.players.cmd_resume = AsyncMock(side_effect=cmd_resume)
+
+    await player._resume_after_voice()
+
+    assert commands == [{"command": "stop"}]
+    assert player._attr_playback_state == PlaybackState.IDLE
+    assert player._external_playing is False
+
+
+async def test_pause_after_station_playback_took_over_the_resume_pauses_it() -> None:
+    """Station playback that took over from the running resume is paused natively."""
+    player, _ = _make_play_media_player([])
+    _answered_interruption(player)
+    commands = _record_commands(player)
+
+    async def cmd_resume(*_args: object, **_kwargs: object) -> None:
+        _report(player, playing=True, native_track_id="yandex-9")
+        await player.pause()
+
+    player.mass.players.cmd_resume = AsyncMock(side_effect=cmd_resume)
+
+    await player._resume_after_voice()
+
+    assert commands == [{"command": "stop"}]
+    assert player._attr_playback_state == PlaybackState.PLAYING
+    assert player._attr_active_source == STATION_SOURCE_ID

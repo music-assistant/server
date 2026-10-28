@@ -415,9 +415,14 @@ class YandexStationPlayer(Player):
         The Station cannot pause a Music Assistant stream, so the player only advertises
         pausing while none plays and the core stops such a stream instead.
         """
-        if self._external_playing or self._voice.holds_playback:
-            # A stream Alice stopped is gone from the Station like a playing one;
-            # pausing it is stopping it, so play resumes its queue afterwards.
+        if (
+            self._external_playing
+            or self._voice.holds_playback
+            or self._voice.awaits_resumed_stream
+        ):
+            # A stream Alice stopped is gone from the Station like a playing one,
+            # also while the resume prepares it; pausing it is stopping it, so play
+            # resumes its queue afterwards.
             await self.stop()
             return
         self._end_voice_interruption()

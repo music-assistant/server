@@ -201,3 +201,15 @@ def test_request_after_the_running_resume_was_cancelled_takes_nothing_over() -> 
     assert (took_over, schedules, recovery.phase) == (False, False, VoiceRecoveryPhase.NONE)
     assert recovery.drops_resumed_stream is True
     assert recovery.finish_resume() is False
+
+
+def test_running_resume_awaits_its_stream_until_something_else_takes_over() -> None:
+    """The music a running resume brings back is still MA's, unless it was cancelled."""
+    recovery = _awaiting()
+    recovery.request_ended(spoke=True, volume=40)
+    recovery.start_resume()
+
+    awaiting = recovery.awaits_resumed_stream
+    recovery.cancel()
+
+    assert (awaiting, recovery.awaits_resumed_stream) == (True, False)

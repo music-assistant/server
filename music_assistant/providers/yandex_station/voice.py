@@ -68,6 +68,11 @@ class VoiceRecovery:
         return self._running != RunningResume.NONE
 
     @property
+    def awaits_resumed_stream(self) -> bool:
+        """Whether a running resume may still bring the interrupted playback back."""
+        return self._running in (RunningResume.ACTIVE, RunningResume.HELD)
+
+    @property
     def drops_resumed_stream(self) -> bool:
         """Whether the stream the running resume starts must not play."""
         return self._running in (RunningResume.HELD, RunningResume.CANCELLED)
