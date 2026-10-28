@@ -3576,6 +3576,101 @@ class TestQueueCommands:
         assert client.pending_navigation_baseline() is None
         assert client.navigation_confirmed(pending)
 
+    async def test_obsolete_navigation_echo_does_not_confirm_it(self, client: YnisonClient) -> None:
+        """A navigation echo rejected as older than a later edit does not settle the navigation."""
+        baseline = client.navigation_baseline()
+        assert await client.advance_queue(natural=True, duration_ms=9000) == "change"
+        navigation_echo = self._sent_queue()
+        await client.set_repeat_mode(RepeatMode.ALL)
+
+        client._parse_state({"player_state": {"player_queue": navigation_echo}})
+
+        assert not client.navigation_confirmed(baseline)
+        client._parse_state({"player_state": {"player_queue": self._sent_queue()}})
+        assert client.navigation_confirmed(baseline)
+
+    def test_peer_seek_supersedes_the_playback(self, client: YnisonClient) -> None:
+        """A seek from another device invalidates a decision taken for the same item."""
+        baseline = client.navigation_baseline()
+        peer = {"device_id": "peer", "version": "7", "timestamp_ms": "0"}
+
+        client._parse_state(
+            {
+                "player_state": {
+                    "status": {
+                        "progress_ms": "10000",
+                        "duration_ms": "200000",
+                        "paused": False,
+                        "version": peer,
+                    }
+                }
+            }
+        )
+
+        assert not client.is_current_playback(baseline)
+
+    async def test_own_edit_echo_of_a_retained_peer_status_keeps_the_playback(
+        self, client: YnisonClient
+    ) -> None:
+        """Our queue edit republishes a retained peer status; its echo is not a new peer seek."""
+        peer = {"device_id": "peer", "version": "7", "timestamp_ms": "0"}
+        client._parse_state(
+            {
+                "player_state": {
+                    "status": {
+                        "progress_ms": "3000",
+                        "duration_ms": "200000",
+                        "paused": False,
+                        "version": peer,
+                    }
+                }
+            }
+        )
+        assert await client.update_playing_status(5000, 200000, paused=False, strict=True)
+        baseline = client.navigation_baseline()
+        await client.set_repeat_mode(RepeatMode.ALL)
+        sent = json.loads(self.mock_ws.send_str.call_args.args[0])
+
+        client._parse_state({"player_state": sent["update_player_state"]["player_state"]})
+
+        assert client.is_current_playback(baseline)
+
+    def test_peer_option_edit_with_a_new_status_keeps_the_playback(
+        self, client: YnisonClient
+    ) -> None:
+        """A peer repeat change that re-stamps its status is not a seek."""
+        baseline = client.navigation_baseline()
+        queue = deepcopy(client.state.player_state["player_queue"])
+        queue["options"] = {"repeat_mode": "ONE"}
+        peer = {"device_id": "peer", "version": "2", "timestamp_ms": "0"}
+        queue["version"] = peer
+        status = {"progress_ms": "4000", "duration_ms": "200000", "paused": False, "version": peer}
+
+        client._parse_state({"player_state": {"player_queue": queue, "status": status}})
+
+        assert client.is_current_playback(baseline)
+
+    async def test_own_and_relayed_status_keep_the_playback(self, client: YnisonClient) -> None:
+        """Our progress reports and their relays are not seeks."""
+        baseline = client.navigation_baseline()
+        assert await client.update_playing_status(30000, 200000, paused=False, strict=True)
+        own = {"device_id": client.device_id, "version": "8", "timestamp_ms": "0"}
+
+        client._parse_state(
+            {
+                "player_state": {
+                    "status": {
+                        "progress_ms": "30000",
+                        "duration_ms": "200000",
+                        "paused": False,
+                        "version": own,
+                    }
+                }
+            }
+        )
+
+        assert client.is_current_playback(baseline)
+
     async def test_own_navigation_supersedes_an_earlier_baseline(
         self, client: YnisonClient
     ) -> None:

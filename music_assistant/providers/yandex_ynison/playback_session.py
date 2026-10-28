@@ -152,7 +152,7 @@ class PlaybackSession:
 
         :param at_ms: Position in milliseconds.
         """
-        if at_ms > 0 and self.restart_at_ms == 0:
+        if at_ms > 0 and self.restart_reason is None:
             self.restart_at_ms = at_ms
             self.restart_reason = RestartReason.RESUME
 

@@ -5306,6 +5306,44 @@ class TestTrackBoundaryRecovery:
         assert await completion == "superseded"
         client.update_player_state.assert_not_awaited()
 
+    async def test_peer_seek_while_completion_waits_supersedes_it(self) -> None:
+        """A seek on the finished item while completion waits for the lock is not overridden."""
+        provider = _make_provider()
+        client = YnisonClient(
+            SecretStr("test-token"),
+            YnisonDeviceInfo(provider._device_id, "Test player"),
+            AsyncMock(),
+            MagicMock(),
+        )
+        client.state = _make_ynison_state(
+            playable_list=[{"playable_id": "t1"}, {"playable_id": "t2"}]
+        )
+        socket = MagicMock(closed=False, send_str=AsyncMock())
+        client._ws = socket
+        client._connected = True
+        provider._ynison = client
+        baseline = client.navigation_baseline()
+        await provider._queue_navigation_lock.acquire()
+        completion = asyncio.create_task(provider._signal_track_completion(baseline=baseline))
+        await asyncio.sleep(0)
+        peer = {"device_id": "peer", "version": "7", "timestamp_ms": "0"}
+        client._parse_state(
+            {
+                "player_state": {
+                    "status": {
+                        "progress_ms": "10000",
+                        "duration_ms": "120000",
+                        "paused": False,
+                        "version": peer,
+                    }
+                }
+            }
+        )
+        provider._queue_navigation_lock.release()
+
+        assert await completion == "superseded"
+        socket.send_str.assert_not_awaited()
+
 
 class TestStableOnlySource:
     """Persisted dynamic settings must not re-enable removed playback behavior."""

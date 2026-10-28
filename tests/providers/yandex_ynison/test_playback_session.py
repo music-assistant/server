@@ -116,6 +116,14 @@ def test_seed_start_only_without_pending_position(session: PlaybackSession) -> N
     assert session.take_start() == (7000, RestartReason.SEEK)
 
 
+def test_seed_start_keeps_a_pending_restart_at_zero(session: PlaybackSession) -> None:
+    """A requested start at 0 ms is a position, so a controller seek does not replace it."""
+    session.request_restart(0, RestartReason.TRACK_CHANGE)
+    session.seed_start(5000)
+
+    assert session.take_start() == (0, RestartReason.TRACK_CHANGE)
+
+
 async def test_wait_restart_wakes_on_request(session: PlaybackSession) -> None:
     """Waiters wake when a restart is requested."""
     waiter = asyncio.create_task(session.wait_restart(1.0))

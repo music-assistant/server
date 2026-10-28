@@ -112,6 +112,13 @@ def _author(block: Any) -> Any:
     return (block.get("version") or {}).get("device_id")
 
 
+def _version(block: Any) -> Any:
+    """Return the version of a versioned state block, or ``None``."""
+    if not isinstance(block, dict):
+        return None
+    return block.get("version")
+
+
 def normalize_player_state_timestamps(player_state: dict[str, Any]) -> None:
     """
     Coerce Ynison timestamp fields to strings in-place.
@@ -247,6 +254,7 @@ class NavigationBaseline:
     active_device_id: str | None
     paused: bool
     navigation_version: int | None
+    peer_status_revision: int = 0
 
 
 @dataclass
@@ -364,6 +372,8 @@ class YnisonClient:
         self._unadopted_navigation: int | None = None
         self._navigation_status: dict[str, Any] | None = None
         self._confirmed_queue_version: int | None = None
+        # Bumped by each fresh status command from another device (seek, pause, resume).
+        self._peer_status_revision = 0
         self._message_task: asyncio.Task[None] | None = None
         self._reconnect_task: asyncio.Task[None] | None = None
         self._stop_event = asyncio.Event()
@@ -743,6 +753,7 @@ class YnisonClient:
             active_device_id=self.state.active_device_id,
             paused=self.state.is_paused,
             navigation_version=self._navigation_version,
+            peer_status_revision=self._peer_status_revision,
         )
 
     def pending_navigation_baseline(self) -> NavigationBaseline | None:
@@ -958,6 +969,7 @@ class YnisonClient:
             and self.state.is_paused == baseline.paused
             and _current_playable_id(queue) == baseline.playable_id
             and self._navigation_version == baseline.navigation_version
+            and self._peer_status_revision == baseline.peer_status_revision
         )
 
     def _channel_ready(self) -> bool:
@@ -1359,12 +1371,12 @@ class YnisonClient:
                 self._queue_lineage += 1
                 self._reset_pending_queue()
             return True
-        if number.isdigit():
-            self._confirmed_queue_version = max(self._confirmed_queue_version or 0, int(number))
         if self._last_queue_version is not None:
             if number.isdigit() and int(number) < self._last_queue_version:
                 return False
             self._pending_queue = None
+        if number.isdigit():
+            self._confirmed_queue_version = max(self._confirmed_queue_version or 0, int(number))
         # A later own edit carries a navigation whose own echo was skipped.
         navigated = self._unadopted_navigation is not None and (
             not number.isdigit() or int(number) >= self._unadopted_navigation
@@ -1534,6 +1546,14 @@ class YnisonClient:
         normalize_player_state_timestamps(incoming_ps)
         is_echo, suppress_status = self._classify_state_as_echo(incoming_ps)
         existing_ps = self.state.player_state
+        previous_queue = existing_ps.get("player_queue")
+        status = incoming_ps.get("status")
+        # A peer command (seek, pause) changes the status alone, under a new version.
+        peer_command = (
+            incoming_ps.get("player_queue", previous_queue) == previous_queue
+            and _author(status) not in (None, "", self.device_id)
+            and _version(status) != _version(existing_ps.get("status"))
+        )
         obsolete = "player_queue" in incoming_ps and not self._accept_queue(
             incoming_ps["player_queue"], existing_ps.get("player_queue")
         )
@@ -1551,6 +1571,8 @@ class YnisonClient:
             if key == "status" and not self.state.status_is_relay:
                 # A relay keeps the anchor its position is extrapolated from.
                 self._remember_server_status(value)
+                if peer_command:
+                    self._peer_status_revision += 1
                 # A newer status supersedes the one our pending navigation sent.
                 self._navigation_status = None
             existing_ps[key] = value
