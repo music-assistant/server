@@ -5,7 +5,7 @@ import functools
 import time
 from collections.abc import Awaitable, Callable, Coroutine, Sequence
 from contextlib import suppress
-from datetime import timedelta
+from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Any, Concatenate
 from urllib.parse import urljoin, urlparse
 from xml.etree.ElementTree import ParseError
@@ -24,6 +24,12 @@ from music_assistant.helpers.upnp import create_didl_metadata
 from music_assistant.models.player import DeviceInfo, Player
 
 from .constants import COMMAND_REFRESH_DELAYS, PLAYER_CONFIG_ENTRIES
+
+# a position that lags MA's own clock by more than this without moving is not reported
+# by the device but a placeholder (e.g. LinkPlay keeps reporting 00:00:00 while playing)
+STUCK_POSITION_LAG = 5.0
+# a pause command's position is used for a pause the device reports up to this long after
+PAUSE_COMMAND_MAX_AGE = 60.0
 
 if TYPE_CHECKING:
     from async_upnp_client.client import UpnpDevice, UpnpService, UpnpStateVariable
@@ -100,6 +106,17 @@ class DLNAPlayer(Player):
 
         self._observed_playback_state: PlaybackState | None = None
         self._playing_since: float | None = None
+        self._observed_since: float | None = None
+        # the position the device keeps reporting although it is playing, if it does so
+        self._stuck_position: float | None = None
+        self._last_reported_position: float | None = None
+        # when the device's position was last read: by a poll, or by its timestamp
+        self._position_read_at: float | None = None
+        self._last_position_stamp: datetime | None = None
+        # MA's position at its last pause command, with the time of the command
+        self._pause_command_position: tuple[float, float] | None = None
+        self._clock_at_pause: tuple[float, float] | None = None
+        self._seeked_while_paused = False
 
         # Track BOOTID in SSDP advertisements for device changes
         self.bootid: int | None = None
@@ -165,13 +182,17 @@ class DLNAPlayer(Player):
         assert _playback_state is not None  # for type checking
         prev_playback_state = self._observed_playback_state
         self._observed_playback_state = _playback_state
-        if _playback_state != PlaybackState.PLAYING:
-            self._playing_since = None
-        elif prev_playback_state not in (None, PlaybackState.PLAYING):
-            self._playing_since = time.time()
-        self._attr_playback_state = _playback_state
+        if prev_playback_state is None:
+            self._observed_since = time.time()
 
         _device_uri = self.device.current_track_uri or ""
+        prev_uri = self._attr_current_media.uri if self._attr_current_media else None
+        # the device moved to another track or stream by itself (e.g. from a vendor app)
+        uri_changed = bool(prev_uri and _device_uri and prev_uri != _device_uri)
+        if _playback_state != PlaybackState.PLAYING:
+            self._playing_since = None
+        elif prev_playback_state not in (None, PlaybackState.PLAYING) or uri_changed:
+            self._playing_since = time.time()
         try:
             media_title = self.device.media_title
             media_artist = self.device.media_artist
@@ -222,19 +243,9 @@ class DLNAPlayer(Player):
             # No URI - idle or unknown
             self._attr_active_source = None
         # TODO: extend this list with other possible sources
-        # a device reports 'no position' as None (RelativeTimePosition unset, sent as
-        # NOT_IMPLEMENTED or unparsable), so a reported 0 is a position like any other
-        # and is adopted instead of being discarded as 'not reported'.
-        if (media_position := self.device.media_position) is not None:
-            self._attr_elapsed_time = float(media_position)
-            if (position_updated_at := self.device.media_position_updated_at) is not None:
-                anchor = position_updated_at.timestamp()
-                if self._playing_since is not None:
-                    # a device only re-stamps a position that actually changed, so shortly
-                    # after a resume the timestamp still dates from before the pause. The
-                    # position may not be extrapolated across the time it was not playing.
-                    anchor = max(anchor, self._playing_since)
-                self._attr_elapsed_time_last_updated = anchor
+        # the clock is read in the previous playback state, before it is replaced
+        self._update_elapsed_time(_playback_state, prev_playback_state, uri_changed)
+        self._attr_playback_state = _playback_state
 
     async def get_config_entries(self) -> list[ConfigEntry]:
         """Return all (provider/player specific) Config Entries for the given player (if any)."""
@@ -259,6 +270,7 @@ class DLNAPlayer(Player):
         """Send PLAY command to given player."""
         assert self.device is not None  # for type checking
         await self.device.async_play()
+        self._pause_command_position = None
 
     @catch_request_errors
     async def play_media(self, media: PlayerMedia) -> None:
@@ -274,6 +286,9 @@ class DLNAPlayer(Player):
         # that is slow or failing to report state changes.
         prev_state = self._attr_playback_state
         self.set_current_media(uri=url, clear_all=True)
+        self._stuck_position = self._last_reported_position = None
+        self._pause_command_position = self._clock_at_pause = None
+        self._seeked_while_paused = False
         self._attr_playback_state = PlaybackState.PLAYING
         self._attr_elapsed_time = 0
         self._attr_elapsed_time_last_updated = time.time()
@@ -314,14 +329,15 @@ class DLNAPlayer(Player):
             await self.stop()
             return
 
+        position = self.corrected_elapsed_time
         if self.device.can_pause:
             await self.device.async_pause()
-            return
-
         # Some devices expose Pause but report stale CurrentTransportActions.
         # Force-call Pause when action exists; otherwise fallback to Stop.
-        if not await self._force_avt_action("Pause"):
+        elif not await self._force_avt_action("Pause"):
             await self._force_avt_action("Stop")
+        if position is not None:
+            self._pause_command_position = (position, time.time())
 
     @catch_request_errors
     async def next_track(self) -> None:
@@ -332,6 +348,7 @@ class DLNAPlayer(Player):
         else:
             # Some devices expose Next but report stale CurrentTransportActions.
             await self._force_avt_action("Next")
+        self._set_elapsed_time(0)
         self._schedule_state_refresh()
 
     @catch_request_errors
@@ -343,6 +360,7 @@ class DLNAPlayer(Player):
         else:
             # Some devices expose Previous but report stale CurrentTransportActions.
             await self._force_avt_action("Previous")
+        self._set_elapsed_time(0)
         self._schedule_state_refresh()
 
     @catch_request_errors
@@ -350,6 +368,7 @@ class DLNAPlayer(Player):
         """Send SEEK command to given player."""
         assert self.device is not None  # for type checking
         await self.device.async_seek_rel_time(timedelta(seconds=position))
+        self._set_elapsed_time(position)
         self._schedule_state_refresh()
 
     @catch_request_errors
@@ -388,6 +407,12 @@ class DLNAPlayer(Player):
             do_ping = self.force_poll or (now - self.last_seen) > 60
             with suppress(ValueError, ParseError):
                 await self.device.async_update(do_ping=do_ping)
+                if self.device.transport_state in (
+                    TransportState.PLAYING,
+                    TransportState.PAUSED_PLAYBACK,
+                ):
+                    # the position was read, even if it did not change
+                    self._position_read_at = time.time()
             self.last_seen = now if do_ping else self.last_seen
         except UpnpError as err:
             # Some devices (e.g. Denon HEOS) return SOAP responses containing
@@ -658,6 +683,166 @@ class DLNAPlayer(Player):
             )
 
         return None
+
+    def _update_elapsed_time(
+        self,
+        playback_state: PlaybackState,
+        prev_playback_state: PlaybackState | None,
+        uri_changed: bool,
+    ) -> None:
+        """
+        Update the elapsed time from the position the device reports.
+
+        A device that reports no position, or one that does not advance (e.g. LinkPlay keeps
+        reporting 00:00:00), would restart the position on every resume. MA then keeps its
+        own clock instead, anchored at the start of playback and moved along with pauses,
+        resumes and seeks.
+        """
+        assert self.device is not None  # for type checking
+        now = time.time()
+        position = self.device.media_position
+        read_at = self._fresh_report_time()
+        if prev_playback_state == PlaybackState.PLAYING != playback_state:
+            # MA's clock at the pause, to judge a report that only arrives once paused
+            self._clock_at_pause = self._paused_clock(now)
+        if uri_changed or playback_state == PlaybackState.IDLE:
+            # what the device reported about the previous track no longer applies
+            self._stuck_position = self._last_reported_position = None
+            self._clock_at_pause = None
+            self._seeked_while_paused = False
+            if uri_changed:
+                self._attr_elapsed_time = 0.0
+                self._attr_elapsed_time_last_updated = now
+        elif position is not None and prev_playback_state is not None:
+            self._check_stuck_position(position, playback_state, read_at, now)
+        self._last_position_stamp = self.device.media_position_updated_at
+        self._position_read_at = None
+        if position is not None:
+            self._last_reported_position = position
+
+        if (
+            position is None
+            or self._stuck_position is not None
+            or (self._seeked_while_paused and playback_state != PlaybackState.PLAYING)
+        ):
+            # (a device may only report the position of a seek while paused once it resumes)
+            self._update_own_clock(playback_state, prev_playback_state, now)
+        else:
+            # a device reports 'no position' as None (RelativeTimePosition unset, sent as
+            # NOT_IMPLEMENTED or unparsable), so a reported 0 is a position like any other
+            # and is adopted instead of being discarded as 'not reported'.
+            self._attr_elapsed_time = float(position)
+            if (position_updated_at := self.device.media_position_updated_at) is not None:
+                anchor = position_updated_at.timestamp()
+                if self._playing_since is not None:
+                    # a device only re-stamps a position that actually changed, so shortly
+                    # after a resume the timestamp still dates from before the pause. The
+                    # position may not be extrapolated across the time it was not playing.
+                    anchor = max(anchor, self._playing_since)
+                self._attr_elapsed_time_last_updated = anchor
+        if (
+            playback_state != PlaybackState.PLAYING
+            or prev_playback_state != playback_state
+            or read_at is not None
+        ):
+            # the device paused, or it still plays after the pause command
+            self._pause_command_position = None
+        if playback_state == PlaybackState.PLAYING:
+            self._clock_at_pause = None
+            self._seeked_while_paused = False
+
+    def _check_stuck_position(
+        self, position: float, playback_state: PlaybackState, read_at: float | None, now: float
+    ) -> None:
+        """Recognise a position that does not advance although the device is playing."""
+        if self._stuck_position is not None:
+            if position != self._stuck_position:
+                # it advances after all
+                self._stuck_position = None
+            return
+        if (
+            read_at is None
+            or self._last_reported_position != position
+            or (self._seeked_while_paused and playback_state != PlaybackState.PLAYING)
+        ):
+            # only a fresh report of a position that was already reported counts: a first
+            # report may come late from a device that was slow to start
+            return
+        # a pause may have been processed before the position was read, which then already
+        # followed the device: a report while paused is judged against the clock at the pause
+        clock_at_pause = self._clock_at_pause
+        clock = clock_at_pause[0] if clock_at_pause else self.corrected_elapsed_time
+        if clock is None:
+            return
+        if clock_at_pause is None and self.playback_state == PlaybackState.PLAYING:
+            # MA's clock at the time of the report
+            clock -= max(0.0, now - read_at)
+        if clock - position <= STUCK_POSITION_LAG:
+            return
+        self._stuck_position = position
+        if (
+            self._observed_since is not None
+            and self._attr_elapsed_time_last_updated is not None
+            and self._attr_elapsed_time_last_updated < self._observed_since
+        ):
+            # the clock only came from the device's timestamp of its placeholder: all that
+            # is known is that it has played since it was found
+            if clock_at_pause is not None:
+                self._attr_elapsed_time = max(0.0, clock_at_pause[1] - self._observed_since)
+                self._attr_elapsed_time_last_updated = now
+                self._clock_at_pause = (self._attr_elapsed_time, clock_at_pause[1])
+            else:
+                self._attr_elapsed_time = 0.0
+                self._attr_elapsed_time_last_updated = self._observed_since
+        elif clock_at_pause is not None:
+            self._attr_elapsed_time = clock_at_pause[0]
+            self._attr_elapsed_time_last_updated = now
+
+    def _update_own_clock(
+        self, playback_state: PlaybackState, prev_playback_state: PlaybackState | None, now: float
+    ) -> None:
+        """Move MA's own clock along with a pause or resume of the device."""
+        if prev_playback_state == PlaybackState.PLAYING != playback_state:
+            if self._clock_at_pause is None:
+                return
+            self._attr_elapsed_time = self._clock_at_pause[0]
+            self._attr_elapsed_time_last_updated = now
+        elif self._playing_since is not None and prev_playback_state not in (
+            None,
+            PlaybackState.PLAYING,
+        ):
+            # resumed: continue from where it was paused
+            self._attr_elapsed_time_last_updated = self._playing_since
+
+    def _fresh_report_time(self) -> float | None:
+        """Return when the device's position was last reported, if it was reported anew."""
+        assert self.device is not None  # for type checking
+        # the position itself is only re-read by a poll, so an update for anything else
+        # (e.g. the volume) shows the position of the last poll
+        read_times = [self._position_read_at] if self._position_read_at is not None else []
+        stamp = self.device.media_position_updated_at
+        if stamp is not None and stamp != self._last_position_stamp:
+            read_times.append(stamp.timestamp())
+        return max(read_times, default=None)
+
+    def _paused_clock(self, now: float) -> tuple[float, float] | None:
+        """Return MA's clock at the moment the device paused, and that moment."""
+        pause_command = self._pause_command_position
+        if pause_command is not None and now - pause_command[1] <= PAUSE_COMMAND_MAX_AGE:
+            # the device's pause may only be noticed at the next poll
+            return pause_command
+        if (clock := self.corrected_elapsed_time) is None:
+            return None
+        return clock, now
+
+    def _set_elapsed_time(self, position: float) -> None:
+        """Move the elapsed time to where a command moved the playback."""
+        self._attr_elapsed_time = float(position)
+        self._attr_elapsed_time_last_updated = time.time()
+        self._pause_command_position = None
+        if self.playback_state != PlaybackState.PLAYING:
+            self._clock_at_pause = (self._attr_elapsed_time, self._attr_elapsed_time_last_updated)
+            self._seeked_while_paused = True
 
     def _get_playback_state(self) -> PlaybackState | None:
         """Return current PlaybackState of the player."""
