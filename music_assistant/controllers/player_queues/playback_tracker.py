@@ -603,8 +603,6 @@ class PlaybackTrackerMixin(_PlayerQueuesBase):
             if self._queue_data.get(queue.queue_id) is not queue_data:
                 # the queue was removed or re-registered while the source was fetched
                 return
-            if queue_data.playback_starts != playback_starts:
-                return
             self._finish_queue(queue, prev_item)
 
         # all checks passed, we stopped playback at the last (or single) track of the queue
