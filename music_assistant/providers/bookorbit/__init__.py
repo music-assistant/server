@@ -566,7 +566,9 @@ class BookOrbitProvider(MusicProvider):
             book_id = int(prov_item_id)
         except ValueError:
             return
-        # Block inbound playlog applies until BookOrbit reflects this outbound write.
+        # Arm cool-down before BookOrbit I/O (same pattern as Audiobookshelf): local
+        # playlog is already advanced when on_played runs, so inbound must not apply a
+        # lagging remote stamp while this report is in flight.
         self._inbound_progress_guard.note_outbound(book_id)
         generation = self._progress_generation.get(book_id, 0) + 1
         self._progress_generation[book_id] = generation

@@ -269,8 +269,8 @@ async def test_apply_conversion_error_returns_none() -> None:
 
 
 @pytest.mark.asyncio
-async def test_apply_skips_unchanged_progress() -> None:
-    """Identical remote progress does not re-stamp the playlog."""
+async def test_apply_stamps_even_when_library_hydrate_matches() -> None:
+    """Always stamp provider playlog; hydrated resume may belong to another user."""
     mass = _mass()
     seconds = max(PLAYBACK_REPORT_INTERVAL_SECONDS, 60)
     library_item = Mock(name="book", fully_played=False, resume_position_ms=seconds * 1000)
@@ -287,7 +287,7 @@ async def test_apply_skips_unchanged_progress() -> None:
             guard=InboundProgressGuard(),
         )
     assert has is True
-    mass.music.mark_item_played.assert_not_awaited()
+    mass.music.mark_item_played.assert_awaited_once()
 
 
 @pytest.mark.asyncio
@@ -445,6 +445,58 @@ async def test_sync_playlog_rechecks_guard_before_unplay() -> None:
             book_ids={5},
             guard=guard,
         )
+    mass.music.mark_item_unplayed.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_sync_playlog_rechecks_guard_after_discard_lookup() -> None:
+    """An outbound stamp during discard library lookup must still block unplay."""
+    mass = Mock()
+    guard = InboundProgressGuard()
+    mass.music.get_playlog_provider_item_ids = AsyncMock(return_value=[(MediaType.AUDIOBOOK, "5")])
+
+    async def lookup(**_kwargs: Any) -> Mock:
+        guard.note_outbound(5)
+        return Mock(name="book")
+
+    mass.music.get_library_item_by_prov_id = AsyncMock(side_effect=lookup)
+    mass.music.mark_item_unplayed = AsyncMock()
+    mass.music.mark_item_played = AsyncMock()
+    with patch(
+        "music_assistant.providers.bookorbit.playlog_sync.resolve_remote_progress_seconds",
+        new=AsyncMock(return_value=None),
+    ):
+        await sync_playlog(
+            mass=mass,
+            provider_instance_id="bookorbit--test",
+            client=Mock(),
+            book_ids={5},
+            guard=guard,
+        )
+    mass.music.mark_item_unplayed.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_sync_playlog_reresolves_before_unplay() -> None:
+    """Discard skips clear when remote regained progress after the apply pass."""
+    mass = Mock()
+    mass.music.get_playlog_provider_item_ids = AsyncMock(return_value=[(MediaType.AUDIOBOOK, "5")])
+    mass.music.get_library_item_by_prov_id = AsyncMock(return_value=Mock(name="book"))
+    mass.music.mark_item_unplayed = AsyncMock()
+    mass.music.mark_item_played = AsyncMock()
+    resolve = AsyncMock(side_effect=[None, (False, 120)])
+    with patch(
+        "music_assistant.providers.bookorbit.playlog_sync.resolve_remote_progress_seconds",
+        new=resolve,
+    ):
+        await sync_playlog(
+            mass=mass,
+            provider_instance_id="bookorbit--test",
+            client=Mock(),
+            book_ids={5},
+            guard=InboundProgressGuard(),
+        )
+    assert resolve.await_count == 2
     mass.music.mark_item_unplayed.assert_not_awaited()
 
 
