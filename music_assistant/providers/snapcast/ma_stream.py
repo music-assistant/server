@@ -512,6 +512,8 @@ class SnapcastMAStream:
         self._stop_without_drain = True
         self._stop_streamer_evt.set()
         self._streamer_started_evt.clear()
+        # the group can rejoin before the old run ends; its start must not anchor elapsed time
+        self._streaming_started_at = None
 
         self._stop_timer_started_at = None
         if self._stop_timer:
