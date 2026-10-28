@@ -73,6 +73,9 @@ class WiimPlayer(Player):
     # the device reports a source the app released as plain 'paused', indistinguishable
     # from a real pause, so only the grace period can tell us the session is over.
     _attr_external_pause_idle_timeout = EXTERNAL_PAUSE_IDLE_TIMEOUT
+    # the source comes from the device's own input mode, and the source list leaves out
+    # the network input our stream arrives on, so a listed source (e.g. TV) is a takeover.
+    _attr_trusts_reported_source = True
 
     def __init__(
         self,
