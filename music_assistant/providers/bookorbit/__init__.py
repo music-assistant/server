@@ -684,10 +684,25 @@ class BookOrbitProvider(MusicProvider):
         else:
             self._applied_mapping_details = {}
 
+    async def _playlog_candidate_book_ids(self) -> set[int]:
+        """Return playlog audiobook ids unioned with BookOrbit continue-listening ids."""
+        playlog = await self.mass.music.get_playlog_provider_item_ids(self.instance_id)
+        playlog_ids = {
+            int(item_id)
+            for media_type, item_id in playlog
+            if media_type == MediaType.AUDIOBOOK and item_id.isdigit()
+        }
+        try:
+            listening = await self._client.get_continue_listening_book_ids(CONTINUE_LISTENING_LIMIT)
+        except (ClientError, TimeoutError, LoginFailed, OSError) as err:
+            self.logger.debug("BookOrbit continue-listening fetch failed: %s", err)
+            listening = []
+        return playlog_ids | set(listening)
+
     async def _sync_playlog_from_bookorbit(self, book_ids: set[int] | None = None) -> None:
-        """Push BookOrbit progress into the MA playlog for ``book_ids`` or the catalog."""
+        """Push BookOrbit progress into the MA playlog for the given or candidate book ids."""
         if book_ids is None:
-            book_ids = {int(book_id) for book_id in self._catalog if book_id.isdigit()}
+            book_ids = await self._playlog_candidate_book_ids()
         if not book_ids:
             return
         try:
@@ -707,20 +722,7 @@ class BookOrbitProvider(MusicProvider):
         while True:
             await asyncio.sleep(PLAYLOG_POLL_INTERVAL_SEC)
             try:
-                playlog = await self.mass.music.get_playlog_provider_item_ids(self.instance_id)
-                playlog_ids = {
-                    int(item_id)
-                    for media_type, item_id in playlog
-                    if media_type == MediaType.AUDIOBOOK and item_id.isdigit()
-                }
-                try:
-                    listening = await self._client.get_continue_listening_book_ids(
-                        CONTINUE_LISTENING_LIMIT
-                    )
-                except (ClientError, TimeoutError, LoginFailed, OSError) as err:
-                    self.logger.debug("BookOrbit continue-listening fetch failed: %s", err)
-                    listening = []
-                await self._sync_playlog_from_bookorbit(playlog_ids | set(listening))
+                await self._sync_playlog_from_bookorbit()
             except asyncio.CancelledError:
                 raise
             except Exception as err:
