@@ -1458,6 +1458,49 @@ async def test_pending_automatic_arm_stops_when_the_provider_unloads(tmp_path: P
     assert not dummy._dj_file.exists()
 
 
+@pytest.mark.parametrize("unload_at", ["saving", "binding_lock"])
+async def test_automatic_arm_does_not_resume_after_unloading_during_persistence(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, unload_at: str
+) -> None:
+    """An in-flight automatic arm cannot restore mixing or save again after unloading."""
+    dummy = _make_show_dj(tmp_path)
+    dummy._sections["Song_Transition"]["allow_post"] = True
+    entered = asyncio.Event()
+    release = asyncio.Event()
+    saves = 0
+
+    async def persist() -> None:
+        nonlocal saves
+        saves += 1
+        if saves == 1:
+            entered.set()
+            await release.wait()
+
+    monkeypatch.setattr(dummy, "_write_queue_dj", persist)
+    monkeypatch.setattr(dummy, "_schedule_replan", lambda _: None)
+    arm = asyncio.create_task(dummy._ensure_show_dj("queue-1"))
+    await entered.wait()
+    if unload_at == "binding_lock":
+        # Queue ahead of the final binding save while the first save still owns the lock.
+        waiter = asyncio.Task(
+            dummy._dj_lock.acquire(), loop=asyncio.get_running_loop(), eager_start=True
+        )
+        release.set()
+        await waiter
+    try:
+        dummy._unloading = True
+        dummy.mass.streams.set_boundary_mix_required("queue-1", dummy.instance_id, False)
+        mixing_calls_before_resume = len(dummy.mass.boundary_mix_calls)
+    finally:
+        if unload_at == "binding_lock":
+            dummy._dj_lock.release()
+        release.set()
+        await arm
+
+    assert saves == 1
+    assert dummy.mass.boundary_mix_calls[mixing_calls_before_resume:] == []
+
+
 @pytest.mark.parametrize("guard", ["min_gap_songs", "max_per_60min"])
 async def test_nonzero_show_start_keeps_section_limits_when_tracks_are_appended(
     tmp_path: Path, guard: str

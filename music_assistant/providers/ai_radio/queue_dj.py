@@ -251,7 +251,7 @@ class AIRadioQueueDJMixin:
             )
             return
         await self.set_queue_dj(queue_id, host_id)
-        if (state := self._dj_queues.get(queue_id)) is None:
+        if self._unloading or (state := self._dj_queues.get(queue_id)) is None:
             return
         state.station_id = station_id
         self._armed_show_queues[queue_id] = station_id
@@ -262,7 +262,8 @@ class AIRadioQueueDJMixin:
             self.mass.streams.set_boundary_mix_required(queue_id, self.instance_id, True)
         # set_queue_dj persisted the state before it carried the binding
         async with self._dj_lock:
-            await self._write_queue_dj()
+            if not self._unloading:
+                await self._write_queue_dj()
 
     async def _maybe_detach_show_dj(self, queue_id: str) -> None:
         """Detach an auto-armed show DJ once the queue left the show."""
