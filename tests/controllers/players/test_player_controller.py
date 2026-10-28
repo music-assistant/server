@@ -1707,7 +1707,7 @@ class TestRegisterOrUpdateTypeTransition:
 
         assert player.state.type is PlayerType.PROTOCOL
         mock_mass.player_queues.on_player_remove.assert_called_once_with(
-            "player_1", permanent=False
+            "player_1", permanent=False, release_audio=False
         )
         assert self._signalled(mock_mass, EventType.PLAYER_REMOVED)
 
@@ -1755,7 +1755,9 @@ class TestRegisterOrUpdateTypeTransition:
 
         await controller.register_or_update(parent)
 
-        mock_mass.player_queues.on_player_remove.assert_called_once_with("parent", permanent=False)
+        mock_mass.player_queues.on_player_remove.assert_called_once_with(
+            "parent", permanent=False, release_audio=False
+        )
         assert self._signalled(mock_mass, EventType.PLAYER_REMOVED)
         assert parent.linked_output_protocols == []
         assert child.protocol_parent_id is None

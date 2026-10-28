@@ -1470,8 +1470,15 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
             data=queue.elapsed_time,
         )
 
-    def on_player_remove(self, player_id: str, permanent: bool) -> None:
-        """Call when a player is removed from the registry."""
+    def on_player_remove(self, player_id: str, permanent: bool, release_audio: bool = True) -> None:
+        """
+        Call when a player is removed from the registry.
+
+        :param player_id: The player whose queue is removed.
+        :param permanent: Also delete the queue's persisted state and items.
+        :param release_audio: Release the audio buffers of the queue's items. Pass False to
+            leave a stream that is still playing untouched.
+        """
         self.mass.streams.audio_processing.clear(player_id)
         self._cancel_pending_playback(player_id)
         # cancel a pending debounced cache write AND an already-started one, so neither can
@@ -1486,12 +1493,13 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
             self.mass.signal_event(
                 EventType.QUEUE_UPDATED, object_id=player_id, data=queue_data.queue
             )
-            # released here: _cleanup_queue_audio_data looks the queue up, and it is gone now
-            self.mass.streams.audio.clear_crossfade_handover(player_id)
-            for item in queue_data.items:
-                if (streamdetails := item.streamdetails) and (buffer := streamdetails.buffer):
-                    streamdetails.buffer = None
-                    self.mass.create_task(buffer.clear())
+            if release_audio:
+                # released here: _cleanup_queue_audio_data looks the queue up, and it is gone now
+                self.mass.streams.audio.clear_crossfade_handover(player_id)
+                for item in queue_data.items:
+                    if (streamdetails := item.streamdetails) and (buffer := streamdetails.buffer):
+                        streamdetails.buffer = None
+                        self.mass.create_task(buffer.clear())
         self._managed_pool.forget(player_id)
 
     def purge_saved_queue(self, queue_id: str) -> None:
