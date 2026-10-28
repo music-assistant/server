@@ -124,6 +124,10 @@ class RecommendationPayloadMixin(_MixinBase):
 
     async def _recommendation_payload(self) -> list[RecommendationFolder]:
         """Return the full recommendations payload, cached and deduplicated."""
+        if getattr(self, "unloading", False):
+            # an unloaded instance fetches alone: its result is neither shared nor written,
+            # and a stale payload it holds starts no refresh that would write it
+            return await self._fetch_recommendation_payload()
         if (payload := self._recommendation_payload_memory) is not None:
             if (
                 time.monotonic() - self._recommendation_payload_timestamp
@@ -133,9 +137,6 @@ class RecommendationPayloadMixin(_MixinBase):
             # stale: serve immediately while a (deduplicated) background refresh runs
             self._schedule_recommendation_refresh()
             return payload
-        if getattr(self, "unloading", False):
-            # an unloaded instance fetches alone: its result is neither shared nor written
-            return await self._fetch_recommendation_payload()
         # cold instance: single-flight load from the persistent cache or the backend
         task = self._recommendation_payload_task
         if task is None or task.done():

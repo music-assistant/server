@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from typing import Any, cast
 from unittest.mock import AsyncMock, Mock
 
@@ -272,6 +273,25 @@ async def test_unloading_instance_fetches_alone_and_writes_nothing() -> None:
 
     assert all(result == payload for result in results)
     assert fetch.await_count == 2
+    assert not provider.background_tasks
+    assert _PAYLOAD_CACHE_KEY not in provider._cache_store
+
+
+@pytest.mark.asyncio
+async def test_unloading_instance_with_a_stale_payload_writes_nothing() -> None:
+    """An unloading instance holding an expired payload refreshes nothing in the background."""
+    payload = _make_payload()
+    fetch = AsyncMock(return_value=payload)
+    provider = _PayloadProvider(fetch)
+    provider._recommendation_payload_memory = payload
+    provider._recommendation_payload_timestamp = time.monotonic() - 2 * (
+        provider.recommendation_payload_ttl
+    )
+    cast("Any", provider).unloading = True
+
+    assert await provider._recommendation_payload() == payload
+    await _drain_background(provider)
+
     assert not provider.background_tasks
     assert _PAYLOAD_CACHE_KEY not in provider._cache_store
 
