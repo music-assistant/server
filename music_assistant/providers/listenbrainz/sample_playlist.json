@@ -1,0 +1,356 @@
+{
+  "identifier": "https://listenbrainz.org/playlist/b68338f0-0061-4e0e-88c6-5ebc55bf39a3",
+  "title": "Weekly Jams for tmatheussen, week of 2026-10-19 Mon",
+  "track": [
+    {
+      "id": "3ac4e11a-ea60-4711-8493-891713637b43",
+      "title": "Rip & Tear",
+      "creator": "Mick Gordon",
+      "album": "DOOM: Original Game Soundtrack",
+      "duration": 257735
+    },
+    {
+      "id": "9f331d71-12ee-46c8-b155-b3828e4cfd7e",
+      "title": "AmEN!",
+      "creator": "Bring Me the Horizon feat. Lil Uzi Vert & Daryl Palumbo of Glassjaw",
+      "album": "POST HUMAN: NeX GEn",
+      "duration": 189546
+    },
+    {
+      "id": "6a6cbfc3-849f-4369-92ea-2b3836869a68",
+      "title": "Dig",
+      "creator": "Mudvayne",
+      "album": "L.D. 50",
+      "duration": 162133
+    },
+    {
+      "id": "dcea7720-4413-4ada-8c07-63cfd10f5724",
+      "title": "If You Can’t Hang",
+      "creator": "Sleeping With Sirens",
+      "album": "Let’s Cheers to This",
+      "duration": 250000
+    },
+    {
+      "id": "5d74244a-d193-44e6-a78c-28446abf2904",
+      "title": "Circle With Me",
+      "creator": "Spiritbox",
+      "album": "Eternal Blue",
+      "duration": 233880
+    },
+    {
+      "id": "6b4aecef-48bc-411b-8f1e-c9c642ccf3aa",
+      "title": "Afterlife",
+      "creator": "Holding Absence",
+      "album": "The Greatest Mistake of My Life",
+      "duration": 226546
+    },
+    {
+      "id": "d3bd52f1-3d84-445b-84f5-7899de8f9340",
+      "title": "American Idiot",
+      "creator": "Green Day",
+      "album": "American Idiot",
+      "duration": 174320
+    },
+    {
+      "id": "89f30d35-5e98-4128-848b-1625e7ccfd83",
+      "title": "Sound of Madness",
+      "creator": "Shinedown",
+      "album": "The Sound of Madness",
+      "duration": 234000
+    },
+    {
+      "id": "320ab068-f72c-4b6b-9bff-c6efc34657d4",
+      "title": "Miss Murder",
+      "creator": "AFI",
+      "album": "DECEMBERUNDERGROUND",
+      "duration": 206586
+    },
+    {
+      "id": "18c0907b-9d95-450e-833d-6dcb523808bb",
+      "title": "Red Flag",
+      "creator": "Billy Talent",
+      "album": "Billy Talent II",
+      "duration": 197000
+    },
+    {
+      "id": "ecba4ff2-1b7f-4f4b-bf3b-3582ef97075b",
+      "title": "Scoring the End of the World",
+      "creator": "Motionless in White feat. Mick Gordon",
+      "album": "Scoring the End of the World",
+      "duration": 228354
+    },
+    {
+      "id": "155fcebf-b270-4e4c-ae87-46b061c6ac1d",
+      "title": "Sleeptalk",
+      "creator": "Dayseeker",
+      "album": "Sleeptalk",
+      "duration": 223000
+    },
+    {
+      "id": "d40fc673-e63c-494b-8852-d3fe005a666e",
+      "title": "Just Pretend",
+      "creator": "Bad Omens",
+      "album": "THE DEATH OF PEACE OF MIND",
+      "duration": 204680
+    },
+    {
+      "id": "2a95c13d-c58d-46ee-8499-8a34f4311e75",
+      "title": "One Last Breath",
+      "creator": "Creed",
+      "album": "Weathered",
+      "duration": 238560
+    },
+    {
+      "id": "2c7c53b7-1de1-4548-9c10-87f2d8f0b9a0",
+      "title": "Zombie",
+      "creator": "Bad Wolves",
+      "album": "Disobey",
+      "duration": 254800
+    },
+    {
+      "id": "57fb9bee-1351-4830-97be-bafbef057924",
+      "title": "Deutschland",
+      "creator": "Rammstein",
+      "album": "[Rammstein]",
+      "duration": 323000
+    },
+    {
+      "id": "fbcaba8b-cbdb-4b2d-9f36-81ffb95007b2",
+      "title": "Playing God",
+      "creator": "Polyphia",
+      "album": "Remember That You Will Die",
+      "duration": 205920
+    },
+    {
+      "id": "540b731d-cf9f-4308-b634-1d779b6ccbb4",
+      "title": "Little Wonder",
+      "creator": "Architects feat. Mike Kerr",
+      "album": "For Those That Wish to Exist",
+      "duration": 227813
+    },
+    {
+      "id": "402d3408-2680-4605-a4c7-a177ce1c0fd8",
+      "title": "Nightmare",
+      "creator": "Avenged Sevenfold",
+      "album": "Nightmare",
+      "duration": 374480
+    },
+    {
+      "id": "5f01c477-b6c2-40a0-b622-953c72077127",
+      "title": "Are You Dead Yet?",
+      "creator": "Children of Bodom",
+      "album": "Are You Dead Yet?",
+      "duration": 234880
+    },
+    {
+      "id": "019b8694-3af1-4c0a-956f-4b8ea7f8a112",
+      "title": "Through Glass",
+      "creator": "Stone Sour",
+      "album": "Come What(ever) May",
+      "duration": 282933
+    },
+    {
+      "id": "57ddb1c0-6e7a-49cd-9e92-059286f1c9be",
+      "title": "Paralyzer",
+      "creator": "Finger Eleven",
+      "album": "Them vs. You vs. Me",
+      "duration": 208106
+    },
+    {
+      "id": "30a6feb0-e400-44a6-894d-02eb22d7a45a",
+      "title": "The Diary of Jane",
+      "creator": "Breaking Benjamin",
+      "album": "Phobia",
+      "duration": 200546
+    },
+    {
+      "id": "2689fd5e-6bdc-4e5e-ba7a-f98d36b2d931",
+      "title": "Between Angels and Insects",
+      "creator": "Papa Roach",
+      "album": "Infest",
+      "duration": 234520
+    },
+    {
+      "id": "a9e6e039-b858-4949-a12b-736ef2988796",
+      "title": "Please End Me",
+      "creator": "Paleface Swiss",
+      "album": "CURSED (The Complete Edition)",
+      "duration": 191744
+    },
+    {
+      "id": "63f01afe-c75c-4fb6-bb8a-d7037e923421",
+      "title": "Pittsburgh",
+      "creator": "The Amity Affliction",
+      "album": "Let the Ocean Take Me",
+      "duration": 288626
+    },
+    {
+      "id": "3661d9ba-5d6c-4b1f-938f-a81f93f3b120",
+      "title": "Ritual",
+      "creator": "The Devil Wears Prada",
+      "album": "Flowers",
+      "duration": 223405
+    },
+    {
+      "id": "ab76fa4c-bd04-404e-9050-dc98af79fc8b",
+      "title": "God Fearing Man",
+      "creator": "Imminence",
+      "album": "The Return of The Black",
+      "duration": 319000
+    },
+    {
+      "id": "e11bb11c-3307-4d13-b8d1-d79cb0559d05",
+      "title": "Miracle",
+      "creator": "A Day to Remember",
+      "album": "Big Ole Album Vol. 1",
+      "duration": 243977
+    },
+    {
+      "id": "5d6e7312-8262-4a59-8cb1-b1bbf6e62110",
+      "title": "God Is a Weapon",
+      "creator": "Falling in Reverse & Marilyn Manson",
+      "album": "God Is a Weapon",
+      "duration": 215000
+    },
+    {
+      "id": "6d3d402e-d77c-40cf-a4be-4843a0771dc7",
+      "title": "Your Betrayal",
+      "creator": "Bullet for My Valentine",
+      "album": "Fever",
+      "duration": 291360
+    },
+    {
+      "id": "c8e00a85-9f7e-4779-a451-7b6890c5f0b9",
+      "title": "Break Stuff",
+      "creator": "Limp Bizkit",
+      "album": "Significant Other",
+      "duration": 166666
+    },
+    {
+      "id": "a8009036-b13e-4cb8-b2c7-2c3f9735b735",
+      "title": "Down With the Sickness",
+      "creator": "Disturbed",
+      "album": "The Sickness",
+      "duration": 278706
+    },
+    {
+      "id": "5738a001-5468-4a4a-854a-5aed73b3ec11",
+      "title": "BRAVE NEW WORLD",
+      "creator": "STARSET",
+      "album": "SILOS",
+      "duration": 263942
+    },
+    {
+      "id": "c1dfc16c-5b20-43d2-ac01-0518afde98d0",
+      "title": "Self-Made Black Hole",
+      "creator": "LANDMVRKS feat. Resolve",
+      "album": "Lost in the Waves",
+      "duration": 254973
+    },
+    {
+      "id": "3bceacbc-1a22-47a4-90fd-703d227f3523",
+      "title": "The Anthem",
+      "creator": "Good Charlotte",
+      "album": "The Young and the Hopeless",
+      "duration": 175200
+    },
+    {
+      "id": "fe11a69a-61ea-4c0f-9eef-d48f6dda4ca4",
+      "title": "Nemesis",
+      "creator": "Arch Enemy",
+      "album": "Doomsday Machine",
+      "duration": 252280
+    },
+    {
+      "id": "b3b3d8a8-bff2-4a6d-b86c-d7681104463d",
+      "title": "Safe and Sound",
+      "creator": "Point North & The Ghost Inside",
+      "album": "Prepare for Despair",
+      "duration": 201000
+    },
+    {
+      "id": "7616d73a-d485-4852-abf6-6280f78b6c62",
+      "title": "Pale Moonlight",
+      "creator": "Dayseeker",
+      "album": "Creature in the Black Night",
+      "duration": 220000
+    },
+    {
+      "id": "bc1aae6f-b836-414e-82fe-57445c0f661f",
+      "title": "Yellowjacket",
+      "creator": "Spiritbox feat. Sam Carter",
+      "album": "Eternal Blue",
+      "duration": 198066
+    },
+    {
+      "id": "0151d8a4-50c8-4036-b824-4a4f4b140e8e",
+      "title": "Master of Puppets",
+      "creator": "Metallica",
+      "album": "Master of Puppets",
+      "duration": 515240
+    },
+    {
+      "id": "0b5bf9ed-6748-45e8-b85e-f05a4af549d5",
+      "title": "Fake It",
+      "creator": "Seether",
+      "album": "Finding Beauty In Negative Spaces",
+      "duration": 193893
+    },
+    {
+      "id": "240ce563-437b-41aa-901e-3067735c770c",
+      "title": "Headstrong",
+      "creator": "Trapt",
+      "album": "Trapt",
+      "duration": 286000
+    },
+    {
+      "id": "63c754d9-37e9-4002-8be3-443baf8d24c2",
+      "title": "In Between",
+      "creator": "Beartooth",
+      "album": "Disgusting",
+      "duration": 213573
+    },
+    {
+      "id": "08687319-3f0e-40c0-b468-b38eb16de2c9",
+      "title": "can u see me in the dark?",
+      "creator": "Halestorm & I Prevail",
+      "album": "can u see me in the dark?",
+      "duration": 238756
+    },
+    {
+      "id": "2fb79b94-161a-4ad3-8ae4-78a5ed69d40d",
+      "title": "Bodies",
+      "creator": "Drowning Pool",
+      "album": "Sinner",
+      "duration": 202133
+    },
+    {
+      "id": "b75b6075-38ef-40ae-8da4-25386e51011a",
+      "title": "In the End",
+      "creator": "Black Veil Brides",
+      "album": "Wretched and Divine: The Story of the Wild Ones",
+      "duration": 228000
+    },
+    {
+      "id": "0c215bdc-65b7-417a-9cfa-d6a5933341bc",
+      "title": "Make Believe",
+      "creator": "Memphis May Fire",
+      "album": "Remade in Misery",
+      "duration": 229007
+    },
+    {
+      "id": "ccf61a59-7243-4640-96e6-3013b88f0e15",
+      "title": "Death",
+      "creator": "LANDMVRKS feat. DR€W ¥ORK",
+      "album": "Lost in the Waves",
+      "duration": 223547
+    },
+    {
+      "id": "7189eedb-14d3-4662-8769-bbcdf03765da",
+      "title": "Nu Delhi",
+      "creator": "Bloodywood",
+      "album": "Nu Delhi",
+      "duration": 268141
+    }
+  ]
+}
