@@ -23,7 +23,8 @@ class VoiceRecovery:
     decision, the queue that owned the playback, the volume the deciding request
     started from, and whether a resume the core is already running still stands.
     A running resume cannot be recalled from the core, so anything that overrules
-    it marks it superseded and the player drops the stream it asks for.
+    it marks it superseded and the player drops the stream it asks for. A resume
+    that has to follow a dropped stream waits until the running one has returned.
     """
 
     def __init__(self) -> None:
@@ -33,6 +34,7 @@ class VoiceRecovery:
         self._baseline_volume = 0
         self._resuming = False
         self._superseded = False
+        self._stream_dropped = False
 
     @property
     def phase(self) -> VoiceRecoveryPhase:
@@ -77,8 +79,9 @@ class VoiceRecovery:
         A request Alice answered, or one that changed the volume, paused the music
         only for a moment; a silent one ("Alice, stop") leaves it stopped. When the
         core is already running a resume, that one is allowed to play again instead
-        of scheduling another: a second resume would replace the running one.
-        Returns True if a resume has to be scheduled.
+        of scheduling another: a second resume would replace the running one. If
+        its stream was already dropped, the resume is scheduled once it returns
+        (see `finish_resume`). Returns True if a resume has to be scheduled now.
 
         :param spoke: Whether Alice answered the request.
         :param volume: The Station volume at the end of the request.
@@ -87,6 +90,9 @@ class VoiceRecovery:
             return False
         if not (spoke or volume != self._baseline_volume):
             self._phase = VoiceRecoveryPhase.NONE
+            return False
+        if self._resuming and self._stream_dropped:
+            self._phase = VoiceRecoveryPhase.SCHEDULED
             return False
         if self._resuming:
             self._superseded = False
@@ -125,12 +131,24 @@ class VoiceRecovery:
         self._phase = VoiceRecoveryPhase.NONE
         self._resuming = True
         self._superseded = False
+        self._stream_dropped = False
         return self._source
 
-    def finish_resume(self) -> None:
-        """Note that the resume the core ran has returned."""
+    def drop_resumed_stream(self) -> None:
+        """Note that the player dropped the stream the running resume asked for."""
+        self._stream_dropped = True
+
+    def finish_resume(self) -> bool:
+        """
+        Note that the resume the core ran has returned.
+
+        Returns True if a resume has to be scheduled now: a request that ended while
+        it ran, after its stream was dropped, asked for one.
+        """
         self._resuming = False
         self._superseded = False
+        self._stream_dropped = False
+        return self._phase == VoiceRecoveryPhase.SCHEDULED
 
     def cancel(self) -> None:
         """Drop the recovery because something else now decides playback."""

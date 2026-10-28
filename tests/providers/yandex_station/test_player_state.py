@@ -52,6 +52,7 @@ def _make_player() -> YandexStationPlayer:
     player._alice = AliceTracker()
     player._voice = VoiceRecovery()
     player._station_track_id = ""
+    vars(player)["_station_playback_starts"] = 0
     player._intercept_active = False
     player._last_intercepted_track_id = None
     player._last_intercept_time = 0.0
@@ -1590,3 +1591,58 @@ async def test_answered_request_during_a_running_resume_schedules_no_second_resu
     player.mass.call_later.assert_not_called()
     assert len(commands) == 1
     assert player._external_playing is True
+
+
+# ── Copilot round 10 ─────────────────────────────────────────────────
+
+
+async def test_station_track_that_starts_during_stop_keeps_playing() -> None:
+    """
+    A native track the Station starts while stop() waits for its response stands.
+
+    The stopped report confirms the stop, but the playing report of the next track
+    after it is newer than the command; the response must not overwrite it.
+    """
+    player = _make_player()
+    _report(player, playing=True, native_track_id="yandex-1")
+    _record_commands(
+        player,
+        "success",
+        {"playing": False, "native_track_id": "yandex-1"},
+        {"playing": True, "native_track_id": "yandex-2"},
+    )
+
+    await player.stop()
+
+    assert player._attr_playback_state == PlaybackState.PLAYING
+    assert player._attr_active_source == STATION_SOURCE_ID
+
+
+async def test_answer_after_a_dropped_resume_stream_resumes_again() -> None:
+    """
+    Alice answering a request that made the running resume drop its stream resumes.
+
+    The stream is gone, so the running resume cannot play any more; a new resume
+    is scheduled once it has returned, so it does not cancel the running one.
+    """
+    player, commands = _make_play_media_player([{"status": "SUCCESS"}])
+    _answered_interruption(player)
+    player.mass.call_later.reset_mock()
+    scheduled_while_running: list[bool] = []
+
+    async def cmd_resume(_player_id: str, source: str | None = None) -> None:
+        _report(player, playing=False, alice_state="LISTENING")
+        await player.play_media(MediaItem(uri="ma://track/1", title="T", source_id=source))
+        for alice_state in ("NONE", "IDLE"):
+            _report(player, playing=False, alice_state=alice_state)
+        scheduled_while_running.append(player.mass.call_later.called)
+
+    player.mass.players.cmd_resume = AsyncMock(side_effect=cmd_resume)
+
+    await player._resume_after_voice()
+
+    assert commands == []
+    assert scheduled_while_running == [False]
+    player.mass.call_later.assert_called_once()
+    assert player._voice.phase == VoiceRecoveryPhase.SCHEDULED
+    assert player._attr_playback_state == PlaybackState.PAUSED

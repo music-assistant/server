@@ -223,6 +223,9 @@ class YandexStationPlayer(Player):
         self._voice = VoiceRecovery()
         # Track id of the Station's own playback in the last report.
         self._station_track_id = ""
+        # Counts playback the Station started on its own; a command response older
+        # than such a start must not overwrite it.
+        self._station_playback_starts = 0
 
         # Intercept feature state (only meaningful when both provider-level and
         # per-player toggles are ON).  See _maybe_intercept / _handle_intercept_tick.
@@ -423,6 +426,7 @@ class YandexStationPlayer(Player):
         self._end_voice_interruption()
         self._external_play_generation += 1
         generation = self._external_play_generation
+        station_starts = self._station_playback_starts
         # audio_client sessions stop with the native stop command; legacy bypass
         # sessions only stop when an invalid radio URL replaces them.
         command = (
@@ -432,8 +436,12 @@ class YandexStationPlayer(Player):
         )
         result = await self.glagol.send(command)
         _raise_if_failed(result, "stop")
-        # A newer play_media() owns the session if it started meanwhile.
-        if self._external_play_generation == generation:
+        # A newer play_media() owns the session if it started meanwhile, and playback
+        # the Station started after the stop is newer than this response.
+        if (
+            self._external_play_generation == generation
+            and self._station_playback_starts == station_starts
+        ):
             self._end_external_session()
             self._attr_playback_state = PlaybackState.IDLE
             self.update_state()
@@ -479,6 +487,7 @@ class YandexStationPlayer(Player):
                 _LOGGER.debug(
                     "[%s] Station playback took over — dropping the resume", self.player_id
                 )
+                self._voice.drop_resumed_stream()
                 return
         else:
             self._end_voice_interruption()
@@ -676,6 +685,9 @@ class YandexStationPlayer(Player):
         :param spoke: Whether Alice answered the request.
         """
         if not self._voice.request_ended(spoke=spoke, volume=self._attr_volume_level or 0):
+            if self._voice.holds_playback:
+                # Resumed once the resume the core is running has returned.
+                return
             _LOGGER.debug("[%s] Silent voice command — staying stopped", self.player_id)
             if self._attr_playback_state == PlaybackState.PAUSED:
                 self._attr_playback_state = PlaybackState.IDLE
@@ -705,7 +717,12 @@ class YandexStationPlayer(Player):
         except (PlayerCommandFailed, PlayerUnavailableError) as exc:
             _LOGGER.warning("[%s] Resume after voice command failed: %s", self.player_id, exc)
         finally:
-            self._voice.finish_resume()
+            if self._voice.finish_resume():
+                # A request Alice answered after the stream was dropped; scheduled
+                # only now, so it does not replace the resume that was running.
+                self.mass.call_later(
+                    VOICE_RESUME_DELAY, self._resume_after_voice, task_id=self._voice_resume_task_id
+                )
 
     # ── Intercept feature ────────────────────────────────────────
 
@@ -1248,6 +1265,7 @@ class YandexStationPlayer(Player):
             ):
                 # The Station started playing on its own, e.g. a track Alice was
                 # asked for; ducked playback that just continues does not count.
+                self._station_playback_starts += 1
                 self._end_voice_interruption()
             self._station_track_id = native_track_id
             self._attr_active_source = STATION_SOURCE_ID

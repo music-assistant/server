@@ -140,3 +140,33 @@ def test_answered_request_during_a_running_resume_lets_it_play() -> None:
     assert schedules is False
     assert recovery.phase == VoiceRecoveryPhase.NONE
     assert recovery.drops_resumed_stream is False
+
+
+def test_answer_after_a_dropped_stream_resumes_once_the_running_resume_returns() -> None:
+    """
+    A request that made the running resume drop its stream still decides.
+
+    If Alice answers it, the music resumes again, but only once the running resume
+    has returned: a resume scheduled earlier would replace the running one.
+    """
+    recovery = _awaiting()
+    recovery.request_ended(spoke=True, volume=40)
+    recovery.start_resume()
+    recovery.request_started(volume=40)
+    recovery.drop_resumed_stream()
+
+    schedules_now = recovery.request_ended(spoke=True, volume=40)
+    holds = recovery.holds_playback
+    schedules_after = recovery.finish_resume()
+
+    assert (schedules_now, holds, schedules_after) == (False, True, True)
+    assert recovery.phase == VoiceRecoveryPhase.SCHEDULED
+
+
+def test_running_resume_that_played_schedules_nothing_after_it() -> None:
+    """A resume whose stream played leaves nothing to schedule when it returns."""
+    recovery = _awaiting()
+    recovery.request_ended(spoke=True, volume=40)
+    recovery.start_resume()
+
+    assert recovery.finish_resume() is False
