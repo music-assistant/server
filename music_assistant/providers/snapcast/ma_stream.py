@@ -333,7 +333,7 @@ class SnapcastMAStream:
             curr_task.cancel()
             await asyncio.gather(curr_task, return_exceptions=True)
 
-    async def _streamer_task_impl(self) -> None:  # noqa: PLR0915
+    async def _streamer_task_impl(self) -> None:
         """
         Streamer task implementation.
 
@@ -361,7 +361,6 @@ class SnapcastMAStream:
             self._register_output_plan()
             self._filter_settings = self._output_plan.filter_params
         stream_format = self._provider.stream_audio_format
-        restarting = False
         # ffmpeg reads this pipeline at 1x (-re) and snapserver only holds ~1 second,
         # so buffer here to give the source room to hiccup without starving the server
         audio_source = self._track_sent_audio(
@@ -382,7 +381,7 @@ class SnapcastMAStream:
                 output_format=stream_format,
                 filter_params=self._filter_settings or [],
                 audio_output=stream_path,
-                extra_input_args=["-y", "-re", "-readrate_initial_burst", "0"],
+                extra_input_args=["-y", "-re"],
             ) as ffmpeg_proc:
                 wait_ffmpeg = self._mass.create_task(ffmpeg_proc.wait())
                 wait_stop = self._mass.create_task(self._stop_streamer_evt.wait())
@@ -407,7 +406,7 @@ class SnapcastMAStream:
                     self._logger.debug("Stopping stream %s requested.", self.stream_name)
                     wait_ffmpeg.cancel()
                     await asyncio.gather(wait_ffmpeg, return_exceptions=True)
-                    if restarting := self._stop_without_drain:
+                    if self._stop_without_drain:
                         await ffmpeg_proc.kill()
                     return
 
@@ -426,10 +425,7 @@ class SnapcastMAStream:
         finally:
             self._is_streaming = False
             self._logger.debug("Finished streaming to %s", stream_path)
-            if restarting:
-                self._streaming_started_at = None
-            else:
-                await self._wait_stream_idle()
+            await self._wait_stream_idle()
 
     async def _track_sent_audio(self, audio_source: AsyncGenerator[bytes]) -> AsyncGenerator[bytes]:
         """Pass the audio through, tracking when the clients will have played it."""

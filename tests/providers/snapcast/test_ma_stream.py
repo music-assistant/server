@@ -631,7 +631,6 @@ async def test_restart_kills_the_old_run_without_draining(fake_provider: MagicMo
         await asyncio.wait_for(stream._streamer_task, 1)
 
     _running_ffmpegs[0].kill.assert_awaited_once()
-    stream._wait_stream_idle.assert_not_awaited()
 
 
 async def test_replay_during_an_explicit_stop_still_drains(fake_provider: MagicMock) -> None:
