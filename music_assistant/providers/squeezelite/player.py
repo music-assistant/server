@@ -248,6 +248,10 @@ class SqueezelitePlayer(Player):
             msg = "A synced player cannot receive play commands directly"
             raise InvalidCommand(msg)
 
+        # don't report the old stream's position until the new stream's first heartbeat
+        self._attr_elapsed_time = 0
+        self._attr_elapsed_time_last_updated = time.time()
+
         # Clean up any existing multi-client stream before starting a new one
         if self.multi_client_stream is not None:
             await self.multi_client_stream.stop()
