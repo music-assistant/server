@@ -203,3 +203,27 @@ async def test_replaying_a_finished_queue_does_not_credit_a_load_that_never_serv
 
     assert _reported(ctrl) == [("a", True)]
     assert ctrl._queue_data[QUEUE_ID].served_item_ids == set()
+
+
+async def test_a_new_playback_during_the_settle_window_is_left_alone() -> None:
+    """A replace right after the queue ran out must start at the requested item, not the next."""
+    ctrl = _controller([_track("a"), _track("b")])
+    ctrl.track_loaded_in_buffer(QUEUE_ID, "b")
+    _player_reports(ctrl, PlaybackState.PLAYING, "b", 0)
+    _player_reports(ctrl, PlaybackState.PLAYING, "b", 196)
+    _player_reports(ctrl, PlaybackState.IDLE, "b", 196)
+    settle = _settle_task(ctrl)
+    assert settle is not None
+
+    # the queue is replaced and started at its first item; the player has not reported playing yet
+    ctrl._queue_data[QUEUE_ID].items = [_track("c"), _track("d")]
+    await ctrl.play_index(QUEUE_ID, 0)
+    play_index = AsyncMock()
+    ctrl.play_index = play_index  # type: ignore[method-assign]
+    with patch(
+        "music_assistant.controllers.player_queues.playback_tracker.asyncio.sleep", AsyncMock()
+    ):
+        await settle
+
+    play_index.assert_not_awaited()
+    cast("Mock", ctrl.mark_ended).assert_not_called()

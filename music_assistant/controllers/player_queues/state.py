@@ -78,6 +78,8 @@ class PlayerQueueData:
     flow_queue_exhausted: str | None = None
     # the current stream session id (set when a stream starts, cleared between sessions)
     session_id: str | None = None
+    # bumped on every playback start, so delayed work can tell it was overtaken
+    playback_starts: int = 0
     # per-item play log for the active flow-mode stream
     flow_mode_stream_log: list[PlayLogEntry] = field(default_factory=list)
     # queue_item_id most recently handed to the player as the next item

@@ -514,11 +514,16 @@ class PlaybackTrackerMixin(_PlayerQueuesBase):
         if prev_item is not None and prev_item.media_type in UNENDABLE_MEDIA_TYPES:
             return
 
+        playback_starts = queue_data.playback_starts
+
         async def _settle_or_resume_delayed() -> None:
             for _ in range(5):
                 await asyncio.sleep(1)
                 if self._queue_data.get(queue.queue_id) is not queue_data:
                     # the queue was removed or re-registered while we waited
+                    return
+                if queue_data.playback_starts != playback_starts:
+                    # a new playback started, which the player may not report as playing yet
                     return
                 if queue.state != PlaybackState.IDLE:
                     return
@@ -559,6 +564,8 @@ class PlaybackTrackerMixin(_PlayerQueuesBase):
                     if self._queue_data.get(queue.queue_id) is not queue_data:
                         # the queue was removed or re-registered while tracks were fetched
                         return
+                    if queue_data.playback_starts != playback_starts:
+                        return
                     if dynamic_tracks:
                         queue_items = [
                             build_queue_item(
@@ -595,6 +602,8 @@ class PlaybackTrackerMixin(_PlayerQueuesBase):
                     )
             if self._queue_data.get(queue.queue_id) is not queue_data:
                 # the queue was removed or re-registered while the source was fetched
+                return
+            if queue_data.playback_starts != playback_starts:
                 return
             self._finish_queue(queue, prev_item)
 

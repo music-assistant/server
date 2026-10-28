@@ -1103,6 +1103,7 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
             self.mass.streams.audio.clear_crossfade_handover(queue_id)
             # always update session id when we start a new playback session
             queue_data.session_id = shortuuid.random(length=8)
+            queue_data.playback_starts += 1
             self.mass.streams.audio_processing.start_session(
                 queue_id,
                 queue_data.session_id,
