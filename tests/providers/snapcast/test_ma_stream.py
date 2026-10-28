@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import time
 from typing import TYPE_CHECKING, Any, Self
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -145,6 +146,18 @@ async def test_streamer_pokes_players_when_playback_anchor_is_known(
     fake_provider.mass.call_later.assert_called_once_with(
         2.0, stream._snap_on_stream_update, task_id="snapcast_playback_started_music"
     )
+
+
+def test_external_server_playback_starts_after_its_buffer(fake_provider: MagicMock) -> None:
+    """With an external Snapserver, clients start playing only after its buffer."""
+    fake_provider._snapcast_server_buffer_size = 1000
+    stream = _make_stream(fake_provider)
+
+    stream._streaming_started_at = time.time() - 0.5
+    assert stream.playback_started_at is None
+
+    stream._streaming_started_at = time.time() - 1.5
+    assert stream.playback_started_at == stream._streaming_started_at + 1.0
 
 
 class _ConsumingFFMpeg(_FakeFFMpeg):

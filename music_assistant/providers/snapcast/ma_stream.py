@@ -816,6 +816,4 @@ class SnapcastMAStream:
 
     def _get_playback_delay(self) -> float:
         """Return the delay in seconds between streaming start and playback at the clients."""
-        if self._provider._use_builtin_server:
-            return self._provider._snapcast_server_buffer_size / 1000.0
-        return 0.0
+        return self._provider._snapcast_server_buffer_size / 1000.0
