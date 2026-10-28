@@ -125,14 +125,18 @@ def test_new_request_during_a_running_resume_supersedes_it_and_decides() -> None
 
 
 def test_answered_request_during_a_running_resume_lets_it_play() -> None:
-    """A question Alice answers during the running resume ends up resuming anyway."""
+    """
+    A question Alice answers during the running resume lets that resume play.
+
+    No second resume is scheduled: the core would replace the running one with it.
+    """
     recovery = _awaiting()
     recovery.request_ended(spoke=True, volume=40)
     recovery.start_resume()
     recovery.request_started(volume=40)
-    recovery.request_ended(spoke=True, volume=40)
 
-    source = recovery.start_resume()
+    schedules = recovery.request_ended(spoke=True, volume=40)
 
-    assert source is None
+    assert schedules is False
+    assert recovery.phase == VoiceRecoveryPhase.NONE
     assert recovery.drops_resumed_stream is False

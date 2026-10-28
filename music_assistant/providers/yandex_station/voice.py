@@ -75,7 +75,9 @@ class VoiceRecovery:
         Decide at the end of the request whether playback resumes.
 
         A request Alice answered, or one that changed the volume, paused the music
-        only for a moment; a silent one ("Alice, stop") leaves it stopped.
+        only for a moment; a silent one ("Alice, stop") leaves it stopped. When the
+        core is already running a resume, that one is allowed to play again instead
+        of scheduling another: a second resume would replace the running one.
         Returns True if a resume has to be scheduled.
 
         :param spoke: Whether Alice answered the request.
@@ -83,11 +85,15 @@ class VoiceRecovery:
         """
         if self._phase != VoiceRecoveryPhase.AWAITING_ANSWER:
             return False
-        if spoke or volume != self._baseline_volume:
-            self._phase = VoiceRecoveryPhase.SCHEDULED
-            return True
-        self._phase = VoiceRecoveryPhase.NONE
-        return False
+        if not (spoke or volume != self._baseline_volume):
+            self._phase = VoiceRecoveryPhase.NONE
+            return False
+        if self._resuming:
+            self._superseded = False
+            self._phase = VoiceRecoveryPhase.NONE
+            return False
+        self._phase = VoiceRecoveryPhase.SCHEDULED
+        return True
 
     def request_started(self, volume: int) -> bool:
         """
@@ -112,15 +118,11 @@ class VoiceRecovery:
         """
         Mark the scheduled resume as running and return the queue to resume.
 
-        Returns None if nothing is scheduled any more, or if a superseded resume
-        is still running: that one is allowed to play again instead.
+        Returns None if nothing is scheduled any more.
         """
         if self._phase != VoiceRecoveryPhase.SCHEDULED:
             return None
         self._phase = VoiceRecoveryPhase.NONE
-        if self._resuming:
-            self._superseded = False
-            return None
         self._resuming = True
         self._superseded = False
         return self._source

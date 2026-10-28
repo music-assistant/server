@@ -1564,3 +1564,29 @@ async def test_silent_request_during_a_running_resume_drops_its_stream() -> None
     assert commands == []
     assert player._external_playing is False
     assert player._voice.phase == VoiceRecoveryPhase.NONE
+
+
+async def test_answered_request_during_a_running_resume_schedules_no_second_resume() -> None:
+    """
+    A second answered request while the core runs the resume keeps that resume.
+
+    The core's scheduler starts a timer's task with abort_existing under the same
+    task id, so a second scheduled resume would cancel the running one midway and
+    leave the music stopped. The running resume's stream plays instead.
+    """
+    player, commands = _make_play_media_player([{"status": "SUCCESS"}])
+    _answered_interruption(player)
+    player.mass.call_later.reset_mock()
+
+    async def cmd_resume(_player_id: str, source: str | None = None) -> None:
+        for alice_state in ("LISTENING", "NONE", "IDLE"):
+            _report(player, playing=False, alice_state=alice_state)
+        await player.play_media(MediaItem(uri="ma://track/1", title="T", source_id=source))
+
+    player.mass.players.cmd_resume = AsyncMock(side_effect=cmd_resume)
+
+    await player._resume_after_voice()
+
+    player.mass.call_later.assert_not_called()
+    assert len(commands) == 1
+    assert player._external_playing is True
