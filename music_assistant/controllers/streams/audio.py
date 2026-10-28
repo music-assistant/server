@@ -727,15 +727,18 @@ class StreamsAudio:
             hand over the slot it holds.
         :param consumer_connected: Reports whether the consumer this audio is for is still
             connected; once it reports False, no source is opened for it.
-        :return: The buffer, or None when the consumer reported it left.
+        :return: The buffer, or None when the consumer reported it left, or when the queue
+            stopped or the item left it while the buffer was being prepared.
         :raises ProviderStreamLimitError: If no source slot becomes available within the budget.
         """
+        registered = self.mass.player_queues.queue_data_or_none(queue_item.queue_id) is not None
         lock_key = (queue_item.queue_id, queue_item.queue_item_id)
         if (buffer_lock := self._audio_buffer_locks.get(lock_key)) is None:
             buffer_lock = asyncio.Lock()
             self._audio_buffer_locks[lock_key] = buffer_lock
         async with buffer_lock:
-            return await self._get_audio_buffer(
+            reused = queue_item.streamdetails.buffer if queue_item.streamdetails else None
+            buffer = await self._get_audio_buffer(
                 queue_item,
                 seek_position_ms,
                 reason,
@@ -744,6 +747,20 @@ class StreamsAudio:
                 stop_paused_queues,
                 consumer_connected,
             )
+            if (
+                buffer is None
+                or buffer is reused
+                or not self._queue_torn_down(queue_item, registered)
+            ):
+                return buffer
+            self.logger.debug(
+                "Releasing the audio of %s: it left its queue or the queue stopped meanwhile",
+                queue_item.name,
+            )
+            if (details := queue_item.streamdetails) and details.buffer is buffer:
+                details.buffer = None
+            await buffer.clear()
+            return None
 
     async def get_media_stream(
         self,
@@ -3845,6 +3862,18 @@ class StreamsAudio:
             int((time.time() - time_start) * 1000),
         )
         return streamdetails
+
+    def _queue_torn_down(self, queue_item: QueueItem, was_registered: bool) -> bool:
+        """Return whether the item's queue went away or stopped, or the item left it."""
+        # a teardown releases only what is attached when it runs; a rotated session (a skip)
+        # still plays the queue and owns the audio
+        queue_id = queue_item.queue_id
+        if (queue_data := self.mass.player_queues.queue_data_or_none(queue_id)) is None:
+            return was_registered
+        return (
+            queue_data.session_id is None
+            or self.mass.player_queues.get_item(queue_id, queue_item.queue_item_id) is None
+        )
 
     async def _get_audio_buffer(
         self,

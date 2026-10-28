@@ -9,9 +9,10 @@ filling them now.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, cast
+from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock
 
+import pytest
 from music_assistant_models.enums import ContentType, MediaType, StreamType
 from music_assistant_models.media_items import AudioFormat, ProviderMapping, SoundEffect
 from music_assistant_models.queue_item import QueueItem
@@ -20,9 +21,6 @@ from music_assistant_models.streamdetails import StreamDetails
 from music_assistant.controllers.player_queues.state import PlayerQueueData
 from music_assistant.controllers.streams.audio import StreamsAudio
 from music_assistant.controllers.streams.audio_buffer import AudioBuffer
-
-if TYPE_CHECKING:
-    import pytest
 
 QUEUE_ID = "queue-1"
 INSTANCE = "service--1"
@@ -170,3 +168,70 @@ async def test_a_filled_buffer_reports_its_queue_item_as_fully_buffered(
     get_buffer.await_args.kwargs["on_complete"]()
 
     mass.player_queues.track_fully_buffered.assert_called_once_with(QUEUE_ID, "queue-item-1")
+
+
+@pytest.mark.parametrize("teardown", ["stop", "removal", "replace"])
+async def test_a_buffer_attached_after_its_queue_was_torn_down_is_released(
+    monkeypatch: pytest.MonkeyPatch, teardown: str
+) -> None:
+    """
+    A request still resolving its source when the queue tears down its audio keeps none.
+
+    The teardown releases what is attached at that moment, so a buffer this request attaches
+    afterwards would hold its provider stream slot until the inactivity timeout.
+    """
+    queue_item = _queue_item(stamped_with=None)
+    details = queue_item.streamdetails
+    assert details is not None
+    queue_item.streamdetails = None
+    audio = _audio("sess-1")
+    mass = cast("MagicMock", audio.mass)
+    queue_data = mass.player_queues.queue_data_or_none.return_value
+
+    async def _resolve_while_torn_down(*_args: Any, **_kwargs: Any) -> StreamDetails:
+        if teardown == "stop":
+            queue_data.session_id = None
+        else:
+            mass.player_queues.get_item.return_value = None
+            if teardown == "removal":
+                mass.player_queues.queue_data_or_none.return_value = None
+        return details
+
+    audio.get_stream_details = _resolve_while_torn_down  # type: ignore[method-assign]
+    late_buffer = MagicMock(spec=AudioBuffer)
+
+    async def _attach(**kwargs: Any) -> MagicMock:
+        kwargs["streamdetails"].buffer = late_buffer
+        return late_buffer
+
+    monkeypatch.setattr(AudioBuffer, "get_buffer", _attach)
+
+    result = await audio.get_audio_buffer(queue_item, reason="streaming")
+
+    assert result is None
+    assert details.buffer is None
+    late_buffer.clear.assert_awaited_once()
+
+
+async def test_a_skip_during_the_request_keeps_the_buffer(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A session that rotated (a skip) still plays the queue and owns the audio prepared for it."""
+    queue_item = _queue_item(stamped_with=None)
+    details = queue_item.streamdetails
+    assert details is not None
+    queue_item.streamdetails = None
+    audio = _audio("sess-1")
+    mass = cast("MagicMock", audio.mass)
+    queue_data = mass.player_queues.queue_data_or_none.return_value
+
+    async def _resolve_while_skipped(*_args: Any, **_kwargs: Any) -> StreamDetails:
+        queue_data.session_id = "sess-2"
+        return details
+
+    audio.get_stream_details = _resolve_while_skipped  # type: ignore[method-assign]
+    buffer = MagicMock(spec=AudioBuffer)
+    monkeypatch.setattr(AudioBuffer, "get_buffer", AsyncMock(return_value=buffer))
+
+    assert await audio.get_audio_buffer(queue_item, reason="streaming") is buffer
+    buffer.clear.assert_not_awaited()
