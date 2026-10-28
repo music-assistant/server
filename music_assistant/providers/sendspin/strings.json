@@ -25,6 +25,9 @@
     "security_status_disconnected": {
       "label": "The device disconnected and will reappear once it reconnects."
     },
+    "security_status_held_unapproved": {
+      "label": "Another server is using this device, and Music Assistant has not paired it or allowed guest access yet."
+    },
     "security_status_unencrypted": {
       "label": "This device is connected without encryption (legacy mode). Pairing is not available."
     },
@@ -82,6 +85,14 @@
     "unpair": {
       "label": "Unpair",
       "description": "Remove the pairing with this device. Both sides forget the stored credential and the device reconnects as unpaired."
+    },
+    "source_input_enable": {
+      "label": "Turn on audio input",
+      "description": "Let this device send its audio (such as a line-in) to Music Assistant."
+    },
+    "source_input_disable": {
+      "label": "Turn off audio input",
+      "description": "Stop using this device's audio input."
     },
     "management_enter": {
       "label": "Manage device settings",
@@ -165,6 +176,9 @@
         "this_device": "This device"
       }
     },
+    "source_autostart_unavailable": {
+      "label": "This device does not support automatically playing its line-in on a speaker."
+    },
     "source_input_action": {
       "label": "Audio input",
       "options": {
@@ -180,10 +194,14 @@
       "label": "Connection",
       "options": {
         "unpaired": "Connect unpaired",
+        "unpaired_with_input": "Connect unpaired with audio input",
+        "unpaired_without_input": "Connect unpaired without audio input",
         "pair": "Pair device"
       },
       "option_descriptions": {
         "unpaired": "No pairing needed. Quick and easy, but less secure.",
+        "unpaired_with_input": "No pairing needed. Quick and easy, but less secure.",
+        "unpaired_without_input": "Playback only. The audio input can be turned on later in the device settings.",
         "pair": "Sets up a permanent, secure connection with this device."
       }
     },
@@ -237,6 +255,10 @@
     "approve_device_source": {
       "title": "How do you want to connect?",
       "description": "You can connect to this device straight away, or set up a secure pairing first. Without pairing the connection can be intercepted. This device can also send audio to Music Assistant. If that input could be sensitive, such as a microphone, pairing is the safer choice."
+    },
+    "source_autostart": {
+      "title": "Play line-in automatically",
+      "description": "This device can start playing its line-in on a player when a signal arrives, such as a record starting to play. You can change this later in the player settings."
     }
   },
   "manifest": {

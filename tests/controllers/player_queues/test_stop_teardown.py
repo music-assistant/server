@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import contextlib
 from collections.abc import AsyncIterator
+from functools import partial
 from typing import TYPE_CHECKING, Any, cast
 from unittest.mock import AsyncMock, MagicMock
 
@@ -151,3 +152,16 @@ async def test_a_stop_that_lost_the_race_to_a_new_session_leaves_it_alone() -> N
     # the cleanup is handed the stopped session, so it tears down that session's audio
     # without touching what the replacement already prepared
     fake._cleanup_queue_audio_data.assert_called_once_with("q", "sess-1")
+
+
+@pytest.mark.asyncio
+async def test_stop_on_a_removed_queue_reports_it_unavailable() -> None:
+    """A stop for a queue whose player was unregistered raises PlayerUnavailableError."""
+    fake = _fake_controller()
+    fake._handle_stop = partial(
+        PlayerQueuesController._handle_stop, cast("PlayerQueuesController", fake)
+    )
+    fake._queue_data.pop("q")
+
+    with pytest.raises(PlayerUnavailableError):
+        await PlayerQueuesController.stop(cast("PlayerQueuesController", fake), "q")

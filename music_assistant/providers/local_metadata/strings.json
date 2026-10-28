@@ -1,0 +1,21 @@
+{
+  "config_entries": {
+    "path": {
+      "label": "Artist information folder",
+      "description": "Folder with one subfolder per artist, holding an artist.nfo file and artwork, as used by Kodi."
+    }
+  },
+  "manifest": {
+    "description": "Reads artist biographies, genres and artwork from a Kodi style artist information folder."
+  },
+  "setup_flow": {
+    "user": {
+      "title": "Choose the artist information folder"
+    }
+  },
+  "errors": {
+    "folder_not_found": "The folder {0} does not exist.",
+    "folder_not_allowed": "The folder {0} is not in a storage location you can use.",
+    "storage_location_unavailable": "The storage location at {0} is not available right now."
+  }
+}

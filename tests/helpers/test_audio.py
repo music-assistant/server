@@ -79,6 +79,21 @@ def test_build_concat_filelist_escapes_multiple_apostrophes() -> None:
     assert result == "file '/x/it'\\''s a, b'\\''s & c'\\''s.mp3'\n"
 
 
+def test_build_concat_filelist_skips_tls_verify_on_request() -> None:
+    """With verify_ssl off, every http(s) part gets the directive, local paths do not."""
+    result = build_concat_filelist(
+        ["https://192.168.1.10/a.mp3", "http://example.com/b.mp3", "/music/c.mp3"],
+        verify_ssl=False,
+    )
+    assert result == (
+        "file 'https://192.168.1.10/a.mp3'\n"
+        "option tls_verify 0\n"
+        "file 'http://example.com/b.mp3'\n"
+        "option tls_verify 0\n"
+        "file '/music/c.mp3'\n"
+    )
+
+
 # verbatim ffmpeg 7.1 output: the report is a block below the marker line, not inline
 FFMPEG_LOUDNORM_OUTPUT = b"""[out#0/null @ 0x93b] Output stream
 [Parsed_loudnorm_0 @ 0x93b41d440] \n{

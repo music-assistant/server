@@ -20,6 +20,9 @@ image and completion is detected by polling, not a browser callback.
 from __future__ import annotations
 
 import base64
+import logging
+from contextlib import asynccontextmanager
+from dataclasses import dataclass
 from html import escape
 from typing import TYPE_CHECKING
 from uuid import uuid4
@@ -64,13 +67,18 @@ from .constants import (
     CONNECTION_TYPE_DIRECT,
     YANDEX_OAUTH_URL,
 )
+from .direct import DirectConnectionHandler
 from .ma_authenticator import make_authenticator
 
 if TYPE_CHECKING:
+    from collections.abc import AsyncIterator
+
     from music_assistant_models.config_entries import ConfigValueType
 
     from music_assistant.mass import MusicAssistant
     from music_assistant.models.setup_flow import SetupSession
+
+_LOGGER = logging.getLogger(__name__)
 
 # skill-creation method choices (cloud_plus)
 _METHOD_AUTO = "auto"
@@ -277,6 +285,61 @@ async def _run_direct(
             errors = {"base": err}
 
 
+@dataclass
+class _SetupDirectBackend:
+    """Direct backend routes served on behalf of the setup flows deploying a skill."""
+
+    handler: DirectConnectionHandler | None = None
+    users: int = 0
+
+
+_SETUP_DIRECT_BACKEND = _SetupDirectBackend()
+
+
+@asynccontextmanager
+async def _serve_direct_backend(
+    session: SetupSession,
+    collected: dict[str, ConfigValueType],
+    connection_type: str,
+) -> AsyncIterator[None]:
+    """
+    Serve the direct-mode backend routes while the skill is being deployed.
+
+    Yandex validates the skill's backend URI on deploy, but the plugin (which normally
+    serves these routes) only loads after setup finishes. No-op for the relay modes.
+    """
+    if connection_type != CONNECTION_TYPE_DIRECT:
+        yield
+        return
+    backend = _SETUP_DIRECT_BACKEND
+    if backend.users == 0:
+        handler = DirectConnectionHandler(
+            mass=session.mass,
+            user_id="",
+            access_token="",
+            client_secret=str(collected.get(CONF_DIRECT_CLIENT_SECRET) or ""),
+            logger=_LOGGER,
+        )
+        try:
+            handler.register_routes()
+        except RuntimeError:
+            # registration is all-or-nothing and the webserver is running, so a refusal
+            # means a loaded instance (reconfigure) already serves the complete backend
+            _LOGGER.debug("Direct backend routes already registered, reusing them")
+            yield
+            return
+        backend.handler = handler
+    # concurrent setup flows share one set of routes; the last one out releases them
+    backend.users += 1
+    try:
+        yield
+    finally:
+        backend.users -= 1
+        if backend.users == 0 and backend.handler is not None:
+            backend.handler.unregister_routes()
+            backend.handler = None
+
+
 async def _provision_skill(
     session: SetupSession,
     collected: dict[str, ConfigValueType],
@@ -314,24 +377,25 @@ async def _provision_skill(
     async def _attempt(x_token: str) -> str:
         authenticator = make_authenticator(cached_x_token=x_token)
         artifacts_raw = collected.get(CONF_AUTO_CREATE_ARTIFACTS)
-        artifacts = await session.progress_until(
-            auto_create_skill(
-                authenticator=authenticator,
-                skill_name=skill_name,
-                artifacts=load_artifacts(str(artifacts_raw) if artifacts_raw else None),
-                backend_uri=urls.backend_uri,
-                oauth_authorize_url=urls.oauth_authorize_url,
-                oauth_token_url=urls.oauth_token_url,
-                oauth_client_id=urls.oauth_client_id,
-                oauth_client_secret=urls.oauth_client_secret,
-                logo_bytes=load_default_logo_bytes(),
-                channel=SMART_HOME_CHANNEL,
-                progress_cb=_track,
-            ),
-            step_id="creating_skill",
-            text="creating_skill",
-            expires_in=_SKILL_CREATE_TIMEOUT,
-        )
+        async with _serve_direct_backend(session, collected, connection_type):
+            artifacts = await session.progress_until(
+                auto_create_skill(
+                    authenticator=authenticator,
+                    skill_name=skill_name,
+                    artifacts=load_artifacts(str(artifacts_raw) if artifacts_raw else None),
+                    backend_uri=urls.backend_uri,
+                    oauth_authorize_url=urls.oauth_authorize_url,
+                    oauth_token_url=urls.oauth_token_url,
+                    oauth_client_id=urls.oauth_client_id,
+                    oauth_client_secret=urls.oauth_client_secret,
+                    logo_bytes=load_default_logo_bytes(),
+                    channel=SMART_HOME_CHANNEL,
+                    progress_cb=_track,
+                ),
+                step_id="creating_skill",
+                text="creating_skill",
+                expires_in=_SKILL_CREATE_TIMEOUT,
+            )
         collected[CONF_AUTO_CREATE_ARTIFACTS] = dump_artifacts(artifacts)
         if artifacts.state != SkillCreationState.DONE or not artifacts.skill_id:
             raise SetupFlowError(artifacts.last_error or "skill creation failed")

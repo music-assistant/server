@@ -112,6 +112,10 @@ LIBRARY_FEATURE_BY_MEDIA_TYPE: Final[dict[MediaType, ProviderFeature]] = {
 }
 
 
+class NothingToSync(Exception):
+    """Raised from sync_library when the provider found nothing changed since its last sync."""
+
+
 @dataclass
 class SyncRunState:
     """
@@ -657,6 +661,21 @@ class MusicProvider(MediaCatalogMixin, RecommendationsMixin, AudioStreamMixin, P
         Remove track(s) from playlist.
 
         Only called if provider supports ProviderFeature.PLAYLIST_TRACKS_EDIT.
+        """
+        raise NotImplementedError
+
+    async def move_playlist_track(
+        self, prov_playlist_id: str, from_position: int, to_position: int
+    ) -> None:
+        """
+        Move one track of a playlist to another position.
+
+        Only called if provider supports ProviderFeature.PLAYLIST_TRACKS_MOVE.
+
+        :param prov_playlist_id: The playlist id on the provider.
+        :param from_position: The current position of the track, 1-based.
+        :param to_position: The position the track ends up at after the move, 1-based.
+        :raises InvalidDataError: A position is outside the playlist.
         """
         raise NotImplementedError
 
@@ -1739,7 +1758,7 @@ class MusicProvider(MediaCatalogMixin, RecommendationsMixin, AudioStreamMixin, P
                         else None
                     )
                     await self._sync_item_genres(
-                        MediaType.TRACK,
+                        prov_track.media_type,
                         prov_track.item_id,
                         db_id,
                         fallback_genres,
@@ -1883,7 +1902,7 @@ class MusicProvider(MediaCatalogMixin, RecommendationsMixin, AudioStreamMixin, P
             # episodes does not make the podcast result set incomplete
             try:
                 # precache podcast episodes
-                async for _ in self.mass.music.podcasts.episodes(str(db_id), "library"):
+                async for _ in self.mass.music.podcasts.iter_episodes(str(db_id), "library"):
                     await asyncio.sleep(0)  # yield to eventloop
             except Exception as err:
                 self._handle_sync_item_failure(MediaType.PODCAST, prov_item.uri, err)

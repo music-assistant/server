@@ -10,7 +10,9 @@ from music_assistant_models.enums import ContentType, ExternalID, ImageType, Med
 from music_assistant_models.errors import InvalidDataError
 from music_assistant_models.media_items import (
     Album,
+    Audiobook,
     AudioFormat,
+    AudioMetadata,
     ItemMapping,
     MediaItemImage,
     MediaItemMetadata,
@@ -1139,6 +1141,41 @@ def test_media_item_to_playlist_item_omits_multi_domain_mb_track() -> None:
     assert "mb_track" not in playlist_item.metadata
 
 
+def test_media_item_to_playlist_item_audiobook_with_item_mapping_authors() -> None:
+    """Library audiobooks carry authors/narrators as ItemMapping, exported by name."""
+    audiobook = Audiobook(
+        item_id="1",
+        provider="library",
+        name="Book 1",
+        provider_mappings={
+            ProviderMapping(
+                item_id="book_1", provider_domain="audible", provider_instance="audible_1"
+            )
+        },
+        authors=UniqueList(
+            [
+                ItemMapping(
+                    media_type=MediaType.ARTIST, item_id="1", provider="library", name="Author 1"
+                ),
+                "Author 2",
+            ]
+        ),
+        narrators=UniqueList(
+            [
+                ItemMapping(
+                    media_type=MediaType.ARTIST, item_id="2", provider="library", name="Narrator 1"
+                )
+            ]
+        ),
+    )
+
+    playlist_item = media_item_to_playlist_item(audiobook)
+
+    assert playlist_item.metadata is not None
+    assert playlist_item.metadata["authors"] == "Author 1; Author 2"
+    assert playlist_item.metadata["narrators"] == "Narrator 1"
+
+
 def test_media_item_to_playlist_item_omits_multi_instance_same_domain_mb_track() -> None:
     """Two instances of the same domain can still disagree on release, so MB_TRACK is omitted."""
     track = Track(
@@ -1644,7 +1681,7 @@ def test_construct_keeps_the_provider_instance() -> None:
 
 
 # --------------------------------------------------------------------------- #
-#  PlaylistController.tracks() — provider-driven pagination                    #
+#  PlaylistController.iter_tracks() — provider-driven pagination               #
 # --------------------------------------------------------------------------- #
 
 
@@ -1657,14 +1694,14 @@ def _make_controller() -> PlaylistController:
 
 @pytest.mark.asyncio
 async def test_tracks_relays_all_provider_pages() -> None:
-    """tracks() relays every non-empty provider page until exhausted (provider decides size)."""
+    """iter_tracks() relays every non-empty provider page until exhausted (provider decides size)."""
     controller = _make_controller()
     page0 = [MagicMock(spec=Track) for _ in range(20)]
     page1 = [MagicMock(spec=Track) for _ in range(15)]
     get_tracks = AsyncMock(side_effect=[page0, page1, []])
     cast("Any", controller)._get_provider_playlist_tracks = get_tracks
 
-    result = [t async for t in controller.tracks("abc", "some_provider")]
+    result = [t async for t in controller.iter_tracks("abc", "some_provider")]
 
     # No controller-side cap: a multi-page (e.g. dynamic) list is relayed in full.
     assert len(result) == 35
@@ -1673,16 +1710,52 @@ async def test_tracks_relays_all_provider_pages() -> None:
 
 @pytest.mark.asyncio
 async def test_tracks_stops_on_empty_page() -> None:
-    """tracks() stops fetching once the provider yields an empty page."""
+    """iter_tracks() stops fetching once the provider yields an empty page."""
     controller = _make_controller()
     page0 = [MagicMock(spec=Track) for _ in range(7)]
     get_tracks = AsyncMock(side_effect=[page0, []])
     cast("Any", controller)._get_provider_playlist_tracks = get_tracks
 
-    result = [t async for t in controller.tracks("abc", "some_provider")]
+    result = [t async for t in controller.iter_tracks("abc", "some_provider")]
 
     assert len(result) == 7
     assert get_tracks.await_count == 2
+
+
+def _playlist_track(item_id: str, audio_metadata: AudioMetadata | None = None) -> Track:
+    return Track(
+        item_id=item_id,
+        provider="some_provider",
+        name=item_id,
+        provider_mappings=set(),
+        audio_metadata=audio_metadata,
+    )
+
+
+@pytest.mark.asyncio
+async def test_tracks_add_audio_metadata_per_page() -> None:
+    """Tracks without audio metadata get it from stored analysis, one lookup per page."""
+    controller = _make_controller()
+    from_provider = AudioMetadata(bpm=99.0)
+    page0 = [_playlist_track("a"), _playlist_track("b", from_provider)]
+    page1 = [
+        _playlist_track("c"),
+        Radio(item_id="r", provider="some_provider", name="r", provider_mappings=set()),
+    ]
+    cast("Any", controller)._get_provider_playlist_tracks = AsyncMock(
+        side_effect=[page0, page1, []]
+    )
+    lookup = AsyncMock(side_effect=[[AudioMetadata(bpm=120.0)], [None]])
+    cast("Any", controller.mass).streams.audio_analysis.get_tracks_audio_metadata = lookup
+
+    result = [t async for t in controller.iter_tracks("abc", "some_provider")]
+
+    assert [cast("Track", t).audio_metadata for t in result[:3]] == [
+        AudioMetadata(bpm=120.0),
+        from_provider,
+        None,
+    ]
+    assert [call.args[0] for call in lookup.await_args_list] == [[page0[0]], [page1[0]]]
 
 
 # --------------------------------------------------------------------------- #

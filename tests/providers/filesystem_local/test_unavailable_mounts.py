@@ -84,6 +84,8 @@ def _source(mass: MusicAssistant, media: Path) -> LocalFileSystemProvider:
     )
     provider._process_deletions = AsyncMock()  # type: ignore[method-assign]
     provider._process_orphaned_albums_and_artists = AsyncMock()  # type: ignore[method-assign]
+    # reported as skipped, so the sync writes no flag to the mocked provider config
+    provider._prune_all_missing_local_refs = AsyncMock(return_value=False)  # type: ignore[method-assign]
     return provider
 
 

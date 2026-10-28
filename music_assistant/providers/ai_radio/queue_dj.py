@@ -62,6 +62,8 @@ class AIRadioQueueDJMixin:
 
         def _station_id_from_source_uri(self, uri: str | None) -> str | None: ...
 
+        def _render_ahead(self, queue_id: str) -> None: ...
+
     async def set_queue_dj(self, queue_id: str, host_id: str | None) -> dict[str, dict[str, str]]:
         """
         Enable, switch or disable the sticky AI DJ on a queue.
@@ -262,6 +264,10 @@ class AIRadioQueueDJMixin:
             else:
                 self._schedule_replan(queue_id)
                 await self._maybe_detach_show_dj(queue_id)
+                # an unready state is still clearing the previous host's clips
+                state = self._dj_queues.get(queue_id)
+                if state is not None and state.ready and not self._unloading:
+                    self._render_ahead(queue_id)
         # an arm-once record can outlive its DJ state (manual disable, deleted host, a failed
         # arm), so it is reconciled against the queue's current sources independently here
         self._forget_armed_show(queue_id, queue_removed=event.event == EventType.PLAYER_REMOVED)
@@ -556,7 +562,7 @@ class AIRadioQueueDJMixin:
         if (queue := self.mass.player_queues.get(queue_id)) is not None:
             guard_index = self._dj_guard_index(queue)
             items = self._dj_queue_items(queue_id)
-            # the failed clip is the one the queue is loading while this runs, and the slot
+            # the failed clip may be the one the queue is loading while this runs, and the slot
             # right after the guard may be handed to the player at any moment: both stay (the
             # clip marked unplayable), since taking either out would shift the indexes the
             # queue's load walks. everything beyond them goes

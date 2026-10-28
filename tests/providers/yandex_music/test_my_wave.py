@@ -11,7 +11,9 @@ from music_assistant_models.enums import MediaType, ProviderFeature
 from music_assistant_models.errors import InvalidDataError
 from music_assistant_models.media_items import Playlist, ProviderMapping
 from music_assistant_models.media_items import Track as MATrack
+from yandex_music import Track as YandexTrack
 
+from music_assistant.providers.yandex_music.browse import _BrowseRouter
 from music_assistant.providers.yandex_music.constants import (
     CONF_ACTION_DELETE_WAVE_PRESET,
     CONF_ACTION_SAVE_WAVE_PRESET,
@@ -99,6 +101,7 @@ async def test_browse_root_exposes_my_wave_as_playlist() -> None:
     )
     provider.get_playlist = AsyncMock(return_value=my_wave)
 
+    provider._browse_router = _BrowseRouter(provider)
     items = await YandexMusicProvider.browse(provider, f"{provider.instance_id}://")
 
     assert isinstance(items[0], Playlist)
@@ -115,7 +118,7 @@ async def test_fetch_rotor_session_batch_starts_session_on_first_call() -> None:
     provider = Mock(spec=YandexMusicProvider)
     provider.client = AsyncMock()
     provider.client.rotor_session_new = AsyncMock(
-        return_value=("sess_1", ["track1", "track2"], "batch_a")
+        return_value=("sess_1", ["track1", "track2"], "batch_a", False)
     )
     provider.client.rotor_session_tracks = AsyncMock()
     wave = _WaveState()
@@ -137,7 +140,7 @@ async def test_fetch_rotor_session_batch_passes_wave_settings_to_session_new() -
     """Session creation forwards wave.settings (diversity/moodEnergy/language) as seeds."""
     provider = Mock(spec=YandexMusicProvider)
     provider.client = AsyncMock()
-    provider.client.rotor_session_new = AsyncMock(return_value=("s", [], "b"))
+    provider.client.rotor_session_new = AsyncMock(return_value=("s", [], "b", False))
     wave = _WaveState()
     wave.settings = {"diversity": "discover", "moodEnergy": "calm"}
 
@@ -153,7 +156,7 @@ async def test_fetch_rotor_session_batch_paginates_via_session_tracks_after_firs
     provider = Mock(spec=YandexMusicProvider)
     provider.client = AsyncMock()
     provider.client.rotor_session_new = AsyncMock()
-    provider.client.rotor_session_tracks = AsyncMock(return_value=(["t3"], "batch_b"))
+    provider.client.rotor_session_tracks = AsyncMock(return_value=(["t3"], "batch_b", False))
     wave = _WaveState()
     wave.session_id = "sess_1"
     wave.last_track_id = "42"
@@ -173,7 +176,7 @@ async def test_fetch_rotor_session_batch_returns_empty_when_session_new_fails() 
     """When session creation returns None session_id, wave is not mutated and result is empty."""
     provider = Mock(spec=YandexMusicProvider)
     provider.client = AsyncMock()
-    provider.client.rotor_session_new = AsyncMock(return_value=(None, [], None))
+    provider.client.rotor_session_new = AsyncMock(return_value=(None, [], None, False))
     wave = _WaveState()
 
     tracks, batch_id = await YandexMusicProvider._fetch_rotor_session_batch(
@@ -190,7 +193,7 @@ async def test_fetch_rotor_session_batch_works_with_track_seed_station() -> None
     """get_similar_tracks uses station 'track:{id}' — same session machinery."""
     provider = Mock(spec=YandexMusicProvider)
     provider.client = AsyncMock()
-    provider.client.rotor_session_new = AsyncMock(return_value=("s", ["t"], "b"))
+    provider.client.rotor_session_new = AsyncMock(return_value=("s", ["t"], "b", False))
     wave = _WaveState()
 
     await YandexMusicProvider._fetch_rotor_session_batch(provider, wave, "track:9999")
@@ -248,7 +251,7 @@ async def test_fetch_rotor_session_batch_resolves_wave_mode_preset_settings() ->
     """A station key like 'user:onyourwave#discover' translates to settingDiversity=discover."""
     provider = Mock(spec=YandexMusicProvider)
     provider.client = AsyncMock()
-    provider.client.rotor_session_new = AsyncMock(return_value=("sess_1", [], "batch_a"))
+    provider.client.rotor_session_new = AsyncMock(return_value=("sess_1", [], "batch_a", False))
     wave = _WaveState()
 
     await YandexMusicProvider._fetch_rotor_session_batch(
@@ -266,7 +269,7 @@ async def test_fetch_rotor_session_batch_preset_merges_with_explicit_wave_settin
     """Explicit wave.settings overrides preset settings on the same key."""
     provider = Mock(spec=YandexMusicProvider)
     provider.client = AsyncMock()
-    provider.client.rotor_session_new = AsyncMock(return_value=("s", [], "b"))
+    provider.client.rotor_session_new = AsyncMock(return_value=("s", [], "b", False))
     wave = _WaveState()
     wave.settings = {"diversity": "popular"}  # overrides preset
 
@@ -284,7 +287,7 @@ async def test_fetch_rotor_session_batch_unknown_preset_strips_suffix_no_setting
     """Unknown '#<x>' suffix is stripped from the station key and no extra settings are sent."""
     provider = Mock(spec=YandexMusicProvider)
     provider.client = AsyncMock()
-    provider.client.rotor_session_new = AsyncMock(return_value=(None, [], None))
+    provider.client.rotor_session_new = AsyncMock(return_value=(None, [], None, False))
     wave = _WaveState()
 
     await YandexMusicProvider._fetch_rotor_session_batch(
@@ -306,7 +309,7 @@ async def test_prefetch_rotor_session_fills_prefetched_when_idle() -> None:
     """With an active session + cursor and no prefetched tracks, fills wave.prefetched."""
     provider = Mock(spec=YandexMusicProvider)
     provider.client = AsyncMock()
-    provider.client.rotor_session_tracks = AsyncMock(return_value=(["t1", "t2"], "batch_b"))
+    provider.client.rotor_session_tracks = AsyncMock(return_value=(["t1", "t2"], "batch_b", False))
     wave = _WaveState()
     wave.session_id = "sess_1"
     wave.last_track_id = "42"
@@ -744,6 +747,7 @@ async def test_send_wave_feedback_uses_session_api_when_session_id_present() -> 
     wave = _WaveState()
     wave.session_id = "sess_1"
     wave.batch_id = "batch_a"
+    wave.remember_track_batch([YandexTrack(id=100)], "batch_a")
 
     result = await YandexMusicProvider._send_wave_feedback(
         provider, wave, "user:onyourwave", "trackStarted", track_id="100"

@@ -5,8 +5,9 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 import ytmusicapi
-from music_assistant_models.errors import LoginFailed
+from music_assistant_models.errors import LoginFailed, MediaNotFoundError
 from ytmusicapi import LikeStatus
+from ytmusicapi.exceptions import YTMusicServerError
 
 from music_assistant.providers.ytmusic import helpers
 
@@ -63,6 +64,32 @@ async def test_get_artist_fallback_still_returns_unknown() -> None:
     with patch.object(ytmusicapi, "YTMusic", return_value=mock_ytm):
         artist = await helpers.get_artist(prov_artist_id="UC123", headers={})
     assert artist == {"channelId": "UC123", "name": "Unknown"}
+
+
+async def test_get_podcast_rejected_id_raises_media_not_found() -> None:
+    """A podcast id YouTube rejects with HTTP 400 must surface as MediaNotFoundError."""
+    mock_ytm = MagicMock()
+    mock_ytm.get_podcast.side_effect = YTMusicServerError(
+        "Server returned HTTP 400: Bad Request.\nRequest contains an invalid argument."
+    )
+    with (
+        patch.object(ytmusicapi, "YTMusic", return_value=mock_ytm),
+        pytest.raises(MediaNotFoundError),
+    ):
+        await helpers.get_podcast(prov_podcast_id="SE", headers={})
+
+
+async def test_get_podcast_server_failure_still_propagates() -> None:
+    """A YouTube server failure on get_podcast must not be reported as not found."""
+    mock_ytm = MagicMock()
+    mock_ytm.get_podcast.side_effect = YTMusicServerError(
+        "Server returned HTTP 503: Service Unavailable.\nThe service is currently unavailable."
+    )
+    with (
+        patch.object(ytmusicapi, "YTMusic", return_value=mock_ytm),
+        pytest.raises(YTMusicServerError),
+    ):
+        await helpers.get_podcast(prov_podcast_id="PL123", headers={})
 
 
 async def test_search_is_anonymous() -> None:

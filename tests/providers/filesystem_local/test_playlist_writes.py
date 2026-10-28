@@ -6,7 +6,7 @@ from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-from music_assistant_models.errors import InvalidDataError
+from music_assistant_models.errors import InvalidDataError, MediaNotFoundError
 
 from music_assistant.helpers.playlists import parse_m3u
 from music_assistant.providers.filesystem_local import LocalFileSystemProvider
@@ -127,3 +127,33 @@ async def test_add_playlist_tracks_keeps_entry_on_one_line(base: Path) -> None:
     assert len(items) == 1
     assert (items[0].title or "").startswith("Song")
     assert items[0].path.startswith("Artist/Song.mp3")
+
+
+@pytest.mark.parametrize("edit", ["add", "remove"])
+async def test_editing_a_non_playlist_file_is_refused(base: Path, edit: str) -> None:
+    """A mapped path without a playlist extension is never read or rewritten."""
+    (base / "pkg").mkdir()
+    module = base / "pkg" / "__init__.py"
+    module.write_text("x = 1\n", encoding="utf-8")
+    provider = _make_provider(base)
+
+    call = (
+        provider.add_playlist_tracks("pkg/__init__.py", ["evil.wav"])
+        if edit == "add"
+        else provider.remove_playlist_tracks("pkg/__init__.py", (1,))
+    )
+
+    with pytest.raises(MediaNotFoundError):
+        await call
+
+    assert module.read_text(encoding="utf-8") == "x = 1\n"
+
+
+async def test_get_playlist_refuses_a_non_playlist_file(base: Path) -> None:
+    """A path without a playlist extension does not resolve as a playlist."""
+    (base / "notes.txt").write_text(ORIGINAL, encoding="utf-8")
+    provider = _make_provider(base)
+    del provider.get_playlist  # the real method, not the helper's stub
+
+    with pytest.raises(MediaNotFoundError):
+        await provider.get_playlist("notes.txt")

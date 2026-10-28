@@ -38,7 +38,10 @@ from music_assistant.helpers.util import enrich_device_mac_address
 from music_assistant.models.player import DeviceInfo, LinkedOutputProtocol, Player
 from music_assistant.models.player_provider import PlayerProvider
 from music_assistant.providers.universal_player.constants import CONF_CREATED_AT
-from music_assistant.providers.universal_player.player import UniversalPlayer
+from music_assistant.providers.universal_player.player import (
+    UniversalPlayer,
+    get_clean_player_name,
+)
 from music_assistant.providers.universal_player.provider import UniversalPlayerProvider
 
 
@@ -564,6 +567,36 @@ class TestIdentifiersMatch:
 
         assert controller._identifiers_match(player_a, player_b) is False
 
+    def test_airplay_id_mismatch_blocks_ip_fallback(self, mock_mass: MagicMock) -> None:
+        """Test that AirPlay receivers sharing one IP with LA MACs don't match."""
+        controller = PlayerController(mock_mass)
+
+        provider = MockProvider("airplay")
+        player_a = MockPlayer(
+            provider,
+            "ap02a82cf96025",
+            "Receiver A",
+            player_type=PlayerType.PROTOCOL,
+            identifiers={
+                IdentifierType.MAC_ADDRESS: "02:A8:2C:F9:60:25",
+                IdentifierType.IP_ADDRESS: "192.168.1.117",
+                IdentifierType.AIRPLAY_ID: "ap02a82cf96025",
+            },
+        )
+        player_b = MockPlayer(
+            provider,
+            "ap5ab35862ec6c",
+            "Receiver B",
+            player_type=PlayerType.PROTOCOL,
+            identifiers={
+                IdentifierType.MAC_ADDRESS: "5A:B3:58:62:EC:6C",
+                IdentifierType.IP_ADDRESS: "192.168.1.117",
+                IdentifierType.AIRPLAY_ID: "ap5ab35862ec6c",
+            },
+        )
+
+        assert controller._identifiers_match(player_a, player_b) is False
+
     def test_ip_fallback_with_la_mac(self, mock_mass: MagicMock) -> None:
         """Test IP fallback matching when one player has a locally-administered MAC."""
         controller = PlayerController(mock_mass)
@@ -1036,10 +1069,8 @@ class TestMintPlayerId:
 class TestGetCleanPlayerName:
     """Tests for player name selection."""
 
-    def test_prefers_chromecast_name(self, mock_mass: MagicMock) -> None:
+    def test_prefers_chromecast_name(self) -> None:
         """Test that Chromecast names are preferred over other protocols."""
-        universal_provider = create_mock_universal_provider(mock_mass)
-
         airplay_provider = MockProvider("airplay")
         chromecast_provider = MockProvider("chromecast")
 
@@ -1057,13 +1088,11 @@ class TestGetCleanPlayerName:
         )
 
         # Chromecast should be preferred (priority 1)
-        clean_name = universal_provider._get_clean_player_name([airplay_player, chromecast_player])
+        clean_name = get_clean_player_name([airplay_player, chromecast_player])
         assert clean_name == "Living Room Speaker"
 
-    def test_filters_mac_address_names(self, mock_mass: MagicMock) -> None:
+    def test_filters_mac_address_names(self) -> None:
         """Test that MAC address-like names are filtered out."""
-        universal_provider = create_mock_universal_provider(mock_mass)
-
         squeezelite_provider = MockProvider("squeezelite")
         airplay_provider = MockProvider("airplay")
 
@@ -1083,13 +1112,11 @@ class TestGetCleanPlayerName:
         )
 
         # Should prefer Kitchen Speaker over MAC address
-        clean_name = universal_provider._get_clean_player_name([sq_player, ap_player])
+        clean_name = get_clean_player_name([sq_player, ap_player])
         assert clean_name == "Kitchen Speaker"
 
-    def test_filters_player_id_names(self, mock_mass: MagicMock) -> None:
+    def test_filters_player_id_names(self) -> None:
         """Test that player ID-like names are filtered out."""
-        universal_provider = create_mock_universal_provider(mock_mass)
-
         sendspin_provider = MockProvider("sendspin")
         dlna_provider = MockProvider("dlna")
 
@@ -1109,13 +1136,11 @@ class TestGetCleanPlayerName:
         )
 
         # Should prefer Bedroom TV over player ID
-        clean_name = universal_provider._get_clean_player_name([ss_player, dlna_player])
+        clean_name = get_clean_player_name([ss_player, dlna_player])
         assert clean_name == "Bedroom TV"
 
-    def test_valid_name_unchanged(self, mock_mass: MagicMock) -> None:
+    def test_valid_name_unchanged(self) -> None:
         """Test that valid names are returned unchanged."""
-        universal_provider = create_mock_universal_provider(mock_mass)
-
         provider = MockProvider("airplay")
         player = MockPlayer(
             provider,
@@ -1124,8 +1149,20 @@ class TestGetCleanPlayerName:
             player_type=PlayerType.PLAYER,
         )
 
-        clean_name = universal_provider._get_clean_player_name([player])
+        clean_name = get_clean_player_name([player])
         assert clean_name == "HomePod Mini"
+
+    def test_no_name_without_a_usable_one(self) -> None:
+        """Test that no name is returned when every name looks like a technical id."""
+        provider = MockProvider("squeezelite")
+        player = MockPlayer(
+            provider,
+            "sq_123456",
+            "AA:BB:CC:DD:EE:FF",
+            player_type=PlayerType.PROTOCOL,
+        )
+
+        assert get_clean_player_name([player]) is None
 
 
 class TestCachedProtocolParentRestore:
@@ -5201,6 +5238,70 @@ class TestProtocolToUniversalIdentifierFallback:
 
         # Should NOT be linked to the wrong universal player
         assert sendspin_player.protocol_parent_id != "up_aabbccddeeff"
+
+    @pytest.mark.parametrize(
+        ("mac_1", "mac_2"),
+        [
+            ("02:A8:2C:F9:60:25", "5A:B3:58:62:EC:6C"),
+            # ARP resolved both receivers to the shared host MAC
+            ("B8:27:EB:12:34:56", "B8:27:EB:12:34:56"),
+        ],
+    )
+    def test_airplay_receivers_on_shared_ip_keep_own_universal(
+        self, mock_mass: MagicMock, mac_1: str, mac_2: str
+    ) -> None:
+        """Test that a re-registered AirPlay receiver doesn't take a sibling receiver's parent."""
+        controller = PlayerController(mock_mass)
+
+        def mock_config_get(_key: str, default: str | None = None) -> str | None:
+            return default
+
+        mock_mass.config.get.side_effect = mock_config_get
+
+        def receiver_ids(airplay_id: str, mac: str) -> dict[IdentifierType, str]:
+            return {
+                IdentifierType.MAC_ADDRESS: mac,
+                IdentifierType.IP_ADDRESS: "192.168.1.117",
+                IdentifierType.AIRPLAY_ID: airplay_id,
+            }
+
+        # Receiver 1 is currently unregistered, so its universal player has a free AirPlay slot
+        universal_1 = _create_universal_player(
+            mock_mass,
+            "up_receiver1",
+            "Receiver 1",
+            protocol_player_ids=["ap02a82cf96025"],
+            identifiers=receiver_ids("ap02a82cf96025", mac_1),
+        )
+        universal_2 = _create_universal_player(
+            mock_mass,
+            "up_receiver2",
+            "Receiver 2",
+            protocol_player_ids=["ap5ab35862ec6c"],
+            identifiers=receiver_ids("ap5ab35862ec6c", mac_2),
+        )
+
+        airplay_provider = MockProvider("airplay", mass=mock_mass)
+        receiver_2 = MockPlayer(
+            airplay_provider,
+            "ap5ab35862ec6c",
+            "Receiver 2",
+            player_type=PlayerType.PROTOCOL,
+            identifiers=receiver_ids("ap5ab35862ec6c", mac_2),
+        )
+
+        mock_mass.players = controller
+        controller._players = {
+            "up_receiver1": universal_1,
+            "up_receiver2": universal_2,
+            "ap5ab35862ec6c": receiver_2,
+        }
+        receiver_2.set_initialized()
+
+        controller._try_link_protocol_to_native(receiver_2)
+
+        assert receiver_2.protocol_parent_id == "up_receiver2"
+        assert "ap5ab35862ec6c" not in universal_1._protocol_player_ids
 
     def test_known_protocol_id_still_works(self, mock_mass: MagicMock) -> None:
         """Test that the existing path (player_id in _protocol_player_ids) still works."""

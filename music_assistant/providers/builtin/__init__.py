@@ -165,6 +165,7 @@ SUPPORTED_FEATURES = {
     ProviderFeature.PLAYLIST_CREATE_RADIOS,
     ProviderFeature.PLAYLIST_CREATE_MIXED,
     ProviderFeature.PLAYLIST_TRACKS_EDIT,
+    ProviderFeature.PLAYLIST_TRACKS_MOVE,
 }
 
 
@@ -583,8 +584,9 @@ class BuiltinProvider(MusicProvider):
                     continue
                 try:
                     entry = await self._build_m3u_entry_from_uri(uri)
-                except MediaNotFoundError, InvalidDataError, ProviderUnavailableError:
+                except (MediaNotFoundError, InvalidDataError, ProviderUnavailableError) as err:
                     self.logger.warning("Can't add %s to playlist - item not found", uri)
+                    report_current_task_failure(f"Can't add {uri} to playlist: {err}")
                     continue
                 # check dedup against the newly built entry's providers too
                 new_ids = {entry.path}
@@ -618,6 +620,25 @@ class BuiltinProvider(MusicProvider):
                 prov_playlist_id,
                 playlist.name,
                 list(existing_items),
+                self._get_playlist_image_url(playlist),
+            )
+
+    async def move_playlist_track(
+        self, prov_playlist_id: str, from_position: int, to_position: int
+    ) -> None:
+        """Move one track of a playlist to another position (both 1-based)."""
+        async with self._get_playlist_lock(prov_playlist_id):
+            m3u_data = await self._read_m3u_file(prov_playlist_id)
+            items = list(parse_m3u(m3u_data))
+            if not (1 <= from_position <= len(items) and 1 <= to_position <= len(items)):
+                msg = f"Position out of range for a playlist of {len(items)} item(s)"
+                raise InvalidDataError(msg)
+            items.insert(to_position - 1, items.pop(from_position - 1))
+            playlist = await self.get_playlist(prov_playlist_id)
+            await self._write_m3u_file(
+                prov_playlist_id,
+                playlist.name,
+                items,
                 self._get_playlist_image_url(playlist),
             )
 
@@ -1617,11 +1638,11 @@ class BuiltinProvider(MusicProvider):
                 ):
                     if source == "library":
                         tracks = await self.mass.music.artists.tracks(
-                            random_artist.item_id, "library"
+                            random_artist.item_id, "library", limit=None
                         )
                     else:
                         tracks = await self.mass.music.artists.top_tracks(
-                            random_artist.item_id, random_artist.provider
+                            random_artist.item_id, random_artist.provider, limit=None
                         )
                     if len(tracks) < min_tracks_required:
                         continue

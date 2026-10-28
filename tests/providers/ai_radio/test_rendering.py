@@ -5,15 +5,18 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import AsyncGenerator
+from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock
+from zoneinfo import ZoneInfo
 
 import pytest
 from music_assistant_models.enums import (
     ContentType,
     MediaType,
+    PlaybackState,
     StreamType,
     VolumeNormalizationMode,
 )
@@ -57,6 +60,7 @@ from music_assistant.providers.ai_radio.constants import (
     CONF_TTS_ENGINE,
     CONF_TTS_LOUDNESS_BOOST,
     DEFAULT_LLM_INSTRUCTIONS,
+    FALLBACK_TRACK_SECONDS,
     MIN_LOUDNESS_REFERENCE_SECONDS,
     NO_WEATHER_DATA_INSTRUCTION,
     TTS_CLIP_PCM_FORMAT,
@@ -67,6 +71,8 @@ from music_assistant.providers.ai_radio.models import DJQueueState, RenderHealth
 from music_assistant.providers.ai_radio.rendering import AIRadioRenderMixin
 
 from .events import ProviderEventRecorder
+
+AMSTERDAM = ZoneInfo("Europe/Amsterdam")
 
 
 class DummyRenderer(ProviderEventRecorder, AIRadioRenderMixin):
@@ -134,7 +140,7 @@ class DummyRenderer(ProviderEventRecorder, AIRadioRenderMixin):
         engine: TTSEngine,
         language: str | None = None,
         options: dict[str, Any] | None = None,
-    ) -> tuple[str, StreamType, AudioFormat]:
+    ) -> tuple[str, StreamType, AudioFormat, bool]:
         self.tts_texts.append(text)
         self.tts_options.append(options)
         if self.fail_tts:
@@ -143,12 +149,13 @@ class DummyRenderer(ProviderEventRecorder, AIRadioRenderMixin):
             f"http://ha.invalid/api/tts_proxy/{len(self.tts_texts)}.mp3",
             StreamType.HTTP,
             AudioFormat(content_type=ContentType.MP3),
+            True,
         )
 
-    async def _probe_duration(self, path: str) -> int | None:
+    async def _probe_duration(self, path: str, verify_ssl: bool = True) -> int | None:
         return 9
 
-    async def _measure_loudness(self, path: str) -> float | None:
+    async def _measure_loudness(self, path: str, verify_ssl: bool = True) -> float | None:
         self.measure_calls.append(path)
         return self.measured_loudness
 
@@ -166,7 +173,9 @@ def _tts_renderer(path: str, audio_format: AudioFormat | None = None) -> RealTts
     plugin.instance_id = "hass_1"
     plugin.get_tts_message = AsyncMock(
         return_value=SimpleNamespace(
-            path=path, audio_format=audio_format or AudioFormat(content_type=ContentType.UNKNOWN)
+            path=path,
+            audio_format=audio_format or AudioFormat(content_type=ContentType.UNKNOWN),
+            verify_ssl=False,
         )
     )
     engine = TTSEngine(id="tts.cloud", name="Cloud", provider=plugin)
@@ -212,9 +221,18 @@ def _attach_queues(renderer: DummyRenderer, queues: dict[str, list[QueueItem]]) 
     cast("Any", renderer).mass = SimpleNamespace(
         player_queues=SimpleNamespace(
             all=lambda: tuple(SimpleNamespace(queue_id=queue_id) for queue_id in queues),
+            get=lambda _queue_id: None,
             items=lambda queue_id, limit=500, offset=0: queues.get(queue_id, [])[
                 offset : offset + limit
             ],
+            index_by_id=lambda queue_id, queue_item_id: next(
+                (
+                    index
+                    for index, item in enumerate(queues.get(queue_id, []))
+                    if item.queue_item_id == queue_item_id
+                ),
+                None,
+            ),
             signal_update=lambda _queue_id, items_changed=False: signals.append(items_changed),
         ),
         metadata=SimpleNamespace(locale="en_US"),
@@ -411,6 +429,7 @@ async def test_render_tts_media_falls_back_without_language_on_rejection() -> No
             SimpleNamespace(
                 path="http://example.test/api/tts_proxy/abc123.mp3",
                 audio_format=AudioFormat(content_type=ContentType.MP3),
+                verify_ssl=True,
             ),
         ]
     )
@@ -506,7 +525,7 @@ async def test_tts_failure_raises_media_not_found_and_logs_the_skip(
             engine: TTSEngine,
             language: str | None = None,
             options: dict[str, Any] | None = None,
-        ) -> tuple[str, StreamType, AudioFormat]:
+        ) -> tuple[str, StreamType, AudioFormat, bool]:
             raise RuntimeError("tts down")
 
     renderer = UnspeakableRenderer()
@@ -571,7 +590,7 @@ async def test_probe_failure_is_not_fatal() -> None:
     """A failed duration probe yields streamdetails without a duration."""
 
     class UnprobableRenderer(DummyRenderer):
-        async def _probe_duration(self, path: str) -> int | None:
+        async def _probe_duration(self, path: str, verify_ssl: bool = True) -> int | None:
             return None
 
     renderer = UnprobableRenderer()
@@ -920,6 +939,7 @@ async def test_generate_script_uses_host_instructions() -> None:
 
     cast("Any", renderer)._generate_text = fake_generate_text
     item = _clip_item("sess_001", **{ATTR_HOST_ID: "rick", ATTR_PROMPT: "p"})
+    _attach_queue(renderer, [item])
 
     text = await renderer._generate_script(item, "p", "clip_1")
 
@@ -945,6 +965,7 @@ async def test_generate_script_falls_back_to_default_instructions() -> None:
 
     cast("Any", renderer)._generate_text = fake_generate_text
     item = _clip_item("sess_001", **{ATTR_HOST_ID: "gone", ATTR_PROMPT: "p"})
+    _attach_queue(renderer, [item])
 
     await renderer._generate_script(item, "p", "clip_1")
 
@@ -975,6 +996,7 @@ async def test_generate_script_forwards_the_hosts_language() -> None:
 
     cast("Any", renderer)._generate_text = fake_generate_text
     item = _clip_item("sess_001", **{ATTR_HOST_ID: "rick", ATTR_PROMPT: "p"})
+    _attach_queue(renderer, [item])
 
     await renderer._generate_script(item, "p", "clip_1")
 
@@ -998,6 +1020,7 @@ async def test_generate_script_forwards_empty_language_when_host_has_none() -> N
 
     cast("Any", renderer)._generate_text = fake_generate_text
     item = _clip_item("sess_001", **{ATTR_HOST_ID: "rick", ATTR_PROMPT: "p"})
+    _attach_queue(renderer, [item])
 
     await renderer._generate_script(item, "p", "clip_1")
 
@@ -1035,8 +1058,11 @@ async def test_render_tts_media_falls_back_to_locale_when_host_language_is_empty
 async def test_resolve_deferred_placeholders_skips_weather_without_token() -> None:
     """A prompt with no weather placeholder never triggers a weather fetch."""
     renderer = DummyRenderer()
+    _attach_queue(renderer, [])
 
-    values = await renderer._resolve_deferred_placeholders("Just plain text, no tokens.")
+    values = await renderer._resolve_deferred_placeholders(
+        "Just plain text, no tokens.", _clip_item("sess_001")
+    )
 
     assert renderer.weather_calls == 0
     assert values["<weather_hourly>"] == ""
@@ -1046,8 +1072,11 @@ async def test_resolve_deferred_placeholders_skips_weather_without_token() -> No
 async def test_resolve_deferred_placeholders_timestamp_spells_out_weekday() -> None:
     """The <timestamp> value names the weekday so the LLM never has to derive it."""
     renderer = DummyRenderer()
+    _attach_queue(renderer, [])
 
-    values = await renderer._resolve_deferred_placeholders("Just plain text, no tokens.")
+    values = await renderer._resolve_deferred_placeholders(
+        "Just plain text, no tokens.", _clip_item("sess_001")
+    )
 
     assert "Thursday" in values["<timestamp>"]
     assert "July" in values["<timestamp>"]
@@ -1126,11 +1155,15 @@ async def test_render_tts_media_streams_a_url_over_http() -> None:
     renderer = _tts_renderer("http://example.test/api/tts_proxy/abc123.mp3")
     engine = cast("Any", renderer)._get_tts_engine.return_value
 
-    path, stream_type, audio_format = await renderer._render_tts_media("hello world", engine)
+    path, stream_type, audio_format, verify_ssl = await renderer._render_tts_media(
+        "hello world", engine
+    )
 
     assert path == "http://example.test/api/tts_proxy/abc123.mp3"
     assert stream_type == StreamType.HTTP
     assert audio_format.content_type == ContentType.MP3
+    # the engine's own certificate setting travels with the clip
+    assert verify_ssl is False
     # the provider-scoped engine.id, never engine.uid, and never omitted
     engine.provider.get_tts_message.assert_awaited_once_with(
         "hello world", language=None, engine_id="tts.cloud", options=None
@@ -1145,7 +1178,7 @@ async def test_render_tts_media_streams_a_local_file_from_disk(tmp_path: Path) -
     _attach_queue(renderer, [_clip_item("sess_001")])
     engine = cast("Any", renderer)._get_tts_engine.return_value
 
-    path, stream_type, _ = await renderer._render_tts_media("hello world", engine)
+    path, stream_type, _, _ = await renderer._render_tts_media("hello world", engine)
 
     assert path == str(clip)
     assert stream_type == StreamType.LOCAL_FILE
@@ -1158,7 +1191,7 @@ async def test_render_tts_media_keeps_a_declared_audio_format(tmp_path: Path) ->
     renderer = _tts_renderer(str(clip), AudioFormat(content_type=ContentType.WAV))
     engine = cast("Any", renderer)._get_tts_engine.return_value
 
-    _, _, audio_format = await renderer._render_tts_media("hello world", engine)
+    _, _, audio_format, _ = await renderer._render_tts_media("hello world", engine)
 
     assert audio_format.content_type == ContentType.WAV
 
@@ -1300,7 +1333,7 @@ async def test_a_short_clip_levels_itself_but_never_becomes_the_reference() -> N
     """A clip of a few words is too thin a sample to speak for the rest of the engine."""
 
     class BriefRenderer(DummyRenderer):
-        async def _probe_duration(self, path: str) -> int | None:
+        async def _probe_duration(self, path: str, verify_ssl: bool = True) -> int | None:
             return MIN_LOUDNESS_REFERENCE_SECONDS - 1
 
     renderer = BriefRenderer()
@@ -1516,7 +1549,7 @@ def _attach_post(
 
     mass.player_queues.load_next_queue_item = AsyncMock(side_effect=load_next_queue_item)
     mass.player_queues.get = lambda queue_id: SimpleNamespace(
-        queue_id=queue_id, flow_mode=flow_mode
+        queue_id=queue_id, flow_mode=flow_mode, current_index=None, state=PlaybackState.PLAYING
     )
     mass.streams.flow_mode_required = MagicMock(return_value=flow_mode_required)
     mass.streams.boundary_mix_required = MagicMock(return_value=boundary_mix_required)
@@ -1844,3 +1877,320 @@ async def test_a_posting_clip_is_served_whole() -> None:
     assert with_post.duration == without.duration == 9
     assert with_post.stream_type == without.stream_type == StreamType.CUSTOM
     assert with_post.path == without.path
+
+
+def _song(index: int, duration: int | None = 200, available: bool = True) -> QueueItem:
+    """Build a queue item for a record of the given length."""
+    item = _track_item(f"qi_song_{index}")
+    item.duration = duration
+    item.available = available
+    return item
+
+
+def _play_queue(
+    renderer: DummyRenderer,
+    *,
+    current_index: int = 0,
+    state: PlaybackState = PlaybackState.PLAYING,
+    elapsed: float = 0,
+) -> dict[str, asyncio.Task[Any]]:
+    """
+    Put the attached queue in the given playback state and return the tasks it starts, by id.
+
+    Tasks start eagerly, as they do on mass, so a render in flight already holds its lock.
+    """
+    mass = cast("Any", renderer).mass
+    mass.player_queues.get = lambda queue_id: SimpleNamespace(
+        queue_id=queue_id,
+        state=state,
+        current_index=current_index,
+        corrected_elapsed_time=elapsed,
+        flow_mode=True,
+    )
+    started: dict[str, asyncio.Task[Any]] = {}
+
+    def create_task(target: Any, task_id: str) -> asyncio.Task[Any]:
+        started[task_id] = asyncio.Task(target, loop=asyncio.get_running_loop(), eager_start=True)
+        return started[task_id]
+
+    mass.create_task = create_task
+    return started
+
+
+async def test_the_clips_of_the_next_two_items_render_ahead() -> None:
+    """A playing queue renders the DJ clips one and two items ahead, and none further out."""
+    renderer = DummyRenderer()
+    clips = [_dj_clip_item("djlive", index) for index in range(1, 4)]
+    _attach_queue(renderer, [_song(0), *clips])
+    started = _play_queue(renderer)
+
+    renderer._render_ahead("player_a")
+    await asyncio.gather(*started.values())
+
+    assert list(started) == ["ai_radio_render_ahead_djlive_001", "ai_radio_render_ahead_djlive_002"]
+    assert [ATTR_RENDERED_TEXT in clip.extra_attributes for clip in clips] == [True, True, False]
+    assert len(renderer.tts_texts) == 2
+
+
+@pytest.mark.parametrize("state", [PlaybackState.PAUSED, PlaybackState.IDLE])
+async def test_a_queue_that_is_not_playing_renders_nothing_ahead(state: PlaybackState) -> None:
+    """A paused or idle queue may never reach its next clip, so nothing renders ahead."""
+    renderer = DummyRenderer()
+    _attach_queue(renderer, [_song(0), _dj_clip_item("djlive", 1)])
+    started = _play_queue(renderer, state=state)
+
+    renderer._render_ahead("player_a")
+
+    assert started == {}
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        pytest.param({ATTR_RENDERED_TEXT: "Already said."}, id="already rendered"),
+        pytest.param({ATTR_QUEUE_DJ: False}, id="not a dj clip"),
+        pytest.param({ATTR_PROMPT: ""}, id="no prompt"),
+    ],
+)
+async def test_a_clip_with_nothing_to_render_is_not_rendered_ahead(
+    overrides: dict[str, Any],
+) -> None:
+    """Only a pending DJ clip renders ahead, so an expired script is never generated twice."""
+    renderer = DummyRenderer()
+    clip = _dj_clip_item("djlive", 1)
+    clip.extra_attributes.update(overrides)
+    _attach_queue(renderer, [_song(0), clip])
+    started = _play_queue(renderer)
+
+    renderer._render_ahead("player_a")
+
+    assert started == {}
+
+
+async def test_an_unplayable_clip_is_not_rendered_ahead() -> None:
+    """A clip that already failed is skipped by the queue, so it does not render ahead."""
+    renderer = DummyRenderer()
+    clip = _dj_clip_item("djlive", 1)
+    clip.available = False
+    _attach_queue(renderer, [_song(0), clip])
+    started = _play_queue(renderer)
+
+    renderer._render_ahead("player_a")
+
+    assert started == {}
+
+
+async def test_a_clip_that_is_rendering_is_not_rendered_ahead_again() -> None:
+    """A clip whose render is in flight, ahead or requested by the queue, starts no second one."""
+    renderer = DummyRenderer()
+    _attach_queue(renderer, [_song(0), _dj_clip_item("djlive", 1)])
+    started = _play_queue(renderer)
+
+    async with renderer._lock_for("djlive_001"):
+        renderer._render_ahead("player_a")
+    assert started == {}
+
+    renderer._render_ahead("player_a")
+    renderer._render_ahead("player_a")
+    await asyncio.gather(*started.values())
+
+    assert renderer.llm_calls == 1
+
+
+async def test_cancelling_the_renders_ahead_stops_one_in_flight() -> None:
+    """A render started ahead stops before it reaches the engines once it is cancelled."""
+    renderer = DummyRenderer()
+    clip = _dj_clip_item("djlive", 1)
+    _attach_queue(renderer, [_song(0), clip])
+    started = _play_queue(renderer)
+    cancelled: list[str] = []
+
+    def cancel_task(task_id: str) -> None:
+        cancelled.append(task_id)
+        started[task_id].cancel()
+
+    cast("Any", renderer).mass.cancel_task = cancel_task
+    renderer._render_ahead("player_a")
+
+    renderer._cancel_renders_ahead()
+
+    assert cancelled == ["ai_radio_render_ahead_djlive_001"]
+    with pytest.raises(asyncio.CancelledError):
+        await started["ai_radio_render_ahead_djlive_001"]
+    assert renderer.llm_calls == 0
+    assert ATTR_RENDERED_TEXT not in clip.extra_attributes
+
+
+async def test_a_clip_rendered_ahead_reuses_its_script_and_plans_its_post_when_due() -> None:
+    """The queue's own request airs the script rendered ahead, and only it plans the post."""
+    renderer = DummyRenderer()
+    clip = _dj_clip_item("djlive", 1, **{ATTR_ALLOW_POST: True})
+    _attach_queue(renderer, [_song(0), clip, _track_item()])
+    _attach_post(renderer, _track_item(), analysis_onset=6.0)
+    started = _play_queue(renderer)
+    load_next_queue_item = cast("Any", renderer).mass.player_queues.load_next_queue_item
+
+    renderer._render_ahead("player_a")
+    await asyncio.gather(*started.values())
+    load_next_queue_item.assert_not_awaited()
+
+    streamdetails = await renderer.get_stream_details("djlive_001", MediaType.SOUND_EFFECT)
+
+    assert renderer.llm_calls == 1
+    assert streamdetails.tail_overlap == TailOverlap(duration=5.6, next_queue_item_id="qi_track")
+    load_next_queue_item.assert_awaited_once()
+
+
+async def test_a_clip_that_fails_to_render_ahead_is_left_unplayable() -> None:
+    """A failed render ahead counts against the DJ and marks the clip, without raising."""
+    renderer, state = _failing_dj_renderer(0)
+    clip = _dj_clip_item("djlive", 1)
+    _attach_queue(renderer, [_song(0), clip])
+    started = _play_queue(renderer)
+
+    renderer._render_ahead("player_a")
+    await asyncio.gather(*started.values())
+
+    assert clip.available is False
+    assert state.render_health.failures == 1
+
+
+async def test_a_weather_required_clip_without_weather_is_left_unplayable() -> None:
+    """A clip skipped for missing weather is marked, so a later event does not fetch it again."""
+    renderer = NoWeatherRenderer()
+    clip = _dj_clip_item("djlive", 1, **{ATTR_WEATHER_REQUIRED: True})
+    _attach_queue(renderer, [_song(0), clip])
+    started = _play_queue(renderer)
+
+    renderer._render_ahead("player_a")
+    await asyncio.gather(*started.values())
+    renderer._render_ahead("player_a")
+
+    assert clip.available is False
+    assert renderer.weather_calls == 1
+
+
+@pytest.mark.parametrize(
+    ("current_index", "elapsed"),
+    [
+        pytest.param(1, 0, id="clip is current"),
+        pytest.param(0, 250, id="current record ran over its length"),
+    ],
+)
+def test_a_clip_with_nothing_left_to_wait_for_airs_now(current_index: int, elapsed: float) -> None:
+    """A clip that is due, or next behind a record that already ran out, airs right away."""
+    renderer = DummyRenderer()
+    clip = _dj_clip_item("djlive", 1)
+    _attach_queue(renderer, [_song(0), clip])
+    _play_queue(renderer, current_index=current_index, elapsed=elapsed)
+
+    assert renderer._seconds_until_airtime(clip) == 0
+
+
+def test_a_clip_on_a_queue_that_plays_nothing_airs_now() -> None:
+    """Without a current item there is nothing to wait for."""
+    renderer = DummyRenderer()
+    clip = _dj_clip_item("djlive", 1)
+    _attach_queue(renderer, [_song(0), clip])
+
+    assert renderer._seconds_until_airtime(clip) == 0
+
+
+@pytest.mark.parametrize("state", [PlaybackState.PAUSED, PlaybackState.IDLE])
+def test_a_clip_started_on_a_queue_that_is_not_playing_airs_now(state: PlaybackState) -> None:
+    """A stopped queue renders a clip to start with it, so the songs before it never play."""
+    renderer = DummyRenderer()
+    clip = _dj_clip_item("djlive", 1)
+    _attach_queue(renderer, [_song(0), _song(1), clip])
+    _play_queue(renderer, state=state, elapsed=50)
+
+    assert renderer._seconds_until_airtime(clip) == 0
+
+
+@pytest.mark.parametrize(
+    ("between", "expected"),
+    [
+        pytest.param(_song(1, duration=180), 150 + 180, id="record in between"),
+        pytest.param(_song(1, duration=None), 150 + FALLBACK_TRACK_SECONDS, id="unknown length"),
+        pytest.param(_song(1, available=False), 150, id="unplayable record is skipped"),
+    ],
+)
+def test_a_clip_airs_once_the_current_record_and_the_ones_before_it_played(
+    between: QueueItem, expected: float
+) -> None:
+    """The wait is the current record's remainder plus every playable record in between."""
+    renderer = DummyRenderer()
+    clip = _dj_clip_item("djlive", 1)
+    _attach_queue(renderer, [_song(0), between, clip])
+    _play_queue(renderer, elapsed=50)
+
+    assert renderer._seconds_until_airtime(clip) == expected
+
+
+def test_an_unplayable_current_record_takes_no_airtime() -> None:
+    """A record the queue is about to skip adds nothing to the wait."""
+    renderer = DummyRenderer()
+    clip = _dj_clip_item("djlive", 1)
+    _attach_queue(renderer, [_song(0, available=False), _song(1, duration=180), clip])
+    _play_queue(renderer)
+
+    assert renderer._seconds_until_airtime(clip) == 180
+
+
+def test_a_clip_behind_an_airing_clip_waits_for_its_loaded_length() -> None:
+    """An airing clip counts with the length its stream details know, not a song's length."""
+    renderer = DummyRenderer()
+    airing = _dj_clip_item("djlive", 1)
+    airing.streamdetails = cast("Any", SimpleNamespace(duration=20))
+    clip = _dj_clip_item("djlive", 2)
+    _attach_queue(renderer, [airing, _song(1, duration=180), clip])
+    _play_queue(renderer, elapsed=5)
+
+    assert renderer._seconds_until_airtime(clip) == 15 + 180
+
+
+def test_a_clip_beyond_the_render_ahead_window_airs_now() -> None:
+    """Only a jump to the clip renders it that far ahead, so it airs right away."""
+    renderer = DummyRenderer()
+    clip = _dj_clip_item("djlive", 1)
+    _attach_queue(renderer, [_song(0), _song(1), _song(2), clip])
+    _play_queue(renderer, elapsed=50)
+
+    assert renderer._seconds_until_airtime(clip) == 0
+
+
+async def test_the_timestamp_names_the_time_the_clip_airs() -> None:
+    """A clip rendered ahead tells the time it airs, not the time it was rendered."""
+    renderer = DummyRenderer()
+    clip = _dj_clip_item("djlive", 1)
+    _attach_queue(renderer, [_song(0, duration=1800), clip])
+    started = _play_queue(renderer)
+
+    renderer._render_ahead("player_a")
+    await asyncio.gather(*started.values())
+
+    # the clock stands at 18:30 and the current record has half an hour left
+    assert "19:00" in renderer.llm_prompts[0]
+
+
+@pytest.mark.parametrize(
+    ("now", "expected"),
+    [
+        pytest.param(datetime(2026, 10, 25, 2, 59, tzinfo=AMSTERDAM), "02:02 CET", id="fall back"),
+        pytest.param(datetime(2026, 3, 29, 1, 59, tzinfo=AMSTERDAM), "03:02 CEST", id="spring on"),
+    ],
+)
+async def test_the_timestamp_counts_real_seconds_across_a_clock_change(
+    now: datetime, expected: str
+) -> None:
+    """A wait across a daylight saving change names the time the clock shows when it airs."""
+    renderer = DummyRenderer()
+    cast("Any", renderer)._configured_now = lambda: now
+    clip = _dj_clip_item("djlive", 1)
+    _attach_queue(renderer, [_song(0, duration=180), clip])
+    started = _play_queue(renderer)
+
+    renderer._render_ahead("player_a")
+    await asyncio.gather(*started.values())
+
+    assert expected in renderer.llm_prompts[0]

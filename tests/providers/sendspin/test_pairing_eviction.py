@@ -84,6 +84,10 @@ def _make_provider(
     provider._unloading = False
     provider._pending_pairing_evictions = set()
     provider._running_pairing_evictions = set()
+    provider._held_elsewhere = set()
+    provider._held_unapproved = set()
+    provider._held_paired = set()
+    provider._unencrypted_clients = set()
     refreshed: list[str] = []
 
     async def _record_refresh(client_id: str) -> None:
