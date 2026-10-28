@@ -16,7 +16,11 @@ from unittest.mock import AsyncMock, MagicMock, Mock
 
 import pytest
 from music_assistant_models.enums import MediaType, PlaybackState, QueueOption
-from music_assistant_models.errors import InvalidDataError
+from music_assistant_models.errors import (
+    InvalidDataError,
+    MusicAssistantError,
+    ResourceTemporarilyUnavailable,
+)
 from music_assistant_models.media_items import (
     ItemMapping,
     Playlist,
@@ -348,9 +352,12 @@ async def test_a_player_still_reporting_the_replaced_item_keeps_the_new_queue_po
 
 
 @pytest.mark.parametrize("option", [QueueOption.PLAY, QueueOption.REPLACE])
-async def test_plugins_prepare_opening_items_before_playback(option: QueueOption) -> None:
+@pytest.mark.parametrize("dynamic", [False, True], ids=["linear", "dynamic"])
+async def test_plugins_prepare_opening_items_before_playback(
+    option: QueueOption, dynamic: bool
+) -> None:
     """Starting media waits for plugins to finish adding their opening queue items."""
-    ctrl = _controller()
+    ctrl = _controller(is_dynamic=dynamic, shuffle_enabled=dynamic)
     entered = asyncio.Event()
     release = asyncio.Event()
     plugin = MagicMock(spec=PluginProvider)
@@ -368,7 +375,7 @@ async def test_plugins_prepare_opening_items_before_playback(option: QueueOption
 
     plugin.on_queue_start = AsyncMock(side_effect=prepare)
     ctrl.mass.get_providers.return_value = [plugin]
-    task = asyncio.create_task(ctrl.play_media("q1", _playlist(), option))
+    task = asyncio.create_task(ctrl.play_media("q1", _playlist(dynamic=dynamic), option))
     try:
         await asyncio.wait_for(entered.wait(), timeout=1)
         ctrl.play_index.assert_not_awaited()
@@ -382,7 +389,9 @@ async def test_plugins_prepare_opening_items_before_playback(option: QueueOption
 
 
 @pytest.mark.parametrize("option", [QueueOption.PLAY, QueueOption.REPLACE])
-@pytest.mark.parametrize("error_type", [InvalidDataError, RuntimeError])
+@pytest.mark.parametrize(
+    "error_type", [MusicAssistantError, InvalidDataError, ResourceTemporarilyUnavailable]
+)
 async def test_plugin_failure_is_logged_and_does_not_block_playback(
     option: QueueOption, error_type: type[Exception]
 ) -> None:
@@ -414,7 +423,7 @@ async def test_plugin_failure_keeps_the_last_prepared_start_index(with_following
     first = MagicMock(spec=PluginProvider)
     first.on_queue_start = AsyncMock(return_value=2)
     broken = MagicMock(spec=PluginProvider)
-    broken.on_queue_start = AsyncMock(side_effect=RuntimeError("Preparation failed"))
+    broken.on_queue_start = AsyncMock(side_effect=InvalidDataError("Preparation failed"))
     following = MagicMock(spec=PluginProvider)
     following.on_queue_start = AsyncMock(return_value=1)
     ctrl.mass.get_providers.return_value = [first, broken, *([following] if with_following else [])]
@@ -425,6 +434,27 @@ async def test_plugin_failure_keeps_the_last_prepared_start_index(with_following
     if with_following:
         following.on_queue_start.assert_awaited_once_with("q1", 2)
     ctrl.play_index.assert_awaited_once_with("q1", 1 if with_following else 2)
+
+
+@pytest.mark.parametrize("option", [QueueOption.PLAY, QueueOption.REPLACE])
+@pytest.mark.parametrize("error_type", [RuntimeError, ValueError])
+async def test_unexpected_plugin_failure_propagates(
+    option: QueueOption, error_type: type[Exception]
+) -> None:
+    """Unexpected plugin errors remain visible to the caller."""
+    ctrl = _controller()
+    broken = MagicMock(spec=PluginProvider)
+    broken.on_queue_start = AsyncMock(side_effect=error_type("Unexpected failure"))
+    following = MagicMock(spec=PluginProvider)
+    following.on_queue_start = AsyncMock(return_value=0)
+    ctrl.mass.get_providers.return_value = [broken, following]
+
+    with pytest.raises(error_type, match="Unexpected failure"):
+        await ctrl.play_media("q1", _playlist(), option)
+
+    following.on_queue_start.assert_not_awaited()
+    ctrl.play_index.assert_not_awaited()
+    ctrl.logger.exception.assert_not_called()
 
 
 @pytest.mark.parametrize("option", [QueueOption.PLAY, QueueOption.REPLACE])

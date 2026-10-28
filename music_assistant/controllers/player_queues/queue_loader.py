@@ -248,7 +248,7 @@ class QueueLoaderMixin(_PlayerQueuesBase):
             if isinstance(provider, PluginProvider):
                 try:
                     start_index = await provider.on_queue_start(queue_id, start_index)
-                except Exception:
+                except MusicAssistantError:
                     self.logger.exception(
                         "Plugin %s failed to prepare queue %s for playback", provider.name, queue_id
                     )
@@ -1163,7 +1163,7 @@ class QueueLoaderMixin(_PlayerQueuesBase):
                 keep_played=option != QueueOption.REPLACE,
             )
             if start_playing:
-                await self.play_index(queue_id, insert_at)
+                await self._start_queue(queue_id, insert_at)
             else:
                 # give an idle/empty queue a current item without starting playback
                 self._ensure_current_index(queue_id)

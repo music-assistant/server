@@ -78,10 +78,6 @@ class PluginProvider(
         """
         Prepare newly enqueued media before it is handed to a player.
 
-        Plugins may add opening items through the queue controller and return the index
-        playback should start from. This is awaited for play/replace, after loading and
-        shuffling the items, but not for seeks, resumes or edits to a playing queue.
-
         :param queue_id: The queue about to start the newly enqueued media.
         :param start_index: The index playback would otherwise start from.
         :return: The index to start playback from after preparation.
