@@ -585,11 +585,11 @@ async def test_on_played_discards_when_remote_captured_at_newer_after_409(
         side_effect=[
             {"revision": 1, "capturedAt": "2026-10-27T11:59:00.000Z"},
             # Newer than the patched report stamp (and than "now" if the patch misses).
-            {"revision": 2, "capturedAt": "2099-01-01T00:00:00.000Z"},
+            {"revision": 2, "capturedAt": "2026-10-27T12:00:30.000Z"},
         ]
     )
     client.put_playback_state = AsyncMock(side_effect=[conflict])
-    with patch("music_assistant.providers.bookorbit.__init__.utc", return_value=report_time):
+    with patch("music_assistant.providers.bookorbit.utc", return_value=report_time):
         await provider.on_played(
             MediaType.AUDIOBOOK,
             str(book_multifile["id"]),
