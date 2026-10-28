@@ -542,28 +542,22 @@ class QueueLoaderMixin(_PlayerQueuesBase):
         if not queue_items or cur_index is None:
             # queue is empty
             return None
-        # handle repeat single track, unless a sleep timer stops at the end of that track
+        # a sleep timer stops the queue at a point in its target item: nothing follows that
+        # item on its own, a skip still moves on
+        sleep_timer_target = self._queue_data[queue_id].sleep_timer_target
         if (
-            queue.repeat_mode == RepeatMode.ONE
+            sleep_timer_target is not None
             and not is_skip
-            and not (
-                cur_index < len(queue_items)
-                and self.mass.players.sleep_timer_ends_item(queue_id, queue_items[cur_index])
-            )
+            and cur_index < len(queue_items)
+            and queue_items[cur_index].queue_item_id == sleep_timer_target.queue_item_id
         ):
+            return None
+        # handle repeat single track
+        if queue.repeat_mode == RepeatMode.ONE and not is_skip:
             return cur_index if allow_repeat else None
         # handle cur_index is last index of the queue
         if cur_index >= (len(queue_items) - 1):
-            if (
-                allow_repeat
-                and queue.repeat_mode == RepeatMode.ALL
-                # repeating a single item would start the item a sleep timer ends at over
-                and not (
-                    not is_skip
-                    and len(queue_items) == 1
-                    and self.mass.players.sleep_timer_ends_item(queue_id, queue_items[0])
-                )
-            ):
+            if allow_repeat and queue.repeat_mode == RepeatMode.ALL:
                 # if repeat all is enabled, we simply start again from the beginning
                 return 0
             return None

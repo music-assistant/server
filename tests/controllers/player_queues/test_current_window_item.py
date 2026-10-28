@@ -43,7 +43,6 @@ def _controller(
     ctrl = PlayerQueuesController.__new__(PlayerQueuesController)
     ctrl.logger = Mock()
     ctrl.mass = MagicMock()
-    ctrl.mass.players.sleep_timer_ends_item.return_value = False
     ctrl.signal_update = Mock()  # type: ignore[method-assign]
     ctrl._enqueue_next_item = Mock()  # type: ignore[method-assign]
     queue = PlayerQueue(queue_id="q1", active=True, display_name="Q1", available=True, items=0)

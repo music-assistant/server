@@ -6,13 +6,13 @@ from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, Mock
 
 import pytest
-from music_assistant_models.enums import PlaybackState, RepeatMode
+from music_assistant_models.enums import PlaybackState, RepeatMode, SleepTimerMode
 from music_assistant_models.player import PlayerMedia
 from music_assistant_models.player_queue import PlayerQueue
 from music_assistant_models.queue_item import QueueItem
 
 from music_assistant.controllers.player_queues import PlayerQueuesController
-from music_assistant.controllers.player_queues.state import PlayerQueueData
+from music_assistant.controllers.player_queues.state import PlayerQueueData, SleepTimerTarget
 from music_assistant.providers.msx_bridge.player import MSXPlayer
 
 if TYPE_CHECKING:
@@ -59,9 +59,10 @@ async def test_natural_completion_uses_real_queue_repeat_selection(
         state=PlaybackState.PLAYING,
     )
     controller = PlayerQueuesController.__new__(PlayerQueuesController)
-    controller.mass = mass_mock
-    mass_mock.players.sleep_timer_ends_item.return_value = timer_ends_item
-    controller._queue_data = {player.player_id: PlayerQueueData(queue=queue, items=items)}
+    queue_data = PlayerQueueData(queue=queue, items=items)
+    if timer_ends_item:
+        queue_data.sleep_timer_target = SleepTimerTarget(SleepTimerMode.END_OF_ITEM, str(index), 8)
+    controller._queue_data = {player.player_id: queue_data}
     mass_mock.players.get_player.return_value = player
     mass_mock.player_queues.get_next_item = controller.get_next_item
     mass_mock.player_queues.get_active_queue.return_value = queue

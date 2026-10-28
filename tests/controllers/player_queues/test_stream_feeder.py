@@ -283,6 +283,7 @@ def _controller_with_next_item() -> tuple[PlayerQueuesController, SimpleNamespac
                 session_id="session-1",
                 next_item_id_preparing=None,
                 last_served_item_id=None,
+                sleep_timer_target=None,
             ),
         )
     }
@@ -294,7 +295,6 @@ def _controller_with_next_item() -> tuple[PlayerQueuesController, SimpleNamespac
 
     controller.load_next_queue_item = AsyncMock(side_effect=_load_next)  # type: ignore[method-assign]
     mass = MagicMock()
-    mass.players.sleep_timer_ends_item.return_value = False
     controller.mass = mass
     return controller, next_item, mass
 

@@ -112,8 +112,6 @@ def _make_player_on_real_queues(count: int, repeat_mode: RepeatMode) -> SonosPla
     data.items = [_make_queue_item(f"track{i}") for i in range(count)]
     queues = PlayerQueuesController.__new__(PlayerQueuesController)
     queues.logger = logging.getLogger("test.sonos.player_queues")
-    queues.mass = MagicMock()
-    queues.mass.players.sleep_timer_ends_item.return_value = False
     queues._queue_data = {QUEUE_ID: data}
     player, _ = _make_player([])
     player.mass.player_queues = queues
