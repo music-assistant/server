@@ -124,16 +124,17 @@ class RecommendationPayloadMixin(_MixinBase):
 
     async def _recommendation_payload(self) -> list[RecommendationFolder]:
         """Return the full recommendations payload, cached and deduplicated."""
+        if (payload := self._recommendation_payload_memory) is not None and (
+            time.monotonic() - self._recommendation_payload_timestamp
+            < self.recommendation_payload_ttl
+        ):
+            # the instance's own memory, which an instance replacing it never sees
+            return payload
         if getattr(self, "unloading", False):
             # an unloaded instance fetches alone: its result is neither shared nor written,
             # and a stale payload it holds starts no refresh that would write it
             return await self._fetch_recommendation_payload()
-        if (payload := self._recommendation_payload_memory) is not None:
-            if (
-                time.monotonic() - self._recommendation_payload_timestamp
-                < self.recommendation_payload_ttl
-            ):
-                return payload
+        if payload is not None:
             # stale: serve immediately while a (deduplicated) background refresh runs
             self._schedule_recommendation_refresh()
             return payload

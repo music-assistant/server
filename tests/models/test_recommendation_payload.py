@@ -297,6 +297,23 @@ async def test_unloading_instance_with_a_stale_payload_writes_nothing() -> None:
 
 
 @pytest.mark.asyncio
+async def test_unloading_instance_serves_its_fresh_payload() -> None:
+    """An unloading instance still serves the fresh payload it holds, without a fetch."""
+    payload = _make_payload()
+    fetch = AsyncMock(return_value=payload)
+    provider = _PayloadProvider(fetch)
+    provider._recommendation_payload_memory = payload
+    provider._recommendation_payload_timestamp = time.monotonic()
+    cast("Any", provider).unloading = True
+
+    assert await provider._recommendation_payload() == payload
+    await _drain_background(provider)
+
+    assert fetch.await_count == 0
+    assert not provider.background_tasks
+
+
+@pytest.mark.asyncio
 async def test_forced_refresh_on_an_unloading_instance_writes_nothing() -> None:
     """A forced refresh through an unloading instance fetches without writing the payload."""
     payload = _make_payload()
