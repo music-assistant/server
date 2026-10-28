@@ -300,6 +300,30 @@ async def test_query_audiobooks_raises_when_total_unmet_on_empty_page(
 
 
 @pytest.mark.asyncio
+async def test_query_audiobooks_raises_on_overlapping_pages(aiohttp_client: Any) -> None:
+    """Duplicate ids across pages must not count toward total and omit later books."""
+
+    async def query(request: web.Request) -> web.Response:
+        body = json.loads(await request.text())
+        page = body["pagination"]["page"]
+        if page == 0:
+            return web.json_response(
+                {"items": [{"id": 1}, {"id": 2}], "total": 3, "page": 0, "size": 2}
+            )
+        # Title edit shifted sort order: id 1 repeats, id 3 never appears.
+        return web.json_response({"items": [{"id": 1}], "total": 3, "page": 1, "size": 2})
+
+    app = web.Application()
+    app.router.add_post("/api/v1/books/query", query)
+    client = await aiohttp_client(app)
+
+    bo = _make(client)
+    bo.access_token = "t"
+    with pytest.raises(BookOrbitIncompleteError, match="overlapping pages"):
+        await bo.query_audiobooks()
+
+
+@pytest.mark.asyncio
 async def test_list_libraries_rejects_non_list_payload(aiohttp_client: Any) -> None:
     """HTTP 200 ``{}`` from /libraries must not publish as an empty library list."""
 

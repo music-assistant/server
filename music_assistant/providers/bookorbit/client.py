@@ -438,10 +438,22 @@ class BookOrbitClient:
         page payload is not a supported list shape.
         """
         items: list[dict[str, Any]] = []
+        seen_ids: set[Any] = set()
         reported_total: int | None = None
         for page in range(QUERY_MAX_PAGES):
             payload = await fetch_page(page)
             page_items = self._require_page_items(payload, what=what)
+            for item in page_items:
+                item_id = item.get("id") if isinstance(item, dict) else None
+                if item_id is None:
+                    continue
+                if item_id in seen_ids:
+                    # Overlapping pages (e.g. a title edit mid-scan) would otherwise
+                    # inflate len(items) toward total while omitting later books.
+                    raise BookOrbitIncompleteError(
+                        f"BookOrbit {what} returned overlapping pages (duplicate id {item_id})."
+                    )
+                seen_ids.add(item_id)
             items.extend(page_items)
             if isinstance(payload, dict) and payload.get("total") is not None:
                 reported_total = int(payload["total"])

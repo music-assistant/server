@@ -109,6 +109,8 @@ class _StreamGrant:
     asset_ids: frozenset[str]
     created_at: float
     last_access_at: float
+    streamdetails: StreamDetails | None = None
+    active_transfers: int = 0
 
 
 def _people(entries: Any) -> list[dict[str, Any]]:
@@ -455,7 +457,7 @@ class BookOrbitProvider(MusicProvider):
             for asset in assets
         ]
         duration = await self._stream_duration(manifest, assets, item_id)
-        return StreamDetails(
+        details = StreamDetails(
             provider=self.instance_id,
             item_id=item_id,
             audio_format=AudioFormat(content_type=ContentType.try_parse(assets[0]["format"])),
@@ -468,24 +470,33 @@ class BookOrbitProvider(MusicProvider):
             expiration=STREAMDETAILS_EXPIRATION_S,
             data={"session_id": session_id},
         )
+        # Keep the grant alive while core can still reuse this buffer / streamdetails.
+        if (grant := self._stream_sessions.get(session_id)) is not None:
+            grant.streamdetails = details
+        return details
 
     async def on_stream_started(self, streamdetails: StreamDetails) -> None:
         """Mark the proxied stream session active so part grants outlive streamdetails TTL."""
         if (session_id := _session_id_from_streamdetails(streamdetails)) is None:
             return
-        if session_id in self._stream_sessions:
-            self._active_stream_sessions.add(session_id)
+        if (grant := self._stream_sessions.get(session_id)) is None:
+            return
+        grant.streamdetails = streamdetails
+        self._active_stream_sessions.add(session_id)
 
     async def on_streamed(self, streamdetails: StreamDetails) -> None:
         """
         Mark the proxied stream session inactive when a stream consumer ends.
 
         Do not revoke the grant here: skip-back and stop/resume can reuse the same
-        buffer and part URLs (``buffer.is_valid``). Grants expire after an idle
-        timeout refreshed by each part request, and are cleared on unload.
+        buffer and part URLs (``buffer.is_valid``) without calling ``on_stream_started``
+        again. Grants stay while a transfer is active or the buffer is still usable,
+        then idle-timeout / unload clears them.
         """
         if (session_id := _session_id_from_streamdetails(streamdetails)) is None:
             return
+        if (grant := self._stream_sessions.get(session_id)) is not None:
+            grant.streamdetails = streamdetails
         self._active_stream_sessions.discard(session_id)
 
     async def get_resume_position(
@@ -821,45 +832,51 @@ class BookOrbitProvider(MusicProvider):
             asset_id = str(request.query["asset_id"])
         except KeyError, ValueError:
             return web.Response(status=400, text="Missing or invalid session_id/book_id/asset_id")
-        if not asset_id or not self._stream_session_allows(session_id, book_id, asset_id):
+        if not asset_id:
+            return web.Response(status=404, text="Unknown asset")
+        grant = self._begin_stream_transfer(session_id, book_id, asset_id)
+        if grant is None:
             return web.Response(status=404, text="Unknown asset")
         try:
-            upstream = await self._client.open_file(
-                int(book_id),
-                asset_id,
-                range_header=request.headers.get("Range"),
-                timeout=PART_STREAM_TIMEOUT,
-            )
-        except (ClientError, LoginFailed, TimeoutError) as err:
-            self.logger.warning(
-                "Requesting asset %s of book %s from BookOrbit failed: %s",
-                asset_id,
-                book_id,
-                err,
-            )
-            raise web.HTTPBadGateway(text="BookOrbit unreachable") from err
-        async with upstream:
-            response = web.StreamResponse(
-                status=upstream.status,
-                headers={
-                    name: upstream.headers[name]
-                    for name in PART_STREAM_HEADERS
-                    if name in upstream.headers
-                },
-            )
             try:
-                await response.prepare(request)
-                async for chunk in upstream.content.iter_chunked(PART_STREAM_CHUNK_SIZE):
-                    await response.write(chunk)
-                await response.write_eof()
-            except ConnectionError:
-                # ffmpeg hangs up e.g. when it seeks or has probed enough
-                self.logger.debug("Client disconnected from asset %s", asset_id)
-            except TimeoutError as err:
-                self.logger.warning("BookOrbit interrupted asset %s: %s", asset_id, err)
-            except ClientError as err:
-                self.logger.warning("BookOrbit interrupted asset %s: %s", asset_id, err)
-        return response
+                upstream = await self._client.open_file(
+                    int(book_id),
+                    asset_id,
+                    range_header=request.headers.get("Range"),
+                    timeout=PART_STREAM_TIMEOUT,
+                )
+            except (ClientError, LoginFailed, TimeoutError) as err:
+                self.logger.warning(
+                    "Requesting asset %s of book %s from BookOrbit failed: %s",
+                    asset_id,
+                    book_id,
+                    err,
+                )
+                raise web.HTTPBadGateway(text="BookOrbit unreachable") from err
+            async with upstream:
+                response = web.StreamResponse(
+                    status=upstream.status,
+                    headers={
+                        name: upstream.headers[name]
+                        for name in PART_STREAM_HEADERS
+                        if name in upstream.headers
+                    },
+                )
+                try:
+                    await response.prepare(request)
+                    async for chunk in upstream.content.iter_chunked(PART_STREAM_CHUNK_SIZE):
+                        await response.write(chunk)
+                    await response.write_eof()
+                except ConnectionError:
+                    # ffmpeg hangs up e.g. when it seeks or has probed enough
+                    self.logger.debug("Client disconnected from asset %s", asset_id)
+                except TimeoutError as err:
+                    self.logger.warning("BookOrbit interrupted asset %s: %s", asset_id, err)
+                except ClientError as err:
+                    self.logger.warning("BookOrbit interrupted asset %s: %s", asset_id, err)
+            return response
+        finally:
+            self._end_stream_transfer(grant)
 
     def _progress_lock_for(self, book_id: int) -> asyncio.Lock:
         """Return the per-book lock used to serialize progress reports."""
@@ -891,13 +908,42 @@ class BookOrbitProvider(MusicProvider):
         grant.last_access_at = time.monotonic()
         return True
 
+    def _begin_stream_transfer(
+        self, session_id: str, book_id: str, asset_id: str
+    ) -> _StreamGrant | None:
+        """Authorize a part request and mark the grant as mid-transfer."""
+        if not self._stream_session_allows(session_id, book_id, asset_id):
+            return None
+        grant = self._stream_sessions[session_id]
+        grant.active_transfers += 1
+        return grant
+
+    def _end_stream_transfer(self, grant: _StreamGrant) -> None:
+        """Release a mid-transfer mark and refresh the idle timer."""
+        grant.active_transfers = max(0, grant.active_transfers - 1)
+        grant.last_access_at = time.monotonic()
+
+    @staticmethod
+    def _stream_grant_held(session_id: str, grant: _StreamGrant, active: set[str]) -> bool:
+        """Return True when a grant must not be idle-pruned yet."""
+        if session_id in active or grant.active_transfers > 0:
+            return True
+        streamdetails = grant.streamdetails
+        if streamdetails is None:
+            return False
+        # Core reuses part URLs while the PCM buffer is still valid, even after
+        # on_streamed and without a second on_stream_started call.
+        buffer = streamdetails.buffer
+        return buffer is not None and not getattr(buffer, "cancelled", False)
+
     def _prune_stream_sessions(self) -> None:
-        """Drop idle sessions that are not mid-playback."""
+        """Drop idle sessions that are not mid-playback or buffer-reusable."""
         now = time.monotonic()
+        active = self._active_stream_sessions
         stale = [
             session_id
             for session_id, grant in self._stream_sessions.items()
-            if session_id not in self._active_stream_sessions
+            if not self._stream_grant_held(session_id, grant, active)
             and now - grant.last_access_at >= STREAMDETAILS_EXPIRATION_S
         ]
         for session_id in stale:

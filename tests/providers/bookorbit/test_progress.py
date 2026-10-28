@@ -281,6 +281,48 @@ async def test_stream_session_idle_timeout_revokes_grant(
 
 
 @pytest.mark.asyncio
+async def test_stream_session_survives_idle_while_buffer_reusable(
+    provider: BookOrbitProvider, book_multifile: dict[str, Any]
+) -> None:
+    """After on_streamed, a reused buffer must still open the next part past idle TTL."""
+    details = await provider.get_stream_details(str(book_multifile["id"]), MediaType.AUDIOBOOK)
+    assert isinstance(details.data, dict)
+    session_id = details.data["session_id"]
+    assets = manifest_from_book(book_multifile)["assets"]
+    book_id = str(book_multifile["id"])
+    # Core attaches a PCM buffer and may reuse it after on_streamed without
+    # calling on_stream_started again (seconds_streamed already set).
+    details.buffer = Mock(cancelled=False)
+    await provider.on_stream_started(details)
+    await provider.on_streamed(details)
+    assert session_id not in provider._active_stream_sessions
+    grant = provider._stream_sessions[session_id]
+    grant.last_access_at -= STREAMDETAILS_EXPIRATION_S + 1
+    assert provider._stream_session_allows(session_id, book_id, assets[1]["assetId"])
+
+
+@pytest.mark.asyncio
+async def test_stream_session_transfer_blocks_idle_prune(
+    provider: BookOrbitProvider, book_audiobook: dict[str, Any]
+) -> None:
+    """In-flight part transfers must not be pruned even when inactive and idle."""
+    details = await provider.get_stream_details(str(book_audiobook["id"]), MediaType.AUDIOBOOK)
+    assert isinstance(details.data, dict)
+    session_id = details.data["session_id"]
+    asset = manifest_from_book(book_audiobook)["assets"][0]
+    book_id = str(book_audiobook["id"])
+    await provider.on_stream_started(details)
+    await provider.on_streamed(details)
+    grant = provider._begin_stream_transfer(session_id, book_id, asset["assetId"])
+    assert grant is not None
+    try:
+        grant.last_access_at -= STREAMDETAILS_EXPIRATION_S + 1
+        assert provider._stream_session_allows(session_id, book_id, asset["assetId"])
+    finally:
+        provider._end_stream_transfer(grant)
+
+
+@pytest.mark.asyncio
 async def test_stream_details_rejects_other_media(provider: BookOrbitProvider) -> None:
     """Only audiobooks can be streamed."""
     with pytest.raises(MediaNotFoundError):
