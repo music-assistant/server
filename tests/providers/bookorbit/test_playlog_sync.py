@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from typing import Any
+import asyncio
+from typing import Any, cast
 from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
@@ -10,6 +11,7 @@ from aiohttp import ClientError
 from music_assistant_models.enums import MediaType
 
 from music_assistant.constants import PLAYBACK_REPORT_INTERVAL_SECONDS
+from music_assistant.providers.bookorbit import BookOrbitProvider
 from music_assistant.providers.bookorbit.playlog_sync import (
     InboundProgressGuard,
     apply_book_progress,
@@ -310,3 +312,100 @@ async def test_sync_playlog_isolates_unexpected_book_failure() -> None:
             guard=InboundProgressGuard(),
         )
     mass.music.mark_item_unplayed.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_provider_sync_playlog_uses_catalog_ids(
+    provider: BookOrbitProvider, book_audiobook: dict[str, Any]
+) -> None:
+    """Provider playlog sync defaults to the catalog's numeric book ids."""
+    provider._catalog = {str(book_audiobook["id"]): book_audiobook}
+    with patch(
+        "music_assistant.providers.bookorbit.sync_playlog",
+        new_callable=AsyncMock,
+    ) as sync_mock:
+        await provider._sync_playlog_from_bookorbit()
+    assert sync_mock.await_count == 1
+    assert sync_mock.await_args is not None
+    kwargs = sync_mock.await_args.kwargs
+    assert int(book_audiobook["id"]) in set(kwargs["book_ids"])
+    assert kwargs["guard"] is provider._inbound_progress_guard
+
+
+@pytest.mark.asyncio
+async def test_provider_sync_playlog_swallows_errors(
+    provider: BookOrbitProvider, book_audiobook: dict[str, Any]
+) -> None:
+    """A failing playlog sync never propagates to sync_library."""
+    provider._catalog = {str(book_audiobook["id"]): book_audiobook}
+    with patch(
+        "music_assistant.providers.bookorbit.sync_playlog",
+        new_callable=AsyncMock,
+        side_effect=RuntimeError("boom"),
+    ):
+        await provider._sync_playlog_from_bookorbit()
+
+
+@pytest.mark.asyncio
+async def test_on_played_notes_inbound_guard(
+    provider: BookOrbitProvider, book_multifile: dict[str, Any]
+) -> None:
+    """Outbound play reports block inbound playlog apply briefly."""
+    provider._inbound_progress_guard = InboundProgressGuard()
+    book_id = int(book_multifile["id"])
+    with patch.object(provider, "_sync_playback_state", new_callable=AsyncMock):
+        await provider.on_played(
+            MediaType.AUDIOBOOK,
+            str(book_id),
+            fully_played=False,
+            position=150,
+            media_item=Mock(),
+        )
+    assert provider._inbound_progress_guard.allow_inbound(book_id) is False
+
+
+@pytest.mark.asyncio
+async def test_sync_library_audiobook_syncs_playlog(provider: BookOrbitProvider) -> None:
+    """Audiobook library sync finishes by pushing BookOrbit progress to the playlog."""
+    with (
+        patch.object(provider, "_load_applied_mapping_details", new_callable=AsyncMock),
+        patch.object(provider, "_save_applied_mapping_details", new_callable=AsyncMock),
+        patch.object(provider, "_sync_playlog_from_bookorbit", new_callable=AsyncMock) as sync_mock,
+        patch("music_assistant.models.music_provider.MusicProvider.sync_library", AsyncMock()),
+    ):
+        await provider.sync_library(MediaType.AUDIOBOOK)
+        assert sync_mock.await_count == 1
+        await provider.sync_library(MediaType.ARTIST)
+        assert sync_mock.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_playlog_poll_loop_syncs_playlog_and_continue_listening(
+    provider: BookOrbitProvider,
+) -> None:
+    """Each poll tick merges MA playlog ids with BookOrbit continue-listening ids."""
+    mass = cast("Any", provider.mass)
+    client = cast("Any", provider._client)
+    mass.music.get_playlog_provider_item_ids = AsyncMock(
+        return_value=[(MediaType.AUDIOBOOK, "1"), (MediaType.PODCAST_EPISODE, "2")]
+    )
+    client.get_continue_listening_book_ids = AsyncMock(return_value=[3])
+    sync_mock = AsyncMock(side_effect=asyncio.CancelledError)
+    with (
+        patch("music_assistant.providers.bookorbit.asyncio.sleep", AsyncMock()),
+        patch.object(provider, "_sync_playlog_from_bookorbit", sync_mock),
+        pytest.raises(asyncio.CancelledError),
+    ):
+        await provider._playlog_poll_loop()
+    sync_mock.assert_awaited_once_with({1, 3})
+
+
+@pytest.mark.asyncio
+async def test_unload_cancels_playlog_poll_task(provider: BookOrbitProvider) -> None:
+    """Unload cancels the background poll task."""
+    cast("Any", provider._client).close = AsyncMock()
+    task = asyncio.create_task(asyncio.sleep(3600))
+    provider._playlog_poll_task = task
+    await provider.unload()
+    assert task.cancelled()
+    assert provider._playlog_poll_task is None
