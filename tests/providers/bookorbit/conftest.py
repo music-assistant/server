@@ -84,6 +84,7 @@ def provider(book_audiobook: dict[str, Any], book_multifile: dict[str, Any]) -> 
     mass = Mock()
     wire_mass_create_task(mass)
     mass.streams.base_url = "http://ma:8097"
+    mass.music.get_playlog_provider_item_ids = AsyncMock(return_value=[])
     manifest = Mock()
     manifest.domain = "bookorbit"
     config = Mock()
@@ -104,4 +105,5 @@ def provider(book_audiobook: dict[str, Any], book_multifile: dict[str, Any]) -> 
     prov._client.upsert_audio_progress = AsyncMock()
     prov._client.get_playback_state = AsyncMock(return_value=None)
     prov._client.put_playback_state = AsyncMock(return_value={"revision": 1})
+    prov._client.get_continue_listening_book_ids = AsyncMock(return_value=[])
     return prov
