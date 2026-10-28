@@ -1723,7 +1723,9 @@ async def test_reconfigure_drops_a_listing_assembled_for_the_previous_account(
             # the old account's tracks are in, the rest of the assembly is not
             fetched.set()
             await release.wait()
-            return Listing([BrowseFolder(item_id="old", provider=instance_id, path="old", name="old")])
+            return Listing(
+                [BrowseFolder(item_id="old", provider=instance_id, path="old", name="old")]
+            )
 
         in_flight = asyncio.create_task(
             cached_listing(
