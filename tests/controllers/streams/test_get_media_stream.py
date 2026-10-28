@@ -1326,6 +1326,8 @@ async def test_radio_stream_keeps_restarting_after_long_runs(
 
     assert chunks == [long_run] * len(runs)
     assert get_stream_details.await_count == len(runs) - 1
+
+
 @pytest.mark.asyncio
 async def test_hls_radio_input_reads_ahead_of_realtime(monkeypatch: pytest.MonkeyPatch) -> None:
     """HLS radio is read at playback pace with a head start that rides out a segment reload."""
