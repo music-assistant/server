@@ -2784,7 +2784,9 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
             # parent, where a stop would cut that parent's stream short. A protocol player
             # has no active group of its own either, so there is nothing to detach here.
             # the queue goes first, so its final update cannot re-add it after the removal
-            self.mass.player_queues.on_player_remove(player.player_id, permanent=False)
+            self.mass.player_queues.on_player_remove(
+                player.player_id, permanent=False, release_audio=False
+            )
             self.mass.signal_event(EventType.PLAYER_REMOVED, player.player_id)
             return
         # the player surfaces on its own, which leaves it unusable without a queue
