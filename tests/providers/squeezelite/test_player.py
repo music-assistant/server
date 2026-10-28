@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import AsyncIterator
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, PropertyMock, patch
 
 import pytest
-from music_assistant_models.enums import MediaType
+from aioslimproto.models import PlayerState as SlimPlayerState
+from music_assistant_models.enums import MediaType, PlaybackState
 from music_assistant_models.player import PlayerMedia
 
 from music_assistant.constants import (
@@ -15,6 +17,7 @@ from music_assistant.constants import (
     CONF_PREFER_WAV_FOR_LIVE_SOURCES,
 )
 from music_assistant.providers.squeezelite.player import SqueezelitePlayer, is_protocol_only_device
+from tests.common import use_real_create_task
 
 
 async def test_squeezelite_prefers_wav_for_live_sources_by_default() -> None:
@@ -121,3 +124,38 @@ def test_group_regular_track_ignores_wav_preference() -> None:
 def test_is_protocol_only_device(device_model: str, expected: bool) -> None:
     """Test protocol-only device detection based on the reported device model."""
     assert is_protocol_only_device(device_model) is expected
+
+
+async def test_regroup_supersedes_pending_resume() -> None:
+    """A member removed and re-added while the leader is busy restarts the leader once."""
+    player, mass = _player_with_mocked_mass()
+    player._player_id = "leader"
+    player._attr_group_members = ["leader", "member"]
+    player._attr_playback_state = PlaybackState.PLAYING
+    use_real_create_task(mass)
+    member = MagicMock()
+    member.player_id = "member"
+    member.state = SlimPlayerState.STOPPED
+    mass.players.get_player.return_value = member
+    # the playback lock an announcement holds on the leader while it plays
+    leader_busy = asyncio.Event()
+    resumed: list[str] = []
+
+    async def _cmd_resume(player_id: str) -> None:
+        await leader_busy.wait()
+        resumed.append(player_id)
+
+    mass.players.cmd_resume = _cmd_resume
+
+    with (
+        patch.object(SqueezelitePlayer, "synced_to", new_callable=PropertyMock, return_value=None),
+        patch.object(SqueezelitePlayer, "state", new_callable=PropertyMock),
+        patch.object(player, "_get_sync_clients", return_value=[member]),
+        patch.object(player, "update_state"),
+    ):
+        await player.set_members(player_ids_to_remove=["member"])
+        await player.set_members(player_ids_to_add=["member"])
+        leader_busy.set()
+        await asyncio.gather(*mass._tracked_tasks.values(), return_exceptions=True)
+
+    assert resumed == ["leader"]
