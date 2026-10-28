@@ -480,14 +480,11 @@ class YandexStationPlayer(Player):
 
     async def play_media(self, media: PlayerMedia) -> None:
         """Play media using the directive supported by the station firmware."""
-        if self._voice.resuming:
-            # The resume after Alice asked the core for this stream. If the Station
-            # started its own playback meanwhile, that playback stands.
-            if self._voice.drops_resumed_stream:
-                _LOGGER.debug(
-                    "[%s] Station playback took over — dropping the resume", self.player_id
-                )
-                self._voice.drop_resumed_stream()
+        # The resume after Alice asked the core for this stream; whatever overruled
+        # that resume meanwhile (the Station's own playback, a new request) stands.
+        resumed = self._voice.resuming
+        if resumed:
+            if self._drop_resumed_stream():
                 return
         else:
             self._end_voice_interruption()
@@ -495,7 +492,9 @@ class YandexStationPlayer(Player):
         generation = self._external_play_generation
         _LOGGER.debug("[%s] play_media called: %s", self.player_id, media.title or media.uri)
         stream_url = await self.provider.mass.streams.resolve_stream_url(self.player_id, media)
-        if self._external_play_generation != generation:
+        if self._external_play_generation != generation or (
+            resumed and self._drop_resumed_stream()
+        ):
             return
         if self._voice_control_enabled and self._alice.activity == AliceActivity.REQUEST:
             # Alice is handling a request; start the queue once she is done.
@@ -708,6 +707,14 @@ class YandexStationPlayer(Player):
         self._voice.cancel()
         self.mass.cancel_timer(self._voice_resume_task_id)
 
+    def _drop_resumed_stream(self) -> bool:
+        """Return True, and record the drop, if the running resume's stream must not play."""
+        if not self._voice.drops_resumed_stream:
+            return False
+        _LOGGER.debug("[%s] Voice resume overruled — dropping its stream", self.player_id)
+        self._voice.drop_resumed_stream()
+        return True
+
     async def _resume_after_voice(self) -> None:
         """Resume the Music Assistant queue Alice's request stopped or delayed."""
         if (source := self._voice.start_resume()) is None:
@@ -756,11 +763,13 @@ class YandexStationPlayer(Player):
             # Station mixes Alice voice into the music output, so a vol=0
             # Station can drown out / quiet her reply on some firmwares),
             # pause the target once so she's heard cleanly, and skip a
-            # new handoff until she goes IDLE.
-            if self._intercept_active and alice.activity == AliceActivity.REQUEST:
-                await self._unmute_station_for_alice()
-                if alice.started:
-                    await self._pause_target(clear_session=False, clear_debounce=True)
+            # new handoff until she goes IDLE — also without a session, or the
+            # target would start over her answer.
+            if alice.activity == AliceActivity.REQUEST:
+                if self._intercept_active:
+                    await self._unmute_station_for_alice()
+                    if alice.started:
+                        await self._pause_target(clear_session=False, clear_debounce=True)
                 return
 
             if self._intercept_active and alice.activity == AliceActivity.PHRASE:

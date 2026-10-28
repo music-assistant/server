@@ -170,3 +170,19 @@ def test_running_resume_that_played_schedules_nothing_after_it() -> None:
     recovery.start_resume()
 
     assert recovery.finish_resume() is False
+
+
+def test_request_that_stops_the_resumed_stream_counts_as_dropping_it() -> None:
+    """
+    The resumed stream stopped for a new request cannot play any more.
+
+    If Alice answers, the music resumes once the running resume has returned.
+    """
+    recovery = _awaiting()
+    recovery.request_ended(spoke=True, volume=40)
+    recovery.start_resume()
+
+    recovery.begin("queue_1", 40)
+    schedules_now = recovery.request_ended(spoke=True, volume=40)
+
+    assert (schedules_now, recovery.finish_resume()) == (False, True)

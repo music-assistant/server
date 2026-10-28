@@ -1470,3 +1470,24 @@ async def test_station_unmuted_by_user_is_not_muted_after_a_phrase() -> None:
     sent = [c.args[0] for c in player.glagol.send.await_args_list]
     assert {"command": "setVolume", "volume": 0.0} not in sent
     assert player._station_muted_by_intercept is False
+
+
+async def test_request_defers_a_new_handoff_until_it_ends() -> None:
+    """
+    A track the Station reports during an Alice request is handed over after it.
+
+    Without a session there is no target to pause when the request starts, so a
+    handoff started during the request would play over Alice's answer.
+    """
+    player = _make_intercept_player()
+
+    for alice_state in ("LISTENING", "BUSY", "NONE"):
+        state, player_state, _ = _state(track_id="12345", alice_state=alice_state)
+        await player._handle_intercept_tick(state, player_state, True, _alice(player, state))
+    handed_over_during_request = player.mass.player_queues.play_media.await_count
+    state, player_state, _ = _state(track_id="12345", alice_state="IDLE")
+    await player._handle_intercept_tick(state, player_state, True, _alice(player, state))
+
+    assert handed_over_during_request == 0
+    player.mass.player_queues.play_media.assert_awaited_once()
+    assert player._intercept_active is True

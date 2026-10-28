@@ -71,6 +71,9 @@ class VoiceRecovery:
         self._phase = VoiceRecoveryPhase.AWAITING_ANSWER
         self._source = source
         self._baseline_volume = volume
+        if self._resuming:
+            # The stream the running resume asked for was stopped or held back.
+            self._stream_dropped = True
 
     def request_ended(self, *, spoke: bool, volume: int) -> bool:
         """
