@@ -134,4 +134,4 @@ async def _run_quick_connect(session: SetupSession) -> None:
             await session.finish(setup_data)
             return
         except SetupFlowError as err:
-            errors = {"base": err.translation_key or str(err)}
+            errors = {"base": err}
