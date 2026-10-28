@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING, Any
 from music_assistant_models.enums import ExternalID, MediaType, ProviderFeature
 from music_assistant_models.errors import MediaNotFoundError
 from music_assistant_models.media_items import (
+    Artist,
     ItemMapping,
     Playlist,
     ProviderMapping,
@@ -26,9 +27,11 @@ if TYPE_CHECKING:
     from music_assistant.models import ProviderInstanceType
 
 SUPPORTED_FEATURES = {ProviderFeature.BROWSE}
-SAMPLE_PLAYLIST: dict[str, Any] = json.loads(
+JSPF_TRACK_EXTENSION = "https://musicbrainz.org/doc/jspf#track"
+SAMPLE_RESPONSE: dict[str, Any] = json.loads(
     Path(__file__).with_name("sample_playlist.json").read_text(encoding="utf-8")
 )
+SAMPLE_PLAYLIST: dict[str, Any] = SAMPLE_RESPONSE["playlist"]
 SAMPLE_PLAYLIST_ID = SAMPLE_PLAYLIST["identifier"].rsplit("/", 1)[-1]
 
 
@@ -76,28 +79,26 @@ class ListenBrainzProvider(PluginProvider):
             raise MediaNotFoundError(f"Unknown ListenBrainz playlist: {prov_playlist_id}")
         if page > 0:
             return []
-        return [
-            self._parse_track(item, position)
-            for position, item in enumerate(SAMPLE_PLAYLIST["track"], 1)
-        ]
+        tracks: list[Track] = []
+        for position, item in enumerate(SAMPLE_PLAYLIST["track"], 1):
+            tracks.append(await self._parse_track(item, position))
+        return tracks
 
-    def _parse_track(self, item: dict[str, Any], position: int) -> Track:
-        """Parse one metadata-only ListenBrainz playlist entry."""
+    async def _parse_track(self, item: dict[str, Any], position: int) -> Track:
+        """Return a matching library track or parse a metadata-only playlist entry."""
+        recording_mbid = item["identifier"][0].rsplit("/", 1)[-1]
+        if library_track := await self.mass.music.tracks.get_library_item_by_external_id(
+            recording_mbid, ExternalID.MB_RECORDING
+        ):
+            library_track.position = position
+            return library_track
+        artists = item["extension"][JSPF_TRACK_EXTENSION]["additional_metadata"]["artists"]
         track = Track(
-            item_id=item["id"],
+            item_id=recording_mbid,
             provider=self.instance_id,
             name=item["title"],
             duration=item["duration"] // 1000,
-            artists=UniqueList(
-                [
-                    ItemMapping(
-                        item_id=item["creator"],
-                        provider=self.instance_id,
-                        name=item["creator"],
-                        media_type=MediaType.ARTIST,
-                    )
-                ]
-            ),
+            artists=UniqueList([await self._resolve_artist(artist) for artist in artists]),
             album=ItemMapping(
                 item_id=item["album"],
                 provider=self.instance_id,
@@ -106,13 +107,35 @@ class ListenBrainzProvider(PluginProvider):
             ),
             provider_mappings={
                 ProviderMapping(
-                    item_id=item["id"],
+                    item_id=recording_mbid,
                     provider_domain=self.domain,
                     provider_instance=self.instance_id,
                     available=False,
                 )
             },
-            external_ids={(ExternalID.MB_RECORDING, item["id"])},
+            external_ids={(ExternalID.MB_RECORDING, recording_mbid)},
         )
         track.position = position
         return track
+
+    async def _resolve_artist(self, artist_data: dict[str, str]) -> Artist:
+        """Return an existing library artist or an unavailable MBID-backed artist."""
+        mbid = artist_data["artist_mbid"]
+        if artist := await self.mass.music.artists.get_library_item_by_external_id(
+            mbid, ExternalID.MB_ARTIST
+        ):
+            return artist
+        return Artist(
+            item_id=mbid,
+            provider=self.instance_id,
+            name=artist_data["artist_credit_name"],
+            provider_mappings={
+                ProviderMapping(
+                    item_id=mbid,
+                    provider_domain=self.domain,
+                    provider_instance=self.instance_id,
+                    available=False,
+                )
+            },
+            external_ids={(ExternalID.MB_ARTIST, mbid)},
+        )
