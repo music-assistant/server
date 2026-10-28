@@ -186,6 +186,30 @@ async def test_apply_respects_outbound_guard(book_audiobook: dict[str, Any]) -> 
 
 
 @pytest.mark.asyncio
+async def test_apply_rechecks_guard_after_library_lookup(book_audiobook: dict[str, Any]) -> None:
+    """An outbound stamp during the library lookup must still block mark_item_played."""
+    mass = _mass()
+    book_id = int(book_audiobook["id"])
+    guard = InboundProgressGuard()
+    client = _client_with_state(book_audiobook, 60_000, 10.0)
+
+    async def lookup(**_kwargs: Any) -> Mock:
+        guard.note_outbound(book_id)
+        return Mock(name="book", fully_played=False, resume_position_ms=0)
+
+    mass.music.get_library_item_by_prov_id = AsyncMock(side_effect=lookup)
+    has = await apply_book_progress(
+        mass,
+        provider_instance_id="bookorbit--test",
+        client=client,
+        book_id=book_id,
+        guard=guard,
+    )
+    assert has is True
+    mass.music.mark_item_played.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_apply_returns_false_without_remote_progress() -> None:
     """No remote progress yields False and no playlog write."""
     mass = _mass()

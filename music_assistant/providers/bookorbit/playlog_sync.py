@@ -38,14 +38,23 @@ class InboundProgressGuard:
 
     def note_outbound(self, book_id: int) -> None:
         """Record that MA just wrote progress for ``book_id`` to BookOrbit."""
-        self._last_outbound_ms[book_id] = self._now_ms()
+        now = self._now_ms()
+        self._last_outbound_ms[book_id] = now
+        # Drop expired stamps so long-lived providers do not retain every book id.
+        cutoff = now - self.min_interval_ms
+        stale = [key for key, stamped in self._last_outbound_ms.items() if stamped < cutoff]
+        for key in stale:
+            del self._last_outbound_ms[key]
 
     def allow_inbound(self, book_id: int) -> bool:
         """Return True when an inbound playlog apply for ``book_id`` is safe."""
         stamped = self._last_outbound_ms.get(book_id)
         if stamped is None:
             return True
-        return self._now_ms() - stamped >= self.min_interval_ms
+        if self._now_ms() - stamped >= self.min_interval_ms:
+            self._last_outbound_ms.pop(book_id, None)
+            return True
+        return False
 
     def _now_ms(self) -> int:
         return int(time.time() * 1000)
@@ -132,6 +141,9 @@ async def apply_book_progress(
     if _local_progress_matches(
         library_item, fully_played=fully_played, seconds_played=seconds_played
     ):
+        return True
+    # Recheck after the await: an outbound MA report may have started during lookup.
+    if not guard.allow_inbound(book_id):
         return True
     await mass.music.mark_item_played(
         library_item,
