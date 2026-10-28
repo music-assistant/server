@@ -393,7 +393,9 @@ class SnapcastMAStream:
                     self._snap_on_stream_update,
                     task_id=f"snapcast_playback_started_{self.stream_name}",
                 )
-                self._streamer_started_evt.set()
+                # a run stopped while FFmpeg started must not release the wait for its replacement
+                if not self._stop_streamer_evt.is_set():
+                    self._streamer_started_evt.set()
                 self._is_streaming = True
 
                 done, pending = await asyncio.wait(

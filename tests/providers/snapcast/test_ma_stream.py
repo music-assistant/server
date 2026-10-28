@@ -653,3 +653,29 @@ async def test_replay_during_an_explicit_stop_still_drains(fake_provider: MagicM
 
     _running_ffmpegs[0].kill.assert_not_awaited()
     stream._wait_stream_idle.assert_awaited_once()
+
+
+async def test_run_stopped_while_starting_does_not_signal_started(fake_provider: MagicMock) -> None:
+    """A restart during FFmpeg startup leaves the wait for the replacement run pending."""
+    _running_ffmpegs.clear()
+    fake_provider._snapcast_server_host = "127.0.0.1"
+    fake_provider.mass.create_task.side_effect = asyncio.ensure_future
+    stream = _make_stream(fake_provider, name="music")
+    stream.snap_stream = MagicMock(identifier="music-1", path="tcp://0.0.0.0:4953")
+    stream._wait_stream_idle = AsyncMock()  # type: ignore[method-assign]
+    started_at_kill: list[bool] = []
+
+    class _RestartedWhileStarting(_RunningFFMpeg):
+        async def __aenter__(self) -> Self:
+            if len(_running_ffmpegs) == 1:
+                stream.update_media(MagicMock())
+            self.kill.side_effect = lambda: started_at_kill.append(
+                stream._streamer_started_evt.is_set()
+            )
+            return self
+
+    with patch("music_assistant.providers.snapcast.ma_stream.FFMpeg", _RestartedWhileStarting):
+        stream._streamer_task = asyncio.ensure_future(stream._streamer_task_impl())
+        await asyncio.wait_for(stream._streamer_task, 1)
+
+    assert started_at_kill == [False]
