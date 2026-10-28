@@ -702,6 +702,18 @@ class DLNAPlayer(Player):
         now = time.time()
         position = self.device.media_position
         read_at = self._fresh_report_time()
+        # a playing device that reports the same position again (e.g. re-sends its 00:00:00)
+        # keeps the time it was first reported, so a position that does not advance falls
+        # behind MA's clock however often it is reported (unless MA moved it meanwhile)
+        repeated = (
+            position is not None
+            and position == self._last_reported_position == self._attr_elapsed_time
+            and prev_playback_state == PlaybackState.PLAYING == playback_state
+            and not uri_changed
+            and self._attr_elapsed_time_last_updated is not None
+        )
+        # the device reported where it is now (e.g. where it paused), not MA's clock
+        moved = position is not None and self._last_reported_position not in (None, position)
         if prev_playback_state == PlaybackState.PLAYING != playback_state:
             # MA's clock at the pause, to judge a report that only arrives once paused
             self._clock_at_pause = self._paused_clock(now)
@@ -710,9 +722,9 @@ class DLNAPlayer(Player):
             self._stuck_position = self._last_reported_position = None
             self._clock_at_pause = None
             self._seeked_while_paused = False
-            if uri_changed:
-                self._attr_elapsed_time = 0.0
-                self._attr_elapsed_time_last_updated = now
+            # (also on a device without a position, which starts over once it plays again)
+            self._attr_elapsed_time = 0.0
+            self._attr_elapsed_time_last_updated = now
         elif position is not None and prev_playback_state is not None:
             self._check_stuck_position(position, playback_state, read_at, now)
         self._last_position_stamp = self.device.media_position_updated_at
@@ -732,7 +744,12 @@ class DLNAPlayer(Player):
             # NOT_IMPLEMENTED or unparsable), so a reported 0 is a position like any other
             # and is adopted instead of being discarded as 'not reported'.
             self._attr_elapsed_time = float(position)
-            if (position_updated_at := self.device.media_position_updated_at) is not None:
+            if moved and self._clock_at_pause is not None:
+                self._clock_at_pause = (self._attr_elapsed_time, self._clock_at_pause[1])
+            if (
+                not repeated
+                and (position_updated_at := self.device.media_position_updated_at) is not None
+            ):
                 anchor = position_updated_at.timestamp()
                 if self._playing_since is not None:
                     # a device only re-stamps a position that actually changed, so shortly
