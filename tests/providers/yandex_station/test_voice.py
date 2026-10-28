@@ -186,3 +186,18 @@ def test_request_that_stops_the_resumed_stream_counts_as_dropping_it() -> None:
     schedules_now = recovery.request_ended(spoke=True, volume=40)
 
     assert (schedules_now, recovery.finish_resume()) == (False, True)
+
+
+def test_request_after_the_running_resume_was_cancelled_takes_nothing_over() -> None:
+    """Something else took playback from the running resume; a request cannot revive it."""
+    recovery = _awaiting()
+    recovery.request_ended(spoke=True, volume=40)
+    recovery.start_resume()
+    recovery.cancel()
+
+    took_over = recovery.request_started(volume=40)
+    schedules = recovery.request_ended(spoke=True, volume=40)
+
+    assert (took_over, schedules, recovery.phase) == (False, False, VoiceRecoveryPhase.NONE)
+    assert recovery.drops_resumed_stream is True
+    assert recovery.finish_resume() is False

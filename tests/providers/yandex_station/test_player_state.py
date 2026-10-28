@@ -45,6 +45,8 @@ def _make_player() -> YandexStationPlayer:
     player._external_playing = False
     player._external_media = None
     vars(player)["_external_play_generation"] = 0
+    vars(player)["_resolving_play"] = None
+    vars(player)["_stops_in_flight"] = 0
     player._external_play_confirmed = False
     vars(player)["_external_stop_observed"] = False
     vars(player)["_audio_client"] = False
@@ -814,7 +816,7 @@ async def test_pause_is_advertised_only_while_no_ma_stream_plays() -> None:
     await player.play_media(_media())
 
     assert PlayerFeature.PAUSE not in player._attr_supported_features
-    assert player._attr_active_source == player.player_id
+    assert player._attr_active_source is None
 
     player._external_play_confirmed = True
     _report(player, playing=False, stream_reported=True, progress=30, duration=180)
@@ -1175,7 +1177,7 @@ async def test_stream_reports_after_a_stop_are_not_station_playback() -> None:
     _station_report(player, track_id="", playing=False)
 
     assert player._attr_playback_state == PlaybackState.IDLE
-    assert player._attr_active_source == player.player_id
+    assert player._attr_active_source is None
 
 
 # ── The Station's own track as a Yandex Music item (spec 0004) ────────
@@ -1706,3 +1708,101 @@ async def test_request_that_stops_the_resumed_stream_resumes_after_the_answer() 
     player.mass.call_later.assert_called_once()
     assert player._voice.phase == VoiceRecoveryPhase.SCHEDULED
     assert player._attr_playback_state == PlaybackState.PAUSED
+
+
+# ── Copilot round 12 ─────────────────────────────────────────────────
+
+
+@pytest.mark.parametrize(
+    ("alice_states", "resumes"),
+    [(("LISTENING", "BUSY", "IDLE"), False), (("LISTENING", "NONE", "IDLE"), True)],
+)
+async def test_request_during_the_url_resolution_decides_the_pending_stream(
+    alice_states: tuple[str, ...], resumes: bool
+) -> None:
+    """
+    An Alice request that runs entirely while the stream URL resolves decides it.
+
+    "Alice, stop" leaves the music stopped; a question Alice answers resumes the
+    queue afterwards. The stream is not sent over the request either way.
+    """
+    player, commands = _make_play_media_player([{"status": "SUCCESS"}])
+    _enable_voice_control(player)
+
+    async def resolve_stream_url(_player_id: str, _media: PlayerMedia) -> str:
+        for alice_state in alice_states:
+            _report(player, playing=False, alice_state=alice_state)
+        return "http://192.168.1.2:8097/next.wav"
+
+    object.__setattr__(player.mass.streams, "resolve_stream_url", resolve_stream_url)
+
+    await player.play_media(MediaItem(uri="ma://track/1", title="T", source_id="queue_1"))
+
+    assert commands == []
+    assert player.mass.call_later.called is resumes
+    assert player._voice.phase == (
+        VoiceRecoveryPhase.SCHEDULED if resumes else VoiceRecoveryPhase.NONE
+    )
+
+
+def test_ma_stream_leaves_the_source_to_the_core() -> None:
+    """
+    An MA stream reports no source of its own, also while Alice holds it.
+
+    A universal group stops a paused member whose reported source differs from
+    the group's, which would cancel the resume of the group's own stream.
+    """
+    player = _make_player()
+    _answered_interruption(player, source="universal_group_1")
+
+    assert player._attr_playback_state == PlaybackState.PAUSED
+    assert player._attr_active_source is None
+
+
+@pytest.mark.parametrize("command", ["stop", "pause"])
+async def test_users_stop_during_a_ducked_request_does_not_start_a_resume(command: str) -> None:
+    """
+    The Station's stopped report for the user's own stop is not Alice's interruption.
+
+    Without that, her answer after the stop would resume the music the user stopped.
+    """
+    player = _make_player()
+    _enable_voice_control(player)
+    _start_confirmed_stream(player)
+    _report(player, playing=True, alice_state="LISTENING")
+    _record_commands(player, "success", {"playing": False, "alice_state": "LISTENING"})
+
+    await getattr(player, command)()
+    for alice_state in ("NONE", "IDLE"):
+        _report(player, playing=False, alice_state=alice_state)
+
+    player.mass.call_later.assert_not_called()
+    assert player._voice.phase == VoiceRecoveryPhase.NONE
+    assert player._attr_playback_state == PlaybackState.IDLE
+
+
+async def test_request_after_a_station_takeover_does_not_revive_the_resume() -> None:
+    """
+    A request Alice answers over the Station's own track leaves that track playing.
+
+    The takeover ended the running resume for good; the request is about the
+    Station's playback, not about the music the resume asked for.
+    """
+    player, commands = _make_play_media_player([{"status": "SUCCESS"}])
+    _answered_interruption(player)
+    player.mass.call_later.reset_mock()
+
+    async def cmd_resume(_player_id: str, source: str | None = None) -> None:
+        _report(player, playing=True, native_track_id="yandex-9")
+        for alice_state in ("LISTENING", "NONE", "IDLE"):
+            _report(player, playing=True, alice_state=alice_state, native_track_id="yandex-9")
+        await player.play_media(MediaItem(uri="ma://track/1", title="T", source_id=source))
+
+    player.mass.players.cmd_resume = AsyncMock(side_effect=cmd_resume)
+
+    await player._resume_after_voice()
+
+    assert commands == []
+    player.mass.call_later.assert_not_called()
+    assert player._attr_active_source == STATION_SOURCE_ID
+    assert player._voice.phase == VoiceRecoveryPhase.NONE

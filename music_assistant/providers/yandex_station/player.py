@@ -209,6 +209,11 @@ class YandexStationPlayer(Player):
         self._external_media: PlayerMedia | None = None
         # Claimed by each play_media() so a superseded request is dropped.
         self._external_play_generation = 0
+        # The generation and owning queue of a play_media() whose stream URL is
+        # still resolving, so an Alice request that starts meanwhile can hold it.
+        self._resolving_play: tuple[int, str] | None = None
+        # stop() calls waiting for the Station; its stopped reports are theirs.
+        self._stops_in_flight = 0
         # Becomes True once Glagol reports playing=True during external playback.
         # Used to distinguish the startup window (station fetching stream) from
         # a user-initiated physical pause on the speaker.
@@ -434,7 +439,11 @@ class YandexStationPlayer(Player):
             if self._external_playing and not self._external_audio_client
             else {"command": "stop"}
         )
-        result = await self.glagol.send(command)
+        self._stops_in_flight += 1
+        try:
+            result = await self.glagol.send(command)
+        finally:
+            self._stops_in_flight -= 1
         _raise_if_failed(result, "stop")
         # A newer play_media() owns the session if it started meanwhile, and playback
         # the Station started after the stop is newer than this response.
@@ -491,7 +500,13 @@ class YandexStationPlayer(Player):
         self._external_play_generation += 1
         generation = self._external_play_generation
         _LOGGER.debug("[%s] play_media called: %s", self.player_id, media.title or media.uri)
-        stream_url = await self.provider.mass.streams.resolve_stream_url(self.player_id, media)
+        if not resumed:
+            self._resolving_play = (generation, media.source_id or self.player_id)
+        try:
+            stream_url = await self.provider.mass.streams.resolve_stream_url(self.player_id, media)
+        finally:
+            if self._resolving_play is not None and self._resolving_play[0] == generation:
+                self._resolving_play = None
         if self._external_play_generation != generation or (
             resumed and self._drop_resumed_stream()
         ):
@@ -650,7 +665,9 @@ class YandexStationPlayer(Player):
             if audio_client
             else self._attr_playback_state != PlaybackState.PLAYING
         )
-        self._attr_active_source = self.player_id
+        # MA-managed playback reports no source of its own, so the core resolves the
+        # owning queue (a universal group stops a paused member whose source differs).
+        self._attr_active_source = None
         # The Station cannot pause this stream; the core stops it instead.
         self._attr_supported_features = self._attr_supported_features - {PlayerFeature.PAUSE}
 
@@ -695,6 +712,20 @@ class YandexStationPlayer(Player):
         self.mass.call_later(
             VOICE_RESUME_DELAY, self._resume_after_voice, task_id=self._voice_resume_task_id
         )
+
+    def _hold_resolving_play_for_request(self) -> None:
+        """Hold a play_media() whose URL still resolves until the Alice request that just started ends."""
+        if not self._voice_control_enabled or self._resolving_play is None:
+            return
+        generation, source = self._resolving_play
+        self._resolving_play = None
+        if generation != self._external_play_generation:
+            return
+        _LOGGER.debug("[%s] Alice request — holding the pending play_media", self.player_id)
+        self._external_play_generation += 1
+        self._voice.begin(source, self._attr_volume_level or 0)
+        if self._attr_playback_state != PlaybackState.PLAYING:
+            self._attr_playback_state = PlaybackState.PAUSED
 
     def _defer_voice_resume_to_new_request(self) -> None:
         """Hand a scheduled auto-resume over to an Alice request that just started."""
@@ -1230,6 +1261,7 @@ class YandexStationPlayer(Player):
                 self._voice_control_enabled
                 and alice.activity == AliceActivity.REQUEST
                 and not playing
+                and not self._stops_in_flight
             ):
                 self._interrupt_for_voice()
             elif playing:
@@ -1244,7 +1276,7 @@ class YandexStationPlayer(Player):
                 self._attr_powered = True
             elif (
                 self._external_play_confirmed
-                and alice.activity != AliceActivity.REQUEST
+                and (alice.activity != AliceActivity.REQUEST or self._stops_in_flight)
                 and stream_reported is not False
             ):
                 # The stream stopped without Alice: it finished, or the user stopped
@@ -1285,6 +1317,7 @@ class YandexStationPlayer(Player):
             self._attr_playback_state = PlaybackState.PAUSED
 
         if alice.started and alice.activity == AliceActivity.REQUEST:
+            self._hold_resolving_play_for_request()
             self._defer_voice_resume_to_new_request()
         if (
             alice.ended == AliceActivity.REQUEST

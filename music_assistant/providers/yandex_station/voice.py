@@ -15,16 +15,28 @@ class VoiceRecoveryPhase(StrEnum):
     SCHEDULED = "scheduled"
 
 
+class RunningResume(StrEnum):
+    """What may still come of a resume the core is already running."""
+
+    NONE = "none"
+    # Its stream may play.
+    ACTIVE = "active"
+    # A new Alice request overruled it; the request's end decides.
+    HELD = "held"
+    # Something else took playback over; its stream never plays.
+    CANCELLED = "cancelled"
+
+
 class VoiceRecovery:
     """
     Follow interrupted playback from Alice's request to its resumption.
 
     The player schedules the timer and asks the core to resume; this tracks the
     decision, the queue that owned the playback, the volume the deciding request
-    started from, and whether a resume the core is already running still stands.
-    A running resume cannot be recalled from the core, so anything that overrules
-    it marks it superseded and the player drops the stream it asks for. A resume
-    that has to follow a dropped stream waits until the running one has returned.
+    started from, and what may still come of a resume the core is already running.
+    A running resume cannot be recalled from the core, so whatever overrules it
+    makes the player drop the stream it asks for. A resume that has to follow a
+    dropped stream waits until the running one has returned.
     """
 
     def __init__(self) -> None:
@@ -32,8 +44,7 @@ class VoiceRecovery:
         self._phase = VoiceRecoveryPhase.NONE
         self._source: str | None = None
         self._baseline_volume = 0
-        self._resuming = False
-        self._superseded = False
+        self._running = RunningResume.NONE
         self._stream_dropped = False
 
     @property
@@ -54,12 +65,12 @@ class VoiceRecovery:
     @property
     def resuming(self) -> bool:
         """Whether the core is running a resume this recovery asked for."""
-        return self._resuming
+        return self._running != RunningResume.NONE
 
     @property
     def drops_resumed_stream(self) -> bool:
         """Whether the stream the running resume starts must not play."""
-        return self._resuming and self._superseded
+        return self._running in (RunningResume.HELD, RunningResume.CANCELLED)
 
     def begin(self, source: str, volume: int) -> None:
         """
@@ -71,9 +82,11 @@ class VoiceRecovery:
         self._phase = VoiceRecoveryPhase.AWAITING_ANSWER
         self._source = source
         self._baseline_volume = volume
-        if self._resuming:
+        if self._running != RunningResume.NONE:
             # The stream the running resume asked for was stopped or held back.
             self._stream_dropped = True
+            if self._running == RunningResume.ACTIVE:
+                self._running = RunningResume.HELD
 
     def request_ended(self, *, spoke: bool, volume: int) -> bool:
         """
@@ -94,31 +107,32 @@ class VoiceRecovery:
         if not (spoke or volume != self._baseline_volume):
             self._phase = VoiceRecoveryPhase.NONE
             return False
-        if self._resuming and self._stream_dropped:
+        if self._running == RunningResume.NONE:
+            self._phase = VoiceRecoveryPhase.SCHEDULED
+            return True
+        if self._stream_dropped:
             self._phase = VoiceRecoveryPhase.SCHEDULED
             return False
-        if self._resuming:
-            self._superseded = False
-            self._phase = VoiceRecoveryPhase.NONE
-            return False
-        self._phase = VoiceRecoveryPhase.SCHEDULED
-        return True
+        self._running = RunningResume.ACTIVE
+        self._phase = VoiceRecoveryPhase.NONE
+        return False
 
     def request_started(self, volume: int) -> bool:
         """
         Let an Alice request that just started decide instead of an earlier one.
 
         It takes over a scheduled resume, and it overrules a resume the core is
-        already running. Its own end decides, measured from the volume it started
-        at. Returns True if a scheduled resume was taken over (its timer must go).
+        already running unless something else took playback from that one. Its own
+        end decides, measured from the volume it started at. Returns True if a
+        scheduled resume was taken over (its timer must go).
 
         :param volume: The Station volume when the new request started.
         """
         took_over_timer = self._phase == VoiceRecoveryPhase.SCHEDULED
-        if not (took_over_timer or self._resuming):
+        if self._running == RunningResume.ACTIVE:
+            self._running = RunningResume.HELD
+        elif not (took_over_timer or self._running == RunningResume.HELD):
             return False
-        if self._resuming:
-            self._superseded = True
         self._phase = VoiceRecoveryPhase.AWAITING_ANSWER
         self._baseline_volume = volume
         return took_over_timer
@@ -132,8 +146,7 @@ class VoiceRecovery:
         if self._phase != VoiceRecoveryPhase.SCHEDULED:
             return None
         self._phase = VoiceRecoveryPhase.NONE
-        self._resuming = True
-        self._superseded = False
+        self._running = RunningResume.ACTIVE
         self._stream_dropped = False
         return self._source
 
@@ -148,13 +161,12 @@ class VoiceRecovery:
         Returns True if a resume has to be scheduled now: a request that ended while
         it ran, after its stream was dropped, asked for one.
         """
-        self._resuming = False
-        self._superseded = False
+        self._running = RunningResume.NONE
         self._stream_dropped = False
         return self._phase == VoiceRecoveryPhase.SCHEDULED
 
     def cancel(self) -> None:
         """Drop the recovery because something else now decides playback."""
-        if self._resuming:
-            self._superseded = True
+        if self._running != RunningResume.NONE:
+            self._running = RunningResume.CANCELLED
         self._phase = VoiceRecoveryPhase.NONE
