@@ -3097,6 +3097,15 @@ class StreamsAudio:
                             del crossfade_buffer[: len(pcm_slice)]
                             await asyncio.sleep(0)
 
+                if _superseded():
+                    # a stop ends the session before it releases its audio (a clean EOF):
+                    # booked as finished, the queue would end and resume from its start
+                    self.logger.debug(
+                        "Flow stream for queue %s superseded - exiting before end-of-track",
+                        queue.display_name,
+                    )
+                    return
+
                 # A source error after partial audio must not look like a completed item.
                 # Progress reporting skips items with stream_error, so the item is not
                 # marked played; move on to the next queue item like the zero-audio path.
