@@ -382,7 +382,7 @@ class SnapcastMAStream:
                 output_format=stream_format,
                 filter_params=self._filter_settings or [],
                 audio_output=stream_path,
-                extra_input_args=["-y", "-re"],
+                extra_input_args=["-y", "-re", "-readrate_initial_burst", "0"],
             ) as ffmpeg_proc:
                 wait_ffmpeg = self._mass.create_task(ffmpeg_proc.wait())
                 wait_stop = self._mass.create_task(self._stop_streamer_evt.wait())
