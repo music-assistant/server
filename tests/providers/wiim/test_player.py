@@ -907,6 +907,25 @@ class TestStalePositionOnNewStream:
         assert player._attr_elapsed_time == 150
 
     @pytest.mark.asyncio
+    async def test_short_stream_reported_at_its_end_keeps_the_time_check(
+        self, mock_provider: MagicMock, mock_wiim_device: MagicMock, clock: _FakeClock
+    ) -> None:
+        """A report at the end of a short stream does not end the check for a stale position."""
+        player, device_media = await self._seek_stream(mock_provider, mock_wiim_device)
+        # a seek to 1199 s in the 1200 s item leaves a 1 s stream
+        device_media.duration = 1
+
+        clock.advance(0.4)
+        device_media.position = 1
+        await player._sync_position()
+
+        clock.advance(0.4)
+        device_media.position = 7
+        await player._sync_position()
+
+        assert player._attr_elapsed_time == 0
+
+    @pytest.mark.asyncio
     async def test_sync_position_accepts_device_when_ma_not_driving_playback(
         self, mock_provider: MagicMock, mock_wiim_device: MagicMock
     ) -> None:
