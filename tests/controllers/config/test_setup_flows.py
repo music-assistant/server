@@ -1743,6 +1743,53 @@ async def test_reconfigure_drops_a_listing_assembled_for_the_previous_account(
     assert cached is None
 
 
+async def test_reconfigure_drops_the_library_listings_holding_the_previous_account(
+    flow_mass: MusicAssistant,
+) -> None:
+    """Listings of library containers, assembled from the instance too, are not kept."""
+    with _use_account_provider():
+        instance_id = await _load_account_provider(flow_mass, "old-account")
+        # library albums mapping to the instance: one listing cached, one being assembled
+        cached_uri, assembling_uri = "library://album/1", "library://album/2"
+        fetched, release = asyncio.Event(), asyncio.Event()
+        old_tracks = [BrowseFolder(item_id="old", provider=instance_id, path="old", name="old")]
+
+        async def assemble_cached() -> Listing[Any]:
+            return Listing(list(old_tracks))
+
+        async def assemble_in_flight() -> Listing[Any]:
+            fetched.set()
+            await release.wait()
+            return Listing(list(old_tracks))
+
+        await cached_listing(
+            flow_mass,
+            ListingType.ALBUM_TRACKS,
+            cached_uri,
+            assemble_cached,
+            item_type=BrowseFolder,
+        )
+        in_flight = asyncio.create_task(
+            cached_listing(
+                flow_mass,
+                ListingType.ALBUM_TRACKS,
+                assembling_uri,
+                assemble_in_flight,
+                item_type=BrowseFolder,
+            )
+        )
+        await fetched.wait()
+        await _reconfigure_account(flow_mass, instance_id, "new-account")
+        release.set()
+        await in_flight
+
+    for uri in (cached_uri, assembling_uri):
+        cached = await flow_mass.cache.get(
+            ListingType.ALBUM_TRACKS.value, provider=uri, category=CACHE_CATEGORY_LISTINGS
+        )
+        assert cached is None, uri
+
+
 async def test_reconfigure_records_a_failed_cache_clear(flow_mass: MusicAssistant) -> None:
     """A cache clear that fails leaves the previous credentials and says why it is down."""
     with _use_account_provider():

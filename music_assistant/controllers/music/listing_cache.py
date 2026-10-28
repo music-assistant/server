@@ -130,13 +130,17 @@ async def invalidate_provider_listings(mass: MusicAssistant, provider_instance: 
     """
     Drop the cached listings of every container of a provider instance.
 
+    The listings of the library's containers go too, as they are assembled from the
+    provider instances their items map to.
+
     :param mass: The MusicAssistant instance.
     :param provider_instance: The provider instance whose containers changed.
     """
-    _provider_generations[provider_instance] = _provider_generations.get(provider_instance, 0) + 1
-    await mass.cache.clear(
-        category_filter=CACHE_CATEGORY_LISTINGS, provider_filter=f"{provider_instance}://"
-    )
+    for source in (provider_instance, "library"):
+        _provider_generations[source] = _provider_generations.get(source, 0) + 1
+        await mass.cache.clear(
+            category_filter=CACHE_CATEGORY_LISTINGS, provider_filter=f"{source}://"
+        )
 
 
 def _generation(uri: str) -> int:
