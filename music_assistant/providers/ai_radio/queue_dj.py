@@ -231,9 +231,11 @@ class AIRadioQueueDJMixin:
         if state is None or not state.station_id:
             return
         queue = self.mass.player_queues.get(queue_id)
-        if queue is not None and self._queue_show_station(queue_id) == state.station_id:
-            if not queue.ended:
-                return
+        if queue is None:
+            # a dropped player comes back with its queue, only PLAYER_REMOVED drops the DJ
+            return
+        if self._queue_show_station(queue_id) == state.station_id and not queue.ended:
+            return
         await self.set_queue_dj(queue_id, None)
         self._armed_show_queues.pop(queue_id, None)
 
@@ -243,6 +245,9 @@ class AIRadioQueueDJMixin:
         if armed_station_id is None:
             return
         queue = None if queue_removed else self.mass.player_queues.get(queue_id)
+        if not queue_removed and queue is None:
+            # a dropped player keeps its record until it is back or removed
+            return
         if (
             queue is not None
             and not queue.ended
