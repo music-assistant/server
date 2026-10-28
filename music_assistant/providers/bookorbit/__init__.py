@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import time
 import uuid
+from contextlib import suppress
 from dataclasses import dataclass
 from datetime import datetime
 from typing import TYPE_CHECKING, Any, NoReturn
@@ -51,9 +52,12 @@ from .constants import (
     CATALOG_DETAIL_CONCURRENCY,
     CATALOG_TTL_SEC,
     CONF_URL,
+    CONTINUE_LISTENING_LIMIT,
     PART_STREAM_CHUNK_SIZE,
     PART_STREAM_HEADERS,
     PART_STREAM_TIMEOUT,
+    PLAYLOG_POLL_INTERVAL_SEC,
+    PLAYLOG_SYNC_CONCURRENCY,
     STREAMDETAILS_EXPIRATION_S,
     BrowseItemsTranslationKey,
     BrowsePaths,
@@ -75,6 +79,7 @@ from .parsers import (
     parse_author,
     parse_narrator,
 )
+from .playlog_sync import InboundProgressGuard, sync_playlog
 from .progress import (
     build_playback_state_update,
     build_progress_update,
@@ -249,6 +254,8 @@ class BookOrbitProvider(MusicProvider):
         self._sync_catalog_fingerprints: dict[str, str] | None = None
         # Audiobook provider ids that failed during the active sync_library run.
         self._failed_audiobook_ids: set[str] = set()
+        self._inbound_progress_guard = InboundProgressGuard()
+        self._playlog_poll_task: asyncio.Task[None] | None = None
 
     async def handle_async_init(self) -> None:
         """Create the BookOrbit client from config, log in, and register the stream proxy."""
@@ -285,6 +292,9 @@ class BookOrbitProvider(MusicProvider):
         self._unregister_route = self.mass.streams.register_dynamic_route(
             f"/{self.instance_id}_part_stream", self._handle_part_request
         )
+        self._playlog_poll_task = self.mass.create_task(
+            self._playlog_poll_loop(), task_name=f"{self.instance_id}_playlog_poll"
+        )
 
     async def unload(self, is_removed: bool = False) -> None:
         """Unload the provider and close its BookOrbit client."""
@@ -300,6 +310,11 @@ class BookOrbitProvider(MusicProvider):
         if unregister := self._unregister_route:
             self._unregister_route = None
             unregister()
+        if poll_task := self._playlog_poll_task:
+            self._playlog_poll_task = None
+            poll_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await poll_task
         if client := getattr(self, "_client", None):
             await client.close()
 
@@ -339,6 +354,7 @@ class BookOrbitProvider(MusicProvider):
             self._commit_applied_mapping_details(self._failed_audiobook_ids)
             await self._save_applied_mapping_details()
             self._sync_catalog_fingerprints = None
+            await self._sync_playlog_from_bookorbit()
 
     async def get_library_audiobooks(self) -> AsyncGenerator[Audiobook]:
         """Yield audiobooks from the current catalog."""
@@ -540,6 +556,8 @@ class BookOrbitProvider(MusicProvider):
             book_id = int(prov_item_id)
         except ValueError:
             return
+        # Block inbound playlog applies until BookOrbit reflects this outbound write.
+        self._inbound_progress_guard.note_outbound(book_id)
         generation = self._progress_generation.get(book_id, 0) + 1
         self._progress_generation[book_id] = generation
         # Stamp before waiting on the lock or any BookOrbit I/O so 409 retries can
@@ -655,6 +673,48 @@ class BookOrbitProvider(MusicProvider):
             }
         else:
             self._applied_mapping_details = {}
+
+    async def _sync_playlog_from_bookorbit(self, book_ids: set[int] | None = None) -> None:
+        """Push BookOrbit progress into the MA playlog for ``book_ids`` or the catalog."""
+        if book_ids is None:
+            book_ids = {int(book_id) for book_id in self._catalog if book_id.isdigit()}
+        if not book_ids:
+            return
+        try:
+            await sync_playlog(
+                mass=self.mass,
+                provider_instance_id=self.instance_id,
+                client=self._client,
+                book_ids=book_ids,
+                guard=self._inbound_progress_guard,
+                concurrency=PLAYLOG_SYNC_CONCURRENCY,
+            )
+        except Exception as err:
+            self.logger.warning("BookOrbit playlog sync failed: %s", err)
+
+    async def _playlog_poll_loop(self) -> None:
+        """Periodically refresh the playlog from BookOrbit progress."""
+        while True:
+            await asyncio.sleep(PLAYLOG_POLL_INTERVAL_SEC)
+            try:
+                playlog = await self.mass.music.get_playlog_provider_item_ids(self.instance_id)
+                playlog_ids = {
+                    int(item_id)
+                    for media_type, item_id in playlog
+                    if media_type == MediaType.AUDIOBOOK and item_id.isdigit()
+                }
+                try:
+                    listening = await self._client.get_continue_listening_book_ids(
+                        CONTINUE_LISTENING_LIMIT
+                    )
+                except (ClientError, TimeoutError, LoginFailed, OSError) as err:
+                    self.logger.debug("BookOrbit continue-listening fetch failed: %s", err)
+                    listening = []
+                await self._sync_playlog_from_bookorbit(playlog_ids | set(listening))
+            except asyncio.CancelledError:
+                raise
+            except Exception as err:
+                self.logger.debug("BookOrbit playlog poll failed: %s", err)
 
     def _commit_applied_mapping_details(self, skipped_ids: set[str]) -> None:
         """Record fingerprints for books that synced; keep prior values for failures."""

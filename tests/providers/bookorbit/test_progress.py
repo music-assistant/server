@@ -13,7 +13,7 @@ from music_assistant_models.enums import ContentType, MediaType, StreamType
 from music_assistant_models.errors import LoginFailed, MediaNotFoundError, ProviderUnavailableError
 from yarl import URL
 
-from music_assistant.providers.bookorbit import SUPPORTED_FEATURES, BookOrbitProvider
+from music_assistant.providers.bookorbit import BookOrbitProvider
 from music_assistant.providers.bookorbit.parsers import _audio_files
 from music_assistant.providers.bookorbit.progress import (
     build_playback_state_update,
@@ -21,40 +21,11 @@ from music_assistant.providers.bookorbit.progress import (
     parse_resume_position,
     parse_resume_position_from_playback_state,
 )
-from tests.providers.bookorbit.conftest import manifest_from_book, wire_mass_create_task
+from tests.providers.bookorbit.conftest import manifest_from_book
 
 
 def _client(provider: BookOrbitProvider) -> Any:
     return cast("Any", provider._client)
-
-
-@pytest.fixture
-def provider(book_audiobook: dict[str, Any], book_multifile: dict[str, Any]) -> BookOrbitProvider:
-    """Create a provider with a mocked client."""
-    mass = Mock()
-    wire_mass_create_task(mass)
-    mass.streams.base_url = "http://ma:8097"
-    manifest = Mock()
-    manifest.domain = "bookorbit"
-    config = Mock()
-    config.instance_id = "bookorbit--test"
-    config.name = "BookOrbit Test"
-    config.enabled = True
-    config.get_value.side_effect = lambda key, default=None: {"log_level": "GLOBAL"}.get(
-        key, default
-    )
-    prov = BookOrbitProvider(mass, manifest, config, SUPPORTED_FEATURES)
-    prov.base_url = "http://bo"
-    prov._client = Mock()
-    details = {book_audiobook["id"]: book_audiobook, book_multifile["id"]: book_multifile}
-    manifests = {book_id: manifest_from_book(book) for book_id, book in details.items()}
-    prov._client.get_book = AsyncMock(side_effect=lambda book_id: details[book_id])
-    prov._client.get_audiobook_manifest = AsyncMock(side_effect=lambda book_id: manifests[book_id])
-    prov._client.get_audio_progress = AsyncMock(return_value=None)
-    prov._client.upsert_audio_progress = AsyncMock()
-    prov._client.get_playback_state = AsyncMock(return_value=None)
-    prov._client.put_playback_state = AsyncMock(return_value={"revision": 1})
-    return prov
 
 
 def test_update_single_file(book_audiobook: dict[str, Any]) -> None:
