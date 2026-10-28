@@ -3,13 +3,17 @@
 from __future__ import annotations
 
 from collections.abc import AsyncGenerator
+from functools import partial
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from aioslimproto.models import EventType as SlimEventType
+from aioslimproto.models import SlimEvent
 from music_assistant_models.enums import ContentType
 from music_assistant_models.media_items import AudioFormat
 
+from music_assistant.providers.squeezelite.player import SqueezelitePlayer
 from music_assistant.providers.squeezelite.provider import SqueezelitePlayerProvider
 
 FLOW_FORMAT = AudioFormat(content_type=ContentType.PCM_F32LE, sample_rate=192000, bit_depth=32)
@@ -56,3 +60,43 @@ async def test_multi_client_stream_content_type_describes_output_format(
         await SqueezelitePlayerProvider._serve_multi_client_stream(provider, request)
 
     assert stream_response.call_args.kwargs["headers"]["Content-Type"] == expected_content_type
+
+
+def _synced_member() -> tuple[MagicMock, SqueezelitePlayer, MagicMock]:
+    """Return a mocked provider whose registered player 'member' is synced to 'leader'."""
+    leader = SqueezelitePlayer.__new__(SqueezelitePlayer)
+    leader._player_id = "leader"
+    leader._attr_group_members = ["leader", "member"]
+    update_state = MagicMock()
+    leader.update_state = update_state  # type: ignore[misc,method-assign]
+    member = MagicMock(player_id="member", synced_to="leader")
+    provider = MagicMock()
+    provider.mass.closing = False
+    provider.mass.players.get_player.side_effect = {"leader": leader, "member": member}.get
+    provider._release_from_sync_leader = partial(
+        SqueezelitePlayerProvider._release_from_sync_leader, provider
+    )
+    return provider, leader, update_state
+
+
+def test_disconnected_member_leaves_its_sync_leader() -> None:
+    """A synced player that disconnects is dropped from its leader, so it returns ungrouped."""
+    provider, leader, update_state = _synced_member()
+    event = SlimEvent(type=SlimEventType.PLAYER_DISCONNECTED, player_id="member")
+
+    SqueezelitePlayerProvider._handle_slimproto_event(provider, event)
+
+    assert leader.group_members == []
+    update_state.assert_called_once()
+    provider.mass.players.unregister.assert_called_once_with("member")
+
+
+def test_reconnected_member_leaves_its_sync_leader() -> None:
+    """A synced player that reconnects before its old socket closed is dropped from its leader."""
+    provider, leader, _ = _synced_member()
+    event = SlimEvent(type=SlimEventType.PLAYER_CONNECTED, player_id="member")
+
+    with patch("music_assistant.providers.squeezelite.provider.SqueezelitePlayer"):
+        SqueezelitePlayerProvider._handle_slimproto_event(provider, event)
+
+    assert leader.group_members == []

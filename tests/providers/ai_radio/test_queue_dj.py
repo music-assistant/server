@@ -591,6 +591,21 @@ async def test_auto_armed_dj_detaches_and_forgets_the_armed_record_when_source_g
     assert "q1" not in dj._armed_show_queues
 
 
+async def test_show_dj_survives_its_player_dropping(tmp_path: Path) -> None:
+    """A show DJ and its arm-once record stay while the queue is temporarily unregistered."""
+    dj = _dj_harness(tmp_path)
+    _fake_queue_with_sources(dj, "q1", [f"{dj.instance_id}://radio/morning_show"])
+    await dj._ensure_show_dj("q1")
+    state = dj._dj_queues["q1"]
+
+    _fake_queue_with_sources(dj, "other", [])
+    await dj._maybe_detach_show_dj("q1")
+    dj._forget_armed_show("q1")
+
+    assert dj._dj_queues["q1"] is state
+    assert dj._armed_show_queues["q1"] == "morning_show"
+
+
 async def test_manually_armed_dj_is_never_auto_detached(tmp_path: Path) -> None:
     """A DJ with no station binding (a manual pick) is left alone by the auto-detach."""
     dj = _dj_harness(tmp_path)

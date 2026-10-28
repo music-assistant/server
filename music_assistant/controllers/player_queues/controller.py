@@ -1470,19 +1470,36 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
             data=queue.elapsed_time,
         )
 
-    def on_player_remove(self, player_id: str, permanent: bool) -> None:
-        """Call when a player is removed from the registry."""
+    def on_player_remove(self, player_id: str, permanent: bool, release_audio: bool = True) -> None:
+        """
+        Call when a player is removed from the registry.
+
+        :param player_id: The player whose queue is removed.
+        :param permanent: Also delete the queue's persisted state and items.
+        :param release_audio: Release the audio buffers of the queue's items. Pass False to
+            leave a stream that is still playing untouched.
+        """
         self.mass.streams.audio_processing.clear(player_id)
-        # cancel any pending play_index calls for this queue to prevent conflicts
-        self.mass.cancel_timer(f"queue_play_index_{player_id}")
+        self._cancel_pending_playback(player_id)
         # cancel a pending debounced cache write AND an already-started one, so neither can
         # recreate a deleted entry after the player is gone (the timer becomes a task once it fires)
         self.mass.cancel_timer(f"save_queue_cache_{player_id}")
         self.mass.cancel_task(f"save_queue_cache_{player_id}")
-        self._set_transitioning(player_id, False)
         if permanent:
             self.purge_saved_queue(player_id)
-        self._queue_data.pop(player_id, None)
+        if (queue_data := self._queue_data.pop(player_id, None)) is not None:
+            # no queue removal event exists, so clients get the gone queue as idle
+            queue_data.queue.state = PlaybackState.IDLE
+            self.mass.signal_event(
+                EventType.QUEUE_UPDATED, object_id=player_id, data=queue_data.queue
+            )
+            if release_audio:
+                # released here: _cleanup_queue_audio_data looks the queue up, and it is gone now
+                self.mass.streams.audio.clear_crossfade_handover(player_id)
+                for item in queue_data.items:
+                    if (streamdetails := item.streamdetails) and (buffer := streamdetails.buffer):
+                        streamdetails.buffer = None
+                        self.mass.create_task(buffer.clear())
         self._managed_pool.forget(player_id)
 
     def purge_saved_queue(self, queue_id: str) -> None:
@@ -2078,17 +2095,7 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
 
         :param queue_id: queue_id of the playerqueue to stop.
         """
-        # cancel any pending play_index calls for this queue to prevent conflicts
-        self.mass.cancel_timer(f"queue_play_index_{queue_id}")
-        # cancel in-flight preload/enqueue-next so it can't enqueue after stop
-        self.mass.cancel_task(f"preload_next_item_{queue_id}")
-        self.mass.cancel_timer(f"enqueue_next_item_{queue_id}")
-        self.mass.cancel_task(f"enqueue_next_item_{queue_id}")
-        # a prewarm still running would attach its buffer after the teardown below has run,
-        # leaving a stopped queue holding a provider's stream. Cancelled here rather than
-        # alongside that teardown, where the task id can already belong to a new session.
-        self.mass.cancel_task(f"prepare_next_audio_buffer_{queue_id}")
-        self._set_transitioning(queue_id, False)
+        self._cancel_pending_playback(queue_id)
         if not (queue_data := self._queue_data.get(queue_id)):
             raise PlayerUnavailableError(f"Queue {queue_id} is not available")
         session_id = queue_data.session_id
@@ -2112,6 +2119,20 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
                     queue_data.session_id = None
                 self.mass.streams.audio_processing.clear(queue_id, session_id)
                 self.mass.create_task(self._cleanup_queue_audio_data(queue_id, session_id))
+
+    def _cancel_pending_playback(self, queue_id: str) -> None:
+        """Cancel the queue's pending play_index, preload, enqueue-next and prewarm work."""
+        # cancel any pending play_index calls for this queue to prevent conflicts
+        self.mass.cancel_timer(f"queue_play_index_{queue_id}")
+        # cancel in-flight preload/enqueue-next so it can't enqueue after stop
+        self.mass.cancel_task(f"preload_next_item_{queue_id}")
+        self.mass.cancel_timer(f"enqueue_next_item_{queue_id}")
+        self.mass.cancel_task(f"enqueue_next_item_{queue_id}")
+        # a prewarm still running would attach its buffer after the teardown has run,
+        # leaving a stopped queue holding a provider's stream. Cancelled here rather than
+        # alongside that teardown, where the task id can already belong to a new session.
+        self.mass.cancel_task(f"prepare_next_audio_buffer_{queue_id}")
+        self._set_transitioning(queue_id, False)
 
     @handle_play_action
     async def _handle_play(self, queue_id: str) -> None:

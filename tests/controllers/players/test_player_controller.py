@@ -1707,7 +1707,7 @@ class TestRegisterOrUpdateTypeTransition:
 
         assert player.state.type is PlayerType.PROTOCOL
         mock_mass.player_queues.on_player_remove.assert_called_once_with(
-            "player_1", permanent=False
+            "player_1", permanent=False, release_audio=False
         )
         assert self._signalled(mock_mass, EventType.PLAYER_REMOVED)
 
@@ -1755,10 +1755,35 @@ class TestRegisterOrUpdateTypeTransition:
 
         await controller.register_or_update(parent)
 
-        mock_mass.player_queues.on_player_remove.assert_called_once_with("parent", permanent=False)
+        mock_mass.player_queues.on_player_remove.assert_called_once_with(
+            "parent", permanent=False, release_audio=False
+        )
         assert self._signalled(mock_mass, EventType.PLAYER_REMOVED)
         assert parent.linked_output_protocols == []
         assert child.protocol_parent_id is None
+
+    async def test_protocol_transition_drops_the_queue_before_the_player(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """The queue's final update reaches clients before the PLAYER_REMOVED that drops it."""
+        controller = self._prepare(mock_mass)
+        provider = MockProvider("test_provider", instance_id="test", mass=mock_mass)
+        parent = self._register(controller, provider, "parent", PlayerType.PLAYER)
+        calls = MagicMock()
+        calls.attach_mock(mock_mass.player_queues.on_player_remove, "on_player_remove")
+        calls.attach_mock(mock_mass.signal_event, "signal_event")
+
+        parent._attr_type = PlayerType.PROTOCOL
+        parent.update_state(signal_event=False)
+        await controller.register_or_update(parent)
+
+        names = [c[0] for c in calls.mock_calls]
+        removed_at = next(
+            i
+            for i, c in enumerate(calls.mock_calls)
+            if c[0] == "signal_event" and EventType.PLAYER_REMOVED in c[1]
+        )
+        assert names.index("on_player_remove") < removed_at
 
     async def test_unchanged_type_leaves_queue_alone(self, mock_mass: MagicMock) -> None:
         """Re-registering a player without a type change does not touch its queue."""
