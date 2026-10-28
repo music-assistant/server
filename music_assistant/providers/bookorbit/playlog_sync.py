@@ -59,18 +59,19 @@ async def resolve_remote_progress_seconds(client: Any, book_id: int) -> tuple[bo
     May raise transport errors from the client; conversion failures return ``None``.
     """
     try:
-        manifest = await client.get_audiobook_manifest(book_id)
         state = await client.get_playback_state(book_id)
         if state:
+            manifest = await client.get_audiobook_manifest(book_id)
             fully_played, position_ms, _ = parse_resume_position_from_playback_state(
                 manifest, state
             )
             return fully_played, position_ms // 1000
-        book = await client.get_book(book_id)
-        book = book_with_manifest_playback_order(book, manifest)
         progress = await client.get_audio_progress(book_id)
         if not progress:
             return None
+        manifest = await client.get_audiobook_manifest(book_id)
+        book = await client.get_book(book_id)
+        book = book_with_manifest_playback_order(book, manifest)
         fully_played, position_ms, _ = parse_resume_position(_audio_files(book), progress)
         return fully_played, position_ms // 1000
     except TypeError, ValueError, KeyError:
@@ -92,10 +93,13 @@ async def apply_book_progress(
         stamp was skipped because it is too short or guarded); False when
         confirmed absent, unusable or zero-and-not-finished; None when the
         fetch failed (transport error), in which case callers must not discard.
+    :raises LoginFailed: When re-authentication fails; callers should abort the batch.
     """
     try:
         resolved = await resolve_remote_progress_seconds(client, book_id)
-    except (ClientError, TimeoutError, LoginFailed, OSError) as err:
+    except LoginFailed:
+        raise
+    except (ClientError, TimeoutError, OSError) as err:
         LOGGER.warning("BookOrbit progress fetch for %s failed: %s", book_id, err)
         return None
     if resolved is None:
@@ -140,9 +144,13 @@ async def sync_playlog(
     sem = asyncio.Semaphore(max(1, concurrency))
     remote_with_progress: set[str] = set()
     confirmed_absent: set[str] = set()
+    auth_failed = False
 
     async def _one(book_id: int) -> None:
+        nonlocal auth_failed
         async with sem:
+            if auth_failed:
+                return
             try:
                 has_progress = await apply_book_progress(
                     mass,
@@ -151,6 +159,15 @@ async def sync_playlog(
                     book_id=book_id,
                     guard=guard,
                 )
+            except LoginFailed as err:
+                if not auth_failed:
+                    auth_failed = True
+                    LOGGER.warning(
+                        "BookOrbit authentication failed during playlog sync; "
+                        "aborting remaining books: %s",
+                        err,
+                    )
+                return
             except Exception:
                 LOGGER.exception("BookOrbit playlog sync for book %s failed", book_id)
                 return
@@ -161,17 +178,25 @@ async def sync_playlog(
 
     await asyncio.gather(*(_one(book_id) for book_id in candidates))
 
+    if auth_failed:
+        return
+
     playlog = await mass.music.get_playlog_provider_item_ids(provider_instance_id)
     for media_type, item_id in playlog:
         if media_type != MediaType.AUDIOBOOK or item_id not in confirmed_absent:
             continue
         if item_id in remote_with_progress:
             continue
-        library_item = await mass.music.get_library_item_by_prov_id(
-            media_type=MediaType.AUDIOBOOK,
-            item_id=item_id,
-            provider_instance_id_or_domain=provider_instance_id,
-        )
-        if library_item is None:
-            continue
-        await mass.music.mark_item_unplayed(library_item, provider_instance_id=provider_instance_id)
+        try:
+            library_item = await mass.music.get_library_item_by_prov_id(
+                media_type=MediaType.AUDIOBOOK,
+                item_id=item_id,
+                provider_instance_id_or_domain=provider_instance_id,
+            )
+            if library_item is None:
+                continue
+            await mass.music.mark_item_unplayed(
+                library_item, provider_instance_id=provider_instance_id
+            )
+        except Exception:
+            LOGGER.warning("BookOrbit playlog discard for book %s failed", item_id, exc_info=True)

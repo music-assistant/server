@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock, Mock, patch
 import pytest
 from aiohttp import ClientError
 from music_assistant_models.enums import MediaType
+from music_assistant_models.errors import LoginFailed
 
 from music_assistant.constants import PLAYBACK_REPORT_INTERVAL_SECONDS
 from music_assistant.providers.bookorbit import BookOrbitProvider
@@ -96,6 +97,8 @@ async def test_resolve_returns_none_when_empty(book_audiobook: dict[str, Any]) -
     client.get_book = AsyncMock(return_value=book_audiobook)
     client.get_audio_progress = AsyncMock(return_value=None)
     assert await resolve_remote_progress_seconds(client, int(book_audiobook["id"])) is None
+    client.get_audiobook_manifest.assert_not_awaited()
+    client.get_book.assert_not_awaited()
 
 
 def _client_with_state(book: dict[str, Any], position_ms: int, percentage: float) -> Mock:
@@ -282,6 +285,61 @@ async def test_sync_playlog_does_not_unplay_on_fetch_failure() -> None:
             guard=InboundProgressGuard(),
         )
     mass.music.mark_item_unplayed.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_sync_playlog_aborts_on_login_failed(caplog: pytest.LogCaptureFixture) -> None:
+    """LoginFailed aborts the batch: one log line, no further fetches, no unplay."""
+    mass = Mock()
+    mass.music.get_playlog_provider_item_ids = AsyncMock(
+        return_value=[(MediaType.AUDIOBOOK, str(i)) for i in range(1, 6)]
+    )
+    mass.music.get_library_item_by_prov_id = AsyncMock(return_value=Mock(name="book"))
+    mass.music.mark_item_unplayed = AsyncMock()
+    mass.music.mark_item_played = AsyncMock()
+    resolve = AsyncMock(side_effect=LoginFailed("nope"))
+    with (
+        patch(
+            "music_assistant.providers.bookorbit.playlog_sync.resolve_remote_progress_seconds",
+            new=resolve,
+        ),
+        caplog.at_level("WARNING"),
+    ):
+        await sync_playlog(
+            mass=mass,
+            provider_instance_id="bookorbit--test",
+            client=Mock(),
+            book_ids=range(1, 6),
+            guard=InboundProgressGuard(),
+            concurrency=1,
+        )
+    assert resolve.await_count == 1
+    assert len([r for r in caplog.records if "authentication failed" in r.getMessage()]) == 1
+    mass.music.mark_item_unplayed.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_sync_playlog_discard_failure_does_not_skip_rest() -> None:
+    """One failing unplay does not prevent the remaining discards."""
+    mass = Mock()
+    mass.music.get_playlog_provider_item_ids = AsyncMock(
+        return_value=[(MediaType.AUDIOBOOK, "5"), (MediaType.AUDIOBOOK, "9")]
+    )
+    mass.music.get_library_item_by_prov_id = AsyncMock(return_value=Mock(name="book"))
+    mass.music.mark_item_played = AsyncMock()
+    mass.music.mark_item_unplayed = AsyncMock(side_effect=[RuntimeError("db"), None])
+    with patch(
+        "music_assistant.providers.bookorbit.playlog_sync.resolve_remote_progress_seconds",
+        new=AsyncMock(return_value=None),
+    ):
+        await sync_playlog(
+            mass=mass,
+            provider_instance_id="bookorbit--test",
+            client=Mock(),
+            book_ids={5, 9},
+            guard=InboundProgressGuard(),
+        )
+    assert mass.music.mark_item_unplayed.await_count == 2
 
 
 @pytest.mark.asyncio
