@@ -1822,23 +1822,20 @@ async def test_flow_zero_audio_skip_restores_seek_position(
 
 
 @pytest.mark.parametrize(
-    ("source_cancelled", "released_by_stop", "expected_duration"),
-    [(True, False, 300), (False, False, 3), (False, True, 300)],
-    ids=["aborted_source", "clean_source", "source_released_by_a_stop"],
+    ("source_cancelled", "detached", "session_ended"),
+    [(False, False, False), (True, False, False), (True, True, False), (True, True, True)],
+    ids=["clean_source", "aborted_source", "source_detached", "source_released_by_a_stop"],
 )
 @pytest.mark.asyncio
-async def test_flow_does_not_write_back_a_duration_for_an_aborted_source(
-    monkeypatch: pytest.MonkeyPatch,
-    source_cancelled: bool,
-    released_by_stop: bool,
-    expected_duration: int,
+async def test_flow_ends_unfinished_when_its_source_is_released(
+    monkeypatch: pytest.MonkeyPatch, source_cancelled: bool, detached: bool, session_ended: bool
 ) -> None:
-    """An externally cancelled buffer ends in a clean EOF that must not shorten the item."""
+    """A released buffer ends in a clean EOF that must not book the item as finished."""
     mass = MagicMock()
     pcm_format = _format(ContentType.PCM_S16LE, 8000, 16)
     streamdetails = SimpleNamespace(
         audio_format=pcm_format,
-        buffer=SimpleNamespace(cancelled=source_cancelled),
+        buffer=SimpleNamespace(cancelled=source_cancelled and not detached),
         fade_in=False,
         stream_error=False,
         tail_overlap=None,
@@ -1884,9 +1881,10 @@ async def test_flow_does_not_write_back_a_duration_for_an_aborted_source(
         # a cancelled buffer stops yielding without an error, exactly like a real EOF
         for _ in range(3):
             yield bytes(pcm_format.pcm_sample_size)
-        if released_by_stop:
-            # a stop (a queue handed over to another player, say) detaches the buffer
-            # from the details before it releases it
+        if session_ended:
+            queue_data.session_id = None
+        if detached:
+            # a stop detaches the buffer from the streamdetails before it releases it
             source_buffer = streamdetails.buffer
             streamdetails.buffer = None
             source_buffer.cancelled = True
@@ -1899,13 +1897,20 @@ async def test_flow_does_not_write_back_a_duration_for_an_aborted_source(
     chunks = [chunk async for chunk in stream]
 
     assert len(chunks) == 3
+    entry = queue_data.flow_mode_stream_log[0]
+    if session_ended:
+        # the stopped item did not play out: no finished entry, so no end of queue
+        assert entry.seconds_streamed is None
+        mass.player_queues.queue_buffer_completed.assert_not_called()
+    else:
+        # the honest streamed amount is always recorded, only the duration is protected
+        assert streamdetails.seconds_streamed == 3
+        assert entry.seconds_streamed == 3
+        mass.player_queues.queue_buffer_completed.assert_called_once()
+    expected_duration = 300 if source_cancelled else 3
     assert streamdetails.duration == expected_duration
     assert queue_track.duration == expected_duration
-    # the honest streamed amount is always recorded, only the duration is protected
-    assert streamdetails.seconds_streamed == 3
-    entry = queue_data.flow_mode_stream_log[0]
-    assert entry.seconds_streamed == 3
-    assert entry.duration == (3 if expected_duration == 3 else None)
+    assert entry.duration == (None if source_cancelled else 3)
 
 
 @pytest.mark.parametrize(
