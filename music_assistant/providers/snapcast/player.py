@@ -322,11 +322,16 @@ class SnapCastPlayer(Player):
         # e.g. DSP settings require a restart
         await self._snap_ma_stream.start_stream(allow_restart=True)
 
+        player_group = await self.snap_provider.ensure_player_owned_group(self.player_id)
+        assert player_group is not None  # for type checking
+        if player_group.stream == ma_stream.stream_id:
+            # leaving the stream drops the old audio the clients still have buffered
+            await player_group.set_stream("default")
+            await ma_stream.wait_for_started(timeout_sec=5)
+
         # if no announcement is playing we activate the stream now, otherwise it
         # will be activated by play_announcement when the announcement is over.
         if not self._announcement_clip_playing:
-            player_group = await self.snap_provider.ensure_player_owned_group(self.player_id)
-            assert player_group is not None  # for type checking
             await player_group.set_stream(ma_stream.stream_id)
 
         self.poke_player_update()

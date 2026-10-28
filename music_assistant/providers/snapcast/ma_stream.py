@@ -330,7 +330,7 @@ class SnapcastMAStream:
             curr_task.cancel()
             await asyncio.gather(curr_task, return_exceptions=True)
 
-    async def _streamer_task_impl(self) -> None:
+    async def _streamer_task_impl(self) -> None:  # noqa: PLR0915
         """
         Streamer task implementation.
 
@@ -358,6 +358,7 @@ class SnapcastMAStream:
             self._register_output_plan()
             self._filter_settings = self._output_plan.filter_params
         stream_format = self._provider.stream_audio_format
+        restarting = False
         # ffmpeg reads this pipeline at 1x (-re) and snapserver only holds ~1 second,
         # so buffer here to give the source room to hiccup without starving the server
         audio_source = self._track_sent_audio(
@@ -401,6 +402,9 @@ class SnapcastMAStream:
                     self._logger.debug("Stopping stream %s requested.", self.stream_name)
                     wait_ffmpeg.cancel()
                     await asyncio.gather(wait_ffmpeg, return_exceptions=True)
+                    # the caller detaches the group on a restart, so the old audio need not drain
+                    if restarting := self._restart_requested:
+                        await ffmpeg_proc.kill()
                     return
 
                 await wait_ffmpeg
@@ -418,7 +422,10 @@ class SnapcastMAStream:
         finally:
             self._is_streaming = False
             self._logger.debug("Finished streaming to %s", stream_path)
-            await self._wait_stream_idle()
+            if restarting:
+                self._streaming_started_at = None
+            else:
+                await self._wait_stream_idle()
 
     async def _track_sent_audio(self, audio_source: AsyncGenerator[bytes]) -> AsyncGenerator[bytes]:
         """Pass the audio through, tracking when the clients will have played it."""
@@ -502,6 +509,7 @@ class SnapcastMAStream:
         self._restart_requested = True
         self._stop_requested = True
         self._stop_streamer_evt.set()
+        self._streamer_started_evt.clear()
 
         self._stop_timer_started_at = None
         if self._stop_timer:
