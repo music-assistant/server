@@ -759,6 +759,15 @@ class YandexStationPlayer(Player):
             await self.mass.players.cmd_resume(self.player_id, source=source)
         except (PlayerCommandFailed, PlayerUnavailableError) as exc:
             _LOGGER.warning("[%s] Resume after voice command failed: %s", self.player_id, exc)
+            if (
+                self._voice.awaits_resumed_stream
+                and not self._voice.holds_playback
+                and self._attr_playback_state == PlaybackState.PAUSED
+            ):
+                # The stream is still gone; idle, the core's next play resumes the
+                # queue instead of sending a native play.
+                self._attr_playback_state = PlaybackState.IDLE
+                self.update_state()
         finally:
             if self._voice.finish_resume():
                 # A request Alice answered after the stream was dropped; scheduled

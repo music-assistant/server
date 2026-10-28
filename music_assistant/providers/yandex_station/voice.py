@@ -111,6 +111,9 @@ class VoiceRecovery:
             return False
         if not (spoke or volume != self._baseline_volume):
             self._phase = VoiceRecoveryPhase.NONE
+            if self._running == RunningResume.HELD:
+                # "Alice, stop" overruled the running resume for good.
+                self._running = RunningResume.CANCELLED
             return False
         if self._running == RunningResume.NONE:
             self._phase = VoiceRecoveryPhase.SCHEDULED

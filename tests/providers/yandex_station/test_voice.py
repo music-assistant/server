@@ -213,3 +213,19 @@ def test_running_resume_awaits_its_stream_until_something_else_takes_over() -> N
     recovery.cancel()
 
     assert (awaiting, recovery.awaits_resumed_stream) == (True, False)
+
+
+def test_silent_request_during_a_running_resume_cancels_it_for_good() -> None:
+    """After "Alice, stop" overruled the running resume, a later request cannot revive it."""
+    recovery = _awaiting()
+    recovery.request_ended(spoke=True, volume=40)
+    recovery.start_resume()
+    recovery.request_started(volume=40)
+    recovery.request_ended(spoke=False, volume=40)
+
+    took_over = recovery.request_started(volume=40)
+    schedules = recovery.request_ended(spoke=True, volume=40)
+
+    assert (took_over, schedules, recovery.phase) == (False, False, VoiceRecoveryPhase.NONE)
+    assert recovery.drops_resumed_stream is True
+    assert recovery.awaits_resumed_stream is False

@@ -1852,3 +1852,73 @@ async def test_pause_after_station_playback_took_over_the_resume_pauses_it() -> 
     assert commands == [{"command": "stop"}]
     assert player._attr_playback_state == PlaybackState.PLAYING
     assert player._attr_active_source == STATION_SOURCE_ID
+
+
+# ── Copilot round 14 ─────────────────────────────────────────────────
+
+
+async def test_failed_resume_leaves_the_player_idle() -> None:
+    """
+    A resume whose stream the Station refused leaves the stopped playback idle.
+
+    Paused, the core's next play would send a native play that cannot bring the
+    stream back; idle, it resumes the queue.
+    """
+    player, commands = _make_play_media_player([{"error": "timeout"}])
+    _answered_interruption(player)
+
+    async def cmd_resume(_player_id: str, source: str | None = None) -> None:
+        await player.play_media(MediaItem(uri="ma://track/1", title="T", source_id=source))
+
+    player.mass.players.cmd_resume = AsyncMock(side_effect=cmd_resume)
+
+    await player._resume_after_voice()
+
+    assert len(commands) == 1
+    assert player._external_playing is False
+    assert player._attr_playback_state == PlaybackState.IDLE
+
+
+async def test_failed_resume_during_a_new_request_keeps_waiting_for_it() -> None:
+    """A failed resume does not end the wait for a request that already holds the music."""
+    player, _ = _make_play_media_player([{"error": "timeout"}])
+    _answered_interruption(player)
+
+    async def cmd_resume(_player_id: str, source: str | None = None) -> None:
+        await player.play_media(MediaItem(uri="ma://track/1", title="T", source_id=source))
+
+    async def send(_command: dict[str, Any]) -> dict[str, Any]:
+        _report(player, playing=False, alice_state="LISTENING")
+        return {"error": "timeout"}
+
+    player.glagol = cast("YandexGlagol", SimpleNamespace(send=send))
+    player.mass.players.cmd_resume = AsyncMock(side_effect=cmd_resume)
+
+    await player._resume_after_voice()
+
+    assert player._voice.phase == VoiceRecoveryPhase.AWAITING_ANSWER
+    assert player._attr_playback_state == PlaybackState.PAUSED
+
+
+async def test_question_after_a_silent_stop_does_not_revive_the_resume() -> None:
+    """
+    "Alice, stop" during the running resume ends it; a later question does not revive it.
+
+    Both requests end before the resumed stream reaches play_media().
+    """
+    player, commands = _make_play_media_player([{"status": "SUCCESS"}])
+    _answered_interruption(player)
+    player.mass.call_later.reset_mock()
+
+    async def cmd_resume(_player_id: str, source: str | None = None) -> None:
+        for alice_state in ("LISTENING", "BUSY", "IDLE", "LISTENING", "NONE", "IDLE"):
+            _report(player, playing=False, alice_state=alice_state)
+        await player.play_media(MediaItem(uri="ma://track/1", title="T", source_id=source))
+
+    player.mass.players.cmd_resume = AsyncMock(side_effect=cmd_resume)
+
+    await player._resume_after_voice()
+
+    assert commands == []
+    player.mass.call_later.assert_not_called()
+    assert player._voice.phase == VoiceRecoveryPhase.NONE
