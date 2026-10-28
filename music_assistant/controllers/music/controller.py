@@ -76,6 +76,7 @@ from music_assistant.constants import (
 )
 from music_assistant.controllers.music.constants import (
     BROWSE_CACHE_EXPIRATION,
+    CACHE_CATEGORY_LISTINGS,
     CACHE_CATEGORY_SEARCH_RESULTS,
     CONF_DELETED_PROVIDERS,
     CONF_KEEP_REMASTERS_APART,
@@ -174,11 +175,13 @@ from music_assistant.helpers.util import parse_optional_bool, parse_title_and_ve
 from music_assistant.models.core_controller import CoreController
 from music_assistant.models.media_capabilities import MediaCatalogMixin
 from music_assistant.models.music_provider import (
+    CACHE_CATEGORY_PREV_LIBRARY_IDS,
     LIBRARY_FEATURE_BY_MEDIA_TYPE,
     MusicProvider,
     NothingToSync,
 )
 from music_assistant.models.plugin import PluginProvider
+from music_assistant.models.recommendation_payload import RECOMMENDATION_PAYLOAD_CACHE_KEY
 
 if TYPE_CHECKING:
     from music_assistant_models.api import SortOptionInfo
@@ -529,6 +532,24 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         Sync tasks are unscheduled by MusicAssistant.unload_provider itself, which also
         decides whether their persisted state is kept (reload) or cleared (removal).
         """
+
+    async def clear_provider_cache(self, provider_instance: str) -> None:
+        """
+        Clear what a provider instance cached, e.g. when it signs in to another account.
+
+        Persistent entries stay, except the recommendations, which belong to the account,
+        and so do the library snapshots the next sync uses to remove the old items.
+
+        :param provider_instance: The provider instance id.
+        """
+        await self.mass.cache.clear(
+            provider_filter=provider_instance, exclude_category=CACHE_CATEGORY_PREV_LIBRARY_IDS
+        )
+        await self.mass.cache.delete(RECOMMENDATION_PAYLOAD_CACHE_KEY, provider=provider_instance)
+        # the library's listings are assembled from the provider's items too
+        await self.mass.cache.clear(
+            category_filter=CACHE_CATEGORY_LISTINGS, provider_filter="library://"
+        )
 
     @property
     def providers(self) -> list[MusicProvider]:
@@ -1098,10 +1119,6 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             is not None
         ):
             return page
-        # resolved anew with no wait before the cached listing takes its generation, as a
-        # reconfigure during the lookup above reloads the instance
-        if (browse_prov := self.mass.get_provider(provider_instance)) is None:
-            return _listed(prepend_items, [])
         if (
             isinstance(browse_prov, MusicProvider)
             and browse_prov.is_streaming_provider

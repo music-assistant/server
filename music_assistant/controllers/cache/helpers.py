@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import functools
-import weakref
 from collections.abc import Awaitable, Callable, Coroutine
 from copy import deepcopy
 from dataclasses import dataclass
@@ -19,8 +18,6 @@ from typing import (
     get_type_hints,
 )
 
-from music_assistant_models.errors import ProviderUnavailableError
-
 from music_assistant.controllers.cache.constants import (
     BYPASS_CACHE,
     DEFAULT_CACHE_EXPIRATION,
@@ -32,12 +29,6 @@ from music_assistant.helpers.throttle_retry import RequestPriority, set_request_
 
 if TYPE_CHECKING:
     from music_assistant import MusicAssistant
-
-# how long cancel_cache_tasks waits for the cancelled tasks to unwind
-CACHE_TASK_CANCEL_TIMEOUT = 10
-
-# the tasks cancel_cache_tasks cancelled, whose callers get an error rather than the cancellation
-_cancelled_for_unload: weakref.WeakSet[asyncio.Task[Any]] = weakref.WeakSet()
 
 
 class _Cacheable(Protocol):
@@ -105,11 +96,6 @@ def use_cache(
 
         @functools.wraps(func)
         async def wrapper(self: ProviderT, /, *args: P.args, **kwargs: P.kwargs) -> R:
-            if getattr(self, "unloading", False):
-                # an unloaded instance's cache entries are about to go, or already belong to
-                # the instance that replaced it: it neither reads nor stores them, and it
-                # fetches alone so no caller is handed its result
-                return await func(self, *args, **kwargs)
             cache = self.mass.cache
             provider_id = getattr(self, "instance_id", self.domain)
 
@@ -131,9 +117,6 @@ def use_cache(
                 base_class=base_class,
                 include_expired=allow_expired_cache,
             )
-            if getattr(self, "unloading", False):
-                # the unload overtook the lookup, which may have found the next instance's entry
-                return await func(self, *args, **kwargs)
             # a found value counts as a hit, except a None that this call opted out of
             # caching (cache_none=False) which is treated as a miss and re-fetched
             cache_hit = found and (cache_none or cachedata is not None)
@@ -160,9 +143,6 @@ def use_cache(
                     set_request_priority(RequestPriority.LOW)
                     try:
                         result = await func(self, *args, **kwargs)
-                        # a refresh the instance's unload overtook is not stored
-                        if getattr(self, "unloading", False):
-                            return
                         if cache_none or result is not None:
                             await _store_task(result)
                     except Exception:
@@ -185,11 +165,8 @@ def use_cache(
             # fetch synchronously, store in background
             async def _fetch_and_store() -> R:
                 result = await func(self, *args, **kwargs)
-                # a fetch the instance's unload overtook is not stored
-                if (cache_none or result is not None) and not getattr(self, "unloading", False):
-                    self.mass.create_task(
-                        _store_task(result), task_name=f"cache_store_{provider_id}"
-                    )
+                if cache_none or result is not None:
+                    self.mass.create_task(_store_task(result))
                 return result
 
             # a caller that bypasses this method's cache asked for the backend, so it
@@ -222,7 +199,7 @@ def use_cache(
                 return await _fetch_and_store()
             # the shield keeps the shared task out of every caller's cancellation scope: a
             # caller giving up cancels neither the fetch nor the callers still waiting
-            outcome = await _join_flight(flight, f"{provider_id}/{cache_key}")
+            outcome = await asyncio.shield(flight)
             if outcome.error is not None:
                 raise outcome.error
             # the fetched objects stay behind with the flight, which keeps them pristine for
@@ -242,50 +219,6 @@ def use_cache(
         return wrapper
 
     return _decorator
-
-
-async def cancel_cache_tasks(provider_id: str) -> None:
-    """
-    Cancel the fetches, refreshes and writes @use_cache has running for a provider.
-
-    Returns once they have all ended.
-
-    :param provider_id: The provider (instance) id the cached methods belong to.
-    """
-    names = {f"cache_{kind}_{provider_id}" for kind in ("flight", "refresh", "store")}
-    if tasks := [task for task in asyncio.all_tasks() if task.get_name() in names]:
-        for task in tasks:
-            _cancelled_for_unload.add(task)
-            task.cancel()
-        _, pending = await asyncio.wait(tasks, timeout=CACHE_TASK_CANCEL_TIMEOUT)
-        if pending:
-            LOGGER.warning(
-                "%s cache task(s) of %s did not end within %ss after cancellation",
-                len(pending),
-                provider_id,
-                CACHE_TASK_CANCEL_TIMEOUT,
-            )
-
-
-async def _join_flight[ResultT](
-    flight: asyncio.Task[_FlightOutcome[ResultT]], what: str
-) -> _FlightOutcome[ResultT]:
-    """
-    Wait for a shared fetch without being cancelled along with it.
-
-    :param flight: The shared fetch.
-    :param what: The provider and cache key it fetches, for the error message.
-    """
-    try:
-        return await asyncio.shield(flight)
-    except asyncio.CancelledError:
-        current = asyncio.current_task()
-        if flight not in _cancelled_for_unload or (current is not None and current.cancelling()):
-            raise
-        # the fetch was cancelled under its callers because its provider unloaded, so they get
-        # an error to report rather than a cancellation of their own task
-        msg = f"The provider was unloaded while fetching {what}"
-        raise ProviderUnavailableError(msg) from None
 
 
 @dataclass(slots=True)

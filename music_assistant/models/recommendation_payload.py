@@ -33,7 +33,7 @@ _T = TypeVar("_T")
 # Key of the persistent payload cache entry (stored with provider=instance_id).
 # Kept identical to the key the previous @use_cache-based implementation produced,
 # so payloads persisted before the redesign still warm cold instances.
-_PAYLOAD_CACHE_KEY = "_cached_recommendation_payload"
+RECOMMENDATION_PAYLOAD_CACHE_KEY = "_cached_recommendation_payload"
 
 
 class RecommendationPayloadMixin(_MixinBase):
@@ -124,17 +124,12 @@ class RecommendationPayloadMixin(_MixinBase):
 
     async def _recommendation_payload(self) -> list[RecommendationFolder]:
         """Return the full recommendations payload, cached and deduplicated."""
-        if (payload := self._recommendation_payload_memory) is not None and (
-            time.monotonic() - self._recommendation_payload_timestamp
-            < self.recommendation_payload_ttl
-        ):
-            # the instance's own memory, which an instance replacing it never sees
-            return payload
-        if getattr(self, "unloading", False):
-            # an unloaded instance fetches alone: its result is neither shared nor written,
-            # and a stale payload it holds starts no refresh that would write it
-            return await self._fetch_recommendation_payload()
-        if payload is not None:
+        if (payload := self._recommendation_payload_memory) is not None:
+            if (
+                time.monotonic() - self._recommendation_payload_timestamp
+                < self.recommendation_payload_ttl
+            ):
+                return payload
             # stale: serve immediately while a (deduplicated) background refresh runs
             self._schedule_recommendation_refresh()
             return payload
@@ -158,9 +153,6 @@ class RecommendationPayloadMixin(_MixinBase):
         cached payload is known to be outdated (e.g. after detecting rotated backend ids).
         Subsequent _recommendation_payload calls serve the refreshed payload.
         """
-        if getattr(self, "unloading", False):
-            # as in _recommendation_payload: no shared refresh, no write
-            return await self._fetch_recommendation_payload()
         task = self._schedule_recommendation_refresh()
         return await join_task(task)
 
@@ -179,7 +171,7 @@ class RecommendationPayloadMixin(_MixinBase):
         """Load the payload on a cold instance: persisted cache entry or backend fetch."""
         if not self._recommendation_payload_cache_checked:
             data, is_fresh, found = await self.mass.cache.get_with_freshness(
-                _PAYLOAD_CACHE_KEY,
+                RECOMMENDATION_PAYLOAD_CACHE_KEY,
                 provider=self.instance_id,
                 checksum=self.recommendation_payload_version,
                 base_class=RecommendationFolder,
@@ -210,27 +202,22 @@ class RecommendationPayloadMixin(_MixinBase):
         self._recommendation_payload_timestamp = time.monotonic()
         self._start_recommendation_task(
             self.mass.cache.set(
-                key=_PAYLOAD_CACHE_KEY,
+                key=RECOMMENDATION_PAYLOAD_CACHE_KEY,
                 data=cast("SerializableType", payload),
                 expiration=self.recommendation_payload_ttl,
                 provider=self.instance_id,
                 checksum=self.recommendation_payload_version,
                 persistent=True,
                 allow_expired_cache=True,
-            ),
-            # named like the @use_cache writes, so cancel_cache_tasks stops it on a reconfigure
-            task_name=f"cache_store_{self.instance_id}",
+            )
         )
         return payload
 
     def _start_recommendation_task(
-        self,
-        coro: Coroutine[Any, Any, _T],
-        task_id: str | None = None,
-        task_name: str | None = None,
+        self, coro: Coroutine[Any, Any, _T], task_id: str | None = None
     ) -> asyncio.Task[_T]:
         """Create a tracked background task that logs failures through the provider logger."""
-        task = self.mass.create_task(coro, task_id=task_id, task_name=task_name)
+        task = self.mass.create_task(coro, task_id=task_id)
         # always retrieve the task's exception: without a waiter (background refresh,
         # cancelled sole caller) it would otherwise surface as a raw loop-handler error
         task.add_done_callback(self._log_recommendation_task_failure)

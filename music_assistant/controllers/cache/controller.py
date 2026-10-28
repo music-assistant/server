@@ -347,6 +347,7 @@ class CacheController(CoreController):
         category_filter: int | None = None,
         provider_filter: str | None = None,
         include_persistent: bool = False,
+        exclude_category: int | None = None,
     ) -> None:
         """Clear all/partial items from cache."""
         assert self.database is not None
@@ -354,6 +355,8 @@ class CacheController(CoreController):
         query_parts: list[str] = []
         if category_filter is not None:
             query_parts.append(f"category = {category_filter}")
+        if exclude_category is not None:
+            query_parts.append(f"category != {exclude_category}")
         if provider_filter is not None:
             query_parts.append(f"provider LIKE '%{provider_filter}%'")
         if key_filter is not None:

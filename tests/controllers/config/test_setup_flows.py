@@ -39,7 +39,6 @@ from music_assistant_models.errors import (
     InsufficientPermissions,
     LoginFailed,
     PlayerUnavailableError,
-    ProviderUnavailableError,
     SetupFailedError,
 )
 from music_assistant_models.media_items import (
@@ -52,8 +51,6 @@ from music_assistant_models.provider import ProviderManifest
 from music_assistant_models.translations import TRANSLATION_RESOLVER
 
 from music_assistant.constants import CONF_PLAYERS, CONF_PROVIDERS, ENCRYPT_SUFFIX
-from music_assistant.controllers.cache import use_cache
-from music_assistant.controllers.cache.constants import BYPASS_CACHE
 from music_assistant.controllers.config.flows import SetupFlowAccess
 from music_assistant.controllers.music import MusicController
 from music_assistant.controllers.music.constants import CACHE_CATEGORY_LISTINGS
@@ -65,7 +62,7 @@ from music_assistant.mass import MusicAssistant
 from music_assistant.models.music_provider import CACHE_CATEGORY_PREV_LIBRARY_IDS, MusicProvider
 from music_assistant.models.player import LinkedOutputProtocol, Player, _state_fingerprint
 from music_assistant.models.recommendation_payload import (
-    _PAYLOAD_CACHE_KEY,
+    RECOMMENDATION_PAYLOAD_CACHE_KEY,
     RecommendationPayloadMixin,
 )
 from music_assistant.models.setup_flow import (
@@ -147,9 +144,13 @@ async def flow_mass(mass_minimal: MusicAssistant) -> AsyncGenerator[MusicAssista
     mass_minimal.music.library_supported = MethodType(
         MusicController.library_supported, mass_minimal.music
     )
+    # the real implementation, as a reconfigure clears the instance's cache through it
+    mass_minimal.music.mass = mass_minimal
+    mass_minimal.music.clear_provider_cache = MethodType(
+        MusicController.clear_provider_cache, mass_minimal.music
+    )
     mass_minimal.players = MagicMock()
     mass_minimal.players.on_player_config_change = AsyncMock()
-    # a finished reconfigure clears the instance's cache
     await mass_minimal.cache.setup(await mass_minimal.config.get_core_config("cache"))
     try:
         yield mass_minimal
@@ -1510,7 +1511,7 @@ async def test_reconfigure_clears_the_provider_cache(
     # persistent entries of the instance: its recommendations belong to the account, other
     # persistent data (e.g. feedback a provider keeps) does not
     persistent_entries = {
-        "recommendations": (_PAYLOAD_CACHE_KEY, instance_id, 0),
+        "recommendations": (RECOMMENDATION_PAYLOAD_CACHE_KEY, instance_id, 0),
         "persistent": ("track-1", instance_id, 99),
     }
     for key, provider, category in persistent_entries.values():
@@ -1540,23 +1541,12 @@ class _AccountProvider(RecommendationPayloadMixin, _FlowlessProvider):
     """A provider serving the data of the account whose token its config holds."""
 
     account = ""
-    # holds the fetches until set, when given
-    gate: asyncio.Event | None = None
-
-    @use_cache(3600)
-    async def get_liked(self) -> list[str]:
-        """Return the account's liked tracks."""
-        if self.gate is not None:
-            await self.gate.wait()
-        return [f"{self.account}-liked"]
 
     async def _fetch_recommendation_payload(self) -> list[RecommendationFolder]:
         return [RecommendationFolder(item_id=self.account, provider=self.instance_id, name="mixes")]
 
 
-def _use_account_provider(
-    gate: asyncio.Event | None = None, features: set[ProviderFeature] | None = None
-) -> Any:
+def _use_account_provider(features: set[ProviderFeature] | None = None) -> Any:
     """Patch the module loader so the fake domain loads an _AccountProvider."""
 
     async def setup(
@@ -1565,7 +1555,6 @@ def _use_account_provider(
         provider = _AccountProvider(mass, manifest, config, supported_features=features)
         setup_data = mass.config.get(f"{CONF_PROVIDERS}/{config.instance_id}/setup_data")
         provider.account = mass.config.decrypt_string(setup_data["token"])
-        provider.gate = gate
         return provider
 
     return patch(
@@ -1651,147 +1640,34 @@ async def test_reconfigure_then_sync_unmarks_the_previous_accounts_items(
     assert library[3].provider_mappings[0].in_library
 
 
-async def test_reconfigure_cancels_a_fetch_of_the_previous_account(
-    flow_mass: MusicAssistant,
-) -> None:
-    """A shared fetch still running for the old account is stopped, and its callers told."""
-    gate = asyncio.Event()
-    with _use_account_provider(gate):
-        instance_id = await _load_account_provider(flow_mass, "old-account")
-        old_provider = cast("_AccountProvider", flow_mass.get_provider(instance_id))
-        old_fetch = asyncio.create_task(old_provider.get_liked())
-        await _wait_for(lambda: flow_mass.get_task(f"cache_flight.{instance_id}.get_liked"))
-        await _reconfigure_account(flow_mass, instance_id, "new-account")
-        new_provider = cast("_AccountProvider", flow_mass.get_provider(instance_id))
-        new_fetch = asyncio.create_task(new_provider.get_liked())
-        # past its cache lookup (a miss), on to the fetch
-        await asyncio.sleep(0.1)
-        gate.set()
-        assert await new_fetch == ["new-account-liked"]
-        # an error its caller can report, rather than the cancellation of the shared fetch
-        with pytest.raises(ProviderUnavailableError):
-            await old_fetch
-        # let the background cache writes finish
-        await asyncio.sleep(0.1)
-
-    assert await flow_mass.cache.get("get_liked", provider=instance_id) == ["new-account-liked"]
-
-
-async def test_the_previous_instance_neither_stores_nor_shares_a_fetch(
-    flow_mass: MusicAssistant,
-) -> None:
-    """Fetches through the instance a reconfigure replaced stay away from the new one."""
-    gate = asyncio.Event()
-    with _use_account_provider(gate):
-        instance_id = await _load_account_provider(flow_mass, "old-account")
-        old_provider = cast("_AccountProvider", flow_mass.get_provider(instance_id))
-
-        async def refresh() -> list[str]:
-            # a refresh fetches in its caller's task, outside any shared fetch to cancel
-            BYPASS_CACHE.set(True)
-            return await old_provider.get_liked()
-
-        old_refresh = asyncio.create_task(refresh())
-        await asyncio.sleep(0.1)
-        await _reconfigure_account(flow_mass, instance_id, "new-account")
-        new_provider = cast("_AccountProvider", flow_mass.get_provider(instance_id))
-        new_provider.gate = None
-        # code still holding the previous instance
-        old_call = asyncio.create_task(old_provider.get_liked())
-        await asyncio.sleep(0.1)
-        assert await asyncio.wait_for(new_provider.get_liked(), 1) == ["new-account-liked"]
-        # let the new fetch's cache write finish before the old fetches end
-        await asyncio.sleep(0.1)
-        gate.set()
-        assert await old_refresh == ["old-account-liked"]
-        assert await old_call == ["old-account-liked"]
-        await asyncio.sleep(0.1)
-
-    assert await flow_mass.cache.get("get_liked", provider=instance_id) == ["new-account-liked"]
-
-
-async def test_reconfigure_drops_a_listing_assembled_for_the_previous_account(
-    flow_mass: MusicAssistant,
-) -> None:
-    """A listing assembled across the reconfigure is not kept for the new account."""
-    with _use_account_provider():
-        instance_id = await _load_account_provider(flow_mass, "old-account")
-        uri = f"{instance_id}://playlist/LM"
-        fetched, release = asyncio.Event(), asyncio.Event()
-
-        async def assemble() -> Listing[Any]:
-            # the old account's tracks are in, the rest of the assembly is not
-            fetched.set()
-            await release.wait()
-            return Listing(
-                [BrowseFolder(item_id="old", provider=instance_id, path="old", name="old")]
-            )
-
-        in_flight = asyncio.create_task(
-            cached_listing(
-                flow_mass, ListingType.PLAYLIST_TRACKS, uri, assemble, item_type=BrowseFolder
-            )
-        )
-        await fetched.wait()
-        await _reconfigure_account(flow_mass, instance_id, "new-account")
-        release.set()
-        await in_flight
-
-    cached = await flow_mass.cache.get(
-        ListingType.PLAYLIST_TRACKS.value, provider=uri, category=CACHE_CATEGORY_LISTINGS
-    )
-    assert cached is None
-
-
 async def test_reconfigure_drops_the_library_listings_holding_the_previous_account(
     flow_mass: MusicAssistant,
 ) -> None:
     """Listings of library containers, assembled from the instance too, are not kept."""
     with _use_account_provider():
         instance_id = await _load_account_provider(flow_mass, "old-account")
-        # library albums mapping to the instance: one listing cached, one being assembled
-        cached_uri, assembling_uri = "library://album/1", "library://album/2"
-        fetched, release = asyncio.Event(), asyncio.Event()
+        # a library album mapping to the instance, its listing cached
+        uri = "library://album/1"
         old_tracks = [BrowseFolder(item_id="old", provider=instance_id, path="old", name="old")]
 
-        async def assemble_cached() -> Listing[Any]:
-            return Listing(list(old_tracks))
-
-        async def assemble_in_flight() -> Listing[Any]:
-            fetched.set()
-            await release.wait()
+        async def assemble() -> Listing[Any]:
             return Listing(list(old_tracks))
 
         await cached_listing(
-            flow_mass,
-            ListingType.ALBUM_TRACKS,
-            cached_uri,
-            assemble_cached,
-            item_type=BrowseFolder,
+            flow_mass, ListingType.ALBUM_TRACKS, uri, assemble, item_type=BrowseFolder
         )
-        in_flight = asyncio.create_task(
-            cached_listing(
-                flow_mass,
-                ListingType.ALBUM_TRACKS,
-                assembling_uri,
-                assemble_in_flight,
-                item_type=BrowseFolder,
-            )
-        )
-        await fetched.wait()
         await _reconfigure_account(flow_mass, instance_id, "new-account")
-        release.set()
-        await in_flight
 
-    for uri in (cached_uri, assembling_uri):
-        cached = await flow_mass.cache.get(
-            ListingType.ALBUM_TRACKS.value, provider=uri, category=CACHE_CATEGORY_LISTINGS
-        )
-        assert cached is None, uri
+    cached = await flow_mass.cache.get(
+        ListingType.ALBUM_TRACKS.value, provider=uri, category=CACHE_CATEGORY_LISTINGS
+    )
+    assert cached is None
 
 
-async def test_reconfigure_records_a_failed_cache_clear(flow_mass: MusicAssistant) -> None:
-    """A cache clear that fails leaves the previous credentials and says why it is down."""
+async def test_reconfigure_restores_the_credentials_on_a_failed_cache_clear(
+    flow_mass: MusicAssistant,
+) -> None:
+    """A cache clear that fails leaves the previous credentials in place."""
     with _use_account_provider():
         instance_id = await _load_account_provider(flow_mass, "old-account")
         clear = AsyncMock(side_effect=OSError("disk I/O error"))
@@ -1800,7 +1676,6 @@ async def test_reconfigure_records_a_failed_cache_clear(flow_mass: MusicAssistan
 
     conf = flow_mass.config.get(f"{CONF_PROVIDERS}/{instance_id}")
     assert flow_mass.config.decrypt_string(conf["setup_data"]["token"]) == "old-account"
-    assert conf["last_error"]["message"] == "disk I/O error"
 
 
 async def test_reconfigure_hides_the_previous_accounts_recommendations_from_the_reload(
@@ -1814,7 +1689,7 @@ async def test_reconfigure_hides_the_previous_accounts_recommendations_from_the_
         # let the persistent payload write finish
         for _ in range(5):
             await asyncio.sleep(0.01)
-        assert await flow_mass.cache.get(_PAYLOAD_CACHE_KEY, provider=instance_id)
+        assert await flow_mass.cache.get(RECOMMENDATION_PAYLOAD_CACHE_KEY, provider=instance_id)
 
         during_reload: list[str] = []
 
