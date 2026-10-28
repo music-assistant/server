@@ -45,6 +45,7 @@ from .constants import (
     CONF_INTERCEPT_TARGET,
     CONF_VOICE_CONTROL,
 )
+from .voice import VoiceRecovery, VoiceRecoveryPhase
 
 CONF_ENTRY_VOICE_CONTROL = ConfigEntry(
     key=CONF_VOICE_CONTROL,
@@ -218,15 +219,8 @@ class YandexStationPlayer(Player):
         self._external_stop_observed = False
         # Alice's activity, followed through the reported aliceState.
         self._alice = AliceTracker()
-        # Set while an Alice request has stopped the Music Assistant stream; when the
-        # request ends it decides whether the stream is resumed.
-        self._voice_interrupted = False
-        self._pre_voice_volume: int = 0
-        # Set while the auto-resume after that request is scheduled.
-        self._voice_resume_pending = False
-        # The queue that owned the stream Alice stopped or delayed (a group's
-        # queue when the Station plays a group stream); it is the one resumed.
-        self._voice_resume_source: str | None = None
+        # Recovery of Music Assistant playback an Alice request stopped or delayed.
+        self._voice = VoiceRecovery()
         # Track id of the Station's own playback in the last report.
         self._station_track_id = ""
 
@@ -393,7 +387,14 @@ class YandexStationPlayer(Player):
         self.update_state()
 
     async def play(self) -> None:
-        """Resume the Station's own playback."""
+        """Resume the Station's own playback, or the MA queue an Alice request stopped."""
+        if self._voice.holds_playback:
+            # The stream Alice stopped is gone from the Station; play resumes its
+            # queue now instead of waiting for her answer or the scheduled resume.
+            source = self._voice.source or self.player_id
+            self._end_voice_interruption()
+            await self.mass.players.cmd_resume(self.player_id, source=source)
+            return
         # The user's command supersedes an auto-resume after Alice, whatever its outcome.
         self._end_voice_interruption()
         result = await self.glagol.send({"command": "play"})
@@ -469,7 +470,16 @@ class YandexStationPlayer(Player):
 
     async def play_media(self, media: PlayerMedia) -> None:
         """Play media using the directive supported by the station firmware."""
-        self._end_voice_interruption()
+        if self._voice.phase == VoiceRecoveryPhase.RESUMING:
+            # The resume after Alice asked the core for this stream. If the Station
+            # started its own playback meanwhile, that playback stands.
+            if self._voice.drops_resumed_stream:
+                _LOGGER.debug(
+                    "[%s] Station playback took over — dropping the resume", self.player_id
+                )
+                return
+        else:
+            self._end_voice_interruption()
         self._external_play_generation += 1
         generation = self._external_play_generation
         _LOGGER.debug("[%s] play_media called: %s", self.player_id, media.title or media.uri)
@@ -479,7 +489,7 @@ class YandexStationPlayer(Player):
         if self._voice_control_enabled and self._alice.activity == AliceActivity.REQUEST:
             # Alice is handling a request; start the queue once she is done.
             _LOGGER.debug("[%s] Alice active — deferring play_media", self.player_id)
-            self._wait_for_voice_request(media.source_id)
+            self._voice.begin(media.source_id or self.player_id, self._attr_volume_level or 0)
             if self._attr_playback_state != PlaybackState.PLAYING:
                 self._attr_playback_state = PlaybackState.PAUSED
                 self.update_state()
@@ -653,61 +663,47 @@ class YandexStationPlayer(Player):
         # Paused, not idle: the core passes a user's stop or pause on to the player
         # only while it is not idle, and that command must cancel the auto-resume.
         self._attr_playback_state = PlaybackState.PAUSED
-        self._wait_for_voice_request(source)
-
-    def _wait_for_voice_request(self, source: str | None) -> None:
-        """
-        Let the end of the current Alice request decide whether playback resumes.
-
-        :param source: The queue that owned the stream, or None for this player's queue.
-        """
-        self._voice_interrupted = True
-        self._voice_resume_source = source or self.player_id
-        self._pre_voice_volume = self._attr_volume_level or 0
+        # The queue that owned the stream (a group's queue for a group stream) is
+        # the one resumed.
+        self._voice.begin(source or self.player_id, self._attr_volume_level or 0)
 
     def _finish_voice_interruption(self, spoke: bool) -> None:
         """
-        Schedule the stream's resumption once the request that stopped it has ended.
-
-        A request Alice answered, or one that changed the volume, was meant to pause
-        the music only for a moment; a silent one ("Alice, stop") leaves it stopped.
+        Schedule the resumption once the request that interrupted playback has ended.
 
         :param spoke: Whether Alice answered the request.
         """
-        self._voice_interrupted = False
-        volume_changed = (self._attr_volume_level or 0) != self._pre_voice_volume
-        if not (spoke or volume_changed):
+        if not self._voice.request_ended(spoke=spoke, volume=self._attr_volume_level or 0):
             _LOGGER.debug("[%s] Silent voice command — staying stopped", self.player_id)
             if self._attr_playback_state == PlaybackState.PAUSED:
                 self._attr_playback_state = PlaybackState.IDLE
             return
         _LOGGER.debug("[%s] Voice command ended — scheduling auto-resume", self.player_id)
-        self._voice_resume_pending = True
         self.mass.call_later(
             VOICE_RESUME_DELAY, self._resume_after_voice, task_id=self._voice_resume_task_id
         )
 
     def _defer_voice_resume_to_new_request(self) -> None:
         """Hand a scheduled auto-resume over to an Alice request that just started."""
-        _LOGGER.debug("[%s] New Alice request — it decides the auto-resume", self.player_id)
-        self.mass.cancel_timer(self._voice_resume_task_id)
-        self._voice_resume_pending = False
-        self._voice_interrupted = True
+        if self._voice.request_started(self._attr_volume_level or 0):
+            _LOGGER.debug("[%s] New Alice request — it decides the auto-resume", self.player_id)
+            self.mass.cancel_timer(self._voice_resume_task_id)
 
     def _end_voice_interruption(self) -> None:
         """Drop a pending auto-resume after Alice; something else now decides playback."""
-        self._voice_interrupted = False
-        self._voice_resume_pending = False
+        self._voice.cancel()
         self.mass.cancel_timer(self._voice_resume_task_id)
 
     async def _resume_after_voice(self) -> None:
         """Resume the Music Assistant queue Alice's request stopped or delayed."""
-        self._voice_resume_pending = False
-        source = self._voice_resume_source or self.player_id
+        if (source := self._voice.start_resume()) is None:
+            return
         try:
             await self.mass.players.cmd_resume(self.player_id, source=source)
         except (PlayerCommandFailed, PlayerUnavailableError) as exc:
             _LOGGER.warning("[%s] Resume after voice command failed: %s", self.player_id, exc)
+        finally:
+            self._voice.finish_resume()
 
     # ── Intercept feature ────────────────────────────────────────
 
@@ -1259,9 +1255,12 @@ class YandexStationPlayer(Player):
             # Native stop and pause are the same command; play resumes either.
             self._attr_playback_state = PlaybackState.PAUSED
 
-        if alice.started and alice.activity == AliceActivity.REQUEST and self._voice_resume_pending:
+        if alice.started and alice.activity == AliceActivity.REQUEST:
             self._defer_voice_resume_to_new_request()
-        if alice.ended == AliceActivity.REQUEST and self._voice_interrupted:
+        if (
+            alice.ended == AliceActivity.REQUEST
+            and self._voice.phase == VoiceRecoveryPhase.AWAITING_ANSWER
+        ):
             self._finish_voice_interruption(alice.spoke)
 
     def _on_glagol_update(self, data: dict[str, Any] | None) -> None:

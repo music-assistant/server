@@ -30,6 +30,7 @@ from music_assistant.providers.yandex_station.player import (
     YandexStationPlayer,
 )
 from music_assistant.providers.yandex_station.protobuf import loads
+from music_assistant.providers.yandex_station.voice import VoiceRecovery, VoiceRecoveryPhase
 
 if TYPE_CHECKING:
     from music_assistant.models.player import PlayerMedia
@@ -49,10 +50,7 @@ def _make_player() -> YandexStationPlayer:
     vars(player)["_audio_client"] = False
     vars(player)["_external_audio_client"] = False
     player._alice = AliceTracker()
-    player._voice_interrupted = False
-    player._pre_voice_volume = 0
-    vars(player)["_voice_resume_pending"] = False
-    vars(player)["_voice_resume_source"] = None
+    player._voice = VoiceRecovery()
     player._station_track_id = ""
     player._intercept_active = False
     player._last_intercepted_track_id = None
@@ -468,7 +466,7 @@ async def test_station_interruption_discards_pending_stream_resolution(
         PlaybackState.PAUSED if voice_control else PlaybackState.IDLE
     )
     assert player._external_media is None
-    assert player._voice_interrupted is voice_control
+    assert (player._voice.phase == VoiceRecoveryPhase.AWAITING_ANSWER) is voice_control
 
 
 async def test_voice_activation_without_pending_request_keeps_native_state() -> None:
@@ -479,7 +477,7 @@ async def test_voice_activation_without_pending_request_keeps_native_state() -> 
     _report(player, playing=False, alice_state="LISTENING")
 
     assert player._attr_playback_state == PlaybackState.IDLE
-    assert player._voice_interrupted is False
+    assert player._voice.phase == VoiceRecoveryPhase.NONE
 
 
 def _voice_tick(
@@ -996,7 +994,11 @@ def test_voice_request_that_stops_the_stream_resumes_it_after_the_answer() -> No
 async def test_resume_after_voice_resumes_the_ma_queue_through_the_core() -> None:
     """The auto-resume asks the core to resume this player's queue."""
     player = _make_player()
+    _enable_voice_control(player)
+    _start_confirmed_stream(player)
     player.mass.players.cmd_resume = AsyncMock()
+    for alice_state in ("LISTENING", "NONE", "IDLE"):
+        _report(player, playing=False, alice_state=alice_state)
 
     await player._resume_after_voice()
 
@@ -1015,7 +1017,7 @@ def test_silent_voice_request_leaves_the_stream_stopped() -> None:
         _report(player, playing=False, alice_state=alice_state)
 
     player.mass.call_later.assert_not_called()
-    assert player._voice_interrupted is False
+    assert player._voice.phase == VoiceRecoveryPhase.NONE
 
 
 def test_track_alice_was_asked_for_replaces_the_stream() -> None:
@@ -1041,7 +1043,7 @@ def test_wake_word_less_stop_leaves_the_stream_stopped() -> None:
     _report(player, playing=False, stream_reported=True, progress=30, duration=180)
 
     assert player._attr_playback_state == PlaybackState.IDLE
-    assert player._voice_interrupted is False
+    assert player._voice.phase == VoiceRecoveryPhase.NONE
 
 
 def test_server_action_phrase_keeps_the_stream() -> None:
@@ -1066,7 +1068,7 @@ def test_stop_on_the_speaker_during_a_phrase_ends_the_stream() -> None:
     _report(player, playing=False, alice_state="NONE", progress=30, duration=180)
 
     assert player._external_playing is False
-    assert player._voice_interrupted is False
+    assert player._voice.phase == VoiceRecoveryPhase.NONE
 
 
 async def test_alice_request_defers_a_pending_play_media() -> None:
@@ -1090,7 +1092,7 @@ async def test_alice_request_defers_a_pending_play_media() -> None:
     player.mass.call_later.assert_called_once()
 
 
-@pytest.mark.parametrize("command", ["play", "pause", "stop"])
+@pytest.mark.parametrize("command", ["pause", "stop"])
 @pytest.mark.parametrize("outcome", ["success", "timeout"])
 async def test_transport_command_cancels_the_auto_resume(command: str, outcome: str) -> None:
     """The user's command supersedes the auto-resume after Alice, whatever its outcome."""
@@ -1316,7 +1318,7 @@ def test_answered_second_request_still_resumes() -> None:
         _report(player, playing=False, alice_state=alice_state)
 
     assert player.mass.call_later.call_count == 2
-    assert vars(player)["_voice_resume_pending"] is True
+    assert player._voice.phase == VoiceRecoveryPhase.SCHEDULED
 
 
 def test_stream_stopped_by_alice_waits_paused_for_her_answer() -> None:
@@ -1349,7 +1351,7 @@ async def test_users_command_during_the_pending_resume_cancels_it(command: str) 
     await getattr(player, command)()
 
     player.mass.cancel_timer.assert_called_with(player._voice_resume_task_id)
-    assert vars(player)["_voice_resume_pending"] is False
+    assert player._voice.phase == VoiceRecoveryPhase.NONE
 
 
 async def test_resume_after_voice_resumes_the_queue_that_owned_the_stream() -> None:
@@ -1363,7 +1365,8 @@ async def test_resume_after_voice_resumes_the_queue_that_owned_the_stream() -> N
     )
     player._external_play_confirmed = True
     player._attr_playback_state = PlaybackState.PLAYING
-    _report(player, playing=False, alice_state="LISTENING")
+    for alice_state in ("LISTENING", "NONE", "IDLE"):
+        _report(player, playing=False, alice_state=alice_state)
 
     await player._resume_after_voice()
 
@@ -1422,3 +1425,98 @@ def _report_station_track_real(
             }
         }
     )
+
+
+# ── Copilot round 7: running resume, play during the wait, volume baseline ──
+
+
+def _answered_interruption(player: YandexStationPlayer, source: str | None = None) -> None:
+    """Stop the stream through an Alice request that she answered."""
+    _enable_voice_control(player)
+    player._start_external_session(
+        MediaItem(uri="ma://track/1", title="T", source_id=source), audio_client=True
+    )
+    player._external_play_confirmed = True
+    player._attr_playback_state = PlaybackState.PLAYING
+    for alice_state in ("LISTENING", "NONE", "IDLE"):
+        _report(player, playing=False, alice_state=alice_state)
+
+
+async def test_station_takeover_during_a_running_resume_drops_its_stream() -> None:
+    """
+    Station playback that starts while the resume is running is not replaced.
+
+    The core cannot recall the resume once it runs; the stream it asks for is
+    dropped instead when it reaches the player.
+    """
+    player, commands = _make_play_media_player([{"status": "SUCCESS"}])
+    _answered_interruption(player)
+
+    async def cmd_resume(_player_id: str, source: str | None = None) -> None:
+        _report(player, playing=True, native_track_id="yandex-9")
+        await player.play_media(MediaItem(uri="ma://track/1", title="T", source_id=source))
+
+    player.mass.players.cmd_resume = AsyncMock(side_effect=cmd_resume)
+
+    await player._resume_after_voice()
+
+    assert commands == []
+    assert player._external_playing is False
+    assert player._attr_active_source == STATION_SOURCE_ID
+    assert player._voice.phase == VoiceRecoveryPhase.NONE
+
+
+async def test_running_resume_starts_its_stream_when_nothing_took_over() -> None:
+    """The resume's own stream is not mistaken for something that supersedes it."""
+    player, commands = _make_play_media_player([{"status": "SUCCESS"}])
+    _answered_interruption(player)
+
+    async def cmd_resume(_player_id: str, source: str | None = None) -> None:
+        await player.play_media(MediaItem(uri="ma://track/1", title="T", source_id=source))
+
+    player.mass.players.cmd_resume = AsyncMock(side_effect=cmd_resume)
+
+    await player._resume_after_voice()
+
+    assert len(commands) == 1
+    assert player._external_playing is True
+
+
+async def test_play_during_the_wait_resumes_the_owning_queue_now() -> None:
+    """
+    Play while the music waits for Alice resumes the queue instead of the Station.
+
+    The stream Alice stopped is gone from the Station, so a native play would not
+    bring it back; the queue that owned it is resumed through the core.
+    """
+    player = _make_player()
+    commands = _record_commands(player)
+    _answered_interruption(player, source="universal_group_1")
+    player.mass.players.cmd_resume = AsyncMock()
+
+    await player.play()
+
+    assert commands == []
+    player.mass.players.cmd_resume.assert_awaited_once_with(
+        player.player_id, source="universal_group_1"
+    )
+    player.mass.cancel_timer.assert_called_with(player._voice_resume_task_id)
+
+
+def test_silent_stop_after_a_volume_request_does_not_resume() -> None:
+    """A louder request followed by a silent stop leaves the music stopped."""
+    player = _make_player()
+    _enable_voice_control(player)
+    _start_confirmed_stream(player)
+    player._attr_volume_level = 40
+    _report(player, playing=False, alice_state="LISTENING")
+    player._attr_volume_level = 50
+    _report(player, playing=False, alice_state="IDLE")
+    player.mass.call_later.assert_called_once()
+
+    for alice_state in ("LISTENING", "BUSY", "IDLE"):
+        _report(player, playing=False, alice_state=alice_state)
+
+    player.mass.call_later.assert_called_once()
+    assert player._voice.phase == VoiceRecoveryPhase.NONE
+    assert player._attr_playback_state == PlaybackState.IDLE
