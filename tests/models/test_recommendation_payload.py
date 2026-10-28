@@ -260,6 +260,23 @@ async def test_single_flight_concurrent_cold_calls_fetch_once() -> None:
 
 
 @pytest.mark.asyncio
+async def test_unloading_instance_fetches_alone_and_writes_nothing() -> None:
+    """Calls on an unloading instance neither share a fetch nor write the payload."""
+    payload = _make_payload()
+    fetch = AsyncMock(return_value=payload)
+    provider = _PayloadProvider(fetch)
+    cast("Any", provider).unloading = True
+
+    results = await asyncio.gather(*(provider._recommendation_payload() for _ in range(2)))
+    await _drain_background(provider)
+
+    assert all(result == payload for result in results)
+    assert fetch.await_count == 2
+    assert not provider.background_tasks
+    assert _PAYLOAD_CACHE_KEY not in provider._cache_store
+
+
+@pytest.mark.asyncio
 async def test_unknown_item_id_returns_empty() -> None:
     """An item_id not present in the payload yields an empty UniqueList."""
     fetch = AsyncMock(return_value=_make_payload())

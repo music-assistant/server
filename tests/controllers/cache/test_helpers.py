@@ -9,12 +9,12 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 from mashumaro import DataClassDictMixin
-from music_assistant_models.errors import MediaNotFoundError
+from music_assistant_models.errors import MediaNotFoundError, ProviderUnavailableError
 
 from music_assistant.constants import DB_TABLE_CACHE
 from music_assistant.controllers.cache import CacheController
 from music_assistant.controllers.cache.constants import BYPASS_CACHE
-from music_assistant.controllers.cache.helpers import use_cache
+from music_assistant.controllers.cache.helpers import cancel_cache_tasks, use_cache
 from music_assistant.helpers.throttle_retry import (
     RequestPriority,
     current_priority,
@@ -52,6 +52,8 @@ class _FakeProvider:
         self.result: str | None = None
         self.error: Exception | None = None
         self.priorities: list[RequestPriority] = []
+        # set by mass.unload_provider on a real provider
+        self.unloading = False
         # released by default, so tests that do not gate a call are unaffected
         self.gate = asyncio.Event()
         self.gate.set()
@@ -405,6 +407,45 @@ async def test_cancelled_fetch_cancels_every_caller(provider: _FakeProvider) -> 
     provider.mass._tracked_tasks[f"cache_flight.{_PROVIDER}.fetch.a"].cancel()
     results = await asyncio.gather(*tasks, return_exceptions=True)
     assert all(isinstance(result, asyncio.CancelledError) for result in results)
+
+
+async def test_fetch_cancelled_for_unload_fails_every_caller(provider: _FakeProvider) -> None:
+    """Test that callers of a fetch cancel_cache_tasks cancelled get an error to report."""
+    provider.gate.clear()
+    tasks = [asyncio.create_task(provider.fetch("a")) for _ in range(3)]
+    await _wait_for_flight(provider)
+    await cancel_cache_tasks(_PROVIDER)
+    results = await asyncio.gather(*tasks, return_exceptions=True)
+    assert all(isinstance(result, ProviderUnavailableError) for result in results)
+
+
+async def test_cancelled_caller_of_a_fetch_cancelled_for_unload_is_cancelled(
+    provider: _FakeProvider,
+) -> None:
+    """Test that a caller cancelled itself is cancelled, also when the fetch is cancelled."""
+    provider.gate.clear()
+    task = asyncio.create_task(provider.fetch("a"))
+    await _wait_for_flight(provider)
+    task.cancel()
+    await cancel_cache_tasks(_PROVIDER)
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+
+async def test_unloading_provider_fetches_alone_and_stores_nothing(
+    cache_controller: CacheController, provider: _FakeProvider
+) -> None:
+    """Test that calls on an unloading provider neither share a fetch nor store its result."""
+    provider.result = "value"
+    provider.gate.clear()
+    provider.unloading = True
+    tasks = [asyncio.create_task(provider.fetch("a")) for _ in range(2)]
+    await _wait_for_flight(provider)
+    provider.gate.set()
+    assert await asyncio.gather(*tasks) == ["value", "value"]
+    assert provider.calls == 2
+    await asyncio.sleep(0.05)
+    assert not await _get_row(cache_controller, "fetch.a")
 
 
 async def test_cancelled_caller_leaves_the_others_untouched(

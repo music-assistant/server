@@ -133,6 +133,9 @@ class RecommendationPayloadMixin(_MixinBase):
             # stale: serve immediately while a (deduplicated) background refresh runs
             self._schedule_recommendation_refresh()
             return payload
+        if getattr(self, "unloading", False):
+            # an unloaded instance fetches alone: its result is neither shared nor written
+            return await self._fetch_recommendation_payload()
         # cold instance: single-flight load from the persistent cache or the backend
         task = self._recommendation_payload_task
         if task is None or task.done():
@@ -209,15 +212,20 @@ class RecommendationPayloadMixin(_MixinBase):
                 checksum=self.recommendation_payload_version,
                 persistent=True,
                 allow_expired_cache=True,
-            )
+            ),
+            # named like the @use_cache writes, so cancel_cache_tasks stops it on a reconfigure
+            task_name=f"cache_store_{self.instance_id}",
         )
         return payload
 
     def _start_recommendation_task(
-        self, coro: Coroutine[Any, Any, _T], task_id: str | None = None
+        self,
+        coro: Coroutine[Any, Any, _T],
+        task_id: str | None = None,
+        task_name: str | None = None,
     ) -> asyncio.Task[_T]:
         """Create a tracked background task that logs failures through the provider logger."""
-        task = self.mass.create_task(coro, task_id=task_id)
+        task = self.mass.create_task(coro, task_id=task_id, task_name=task_name)
         # always retrieve the task's exception: without a waiter (background refresh,
         # cancelled sole caller) it would otherwise surface as a raw loop-handler error
         task.add_done_callback(self._log_recommendation_task_failure)

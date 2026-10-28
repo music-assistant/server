@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
 from music_assistant_models.auth import Scope
-from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption
+from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption, ProviderError
 from music_assistant_models.enums import (
     ConfigEntryType,
     EventType,
@@ -27,9 +27,11 @@ from music_assistant_models.errors import (
 from music_assistant_models.setup_flow import SetupFlowStep
 
 from music_assistant.constants import CONF_PLAYERS, CONF_PROVIDERS
+from music_assistant.controllers.cache.helpers import cancel_cache_tasks
 from music_assistant.controllers.config.helpers import _AUTH_ERROR_CODES
 from music_assistant.helpers.api import api_command
 from music_assistant.helpers.util import import_module_in_thread, load_provider_module
+from music_assistant.models.music_provider import CACHE_CATEGORY_PREV_LIBRARY_IDS
 from music_assistant.models.player import Player
 from music_assistant.models.recommendation_payload import _PAYLOAD_CACHE_KEY
 from music_assistant.models.setup_flow import (
@@ -550,6 +552,18 @@ class SetupFlowMixin:
         self.set(f"{conf_key}/setup_data", {**snapshot, **self._encrypt_values(values)})
         try:
             config = await self.get_provider_config(instance_id)
+            # the cache was filled with the previous credentials, which may be another
+            # account's, so it has to go before the instance is back to serve from it
+            await self.mass.unload_provider(instance_id)
+            try:
+                await self._clear_account_cache(instance_id)
+            except Exception as err:
+                # the instance stays unloaded rather than serve the previous account's cache,
+                # and its status has to say why, as a failed load's would
+                message = str(err) or type(err).__name__
+                error = ProviderError(error_code=999, message=message)
+                self.update_provider_last_error(instance_id, error)
+                raise
             await self.mass.load_provider_config(config)
         except asyncio.CancelledError:
             self.set(f"{conf_key}/setup_data", snapshot)
@@ -563,12 +577,38 @@ class SetupFlowMixin:
                 translation_args=getattr(err, "translation_args", None),
                 translation_owner=getattr(err, "translation_owner", None),
             ) from err
-        # the cache was filled with the previous credentials, which may be another account's;
-        # persistent entries stay, except the recommendations, which belong to the account
-        await self.mass.cache.clear(provider_filter=instance_id)
-        await self.mass.cache.delete(_PAYLOAD_CACHE_KEY, provider=instance_id)
         self.update_provider_last_error(instance_id, None)
         return {"instance_id": instance_id}
+
+    async def _clear_account_cache(self, instance_id: str) -> None:
+        """Clear what an unloaded provider instance cached for its account."""
+        # a fetch still running for the previous account would store its result after the
+        # clear, or hand it to the reloaded instance asking for the same thing
+        await cancel_cache_tasks(instance_id)
+        # the library snapshots stay: the next sync compares with them to take the previous
+        # account's items out of the library
+        library_snapshots = {
+            media_type: ids
+            for media_type in MediaType
+            if (
+                ids := await self.mass.cache.get(
+                    media_type.value,
+                    provider=instance_id,
+                    category=CACHE_CATEGORY_PREV_LIBRARY_IDS,
+                    allow_bypass=False,
+                )
+            )
+        }
+        await self.mass.cache.clear(provider_filter=instance_id)
+        for media_type, ids in library_snapshots.items():
+            await self.mass.cache.set(
+                media_type.value,
+                ids,
+                provider=instance_id,
+                category=CACHE_CATEGORY_PREV_LIBRARY_IDS,
+            )
+        # persistent entries stay, except the recommendations, which belong to the account
+        await self.mass.cache.delete(_PAYLOAD_CACHE_KEY, provider=instance_id)
 
     async def _finish_player_setup(
         self, session: SetupSession, values: dict[str, ConfigValueType]
