@@ -1348,7 +1348,12 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         self._set_transitioning(player_id, False)
         if permanent:
             self.purge_saved_queue(player_id)
-        self._queue_data.pop(player_id, None)
+        if (queue_data := self._queue_data.pop(player_id, None)) is not None:
+            # no queue removal event exists, so clients get the gone queue as idle
+            queue_data.queue.state = PlaybackState.IDLE
+            self.mass.signal_event(
+                EventType.QUEUE_UPDATED, object_id=player_id, data=queue_data.queue
+            )
         self._managed_pool.forget(player_id)
 
     def purge_saved_queue(self, queue_id: str) -> None:

@@ -2700,8 +2700,9 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
             # (hidden) bridge client with nothing playing on it, or is already serving its
             # parent, where a stop would cut that parent's stream short. A protocol player
             # has no active group of its own either, so there is nothing to detach here.
-            self.mass.signal_event(EventType.PLAYER_REMOVED, player.player_id)
+            # the queue goes first, so its final update cannot re-add it after the removal
             self.mass.player_queues.on_player_remove(player.player_id, permanent=False)
+            self.mass.signal_event(EventType.PLAYER_REMOVED, player.player_id)
             return
         # the player surfaces on its own, which leaves it unusable without a queue
         self.mass.signal_event(EventType.PLAYER_ADDED, object_id=player.player_id, data=player)
