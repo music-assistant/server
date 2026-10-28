@@ -366,6 +366,39 @@ async def test_transport_command_reads_the_new_state_back(
     assert player.elapsed_time == 83.0
 
 
+async def test_resume_reads_the_playing_state_back() -> None:
+    """A device that sends no event when it resumes is soon reported as playing again."""
+    device = _mock_device(transport_state=TransportState.PAUSED_PLAYBACK, async_play=AsyncMock())
+
+    async def _async_update(**_kwargs: Any) -> None:
+        """Answer the poll with the state the resume left the device in."""
+        device.transport_state = TransportState.PLAYING
+
+    device.async_update = _async_update
+    player = _player(device)
+    await player.set_dynamic_attributes()
+    paused_state = player.playback_state
+    assert paused_state == PlaybackState.PAUSED
+    scheduled: list[tuple[float, Any]] = []
+
+    def _call_later(delay: float, target: Any, *_args: Any, **_kwargs: Any) -> None:
+        # the base player also schedules synchronous media callbacks, which are not polls
+        if inspect.iscoroutinefunction(target):
+            scheduled.append((delay, target))
+
+    player.mass.call_later = _call_later  # type: ignore[method-assign,assignment]
+
+    await player.play()
+    device.async_play.assert_awaited_once()
+    assert scheduled
+    # well within the time a queue resume waits for the player to report playing
+    delay, target = min(scheduled, key=lambda item: item[0])
+    assert delay < 3
+    await target()
+
+    assert player.playback_state == PlaybackState.PLAYING
+
+
 async def test_pending_refresh_does_not_reconnect_an_unloaded_player() -> None:
     """A refresh timer that fires after the device was disconnected leaves it disconnected."""
     player = _player(_mock_device())
