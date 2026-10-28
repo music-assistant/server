@@ -3300,15 +3300,11 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         """Return the metadata computed over all items of a collection row."""
         raw_metadata = db_row["collection_metadata"]
         metadata = json_loads(raw_metadata) if raw_metadata else {}
-        # the first books, in collection order, whose thumb the viewer can be shown
-        usable = [
-            thumb
-            for images in metadata.get("covers") or []
-            if (thumb := usable_thumb(images, hidden_sources))
-        ]
+        # the covers of the first books with a thumb, less those the viewer can't be shown
         thumbs = [
             self._summary_thumb([thumb], hidden_sources)
-            for thumb in usable[:COLLECTION_COVER_COUNT]
+            for images in metadata.get("covers") or []
+            if (thumb := usable_thumb(images, hidden_sources))
         ]
         return MediaCollectionMetadata(
             images=UniqueList(thumb for thumb in thumbs if thumb) or None,
@@ -3378,6 +3374,26 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         # single is targeting a single media item, collection the aggregated ones
         single_extra_order_keys = ""
         collection_extra_order_keys = ""
+        # the order of the items within a collection, which the covers follow as well
+        sequence_order = """
+                -- null case
+                CASE WHEN collection_sequence IS NULL THEN 1 ELSE 0 END,
+                -- numeric before text
+                CASE WHEN collection_sequence_is_numeric THEN 0 ELSE 1 END,
+                -- order NUMERIC
+                CASE WHEN collection_sequence_is_numeric
+                    THEN CAST(collection_sequence AS REAL)
+                END,
+                -- order TEXT
+                CASE WHEN NOT collection_sequence_is_numeric
+                    THEN collection_sequence
+                END COLLATE NOCASE,
+                -- order by media name if no sequence given
+                CASE
+                    WHEN collection_sequence IS NULL
+                    THEN media_name
+                END COLLATE NOCASE"""
+
         # the played state of a collection, from the columns this media type has
         collection_extract_keys = ""
         fully_played_stat = in_progress_stat = duration_stat = "NULL"
@@ -3387,8 +3403,10 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
             collection_extract_keys = "fully_played, resume_position_ms,"
             duration_stat = "SUM(duration)"
             fully_played_stat = "MIN(COALESCE(fully_played, 0))"
+            # some book started or finished, but not all of them finished
             in_progress_stat = (
-                "MAX(COALESCE(fully_played, 0) = 0 AND COALESCE(resume_position_ms, 0) > 0)"
+                "MAX(COALESCE(fully_played, 0) OR COALESCE(resume_position_ms, 0) > 0)"
+                f" AND NOT {fully_played_stat}"
             )
             supported_sort_fields.add(SortField.DURATION)
         elif self.media_type == MediaType.ALBUM:
@@ -3457,32 +3475,20 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
                     'duration', {duration_stat},
                     'fully_played', {fully_played_stat},
                     'in_progress', {in_progress_stat},
-                    'covers', json_group_array(json(images)) FILTER (WHERE has_thumb)
+                    'covers', json_group_array(json(images))
+                        FILTER (WHERE has_thumb AND cover_rank <= {COLLECTION_COVER_COUNT})
                 ) as collection_metadata,
                 json_group_array(media_data) FILTER (WHERE in_view) as media_data
             FROM (
-                SELECT * FROM collection_extract
+                SELECT *,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY collection_title, has_thumb ORDER BY {sequence_order}
+                    ) as cover_rank
+                FROM collection_extract
                 -- NOTE: The following ORDER_BY to control the aggregation order of json_group_array is undocumented sqlite behavior
                 -- Confirmed working with sqlite 3.40.1 & 3.53
                 -- Once our image moves to sqlite 3.44 we can and should make use of ORDER_BY in the aggregate itself
-                ORDER BY collection_title,
-                -- null case
-                CASE WHEN collection_sequence IS NULL THEN 1 ELSE 0 END,
-                -- numeric before text
-                CASE WHEN collection_sequence_is_numeric THEN 0 ELSE 1 END,
-                -- order NUMERIC
-                CASE WHEN collection_sequence_is_numeric
-                    THEN CAST(collection_sequence AS REAL)
-                END,
-                -- order TEXT
-                CASE WHEN NOT collection_sequence_is_numeric
-                    THEN collection_sequence
-                END COLLATE NOCASE,
-                -- order by media name if no sequence given
-                CASE
-                    WHEN collection_sequence IS NULL
-                    THEN media_name
-                END COLLATE NOCASE
+                ORDER BY collection_title, {sequence_order}
             )
             GROUP BY collection_title
             HAVING MAX(in_view)

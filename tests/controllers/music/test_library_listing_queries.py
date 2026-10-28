@@ -859,6 +859,9 @@ async def test_audiobook_collection_statistics_ignore_view_filters(
         ("Alpha 5", "Alpha Series", 5, "alpha_5.jpg", 500, None, None),
         ("Alpha 3", "Alpha Series", 3, "alpha_3.jpg", 300, None, None),
         ("Beta 1", "Beta Series", 1, None, 400, True, 400),
+        # finished the first book, never started the second
+        ("Gamma 1", "Gamma Series", 1, None, 100, True, 100),
+        ("Gamma 2", "Gamma Series", 2, None, 100, None, None),
     )
     db_books = {}
     for name, collection_name, sequence, cover, duration, fully_played, seconds_played in books:
@@ -932,6 +935,8 @@ async def test_audiobook_collection_statistics_ignore_view_filters(
         True,
         False,
     )
+    gamma = collections["Gamma Series"].metadata
+    assert (gamma.fully_played, gamma.in_progress) == (False, True)
     # the first three books with a cover, in sequence order
     assert [image.path for image in alpha.images or []] == [
         "alpha_2.jpg",
@@ -1055,8 +1060,9 @@ async def test_collapsed_audiobook_collections_sort_by_duration(mass: MusicAssis
 async def test_collection_covers_skip_thumbs_the_viewer_cannot_be_shown(
     mass: MusicAssistant,
 ) -> None:
-    """The cover stack takes the first books whose thumb can be shown, in collection order."""
-    # the first two covers belong to a provider that is not loaded
+    """The cover stack takes the first books with a thumb, less those the viewer can't be shown."""
+    # the first two covers belong to a provider that is not loaded, so only the third of
+    # the three covers the query keeps can be shown
     for name, sequence, cover_remote in (
         ("Book 1", 1, False),
         ("Book 2", 2, False),
@@ -1074,11 +1080,7 @@ async def test_collection_covers_skip_thumbs_the_viewer_cannot_be_shown(
     finally:
         await set_global_cache_values({"available_providers": available_providers})
     assert isinstance(collection, MediaCollection)
-    assert [image.path for image in collection.metadata.images or []] == [
-        "Book 3.jpg",
-        "Book 4.jpg",
-        "Book 5.jpg",
-    ]
+    assert [image.path for image in collection.metadata.images or []] == ["Book 3.jpg"]
 
 
 async def test_listing_queries_stream_from_sort_index(seeded_mass: MusicAssistant) -> None:
