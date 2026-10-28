@@ -225,30 +225,6 @@ class BookOrbitClient:
             raise
         return data or None
 
-    async def get_continue_listening_book_ids(self, limit: int = 50) -> list[int]:
-        """
-        Return book ids from the continue-listening dashboard scroller.
-
-        :param limit: Max books (BookOrbit clamps; server max is 50).
-        """
-        data = await self.request(
-            "GET",
-            f"{API_PREFIX}/dashboard/scrollers/continue-listening",
-            params={"limit": max(1, int(limit))},
-        )
-        books = (data or {}).get("books") if isinstance(data, dict) else None
-        if not isinstance(books, list):
-            return []
-        ids: list[int] = []
-        for book in books:
-            if not isinstance(book, dict) or book.get("id") is None:
-                continue
-            try:
-                ids.append(int(book["id"]))
-            except TypeError, ValueError:
-                continue
-        return ids
-
     async def put_playback_state(
         self,
         book_id: int,
