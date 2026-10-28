@@ -463,7 +463,8 @@ class BluesoundPlayer(Player):
         def _input_to_ma_source(bluos_input: Input) -> PlayerSource:
             return PlayerSource(
                 id=f"input-{bluos_input.url}",
-                name=f"Input: {bluos_input.text}",
+                # some players (e.g. the NAD C399) leave out the text attribute of an input
+                name=f"Input: {bluos_input.text or bluos_input.id or bluos_input.url}",
                 passive=False,
                 can_play_pause=False,
                 can_seek=False,
