@@ -522,10 +522,15 @@ async def test_artist_aggregations_merge_provider_artist_mappings(
     ] == [(str(library_artist_id), "library", 2)]
     assert counts == [2, 2, 2, 2, 2]
     assert [(result.name, result.minutes) for result in listening_time] == [("Shared Artist", 6.0)]
+    assert [
+        (result.item.item_id, result.item.provider, result.item.media_type)
+        for result in listening_time
+        if result.item
+    ] == [(str(library_artist_id), "library", MediaType.ARTIST)]
 
 
 async def test_listening_time_keeps_same_named_artists_separate(mass: MusicAssistant) -> None:
-    """Artist duration sums use mapped track lengths and keep provider identities separate."""
+    """Artist duration sums use mapped track lengths and keep each artist as its own item."""
     user = await mass.webserver.auth.create_user("statistics-artists")
     track_durations = {"track-a": 120, "track-b": 240}
     for artist_id, track_id in (("artist-a", "track-a"), ("artist-b", "track-b")):
@@ -591,6 +596,14 @@ async def test_listening_time_keeps_same_named_artists_separate(mass: MusicAssis
     assert [(result.name, result.minutes) for result in results] == [
         ("Same Name", 4.0),
         ("Same Name", 2.0),
+    ]
+    assert [
+        (result.item.item_id, result.item.provider, result.item.media_type, result.item.name)
+        for result in results
+        if result.item
+    ] == [
+        ("artist-b", "test-provider", MediaType.ARTIST, "Same Name"),
+        ("artist-a", "test-provider", MediaType.ARTIST, "Same Name"),
     ]
 
 
@@ -659,6 +672,7 @@ async def test_genre_distribution_counts_play_history(
 
     assert [(result.name, result.value) for result in results] == [("Rock", 2)]
     assert [(result.name, result.minutes) for result in listening_time] == [("Rock", 8.0)]
+    assert [result.item for result in listening_time] == [None]
 
 
 @pytest.mark.parametrize("media_type", [MediaType.TRACK, MediaType.ARTIST])

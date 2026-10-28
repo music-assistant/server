@@ -8,6 +8,9 @@ from datetime import UTC, datetime, timedelta
 from music_assistant_models.auth import Scope
 from music_assistant_models.enums import MediaType
 from music_assistant_models.errors import InvalidDataError
+from music_assistant_models.helpers import get_global_cache_value
+from music_assistant_models.media_items import ItemMapping
+from music_assistant_models.media_items.metadata import MediaItemImage
 from music_assistant_models.statistics import (
     HeatmapPoint,
     ListeningTimeItem,
@@ -32,6 +35,7 @@ from music_assistant.controllers.statistics.queries import (
 from music_assistant.controllers.webserver.helpers.auth_middleware import get_current_user
 from music_assistant.helpers.api import api_command
 from music_assistant.helpers.datetime import get_timezone
+from music_assistant.helpers.json import json_loads
 
 
 class TimeSeriesMixin(_StatisticsBase):
@@ -192,7 +196,8 @@ class TimeSeriesMixin(_StatisticsBase):
         Sum stored durations for completed plays resolvable to library tracks.
 
         Plays without a library mapping or known duration are omitted. Genre grouping also
-        requires library genre mappings.
+        requires library genre mappings. Artist results carry the artist in `item`, so
+        same-named artists stay separate; genre results have no `item`.
 
         :param period: Time period - 'today', 'week', 'month', 'year', 'all_time'.
         :param group_by: Group by 'artist' or 'genre' (default 'artist').
@@ -218,6 +223,7 @@ class TimeSeriesMixin(_StatisticsBase):
                         track_artists.item_id AS artist_item_id,
                         track_artists.provider AS artist_provider,
                         track_artists.name AS name,
+                        track_artists.image AS image,
                         tracks.duration as duration
                     FROM track_artists
                     INNER JOIN {DB_TABLE_TRACKS} as tracks
@@ -228,6 +234,7 @@ class TimeSeriesMixin(_StatisticsBase):
                     artist_item_id,
                     artist_provider,
                     MAX(name) as name,
+                    MAX(image) as image,
                     SUM(duration * play_count) as total_seconds
                 FROM artist_plays
                 GROUP BY artist_item_id, artist_provider
@@ -264,12 +271,36 @@ class TimeSeriesMixin(_StatisticsBase):
         }
 
         rows = await self.mass.music.database.get_rows_from_query(query, params, limit=limit)
+        available_providers = ("library", *get_global_cache_value("available_providers", []))
+        result: list[ListeningTimeItem] = []
+        for row in rows:
+            if row["total_seconds"] is None or row["total_seconds"] <= 0:
+                continue
+            item_mapping = None
+            if group_by == "artist":
+                image = None
+                if row["image"] and (image_dict := json_loads(row["image"])):
+                    image = MediaItemImage.from_dict(image_dict)
+                item_mapping = ItemMapping(
+                    item_id=row["artist_item_id"],
+                    provider=row["artist_provider"],
+                    media_type=MediaType.ARTIST,
+                    name=row["name"],
+                    image=image,
+                    available=row["artist_provider"] in available_providers,
+                )
+            result.append(
+                ListeningTimeItem(
+                    name=row["name"],
+                    minutes=round(row["total_seconds"] / 60, 1),
+                    item=item_mapping,
+                )
+            )
 
-        return [
-            ListeningTimeItem(name=row["name"], minutes=round(row["total_seconds"] / 60, 1))
-            for row in rows
-            if row["total_seconds"] is not None and row["total_seconds"] > 0
-        ]
+        await self._set_library_item_availability(
+            [entry.item for entry in result if entry.item is not None]
+        )
+        return result
 
     async def _iter_local_play_counts(
         self, user_id: str, cutoff_timestamp: float, timezone: str
