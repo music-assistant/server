@@ -563,10 +563,8 @@ class SetupFlowMixin:
                 translation_args=getattr(err, "translation_args", None),
                 translation_owner=getattr(err, "translation_owner", None),
             ) from err
-        # what the provider cached was fetched with the previous credentials, which may
-        # belong to another account; the filter also matches the listings cached under
-        # the provider's item uris. Persistent entries are kept (they can hold data a
-        # provider depends on), except its recommendations, which are the account's own.
+        # the cache was filled with the previous credentials, which may be another account's;
+        # persistent entries stay, except the recommendations, which belong to the account
         await self.mass.cache.clear(provider_filter=instance_id)
         await self.mass.cache.delete(_PAYLOAD_CACHE_KEY, provider=instance_id)
         self.update_provider_last_error(instance_id, None)
