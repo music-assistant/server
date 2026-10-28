@@ -135,6 +135,16 @@ class ListenBrainzScrobbleProvider(PluginProvider):
                     )
                 response.raise_for_status()
                 result = await response.json()
+        except aiohttp.ClientConnectionError as err:
+            error = str(err) or err.__class__.__name__
+            self.logger.warning(
+                "Unable to validate ListenBrainz token at %s: %s", api_base_url, error
+            )
+            raise SetupFailedError(
+                f"Unable to connect to ListenBrainz: {error}",
+                translation_key="connection_failed",
+                translation_owner="provider.listenbrainz_scrobble",
+            ) from err
         except (aiohttp.ClientError, TimeoutError, ValueError) as err:
             # ValueError covers a malformed JSON body from response.json()
             error = str(err) or err.__class__.__name__
