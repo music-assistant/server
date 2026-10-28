@@ -104,10 +104,17 @@ def build_playback_state_update(
     revision = manifest.get("revision")
     if not assets or not revision:
         return None
-    # Missing part durations make absolute→asset mapping unsafe; fall back to legacy.
+    position_ms = max(int(float(position) * 1000), 0)
+    if len(assets) == 1 and assets[0].get("durationMs") is None:
+        return PlaybackStateUpdate(
+            asset_id=str(assets[0]["assetId"]),
+            position_ms=position_ms,
+            percentage=0.0,
+            manifest_revision=str(revision),
+        )
+    # Multipart positions require known durations to locate the current asset.
     if any(asset.get("durationMs") is None for asset in assets):
         return None
-    position_ms = max(int(float(position) * 1000), 0)
     total_ms = manifest.get("totalDurationMs")
     if total_ms is None:
         total_ms = sum(int(a["durationMs"]) for a in assets)
