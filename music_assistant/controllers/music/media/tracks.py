@@ -250,12 +250,12 @@ class TracksController(MediaControllerBase[Track]):
                 item = await self.mass.music.get_item_by_uri(album_uri, allow_update_metadata=False)
                 if isinstance(item, Album):
                     track.album = item
-            elif provider_instance_id_or_domain == "library":
+            elif track.provider == "library":
                 # grab the first album this track is attached to, on the user's sources; the
                 # row's album mapping is dropped when none is
                 track.album = None
                 for album_track_row in await self.mass.music.database.get_rows(
-                    DB_TABLE_ALBUM_TRACKS, {"track_id": int(item_id)}
+                    DB_TABLE_ALBUM_TRACKS, {"track_id": int(track.item_id)}
                 ):
                     if album := await self.mass.music.albums.get_visible_library_item_by_prov_id(
                         str(album_track_row["album_id"]), "library"

@@ -789,7 +789,9 @@ async def test_a_library_track_only_carries_an_album_on_the_users_sources(
         assert read.album is not None
         assert read.album.item_id == album.item_id
     with _as_user(MEMBER):
+        # read by its library id, and by the id on the member's own source
         assert (await music.tracks.get(library_track.item_id, "library")).album is None
+        assert (await music.tracks.get("t1-mine", MINE)).album is None
 
 
 async def test_a_library_playlist_on_hidden_sources_is_a_plain_miss(music: MusicController) -> None:
