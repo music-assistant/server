@@ -42,6 +42,7 @@ from .constants import (
     SPECTRUM_F_MIN,
     SPECTRUM_SCALE,
 )
+from .recorder import FeatureRecorder
 from .settings import get_brightness, get_color_mode, get_hue_latency_ms
 
 if TYPE_CHECKING:
@@ -108,6 +109,16 @@ class HueEntertainmentBridge:
         self._render_handle: asyncio.TimerHandle | None = None
         self._entertainment_starting: bool = False
         self._hue_latency_us: int = get_hue_latency_ms(self.provider.config) * 1000
+        self._recorder = FeatureRecorder.from_env(
+            area,
+            sendspin_server.clock.now_us,
+            {
+                "bins": SPECTRUM_BINS,
+                "scale": SPECTRUM_SCALE,
+                "f_min": SPECTRUM_F_MIN,
+                "f_max": SPECTRUM_F_MAX,
+            },
+        )
 
     async def start(self) -> None:
         """Start the bridge — register as an in-process Sendspin visualizer client."""
@@ -284,6 +295,8 @@ class HueEntertainmentBridge:
         self._cancel_render_loop()
         if self._analyzer is not None:
             self._analyzer.clear_beats()
+        if self._recorder is not None:
+            self._recorder.end_session()
         if self._session is not None:
             with suppress(Exception):
                 await self._session.aclose()
@@ -303,6 +316,9 @@ class HueEntertainmentBridge:
         if self._stop_debounce_task and not self._stop_debounce_task.done():
             self._stop_debounce_task.cancel()
             self._stop_debounce_task = None
+        if self._recorder is not None:
+            self._recorder.start_session(self._hue_latency_us)
+            self._recorder.event("stream_start")
         if not self._is_streaming and not self._entertainment_starting:
             self._entertainment_starting = True
             self.logger.info("Stream starting for area '%s', connecting DTLS...", self.area.name)
@@ -313,6 +329,8 @@ class HueEntertainmentBridge:
         # Also act while a start is still in flight: the stream can end before
         # session.start() completes, and that late start would otherwise adopt a
         # session that streams forever (idle_timeout=0).
+        if self._recorder is not None:
+            self._recorder.event("stream_end")
         starting = self._start_task is not None and not self._start_task.done()
         if self._is_streaming or starting:
             if self._stop_debounce_task and not self._stop_debounce_task.done():
@@ -321,6 +339,8 @@ class HueEntertainmentBridge:
 
     def _on_stream_clear(self) -> None:
         """Handle seek — queued analyzer state belongs to pre-seek audio, drop it."""
+        if self._recorder is not None:
+            self._recorder.event("stream_clear")
         if self._analyzer is not None:
             self._analyzer.clear_beats()
 
@@ -344,6 +364,11 @@ class HueEntertainmentBridge:
         # queues only fill while the lights are up or coming up.
         if self._analyzer is None or not (self._is_streaming or self._entertainment_starting):
             return
+        if self._recorder is not None:
+            if frame.spectrum is not None:
+                self._recorder.spectrum(frame.spectrum.tolist(), frame.timestamp_us)
+            if frame.peak is not None:
+                self._recorder.peak(frame.peak, frame.timestamp_us)
         if frame.spectrum is not None:
             self._analyzer.apply_spectrum(frame.spectrum.tolist(), frame.timestamp_us)
         if frame.peak is not None:
@@ -354,11 +379,15 @@ class HueEntertainmentBridge:
         # Not gated on streaming: the schedule lands once per track and may arrive while
         # DTLS is still connecting; the renderer prunes past beats and track changes
         # replace the schedule.
+        if self._recorder is not None:
+            self._recorder.beats(beats)
         if self._analyzer is not None:
             self._analyzer.push_beats(beats)
 
     def _on_beats_clear(self) -> None:
         """Drop the beat schedule (a track change re-pushes a fresh one)."""
+        if self._recorder is not None:
+            self._recorder.event("beats_clear")
         if self._analyzer is not None:
             self._analyzer.clear_beat_schedule()
 
@@ -380,6 +409,8 @@ class HueEntertainmentBridge:
                 continue
             update[name] = value
         if update:
+            if self._recorder is not None:
+                self._recorder.color(update)
             self._analyzer.apply_color_palette(update)
 
     # -- Render loop --

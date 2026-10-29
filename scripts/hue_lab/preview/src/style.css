@@ -1,0 +1,37 @@
+:root {
+  --night: #1f1c26;
+  --floor: #2a2632;
+  --rule: #403a4c;
+  --paper: #e6dfd2;
+  --paper-dim: #9a92a6;
+  --warn: #e7a66a;
+  color-scheme: dark;
+  accent-color: var(--paper);
+  font-family: 'Hanken Grotesk', ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
+  font-variant-numeric: tabular-nums;
+  color: var(--paper);
+  background: var(--night);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#app {
+  height: 100%;
+  margin: 0;
+}
+
+button,
+input,
+select {
+  font: inherit;
+  color: inherit;
+}
+
+:focus-visible {
+  outline: 2px solid var(--paper);
+  outline-offset: 2px;
+}
