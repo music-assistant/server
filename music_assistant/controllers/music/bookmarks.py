@@ -12,7 +12,6 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any, NamedTuple
 
 from music_assistant_models.auth import Scope
-from music_assistant_models.bookmarks_update import BookmarksUpdate
 from music_assistant_models.enums import EventType, MediaType, ProviderFeature
 from music_assistant_models.errors import (
     AuthenticationRequired,
@@ -186,16 +185,10 @@ class BookmarksController:
         self._signal_updated(row)
 
     def _signal_updated(self, row: dict[str, Any]) -> None:
-        media_type = MediaType(row["media_type"])
         self.mass.signal_event(
             EventType.BOOKMARKS_UPDATED,
-            create_uri(media_type, row["provider_instance"], row["provider_item_id"]),
-            BookmarksUpdate(
-                media_type=media_type,
-                provider_instance_id=row["provider_instance"],
-                provider_item_id=row["provider_item_id"],
-                user_id=row["user_id"],
-            ),
+            create_uri(row["media_type"], row["provider_instance"], row["provider_item_id"]),
+            row["user_id"],
         )
 
     @staticmethod
