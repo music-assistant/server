@@ -957,7 +957,7 @@ def parse_station_stream_title(line: str) -> tuple[str, str, str | None] | None:
         artist = multi_strip(match.group("artist")).strip('"')
         if title and artist:
             return title, artist, None
-    # at least four fields, so a lone "~" in an ordinary title is left alone
+    # at least four fields, so an ordinary title holding a "~" is left alone
     if len(fields := stripped.split("~")) >= 4:
         artist, title, album = (multi_strip(x) for x in fields[:3])
         if title and artist:
