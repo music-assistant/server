@@ -406,10 +406,16 @@ class MetaDataController(
         """
         if isinstance(item, Artist):
             merge_mbid: str | None = None
+            reliable = bool(item.mbid)
             if not item.mbid and (found := await self._get_artist_mbid(item)):
                 item.mbid, by_name = found
                 merge_mbid = None if by_name else item.mbid
-            await self._link_artist_to_musicbrainz(item)
+                reliable = not by_name
+            looked_up_mbid = item.mbid
+            await self._link_artist_to_musicbrainz(item, follow_merged=reliable)
+            if looked_up_mbid and item.mbid != looked_up_mbid:
+                # the id an artist merged on MusicBrainz led to is as reliable as the old one
+                merge_mbid = item.mbid
             await self.mass.music.artists.update_item_in_library(item.item_id, item)
             # an id a name search found may belong to a namesake, so only a reliable one merges
             if merge_mbid:
