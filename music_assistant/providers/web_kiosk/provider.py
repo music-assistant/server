@@ -401,15 +401,13 @@ class WebKioskProvider(PlayerProvider):
                 # instead of being undone by the resume.
                 claim = player.claim(take_over=True) if was_playing and not follower else None
                 try:
-                    # Controller commands resolve protocol IDs back to their native
-                    # parent, which would release a captured static group. Detach only
-                    # this owned transport through the protocol player's public API.
+                    # Detach only this owned transport, through the players
+                    # controller so it can resolve the protocol member and keep a
+                    # captured group's own membership handling intact.
                     if protocol and (protocol.synced_to or len(protocol.group_members) > 1):
-                        leader = self.mass.players.get_player(
-                            protocol.synced_to or protocol.player_id, raise_unavailable=True
+                        await self.mass.players.cmd_set_members(
+                            player.player_id, player_ids_to_remove=[client_id]
                         )
-                        assert leader is not None
-                        await leader.set_members(player_ids_to_remove=[client_id])
                     # Release the kiosk's own bridge instead of unregistering the
                     # Sendspin provider's player: removing the client lets that
                     # provider drop its player itself, and a later verified claim

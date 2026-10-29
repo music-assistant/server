@@ -794,10 +794,13 @@ async def test_sendspin_fallback_of_sync_follower_leaves_the_group_like_ungroup(
     mass_mock.player_queues.play_media = AsyncMock()
     mass_mock.player_queues.load = AsyncMock()
     provider.bridge_manager = Mock(remove_bridge=AsyncMock())
+    mass_mock.players.cmd_set_members = AsyncMock()
 
     await provider.fallback_sendspin(player.player_id, expected_client_id=client_id)
 
-    leader.set_members.assert_awaited_once_with(player_ids_to_remove=[client_id])
+    mass_mock.players.cmd_set_members.assert_awaited_once_with(
+        player.player_id, player_ids_to_remove=[client_id]
+    )
     provider.bridge_manager.remove_bridge.assert_awaited_once_with(player.player_id)
     mass_mock.players.unregister.assert_not_awaited()
     assert player.active_output_protocol == "native"

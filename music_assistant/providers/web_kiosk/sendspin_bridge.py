@@ -251,6 +251,8 @@ class WebKioskSendspinBridgeManager(SendspinBridgeManagerBase[WebKioskSendspinBr
         ):
             # Give MA's one-output wrapper the browser identity before native registration.
             # MA then owns the wrapper replacement and configuration/group migration.
+            # No public controller or bridge API exposes this hand-off yet; removing it
+            # leaves both the wrapper and the kiosk player registered. Tracking: issue #44.
             parent.device_info.add_identifier(IdentifierType.UUID, identifiers[IdentifierType.UUID])
         await sendspin.apply_bridge_claim(
             client_id,
