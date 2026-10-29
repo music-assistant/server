@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 from logging import Logger
 from typing import TYPE_CHECKING
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from aiojellyfin import ImageType as JellyImageType
 from music_assistant_models.enums import ContentType, ExternalID, ImageType, MediaType
@@ -222,7 +223,7 @@ def parse_track(
                 provider_instance=instance_id,
                 available=available,
                 audio_format=audio_format(jellyfin_track),
-                url=client.audio_url(jellyfin_track[ITEM_KEY_ID]),
+                url=f"{client.base_url}/web/#/details?id={jellyfin_track[ITEM_KEY_ID]}",
             )
         },
     )
@@ -303,6 +304,24 @@ def parse_playlist(
     return playlist
 
 
+def set_api_key(url: str, api_key: str | None) -> str:
+    """
+    Return the URL with its Jellyfin auth query param replaced, or removed when api_key is None.
+
+    :param url: Jellyfin media URL, with or without an auth query param.
+    :param api_key: Access token to authenticate the URL with.
+    """
+    parsed = urlsplit(url)
+    query = [
+        (key, value)
+        for key, value in parse_qsl(parsed.query, keep_blank_values=True)
+        if key.lower() not in ("api_key", "apikey")
+    ]
+    if api_key is not None:
+        query.append(("apiKey", api_key))
+    return urlunsplit(parsed._replace(query=urlencode(query)))
+
+
 def _unknown_artist_mapping(instance_id: str) -> ItemMapping:
     return ItemMapping(
         media_type=MediaType.ARTIST,
@@ -321,7 +340,10 @@ def _get_artwork(
         images.append(
             MediaItemImage(
                 type=ImageType.FANART,
-                path=client.artwork(media_item[ITEM_KEY_ID], JellyImageType.Backdrop, index=i),
+                path=set_api_key(
+                    client.artwork(media_item[ITEM_KEY_ID], JellyImageType.Backdrop, index=i),
+                    None,
+                ),
                 provider=instance_id,
                 remotely_accessible=False,
             )
@@ -333,7 +355,9 @@ def _get_artwork(
             images.append(
                 MediaItemImage(
                     type=image_type,
-                    path=client.artwork(media_item[ITEM_KEY_ID], jelly_image_type),
+                    path=set_api_key(
+                        client.artwork(media_item[ITEM_KEY_ID], jelly_image_type), None
+                    ),
                     provider=instance_id,
                     remotely_accessible=False,
                 )

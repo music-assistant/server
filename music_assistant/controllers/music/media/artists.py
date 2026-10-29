@@ -57,6 +57,7 @@ from music_assistant.controllers.music.helpers import (
 )
 from music_assistant.controllers.music.listing import apply_listing, resolve_listing_sort
 from music_assistant.controllers.music.listing_cache import Listing
+from music_assistant.controllers.webserver.helpers.auth_middleware import get_current_user
 from music_assistant.helpers.collections import has_available_item
 from music_assistant.helpers.compare import (
     compare_album,
@@ -67,6 +68,7 @@ from music_assistant.helpers.compare import (
 )
 from music_assistant.helpers.database import UNSET
 from music_assistant.helpers.json import serialize_to_json
+from music_assistant.helpers.provider_access import visible_items
 from music_assistant.models.music_provider import (
     PROVIDER_FETCH_ERRORS,
     MusicProvider,
@@ -740,8 +742,9 @@ class ArtistsController(MediaControllerBase[Artist]):
                 lambda instance_id: self.get_provider_artist_toptracks(item_id, instance_id),
                 item_type=Track,
             )
+        # a metadata provider's ranking can list items on any music source
         return apply_listing(
-            tracks,
+            visible_items(self.mass, tracks, get_current_user()),
             ListingType.ARTIST_TOP_TRACKS,
             search=search,
             sort_field=sort_field,
@@ -871,8 +874,9 @@ class ArtistsController(MediaControllerBase[Artist]):
                 ),
                 item_type=Artist,
             )
+        # a metadata provider's ranking can list items on any music source
         return apply_listing(
-            artists,
+            visible_items(self.mass, artists, get_current_user()),
             ListingType.SIMILAR_ARTISTS,
             search=search,
             sort_field=sort_field,
@@ -946,8 +950,8 @@ class ArtistsController(MediaControllerBase[Artist]):
         :param artist_type: Whether the artist is listed as the author or the narrator.
         :param in_library_only: Only list the audiobooks that are in the library.
         :param search: Only list the audiobooks (or collections) whose name contains this text.
-        :param sort_field: Sort field, the sort name when omitted; a collection has no
-            duration of its own and sorts as the shortest.
+        :param sort_field: Sort field, the sort name when omitted; a collection sorts by
+            the duration of all its audiobooks.
         :param sort_direction: Sort direction, the field's default when omitted.
         :param limit: Maximum number of audiobooks to return; 0 returns them all.
         :param offset: Number of audiobooks to skip.
@@ -1171,7 +1175,7 @@ class ArtistsController(MediaControllerBase[Artist]):
     async def get_library_artist_toptracks(
         self,
         item_id: str | int,
-        provider_filter: str | None = None,
+        provider_filter: str | list[str] | None = None,
     ) -> Listing[Track]:
         """
         Return the top tracks for an in-library artist, aggregated across its providers.
@@ -1182,7 +1186,7 @@ class ArtistsController(MediaControllerBase[Artist]):
         incomplete when a provider failed or is not loaded.
 
         :param item_id: The library item ID of the artist.
-        :param provider_filter: Optional provider instance ID to limit the result to.
+        :param provider_filter: Optional provider instance ID, or IDs, to limit the result to.
         """
         ref_item = await self._get_visible_library_item(item_id)
         listings, incomplete = await self._get_library_artist_listings(
@@ -1894,7 +1898,13 @@ class ArtistsController(MediaControllerBase[Artist]):
             update = self.artist_from_item_mapping(update)
             metadata = cur_item.metadata
         else:
-            metadata = metadata_for_update(cur_item.metadata, update.metadata, overwrite)
+            metadata = metadata_for_update(
+                cur_item.metadata,
+                update.metadata,
+                overwrite,
+                cur_item.provider_mappings,
+                update.provider_mappings,
+            )
         cur_item.external_ids.update(update.external_ids)
         # enforce various artists name + id
         mbid = cur_item.mbid

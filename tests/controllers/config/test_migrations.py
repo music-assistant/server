@@ -27,10 +27,12 @@ from music_assistant.controllers.config.migrations import (
     _migrate_bluesound_http_profile,
     _migrate_bose_soundtouch_presets,
     _migrate_emby_album_artists_heal,
+    _migrate_nicovideo_drop_mail_login,
     _migrate_orphaned_disabled_protocol_configs,
     _migrate_output_limiter,
     _migrate_player_icons,
     _migrate_player_setup_data,
+    _migrate_raumfeld_icy_basic,
     _migrate_unrenamed_player_names,
     migrate,
     migrate_connected_player_plugins,
@@ -1778,3 +1780,93 @@ def test_migrate_emby_album_artists_heal_survives_malformed_config() -> None:
     data: dict[str, Any] = {"providers": {"emby--a": {"domain": "emby", "values": "broken"}}}
     _migrate_emby_album_artists_heal(data)
     assert data["providers"]["emby--a"]["values"] == "broken"
+
+
+async def test_migrate_nicovideo_drop_mail_login_removes_credentials() -> None:
+    """The mail, password and MFA code are removed, the user_session and other values kept."""
+    data: dict[str, Any] = {
+        "providers": {
+            "nicovideo--a": {
+                "domain": "nicovideo",
+                "values": {"mail": "a@example.com", "password": "pw", "search_limit": 10},
+                "setup_data": {
+                    "mail": "enc-mail",
+                    "password": "enc-pw",
+                    "mfa": None,
+                    "user_session": "enc-session",
+                },
+            },
+            "nicovideo--b": {"domain": "nicovideo"},
+            "spotify--s": {"domain": "spotify", "values": {"password": "pw"}},
+        }
+    }
+    providers = data["providers"]
+
+    assert await migrate(data) is True
+    assert providers["nicovideo--a"]["values"] == {"search_limit": 10}
+    assert providers["nicovideo--a"]["setup_data"] == {"user_session": "enc-session"}
+    assert providers["nicovideo--b"] == {"domain": "nicovideo"}
+    assert providers["spotify--s"]["values"] == {"password": "pw"}
+
+    # a second run has nothing left to remove
+    assert _migrate_nicovideo_drop_mail_login(data) is False
+
+
+def test_migrate_nicovideo_drop_mail_login_survives_malformed_config() -> None:
+    """Malformed provider configs are skipped without raising."""
+    assert _migrate_nicovideo_drop_mail_login({"providers": "broken"}) is False
+    data: dict[str, Any] = {
+        "providers": {
+            "nicovideo--a": {"domain": "nicovideo", "values": "broken", "setup_data": None},
+            "broken": "broken",
+        }
+    }
+    assert _migrate_nicovideo_drop_mail_login(data) is False
+    assert data["providers"]["nicovideo--a"]["values"] == "broken"
+
+
+def test_migrate_raumfeld_icy_basic_moves_former_default() -> None:
+    """Raumfeld players on the former "full" ICY default move to "basic", once."""
+    data: dict[str, Any] = {
+        "players": {
+            "raumfeld_bar": {"provider": "raumfeld", "values": {"enable_icy_metadata": "full"}},
+            "raumfeld_bank": {
+                "provider": "raumfeld",
+                "values": {"enable_icy_metadata": "disabled"},
+            },
+            "raumfeld_tv": {"provider": "raumfeld"},
+            "sonos_kitchen": {"provider": "sonos", "values": {"enable_icy_metadata": "full"}},
+        }
+    }
+    players = data["players"]
+
+    assert _migrate_raumfeld_icy_basic(data) is True
+    assert players["raumfeld_bar"]["values"]["enable_icy_metadata"] == "basic"
+    assert players["raumfeld_bank"]["values"]["enable_icy_metadata"] == "disabled"
+    assert "values" not in players["raumfeld_tv"]
+    assert players["sonos_kitchen"]["values"]["enable_icy_metadata"] == "full"
+    assert data["raumfeld_icy_basic_migrated"] is True
+
+    # a "full" picked afterwards is kept
+    players["raumfeld_bar"]["values"]["enable_icy_metadata"] = "full"
+    assert _migrate_raumfeld_icy_basic(data) is False
+    assert players["raumfeld_bar"]["values"]["enable_icy_metadata"] == "full"
+
+
+def test_migrate_raumfeld_icy_basic_survives_malformed_players() -> None:
+    """Malformed player configs are skipped without raising."""
+    data: dict[str, Any] = {
+        "players": {
+            "raumfeld_bar": "broken",
+            "raumfeld_bank": {"provider": "raumfeld", "values": 1},
+        }
+    }
+    assert _migrate_raumfeld_icy_basic(data) is True
+    assert data["players"]["raumfeld_bar"] == "broken"
+
+
+def test_migrate_raumfeld_icy_basic_noop_without_raumfeld() -> None:
+    """Installs without a Raumfeld player are left untouched."""
+    data: dict[str, Any] = {"players": {"sonos_kitchen": {"provider": "sonos"}}}
+    assert _migrate_raumfeld_icy_basic(data) is False
+    assert "raumfeld_icy_basic_migrated" not in data

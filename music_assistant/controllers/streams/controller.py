@@ -1543,7 +1543,9 @@ class StreamsController(CoreController):
             # see for example: https://github.com/music-assistant/support/issues/3717
             # one continuous stream, so the player gains nothing from running far ahead
             extra_input_args=output_pacing_args(PacingProfile.NEAR_REALTIME),
-            chunk_size=icy_meta_interval if enable_icy else calculate_content_length(output_format),
+            # without ICY framing, pass on whatever ffmpeg has encoded: an exact 1s read
+            # holds back FLAC on quiet passages until the player gives up waiting
+            chunk_size=icy_meta_interval if enable_icy else None,
         )
         client_disconnected = False
         # same registry as the single-item route: a forced-flow player (overlay)

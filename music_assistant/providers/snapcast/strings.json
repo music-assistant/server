@@ -30,6 +30,10 @@
     "snapcast_server_control_port": {
       "label": "Snapcast control port"
     },
+    "snapcast_external_server_buffer_size": {
+      "label": "External Snapserver buffer size",
+      "description": "The stream buffer (in ms) your external Snapserver is configured with. Music Assistant cannot read it from the server, but needs it to time playback and announcements. Only change it if you changed buffer in snapserver.conf. Default is 1000."
+    },
     "snapcast_stream_idle_threshold": {
       "label": "Snapcast idle threshold stream parameter"
     },

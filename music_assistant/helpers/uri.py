@@ -29,7 +29,7 @@ _OPEN_HOSTS: Final[dict[str, str]] = {
 }
 
 _APPLE_TYPE_MAP: Final[dict[str, MediaType]] = {
-    "station": MediaType.PLAYLIST,
+    "station": MediaType.RADIO,
     "playlist": MediaType.PLAYLIST,
     "album": MediaType.ALBUM,
     "artist": MediaType.ARTIST,

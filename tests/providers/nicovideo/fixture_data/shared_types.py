@@ -9,7 +9,11 @@ manually maintained and versioned.
 from __future__ import annotations
 
 # Pydantic requires runtime type information, so these imports cannot be in TYPE_CHECKING block
-from niconico.objects.video.watch import WatchData, WatchMediaDomandAudio  # noqa: TC002
+from niconico.objects.video.watch import (  # noqa: TC002
+    WatchData,
+    WatchLazyData,
+    WatchMediaAudio,
+)
 from pydantic import BaseModel
 
 
@@ -23,8 +27,10 @@ class StreamFixtureData(BaseModel):
 
     Attributes:
         watch_data: Video watch page data from niconico
+        watch_lazy_data: Lazily loaded watch data (owner, series) from niconico
         selected_audio: Selected audio track information
     """
 
     watch_data: WatchData
-    selected_audio: WatchMediaDomandAudio
+    watch_lazy_data: WatchLazyData
+    selected_audio: WatchMediaAudio

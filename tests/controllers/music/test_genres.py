@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import asyncio
 import json
+from collections.abc import AsyncGenerator
+from functools import partial
 from pathlib import Path
 from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock, PropertyMock, patch
@@ -22,9 +24,11 @@ from music_assistant_models.helpers import create_safe_string
 from music_assistant_models.media_items import (
     Album,
     Artist,
+    Audiobook,
     Genre,
     GenreSummary,
     Podcast,
+    PodcastEpisode,
     ProviderMapping,
     Track,
 )
@@ -43,9 +47,11 @@ from music_assistant.constants import (
     DEFAULT_AUDIOBOOK_GENRE_MAPPING,
     DEFAULT_GENRE_MAPPING,
     DEFAULT_PODCAST_GENRE_MAPPING,
+    PlaylistPlayableItem,
 )
 from music_assistant.controllers.music.media.genres import GenreController
 from music_assistant.mass import MusicAssistant
+from music_assistant.models.music_provider import MusicProvider
 
 GET_CURRENT_USER = "music_assistant.controllers.music.media.base.get_current_user"
 # the user whose likes the favorite tests below check
@@ -87,6 +93,18 @@ def _library_provider_mapping() -> set[ProviderMapping]:
             item_id=uuid4().hex,
             provider_domain="library",
             provider_instance="library",
+            in_library=True,
+        )
+    }
+
+
+def _sync_provider_mapping(item_id: str) -> set[ProviderMapping]:
+    """Create a provider mapping set for an item a provider sync adds to the library."""
+    return {
+        ProviderMapping(
+            item_id=item_id,
+            provider_domain="plsync",
+            provider_instance="plsync",
             in_library=True,
         )
     }
@@ -1005,6 +1023,62 @@ class TestSyncMediaItemGenres:
             limit=0,
         )
         assert [(int(r["genre_id"]), r["is_manual"]) for r in rows] == [(int(manual.item_id), 1)]
+
+
+class TestPlaylistSyncLinksGenres:
+    """Tests for the genres a playlist sync links."""
+
+    async def test_podcast_genres_go_to_the_library_podcast(
+        self, mass: MusicAssistant, genre_ctrl: GenreController
+    ) -> None:
+        """A playlist episode's podcast gets its genres, not a track with the podcast's id."""
+        podcast = Podcast(
+            item_id="prov-podcast",
+            provider="plsync",
+            name="PlSync Podcast",
+            provider_mappings=_sync_provider_mapping("prov-podcast"),
+        )
+        podcast.metadata.genres = {"SzPlaylistPodcastGenre"}
+        episode = PodcastEpisode(
+            item_id="prov-episode",
+            provider="plsync",
+            name="PlSync Episode",
+            provider_mappings=_sync_provider_mapping("prov-episode"),
+            position=1,
+            podcast=podcast,
+        )
+        await _provider_sync_playlist(mass, episode, podcast)
+        library_podcast = await mass.music.podcasts.get_library_item_by_prov_mappings(
+            podcast.provider_mappings
+        )
+        assert library_podcast is not None
+        podcast_id = library_podcast.item_id
+        assert await _linked_genre_names(mass, MediaType.PODCAST, podcast_id) == {
+            "SzPlaylistPodcastGenre"
+        }
+        assert await _linked_genre_names(mass, MediaType.TRACK, podcast_id) == set()
+
+    async def test_audiobook_genres_go_to_the_library_audiobook(
+        self, mass: MusicAssistant, genre_ctrl: GenreController
+    ) -> None:
+        """A playlist audiobook gets its genres, not a track with the audiobook's id."""
+        audiobook = Audiobook(
+            item_id="prov-audiobook",
+            provider="plsync",
+            name="PlSync Audiobook",
+            provider_mappings=_sync_provider_mapping("prov-audiobook"),
+        )
+        audiobook.metadata.genres = {"SzPlaylistAudiobookGenre"}
+        await _provider_sync_playlist(mass, audiobook)
+        library_audiobook = await mass.music.audiobooks.get_library_item_by_prov_mappings(
+            audiobook.provider_mappings
+        )
+        assert library_audiobook is not None
+        audiobook_id = library_audiobook.item_id
+        assert await _linked_genre_names(mass, MediaType.AUDIOBOOK, audiobook_id) == {
+            "SzPlaylistAudiobookGenre"
+        }
+        assert await _linked_genre_names(mass, MediaType.TRACK, audiobook_id) == set()
 
 
 class TestAddItemLinksGenres:
@@ -3227,3 +3301,31 @@ async def _linked_genre_names(
         limit=0,
     )
     return {r["name"] for r in rows}
+
+
+async def _provider_sync_playlist(
+    mass: MusicAssistant, item: PlaylistPlayableItem, podcast: Podcast | None = None
+) -> None:
+    """
+    Run a provider's playlist sync step for a playlist holding a single item.
+
+    :param mass: The MusicAssistant instance.
+    :param item: The item the playlist holds.
+    :param podcast: The podcast the provider returns for a podcast episode.
+    """
+
+    async def _iter_playlist_tracks(*_: Any) -> AsyncGenerator[PlaylistPlayableItem]:
+        yield item
+
+    def _raise(_media_type: MediaType, _uri: str, err: Exception) -> None:
+        raise err
+
+    provider = MagicMock(mass=mass)
+    provider.iter_playlist_tracks = _iter_playlist_tracks
+    provider.get_podcast = AsyncMock(return_value=podcast)
+    provider.get_item_genre_names = AsyncMock(side_effect=NotImplementedError)
+    provider._handle_sync_item_failure = _raise
+    provider._sync_item_genres = partial(MusicProvider._sync_item_genres, provider)
+    playlist = MagicMock(item_id="prov-playlist")
+    playlist.name = "PlSync Playlist"
+    await MusicProvider._sync_playlist_tracks(provider, playlist)

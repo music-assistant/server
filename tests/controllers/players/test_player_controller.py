@@ -1124,6 +1124,26 @@ class TestUnregisterCleanup:
 
         assert "set_members_other" in controller._player_command_locks
 
+    def test_state_update_after_unregister_is_not_signalled(self, mock_mass: MagicMock) -> None:
+        """A late state update of an unregistered player does not mark it available again."""
+        controller = PlayerController(mock_mass)
+        mock_mass.players = controller
+        provider = MockProvider("test_provider", instance_id="test", mass=mock_mass)
+        player = MockPlayer(provider, "player_1", "Player 1")
+        controller._players = {"player_1": player}
+        player.set_initialized()
+        player.update_state(signal_event=False)
+
+        player._attr_playback_state = PlaybackState.PLAYING
+        controller.trigger_player_update("player_1")
+        debounced_update = mock_mass.call_later.call_args
+        asyncio.run(controller.unregister("player_1"))
+        mock_mass.signal_event.reset_mock()
+        # the debounced update scheduled before the unregister still fires afterwards
+        debounced_update.args[1]()
+
+        mock_mass.signal_event.assert_not_called()
+
 
 class TestRegisterUnregisterRace:
     """Test registration that is interrupted by an unregister of the same player."""
@@ -1687,7 +1707,7 @@ class TestRegisterOrUpdateTypeTransition:
 
         assert player.state.type is PlayerType.PROTOCOL
         mock_mass.player_queues.on_player_remove.assert_called_once_with(
-            "player_1", permanent=False
+            "player_1", permanent=False, release_audio=False
         )
         assert self._signalled(mock_mass, EventType.PLAYER_REMOVED)
 
@@ -1735,10 +1755,35 @@ class TestRegisterOrUpdateTypeTransition:
 
         await controller.register_or_update(parent)
 
-        mock_mass.player_queues.on_player_remove.assert_called_once_with("parent", permanent=False)
+        mock_mass.player_queues.on_player_remove.assert_called_once_with(
+            "parent", permanent=False, release_audio=False
+        )
         assert self._signalled(mock_mass, EventType.PLAYER_REMOVED)
         assert parent.linked_output_protocols == []
         assert child.protocol_parent_id is None
+
+    async def test_protocol_transition_drops_the_queue_before_the_player(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """The queue's final update reaches clients before the PLAYER_REMOVED that drops it."""
+        controller = self._prepare(mock_mass)
+        provider = MockProvider("test_provider", instance_id="test", mass=mock_mass)
+        parent = self._register(controller, provider, "parent", PlayerType.PLAYER)
+        calls = MagicMock()
+        calls.attach_mock(mock_mass.player_queues.on_player_remove, "on_player_remove")
+        calls.attach_mock(mock_mass.signal_event, "signal_event")
+
+        parent._attr_type = PlayerType.PROTOCOL
+        parent.update_state(signal_event=False)
+        await controller.register_or_update(parent)
+
+        names = [c[0] for c in calls.mock_calls]
+        removed_at = next(
+            i
+            for i, c in enumerate(calls.mock_calls)
+            if c[0] == "signal_event" and EventType.PLAYER_REMOVED in c[1]
+        )
+        assert names.index("on_player_remove") < removed_at
 
     async def test_unchanged_type_leaves_queue_alone(self, mock_mass: MagicMock) -> None:
         """Re-registering a player without a type change does not touch its queue."""
@@ -7527,6 +7572,26 @@ class TestPlayerLockTimeouts:
             pass
 
         assert acquisitions == [("group", True), ("member", True)]
+
+
+def test_state_update_during_registration_is_not_published(mock_mass: MagicMock) -> None:
+    """A state update before register() finishes emits no player events."""
+    controller = PlayerController(mock_mass)
+    provider = MockProvider("test", instance_id="test", mass=mock_mass)
+    player = MockPlayer(provider, "p1", "Player")
+    controller._players = {"p1": player}
+    mock_mass.players = controller
+    changed = {"volume_level": (10, 20), "supported_features": (set(), {PlayerFeature.VOLUME_SET})}
+    published = {EventType.PLAYER_UPDATED, EventType.PLAYER_CONFIG_UPDATED}
+
+    controller.signal_player_state_update(player, changed)
+
+    assert not [c for c in mock_mass.signal_event.call_args_list if c.args[0] in published]
+
+    player.set_initialized()
+    controller.signal_player_state_update(player, changed)
+
+    assert {c.args[0] for c in mock_mass.signal_event.call_args_list} >= published
 
 
 if __name__ == "__main__":

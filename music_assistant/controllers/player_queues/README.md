@@ -315,14 +315,17 @@ and items played on their own):
   still recorded.
 - A folder pins each file it lists, and a library track standing in for a file to its copy under
   that folder. An album folder, or a disc subfolder of one, records the library album as its
-  container, so it plays with album loudness like the album itself.
+  container, so it plays with album loudness like the album itself. An album inside a played
+  folder (an album folder below it, or an album a folder lists) plays as part of the folder it
+  sits in: its tracks keep their pins but record that folder.
 - An artist, a genre or a finite radio station records itself without pinning anything.
 - An audiobook or podcast episode played on its own is pinned to the copy it was started from, so
   its progress and resume stay on that account. A single track played on its own has no origin.
 
-A track played from an album, or from the folder that holds one, plays as part of that album: it
+A track played from an album, or from the album's own folder, plays as part of that album: it
 uses the album loudness, and it is not crossfaded into the next track played from the same album
-unless the streams setting `allow_crossfade_same_album` is on.
+unless the streams setting `allow_crossfade_same_album` is on. The first of those tracks to play to
+the end counts the album as played, once until the album is played again.
 
 **Album source.** An album plays all of its tracks from one source. `_resolve_album` asks the Music
 Controller for the album's `playback_listing` (which entry each source lists for each track),
