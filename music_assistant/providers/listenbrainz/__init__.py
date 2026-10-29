@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from music_assistant_models.enums import ExternalID, MediaType, ProviderFeature
-from music_assistant_models.errors import MediaNotFoundError
+from music_assistant_models.errors import MediaNotFoundError, MusicAssistantError
 from music_assistant_models.media_items import (
     Artist,
     ItemMapping,
@@ -17,6 +17,7 @@ from music_assistant_models.media_items import (
     UniqueList,
 )
 
+from music_assistant.helpers.compare import compare_strings
 from music_assistant.models.plugin import PluginProvider
 from music_assistant.providers.listenbrainz.parsers import parse_artists
 
@@ -93,6 +94,10 @@ class ListenBrainzProvider(PluginProvider):
             library_track.position = position
             return library_track
         parsed_artists = parse_artists(item, self.instance_id, self.domain)
+        artist_name = parsed_artists[0].name if parsed_artists else None
+        if provider_track := await self._search_track(item["title"], artist_name):
+            provider_track.position = position
+            return provider_track
         track = Track(
             item_id=recording_mbid,
             provider=self.instance_id,
@@ -117,6 +122,33 @@ class ListenBrainzProvider(PluginProvider):
         )
         track.position = position
         return track
+
+    async def _search_track(self, title: str, artist_name: str | None) -> Track | None:
+        """Search streaming providers and return the first matching track."""
+        search_query = f"{artist_name} - {title}" if artist_name else title
+        for music_provider in self.mass.music.providers:
+            if not music_provider.available or not music_provider.is_streaming_provider:
+                continue
+            try:
+                candidates = await self.mass.music.tracks.search(
+                    search_query, music_provider.instance_id, limit=10
+                )
+            except MusicAssistantError:
+                continue
+            for candidate in candidates:
+                if not compare_strings(title, candidate.name, strict=False):
+                    continue
+                if (
+                    artist_name
+                    and candidate.artists
+                    and not any(
+                        compare_strings(artist_name, artist.name, strict=False)
+                        for artist in candidate.artists
+                    )
+                ):
+                    continue
+                return candidate
+        return None
 
     async def _resolve_artist(self, artist: Artist) -> Artist:
         """Return an existing library artist or the parsed unavailable artist."""
