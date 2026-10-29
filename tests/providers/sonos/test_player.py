@@ -139,6 +139,49 @@ async def test_connect_timeout_reschedules_reconnect() -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("retry_on_fail", [3590, 3600])
+async def test_connect_timeout_caps_reconnect_delay(retry_on_fail: int) -> None:
+    """Test repeated timeouts never increase the retry delay beyond one hour."""
+    player, mass = _make_player()
+    player.client.connect = AsyncMock(  # type: ignore[method-assign]
+        side_effect=ConnectionTimeoutError("Connection timeout to host https://x:1443")
+    )
+
+    await player._connect(retry_on_fail=retry_on_fail)
+
+    mass.call_later.assert_called_once()
+    args, _ = mass.call_later.call_args
+    assert args[0] == 3600
+    assert args[1] == player._connect
+    assert args[2] == 3600
+
+
+@pytest.mark.asyncio
+async def test_cancelled_connect_propagates_without_reconnecting() -> None:
+    """Test cancellation during a connection attempt does not schedule a retry."""
+    player, mass = _make_player()
+    player.client.connect = AsyncMock(side_effect=asyncio.CancelledError())  # type: ignore[method-assign]
+
+    with pytest.raises(asyncio.CancelledError):
+        await player._connect(retry_on_fail=30)
+
+    mass.call_later.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_connect_during_shutdown_does_not_contact_player() -> None:
+    """Test shutdown prevents a pending connection attempt from contacting the speaker."""
+    player, mass = _make_player()
+    mass.closing = True
+    player.client.connect = AsyncMock()  # type: ignore[method-assign]
+
+    await player._connect(retry_on_fail=30)
+
+    player.client.connect.assert_not_awaited()
+    mass.call_later.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_connect_timeout_without_retry_raises() -> None:
     """Test a connection failure without retry_on_fail still propagates."""
     player, mass = _make_player()
