@@ -42,10 +42,10 @@ def _get_own_version() -> str:
         return "0.0.0"
 
 
+MASS_VERSION: Final[str] = _get_own_version()
+
 # User agent that identifies Music Assistant on outgoing HTTP requests
-MASS_USER_AGENT: Final[str] = (
-    f"{APPLICATION_NAME}/{_get_own_version()} (https://music-assistant.io)"
-)
+MASS_USER_AGENT: Final[str] = f"{APPLICATION_NAME}/{MASS_VERSION} (https://music-assistant.io)"
 
 # Type alias for items that can be added to playlists
 PlaylistPlayableItem = Track | Radio | PodcastEpisode | Audiobook | SoundEffect
