@@ -14,6 +14,7 @@ from music_assistant_models.player import PlayerMedia
 import music_assistant.providers.web_kiosk.player as player_module
 from music_assistant.providers.web_kiosk.http_server import WebKioskHTTPServer
 from music_assistant.providers.web_kiosk.player import WebKioskPlayer, media_timeline
+from music_assistant.providers.web_kiosk.provider import WebKioskProvider
 
 
 def _media() -> Mock:
@@ -82,7 +83,9 @@ def test_media_timeline_equal_durations_have_no_offset() -> None:
     assert media_timeline(media) == (120.0, 0.0)
 
 
-async def test_play_media_reports_song_length_and_stream_start(player: WebKioskPlayer) -> None:
+async def test_play_media_reports_song_length_and_stream_start(
+    provider: WebKioskProvider, player: WebKioskPlayer
+) -> None:
     """After a seek, the kiosk is told the song length and where the file starts."""
     media = _media()
     media.duration = 208
@@ -90,7 +93,9 @@ async def test_play_media_reports_song_length_and_stream_start(player: WebKioskP
     server = WebKioskHTTPServer(player.provider, 0)  # type: ignore[arg-type]
     server._ws_clients[player.player_id] = {Mock(closed=False)}
     server._post = Mock()  # type: ignore[method-assign]
-    player.provider.http_server = server  # type: ignore[attr-defined]
+    provider.http_server = server
+    provider.spawn_wave = Mock()  # type: ignore[method-assign]
+    provider.spawn_lyrics = Mock()  # type: ignore[method-assign]
 
     await player.play_media(media)
 

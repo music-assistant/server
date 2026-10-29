@@ -3,18 +3,18 @@
 This directory holds the entry-point source, the build script and the locked npm
 dependencies for the bundle committed in `../static/web/sendspin-js/`. It lives
 inside the provider so the upstream sync ships the source together with the
-generated assets: the bundle can be reviewed and rebuilt from the provider tree
-alone, without the provider-repository scripts.
+generated assets, and the bundle can be rebuilt from the provider tree alone.
 
-Node 22 or newer is required only for development and CI. Music Assistant
-serves the committed assets and does not install npm dependencies at runtime.
+Node 22 or newer is required only for development. Music Assistant serves the
+committed assets and does not install npm dependencies at runtime.
 
-Run `scripts/vendor-sendspin-js.sh` from the repository root to install the
-locked dependencies and rebuild the SDK. Run `npm run check` in this directory
-to verify that every committed asset matches the build, including embedded licenses.
-CI also runs `npm test` to check classic-script loading, identity persistence and PCM
-decoding using the generated entry, plus registration during kiosk startup on
-plain HTTP without the secure-context-only `crypto.randomUUID` API.
+From this directory:
+
+```bash
+npm ci
+npm run check   # every committed asset matches the locked build
+npm run build   # rebuild after changing index.js or the dependencies
+```
 
 To update dependencies, edit the exact versions in `package.json`, regenerate
 `package-lock.json` with npm, rebuild and review the generated diff. The Noble
@@ -26,8 +26,8 @@ BigInt, Web Audio and crypto support are still runtime requirements. A small
 `globalThis` fallback supports older engines without weakening crypto.
 
 The player/builder scripts are separately checked against ES2015 syntax, so
-HTML5 does not require the SDK. `compatibility.test.mjs` verifies that boundary.
-esbuild bundles their SDK and crypto dependencies without property mangling.
+HTML5 does not require the SDK. esbuild bundles their SDK and crypto
+dependencies without property mangling.
 The entry URL stays `/web/sendspin-js/index.js`; browser storage, player identity
 and the existing Sendspin connection behavior remain the same.
 

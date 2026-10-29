@@ -79,11 +79,11 @@ async function existingFiles(directory, prefix = '') {
 if (process.argv.includes('--check')) {
     const existing = await existingFiles(destination);
     if (JSON.stringify(existing) !== JSON.stringify([...files.keys()].sort())) {
-        throw new Error('Sendspin asset list differs; run scripts/vendor-sendspin-js.sh');
+        throw new Error('Sendspin asset list differs; run npm run build');
     }
     for (const [name, content] of files) {
         if (!Buffer.from(content).equals(await readFile(path.join(destination, name)))) {
-            throw new Error(`Sendspin asset differs: ${name}; run scripts/vendor-sendspin-js.sh`);
+            throw new Error(`Sendspin asset differs: ${name}; run npm run build`);
         }
     }
     console.log('Sendspin assets match the locked npm build.');

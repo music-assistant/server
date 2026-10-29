@@ -290,8 +290,14 @@
     }
     function sendWS(obj) { if (ws && ws.readyState === WebSocket.OPEN) { try { ws.send(JSON.stringify(obj)); } catch (e) { /* noop */ } } }
     function reportVolumeCapability() {
+        // In Sendspin mode the SDK owns the output volume; the HTML5 element is
+        // silent and stays at its default, so never report that value.
+        var level = sendspinStreaming && window.__sendspinPlayer
+            && typeof window.__sendspinPlayer.volume === 'number'
+            ? window.__sendspinPlayer.volume
+            : audio.volume * 100;
         sendWS({ type:'capabilities', volume_control:mediaVolumeWritable || sendspinStreaming });
-        syncVolume(audio.volume * 100);
+        syncVolume(level);
     }
     function reportPlaybackError(generation, reason) {
         // Only the stream that is still current may fail. A replaced stream's
@@ -1543,7 +1549,9 @@
             if (audio.paused) { playing = false; sync(); }
         });
         chain('onStreamClear', function () {
-            sendspinStreaming = false;
+            // A seek clears the buffered stream without ending it; keep following
+            // the SDK until onStreamEnd so progress and software volume stay on
+            // the stream instead of the silent HTML5 element.
             reportVolumeCapability();
         });
         chain('onAudioData', function () { sendspinReceivedAudio = true; });

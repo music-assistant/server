@@ -454,9 +454,6 @@ class WebKioskProvider(PlayerProvider):
         task = self._own(coro)
         if task is None:
             raise asyncio.CancelledError
-        if not isinstance(task, asyncio.Future):
-            # The test double for mass.create_task hands the coroutine back.
-            return cast("T", await task)
         try:
             return cast("T", await asyncio.shield(task))
         except asyncio.CancelledError:
@@ -573,20 +570,16 @@ class WebKioskProvider(PlayerProvider):
 
     def _spawn(self, coro: Any) -> None:
         """Schedule coro as provider-owned work that unload cancels."""
-        task = self._own(coro)
-        # A test double that hands the coroutine back is closed.
-        if asyncio.iscoroutine(task):
-            task.close()
+        self._own(coro)
 
-    def _own(self, coro: Any) -> Any:
+    def _own(self, coro: Any) -> asyncio.Future[Any] | None:
         """Start coro as provider-owned work; None once the provider is unloading."""
         if self._unloading:
             coro.close()
             return None
-        task = self.mass.create_task(coro)
-        if isinstance(task, asyncio.Future):
-            self._background_tasks.add(task)
-            task.add_done_callback(self._background_tasks.discard)
+        task: asyncio.Future[Any] = self.mass.create_task(coro)
+        self._background_tasks.add(task)
+        task.add_done_callback(self._background_tasks.discard)
         return task
 
     def _report_abandoned_work(self, task: asyncio.Future[Any]) -> None:

@@ -1023,7 +1023,14 @@ async def test_play_broadcast_carries_playback_speed(
     ws = Mock(closed=False)
     server._ws_clients["wk_test"] = {ws}
     server._ws_send = AsyncMock()  # type: ignore[method-assign]
-    mass_mock.create_task = Mock(side_effect=lambda coro: coro)
+    tasks: list[asyncio.Task[None]] = []
+
+    def spawn(coro: Any) -> asyncio.Task[None]:
+        task = asyncio.create_task(coro)
+        tasks.append(task)
+        return task
+
+    mass_mock.create_task.side_effect = spawn
 
     provider.spawn_wave = Mock()  # type: ignore[method-assign]
     provider.spawn_lyrics = Mock()  # type: ignore[method-assign]
@@ -1031,7 +1038,7 @@ async def test_play_broadcast_carries_playback_speed(
     player._playback_speed = 2.0
 
     server.broadcast_play(player)
-    await mass_mock.create_task.call_args.args[0]
+    await asyncio.gather(*tasks)
 
     sent = server._ws_send.await_args
     assert sent is not None
@@ -1135,7 +1142,14 @@ async def test_live_and_snapshot_play_messages_share_one_contract(
     server._ws_send = AsyncMock(  # type: ignore[method-assign]
         side_effect=lambda _ws, data, *_a: sent.append(json.loads(data))
     )
-    mass_mock.create_task = Mock(side_effect=lambda coro: coro)
+    tasks: list[asyncio.Task[None]] = []
+
+    def spawn(coro: Any) -> asyncio.Task[None]:
+        task = asyncio.create_task(coro)
+        tasks.append(task)
+        return task
+
+    mass_mock.create_task.side_effect = spawn
     provider.spawn_wave = Mock()  # type: ignore[method-assign]
     provider.spawn_lyrics = Mock()  # type: ignore[method-assign]
     await player.play_media(
@@ -1143,7 +1157,7 @@ async def test_live_and_snapshot_play_messages_share_one_contract(
     )
 
     server.broadcast_play(player)
-    await mass_mock.create_task.call_args.args[0]
+    await asyncio.gather(*tasks)
     # A page that connects now; the one above already received this stream.
     await server._send_snapshot(Mock(closed=False), player)
 
@@ -1352,8 +1366,11 @@ async def test_failed_page_preparation_closes_the_socket_for_a_reconnect(
     ws = await http_client.ws_connect("/ws?device_id=test")
     try:
         assert (await asyncio.wait_for(ws.receive_json(), 1))["type"] == "welcome"
-        message = await asyncio.wait_for(ws.receive(), 1)
-        assert message.type in {WSMsgType.CLOSE, WSMsgType.CLOSING, WSMsgType.CLOSED}
+        async with asyncio.timeout(2):
+            while True:
+                message = await ws.receive()
+                if message.type in {WSMsgType.CLOSE, WSMsgType.CLOSING, WSMsgType.CLOSED}:
+                    break
         assert "seek failed" in caplog.text
     finally:
         await ws.close()

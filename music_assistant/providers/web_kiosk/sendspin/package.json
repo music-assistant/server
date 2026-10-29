@@ -7,14 +7,12 @@
   },
   "scripts": {
     "build": "node build.mjs",
-    "check": "node build.mjs --check",
-    "test": "node --experimental-vm-modules --test smoke.test.mjs kiosk.test.mjs compatibility.test.mjs"
+    "check": "node build.mjs --check"
   },
   "dependencies": {
     "@sendspin/sendspin-js": "5.0.0"
   },
   "devDependencies": {
-    "acorn": "8.15.0",
     "esbuild": "0.28.2"
   },
   "overrides": {

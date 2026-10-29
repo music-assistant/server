@@ -1069,11 +1069,8 @@ small {{ color: #9a9aa6; display: block; margin-top: 4px; }}
         self._own_socket_task(ws, task)
         return task
 
-    def _own_socket_task(self, ws: web.WebSocketResponse, task: object) -> None:
+    def _own_socket_task(self, ws: web.WebSocketResponse, task: asyncio.Future[Any]) -> None:
         """Make a task part of the socket's work, cancelled when the socket goes."""
-        # The test double for mass.create_task hands back the coroutine instead.
-        if not isinstance(task, asyncio.Future):
-            return
         tasks = self._ws_tasks.setdefault(ws, set())
         tasks.add(task)
         task.add_done_callback(tasks.discard)

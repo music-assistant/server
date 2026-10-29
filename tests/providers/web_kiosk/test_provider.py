@@ -901,9 +901,17 @@ async def test_lyrics_are_looked_up_only_for_kiosks_showing_them(
     mass_mock.create_task.assert_not_called()
 
     provider.http_server.lyrics_requested.return_value = True
-    mass_mock.create_task = Mock(side_effect=lambda coro: coro)
+    tasks: list[asyncio.Task[None]] = []
+
+    def spawn(coro: Any) -> asyncio.Task[None]:
+        task = asyncio.create_task(coro)
+        tasks.append(task)
+        return task
+
+    mass_mock.create_task.side_effect = spawn
     provider.spawn_lyrics("wk_test", 2)
     mass_mock.create_task.assert_called_once()
+    await asyncio.gather(*tasks)
     provider.http_server.lyrics_requested.assert_called_with("wk_test")
 
 
