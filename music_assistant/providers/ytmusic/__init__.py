@@ -58,6 +58,7 @@ from music_assistant_models.media_items import (
     UniqueList,
 )
 from music_assistant_models.streamdetails import StreamDetails
+from requests.exceptions import RequestException
 from ytmusicapi import LikeStatus
 from ytmusicapi.constants import SUPPORTED_LANGUAGES
 from ytmusicapi.exceptions import YTMusicError, YTMusicServerError
@@ -213,6 +214,7 @@ class EpisodePlayback:
     cpn: str
     position: int
     reported_at: float = 0.0
+    announced: bool = False
     watchtime_url: str | None = None
 
 
@@ -769,7 +771,7 @@ class YoutubeMusicProvider(RecommendationPayloadMixin, MusicProvider):
                 return False, 0, None
             # the episode page only shows a rounded duration, the (cached) video details the exact one
             duration = (await self.get_track(video_id)).duration
-        except (YTMusicError, KeyError, MediaNotFoundError) as err:
+        except (YTMusicError, RequestException, KeyError, MediaNotFoundError) as err:
             # without YouTube's progress the episode resumes from Music Assistant's own
             self.logger.debug("Unable to get the progress of episode %s: %s", video_id, err)
             raise NotImplementedError from err
@@ -806,7 +808,6 @@ class YoutubeMusicProvider(RecommendationPayloadMixin, MusicProvider):
             and time.monotonic() - playback.reported_at < PROGRESS_REPORT_INTERVAL
         ):
             return
-        is_new = playback is None
         if playback is None:
             cpn = "".join(secrets.choice(CPN_ALPHABET) for _ in range(16))
             playback = EpisodePlayback(cpn=cpn, position=position)
@@ -817,8 +818,10 @@ class YoutubeMusicProvider(RecommendationPayloadMixin, MusicProvider):
         else:
             # a pause, stop or finish ends this playback, a resume starts a new one
             self._episode_playbacks.pop(video_id, None)
-        if is_new:
+        # a failed announcement is tried again with the next report
+        if not playback.announced:
             playback.watchtime_url = await self._start_episode_playback(video_id, playback.cpn)
+            playback.announced = True
         if playback.watchtime_url:
             await self._report_episode_position(playback, position)
 
