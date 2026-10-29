@@ -589,12 +589,14 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         :param sort_direction: Sort direction, the field's default when omitted.
         :param start_position: Position in seconds to start an audiobook or episode at, e.g. a
             bookmark, instead of its resume position.
-        :raises InvalidDataError: When the sort key is unknown, or an album or playlist does
-            not offer the sort field.
+        :raises InvalidDataError: When the sort key is unknown, an album or playlist does
+            not offer the sort field, or a start position comes with more than one item.
         """
         self._check_player_permission(queue_id)
         if not self.get(queue_id):
             raise PlayerUnavailableError(f"Queue {queue_id} is not available")
+        if start_position is not None and isinstance(media, list) and len(media) > 1:
+            raise InvalidDataError("A start position fits a single audiobook or episode only")
         # a request with a sort that is not offered is rejected before anything is played
         sort_field, sort_direction = await _resolve_play_sort(
             media, sort_field, sort_direction, sort_by

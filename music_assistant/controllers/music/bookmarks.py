@@ -110,8 +110,8 @@ class BookmarksController:
                 MediaItemBookmark(
                     name=row["name"],
                     start=row["start"],
-                    provider_instance_id=provider_instance_id,
-                    provider_item_id=provider_item_id,
+                    provider_instance=provider_instance_id,
+                    item_id=provider_item_id,
                     stored_by_music_assistant=True,
                 )
                 for row in await self.mass.music.database.get_rows(
@@ -207,6 +207,28 @@ class BookmarksController:
             EventType.BOOKMARKS_UPDATED,
             create_uri(media_type, provider_instance_id, provider_item_id),
             user.user_id,
+        )
+
+    async def remove_copy(
+        self, media_type: MediaType, provider_instance_id: str, item_id: str
+    ) -> None:
+        """
+        Remove every user's bookmarks Music Assistant keeps for a library copy that leaves.
+
+        :param media_type: Media type of the library item: an audiobook, or a podcast for its
+            episodes.
+        :param provider_instance_id: The provider instance of the copy.
+        :param item_id: The id of the copy on the provider.
+        """
+        if media_type == MediaType.PODCAST:
+            # an episode's rows carry the podcast copy they belong to
+            match = {"podcast_item_id": item_id}
+        elif media_type == MediaType.AUDIOBOOK:
+            match = {"media_type": media_type, "provider_item_id": item_id}
+        else:
+            return
+        await self.mass.music.database.delete(
+            DB_TABLE_BOOKMARKS, {"provider_instance": provider_instance_id, **match}
         )
 
     @staticmethod

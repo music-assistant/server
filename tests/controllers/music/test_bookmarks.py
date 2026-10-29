@@ -49,8 +49,8 @@ def _provider(features: set[ProviderFeature]) -> Mock:
             MediaItemBookmark(
                 name=name,
                 start=start,
-                provider_instance_id=ABS,
-                provider_item_id=item_id,
+                provider_instance=ABS,
+                item_id=item_id,
             )
             for start, name in stored.items()
         ]
@@ -149,8 +149,8 @@ async def test_bookmark_goes_to_the_provider_only_when_it_may_edit(
             MediaItemBookmark(
                 name="Arrakis",
                 start=754.5,
-                provider_instance_id=ABS,
-                provider_item_id="book1",
+                provider_instance=ABS,
+                item_id="book1",
                 stored_by_music_assistant=bool(stored_by_music_assistant),
             )
         ]
@@ -178,7 +178,7 @@ async def test_bookmarks_stored_by_music_assistant(
         await bookmarks.remove_bookmark(AUDIOBOOK, LOCAL, "dune.m4b", 60.0)
 
     listed = [
-        (x.provider_instance_id, x.start, x.name)
+        (x.provider_instance, x.start, x.name)
         for x in await bookmarks.bookmarks(AUDIOBOOK, book.item_id, "library")
     ]
     assert listed == [
@@ -191,8 +191,8 @@ async def test_bookmarks_stored_by_music_assistant(
     assert await bookmarks.bookmarks(AUDIOBOOK, book.item_id, "library") == []
 
     set_current_user(LISTENER)
+    # gone with the mapping itself, not only after the nightly cleanup
     await audiobooks.remove_provider_mapping(book.item_id, LOCAL, "dune.m4b")
-    await mass.music._cleanup_database()
     await audiobooks.add_provider_mappings(
         book.item_id,
         [
@@ -236,7 +236,6 @@ async def test_episode_bookmarks_leave_with_the_podcast(
     assert [x.name for x in await bookmarks.bookmarks(EPISODE, "episode1", ABS)] == ["Intro"]
 
     await mass.music.podcasts.remove_provider_mapping(podcast.item_id, ABS, "show1")
-    await mass.music._cleanup_database()
     assert await bookmarks.bookmarks(EPISODE, "episode1", ABS) == []
 
 
@@ -306,8 +305,8 @@ async def test_episode_bookmarks_of_an_unavailable_account(
             MediaItemBookmark(
                 name="Other account",
                 start=10.0,
-                provider_instance_id=other_account.instance_id,
-                provider_item_id="episode1",
+                provider_instance=other_account.instance_id,
+                item_id="episode1",
             )
         ]
     )
@@ -340,7 +339,7 @@ async def test_episode_bookmarks_of_an_unavailable_account(
     )
 
     listed = [
-        (x.provider_instance_id, x.name)
+        (x.provider_instance, x.name)
         for x in await music_mass.music.bookmarks.bookmarks(EPISODE, "episode1", requested)
     ]
 

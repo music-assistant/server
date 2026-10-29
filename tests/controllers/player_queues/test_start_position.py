@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, Mock
+from typing import Any
+from unittest.mock import AsyncMock, MagicMock, Mock
 
 import pytest
 from music_assistant_models.enums import MediaType
+from music_assistant_models.errors import InvalidDataError
 from music_assistant_models.media_items import (
     Audiobook,
     ItemMapping,
@@ -14,6 +16,7 @@ from music_assistant_models.media_items import (
     UniqueList,
 )
 
+from music_assistant.controllers.player_queues import PlayerQueuesController
 from music_assistant.controllers.player_queues.media_resolver import MediaResolver
 
 ABS = "audiobookshelf--abs"
@@ -53,3 +56,18 @@ async def test_item_starts_at_the_requested_position(
 
     assert isinstance(resolved.item, Audiobook | PodcastEpisode)
     assert resolved.item.resume_position_ms == resume_position_ms
+
+
+async def test_a_start_position_for_several_items_is_refused() -> None:
+    """A position fits a single item, so a list with one is refused before anything plays."""
+    ctrl: Any = PlayerQueuesController.__new__(PlayerQueuesController)
+    ctrl._check_player_permission = MagicMock()
+    ctrl.get = MagicMock(return_value=MagicMock())
+    ctrl._handle_play_media = AsyncMock()
+
+    with pytest.raises(InvalidDataError):
+        await ctrl.play_media(
+            "q1", ["library://audiobook/1", "library://audiobook/2"], start_position=30.0
+        )
+
+    ctrl._handle_play_media.assert_not_awaited()
