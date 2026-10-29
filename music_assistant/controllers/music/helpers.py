@@ -216,6 +216,34 @@ def provider_mappings_for_update(
     }
 
 
+def usable_thumb(
+    images: Iterable[dict[str, Any]] | None, hidden_sources: AbstractSet[str]
+) -> dict[str, Any] | None:
+    """
+    Return the first thumb of a library item's stored (raw) images the viewer can be shown.
+
+    :param images: The stored (raw) images of the item.
+    :param hidden_sources: Music sources hidden from the viewer.
+    """
+    # same semantics as the MediaItem.available property: an empty cache means unknown
+    available_providers: AbstractSet[str] = get_global_cache_value("available_providers") or set()
+    return next(
+        (
+            image
+            for image in images or ()
+            if image["type"] == ImageType.THUMB.value
+            and (
+                image.get("remotely_accessible")
+                or (
+                    image["provider"] not in hidden_sources
+                    and (not available_providers or image["provider"] in available_providers)
+                )
+            )
+        ),
+        None,
+    )
+
+
 def preferred_thumb(
     images: Iterable[dict[str, Any]] | None, hidden_sources: AbstractSet[str]
 ) -> dict[str, Any] | None:
@@ -230,20 +258,7 @@ def preferred_thumb(
     :param hidden_sources: Music sources hidden from the viewer.
     """
     thumbs = [image for image in images or () if image["type"] == ImageType.THUMB.value]
-    # same semantics as the MediaItem.available property: an empty cache means unknown
-    available_providers: AbstractSet[str] = get_global_cache_value("available_providers") or set()
-    return next(
-        (
-            image
-            for image in thumbs
-            if image.get("remotely_accessible")
-            or (
-                image["provider"] not in hidden_sources
-                and (not available_providers or image["provider"] in available_providers)
-            )
-        ),
-        thumbs[0] if thumbs else None,
-    )
+    return usable_thumb(thumbs, hidden_sources) or (thumbs[0] if thumbs else None)
 
 
 def sibling_instance_mappings(

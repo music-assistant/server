@@ -764,6 +764,14 @@ class MetaDataController(
                     )
                     rate_limited = True
                     break
+                if not await self._in_library(item):
+                    # an earlier item of this run may have merged it into another library item
+                    self.logger.debug(
+                        "Skipping %s %s, it left the library earlier in this run",
+                        item.media_type.value,
+                        item.name,
+                    )
+                    continue
                 if processed:
                     # the pause between two items, so the run's first one starts right away
                     await asyncio.sleep(MUSICBRAINZ_LINK_ITEM_INTERVAL)
