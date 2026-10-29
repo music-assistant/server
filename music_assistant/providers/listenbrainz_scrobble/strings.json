@@ -9,6 +9,7 @@
     }
   },
   "errors": {
+    "access_denied": "The server refused access. Check that your user token is correct. If the server is behind a proxy or another authentication layer, check that configuration as well.",
     "connection_failed": "Could not connect to the ListenBrainz server. Please check the Base URL and confirm that the server is running and reachable.",
     "endpoint_not_found": "The ListenBrainz endpoint was not found. Please check the Base URL and try again.",
     "token_invalid": "Your ListenBrainz user token is no longer valid. Please reconfigure this plugin to resume scrobbling."

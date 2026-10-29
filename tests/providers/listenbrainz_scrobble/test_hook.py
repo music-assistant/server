@@ -231,18 +231,18 @@ async def test_an_invalid_token_fails_setup() -> None:
         await provider.handle_async_init()
 
 
-async def test_an_unauthorized_response_reports_an_invalid_token() -> None:
-    """An HTTP authentication rejection gives the setup form an actionable token error."""
+async def test_an_unauthorized_response_is_retryable() -> None:
+    """An ambiguous HTTP rejection does not permanently disable the provider."""
     provider = _provider(
         {CONF_USER_TOKEN: "token", CONF_API_BASE_URL: "https://lb.example.com"},
         http_session=_FakeSession(status=401),
     )
 
-    with pytest.raises(InvalidToken, match="rejected the user token") as exc_info:
+    with pytest.raises(SetupFailedError, match="refused access") as exc_info:
         await provider.handle_async_init()
 
-    assert exc_info.value.translation_key == "invalid_token"
-    assert exc_info.value.translation_owner is None
+    assert exc_info.value.translation_key == "access_denied"
+    assert exc_info.value.translation_owner == "provider.listenbrainz_scrobble"
 
 
 async def test_a_missing_endpoint_reports_the_bad_base_url() -> None:
