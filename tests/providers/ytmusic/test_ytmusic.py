@@ -1068,6 +1068,20 @@ async def test_on_played_ignores_tracks_and_untracked_episodes(
     cast("MagicMock", reporting_provider.mass.http_session.get).assert_not_called()
 
 
+async def test_on_played_ignores_marking_an_episode_played(
+    reporting_provider: YoutubeMusicProvider,
+) -> None:
+    """Marking an episode (un)played without a playback here sends YouTube nothing."""
+    with patch(
+        "music_assistant.providers.ytmusic.get_playback_tracking",
+        AsyncMock(return_value=_tracking()),
+    ) as mock_tracking:
+        await _played(reporting_provider, 0, is_playing=False)
+
+    mock_tracking.assert_not_awaited()
+    cast("MagicMock", reporting_provider.mass.http_session.get).assert_not_called()
+
+
 async def test_on_played_announces_again_after_a_failed_announcement(
     reporting_provider: YoutubeMusicProvider,
 ) -> None:

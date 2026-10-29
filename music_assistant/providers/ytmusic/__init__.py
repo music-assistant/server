@@ -760,6 +760,9 @@ class YoutubeMusicProvider(RecommendationPayloadMixin, MusicProvider):
             return
         video_id = prov_item_id.split(PODCAST_EPISODE_SPLITTER)[1]
         playback = self._episode_playbacks.get(video_id)
+        # marking an episode (un)played is no playback, so YouTube gets no report of it
+        if playback is None and not is_playing:
+            return
         if (
             is_playing
             and playback
