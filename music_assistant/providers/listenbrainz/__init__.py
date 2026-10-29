@@ -46,6 +46,17 @@ async def setup(
 class ListenBrainzProvider(PluginProvider):
     """Expose a static ListenBrainz playlist for initial development."""
 
+    def __init__(
+        self,
+        mass: MusicAssistant,
+        manifest: ProviderManifest,
+        config: ProviderConfig,
+        supported_features: set[ProviderFeature] | None = None,
+    ) -> None:
+        """Initialize the ListenBrainz provider."""
+        super().__init__(mass, manifest, config, supported_features)
+        self._resolved_tracks: dict[str, Track] = {}
+
     async def browse(self, path: str) -> list[Playlist]:
         """
         Return the static sample playlist.
@@ -88,14 +99,19 @@ class ListenBrainzProvider(PluginProvider):
     async def _parse_track(self, item: dict[str, Any], position: int) -> Track:
         """Return a matching library track or parse a metadata-only playlist entry."""
         recording_mbid = item["identifier"][0].rsplit("/", 1)[-1]
+        if cached_track := self._resolved_tracks.get(recording_mbid):
+            cached_track.position = position
+            return cached_track
         if library_track := await self.mass.music.tracks.get_library_item_by_external_id(
             recording_mbid, ExternalID.MB_RECORDING
         ):
+            self._resolved_tracks[recording_mbid] = library_track
             library_track.position = position
             return library_track
         parsed_artists = parse_artists(item, self.instance_id, self.domain)
         artist_name = parsed_artists[0].name if parsed_artists else None
         if provider_track := await self._search_track(item["title"], artist_name):
+            self._resolved_tracks[recording_mbid] = provider_track
             provider_track.position = position
             return provider_track
         track = Track(

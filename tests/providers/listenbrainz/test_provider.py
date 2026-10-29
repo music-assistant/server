@@ -62,6 +62,7 @@ def _provider(
     else:
         mass.music.providers = []
     provider.mass = cast("MusicAssistant", mass)
+    provider.__dict__["_resolved_tracks"] = {}
     return provider
 
 
@@ -241,3 +242,55 @@ async def test_playlist_tracks_reject_streaming_track_with_different_artist() ->
 
     assert track is not candidate
     assert track.provider == "listenbrainz--test"
+
+
+@pytest.mark.asyncio
+async def test_playlist_tracks_cache_resolved_streaming_track() -> None:
+    """A resolved provider track is reused without searching again."""
+    library_artist = Artist(
+        item_id="42", provider="library", name="Library Artist", provider_mappings=set()
+    )
+    streaming_track = _streaming_track()
+    provider = _provider(library_artist, streaming_track=streaming_track)
+    item = _track_data(
+        UNMATCHED_RECORDING_MBID,
+        [("Library Artist", LIBRARY_ARTIST_MBID)],
+    )
+
+    first = await provider._parse_track(item, 1)
+    second = await provider._parse_track(item, 2)
+
+    assert first is streaming_track
+    assert second is streaming_track
+    assert cast("AsyncMock", provider.mass.music.tracks.search).await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_playlist_tracks_cache_resolved_library_track() -> None:
+    """A resolved library track is reused without looking it up again."""
+    library_artist = Artist(
+        item_id="42", provider="library", name="Library Artist", provider_mappings=set()
+    )
+    library_track = Track(
+        item_id="7",
+        provider="library",
+        name="Library Track",
+        duration=180,
+        artists=UniqueList([library_artist]),
+        provider_mappings=set(),
+        external_ids={(ExternalID.MB_RECORDING, LIBRARY_RECORDING_MBID)},
+    )
+    provider = _provider(library_artist, library_track=library_track)
+    item = _track_data(
+        LIBRARY_RECORDING_MBID,
+        [("Library Artist", LIBRARY_ARTIST_MBID)],
+        title="Library Track",
+    )
+
+    first = await provider._parse_track(item, 1)
+    second = await provider._parse_track(item, 2)
+
+    assert first is library_track
+    assert second is library_track
+    lookup = cast("AsyncMock", provider.mass.music.tracks.get_library_item_by_external_id)
+    assert lookup.await_count == 1
