@@ -54,8 +54,7 @@ MEDIA_FSTYPES: Final[frozenset[str]] = frozenset(
 )
 MEDIA_FSTYPE_PREFIX: Final[str] = "fuse."
 AUTOMOUNT_FSTYPE: Final[str] = "autofs"
-# the container root is an overlay, but so is a merged folder of the host mapped in as a volume;
-# outside a container, overlays are the root filesystems of the containers it runs
+# in a container also a merged host folder mapped in as a volume; on a host only container roots
 OVERLAY_FSTYPE: Final[str] = "overlay"
 NETWORK_FSTYPES: Final[frozenset[str]] = frozenset({"cifs", "smb3", "nfs", "nfs4"})
 REMOVABLE_FSTYPES: Final[frozenset[str]] = frozenset(
@@ -88,9 +87,8 @@ CONTAINER_RESERVED_PATHS: Final[tuple[str, ...]] = (
 SUPERVISOR_MEDIA_PATH: Final[str] = "/media"
 
 _OCTAL_ESCAPE = re.compile(r"\\([0-7]{3})")
-# the root of a container in the container storage of docker, podman and CRI-O, containerd and
-# k3s, and docker with the containerd image store; it shows up in a container when a host folder
-# holding that storage is mapped in, while a media volume can be named merged or rootfs as well
+# root of another container in mapped docker, podman/CRI-O or containerd/k3s storage; matched by
+# layout, not name, since a media volume can be called merged or rootfs too
 _CONTAINER_ROOT = re.compile(
     r"/(?:overlay2?/[^/]+/merged|io\.containerd\.runtime\.[^/]+/[^/]+/[^/]+/rootfs"
     r"|rootfs/overlayfs/[^/]+)$"
