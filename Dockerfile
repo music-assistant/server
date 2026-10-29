@@ -125,9 +125,7 @@ FROM ghcr.io/music-assistant/base:$BASE_IMAGE_VERSION
 ENV VIRTUAL_ENV=/app/venv
 ENV PATH="$VIRTUAL_ENV/bin:$PATH"
 
-# tini as PID 1: Music Assistant itself never waits on processes it did not start, so the
-# children its subprocesses leave behind (the crash handler of each Soloist run) became
-# zombies. -s also makes it collect them when the container already runs with --init.
+# tini as PID 1 reaps orphaned subprocesses; -s keeps that working under docker --init.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends tini \
     && rm -rf /var/lib/apt/lists/*
