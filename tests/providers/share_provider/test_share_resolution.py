@@ -423,7 +423,7 @@ async def test_core_search_rejects_reused_isrc_with_different_lead_artist() -> N
     )
     mass.music.get_controller.return_value.get_item_by_external_id = AsyncMock(return_value=None)
     mass.music.tracks.enrich_provider_mappings = AsyncMock(
-        return_value=SimpleNamespace(matches=(_core_match(candidate, TrackMatchConfidence.LIKELY),))
+        return_value=SimpleNamespace(matches=(_core_match(candidate, TrackMatchConfidence.LOOSE),))
     )
 
     result = await provider._resolve_media_item(
@@ -439,8 +439,8 @@ async def test_core_search_rejects_reused_isrc_with_different_lead_artist() -> N
     assert result is None
 
 
-async def test_core_search_rejects_conflicting_featured_artist_credit() -> None:
-    """A shared ISRC cannot override a conflicting secondary artist credit."""
+async def test_core_search_accepts_core_match_with_different_featured_artist_credits() -> None:
+    """A confident Core match is not rejected by a stricter share-local artist check."""
     provider = _provider()
     mass = _mass(provider)
     candidate = Track(
@@ -484,7 +484,7 @@ async def test_core_search_rejects_conflicting_featured_artist_credit() -> None:
         )
     )
 
-    assert result is None
+    assert result is candidate
 
 
 @pytest.mark.parametrize(("second_artist", "expected_match"), [("Second", True), ("Other", False)])
