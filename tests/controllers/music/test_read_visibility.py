@@ -448,7 +448,7 @@ async def test_provider_listings_refuse_a_hidden_source(
     """A listing asked of a source the user may not see is refused, not served empty."""
     with _as_user(MEMBER), pytest.raises(InsufficientPermissions):
         await listing(music)
-    _mock(music, THEIRS).assert_not_called()
+    assert not _mock(music, THEIRS).method_calls
 
 
 async def test_album_tracks_come_from_the_resolved_visible_account(
@@ -771,7 +771,7 @@ async def test_library_artist_types_follow_the_users_sources(music: MusicControl
 async def test_a_library_track_only_carries_an_album_on_the_users_sources(
     music: MusicController,
 ) -> None:
-    """The album attached to a library track is left out when it lives on hidden sources only."""
+    """An album only on hidden sources is left off a library track and out of its albums."""
     track = create_track(THEIRS, "t1")
     track.provider_mappings.add(_mapping(MINE, "t1-mine"))
     library_track = await music.tracks.add_item_to_library(track)
@@ -794,10 +794,12 @@ async def test_a_library_track_only_carries_an_album_on_the_users_sources(
         read = await music.tracks.get(library_track.item_id, "library")
         assert read.album is not None
         assert read.album.item_id == album.item_id
+        assert await music.tracks.get_library_track_albums(library_track.item_id) == [album]
     with _as_user(MEMBER):
         # read by its library id, and by the id on the member's own source
         assert (await music.tracks.get(library_track.item_id, "library")).album is None
         assert (await music.tracks.get("t1-mine", MINE)).album is None
+        assert await music.tracks.get_library_track_albums(library_track.item_id) == []
 
 
 async def test_a_library_playlist_on_hidden_sources_is_a_plain_miss(music: MusicController) -> None:
