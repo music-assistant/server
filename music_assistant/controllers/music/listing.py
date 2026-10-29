@@ -17,7 +17,7 @@ from typing import Any, Final
 from music_assistant_models.enums import ListingType, SortDirection, SortField
 from music_assistant_models.errors import InvalidDataError
 from music_assistant_models.helpers import create_safe_string, create_sort_name
-from music_assistant_models.media_items import BrowseFolder, ItemMapping, MediaItem
+from music_assistant_models.media_items import BrowseFolder, ItemMapping, MediaCollection, MediaItem
 
 from music_assistant.controllers.music.constants import LEGACY_SORT_KEYS
 from music_assistant.controllers.music.sorting import LISTING_SORT_OPTIONS
@@ -153,6 +153,13 @@ def _date_added(item: ListingItem) -> float:
     return date_added.timestamp() if date_added else 0.0
 
 
+def _duration(item: ListingItem) -> int:
+    # a collection carries the duration of all its items in its metadata
+    if isinstance(item, MediaCollection):
+        return item.metadata.duration or 0
+    return getattr(item, "duration", 0) or 0
+
+
 def _artist_name(item: ListingItem) -> str:
     artists = getattr(item, "artists", None)
     return _normalize(artists[0].name) if artists else ""
@@ -175,7 +182,7 @@ _SORT_KEYS: Final[dict[SortField, Callable[[ListingItem], Any]]] = {
     SortField.SORT_NAME: _sort_name,
     SortField.TIMESTAMP_ADDED: _date_added,
     SortField.LAST_PLAYED: lambda item: getattr(item, "last_played", 0) or 0,
-    SortField.DURATION: lambda item: getattr(item, "duration", 0) or 0,
+    SortField.DURATION: _duration,
     SortField.YEAR: lambda item: getattr(item, "year", 0) or 0,
     SortField.POSITION: lambda item: getattr(item, "position", 0) or 0,
     SortField.ARTIST_NAME: _artist_name,

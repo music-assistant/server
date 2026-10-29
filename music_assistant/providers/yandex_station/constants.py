@@ -29,9 +29,13 @@ CONF_YM_INSTANCE = "ym_instance"
 # Intercept feature: provider-level kill switch (off by default)
 CONF_INTERCEPT_FEATURE_ENABLED = "intercept_feature_enabled"
 
+# API command yandex_station/command: provider-level opt-in (off by default)
+CONF_ALICE_TEXT_COMMANDS = "alice_text_commands"
+
 # Intercept feature: per-player toggles
 CONF_INTERCEPT_ENABLED = "intercept_enabled"
 CONF_INTERCEPT_TARGET = "intercept_target_player_id"
+CONF_INTERCEPT_MIRROR_VOLUME = "intercept_mirror_volume"
 
 # Yandex API endpoints
 QUASAR_DEVICES_URL = "https://iot.quasar.yandex.ru/m/v3/user/devices"

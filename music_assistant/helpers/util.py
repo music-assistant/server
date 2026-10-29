@@ -932,12 +932,13 @@ def multi_strip(line: str) -> str:
     ).rstrip()
 
 
-def parse_quoted_stream_title(line: str) -> tuple[str, str, str | None] | None:
+def parse_station_stream_title(line: str) -> tuple[str, str, str | None] | None:
     """
-    Parse stream titles that name the track in natural language with a quoted title.
+    Parse stream titles that name the track in a known station format.
 
-    Recognises '"Track" by Artist from "Album"' (album optional) and the German
-    '"Track" von Artist'.
+    Recognises '"Track" by Artist from "Album"' (album optional), the German
+    '"Track" von Artist' and the "Artist~Track~Album~Year~..." fields of the Italian
+    RadioMediaset stations.
 
     :param line: Raw (uncleaned) stream title.
     :returns: Tuple of (title, artist, album), or None when the line is not in one of
@@ -956,6 +957,11 @@ def parse_quoted_stream_title(line: str) -> tuple[str, str, str | None] | None:
         artist = multi_strip(match.group("artist")).strip('"')
         if title and artist:
             return title, artist, None
+    # at least four fields, so an ordinary title holding a "~" is left alone
+    if len(fields := stripped.split("~")) >= 4:
+        artist, title, album = (multi_strip(x) for x in fields[:3])
+        if title and artist:
+            return title, artist, album or None
     return None
 
 
@@ -965,7 +971,7 @@ def clean_stream_title(line: str) -> str:
     artist: str = ""
 
     if not keyword_pattern.search(line):
-        if parsed := parse_quoted_stream_title(line):
+        if parsed := parse_station_stream_title(line):
             track_name, artist_name, _ = parsed
             return f"{artist_name} - {track_name}"
         return multi_strip(line)

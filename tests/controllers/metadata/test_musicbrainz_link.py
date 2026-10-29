@@ -17,7 +17,7 @@ from music_assistant_models.enums import (
     SortField,
     TaskStatus,
 )
-from music_assistant_models.errors import MusicAssistantError
+from music_assistant_models.errors import MediaNotFoundError, MusicAssistantError
 from music_assistant_models.event import MassEvent
 from music_assistant_models.media_items import (
     Album,
@@ -59,6 +59,7 @@ _PROGRESS_TEXT = f"{_CONTROLLER}.update_current_task_progress_text"
 NOW = 1_700_000_000
 RELEASE_ID = "5d9c6e8a-1c3b-4f2e-9a7d-2b8c4e6f0a11"
 ARTIST_ID = "a74b1b7f-71a5-4011-9441-d0b5e4122711"
+OLD_ARTIST_ID = "9e8d7c6b-5a4f-4e3d-8c2b-1a0f9e8d7c33"
 
 
 @pytest.fixture(autouse=True)
@@ -127,6 +128,8 @@ def _controller(
         controller.get_library_items_by_query = AsyncMock(return_value=[])
         controller.update_item_in_library = AsyncMock()
     mass.music.active_sync_tasks = []
+    # every queued item is still in the library unless a test says otherwise
+    mass.music.get_controller.return_value.get_library_item = AsyncMock()
     stored = (
         None
         if linked_domains is None
@@ -377,6 +380,26 @@ async def test_link_run_reports_an_item_whose_lookup_gave_up() -> None:
     assert ctrl._musicbrainz_link_summary["processed"] == {"albums": 2}
     assert ctrl._musicbrainz_link_summary["failed"] == 1
     assert ctrl._musicbrainz_link_summary["not_found"] == 0
+
+
+async def test_link_run_skips_an_item_that_left_the_library_during_the_run() -> None:
+    """An item merged into another earlier in the run is skipped, neither linked nor failed."""
+    ctrl = _controller()
+    gone, kept = _albums(2)
+    _queue(ctrl, albums=[gone, kept])
+    _mass(ctrl).music.get_controller.return_value.get_library_item = AsyncMock(
+        side_effect=[MediaNotFoundError("merged"), kept]
+    )
+
+    with patch(_REPORT_FAILURE) as report_failure:
+        await ctrl._link_library_to_musicbrainz()
+
+    _linked(ctrl).assert_awaited_once_with(kept)
+    report_failure.assert_not_called()
+    _logger(ctrl).warning.assert_not_called()
+    assert ctrl._musicbrainz_link_summary is not None
+    assert ctrl._musicbrainz_link_summary["processed"] == {"albums": 1}
+    assert ctrl._musicbrainz_link_summary["failed"] == 0
 
 
 async def test_link_run_stops_when_musicbrainz_starts_rate_limiting() -> None:
@@ -633,8 +656,46 @@ async def test_link_item_resolves_an_artists_musicbrainz_id_first() -> None:
     await ctrl.link_item_to_musicbrainz(artist)
 
     assert artist.mbid == ARTIST_ID
-    ctrl._link_artist_to_musicbrainz.assert_awaited_once_with(artist)
+    ctrl._link_artist_to_musicbrainz.assert_awaited_once_with(artist, follow_merged=True)
     _mass(ctrl).music.artists.update_item_in_library.assert_awaited_once_with("1", artist)
+    _mass(ctrl).music.artists.merge_library_artists_by_mbid.assert_awaited_once_with(1, ARTIST_ID)
+
+
+async def test_link_item_does_not_follow_an_artist_id_a_name_search_found() -> None:
+    """An id only a name search found may be a namesake's, so a merge it leads to is not followed."""
+    ctrl = _controller(stub_link=False)
+    ctrl._get_artist_mbid = AsyncMock(return_value=(ARTIST_ID, True))  # type: ignore[method-assign]
+    ctrl._link_artist_to_musicbrainz = AsyncMock()  # type: ignore[method-assign]
+    _mass(ctrl).music.artists.merge_library_artists_by_mbid = AsyncMock(return_value=1)
+    artist = Artist(item_id="1", provider="library", name="Radiohead", provider_mappings=set())
+
+    await ctrl.link_item_to_musicbrainz(artist)
+
+    ctrl._link_artist_to_musicbrainz.assert_awaited_once_with(artist, follow_merged=False)
+    _mass(ctrl).music.artists.merge_library_artists_by_mbid.assert_not_awaited()
+
+
+async def test_link_item_merges_the_library_artists_sharing_a_followed_id() -> None:
+    """An artist that followed a merge is merged with the library artists holding the new id."""
+    ctrl = _controller(stub_link=False)
+
+    async def follow(artist: Artist, **_kwargs: Any) -> bool:
+        artist.mbid = ARTIST_ID
+        return False
+
+    ctrl._link_artist_to_musicbrainz = AsyncMock(side_effect=follow)  # type: ignore[method-assign]
+    _mass(ctrl).music.artists.merge_library_artists_by_mbid = AsyncMock(return_value=1)
+    artist = Artist(
+        item_id="1",
+        provider="library",
+        name="Radiohead",
+        provider_mappings=set(),
+        external_ids={(ExternalID.MB_ARTIST, OLD_ARTIST_ID)},
+    )
+
+    await ctrl.link_item_to_musicbrainz(artist)
+
+    ctrl._link_artist_to_musicbrainz.assert_awaited_once_with(artist, follow_merged=True)
     _mass(ctrl).music.artists.merge_library_artists_by_mbid.assert_awaited_once_with(1, ARTIST_ID)
 
 

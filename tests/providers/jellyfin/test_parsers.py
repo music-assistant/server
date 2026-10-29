@@ -95,6 +95,17 @@ async def test_parse_tracks(
     assert snapshot == parsed
 
 
+async def test_parse_track_does_not_leak_access_token(connection: Connection) -> None:
+    """Parsed tracks must not expose the Jellyfin access token to API clients."""
+    async with aiofiles.open(FIXTURES_DIR / "tracks/do_i_wanna_know.json", encoding="utf-8") as fp:
+        raw_data = ARTIST_DECODER.decode(await fp.read())
+    track = parse_track(_LOGGER, "xx-instance-id-xx", connection, raw_data)
+    urls = [mapping.url for mapping in track.provider_mappings]
+    urls += [image.path for image in track.metadata.images or []]
+    assert urls
+    assert not any("ACCESS_TOKEN" in str(url) for url in urls)
+
+
 def test_audio_format_empty_mediastreams() -> None:
     """Test audio_format handles empty MediaStreams array."""
     # Track with empty MediaStreams

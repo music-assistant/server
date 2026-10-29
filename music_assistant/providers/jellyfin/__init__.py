@@ -24,7 +24,13 @@ from music_assistant_models.media_items import (
 )
 from music_assistant_models.streamdetails import StreamDetails
 
-from music_assistant.constants import UNKNOWN_ARTIST, UNKNOWN_ARTIST_ID_MBID
+from music_assistant.constants import (
+    CONF_PASSWORD,
+    CONF_USERNAME,
+    CONF_VERIFY_SSL,
+    UNKNOWN_ARTIST,
+    UNKNOWN_ARTIST_ID_MBID,
+)
 from music_assistant.controllers.cache import use_cache
 from music_assistant.mass import MusicAssistant
 from music_assistant.models import ProviderInstanceType
@@ -35,6 +41,7 @@ from music_assistant.providers.jellyfin.parsers import (
     parse_artist,
     parse_playlist,
     parse_track,
+    set_api_key,
 )
 
 from .const import (
@@ -59,9 +66,6 @@ if TYPE_CHECKING:
     from music_assistant_models.provider import ProviderManifest
 
 CONF_URL = "url"
-CONF_USERNAME = "username"
-CONF_PASSWORD = "password"  # noqa: S105 - config key
-CONF_VERIFY_SSL = "verify_ssl"
 SUPPORTED_FEATURES = {
     ProviderFeature.LIBRARY_ARTISTS,
     ProviderFeature.LIBRARY_ALBUMS,
@@ -142,7 +146,11 @@ class JellyfinProvider(MusicProvider):
 
         :param path: Artwork URL or provider path to resolve.
         """
-        return _normalize_jellyfin_media_url(path)
+        if not path.startswith(f"{self._client.base_url}/"):
+            # never hand the token to a host other than the configured Jellyfin server
+            return set_api_key(path, None)
+        # aiojellyfin has no public accessor for the access token
+        return set_api_key(path, self._client._access_token)
 
     async def _search_track(self, search_query: str, limit: int) -> list[Track]:
         resultset = (

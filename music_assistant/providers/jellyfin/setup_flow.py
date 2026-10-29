@@ -8,13 +8,9 @@ from typing import TYPE_CHECKING
 from music_assistant_models.config_entries import ConfigEntry
 from music_assistant_models.enums import ConfigEntryType
 
+from music_assistant.constants import CONF_PASSWORD, CONF_USERNAME, CONF_VERIFY_SSL
 from music_assistant.models.setup_flow import SetupFlowError
-from music_assistant.providers.jellyfin import (
-    CONF_PASSWORD,
-    CONF_URL,
-    CONF_USERNAME,
-    CONF_VERIFY_SSL,
-)
+from music_assistant.providers.jellyfin import CONF_URL
 
 if TYPE_CHECKING:
     from music_assistant.models.setup_flow import SetupSession

@@ -49,6 +49,8 @@ from music_assistant.providers.spotify.provider import SpotifyProvider
 from music_assistant.providers.spotify_connect.soloist.runtime import (
     WS_ADDR_FILE,
     WS_PORT_FILE,
+    SoloistEvent,
+    SoloistPlaybackState,
 )
 
 TRACK_A = "spotify:track:aaa"
@@ -720,6 +722,132 @@ def test_losing_the_device_after_the_item_is_over_is_not_a_takeover(tmp_path: Pa
     run._item_over = True
     run._observe_device_active(active=False)
     assert run._error is None
+
+
+def _playback_event(status: str) -> SoloistEvent:
+    """Return a playback_changed event carrying only the given status."""
+    return SoloistEvent(type="playback_changed", data=SoloistPlaybackState(status=status), raw={})
+
+
+def _live_run(tmp_path: Path) -> _SingleTrackRun:
+    """Return a run whose item is playing and whose audio is flowing."""
+    run = _make_run(tmp_path)
+    run.mass.create_task = MagicMock()  # type: ignore[method-assign]
+    run._started.set()
+    run._reader = MagicMock()
+    return run
+
+
+def _shorten_pause_grace(monkeypatch: pytest.MonkeyPatch) -> float:
+    """Shrink the wait a pause is given to prove external, and return a sleep past it."""
+    monkeypatch.setattr(soloist_backend, "_EXTERNAL_PAUSE_GRACE_S", 0.02)
+    return 0.1
+
+
+async def test_a_pause_from_spotify_mid_item_stops_the_queue(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A pause from the Spotify app is not a broken track: the queue stops once."""
+    past_grace = _shorten_pause_grace(monkeypatch)
+    run = _live_run(tmp_path)
+    mass = cast("MagicMock", run.mass)
+    await run._handle_event(_playback_event("playing"))
+    mass.player_queues.stop.assert_not_called()
+    await run._handle_event(_playback_event("paused"))
+    # the engine repeats the pause in its next snapshot
+    await run._handle_event(_playback_event("paused"))
+    await asyncio.sleep(past_grace)
+    mass.player_queues.stop.assert_called_once_with("player1")
+    mass.create_task.assert_called_once()
+    assert run._error is None
+
+
+@pytest.mark.parametrize("attr", ["_engine_exited", "_item_over", "_delivery_done"])
+async def test_the_engine_pausing_at_its_items_end_does_not_stop_the_queue(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, attr: str
+) -> None:
+    """At its item's end the engine reports a pause (rewound to 0:00) and exits right after."""
+    past_grace = _shorten_pause_grace(monkeypatch)
+    run = _live_run(tmp_path)
+    await run._handle_event(_playback_event("playing"))
+    await run._handle_event(_playback_event("paused"))
+    setattr(run, attr, True)
+    await asyncio.sleep(past_grace)
+    cast("MagicMock", run.mass).player_queues.stop.assert_not_called()
+
+
+async def test_a_pause_the_app_takes_back_does_not_stop_the_queue(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Play pressed again in the Spotify app before the grace ran out leaves the queue alone."""
+    past_grace = _shorten_pause_grace(monkeypatch)
+    run = _live_run(tmp_path)
+    await run._handle_event(_playback_event("playing"))
+    await run._handle_event(_playback_event("paused"))
+    first_watch = run._pause_watch
+    # a resume may land as a rebuffer first
+    await run._handle_event(_playback_event("buffering"))
+    await asyncio.sleep(past_grace)
+    cast("MagicMock", run.mass).player_queues.stop.assert_not_called()
+    assert first_watch is not None
+    assert first_watch.done()
+
+
+async def test_a_pause_while_the_engine_buffers_stops_the_queue(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The engine looks up autoplay (buffering) just before its item's end; a pause then still counts."""
+    past_grace = _shorten_pause_grace(monkeypatch)
+    run = _live_run(tmp_path)
+    await run._handle_event(_playback_event("playing"))
+    await run._handle_event(_playback_event("buffering"))
+    await run._handle_event(_playback_event("paused"))
+    await asyncio.sleep(past_grace)
+    cast("MagicMock", run.mass).player_queues.stop.assert_called_once_with("player1")
+
+
+async def test_a_repeated_pause_gets_its_own_grace(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A pause taken back and repeated is judged on a fresh deadline, not the first one's."""
+    _shorten_pause_grace(monkeypatch)
+    run = _live_run(tmp_path)
+    await run._handle_event(_playback_event("playing"))
+    await run._handle_event(_playback_event("paused"))
+    first_watch = run._pause_watch
+    await run._handle_event(_playback_event("playing"))
+    await run._handle_event(_playback_event("paused"))
+    await asyncio.sleep(0)
+    assert first_watch is not None
+    assert first_watch.cancelled()
+    assert run._pause_watch is not first_watch
+
+
+@pytest.mark.parametrize("attr", ["_stopped", "_item_over", "_engine_exited", "_delivery_done"])
+async def test_a_pause_as_the_run_ends_does_not_stop_the_queue(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, attr: str
+) -> None:
+    """The engine settling as its item ends or the run is torn down is no listener's pause."""
+    past_grace = _shorten_pause_grace(monkeypatch)
+    run = _live_run(tmp_path)
+    await run._handle_event(_playback_event("playing"))
+    setattr(run, attr, True)
+    await run._handle_event(_playback_event("paused"))
+    await asyncio.sleep(past_grace)
+    cast("MagicMock", run.mass).player_queues.stop.assert_not_called()
+
+
+async def test_a_pause_before_audio_flows_does_not_stop_the_queue(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A run still starting up (or seeking) has released no audio to pause."""
+    past_grace = _shorten_pause_grace(monkeypatch)
+    run = _live_run(tmp_path)
+    run._reader = None
+    await run._handle_event(_playback_event("playing"))
+    await run._handle_event(_playback_event("paused"))
+    await asyncio.sleep(past_grace)
+    cast("MagicMock", run.mass).player_queues.stop.assert_not_called()
 
 
 def test_the_engine_starting_on_the_wrong_item_fails_the_run(tmp_path: Path) -> None:

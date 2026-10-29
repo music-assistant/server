@@ -38,17 +38,9 @@ from music_assistant_models.player import (
 )
 from music_assistant_models.unique_list import UniqueList
 
-from music_assistant.helpers.util import is_valid_mac_address
+from music_assistant.helpers.upnp import AVTransport, search_xml
+from music_assistant.helpers.util import format_ip_for_url, is_valid_mac_address
 from music_assistant.models.player import Player
-from music_assistant.providers.musiccast.avt_helpers import (
-    avt_get_media_info,
-    avt_next,
-    avt_play,
-    avt_previous,
-    avt_set_url,
-    avt_stop,
-    search_xml,
-)
 from music_assistant.providers.musiccast.constants import (
     CONF_PLAYER_AUTO_ADVANCE,
     CONF_PLAYER_HANDLE_SOURCE_DISABLED,
@@ -56,6 +48,9 @@ from music_assistant.providers.musiccast.constants import (
     CONF_PLAYER_TURN_OFF_ON_LEAVE,
     MC_CAPABILITIES,
     MC_CONTROL_SOURCE_IDS,
+    MC_DEVICE_UPNP_CTRL_ENDPOINT,
+    MC_DEVICE_UPNP_PORT,
+    MC_DEVICE_UPNP_USER_AGENT,
     MC_NETUSB_SOURCE_IDS,
     MC_PASSIVE_SOURCE_IDS,
     MC_POLL_INTERVAL,
@@ -155,6 +150,16 @@ class MusicCastPlayer(Player):
         # honouring the queued NextURI (Yamaha gapless can fail this way)
         self._last_playback_state: PlaybackState | None = None
         self._last_playing_elapsed_time: float = 0.0
+
+    @property
+    def avt(self) -> AVTransport:
+        """UPnP AVTransport of the physical device."""
+        host = format_ip_for_url(self.physical_device.device.device.ip)
+        return AVTransport(
+            client=self.mass.http_session,
+            ctrl_url=f"http://{host}:{MC_DEVICE_UPNP_PORT}/{MC_DEVICE_UPNP_CTRL_ENDPOINT}",
+            user_agent=MC_DEVICE_UPNP_USER_AGENT,
+        )
 
     async def setup(self) -> None:
         """Set up player in Music Assistant."""
@@ -322,9 +327,7 @@ class MusicCastPlayer(Player):
             # Note: The devices always return the last UPnP xmls, even if
             # currently another source/ playback method is used
             try:
-                _xml_media_info = await avt_get_media_info(
-                    self.mass.http_session, self.physical_device
-                )
+                _xml_media_info = await self.avt.get_media_info()
             except ClientError:
                 # this is regularly called, we can ignore a failing update
                 self.logger.debug("Acquiring media info failed, trying again in 5s.")
@@ -796,14 +799,14 @@ class MusicCastPlayer(Player):
     async def play(self) -> None:
         """Play command."""
         if self.upnp_update_helper is not None and self.upnp_update_helper.controlled_by_mass:
-            await avt_play(self.mass.http_session, self.physical_device)
+            await self.avt.play()
         else:
             await self._cmd_run(self.zone_device.play)
 
     async def stop(self) -> None:
         """Stop command."""
         if self.upnp_update_helper is not None and self.upnp_update_helper.controlled_by_mass:
-            await avt_stop(self.mass.http_session, self.physical_device)
+            await self.avt.stop()
         else:
             await self._cmd_run(self.zone_device.stop)
 
@@ -812,21 +815,21 @@ class MusicCastPlayer(Player):
         if self.upnp_update_helper is not None and self.upnp_update_helper.controlled_by_mass:
             # if we are controlled by MA, i.e. upnp, send a stop, since
             # pause appears to be unreliable/ not working
-            await avt_stop(self.mass.http_session, self.physical_device)
+            await self.avt.stop()
         else:
             await self._cmd_run(self.zone_device.pause)
 
     async def next_track(self) -> None:
         """Next command."""
         if self.upnp_update_helper is not None and self.upnp_update_helper.controlled_by_mass:
-            await avt_next(self.mass.http_session, self.physical_device)
+            await self.avt.next()
         else:
             await self._cmd_run(self.zone_device.next_track)
 
     async def previous_track(self) -> None:
         """Previous command."""
         if self.upnp_update_helper is not None and self.upnp_update_helper.controlled_by_mass:
-            await avt_previous(self.mass.http_session, self.physical_device)
+            await self.avt.previous()
         else:
             await self._cmd_run(self.zone_device.previous_track)
 
@@ -851,9 +854,9 @@ class MusicCastPlayer(Player):
                 await self._cmd_run(self.zone_device.select_source, "server", "autoplay_disabled")
             media.uri = await self.provider.mass.streams.resolve_stream_url(self.player_id, media)
             # clear any pending AVT state to avoid wedging on rapid play_media
-            await avt_stop(self.mass.http_session, self.physical_device)
-            await avt_set_url(self.mass.http_session, self.physical_device, player_media=media)
-            await avt_play(self.mass.http_session, self.physical_device)
+            await self.avt.stop()
+            await self.avt.set_url(media)
+            await self.avt.play()
 
             self.upnp_update_helper = UpnpUpdateHelper(
                 last_poll=time.time(),
@@ -864,12 +867,7 @@ class MusicCastPlayer(Player):
     async def enqueue_next_media(self, media: PlayerMedia) -> None:
         """Enqueue next command."""
         media.uri = await self.provider.mass.streams.resolve_stream_url(self.player_id, media)
-        await avt_set_url(
-            self.mass.http_session,
-            self.physical_device,
-            player_media=media,
-            enqueue=True,
-        )
+        await self.avt.set_url(media, enqueue=True)
 
     async def select_source(self, source: str) -> None:
         """Select source command."""

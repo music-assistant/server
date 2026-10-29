@@ -678,6 +678,140 @@ async def test_release_year_by_track_name_escapes_lucene_specials() -> None:
 
 
 # ---------------------------------------------------------------------------
+# get_artist_by_track_titles
+# ---------------------------------------------------------------------------
+
+
+def _title_search_provider(*responses: Any) -> tuple[MusicbrainzProvider, AsyncMock]:
+    """Return a MusicbrainzProvider answering each successive request with the next response."""
+    provider, get_data = _provider(None)
+    get_data.side_effect = list(responses)
+    return provider, get_data
+
+
+def _credited_recording(title: str, artist: str, artist_id: str = "artist-1") -> dict[str, Any]:
+    """Return one searched recording of the given title, credited as MusicBrainz credits it."""
+    return {
+        "id": f"recording-{title}",
+        "title": title,
+        "artist-credit": [_credit(artist, artist_id)],
+    }
+
+
+async def test_artist_by_track_titles_returns_the_first_credited_recording() -> None:
+    """Search title by title until a recording of that title credits the artist."""
+    provider, get_data = _title_search_provider(
+        _search_result(_credited_recording("Under Pressure", "David Bowie")),
+        _search_result(_credited_recording("Bohemian Rhapsody", "Queen", "artist-queen")),
+    )
+
+    artist = await provider.get_artist_by_track_titles(
+        "Queen", ["Under Pressure", "Bohemian Rhapsody"]
+    )
+
+    assert artist is not None
+    assert artist.id == "artist-queen"
+    assert [call.kwargs for call in get_data.await_args_list] == [
+        {"query": '"Under Pressure" AND artist:"Queen"', "limit": "100"},
+        {"query": '"Bohemian Rhapsody" AND artist:"Queen"', "limit": "100"},
+    ]
+
+
+async def test_artist_by_track_titles_requires_the_searched_title() -> None:
+    """A recording of another title does not identify the artist."""
+    provider, _ = _title_search_provider(
+        _search_result(_credited_recording("Bohemian Rhapsody (Live Aid)", "Queen"))
+    )
+
+    assert await provider.get_artist_by_track_titles("Queen", ["Radio Ga Ga"]) is None
+
+
+async def test_artist_by_track_titles_prefers_an_exact_title() -> None:
+    """A recording of exactly the searched title wins over a near one listed before it."""
+    provider, _ = _title_search_provider(
+        _search_result(
+            _credited_recording("Creeps", "Radiohead", "artist-near"),
+            _credited_recording("Creep", "Radiohead", "artist-exact"),
+        )
+    )
+
+    artist = await provider.get_artist_by_track_titles("Radiohead", ["Creep"])
+
+    assert artist is not None
+    assert artist.id == "artist-exact"
+
+
+async def test_artist_by_track_titles_skips_a_title_namesakes_share() -> None:
+    """A title two artists of the name are credited with is passed over for the next one."""
+    provider, get_data = _title_search_provider(
+        _search_result(
+            _credited_recording("All My Loving", "Bella", "artist-trio"),
+            _credited_recording("All My Loving", "Bella", "artist-band"),
+        ),
+        _search_result(_credited_recording("Dance With Me", "Bella", "artist-trio")),
+    )
+
+    artist = await provider.get_artist_by_track_titles("Bella", ["All My Loving", "Dance With Me"])
+
+    assert artist is not None
+    assert artist.id == "artist-trio"
+    assert get_data.await_count == 2
+
+
+async def test_artist_by_track_titles_leaves_namesakes_unidentified() -> None:
+    """When every title is shared by namesakes, no artist is picked."""
+    provider, _ = _title_search_provider(
+        _search_result(
+            _credited_recording("Little Lies", "Aerosol", "artist-a"),
+            _credited_recording("Little Lies", "Aerosol", "artist-b"),
+        )
+    )
+
+    assert await provider.get_artist_by_track_titles("Aerosol", ["Little Lies"]) is None
+
+
+async def test_artist_by_track_titles_matches_an_alias() -> None:
+    """The artist is also recognised by one of its aliases."""
+    recording = {"id": "recording-creep", "title": "Creep", "artist-credit": [_radiohead_credit()]}
+    provider, _ = _title_search_provider(_search_result(recording))
+
+    artist = await provider.get_artist_by_track_titles("レディオヘッド", ["Creep"])
+
+    assert artist is not None
+    assert artist.id == RADIOHEAD_MBID
+
+
+async def test_artist_by_track_titles_stops_at_the_first_match() -> None:
+    """No further title is searched once one identifies the artist."""
+    provider, get_data = _title_search_provider(
+        _search_result(
+            _credited_recording("Bohemian Rhapsody", "Queen", "artist-first"),
+            {**_credited_recording("Bohemian Rhapsody", "Queen", "artist-first"), "id": "live"},
+        ),
+        _search_result(_credited_recording("Radio Ga Ga", "Queen")),
+    )
+
+    artist = await provider.get_artist_by_track_titles(
+        "Queen", ["Bohemian Rhapsody", "Radio Ga Ga"]
+    )
+
+    assert artist is not None
+    assert artist.id == "artist-first"
+    get_data.assert_awaited_once()
+
+
+async def test_artist_by_track_titles_escapes_lucene_specials() -> None:
+    """Escape characters that would otherwise change the meaning of the search query."""
+    provider, get_data = _title_search_provider(_search_result())
+
+    assert await provider.get_artist_by_track_titles("AC/DC", ["T.N.T. (live!)"]) is None
+
+    get_data.assert_awaited_once_with(
+        "recording", query='"T.N.T. \\(live\\!\\)" AND artist:"AC\\/DC"', limit="100"
+    )
+
+
+# ---------------------------------------------------------------------------
 # get_releases_by_barcode
 # ---------------------------------------------------------------------------
 
@@ -1683,6 +1817,29 @@ async def test_resolve_recording_by_isrc_needs_a_credit_for_a_named_artist() -> 
 
     assert recording is not None
     assert recording.id == "rec-cover"
+
+
+@pytest.mark.parametrize("named_artist", [True, False])
+async def test_resolve_recording_by_isrc_of_a_single_recording_needs_no_title(
+    named_artist: bool,
+) -> None:
+    """An ISRC naming one recording identifies a track titled otherwise, by its credited artist."""
+    isrc_lookup = {
+        "isrc": ISRC,
+        "recordings": [_recording_lookup("rec-1", title="15 Step (In Rainbows version)")],
+    }
+    provider, _ = _routed_provider(
+        {f"isrc/{ISRC}": isrc_lookup, "recording/rec-1": _recording_lookup("rec-1")}
+    )
+    track = _track_item(
+        artist="Radiohead" if named_artist else None,
+        album=None,
+        external_ids={(ExternalID.ISRC, ISRC)},
+    )
+
+    recording = await provider.resolve_recording(track)
+
+    assert (recording.id if recording else None) == ("rec-1" if named_artist else None)
 
 
 async def test_resolve_recording_falls_back_to_a_name_search() -> None:

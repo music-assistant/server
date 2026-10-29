@@ -49,6 +49,7 @@ def _make_provider(player: SendspinBasePlayer | None) -> SendspinProvider:
     provider._held_unapproved = set()
     provider._held_paired = set()
     provider._unencrypted_clients = set()
+    provider._hass_auto_pairer = Mock()
     return provider
 
 
@@ -215,6 +216,7 @@ def test_player_classes_advertise_grouping_by_role(monkeypatch: pytest.MonkeyPat
     monkeypatch.setattr(SendspinBasePlayer, "_subscribe_client_callbacks", Mock())
     monkeypatch.setattr(SendspinPlayer, "_refresh_client_info", Mock())
     monkeypatch.setattr(SendspinPlayer, "_subscribe_client_callbacks", Mock())
+    monkeypatch.setattr(SendspinVisualizerPlayer, "_subscribe_client_callbacks", Mock())
     monkeypatch.setattr(player_module, "SendspinPlaybackSession", Mock())
 
     audio_player = SendspinPlayer(provider, "audio")

@@ -2064,6 +2064,14 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         if not player.state.enabled and ATTR_ENABLED not in changed_values:
             return
 
+        # register() publishes the player itself once its config is loaded
+        if not player.initialized.is_set():
+            return
+
+        # a debounced update can still run on a player that was unregistered meanwhile
+        if self._players.get(player_id) is not player:
+            return
+
         # The current_media position anchor only changes on discrete events
         # (play/pause/seek/track change/buffer correction), so a change set holding
         # only anchor keys represents a position correction rather than a regular
@@ -2775,8 +2783,11 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
             # (hidden) bridge client with nothing playing on it, or is already serving its
             # parent, where a stop would cut that parent's stream short. A protocol player
             # has no active group of its own either, so there is nothing to detach here.
+            # the queue goes first, so its final update cannot re-add it after the removal
+            self.mass.player_queues.on_player_remove(
+                player.player_id, permanent=False, release_audio=False
+            )
             self.mass.signal_event(EventType.PLAYER_REMOVED, player.player_id)
-            self.mass.player_queues.on_player_remove(player.player_id, permanent=False)
             return
         # the player surfaces on its own, which leaves it unusable without a queue
         self.mass.signal_event(EventType.PLAYER_ADDED, object_id=player.player_id, data=player)
