@@ -18,6 +18,7 @@ from aiosendspin.models.management import (
     SetStaticPairingCodeConfig,
 )
 from aiosendspin.models.types import (
+    GoodbyeReason,
     PairAbortReason,
     PairMethod,
     PlaybackStateType,
@@ -503,8 +504,9 @@ class SendspinBasePlayer(Player):
         as a side effect of the provider pairing calls;
         declining the audio input persists via the player config. Bridge/web players
         and unencrypted (legacy) connections have nothing to pair. A device another server
-        holds is dialed for the pairing. A device whose line-in was allowed and can sense a
-        signal then picks where that line-in plays automatically.
+        holds, or one that refused this server, is dialed for the pairing. A device whose
+        line-in was allowed and can sense a signal then picks where that line-in plays
+        automatically.
 
         :param session: The setup flow session used to interact with the user.
         """
@@ -927,12 +929,26 @@ class SendspinBasePlayer(Player):
         self, provider: SendspinProvider
     ) -> tuple[ConfigEntry | None, list[ConfigEntry]]:
         """Return the current security-status entry and the available action entries."""
+        refused_reason = provider.refused_reason(self.player_id)
+        if refused_reason is GoodbyeReason.UNPAIRED:
+            status_key = (
+                "security_status_was_unpaired_guest"
+                if self._offers_unpaired_consent
+                else "security_status_was_unpaired"
+            )
+            return ConfigEntry(key=status_key, type=ConfigEntryType.LABEL), []
+        if refused_reason is GoodbyeReason.PAIRING_REQUIRED:
+            return ConfigEntry(
+                key="security_status_guest_access_off", type=ConfigEntryType.LABEL
+            ), []
+        if refused_reason is not None:
+            return ConfigEntry(key="security_status_refused", type=ConfigEntryType.LABEL), []
         if provider.is_held_unapproved(self.player_id):
             return ConfigEntry(
                 key="security_status_held_unapproved", type=ConfigEntryType.LABEL
             ), []
         if not self.api.is_connected:
-            # The action dropped the connection (e.g. unpair); the client will reconnect
+            # The action dropped the connection; the client will reconnect
             return ConfigEntry(key="security_status_disconnected", type=ConfigEntryType.LABEL), []
 
         security = self.api.connection_security

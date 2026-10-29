@@ -25,6 +25,18 @@
     "security_status_disconnected": {
       "label": "The device disconnected and will reappear once it reconnects."
     },
+    "security_status_was_unpaired_guest": {
+      "label": "This device was unpaired from Music Assistant. Set up the player again to connect it unpaired or pair it."
+    },
+    "security_status_was_unpaired": {
+      "label": "This device was unpaired from Music Assistant. Set up the player again to pair it."
+    },
+    "security_status_guest_access_off": {
+      "label": "This device no longer allows guest access. Set up the player again to pair it."
+    },
+    "security_status_refused": {
+      "label": "This device is no longer connected to Music Assistant. Set up the player again to pair it."
+    },
     "security_status_held_unapproved": {
       "label": "Another server is using this device, and Music Assistant has not paired it or allowed guest access yet."
     },
@@ -84,7 +96,7 @@
     },
     "unpair": {
       "label": "Unpair",
-      "description": "Remove the pairing with this device. Both sides forget the stored credential and the device reconnects as unpaired."
+      "description": "Remove the pairing with this device. Both sides forget the stored credential."
     },
     "source_input_enable": {
       "label": "Turn on audio input",

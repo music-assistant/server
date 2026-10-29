@@ -87,6 +87,7 @@ def _make_provider(api: _HeldServerApi) -> tuple[SendspinProvider, Mock]:
     provider._held_elsewhere = set()
     provider._held_unapproved = set()
     provider._held_paired = set()
+    provider._refused_here = {}
     provider._unencrypted_clients = set()
     provider._hass_auto_pairer = Mock()
     provider._pending_pairing_evictions = set()
@@ -167,6 +168,65 @@ async def test_a_device_that_reconnects_here_is_no_longer_held() -> None:
     provider.event_cb(cast("SendspinServer", None), ClientConnectedEvent("c1"))
 
     assert not provider.is_held_unapproved("c1")
+
+
+@pytest.mark.parametrize(
+    "reason",
+    [GoodbyeReason.UNPAIRED, GoodbyeReason.PAIRING_REQUIRED, GoodbyeReason.UNAUTHORIZED],
+)
+async def test_a_device_that_refused_this_server_can_be_paired_again(
+    reason: GoodbyeReason,
+) -> None:
+    """It will not reconnect on its own, so the player offers to pair it by dialing it."""
+    api = _HeldServerApi()
+    await api.pairing_store.add_trusted_unpaired(TrustedUnpairedClient(client_id="c1"))
+    provider, player = _make_provider(api)
+    server = cast("SendspinServer", None)
+    provider.event_cb(server, ClientConnectedEvent("c1"))
+    await _settle()
+    player.update_state.reset_mock()
+
+    provider.event_cb(server, ClientDisconnectedEvent("c1", reason))
+    await _settle()
+
+    assert provider.is_held_unpaired("c1")
+    assert provider.refused_reason("c1") is reason
+    player.update_state.assert_called()
+
+
+async def test_a_refused_device_that_reconnects_is_no_longer_refused() -> None:
+    """The live connection decides its status again."""
+    provider, _player = _make_provider(_HeldServerApi())
+    server = cast("SendspinServer", None)
+    provider.event_cb(server, ClientDisconnectedEvent("c1", GoodbyeReason.UNPAIRED))
+    await _settle()
+
+    provider.event_cb(server, ClientConnectedEvent("c1"))
+
+    assert provider.refused_reason("c1") is None
+
+
+@pytest.mark.parametrize(
+    ("reason", "guest", "expected"),
+    [
+        (GoodbyeReason.UNPAIRED, True, "security_status_was_unpaired_guest"),
+        (GoodbyeReason.UNPAIRED, False, "security_status_was_unpaired"),
+        (GoodbyeReason.PAIRING_REQUIRED, False, "security_status_guest_access_off"),
+        (GoodbyeReason.UNAUTHORIZED, False, "security_status_refused"),
+    ],
+)
+async def test_a_refused_device_says_why_instead_of_blaming_another_server(
+    reason: GoodbyeReason, guest: bool, expected: str
+) -> None:
+    """An unapproved device that refused us is not shown as held by another server."""
+    player, provider = _held_player(guest=guest, roles=["player@v1"])
+    provider.refused_reason_value = reason
+
+    status, actions = await player._security_state_entries(cast("SendspinProvider", provider))
+
+    assert status is not None
+    assert status.key == expected
+    assert actions == []
 
 
 def _held_player(
