@@ -318,3 +318,69 @@ async def test_a_stop_and_the_end_of_the_queue_clear_the_sleep_timer(stop: str) 
     _scheduled(mass)
     assert ctrl._queue_data["q1"].sleep_timer_target is None
     mass.players._clear_sleep_timer.assert_called_once_with(mass.players.get_player.return_value)
+
+
+@pytest.mark.parametrize(
+    ("prev_elapsed", "elapsed_time", "stops"),
+    [
+        # ordinary playback inside the end margin of a short item
+        (3, 4, False),
+        # a small position correction is not a restart
+        (4, 3.5, False),
+        # the player started the item over
+        (7, 0.5, True),
+    ],
+)
+def test_short_target_only_stops_when_it_starts_over(
+    prev_elapsed: int, elapsed_time: float, stops: bool
+) -> None:
+    """A target shorter than twice the end margin plays on until it ends or starts over."""
+    ctrl, queue, mass = _controller()
+    short_item = _book_item("item_1", chapters=None, duration=8)
+    ctrl._queue_data["q1"].items[0] = short_item
+    queue.current_item = short_item
+    ctrl.set_sleep_timer_target("q1", SleepTimerMode.END_OF_ITEM)
+    queue.elapsed_time = elapsed_time
+    queue.elapsed_time_last_updated = time.time()
+
+    ctrl._handle_sleep_timer(
+        queue, *_states(PlaybackState.PLAYING, "item_1", prev_elapsed=prev_elapsed)
+    )
+
+    assert ("_handle_stop" in _scheduled(mass)) is stops
+
+
+async def test_sleep_timer_stop_on_the_last_item_ends_the_queue(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A stop on the last item ends the queue, without resuming or refilling it."""
+    ctrl, queue, mass = _controller()
+    queue_data = ctrl._queue_data["q1"]
+    queue_data.items = queue_data.items[:1]
+    ctrl.set_sleep_timer_target("q1", SleepTimerMode.END_OF_ITEM)
+    queue.elapsed_time = 600
+    queue.elapsed_time_last_updated = time.time()
+    ctrl._handle_sleep_timer(queue, *_states(PlaybackState.PLAYING, "item_1"))
+    assert _scheduled(mass) == ["_handle_stop"]
+    assert queue.next_item is None
+    mass.create_task.reset_mock()
+
+    find_dynamic_source = Mock(return_value=MagicMock())
+    monkeypatch.setattr(
+        "music_assistant.controllers.player_queues.playback_tracker.find_dynamic_source",
+        find_dynamic_source,
+    )
+    ctrl.play_index = AsyncMock()  # type: ignore[method-assign]
+    ctrl.mark_ended = Mock()  # type: ignore[method-assign]
+    queue.state = PlaybackState.IDLE
+    prev_state, new_state = _states(PlaybackState.IDLE, "item_1", prev_elapsed=600)
+    prev_state["current_item"] = queue_data.items[0]
+    ctrl._handle_end_of_queue(queue, prev_state, new_state)
+
+    settle = mass.create_task.call_args.args[0]
+    await settle
+
+    find_dynamic_source.assert_not_called()
+    ctrl.play_index.assert_not_called()
+    ctrl.mark_ended.assert_called_once_with("q1")
+    assert queue_data.sleep_timer_stopped is False

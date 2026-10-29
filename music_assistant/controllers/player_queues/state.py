@@ -112,6 +112,9 @@ class PlayerQueueData:
     # the point an END_OF_ITEM/END_OF_CHAPTER sleep timer stops the queue at; while set, the
     # queue does not advance past that item on its own
     sleep_timer_target: SleepTimerTarget | None = None
+    # set when a sleep timer stopped the queue, until the end of queue check reads that stop:
+    # the queue then ends without resuming or refilling
+    sleep_timer_stopped: bool = False
     # set when the queue items changed since the last cache write; the debounced saver writes the
     # (heavier) items payload only when this is set
     items_cache_dirty: bool = False

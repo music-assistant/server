@@ -500,6 +500,8 @@ class PlaybackTrackerMixin(_PlayerQueuesBase):
             and new_state["state"] == PlaybackState.IDLE
         ):
             return
+        sleep_timer_stopped = queue_data.sleep_timer_stopped
+        queue_data.sleep_timer_stopped = False
         # check if no more items in the queue (next_item should be None at end of queue)
         if queue.next_item is not None:
             return
@@ -520,6 +522,10 @@ class PlaybackTrackerMixin(_PlayerQueuesBase):
             return
 
         async def _settle_or_resume_delayed() -> None:
+            if sleep_timer_stopped:
+                # the sleep timer ended playback here: nothing resumes or refills the queue
+                self._finish_queue(queue, prev_item)
+                return
             for _ in range(5):
                 await asyncio.sleep(1)
                 if self._queue_data.get(queue.queue_id) is not queue_data:
@@ -706,9 +712,15 @@ class PlaybackTrackerMixin(_PlayerQueuesBase):
                 # a skip on the device: stop at the end of what plays now
                 self._repin_sleep_timer(queue_id)
             return
+        # the position jumped back to the start: the player started the target over. A short
+        # target also passes the end margin during ordinary playback, which only moves forward
+        started_over = (
+            left_target_end
+            and queue.corrected_elapsed_time < SLEEP_TIMER_NATURAL_END_MARGIN
+            and queue.corrected_elapsed_time < prev_state["last_playing_elapsed_time"] - 1
+        )
         if new_state["state"] == PlaybackState.PLAYING and (
-            queue.corrected_elapsed_time >= target.stop_position
-            or (left_target_end and queue.corrected_elapsed_time < SLEEP_TIMER_NATURAL_END_MARGIN)
+            queue.corrected_elapsed_time >= target.stop_position or started_over
         ):
             self._stop_for_sleep_timer(queue_id)
             return

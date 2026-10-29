@@ -1136,6 +1136,7 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
             queue_data.flow_mode_stream_log = []
             queue_data.flow_buffer_completed = None
             queue_data.flow_queue_exhausted = None
+            queue_data.sleep_timer_stopped = False
             target_player = self.mass.players.get_player(queue_id)
             if target_player is None:
                 raise PlayerUnavailableError(f"Player {queue_id} is not available")
@@ -2321,6 +2322,9 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         # cleared first: with its next item back, the stop reads as a stop and not as the end
         # of the queue, which would settle or resume it
         self._clear_sleep_timer(queue_id)
+        # on the last item there is no next item to give back, so the end of queue check
+        # must know this stop ends playback
+        self._queue_data[queue_id].sleep_timer_stopped = True
         self.mass.create_task(self._handle_stop(queue_id))
 
     def _clear(self, queue_id: str, skip_stop: bool = False) -> None:
