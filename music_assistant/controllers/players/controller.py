@@ -2150,14 +2150,7 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
             self._handle_membership_cleanup_on_state_change(player, changed_values)
             self._handle_external_power_off(player, changed_values)
 
-        # a player that comes back online (reconnect, or one that registered while
-        # unavailable) does not pass through register again, so pin it from here
-        if (
-            ATTR_AVAILABLE in changed_values
-            and changed_values[ATTR_AVAILABLE][1] is True
-            and player.initialized.is_set()
-        ):
-            self._schedule_native_volume_pin(player_id)
+        self._handle_native_volume_pin_on_state_change(player, changed_values)
 
         # enforce volume limits when volume changes externally
         if "volume_level" in changed_values:
@@ -4370,22 +4363,33 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         if {f"values/{CONF_NATIVE_VOLUME}", f"values/{CONF_VOLUME_CONTROL}"} & changed_keys:
             await self._apply_native_volume_pin(player)
 
-    def _schedule_native_volume_pin(self, player_id: str) -> None:
+    def _handle_native_volume_pin_on_state_change(
+        self, player: Player, changed_values: dict[str, tuple[Any, Any]]
+    ) -> None:
         """
-        Schedule the native volume pin for a player that came back online.
+        Schedule the native volume pin when a player came back online.
 
-        :param player_id: The player to pin native volume on.
+        :param player: The player whose state changed.
+        :param changed_values: The changed state values (old, new) by attribute.
         """
+        # a player that comes back online (reconnect, or one that registered while
+        # unavailable) does not pass through register again, so pin it from here
+        if (
+            ATTR_AVAILABLE not in changed_values
+            or changed_values[ATTR_AVAILABLE][1] is not True
+            or not player.initialized.is_set()
+        ):
+            return
         self.mass.call_later(
             NATIVE_VOLUME_PIN_DELAY,
             self._apply_scheduled_native_volume_pin,
-            player_id,
-            task_id=f"native_volume_pin_{player_id}",
+            player.player_id,
+            task_id=f"native_volume_pin_{player.player_id}",
         )
 
     async def _apply_scheduled_native_volume_pin(self, player_id: str) -> None:
         """
-        Apply the native volume pin scheduled by _schedule_native_volume_pin.
+        Apply the native volume pin scheduled for a player that came back online.
 
         :param player_id: The player to pin native volume on.
         """
