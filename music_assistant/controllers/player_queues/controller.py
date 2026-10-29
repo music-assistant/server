@@ -90,6 +90,7 @@ from music_assistant.controllers.player_queues.queue_loader import QueueLoaderMi
 from music_assistant.controllers.player_queues.smart_shuffle import SmartShuffle
 from music_assistant.controllers.player_queues.state import PlayerQueueData
 from music_assistant.controllers.player_queues.stream_feeder import StreamFeederMixin
+from music_assistant.controllers.streams.constants import FLOW_STREAM_LEAD_OUT_MAX_SECONDS
 from music_assistant.controllers.webserver.helpers.auth_middleware import (
     get_current_user,
     has_player_access,
@@ -1660,8 +1661,10 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
 
         async def _resume_on_idle() -> None:
             # wait for the player to finish playing the buffered audio and go idle
+            # the flow stream may hold its connection open for up to the max lead-out
+            # after the last byte, and some players only report idle once it closes
             idle_detected = False
-            for _ in range(60):
+            for _ in range(60 + FLOW_STREAM_LEAD_OUT_MAX_SECONDS):
                 await asyncio.sleep(1)
                 if not queue.active or queue_data.session_id != original_session_id:
                     return
