@@ -12,6 +12,10 @@
       "label": "Sendspin bridge (experimental)",
       "description": "Register each kiosk under its browser Sendspin identity so it can join sample-synchronized playback groups. When a synchronized stream starts, the kiosk opens in Sendspin mode. Playback falls back to the regular HTTP player when the kiosk cannot connect."
     },
+    "enable_party_qr": {
+      "label": "Show the Party guest QR",
+      "description": "Show the Party join QR on the kiosk page. The QR contains a guest login, and anyone who can reach the kiosk port can scan it, so enable this only when that port is limited to a trusted network."
+    },
     "kiosk_url": {
       "label": "Kiosk URL",
       "description": "Open this URL for a minimal Sendspin player. Use the URL builder at the server root to enable additions or select HTML5."

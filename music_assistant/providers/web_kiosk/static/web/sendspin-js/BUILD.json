@@ -5,6 +5,8 @@
     "@noble/hashes": "1.8.0",
     "@noble/ciphers": "1.3.0"
   },
+  "source": "sendspin/index.js",
+  "build": "sendspin/build.mjs",
   "esbuild": "0.28.2",
   "format": "iife",
   "target": [

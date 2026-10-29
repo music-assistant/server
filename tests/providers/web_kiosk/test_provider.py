@@ -20,6 +20,7 @@ from music_assistant_models.queue_item import QueueItem
 
 import music_assistant.providers.web_kiosk.provider as provider_module
 from music_assistant.controllers.player_queues import PlayerQueuesController
+from music_assistant.providers.web_kiosk.constants import CONF_ENABLE_PARTY_QR
 from music_assistant.providers.web_kiosk.http_server import WebKioskHTTPServer
 from music_assistant.providers.web_kiosk.ownership import VerifiedSendspinClaim
 from music_assistant.providers.web_kiosk.player import WebKioskPlayer
@@ -471,6 +472,24 @@ async def test_failed_initialization_releases_resources(
     stop.assert_awaited_once()
     assert provider.bridge_manager is None
     assert provider.http_server is None
+
+
+@pytest.mark.parametrize("configured", [True, False])
+async def test_party_qr_gate_follows_the_provider_setting(
+    provider: WebKioskProvider, config_mock: Mock, configured: bool
+) -> None:
+    """The Party QR is served only when the provider setting enables it."""
+    config_mock.get_value = Mock(
+        side_effect=lambda key, default=None: configured if key == CONF_ENABLE_PARTY_QR else default
+    )
+    with (
+        patch.object(WebKioskHTTPServer, "start", new_callable=AsyncMock),
+        patch.object(WebKioskHTTPServer, "stop", new_callable=AsyncMock),
+        patch.object(WebKioskSendspinBridgeManager, "close", new_callable=AsyncMock),
+    ):
+        await provider.handle_async_init()
+
+    assert provider.party_qr_enabled is configured
 
 
 @pytest.mark.parametrize(

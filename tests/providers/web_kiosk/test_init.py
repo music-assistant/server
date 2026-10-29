@@ -2,12 +2,16 @@
 
 from __future__ import annotations
 
+import json
+from pathlib import Path
 from unittest.mock import Mock
 
 from music_assistant_models.enums import ProviderFeature
 
+import music_assistant.providers.web_kiosk as provider_package
 from music_assistant.providers.web_kiosk import setup
 from music_assistant.providers.web_kiosk.constants import (
+    CONF_ENABLE_PARTY_QR,
     CONF_ENABLE_SENDSPIN_BRIDGE,
     CONF_HTTP_PORT,
     CONF_KIOSK_URL,
@@ -36,9 +40,23 @@ async def test_get_config_entries_exposes_expected_keys(provider: WebKioskProvid
         CONF_HTTP_PORT,
         CONF_SHOW_STOP_NOTIFICATION,
         CONF_ENABLE_SENDSPIN_BRIDGE,
+        CONF_ENABLE_PARTY_QR,
         CONF_KIOSK_URL,
         CONF_URL_BUILDER_REQUIRE_AUTH,
     }
+
+
+async def test_party_qr_is_an_opt_in(provider: WebKioskProvider) -> None:
+    """A guest login QR is not exposed on the unauthenticated kiosk port by default."""
+    entries = {entry.key: entry for entry in await provider.get_config_entries()}
+    strings = json.loads(
+        (Path(provider_package.__file__).parent / "strings.json").read_text(encoding="utf-8")
+    )
+
+    assert entries[CONF_ENABLE_PARTY_QR].default_value is False
+    description = strings["config_entries"][CONF_ENABLE_PARTY_QR]["description"]
+    assert "guest login" in description
+    assert "trusted network" in description
 
 
 async def test_config_url_is_canonical_kiosk_address(

@@ -12,6 +12,19 @@ if TYPE_CHECKING:
     from aiohttp.test_utils import TestClient
 
 BUNDLE_ROOT = STATIC_DIR / "web" / "sendspin-js"
+PROVIDER_ROOT = STATIC_DIR.parent
+
+
+def test_sendspin_bundle_ships_the_sources_that_build_it() -> None:
+    """BUILD.json names build inputs that travel with the provider for review and rebuilds."""
+    metadata = json.loads((BUNDLE_ROOT / "BUILD.json").read_text(encoding="utf-8"))
+
+    entry = PROVIDER_ROOT / metadata["source"]
+    build = PROVIDER_ROOT / metadata["build"]
+    assert entry.is_file()
+    assert build.is_file()
+    assert "createSendspinClaimProof" in entry.read_text(encoding="utf-8")
+    assert "sendspin-js" in build.read_text(encoding="utf-8")
 
 
 def test_sendspin_bundle_integrity() -> None:

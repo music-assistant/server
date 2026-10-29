@@ -32,7 +32,14 @@ class PartyInfo(NamedTuple):
 
 
 class PartyAdapter:
-    """Answer whether a party is active and render its join QR code."""
+    """
+    Answer whether a party is active and render its join QR code.
+
+    The kiosk has no Music Assistant session, so the adapter reads the Party
+    plugin's command handlers directly instead of calling the scoped API. The
+    provider setting ``enable_party_qr`` (off by default) is the exposure
+    boundary; a provider-neutral core API for this is tracked in issue #44.
+    """
 
     def __init__(self, provider: WebKioskProvider) -> None:
         """Initialize the adapter."""

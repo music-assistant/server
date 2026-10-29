@@ -9,12 +9,16 @@ CONF_KIOSK_URL = "kiosk_url"
 CONF_URL_BUILDER_REQUIRE_AUTH = "url_builder_require_auth"
 CONF_SHOW_STOP_NOTIFICATION = "show_stop_notification"
 CONF_ENABLE_SENDSPIN_BRIDGE = "enable_sendspin_bridge"
+CONF_ENABLE_PARTY_QR = "enable_party_qr"
 
 DEFAULT_URL_BUILDER_REQUIRE_AUTH = False
 DEFAULT_HTTP_PORT = 8098
 DEFAULT_PLAYER_IDLE_TIMEOUT = 30  # minutes
 DEFAULT_SHOW_STOP_NOTIFICATION = False
 DEFAULT_ENABLE_SENDSPIN_BRIDGE = True
+# The QR encodes a Party guest join code and the kiosk port has no
+# authentication, so serving it is an explicit choice for a trusted network.
+DEFAULT_ENABLE_PARTY_QR = False
 
 # Player ID prefix for dynamically registered kiosk players
 WEB_KIOSK_PLAYER_ID_PREFIX = "wk_"

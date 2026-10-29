@@ -332,6 +332,13 @@ async def test_ws_rejects_cross_site(http_client: TestClient[Any, Any]) -> None:
     assert resp.status == 403
 
 
+@pytest.fixture
+def party_enabled(provider: WebKioskProvider) -> None:
+    """Expose the Party QR; the provider keeps it off until the admin opts in."""
+    provider.party_qr_enabled = True
+
+
+@pytest.mark.usefixtures("party_enabled")
 async def test_party_qr_404_without_party_provider(
     http_client: TestClient[Any, Any],
 ) -> None:
@@ -341,6 +348,7 @@ async def test_party_qr_404_without_party_provider(
     assert resp.status == 404
 
 
+@pytest.mark.usefixtures("party_enabled")
 async def test_party_info_is_inactive_without_plugin(
     http_client: TestClient[Any, Any],
 ) -> None:
@@ -351,6 +359,32 @@ async def test_party_info_is_inactive_without_plugin(
     assert await resp.json() == {"active": False}
 
 
+async def test_party_routes_are_off_until_the_admin_opts_in(
+    http_client: TestClient[Any, Any], mass_mock: Mock
+) -> None:
+    """The default install serves neither the party caption nor the guest QR."""
+    plugin = Mock()
+    plugin.get_party_url = AsyncMock(return_value="http://join.example/secret-code")
+    plugin.get_party_config = AsyncMock(return_value=Mock(party_name="Room", qr_text="Scan"))
+    mass_mock.command_handlers = {
+        "party/url": APICommandHandler.parse("party/url", plugin.get_party_url),
+        "party/config": APICommandHandler.parse("party/config", plugin.get_party_config),
+    }
+
+    info = await http_client.get("/api/party")
+    qr = await http_client.get("/api/party/qr.svg")
+    png = await http_client.get("/api/party/qr.png")
+
+    assert info.status == 200
+    assert await info.json() == {"active": False}
+    assert qr.status == 404
+    assert png.status == 404
+    # Nothing may reach the Party plugin while the route is disabled.
+    plugin.get_party_url.assert_not_called()
+    plugin.get_party_config.assert_not_called()
+
+
+@pytest.mark.usefixtures("party_enabled")
 async def test_party_info_hides_the_join_url(
     http_client: TestClient[Any, Any], mass_mock: Mock
 ) -> None:
@@ -384,6 +418,7 @@ async def test_party_info_hides_the_join_url(
 
 @pytest.mark.parametrize("command", ["party/url", "party/config"])
 @pytest.mark.parametrize("failure", ["absent", "error", "timeout"])
+@pytest.mark.usefixtures("party_enabled")
 async def test_party_commands_unavailable_keep_kiosk_working(
     http_client: TestClient[Any, Any],
     mass_mock: Mock,
@@ -449,7 +484,11 @@ async def test_api_proxy_forwards_jsonrpc(
 
     resp = await http_client.post(
         "/api",
-        json={"command": "music/albums/library_items", "args": {"limit": 1}, "message_id": "1"},
+        json={
+            "command": "player_queues/get_active_queue",
+            "args": {"player_id": "wk_test"},
+            "message_id": "1",
+        },
         headers={"Authorization": "Bearer test-token"},
     )
 
@@ -460,7 +499,49 @@ async def test_api_proxy_forwards_jsonrpc(
     assert kwargs["allow_redirects"] is False
     assert kwargs["headers"]["Authorization"] == "Bearer test-token"
     forwarded = json.loads(kwargs["data"])
-    assert forwarded["command"] == "music/albums/library_items"
+    assert forwarded["command"] == "player_queues/get_active_queue"
+
+
+async def test_api_proxy_refuses_commands_the_page_does_not_need(
+    http_client: TestClient[Any, Any], mass_mock: Mock
+) -> None:
+    """The proxy is not a general MA API: anything outside the page's commands is refused."""
+    _point_mass_at(mass_mock, "http://127.0.0.1:8095")
+
+    for command in (
+        "auth/login",
+        "config/providers",
+        "music/search",
+        "players/create",
+        "player_queues/play_index",
+    ):
+        resp = await http_client.post("/api", json={"command": command, "args": {}})
+
+        assert resp.status == 403, command
+
+    mass_mock.http_session.request.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        b"not json",
+        b"[]",
+        b'{"args": {"player_id": "wk_test"}}',
+        b'{"command": 42}',
+        b'{"command": ["player_queues/items"]}',
+    ],
+)
+async def test_api_proxy_refuses_malformed_requests(
+    http_client: TestClient[Any, Any], mass_mock: Mock, body: bytes
+) -> None:
+    """A body without a single string command never reaches Music Assistant."""
+    _point_mass_at(mass_mock, "http://127.0.0.1:8095")
+
+    resp = await http_client.post("/api", data=body, headers={"Content-Type": "application/json"})
+
+    assert resp.status in {400, 403}
+    mass_mock.http_session.request.assert_not_called()
 
 
 async def test_imageproxy_forwards_query(
@@ -493,7 +574,7 @@ async def test_api_proxy_falls_back_to_base_url(
     mass_mock.webserver = webserver
     mass_mock.http_session.request = Mock(return_value=upstream)
 
-    resp = await http_client.post("/api", json={"command": "music/search"})
+    resp = await http_client.post("/api", json={"command": "player_queues/get_active_queue"})
 
     assert resp.status == 200
     args, _kwargs = mass_mock.http_session.request.call_args
@@ -506,7 +587,7 @@ async def test_api_proxy_503_without_webserver(
     """POST /api reports unavailable when this process cannot see the webserver."""
     mass_mock.webserver = None
 
-    resp = await http_client.post("/api", json={"command": "music/search"})
+    resp = await http_client.post("/api", json={"command": "player_queues/get_active_queue"})
 
     assert resp.status == 503
     mass_mock.http_session.request.assert_not_called()
@@ -531,7 +612,7 @@ async def test_api_proxy_502_when_upstream_fails(
     mass_mock.webserver = Mock(internal_base_url="http://127.0.0.1:8095")
     mass_mock.http_session.request = Mock(side_effect=ClientError())
 
-    resp = await http_client.post("/api", json={"command": "music/search"})
+    resp = await http_client.post("/api", json={"command": "player_queues/get_active_queue"})
 
     assert resp.status == 502
     assert "unreachable" in await resp.text()

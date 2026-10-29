@@ -47,6 +47,24 @@ STATIC_DIR = Path(__file__).parent / "static"
 
 _KNOWN_EXTENSIONS = (".mp3", ".json", ".flac", ".aac")
 
+# The page calls Music Assistant through POST /api because it is served from the
+# kiosk port while the MA webserver listens on another origin. Forward only the
+# commands the page sends: a general proxy would re-expose the whole MA API,
+# including unauthenticated commands such as login, on the kiosk port.
+PAGE_API_COMMANDS = frozenset(
+    {
+        "audio_analysis/wave_form",
+        "player_queues/get_active_queue",
+        "player_queues/items",
+        "players/cmd/next",
+        "players/cmd/pause",
+        "players/cmd/play",
+        "players/cmd/previous",
+        "players/cmd/seek",
+        "players/cmd/volume_set",
+    }
+)
+
 
 def _is_finite_position(value: object) -> TypeGuard[int | float]:
     """Return whether a position can safely represent non-negative elapsed time."""
@@ -939,6 +957,8 @@ small {{ color: #9a9aa6; display: block; margin-top: 4px; }}
 
     async def _handle_party_info(self, request: web.Request) -> web.Response:
         """Return the active party caption. The join URL stays inside the QR image."""
+        if not self.provider.party_qr_enabled:
+            return web.json_response({"active": False})
         party = await self.party.get_active_party()
         if party is None:
             return web.json_response({"active": False})
@@ -953,14 +973,20 @@ small {{ color: #9a9aa6; display: block; margin-top: 4px; }}
 
     async def _handle_party_qr(self, request: web.Request) -> web.Response:
         """Serve the guest join URL as a QR code image (SVG or PNG by route)."""
+        if not self.provider.party_qr_enabled:
+            return web.Response(status=404, text="Party QR is disabled")
         return await self.party.handle_qr(request)
 
     async def _handle_ma_api(self, request: web.Request) -> web.Response:
-        """Forward a JSON-RPC call to the Music Assistant webserver on this host."""
+        """Forward one page command to the Music Assistant webserver on this host."""
+        body = await request.read()
+        if self._page_command(body) is None:
+            logger.debug("Kiosk API proxy refused a request outside the page commands")
+            return web.Response(status=403, text="Command not allowed")
         base = self._ma_internal_base()
         if not base:
             return web.Response(status=503, text="Music Assistant API is unavailable")
-        return await self._forward_to_mass(request, "POST", f"{base}/api", await request.read())
+        return await self._forward_to_mass(request, "POST", f"{base}/api", body)
 
     async def _handle_imageproxy(self, request: web.Request) -> web.Response:
         """Forward a cover-art request to the Music Assistant image proxy."""
@@ -985,6 +1011,22 @@ small {{ color: #9a9aa6; display: block; margin-top: 4px; }}
             if isinstance(value, str) and value.startswith("http"):
                 return value.rstrip("/")
         return None
+
+    @staticmethod
+    def _page_command(body: bytes) -> str | None:
+        """
+        Return the page command in a JSON-RPC body, or None when it is not allowed.
+
+        :param body: Raw request body the page sent to the proxy.
+        """
+        try:
+            payload = json.loads(body)
+        except ValueError:
+            return None
+        if not isinstance(payload, dict):
+            return None
+        command = payload.get("command")
+        return command if isinstance(command, str) and command in PAGE_API_COMMANDS else None
 
     async def _forward_to_mass(
         self, request: web.Request, method: str, url: str, body: bytes | None
