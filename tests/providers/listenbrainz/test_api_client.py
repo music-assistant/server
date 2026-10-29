@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock, MagicMock
 from music_assistant.constants import CONF_USERNAME
 from music_assistant.providers.listenbrainz import ListenBrainzProvider
 from music_assistant.providers.listenbrainz.api_client import ListenBrainzAPIClient
+from music_assistant.providers.listenbrainz.playlist import ListenBrainzPlaylistManager
 
 if TYPE_CHECKING:
     from music_assistant_models.config_entries import ProviderConfig
@@ -49,7 +50,7 @@ def _provider() -> ListenBrainzProvider:
         MagicMock(instance_id="listenbrainz--test", name=None),
     )
     provider.mass = cast("MusicAssistant", MagicMock())
-    provider.__dict__["_resolved_tracks"] = {}
+    provider.playlists = ListenBrainzPlaylistManager(provider)
     return provider
 
 
