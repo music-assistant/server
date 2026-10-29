@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import time
 import uuid
+from contextlib import suppress
 from dataclasses import dataclass
 from datetime import datetime
 from typing import TYPE_CHECKING, Any, NoReturn
@@ -45,15 +46,21 @@ from .constants import (
     BROWSE_LIBRARY_BATCH_SIZE,
     CACHE_CATEGORY_BOOK,
     CACHE_CATEGORY_LIBRARY_FINGERPRINTS,
+    CACHE_CATEGORY_PLAYLOG_PROGRESS,
     CACHE_EXPIRATION_BOOK,
     CACHE_EXPIRATION_LIBRARY_FINGERPRINTS,
+    CACHE_EXPIRATION_PLAYLOG_PROGRESS,
     CACHE_KEY_LIBRARY_FINGERPRINTS,
+    CACHE_KEY_PLAYLOG_PROGRESS,
     CATALOG_DETAIL_CONCURRENCY,
     CATALOG_TTL_SEC,
     CONF_URL,
+    CONTINUE_LISTENING_LIMIT,
     PART_STREAM_CHUNK_SIZE,
     PART_STREAM_HEADERS,
     PART_STREAM_TIMEOUT,
+    PLAYLOG_POLL_INTERVAL_SEC,
+    PLAYLOG_SYNC_CONCURRENCY,
     STREAMDETAILS_EXPIRATION_S,
     BrowseItemsTranslationKey,
     BrowsePaths,
@@ -75,6 +82,7 @@ from .parsers import (
     parse_author,
     parse_narrator,
 )
+from .playlog_sync import InboundProgressGuard, PlaylogProgressMemory, sync_playlog
 from .progress import (
     build_playback_state_update,
     build_progress_update,
@@ -252,6 +260,9 @@ class BookOrbitProvider(MusicProvider):
         self._sync_catalog_fingerprints: dict[str, str] | None = None
         # Audiobook provider ids that failed during the active sync_library run.
         self._failed_audiobook_ids: set[str] = set()
+        self._inbound_progress_guard = InboundProgressGuard()
+        self._playlog_progress_memory = PlaylogProgressMemory()
+        self._playlog_poll_task: asyncio.Task[None] | None = None
 
     async def handle_async_init(self) -> None:
         """Create the BookOrbit client from config, log in, and register the stream proxy."""
@@ -288,6 +299,10 @@ class BookOrbitProvider(MusicProvider):
         self._unregister_route = self.mass.streams.register_dynamic_route(
             f"/{self.instance_id}_part_stream", self._handle_part_request
         )
+        await self._load_playlog_progress_memory()
+        self._playlog_poll_task = self.mass.create_task(
+            self._playlog_poll_loop(), task_name=f"{self.instance_id}_playlog_poll"
+        )
 
     async def unload(self, is_removed: bool = False) -> None:
         """Unload the provider and close its BookOrbit client."""
@@ -303,6 +318,11 @@ class BookOrbitProvider(MusicProvider):
         if unregister := self._unregister_route:
             self._unregister_route = None
             unregister()
+        if poll_task := self._playlog_poll_task:
+            self._playlog_poll_task = None
+            poll_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await poll_task
         if client := getattr(self, "_client", None):
             await client.close()
 
@@ -342,6 +362,7 @@ class BookOrbitProvider(MusicProvider):
             self._commit_applied_mapping_details(self._failed_audiobook_ids)
             await self._save_applied_mapping_details()
             self._sync_catalog_fingerprints = None
+            await self._sync_playlog_from_bookorbit()
 
     async def get_library_audiobooks(self) -> AsyncGenerator[Audiobook]:
         """Yield audiobooks from the current catalog."""
@@ -550,6 +571,10 @@ class BookOrbitProvider(MusicProvider):
             book_id = int(prov_item_id)
         except ValueError:
             return
+        # Arm cool-down before BookOrbit I/O (same pattern as Audiobookshelf): local
+        # playlog is already advanced when on_played runs, so inbound must not apply a
+        # lagging remote stamp while this report is in flight.
+        self._inbound_progress_guard.note_outbound(book_id)
         generation = self._progress_generation.get(book_id, 0) + 1
         self._progress_generation[book_id] = generation
         # Stamp before waiting on the lock or any BookOrbit I/O so 409 retries can
@@ -574,6 +599,11 @@ class BookOrbitProvider(MusicProvider):
             ResourceTemporarilyUnavailable,
         ) as err:
             self.logger.warning("Updating BookOrbit progress of %s failed: %s", prov_item_id, err)
+        else:
+            # Only record progress BookOrbit accepted so a failed upload cannot block
+            # inbound from correcting local resume on the next poll.
+            self._playlog_progress_memory.note_progress(book_id, fully_played, position)
+            await self._save_playlog_progress_memory()
 
     async def browse(self, path: str) -> Sequence[MediaItemType | ItemMapping | BrowseFolder]:
         """
@@ -665,6 +695,84 @@ class BookOrbitProvider(MusicProvider):
             }
         else:
             self._applied_mapping_details = {}
+
+    async def _playlog_candidate_book_ids(self) -> set[int]:
+        """Return playlog audiobook ids unioned with BookOrbit continue-listening ids."""
+        playlog = await self.mass.music.get_playlog_provider_item_ids(self.instance_id)
+        playlog_ids = {
+            int(item_id)
+            for media_type, item_id in playlog
+            if media_type == MediaType.AUDIOBOOK and item_id.isdigit()
+        }
+        try:
+            listening = await self._client.get_continue_listening_book_ids(CONTINUE_LISTENING_LIMIT)
+        except (ClientError, TimeoutError, LoginFailed) as err:
+            self.logger.debug("BookOrbit continue-listening fetch failed: %s", err)
+            listening = []
+        return playlog_ids | set(listening)
+
+    async def _playlog_poll_candidate_book_ids(self) -> set[int]:
+        """Return BookOrbit continue-listening ids only (poll must not walk full playlog)."""
+        try:
+            listening = await self._client.get_continue_listening_book_ids(CONTINUE_LISTENING_LIMIT)
+        except (ClientError, TimeoutError, LoginFailed) as err:
+            self.logger.debug("BookOrbit continue-listening fetch failed: %s", err)
+            return set()
+        return set(listening)
+
+    async def _load_playlog_progress_memory(self) -> None:
+        """Load last applied/sent playlog progress from mass.cache."""
+        cached = await self.mass.cache.get(
+            key=CACHE_KEY_PLAYLOG_PROGRESS,
+            provider=self.instance_id,
+            category=CACHE_CATEGORY_PLAYLOG_PROGRESS,
+            default=None,
+        )
+        if isinstance(cached, dict):
+            self._playlog_progress_memory.load_progress(cached)
+
+    async def _save_playlog_progress_memory(self) -> None:
+        """Persist last applied/sent playlog progress to mass.cache."""
+        await self.mass.cache.set(
+            key=CACHE_KEY_PLAYLOG_PROGRESS,
+            data=self._playlog_progress_memory.export_progress(),
+            provider=self.instance_id,
+            category=CACHE_CATEGORY_PLAYLOG_PROGRESS,
+            expiration=CACHE_EXPIRATION_PLAYLOG_PROGRESS,
+        )
+
+    async def _sync_playlog_from_bookorbit(self, book_ids: set[int] | None = None) -> None:
+        """Push BookOrbit progress into the MA playlog for the given or candidate book ids."""
+        if book_ids is None:
+            book_ids = await self._playlog_candidate_book_ids()
+        if not book_ids:
+            return
+        try:
+            await sync_playlog(
+                mass=self.mass,
+                provider_instance_id=self.instance_id,
+                client=self._client,
+                book_ids=book_ids,
+                guard=self._inbound_progress_guard,
+                memory=self._playlog_progress_memory,
+                concurrency=PLAYLOG_SYNC_CONCURRENCY,
+            )
+            await self._save_playlog_progress_memory()
+        except Exception as err:
+            self.logger.warning("BookOrbit playlog sync failed: %s", err)
+
+    async def _playlog_poll_loop(self) -> None:
+        """Periodically refresh continue-listening progress from BookOrbit."""
+        while True:
+            await asyncio.sleep(PLAYLOG_POLL_INTERVAL_SEC)
+            try:
+                await self._sync_playlog_from_bookorbit(
+                    await self._playlog_poll_candidate_book_ids()
+                )
+            except asyncio.CancelledError:
+                raise
+            except Exception as err:
+                self.logger.debug("BookOrbit playlog poll failed: %s", err)
 
     def _commit_applied_mapping_details(self, skipped_ids: set[str]) -> None:
         """Record fingerprints for books that synced; keep prior values for failures."""
