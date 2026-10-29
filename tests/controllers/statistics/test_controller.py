@@ -1421,6 +1421,32 @@ async def test_today_series_fills_every_local_hour(
     assert [(point.timestamp, point.value) for point in results] == expected
 
 
+@pytest.mark.parametrize(
+    ("now", "expected"),
+    [
+        ("2027-03-28T01:30:00", [("2027-03-28 03:00:00", 1)]),
+        (
+            "2027-03-28T04:30:00",
+            [(f"2027-03-28 {hour:02d}:00:00", 1 if hour == 3 else 0) for hour in range(3, 7)],
+        ),
+    ],
+)
+async def test_all_time_hours_start_right_after_a_two_hour_gap(
+    mass: MusicAssistant, now: str, expected: list[tuple[str, int]]
+) -> None:
+    """A first play in the hour after Antarctica/Troll's 01:00 to 03:00 jump keeps its bucket."""
+    user = await mass.webserver.auth.create_user("statistics-troll-spring")
+    # 03:20 local, twenty minutes after the clocks jumped from 01:00 to 03:00
+    await _insert_plays(mass, user, ("2027-03-28T01:20:00",))
+
+    with _as_user(user), _frozen_now(now):
+        results = await mass.statistics.get_plays_over_time(
+            period="all_time", granularity="hour", timezone="Antarctica/Troll"
+        )
+
+    assert [(point.timestamp, point.value) for point in results] == expected
+
+
 @pytest.mark.parametrize("timezone", ["UTC", "Europe/Berlin"])
 async def test_rolling_week_series_spans_eight_calendar_days(
     mass: MusicAssistant, timezone: str

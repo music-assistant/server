@@ -46,6 +46,9 @@ TIME_SERIES_DATE_FORMATS = {
 }
 # Every UTC offset, and every daylight-saving shift, is a multiple of 15 minutes.
 HOUR_BUCKET_SCAN_STEP = timedelta(minutes=15)
+# Longer than any daylight-saving shift (Antarctica/Troll moves two hours), taken off in UTC
+# so the hour scan starts before the first bucket even when its local start is in a gap.
+HOUR_BUCKET_SCAN_MARGIN = timedelta(hours=3)
 
 
 class TimeSeriesMixin(_StatisticsBase):
@@ -331,12 +334,12 @@ def _iter_bucket_keys(
     :param zone: Timezone the bucket keys are expressed in.
     """
     if granularity == "hour":
-        # Walk real time in steps no offset change can skip, from an hour before the first
-        # bucket (whose local start may not exist), keeping each local hour that exists at all,
-        # even partly, once and in order however far a daylight-saving change rolls back.
+        # Walk real time in steps no offset change can skip, starting well before the first
+        # bucket (whose local start may fall in a gap), keeping each local hour that exists at
+        # all, even partly, once and in order however far a daylight-saving change rolls back.
         date_format = TIME_SERIES_DATE_FORMATS["hour"]
         first_start = datetime.strptime(first_bucket, date_format).replace(tzinfo=zone)
-        current = (first_start - timedelta(hours=1)).astimezone(UTC)
+        current = first_start.astimezone(UTC) - HOUR_BUCKET_SCAN_MARGIN
         previous: str | None = None
         while (bucket := current.astimezone(zone).strftime(date_format)) <= last_bucket:
             if bucket >= first_bucket and (previous is None or bucket > previous):
