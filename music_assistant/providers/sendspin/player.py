@@ -68,6 +68,7 @@ from aiosendspin.server.roles.color.state import Color
 from aiosendspin.server.roles.metadata.state import Metadata
 from aiosendspin.server.roles.player.events import OutputDelayChangedEvent
 from aiosendspin.server.roles.player.types import PlayerRoleProtocol
+from aiosendspin.server.roles.player.v1 import PlayerPersistentState
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption
 from music_assistant_models.constants import PLAYER_CONTROL_NONE
 from music_assistant_models.enums import (
@@ -947,6 +948,20 @@ class SendspinBasePlayer(Player):
             return ConfigEntry(
                 key="security_status_held_unapproved", type=ConfigEntryType.LABEL
             ), []
+        # Only starting playback on a held device dials it back.
+        if (
+            provider.is_held_elsewhere(self.player_id)
+            and PlayerFeature.PLAY_MEDIA in self.supported_features
+        ):
+            # aiosendspin keeps the commands the device last reported after its roles detach.
+            player_state = self.api.get_role_state("player", PlayerPersistentState)
+            status_key = (
+                "security_status_held_elsewhere_delay"
+                if player_state is not None
+                and not _OUTPUT_DELAY_COMMANDS.isdisjoint(player_state.state_supported_commands)
+                else "security_status_held_elsewhere"
+            )
+            return ConfigEntry(key=status_key, type=ConfigEntryType.LABEL), []
         if not self.api.is_connected:
             # The action dropped the connection; the client will reconnect
             return ConfigEntry(key="security_status_disconnected", type=ConfigEntryType.LABEL), []

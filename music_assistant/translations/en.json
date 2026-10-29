@@ -2437,6 +2437,8 @@
   "provider.sendspin.config_entries.security_status_guest.label": "This device is connected through guest access. The connection is encrypted but not verified, which the device allows on purpose.",
   "provider.sendspin.config_entries.security_status_guest_access_off.label": "This device no longer allows guest access. Set up the player again to pair it.",
   "provider.sendspin.config_entries.security_status_guest_pairable.label": "This device is connected through guest access. It also supports pairing for a permanent, verified connection - use Reconfigure to set that up.",
+  "provider.sendspin.config_entries.security_status_held_elsewhere.label": "Another server is using this device. Play something on it in Music Assistant to take it back.",
+  "provider.sendspin.config_entries.security_status_held_elsewhere_delay.label": "Another server is using this device. Play something on it in Music Assistant to take it back. The static playback delay setting shows up again once it is back.",
   "provider.sendspin.config_entries.security_status_held_unapproved.label": "Another server is using this device, and Music Assistant has not paired it or allowed guest access yet.",
   "provider.sendspin.config_entries.security_status_paired.label": "This device is paired. The connection is encrypted and authenticated.",
   "provider.sendspin.config_entries.security_status_pairing_lost.label": "This device lost its pairing with Music Assistant and cannot play. Use Reconfigure to pair it again, or Unpair to remove the old pairing.",

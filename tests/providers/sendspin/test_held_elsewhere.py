@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING, Any, cast
 from unittest.mock import Mock
 
 import pytest
-from aiosendspin.models.types import GoodbyeReason, PairAbortReason, PairMethod
+from aiosendspin.models.types import GoodbyeReason, PairAbortReason, PairMethod, PlayerCommand
 from aiosendspin.noise.keys import generate_psk, psk_id_for
 from aiosendspin.noise.pairing import RemotePairingAbortError
 from aiosendspin.noise.trust_store import (
@@ -20,7 +20,8 @@ from aiosendspin.noise.trust_store import (
     TrustedUnpairedClient,
 )
 from aiosendspin.server import ClientConnectedEvent, ClientDisconnectedEvent
-from music_assistant_models.enums import FlowStepType
+from aiosendspin.server.roles.player.v1 import PlayerPersistentState
+from music_assistant_models.enums import FlowStepType, PlayerFeature
 
 from music_assistant.models.setup_flow import AbortFlow
 from music_assistant.providers.sendspin.constants import (
@@ -181,6 +182,67 @@ async def test_approving_a_refused_device_dials_it(reason: GoodbyeReason, dialed
     await provider.set_trusted_unpaired("c1", enabled=True)
 
     assert api.dialed == (["ws://device/sendspin"] if dialed else [])
+
+
+@pytest.mark.parametrize(
+    ("reason", "held"), [(GoodbyeReason.ANOTHER_SERVER, True), (GoodbyeReason.UNPAIRED, False)]
+)
+async def test_only_a_takeover_goodbye_counts_as_held_elsewhere(
+    reason: GoodbyeReason, held: bool
+) -> None:
+    """A device that refused this server after Unpair is not one another server holds."""
+    provider, _player = _make_provider(_HeldServerApi())
+    server = cast("SendspinServer", None)
+
+    provider.event_cb(server, ClientConnectedEvent("c1"))
+    provider.event_cb(server, ClientDisconnectedEvent("c1", reason))
+
+    assert provider.is_held_elsewhere("c1") is held
+
+
+@pytest.mark.parametrize(
+    ("held", "features", "commands", "status_key"),
+    [
+        (
+            True,
+            {PlayerFeature.PLAY_MEDIA},
+            [PlayerCommand.SET_STATIC_DELAY],
+            "security_status_held_elsewhere_delay",
+        ),
+        (
+            True,
+            {PlayerFeature.PLAY_MEDIA},
+            [PlayerCommand.VOLUME],
+            "security_status_held_elsewhere",
+        ),
+        (True, set(), [], "security_status_disconnected"),
+        (
+            False,
+            {PlayerFeature.PLAY_MEDIA},
+            [PlayerCommand.SET_STATIC_DELAY],
+            "security_status_disconnected",
+        ),
+    ],
+)
+async def test_settings_tell_how_to_take_back_a_held_device(
+    held: bool, features: set[PlayerFeature], commands: list[PlayerCommand], status_key: str
+) -> None:
+    """Only a playable device gets the note, and a drop keeps its text."""
+    api = _FakeApi([_desc(PairMethod.DYNAMIC_PAIRING_CODE)])
+    api.connection_security = None
+    api.is_connected = False
+    player_state = PlayerPersistentState(state_supported_commands=commands)
+    cast("Any", api).get_role_state = lambda _family, _cls: player_state
+    provider = _FakeProvider(api)
+    provider.held_elsewhere = held
+    player = _make_player(api, provider)
+    player._attr_supported_features = features
+
+    status, actions = await player._security_state_entries(cast("SendspinProvider", provider))
+
+    assert status is not None
+    assert status.key == status_key
+    assert actions == []
 
 
 async def test_a_device_that_reconnects_here_is_no_longer_held() -> None:

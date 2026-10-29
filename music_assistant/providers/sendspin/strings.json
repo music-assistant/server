@@ -41,6 +41,12 @@
     "security_status_refused": {
       "label": "This device is no longer connected to Music Assistant. Set up the player again to pair it."
     },
+    "security_status_held_elsewhere": {
+      "label": "Another server is using this device. Play something on it in Music Assistant to take it back."
+    },
+    "security_status_held_elsewhere_delay": {
+      "label": "Another server is using this device. Play something on it in Music Assistant to take it back. The static playback delay setting shows up again once it is back."
+    },
     "security_status_held_unapproved": {
       "label": "Another server is using this device, and Music Assistant has not paired it or allowed guest access yet."
     },
