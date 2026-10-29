@@ -1378,6 +1378,28 @@ async def test_plays_over_time_does_not_inherit_default_query_limit(
             ("2027-01-15T02:00:00",),
             [(f"2027-01-15 {hour:02d}:00:00", 1 if hour == 2 else 0) for hour in range(4)],
         ),
+        # 02:45 jumps to 03:45, so only the end of the 03:00 hour exists; a play at 03:50
+        # keeps its bucket
+        (
+            "Pacific/Chatham",
+            "2026-09-26T15:45:00",
+            ("2026-09-26T14:05:00",),
+            [(f"2026-09-27 {hour:02d}:00:00", 1 if hour == 3 else 0) for hour in range(6)],
+        ),
+        # 02:00 jumps half an hour to 02:30, so the 02:00 hour exists only in part
+        (
+            "Australia/Lord_Howe",
+            "2026-10-03T17:30:00",
+            ("2026-10-03T15:40:00",),
+            [(f"2026-10-04 {hour:02d}:00:00", 1 if hour == 2 else 0) for hour in range(5)],
+        ),
+        # 03:00 rolls back two hours to 01:00, so 01:00 and 02:00 happen twice
+        (
+            "Antarctica/Troll",
+            "2026-10-25T06:30:00",
+            ("2026-10-24T23:30:00", "2026-10-25T01:30:00"),
+            [(f"2026-10-25 {hour:02d}:00:00", 2 if hour == 1 else 0) for hour in range(7)],
+        ),
     ],
 )
 async def test_today_series_fills_every_local_hour(

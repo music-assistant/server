@@ -44,6 +44,8 @@ TIME_SERIES_DATE_FORMATS = {
     "week": "%Y-%m-%d",
     "month": "%Y-%m",
 }
+# Every UTC offset, and every daylight-saving shift, is a multiple of 15 minutes.
+HOUR_BUCKET_SCAN_STEP = timedelta(minutes=15)
 
 
 class TimeSeriesMixin(_StatisticsBase):
@@ -329,17 +331,18 @@ def _iter_bucket_keys(
     :param zone: Timezone the bucket keys are expressed in.
     """
     if granularity == "hour":
-        # Step real hours so daylight-saving gaps are skipped and repeated hours are yielded
-        # once, exactly as the play buckets are keyed.
+        # Walk real time in steps no offset change can skip, from an hour before the first
+        # bucket (whose local start may not exist), keeping each local hour that exists at all,
+        # even partly, once and in order however far a daylight-saving change rolls back.
         date_format = TIME_SERIES_DATE_FORMATS["hour"]
-        current = datetime.strptime(first_bucket, date_format).replace(tzinfo=zone)
-        current = current.astimezone(UTC)
-        previous = None
+        first_start = datetime.strptime(first_bucket, date_format).replace(tzinfo=zone)
+        current = (first_start - timedelta(hours=1)).astimezone(UTC)
+        previous: str | None = None
         while (bucket := current.astimezone(zone).strftime(date_format)) <= last_bucket:
-            if bucket != previous:
+            if bucket >= first_bucket and (previous is None or bucket > previous):
                 yield bucket
                 previous = bucket
-            current += timedelta(hours=1)
+            current += HOUR_BUCKET_SCAN_STEP
         return
     if granularity == "month":
         year, month = (int(part) for part in first_bucket.split("-"))
