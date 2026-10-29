@@ -179,6 +179,20 @@ def test_description_is_populated() -> None:
     assert mass_episode.metadata.description == "All about parsing podcasts."
 
 
+def test_description_prefers_full_show_notes() -> None:
+    """The full show notes win over a summary the feed cut short."""
+    mass_episode = _parse(
+        _episode(
+            description="A bombed out runwayFailing communications equi...",
+            description_html="<ul><li>A bombed out runway</li><li>Failing equipment</li></ul>",
+        )
+    )
+    assert mass_episode is not None
+    assert mass_episode.metadata.description == (
+        "<ul><li>A bombed out runway</li><li>Failing equipment</li></ul>"
+    )
+
+
 def test_empty_description_left_unset() -> None:
     """An empty description (podcastparser's default) leaves metadata.description as None."""
     mass_episode = _parse(_episode(description=""))
@@ -257,6 +271,16 @@ def test_episode_position_uses_caller_supplied_position() -> None:
     )
     assert mass_episode is not None
     assert mass_episode.position == 5
+
+
+def test_episode_and_season_numbers_from_feed() -> None:
+    """The itunes:episode and itunes:season numbers are kept, a season of 0 is dropped."""
+    mass_episode = _parse(_episode(number=12, season=2))
+    assert mass_episode is not None
+    assert (mass_episode.episode_number, mass_episode.season) == (12, 2)
+    mass_episode = _parse(_episode(season=0))
+    assert mass_episode is not None
+    assert (mass_episode.episode_number, mass_episode.season) == (None, None)
 
 
 def test_positions_use_episode_numbers_when_all_numbered() -> None:

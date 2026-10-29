@@ -16,10 +16,11 @@ from functools import partial
 from itertools import batched
 from sys import intern
 from types import MappingProxyType
-from typing import TYPE_CHECKING, Any, NamedTuple, TypedDict, cast
+from typing import TYPE_CHECKING, Any, Final, NamedTuple, TypedDict, cast
+from urllib.parse import unquote
 
 from hass_client import HomeAssistantClient
-from hass_client.exceptions import BaseHassClientError
+from hass_client.exceptions import BaseHassClientError, FailedCommand
 from hass_client.utils import get_websocket_url
 from music_assistant_models.auth import Scope
 from music_assistant_models.config_entries import ConfigEntry
@@ -40,11 +41,11 @@ from music_assistant_models.media_items.audio_format import AudioFormat
 from music_assistant_models.player_control import PlayerControl
 from music_assistant_models.streamdetails import StreamDetails
 
-from music_assistant.constants import VERBOSE_LOG_LEVEL
+from music_assistant.constants import CONF_VERIFY_SSL, VERBOSE_LOG_LEVEL
 from music_assistant.controllers.cache import use_cache
 from music_assistant.helpers.datetime import iso_from_utc_timestamp
 from music_assistant.helpers.json import SerializableType
-from music_assistant.helpers.tts import TTSLanguageNotSupportedError
+from music_assistant.helpers.tts import TTSLanguageNotSupportedError, match_tts_language
 from music_assistant.helpers.util import lock, try_parse_int
 from music_assistant.models.plugin import AIEngine, PluginProvider, TTSEngine
 
@@ -75,6 +76,7 @@ if TYPE_CHECKING:
         Entity,
         EntityStateEvent,
         Event,
+        Message,
         State,
     )
     from music_assistant_models.config_entries import ProviderConfig
@@ -86,8 +88,7 @@ if TYPE_CHECKING:
 
 DOMAIN = "hass"
 CONF_URL = "url"
-CONF_AUTH_TOKEN = "token"
-CONF_VERIFY_SSL = "verify_ssl"
+CONF_AUTH_TOKEN = "token"  # noqa: S105 - config key
 FEATURE_DISCOVERY_TIMEOUT = 30
 STATE_FETCH_TIMEOUT = 30
 STATE_FETCH_BATCH_SIZE = 500
@@ -101,6 +102,16 @@ DEVICE_REGISTRY_CACHE_TTL = 60
 AREA_REGISTRY_CACHE_TTL = 60
 
 SEARCH_CONTROL_ENTITIES_COMMAND = f"{DOMAIN}/search_control_entities"
+
+# HA paths a media player's entity_picture points at, the only images this provider resolves
+IMAGE_PATH_PREFIXES: Final = (
+    "/api/media_player_proxy/",
+    "/api/image_proxy/",
+    "/api/image/serve/",
+    "/local/",
+)
+IMAGE_MAX_BYTES: Final = 10 * 1024 * 1024
+IMAGE_READ_CHUNK_SIZE: Final = 64 * 1024
 
 # Home Assistant entity domains that back the TTS and AI Task features.
 FEATURE_DOMAINS = ("tts", "ai_task")
@@ -170,6 +181,9 @@ class HomeAssistantProvider(PluginProvider):
     _engine_refresh_task: asyncio.Task[None] | None = None
     _ai_engines: list[AIEngine]
     _tts_engines: list[TTSEngine]
+    # languages per TTS entity, as Home Assistant reports them; an entity whose list could
+    # not be read is absent and gets the requested language passed through unchanged
+    _tts_languages: dict[str, tuple[str, ...]]
     _startup_complete: bool = False
     _entity_registry: Mapping[str, HassRegistryEntity] | None = None
     _entity_registry_generation: int = 0
@@ -249,6 +263,7 @@ class HomeAssistantProvider(PluginProvider):
         self._control_reconcile_lock = asyncio.Lock()
         self._ai_engines = []
         self._tts_engines = []
+        self._tts_languages = {}
         url = get_websocket_url(cast("str", self.get_setup_value(CONF_URL)))
         token = self.get_setup_value(CONF_AUTH_TOKEN)
         logging.getLogger("hass_client").setLevel(self.logger.level + 10)
@@ -267,6 +282,9 @@ class HomeAssistantProvider(PluginProvider):
         )
         try:
             await self.hass.connect()
+        except asyncio.CancelledError:
+            await self._cleanup_failed_init()
+            raise
         except BaseHassClientError as err:
             await self._cleanup_failed_init()
             err_msg = str(err) or err.__class__.__name__
@@ -441,32 +459,37 @@ class HomeAssistantProvider(PluginProvider):
         (announcement-capable) media_player entity.
 
         :param mac_addresses: Device MAC addresses to look up (case-insensitive).
-        :param platform: The HA integration domain the media_player entities must belong to.
+        :param platform: The HA integration domain the devices and their media_player entities
+            must belong to.
         :return: Correlation info keyed by lowercased MAC address; devices unknown
-            to Home Assistant are absent from the result.
+            to Home Assistant or to that integration are absent from the result.
         """
         wanted_macs = {mac.lower() for mac in mac_addresses}
         if not wanted_macs:
             return {}
         device_registry = await self.get_device_registry()
-        device_by_mac: dict[str, Device] = {
-            connection[1].lower(): device
+        mac_devices = [
+            (connection[1].lower(), device)
             for device in device_registry.values()
             for connection in device.get("connections", [])
             if len(connection) == 2
             and connection[0] == "mac"
             and connection[1].lower() in wanted_macs
-        }
-        if not device_by_mac:
+        ]
+        if not mac_devices:
             return {}
+        platform_device_ids: set[str] = set()
         media_players_by_device: dict[str, list[str]] = {}
         for entity_id, entry in (await self.get_entity_registry()).items():
-            if (
-                entry.platform == platform
-                and entity_id.startswith("media_player.")
-                and (device_id := entry.device_id)
-            ):
+            if entry.platform != platform or not (device_id := entry.device_id):
+                continue
+            platform_device_ids.add(device_id)
+            if entity_id.startswith("media_player."):
                 media_players_by_device.setdefault(device_id, []).append(entity_id)
+        # other integrations (e.g. network trackers) register their own devices for the same MAC
+        device_by_mac: dict[str, Device] = {
+            mac: device for mac, device in mac_devices if device["id"] in platform_device_ids
+        }
         candidates_by_mac = {
             mac: media_players_by_device.get(device["id"], [])
             for mac, device in device_by_mac.items()
@@ -504,6 +527,45 @@ class HomeAssistantProvider(PluginProvider):
             )
             for mac, device in device_by_mac.items()
         }
+
+    async def subscribe_sendspin_clients(
+        self, callback: Callable[[list[str]], None]
+    ) -> Callable[[], None] | None:
+        """
+        Follow the Sendspin client ids Home Assistant can fetch a pairing token for.
+
+        :param callback: Called with the full list of client ids right away and again
+            whenever it changes.
+        :return: A function that ends the subscription, or None when this Home Assistant
+            hands out no Sendspin pairing tokens or could not be asked.
+        """
+
+        def _on_message(message: Message) -> None:
+            callback(list(message["event"]["client_ids"]))
+
+        try:
+            unsubscribe = await self.hass.subscribe(_on_message, "sendspin/subscribe_clients")
+        except FailedCommand as err:
+            self.logger.debug("Home Assistant hands out no Sendspin pairing tokens: %s", err)
+            return None
+        except BaseHassClientError as err:
+            self.logger.debug("Could not follow the Sendspin clients of Home Assistant: %s", err)
+            return None
+        return cast("Callable[[], None]", unsubscribe)
+
+    async def get_sendspin_pairing_token(self, client_id: str) -> str | None:
+        """
+        Return the Sendspin pairing token of the device with this Sendspin client id.
+
+        :return: The token, or None when Home Assistant has no connected device with the
+            client id or the device hands out no token right now (reason logged at debug level).
+        """
+        try:
+            result = await self.hass.send_command("sendspin/get_pairing_token", client_id=client_id)
+        except (FailedCommand, BaseHassClientError) as err:
+            self.logger.debug("No Sendspin pairing token for %s: %s", client_id, err)
+            return None
+        return cast("str", result["token"])
 
     async def get_user_details(self, ha_user_id: str) -> tuple[str | None, str | None, str | None]:
         """
@@ -603,11 +665,31 @@ class HomeAssistantProvider(PluginProvider):
         return states
 
     async def resolve_image(self, path: str) -> bytes:
-        """Resolve an image from an image path."""
+        """
+        Fetch an entity picture from Home Assistant.
+
+        :param path: The HA-relative image path, as found in a media player's entity_picture.
+        :raises FileNotFoundError: When the path is not an HA image path, or HA does not
+            answer with an image within the size limit.
+        """
+        # the HTTP client resolves percent-encoded dot segments, so check the decoded form
+        path_segments = unquote(path.split("?", 1)[0]).split("/")
+        if not path.startswith(IMAGE_PATH_PREFIXES) or ".." in path_segments:
+            raise FileNotFoundError("Image not found")
         ha_url, headers, http_session = self._get_ha_http()
         async with http_session.get(f"{ha_url}{path}", headers=headers) as response:
             response.raise_for_status()
-            return await response.read()
+            if not response.content_type.startswith("image/"):
+                raise FileNotFoundError("Image not found")
+            if (response.content_length or 0) > IMAGE_MAX_BYTES:
+                raise FileNotFoundError("Image too large")
+            # the declared length can be absent or wrong, so cap what is actually read
+            data = bytearray()
+            while chunk := await response.content.read(IMAGE_READ_CHUNK_SIZE):
+                data.extend(chunk)
+                if len(data) > IMAGE_MAX_BYTES:
+                    raise FileNotFoundError("Image too large")
+            return bytes(data)
 
     async def get_ai_engines(self) -> list[AIEngine]:
         """Return the Home Assistant AI Task entities as AI engines."""
@@ -677,6 +759,17 @@ class HomeAssistantProvider(PluginProvider):
         entity_id = engine_id or next((engine.id for engine in self._tts_engines), None)
         if entity_id is None:
             raise UnsupportedFeaturedException("TTS entity is not available")
+        if language and (supported := self._tts_languages.get(entity_id)) is not None:
+            # Home Assistant only accepts a language spelled exactly as the entity lists it
+            country = self.mass.metadata.locale.partition("_")[2] or None
+            matched = match_tts_language(language, supported, country)
+            if matched is None:
+                self.logger.debug(
+                    "TTS engine %s has no voice for language '%s', using its default",
+                    entity_id,
+                    language,
+                )
+            language = matched
         ha_url, headers, http_session = self._get_ha_http()
         # the tts_get_url payload field is called engine_id but takes a tts entity_id
         payload: dict[str, Any] = {"engine_id": entity_id, "message": message}
@@ -697,6 +790,10 @@ class HomeAssistantProvider(PluginProvider):
             media_type=MediaType.SOUND_EFFECT,
             stream_type=StreamType.HTTP,
             path=url,
+            # the add-on reaches HA through the supervisor, and HA's own https certificate
+            # is self-signed on most installs
+            verify_ssl=not self.mass.running_as_hass_addon
+            and bool(self.get_setup_value(CONF_VERIFY_SSL, True)),
         )
 
     async def _hass_listener(self) -> None:
@@ -706,6 +803,12 @@ class HomeAssistantProvider(PluginProvider):
             await self.hass.start_listening()
         except BaseHassClientError as err:
             self.logger.warning("Connection to HA lost due to error: %s", err)
+        except Exception as err:
+            # any other error would end the listener without arming the reconnect below,
+            # leaving the provider loaded but permanently disconnected
+            self.logger.warning(
+                "Home Assistant listener stopped unexpectedly: %s", err, exc_info=err
+            )
         if not self._startup_complete:
             return
         self.logger.info("Connection to HA lost. Connection will be automatically retried later.")
@@ -1074,8 +1177,10 @@ class HomeAssistantProvider(PluginProvider):
                 ai_engines.append(AIEngine(id=entity_id, name=name, provider=self))
         tts_engines.sort(key=lambda engine: engine.name)
         ai_engines.sort(key=lambda engine: engine.name)
+        tts_languages = await self._fetch_tts_languages() if tts_engines else {}
         changed = (self._tts_engines, self._ai_engines) != (tts_engines, ai_engines)
         self._tts_engines = tts_engines
+        self._tts_languages = tts_languages
         self._ai_engines = ai_engines
         self._supported_features.discard(ProviderFeature.TTS)
         self._supported_features.discard(ProviderFeature.AI_QUERY)
@@ -1089,6 +1194,21 @@ class HomeAssistantProvider(PluginProvider):
         # during startup the load itself signals once we are done.
         if changed and self._startup_complete:
             self.mass.signal_event(EventType.PROVIDERS_UPDATED, data=self.mass.providers)
+
+    async def _fetch_tts_languages(self) -> dict[str, tuple[str, ...]]:
+        """Return the languages each TTS entity accepts, leaving out the ones without a list."""
+        try:
+            result = await self.hass.send_command("tts/engine/list")
+        except BaseHassClientError as err:
+            self.logger.debug("Could not read the languages of the TTS engines: %s", err)
+            return {}
+        providers = result.get("providers") if isinstance(result, dict) else None
+        languages: dict[str, tuple[str, ...]] = {}
+        for provider in providers or ():
+            supported = provider.get("supported_languages")
+            if isinstance(supported, list):
+                languages[str(provider["engine_id"])] = tuple(str(code) for code in supported)
+        return languages
 
     async def _subscribe_entity_registry(self) -> None:
         """Watch the Home Assistant entity registry to keep the engine lists up to date."""

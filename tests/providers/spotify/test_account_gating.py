@@ -98,6 +98,30 @@ async def test_an_unreachable_lookup_does_not_block_the_setup() -> None:
     await spotify_flow._verify_account(session, "at-test")
 
 
+async def test_a_failing_lookup_keeps_the_stored_account_on_reconfigure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A reconfigure whose account lookup fails keeps the account id stored earlier."""
+    session = _make_session(instance_id="spotify--test")
+    session.context.setup_data = {CONF_ACCOUNT_ID: "u1"}
+    _stub_me(session, status=429)
+    finish = mock.AsyncMock(return_value={"instance_id": "spotify--test"})
+    monkeypatch.setattr(session, "finish", finish)
+    monkeypatch.setattr(session, "form", mock.AsyncMock(return_value={}))
+    monkeypatch.setattr(
+        spotify_flow,
+        "_pkce_authenticate",
+        mock.AsyncMock(return_value={"refresh_token": "rt-test", "access_token": "at-test"}),
+    )
+    monkeypatch.setattr(spotify_flow, "_setup_playback", mock.AsyncMock())
+    monkeypatch.setattr(spotify_flow, "_discard_pairing_dir", mock.AsyncMock())
+
+    await spotify_flow.run_setup(session)
+
+    finish.assert_awaited_once()
+    assert finish.call_args.args[0][CONF_ACCOUNT_ID] == "u1"
+
+
 @pytest.mark.parametrize(
     ("setup_instance_id", "other_instance_id", "aborts"),
     [

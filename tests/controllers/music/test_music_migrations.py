@@ -9,16 +9,22 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from music_assistant_models.enums import ExternalID
 from music_assistant_models.errors import MusicAssistantError
+from music_assistant_models.helpers import create_safe_string
 
 from music_assistant.constants import (
     DB_TABLE_AUDIO_ANALYSIS,
     DB_TABLE_EXTERNAL_ID_LOOKUP,
     DB_TABLE_FAVORITES,
-    DB_TABLE_PLAYLOG,
+    DB_TABLE_GENRE_MEDIA_ITEM_MAPPING,
+    DB_TABLE_GENRES,
+    DB_TABLE_LEGACY_PLAYLOG,
+    DB_TABLE_MEDIA_PROGRESS,
+    DB_TABLE_PLAY_HISTORY,
     DB_TABLE_PROVIDER_MAPPINGS,
     DB_TABLE_SETTINGS,
+    DEFAULT_GENRE_MAPPING,
 )
-from music_assistant.controllers.music import MusicController
+from music_assistant.controllers.music import MusicController, migrations
 from music_assistant.controllers.music.favorites import PENDING_USER_ID
 from music_assistant.controllers.music.migrations import migrate_database
 from music_assistant.helpers.database import DatabaseConnection
@@ -40,6 +46,26 @@ MEDIA_TABLES = (
     "audiobooks",
     "podcasts",
     "genres",
+)
+
+# the aliases the schema 69 step adds to the classical genre
+ADDED_CLASSICAL_ALIASES = (
+    "Kamermuziek",
+    "Kammermusik",
+    "Kammermusikk",
+    "Klassiek",
+    "Klassik",
+    "Klassisk",
+    "Klassisk Musik",
+    "Klassische Musik",
+    "Musica Classica",
+    "Musica da Camera",
+    "Musique Classique",
+    "Musique de Chambre",  # codespell:ignore chambre
+    "Muzyka Kameralna",
+    "Muzyka Klasyczna",
+    "Música Clásica",
+    "Música de Cámara",
 )
 
 
@@ -69,7 +95,7 @@ async def database(tmp_path: Path) -> AsyncGenerator[DatabaseConnection]:
     )
     # tests that exercise a specific playlog layout replace this stand-in
     await db.execute(
-        f"CREATE TABLE {DB_TABLE_PLAYLOG}([id] INTEGER PRIMARY KEY, [userid] TEXT NOT NULL, "
+        f"CREATE TABLE {DB_TABLE_LEGACY_PLAYLOG}([id] INTEGER PRIMARY KEY, [userid] TEXT NOT NULL, "
         "[playback_speed] REAL NOT NULL DEFAULT 1.0, "
         "UNIQUE(userid))"
     )
@@ -82,7 +108,7 @@ async def database(tmp_path: Path) -> AsyncGenerator[DatabaseConnection]:
 # 4-column unique constraint, so it raises IntegrityError on databases that still
 # carry the legacy 3-column constraint (issue #5754)
 PLAYLOG_UPSERT = (
-    f"INSERT INTO {DB_TABLE_PLAYLOG} "
+    f"INSERT INTO {DB_TABLE_LEGACY_PLAYLOG} "
     "(item_id, provider, media_type, name, image, fully_played, "
     "seconds_played, timestamp, queue_id, user_initiated, userid) "
     "VALUES (:item_id, :provider, :media_type, :name, :image, :fully_played, "
@@ -90,6 +116,7 @@ PLAYLOG_UPSERT = (
     "ON CONFLICT(item_id, provider, media_type, userid) DO UPDATE SET "
     "timestamp = excluded.timestamp"
 )
+MEDIA_PROGRESS_UPSERT = PLAYLOG_UPSERT.replace("playlog", "media_progress")
 
 
 def _playlog_entry(userid: str, timestamp: int = 100) -> dict[str, object]:
@@ -110,10 +137,10 @@ def _playlog_entry(userid: str, timestamp: int = 100) -> dict[str, object]:
 
 async def _create_legacy_playlog_table(database: DatabaseConnection) -> None:
     """Create the playlog table as it exists on pre-userid installs."""
-    await database.execute(f"DROP TABLE {DB_TABLE_PLAYLOG}")
+    await database.execute(f"DROP TABLE {DB_TABLE_LEGACY_PLAYLOG}")
     # original table layout (schema version <= 22) with the 3-column UNIQUE constraint
     await database.execute(
-        f"""CREATE TABLE {DB_TABLE_PLAYLOG}(
+        f"""CREATE TABLE {DB_TABLE_LEGACY_PLAYLOG}(
             [id] INTEGER PRIMARY KEY AUTOINCREMENT,
             [item_id] TEXT NOT NULL,
             [provider] TEXT NOT NULL,
@@ -126,18 +153,18 @@ async def _create_legacy_playlog_table(database: DatabaseConnection) -> None:
             UNIQUE(item_id, provider, media_type));"""
     )
     # columns + index added in-place by the later ALTER TABLE migrations
-    await database.execute(f"ALTER TABLE {DB_TABLE_PLAYLOG} ADD COLUMN userid TEXT")
-    await database.execute(f"ALTER TABLE {DB_TABLE_PLAYLOG} ADD COLUMN queue_id TEXT")
+    await database.execute(f"ALTER TABLE {DB_TABLE_LEGACY_PLAYLOG} ADD COLUMN userid TEXT")
+    await database.execute(f"ALTER TABLE {DB_TABLE_LEGACY_PLAYLOG} ADD COLUMN queue_id TEXT")
     await database.execute(
-        f"ALTER TABLE {DB_TABLE_PLAYLOG} ADD COLUMN user_initiated BOOLEAN NOT NULL DEFAULT 1"
+        f"ALTER TABLE {DB_TABLE_LEGACY_PLAYLOG} ADD COLUMN user_initiated BOOLEAN NOT NULL DEFAULT 1"
     )
     await database.execute(
-        f"ALTER TABLE {DB_TABLE_PLAYLOG} ADD COLUMN playback_speed REAL NOT NULL DEFAULT 1.0"
+        f"ALTER TABLE {DB_TABLE_LEGACY_PLAYLOG} ADD COLUMN playback_speed REAL NOT NULL DEFAULT 1.0"
     )
-    await database.execute(f"ALTER TABLE {DB_TABLE_PLAYLOG} ADD COLUMN artists json")
+    await database.execute(f"ALTER TABLE {DB_TABLE_LEGACY_PLAYLOG} ADD COLUMN artists json")
     await database.execute(
-        f"CREATE UNIQUE INDEX {DB_TABLE_PLAYLOG}_unique_idx "
-        f"ON {DB_TABLE_PLAYLOG}(item_id,provider,media_type,userid)"
+        f"CREATE UNIQUE INDEX {DB_TABLE_LEGACY_PLAYLOG}_unique_idx "
+        f"ON {DB_TABLE_LEGACY_PLAYLOG}(item_id,provider,media_type,userid)"
     )
     await database.commit()
 
@@ -158,7 +185,7 @@ async def test_migration_rebuilds_playlog_with_stale_unique_constraint(
     await database.execute(PLAYLOG_UPSERT, _playlog_entry("user1"))
     # a legacy row from before the userid column existed
     await database.execute(
-        f"INSERT INTO {DB_TABLE_PLAYLOG} (item_id, provider, media_type, name) "
+        f"INSERT INTO {DB_TABLE_LEGACY_PLAYLOG} (item_id, provider, media_type, name) "
         "VALUES ('2', 'library', 'track', 'Legacy Track')"
     )
     await database.commit()
@@ -174,25 +201,25 @@ async def test_migration_rebuilds_playlog_with_stale_unique_constraint(
     )
 
     # replaying the same item for the same user updates the existing row in place
-    await database.execute(PLAYLOG_UPSERT, _playlog_entry("user1", timestamp=200))
+    await database.execute(MEDIA_PROGRESS_UPSERT, _playlog_entry("user1", timestamp=200))
     # another user playing the same item gets their own row
-    await database.execute(PLAYLOG_UPSERT, _playlog_entry("user2"))
-    rows = await database.get_rows(DB_TABLE_PLAYLOG, {"item_id": "1"})
+    await database.execute(MEDIA_PROGRESS_UPSERT, _playlog_entry("user2"))
+    rows = await database.get_rows(DB_TABLE_MEDIA_PROGRESS, {"item_id": "1"})
     assert len(rows) == 2
     user1_row = next(row for row in rows if row["userid"] == "user1")
     assert user1_row["timestamp"] == 200
     assert user1_row["name"] == "Test Track"
     # legacy rows without a userid cannot be kept under the NOT NULL schema
-    assert not await database.get_rows(DB_TABLE_PLAYLOG, {"item_id": "2"})
+    assert not await database.get_rows(DB_TABLE_MEDIA_PROGRESS, {"item_id": "2"})
 
 
-async def test_migration_leaves_correct_playlog_untouched(
+async def test_migration_renames_current_playlog_and_keeps_unique_progress_state(
     database: DatabaseConnection,
 ) -> None:
-    """A playlog table that already has the 4-column constraint is not rebuilt."""
-    await database.execute(f"DROP TABLE {DB_TABLE_PLAYLOG}")
+    """A current playlog table is renamed without changing its progress constraint."""
+    await database.execute(f"DROP TABLE {DB_TABLE_LEGACY_PLAYLOG}")
     await database.execute(
-        f"""CREATE TABLE {DB_TABLE_PLAYLOG}(
+        f"""CREATE TABLE {DB_TABLE_LEGACY_PLAYLOG}(
             [id] INTEGER PRIMARY KEY AUTOINCREMENT,
             [item_id] TEXT NOT NULL,
             [provider] TEXT NOT NULL,
@@ -210,11 +237,65 @@ async def test_migration_leaves_correct_playlog_untouched(
             UNIQUE(item_id, provider, media_type, userid));"""
     )
     await database.execute(PLAYLOG_UPSERT, _playlog_entry("user1"))
+    await database.execute(
+        f"CREATE UNIQUE INDEX {DB_TABLE_LEGACY_PLAYLOG}_unique_idx "
+        f"ON {DB_TABLE_LEGACY_PLAYLOG}(item_id,provider,media_type,userid)"
+    )
+    await database.execute(
+        f"CREATE INDEX {DB_TABLE_LEGACY_PLAYLOG}_userid_timestamp_idx "
+        f"ON {DB_TABLE_LEGACY_PLAYLOG}(userid,timestamp)"
+    )
+    await database.execute(
+        f"CREATE INDEX {DB_TABLE_LEGACY_PLAYLOG}_provider_media_type_idx "
+        f"ON {DB_TABLE_LEGACY_PLAYLOG}(provider,media_type,userid,timestamp)"
+    )
     await database.commit()
     table_sql_query = (
-        f"SELECT sql FROM sqlite_master WHERE type = 'table' AND name = '{DB_TABLE_PLAYLOG}'"
+        f"SELECT sql FROM sqlite_master WHERE type = 'table' AND name = '{DB_TABLE_LEGACY_PLAYLOG}'"
     )
     table_sql_before = (await database.get_rows_from_query(table_sql_query))[0]["sql"]
+
+    mass = MagicMock()
+    mass.cache.clear = AsyncMock()
+    await migrate_database(
+        mass,
+        database,
+        MagicMock(),
+        prev_version=65,
+        create_tables=AsyncMock(),
+    )
+
+    progress_sql_query = (
+        f"SELECT sql FROM sqlite_master WHERE type = 'table' AND name = '{DB_TABLE_MEDIA_PROGRESS}'"
+    )
+    progress_table_sql = (await database.get_rows_from_query(progress_sql_query))[0]["sql"]
+    assert "UNIQUE(item_id, provider, media_type, userid)" in progress_table_sql
+    assert DB_TABLE_LEGACY_PLAYLOG in table_sql_before
+    rows = await database.get_rows(DB_TABLE_MEDIA_PROGRESS)
+    assert len(rows) == 1
+    assert not await database.get_row(
+        "sqlite_master", {"type": "table", "name": DB_TABLE_LEGACY_PLAYLOG}
+    )
+    assert not await database.get_rows(DB_TABLE_PLAY_HISTORY)
+    indexes = {
+        row["name"]
+        for row in await database.get_rows_from_query(
+            "SELECT name FROM sqlite_master WHERE type = 'index'", limit=0
+        )
+    }
+    assert not any(name.startswith(f"{DB_TABLE_LEGACY_PLAYLOG}_") for name in indexes)
+
+
+async def test_migration_retries_interrupted_playlog_rename(
+    database: DatabaseConnection,
+) -> None:
+    """An older migration can resume when the table rename already happened."""
+    await _create_legacy_playlog_table(database)
+    await database.execute(PLAYLOG_UPSERT, _playlog_entry("user1"))
+    await database.execute(
+        f"ALTER TABLE {DB_TABLE_LEGACY_PLAYLOG} RENAME TO {DB_TABLE_MEDIA_PROGRESS}"
+    )
+    await database.commit()
 
     mass = MagicMock()
     mass.cache.clear = AsyncMock()
@@ -226,9 +307,13 @@ async def test_migration_leaves_correct_playlog_untouched(
         create_tables=AsyncMock(),
     )
 
-    assert (await database.get_rows_from_query(table_sql_query))[0]["sql"] == table_sql_before
-    rows = await database.get_rows(DB_TABLE_PLAYLOG)
+    rows = await database.get_rows(DB_TABLE_MEDIA_PROGRESS)
     assert len(rows) == 1
+    assert rows[0]["userid"] == "user1"
+    assert not await database.get_row(
+        "sqlite_master", {"type": "table", "name": DB_TABLE_LEGACY_PLAYLOG}
+    )
+    assert await database.get_rows(DB_TABLE_PLAY_HISTORY) == []
 
 
 async def test_migrate_database_rejects_too_old_schema() -> None:
@@ -254,6 +339,15 @@ async def test_migrate_database_backfills_external_id_lookup(
     music = MusicController(mass_minimal)
     mass_minimal.music = music
     await music._setup_database()
+    table_names = {
+        row["name"]
+        for row in await music.database.get_rows_from_query(
+            "SELECT name FROM sqlite_master WHERE type = 'table'", limit=0
+        )
+    }
+    assert DB_TABLE_MEDIA_PROGRESS in table_names
+    assert DB_TABLE_PLAY_HISTORY in table_names
+    assert DB_TABLE_LEGACY_PLAYLOG not in table_names
     library_track = await music.tracks.add_item_to_library(create_track("spotify_1", "track_abc"))
     db_id = int(library_track.item_id)
     # revert the database to its v49 state: no lookup table, external ids stored
@@ -270,6 +364,9 @@ async def test_migrate_database_backfills_external_id_lookup(
     await music.database.execute(
         "UPDATE tracks SET external_ids = :external_ids WHERE item_id = :item_id",
         {"external_ids": f'[["isrc","{ISRC}"]]', "item_id": db_id},
+    )
+    await music.database.execute(
+        f"ALTER TABLE {DB_TABLE_MEDIA_PROGRESS} RENAME TO {DB_TABLE_LEGACY_PLAYLOG}"
     )
     await music.database.insert_or_replace(
         DB_TABLE_SETTINGS, {"key": "version", "value": "49", "type": "str"}
@@ -302,9 +399,11 @@ async def test_migrate_database_backfills_external_id_lookup(
 
 
 async def test_migration_repairs_null_smart_fades_centroids(
-    database: DatabaseConnection,
+    database: DatabaseConnection, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Null spectral centroid values in legacy Smart Fades analysis rows become 0.0."""
+    # keep the repaired rows in library.db; moving them out is tested on its own
+    monkeypatch.setattr(migrations, "_move_audio_analysis_out", AsyncMock())
     await database.execute(
         f"""CREATE TABLE {DB_TABLE_AUDIO_ANALYSIS}(
             [id] INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -498,9 +597,9 @@ async def test_migration_adds_columns_leapfrogged_by_the_stable_schema_version(
     # the stable branch numbers its schema versions independently: its v43 already has the
     # 4-column playlog constraint, but never got playback_speed or the playlist translation
     # columns, which this branch gates behind steps a v43 database no longer runs
-    await database.execute(f"DROP TABLE {DB_TABLE_PLAYLOG}")
+    await database.execute(f"DROP TABLE {DB_TABLE_LEGACY_PLAYLOG}")
     await database.execute(
-        f"""CREATE TABLE {DB_TABLE_PLAYLOG}(
+        f"""CREATE TABLE {DB_TABLE_LEGACY_PLAYLOG}(
             [id] INTEGER PRIMARY KEY AUTOINCREMENT,
             [item_id] TEXT NOT NULL,
             [provider] TEXT NOT NULL,
@@ -528,7 +627,7 @@ async def test_migration_adds_columns_leapfrogged_by_the_stable_schema_version(
     )
 
     assert {"translation_key", "translation_params"} <= await _table_columns(database, "playlists")
-    assert "playback_speed" in await _table_columns(database, DB_TABLE_PLAYLOG)
+    assert "playback_speed" in await _table_columns(database, DB_TABLE_MEDIA_PROGRESS)
 
 
 async def test_migration_adds_is_dynamic_column_to_radios(database: DatabaseConnection) -> None:
@@ -779,8 +878,8 @@ async def test_migration_clears_playlist_collages_from_the_playlog(
     database: DatabaseConnection, tmp_path: Path
 ) -> None:
     """The playlog forgets the collage of a played playlist, every other image stays."""
-    await database.execute(f"ALTER TABLE {DB_TABLE_PLAYLOG} ADD COLUMN media_type TEXT")
-    await database.execute(f"ALTER TABLE {DB_TABLE_PLAYLOG} ADD COLUMN image json")
+    await database.execute(f"ALTER TABLE {DB_TABLE_LEGACY_PLAYLOG} ADD COLUMN media_type TEXT")
+    await database.execute(f"ALTER TABLE {DB_TABLE_LEGACY_PLAYLOG} ADD COLUMN image json")
     collage = _image("thumb", "/collage/abc_thumb.jpg", "builtin")
     remote = serialize_to_json(_image("thumb", "https://cdn.example.com/collage/a.jpg", "spotify"))
     foreign = serialize_to_json(_image("thumb", "/collage/cover.jpg", "filesystem_local"))
@@ -793,7 +892,7 @@ async def test_migration_clears_playlist_collages_from_the_playlog(
     }
     for userid, (media_type, image) in stored_images.items():
         await database.execute(
-            f"INSERT INTO {DB_TABLE_PLAYLOG} (userid, media_type, image) "
+            f"INSERT INTO {DB_TABLE_LEGACY_PLAYLOG} (userid, media_type, image) "
             "VALUES (:userid, :media_type, :image)",
             {"userid": userid, "media_type": media_type, "image": image},
         )
@@ -805,7 +904,7 @@ async def test_migration_clears_playlist_collages_from_the_playlog(
     await migrate_database(mass, database, MagicMock(), prev_version=61, create_tables=AsyncMock())
 
     rows = await database.get_rows_from_query(
-        f"SELECT userid, image FROM {DB_TABLE_PLAYLOG}", limit=0
+        f"SELECT userid, image FROM {DB_TABLE_MEDIA_PROGRESS}", limit=0
     )
     assert {row["userid"]: row["image"] for row in rows} == {
         "user1": None,
@@ -814,3 +913,656 @@ async def test_migration_clears_playlist_collages_from_the_playlog(
         "user4": serialize_to_json(collage),
         "user5": foreign,
     }
+
+
+async def test_migration_drops_images_without_a_path(
+    database: DatabaseConnection, tmp_path: Path
+) -> None:
+    """
+    Images with an empty path leave the library, so stations stop sharing one proxy id.
+
+    Every other image stays, rows that can not be parsed are left alone and the playlog
+    forgets an empty-path image of a played item.
+    """
+    for table in ("radios", "tracks"):
+        await database.execute(f"ALTER TABLE {table} ADD COLUMN metadata json")
+    await database.execute(f"ALTER TABLE {DB_TABLE_LEGACY_PLAYLOG} ADD COLUMN image json")
+    empty = _image("thumb", "", "radiobrowser--abc")
+    tunein = _image("thumb", "https://cdn-radiotime-logos.tunein.com/s1.png", "tunein")
+    stored_radios = {
+        1: serialize_to_json({"images": [empty, tunein], "last_refresh": 1}),
+        2: json.dumps({"images": [empty]}),
+        3: serialize_to_json({"images": [tunein, empty]}),
+        4: serialize_to_json({"images": [tunein], "description": ""}),
+        5: 'not json ""',
+        6: None,
+    }
+    for item_id, metadata in stored_radios.items():
+        await database.execute(
+            "INSERT INTO radios (item_id, metadata) VALUES (:item_id, :metadata)",
+            {"item_id": item_id, "metadata": metadata},
+        )
+    await database.execute(
+        "INSERT INTO tracks (item_id, metadata) VALUES (1, :metadata)",
+        {"metadata": serialize_to_json({"images": [empty, tunein]})},
+    )
+    for userid, image in (
+        ("user1", serialize_to_json(empty)),
+        ("user2", serialize_to_json(tunein)),
+    ):
+        await database.execute(
+            f"INSERT INTO {DB_TABLE_LEGACY_PLAYLOG} (userid, image) VALUES (:userid, :image)",
+            {"userid": userid, "image": image},
+        )
+    await database.commit()
+    mass = MagicMock()
+    mass.cache.clear = AsyncMock()
+    mass.cache_path = str(tmp_path)
+
+    await migrate_database(mass, database, MagicMock(), prev_version=62, create_tables=AsyncMock())
+
+    radios = {
+        row["item_id"]: row["metadata"]
+        for row in await database.get_rows_from_query(
+            "SELECT item_id, metadata FROM radios", limit=0
+        )
+    }
+    assert json.loads(radios[1]) == {"images": [tunein], "last_refresh": 1}
+    assert json.loads(radios[2]) == {"images": []}
+    assert json.loads(radios[3]) == {"images": [tunein]}
+    for item_id in (4, 5, 6):
+        assert radios[item_id] == stored_radios[item_id]
+    track_rows = await database.get_rows_from_query("SELECT metadata FROM tracks", limit=0)
+    assert json.loads(track_rows[0]["metadata"]) == {"images": [tunein]}
+    playlog_rows = await database.get_rows_from_query(
+        f"SELECT userid, image FROM {DB_TABLE_MEDIA_PROGRESS}", limit=0
+    )
+    assert {row["userid"]: row["image"] for row in playlog_rows} == {
+        "user1": None,
+        "user2": serialize_to_json(tunein),
+    }
+
+
+async def _create_genre_tables(database: DatabaseConnection) -> None:
+    """Replace the genres stand-in with the genre tables as they exist at schema 64."""
+    await database.execute(f"DROP TABLE {DB_TABLE_GENRES}")
+    await database.execute(
+        f"CREATE TABLE {DB_TABLE_GENRES}([item_id] INTEGER PRIMARY KEY, "
+        "[translation_key] TEXT, [genre_aliases] json NOT NULL DEFAULT '[]', "
+        "[content_type] TEXT)"
+    )
+    await database.execute(
+        f"CREATE TABLE {DB_TABLE_GENRE_MEDIA_ITEM_MAPPING}([genre_id] INTEGER NOT NULL, "
+        "[media_id] INTEGER NOT NULL, [media_type] TEXT NOT NULL, [alias] TEXT, "
+        "[is_derived] BOOLEAN NOT NULL DEFAULT 0, [is_manual] BOOLEAN NOT NULL DEFAULT 0, "
+        "UNIQUE(genre_id, media_id, media_type))"
+    )
+
+
+async def _genre_aliases(database: DatabaseConnection) -> dict[int, Any]:
+    rows = await database.get_rows_from_query(
+        f"SELECT item_id, genre_aliases FROM {DB_TABLE_GENRES}", limit=0
+    )
+    return {row["item_id"]: json.loads(row["genre_aliases"]) for row in rows}
+
+
+async def test_migration_moves_misplaced_classical_genre_aliases(
+    database: DatabaseConnection,
+) -> None:
+    """
+    Aliases that are not classical leave the classical genre and its mappings.
+
+    Moved aliases land on their new genre, other genres and manual mappings stay untouched
+    and running the step twice changes nothing.
+    """
+    await _create_genre_tables(database)
+    genres = {
+        # music classical genre
+        1: (
+            "classical",
+            None,
+            ["classical", "Opera", "gamelan", "K-Pop", "Electronic", "Christian/Gospel"],
+        ),
+        2: ("asian_music", None, ["asian music", "K-Pop"]),
+        3: ("marching_band", None, ["marching band", "Brass Band"]),
+        # a classical genre in another taxonomy is left alone
+        4: ("classical", "audiobook", ["classical", "K-Pop"]),
+        5: ("pop", None, ["pop", "K-Pop"]),
+    }
+    for item_id, (translation_key, content_type, stored_aliases) in genres.items():
+        await database.execute(
+            f"INSERT INTO {DB_TABLE_GENRES} VALUES "
+            "(:item_id, :translation_key, :genre_aliases, :content_type)",
+            {
+                "item_id": item_id,
+                "translation_key": translation_key,
+                "genre_aliases": serialize_to_json(stored_aliases),
+                "content_type": content_type,
+            },
+        )
+    mappings = [
+        (1, 10, "Opera", 0),
+        (1, 11, "Gamelan", 0),
+        (1, 12, "K-Pop", 0),
+        (1, 13, "electronic", 1),
+        # raw tag variants the scanner matched to a removed alias in normalized form
+        (1, 14, "Christian/Gospel", 0),
+        (1, 15, " k-pop ", 0),
+        (5, 12, "K-Pop", 0),
+    ]
+    for genre_id, media_id, alias, is_manual in mappings:
+        await database.execute(
+            f"INSERT INTO {DB_TABLE_GENRE_MEDIA_ITEM_MAPPING} "
+            "(genre_id, media_id, media_type, alias, is_manual) "
+            "VALUES (:genre_id, :media_id, 'track', :alias, :is_manual)",
+            {"genre_id": genre_id, "media_id": media_id, "alias": alias, "is_manual": is_manual},
+        )
+    await database.commit()
+    mass = MagicMock()
+    mass.cache.clear = AsyncMock()
+
+    for _ in range(2):
+        await migrate_database(
+            mass, database, MagicMock(), prev_version=64, create_tables=AsyncMock()
+        )
+
+    aliases = await _genre_aliases(database)
+    assert aliases[1] == ["classical", "Opera", *ADDED_CLASSICAL_ALIASES]
+    assert aliases[2][:2] == ["asian music", "K-Pop"]
+    assert "Gamelan" in aliases[2]
+    assert "Thai Classical" in aliases[2]
+    assert aliases[2].count("Gamelan") == 1
+    assert aliases[3][:2] == ["marching band", "Brass Band"]
+    assert aliases[3].count("Brass Band") == 1
+    assert "Circus March" in aliases[3]
+    assert aliases[4] == ["classical", "K-Pop"]
+    assert aliases[5] == ["pop", "K-Pop"]
+    mapping_rows = await database.get_rows_from_query(
+        f"SELECT genre_id, media_id FROM {DB_TABLE_GENRE_MEDIA_ITEM_MAPPING}", limit=0
+    )
+    assert {(row["genre_id"], row["media_id"]) for row in mapping_rows} == {
+        (1, 10),
+        (1, 13),
+        (5, 12),
+    }
+
+
+async def test_migration_survives_unparsable_classical_genre_aliases(
+    database: DatabaseConnection,
+) -> None:
+    """A classical genre with broken alias data is skipped instead of failing the migration."""
+    await _create_genre_tables(database)
+    await database.execute(
+        f"INSERT INTO {DB_TABLE_GENRES} VALUES (1, 'classical', 'not json', NULL)"
+    )
+    await database.commit()
+    mass = MagicMock()
+    mass.cache.clear = AsyncMock()
+
+    await migrate_database(mass, database, MagicMock(), prev_version=64, create_tables=AsyncMock())
+
+    rows = await database.get_rows_from_query(f"SELECT genre_aliases FROM {DB_TABLE_GENRES}")
+    assert rows[0]["genre_aliases"] == "not json"
+
+
+async def test_migration_drops_stale_mappings_of_a_clean_classical_genre(
+    database: DatabaseConnection,
+) -> None:
+    """Mappings made through a removed alias go, even when the alias list is already clean."""
+    await _create_genre_tables(database)
+    await database.execute(
+        f"INSERT INTO {DB_TABLE_GENRES} VALUES (1, 'classical', :aliases, NULL)",
+        {"aliases": serialize_to_json(["classical", "Opera"])},
+    )
+    # a second classical genre whose alias data can not be read
+    await database.execute(f"INSERT INTO {DB_TABLE_GENRES} VALUES (2, 'classical', '42', NULL)")
+    for genre_id, media_id, alias in ((1, 10, "Opera"), (1, 11, "K-Pop"), (2, 12, "Gamelan")):
+        await database.execute(
+            f"INSERT INTO {DB_TABLE_GENRE_MEDIA_ITEM_MAPPING} "
+            "(genre_id, media_id, media_type, alias) "
+            "VALUES (:genre_id, :media_id, 'track', :alias)",
+            {"genre_id": genre_id, "media_id": media_id, "alias": alias},
+        )
+    await database.commit()
+    mass = MagicMock()
+    mass.cache.clear = AsyncMock()
+
+    await migrate_database(mass, database, MagicMock(), prev_version=64, create_tables=AsyncMock())
+
+    genre_rows = await database.get_rows_from_query(
+        f"SELECT item_id, genre_aliases FROM {DB_TABLE_GENRES}", limit=0
+    )
+    assert {row["item_id"]: row["genre_aliases"] for row in genre_rows} == {
+        1: serialize_to_json(["classical", "Opera", *ADDED_CLASSICAL_ALIASES]),
+        2: 42,
+    }
+    mapping_rows = await database.get_rows_from_query(
+        f"SELECT media_id FROM {DB_TABLE_GENRE_MEDIA_ITEM_MAPPING}", limit=0
+    )
+    assert [row["media_id"] for row in mapping_rows] == [10]
+
+
+def test_genre_mapping_keeps_non_classical_aliases_out_of_classical() -> None:
+    """The default classical genre holds only classical aliases, the rest sit elsewhere."""
+    aliases = {x["translation_key"]: x["aliases"] for x in DEFAULT_GENRE_MAPPING}
+    removed = {
+        "Cinematic Classical",
+        "Duets",
+        "March",
+        "Modern Classical",
+        "Post-Classical",
+        "Quartets",
+        "Quintets",
+        "Secular Vocal Music",
+        "Solo Piano",
+        "Third Stream",
+        "Trios",
+        "Vocal Music",
+        "Vocal Music (Secular and Sacred)",
+    }
+    assert not removed & set(aliases["classical"])
+    assert set(ADDED_CLASSICAL_ALIASES) <= set(aliases["classical"])
+    assert "Cinematic Classical" in aliases["soundtrack"]
+    assert {"Post-Classical", "Solo Piano"} <= set(aliases["new_age"])
+    assert "Third Stream" in aliases["jazz"]
+    assert "March" in aliases["marching_band"]
+    # an added alias must not pull items into another genre as well
+    other_norms = {
+        create_safe_string(alias, True, True)
+        for key, genre_aliases in aliases.items()
+        if key != "classical"
+        for alias in genre_aliases
+    }
+    assert not {create_safe_string(x, True, True) for x in ADDED_CLASSICAL_ALIASES} & other_norms
+
+
+async def test_migration_moves_more_classical_genre_aliases(
+    database: DatabaseConnection,
+) -> None:
+    """
+    More aliases leave the classical genre and the words for it in other languages join.
+
+    Moved aliases land on their new genre, other genres and manual mappings stay untouched
+    and running the step twice changes nothing.
+    """
+    await _create_genre_tables(database)
+    genres = {
+        # music classical genre
+        1: (
+            "classical",
+            None,
+            ["classical", "Opera", "Solo Piano", "Duets", "March", "third stream", "klassiek"],
+        ),
+        2: ("new_age", None, ["new age", "Solo Piano"]),
+        3: ("soundtrack", None, ["soundtrack"]),
+        # a classical genre in another taxonomy is left alone
+        4: ("classical", "audiobook", ["classical", "Duets"]),
+        5: ("jazz", None, ["jazz", "Third Stream"]),
+        6: ("marching_band", None, ["marching band", "March"]),
+    }
+    for item_id, (translation_key, content_type, stored_aliases) in genres.items():
+        await database.execute(
+            f"INSERT INTO {DB_TABLE_GENRES} VALUES "
+            "(:item_id, :translation_key, :genre_aliases, :content_type)",
+            {
+                "item_id": item_id,
+                "translation_key": translation_key,
+                "genre_aliases": serialize_to_json(stored_aliases),
+                "content_type": content_type,
+            },
+        )
+    mappings = [
+        (1, 10, "Opera", 0),
+        (1, 11, "Solo Piano", 0),
+        (1, 12, "Duets", 1),
+        # raw tag variant the scanner matched to a removed alias in normalized form
+        (1, 13, "Third-Stream", 0),
+        (1, 14, "Klassiek", 0),
+        (1, 15, "march", 0),
+        (5, 13, "Third Stream", 0),
+        (6, 15, "March", 0),
+    ]
+    for genre_id, media_id, alias, is_manual in mappings:
+        await database.execute(
+            f"INSERT INTO {DB_TABLE_GENRE_MEDIA_ITEM_MAPPING} "
+            "(genre_id, media_id, media_type, alias, is_manual) "
+            "VALUES (:genre_id, :media_id, 'track', :alias, :is_manual)",
+            {"genre_id": genre_id, "media_id": media_id, "alias": alias, "is_manual": is_manual},
+        )
+    await database.commit()
+    mass = MagicMock()
+    mass.cache.clear = AsyncMock()
+
+    for _ in range(2):
+        await migrate_database(
+            mass, database, MagicMock(), prev_version=68, create_tables=AsyncMock()
+        )
+
+    aliases = await _genre_aliases(database)
+    assert aliases[1] == [
+        "classical",
+        "Opera",
+        "klassiek",
+        *(x for x in ADDED_CLASSICAL_ALIASES if x != "Klassiek"),
+    ]
+    assert aliases[2] == ["new age", "Solo Piano", "Post-Classical"]
+    assert aliases[3] == ["soundtrack", "Cinematic Classical"]
+    assert aliases[4] == ["classical", "Duets"]
+    assert aliases[5] == ["jazz", "Third Stream"]
+    assert aliases[6] == ["marching band", "March"]
+    mapping_rows = await database.get_rows_from_query(
+        f"SELECT genre_id, media_id FROM {DB_TABLE_GENRE_MEDIA_ITEM_MAPPING}", limit=0
+    )
+    assert {(row["genre_id"], row["media_id"]) for row in mapping_rows} == {
+        (1, 10),
+        (1, 12),
+        (1, 14),
+        (5, 13),
+        (6, 15),
+    }
+
+
+async def test_migration_survives_missing_genres_for_more_classical_aliases(
+    database: DatabaseConnection,
+) -> None:
+    """Missing genres, a missing mapping table and broken alias data do not fail the step."""
+    await _create_genre_tables(database)
+    await database.execute(f"DROP TABLE {DB_TABLE_GENRE_MEDIA_ITEM_MAPPING}")
+    await database.execute(
+        f"INSERT INTO {DB_TABLE_GENRES} VALUES (1, 'classical', 'not json', NULL)"
+    )
+    await database.execute(f"INSERT INTO {DB_TABLE_GENRES} VALUES (2, 'soundtrack', '', NULL)")
+    await database.commit()
+    mass = MagicMock()
+    mass.cache.clear = AsyncMock()
+
+    await migrate_database(mass, database, MagicMock(), prev_version=68, create_tables=AsyncMock())
+
+    genre_rows = await database.get_rows_from_query(
+        f"SELECT item_id, genre_aliases FROM {DB_TABLE_GENRES}", limit=0
+    )
+    assert {row["item_id"]: row["genre_aliases"] for row in genre_rows} == {
+        1: "not json",
+        2: serialize_to_json(["Cinematic Classical"]),
+    }
+
+
+async def test_migration_adds_is_endless_column_to_radios(
+    database: DatabaseConnection,
+) -> None:
+    """
+    A pre-67 database gets the radios.is_endless column, defaulting every row to endless.
+
+    A pre-existing dynamic station is an endless feed and a plain station an endless
+    stream, so both default correctly. Running the migration twice is harmless.
+    """
+    await database.execute("ALTER TABLE radios ADD COLUMN is_dynamic BOOLEAN NOT NULL DEFAULT 0")
+    await database.execute(
+        "INSERT INTO radios (item_id, external_ids, is_dynamic) VALUES (1, '[]', 1)"
+    )
+    await database.execute(
+        "INSERT INTO radios (item_id, external_ids, is_dynamic) VALUES (2, '[]', 0)"
+    )
+    await database.commit()
+    assert "is_endless" not in await _table_columns(database, "radios")
+
+    mass = MagicMock()
+    mass.cache.clear = AsyncMock()
+    for _ in range(2):
+        await migrate_database(
+            mass,
+            database,
+            MagicMock(),
+            prev_version=66,
+            create_tables=AsyncMock(),
+        )
+
+    assert "is_endless" in await _table_columns(database, "radios")
+    rows = await database.get_rows_from_query(
+        "SELECT item_id, is_endless FROM radios ORDER BY item_id"
+    )
+    assert [(row["item_id"], row["is_endless"]) for row in rows] == [(1, 1), (2, 1)]
+
+
+async def test_migration_replaces_play_history_indexes(database: DatabaseConnection) -> None:
+    """Schema 70 replaces the two play-history indexes with its covering index."""
+    await database.execute(
+        f"""CREATE TABLE {DB_TABLE_PLAY_HISTORY}(
+            userid TEXT, timestamp REAL, media_type TEXT, provider TEXT, item_id TEXT
+        )"""
+    )
+    await database.execute(
+        f"CREATE INDEX {DB_TABLE_PLAY_HISTORY}_user_timestamp_idx "
+        f"ON {DB_TABLE_PLAY_HISTORY}(userid,timestamp)"
+    )
+    await database.execute(
+        f"CREATE INDEX {DB_TABLE_PLAY_HISTORY}_user_media_timestamp_idx "
+        f"ON {DB_TABLE_PLAY_HISTORY}(userid,media_type,timestamp)"
+    )
+    await database.commit()
+
+    mass = MagicMock()
+    mass.cache.clear = AsyncMock()
+    for _ in range(2):
+        await migrate_database(
+            mass,
+            database,
+            MagicMock(),
+            prev_version=69,
+            create_tables=AsyncMock(),
+        )
+
+    indexes = await database.get_rows_from_query(
+        "SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = :table",
+        {"table": DB_TABLE_PLAY_HISTORY},
+    )
+    assert {row["name"] for row in indexes} == {f"{DB_TABLE_PLAY_HISTORY}_user_timestamp_cov_idx"}
+    columns = await database.get_rows_from_query(
+        f"PRAGMA index_info({DB_TABLE_PLAY_HISTORY}_user_timestamp_cov_idx)", limit=0
+    )
+    assert [row["name"] for row in columns] == [
+        "userid",
+        "timestamp",
+        "media_type",
+        "provider",
+        "item_id",
+    ]
+
+
+async def test_migration_drops_the_token_from_audiobookshelf_image_urls(
+    database: DatabaseConnection,
+) -> None:
+    """
+    A pre-68 database loses the audiobookshelf api token from its stored image urls.
+
+    The cover version stays, images of other providers and unparsable rows are left alone,
+    and running the migration twice is harmless.
+    """
+    base = "http://abs.local"
+    cover = _image("thumb", f"{base}/api/items/li_1/cover?token=secret&ts=5", "audiobookshelf--a")
+    author = _image("thumb", f"{base}/api/authors/au_1/image?token=secret", "audiobookshelf--a")
+    other = _image("thumb", "https://example.com/cover?token=keep", "other--b")
+    for table in ("artists", "audiobooks"):
+        await database.execute(f"ALTER TABLE {table} ADD COLUMN metadata json")
+    for table in (DB_TABLE_MEDIA_PROGRESS, DB_TABLE_PLAY_HISTORY):
+        await database.execute(f"CREATE TABLE {table}([id] INTEGER PRIMARY KEY, [image] json)")
+    stored = {
+        ("artists", 1): serialize_to_json({"images": [author, other]}),
+        ("artists", 2): 'not json "token="',
+        ("audiobooks", 1): serialize_to_json({"images": [cover]}),
+    }
+    for (table, item_id), metadata in stored.items():
+        await database.execute(
+            f"INSERT INTO {table} (item_id, metadata) VALUES (:item_id, :metadata)",
+            {"item_id": item_id, "metadata": metadata},
+        )
+    for table in (DB_TABLE_MEDIA_PROGRESS, DB_TABLE_PLAY_HISTORY):
+        await database.execute(
+            f"INSERT INTO {table} (id, image) VALUES (1, :image)",
+            {"image": serialize_to_json(cover)},
+        )
+    await database.commit()
+
+    mass = MagicMock()
+    mass.cache.clear = AsyncMock()
+    for _ in range(2):
+        await migrate_database(
+            mass, database, MagicMock(), prev_version=67, create_tables=AsyncMock()
+        )
+
+    clean_cover = {**cover, "path": f"{base}/api/items/li_1/cover?ts=5"}
+    clean_author = {**author, "path": f"{base}/api/authors/au_1/image"}
+    artists = {
+        row["item_id"]: row["metadata"]
+        for row in await database.get_rows_from_query("SELECT item_id, metadata FROM artists")
+    }
+    assert json.loads(artists[1]) == {"images": [clean_author, other]}
+    assert artists[2] == stored[("artists", 2)]
+    audiobook = await database.get_rows_from_query("SELECT metadata FROM audiobooks")
+    assert json.loads(audiobook[0]["metadata"]) == {"images": [clean_cover]}
+    for table in (DB_TABLE_MEDIA_PROGRESS, DB_TABLE_PLAY_HISTORY):
+        played = await database.get_rows_from_query(f"SELECT image FROM {table}")
+        assert json.loads(played[0]["image"]) == clean_cover
+
+
+async def _create_station_tables(database: DatabaseConnection) -> None:
+    """Create the tables a pre-70 Apple Music station playlist lives in, real-shaped."""
+    item_columns = (
+        "[item_id] INTEGER PRIMARY KEY AUTOINCREMENT, [name] TEXT NOT NULL, "
+        "[sort_name] TEXT NOT NULL, [metadata] json NOT NULL, [play_count] INTEGER DEFAULT 0, "
+        "[last_played] INTEGER DEFAULT 0, [timestamp_added] INTEGER, "
+        "[timestamp_modified] INTEGER NOT NULL DEFAULT 0, [search_name] TEXT NOT NULL, "
+        "[search_sort_name] TEXT NOT NULL"
+    )
+    playlog_columns = (
+        "[id] INTEGER PRIMARY KEY AUTOINCREMENT, [item_id] TEXT NOT NULL, "
+        "[provider] TEXT NOT NULL, [media_type] TEXT NOT NULL, [userid] TEXT NOT NULL, "
+        "[name] TEXT NOT NULL, [image] json"
+    )
+    for table in ("playlists", "radios"):
+        await database.execute(f"DROP TABLE {table}")
+    await database.execute(
+        f"CREATE TABLE playlists({item_columns}, [owner] TEXT NOT NULL, "
+        "[is_editable] BOOLEAN NOT NULL, [is_dynamic] BOOLEAN NOT NULL DEFAULT 0)"
+    )
+    await database.execute(
+        f"CREATE TABLE radios({item_columns}, [is_dynamic] BOOLEAN NOT NULL DEFAULT 0, "
+        "[is_endless] BOOLEAN DEFAULT 1 NOT NULL)"
+    )
+    await database.execute(
+        f"CREATE TABLE {DB_TABLE_PROVIDER_MAPPINGS}([media_type] TEXT NOT NULL, "
+        "[item_id] INTEGER NOT NULL, [provider_domain] TEXT NOT NULL, "
+        "[provider_instance] TEXT NOT NULL, [provider_item_id] TEXT NOT NULL, "
+        "UNIQUE(media_type, provider_instance, provider_item_id))"
+    )
+    await database.execute(
+        f"CREATE TABLE {DB_TABLE_FAVORITES}([user_id] TEXT NOT NULL, [media_type] TEXT NOT NULL, "
+        "[item_id] INTEGER NOT NULL, UNIQUE(user_id, media_type, item_id))"
+    )
+    await database.execute(
+        f"CREATE TABLE {DB_TABLE_MEDIA_PROGRESS}({playlog_columns}, "
+        "UNIQUE(item_id, provider, media_type, userid))"
+    )
+    await database.execute(f"CREATE TABLE {DB_TABLE_PLAY_HISTORY}({playlog_columns})")
+
+
+async def _station_snapshot(database: DatabaseConnection) -> dict[str, Any]:
+    """Return the rows the station migration touches, comparable across runs."""
+    queries = {
+        "playlists": "SELECT item_id, name FROM playlists",
+        "radios": "SELECT * FROM radios",
+        "mappings": f"SELECT media_type, item_id, provider_item_id FROM {DB_TABLE_PROVIDER_MAPPINGS}",
+        "favorites": f"SELECT media_type, item_id FROM {DB_TABLE_FAVORITES}",
+        "progress": f"SELECT media_type, item_id, provider, image FROM {DB_TABLE_MEDIA_PROGRESS}",
+        "history": f"SELECT media_type, item_id, provider, image FROM {DB_TABLE_PLAY_HISTORY}",
+    }
+    return {
+        name: sorted(tuple(row) for row in await database.get_rows_from_query(query, limit=0))
+        for name, query in queries.items()
+    }
+
+
+async def test_migration_moves_apple_music_station_playlists_to_radios(
+    database: DatabaseConnection,
+) -> None:
+    """
+    A pre-70 library playlist of an Apple Music station becomes a dynamic radio.
+
+    Its mapping, favorite and plays follow it, plays of the station outside the library turn
+    into radio plays, a regular Apple Music playlist stays and a second run changes nothing.
+    """
+    await _create_station_tables(database)
+    token = _image("thumb", "playlist/ra.111", "apple_music--abc")
+    remote = {
+        **_image("thumb", "https://is1-ssl.mzstatic.com/a.jpg", "apple_music--abc"),
+        "remotely_accessible": True,
+    }
+    playlists = {
+        5: ("Chill Station", serialize_to_json({"images": [token, remote]})),
+        2: ("My Mix", serialize_to_json({"images": []})),
+    }
+    for item_id, (name, metadata) in playlists.items():
+        await database.execute(
+            "INSERT INTO playlists (item_id, name, sort_name, metadata, play_count, last_played, "
+            "timestamp_added, timestamp_modified, search_name, search_sort_name, owner, "
+            "is_editable, is_dynamic) VALUES (:item_id, :name, :name, :metadata, 3, 50, 10, 20, "
+            ":name, :name, 'Apple Music', 0, :is_dynamic)",
+            {"item_id": item_id, "name": name, "metadata": metadata, "is_dynamic": item_id == 5},
+        )
+    await database.execute(
+        f"INSERT INTO {DB_TABLE_PROVIDER_MAPPINGS} "
+        "(media_type, item_id, provider_domain, provider_instance, provider_item_id) VALUES "
+        "('playlist', 5, 'apple_music', 'apple_music--abc', 'ra.111'), "
+        "('playlist', 2, 'apple_music', 'apple_music--abc', 'pl.222')"
+    )
+    await database.execute(
+        f"INSERT INTO {DB_TABLE_FAVORITES} (user_id, media_type, item_id) VALUES "
+        "('u1', 'playlist', 5), ('u1', 'playlist', 2)"
+    )
+    for table in (DB_TABLE_MEDIA_PROGRESS, DB_TABLE_PLAY_HISTORY):
+        await database.execute(
+            f"INSERT INTO {table} (item_id, provider, media_type, userid, name, image) VALUES "
+            "('5', 'library', 'playlist', 'u1', 'Chill Station', :image), "
+            "('ra.111', 'apple_music--abc', 'playlist', 'u1', 'Chill Station', :image), "
+            "('2', 'library', 'playlist', 'u1', 'My Mix', NULL)",
+            {"image": serialize_to_json(token)},
+        )
+    await database.commit()
+
+    mass = MagicMock()
+    mass.cache.clear = AsyncMock()
+    await migrate_database(mass, database, MagicMock(), prev_version=69, create_tables=AsyncMock())
+    migrated = await _station_snapshot(database)
+    await migrate_database(mass, database, MagicMock(), prev_version=69, create_tables=AsyncMock())
+
+    assert await _station_snapshot(database) == migrated
+    radios = await database.get_rows_from_query("SELECT * FROM radios", limit=0)
+    assert len(radios) == 1
+    radio = dict(radios[0])
+    radio_id = radio.pop("item_id")
+    assert radio_id != 5
+    assert json.loads(radio.pop("metadata")) == {
+        "images": [{**token, "path": "radio/ra.111"}, remote]
+    }
+    assert radio == {
+        "name": "Chill Station",
+        "sort_name": "Chill Station",
+        "play_count": 3,
+        "last_played": 50,
+        "timestamp_added": 10,
+        "timestamp_modified": 20,
+        "search_name": "Chill Station",
+        "search_sort_name": "Chill Station",
+        "is_dynamic": 1,
+        "is_endless": 1,
+    }
+    assert migrated["playlists"] == [(2, "My Mix")]
+    assert migrated["mappings"] == [("playlist", 2, "pl.222"), ("radio", radio_id, "ra.111")]
+    assert migrated["favorites"] == [("playlist", 2), ("radio", radio_id)]
+    for played in (migrated["progress"], migrated["history"]):
+        radio_image = serialize_to_json({**token, "path": "radio/ra.111"})
+        assert played == [
+            ("playlist", "2", "library", None),
+            ("radio", str(radio_id), "library", radio_image),
+            ("radio", "ra.111", "apple_music--abc", radio_image),
+        ]

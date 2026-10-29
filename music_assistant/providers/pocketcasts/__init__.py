@@ -48,6 +48,7 @@ from music_assistant.controllers.cache import use_cache
 from music_assistant.helpers.datetime import from_iso_string
 from music_assistant.helpers.podcast_parsers import (
     get_episode_transcript,
+    get_publisher_number,
     rank_episodes_by_date,
 )
 from music_assistant.models.music_provider import MusicProvider
@@ -269,7 +270,7 @@ class PocketCastsProvider(MusicProvider):
         in_progress_map = {ep.get("uuid"): ep for ep in in_progress}
         history_map = {ep.get("uuid"): ep for ep in history}
 
-        # the full-podcast payload carries no episode number, so rank on the publication date
+        # episode numbers are often missing or restart each season, so rank on the publication date
         positions = rank_episodes_by_date([ep.get("published") or None for ep in episodes])
         for position, episode_data in zip(positions, episodes, strict=True):
             details = (show_notes or {}).get(episode_data.get("uuid", ""))
@@ -629,6 +630,12 @@ class PocketCastsProvider(MusicProvider):
                 name=podcast_name,
             ),
             position=position,
+            episode_number=get_publisher_number(
+                episode_data.get("number") or episode_data.get("episodeNumber")
+            ),
+            season=get_publisher_number(
+                episode_data.get("season") or episode_data.get("episodeSeason")
+            ),
             provider_mappings={
                 ProviderMapping(
                     item_id=item_id,

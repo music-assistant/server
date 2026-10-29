@@ -27,6 +27,7 @@ from pychromecast.controllers.media import (
     STREAM_TYPE_LIVE,
 )
 from pychromecast.controllers.multizone import MultizoneController
+from pychromecast.error import PyChromecastError
 from pychromecast.socket_client import CONNECTION_STATUS_CONNECTED, CONNECTION_STATUS_DISCONNECTED
 
 from music_assistant.constants import MASS_LOGO_ONLINE, VERBOSE_LOG_LEVEL
@@ -38,6 +39,8 @@ from .constants import (
     APP_MEDIA_RECEIVER,
     APP_QUIT_DELAY,
     CAST_PLAYER_CONFIG_ENTRIES,
+    CONF_DEFER_IDLE_VOLUME,
+    CONF_ENTRY_DEFER_IDLE_VOLUME,
     CONF_ENTRY_SAMPLE_RATES_CAST,
     CONF_ENTRY_SAMPLE_RATES_CAST_GROUP,
     CONF_USE_MASS_APP,
@@ -45,7 +48,13 @@ from .constants import (
     MASS_APP_ID,
     SENDSPIN_CAST_APP_ID,
 )
-from .helpers import CastStatusListener, ChromecastInfo, disconnect_cast
+from .helpers import (
+    CastStatusListener,
+    ChromecastInfo,
+    disconnect_cast,
+    http_profile_entry,
+    is_google_device,
+)
 from .receiver_commands import MassCastCommandController
 
 if TYPE_CHECKING:
@@ -64,6 +73,8 @@ class ChromecastPlayer(Player):
     # a quit that is already on the wire cannot be recalled, so a receiver that
     # still reports our app is no longer proof that the session is usable
     app_quit_sent: bool = False
+    # Cast reports the running app accurately, and only a foreign app is listed as source
+    _attr_trusts_reported_source = True
 
     def __init__(
         self,
@@ -78,7 +89,7 @@ class ChromecastPlayer(Player):
             player_type = PlayerType.STEREO_PAIR
         elif cast_info.is_audio_group:
             player_type = PlayerType.GROUP
-        elif self._is_google_device(cast_info):
+        elif is_google_device(cast_info):
             # Google devices (Chromecast, Nest, Google Home) have native Cast support
             player_type = PlayerType.PLAYER
         else:
@@ -96,6 +107,8 @@ class ChromecastPlayer(Player):
         self.flow_meta_checksum: str | None = None
         self._app_quit_task_id: str = f"cast_quit_app_{player_id}"
         self._media_error_reported = False
+        # a volume set while idle, kept back until playback starts (see volume_set)
+        self._pending_volume: int | None = None
         # set static variables
         self._attr_supported_features = {
             PlayerFeature.PLAY_MEDIA,
@@ -153,12 +166,15 @@ class ChromecastPlayer(Player):
         if self.type == PlayerType.GROUP:
             return [
                 *CAST_PLAYER_CONFIG_ENTRIES,
+                http_profile_entry(self.cast_info),
                 CONF_ENTRY_SAMPLE_RATES_CAST_GROUP,
             ]
 
         return [
             *CAST_PLAYER_CONFIG_ENTRIES,
+            http_profile_entry(self.cast_info),
             CONF_ENTRY_SAMPLE_RATES_CAST,
+            CONF_ENTRY_DEFER_IDLE_VOLUME,
         ]
 
     async def stop(self) -> None:
@@ -214,7 +230,17 @@ class ChromecastPlayer(Player):
         self.update_state()
 
     async def volume_set(self, volume_level: int) -> None:
-        """Send VOLUME_SET command to given player."""
+        """Send VOLUME_SET command to given player, or keep it back while idle if so configured."""
+        if self.cc.app_id in (None, IDLE_APP_ID) and self.config.get_value(
+            CONF_DEFER_IDLE_VOLUME, False
+        ):
+            # the receiver would accept the volume but keep playing at the old level
+            # once an app starts, so keep it back until playback starts
+            self._pending_volume = volume_level
+            self._attr_volume_level = volume_level
+            self.update_state()
+            return
+        self._pending_volume = None
         # Round to 2 decimal places to avoid floating-point precision issues
         await asyncio.to_thread(self.cc.set_volume, round(volume_level / 100, 2))
 
@@ -237,6 +263,12 @@ class ChromecastPlayer(Player):
         # send queue info to the CC
         media_controller = self.cc.media_controller
         await asyncio.to_thread(media_controller.send_message, data=queuedata, inc_session_id=True)
+        if (volume_level := self._pending_volume) is not None:
+            # the media is loaded but no audio is out yet, so a volume kept back while
+            # idle lands before the first sample instead of after it. sent as a task, so
+            # a receiver slow to acknowledge it cannot hold up the playback start
+            self._pending_volume = None
+            self.mass.create_task(self._send_kept_back_volume(volume_level))
 
     async def enqueue_next_media(self, media: PlayerMedia) -> None:
         """Handle enqueuing of the next item on the player."""
@@ -428,21 +460,6 @@ class ChromecastPlayer(Player):
             update_flow_metadata(), task_name=f"cast_flow_metadata_{self.player_id}"
         )
 
-    @staticmethod
-    def _is_google_device(cast_info: ChromecastInfo) -> bool:
-        """
-        Check if a device is a Google device with native Cast support.
-
-        Google devices (Chromecast, Nest, Google Home) have native Cast support
-        and should be exposed as PlayerType.PLAYER. Non-Google devices with Cast
-        support should be exposed as PlayerType.PROTOCOL.
-        """
-        if not cast_info.manufacturer:
-            # If no manufacturer, check model name for Google devices
-            model = cast_info.model_name.lower() if cast_info.model_name else ""
-            return any(google in model for google in ("chromecast", "google", "nest", "home"))
-        return cast_info.manufacturer.lower() in ("google", "google inc.")
-
     async def _launch_app(self) -> None:
         """Launch the configured Media Receiver App on a Chromecast."""
         self.cancel_pending_app_quit()
@@ -569,6 +586,17 @@ class ChromecastPlayer(Player):
         self.app_quit_sent = True
         await asyncio.to_thread(self.cc.quit_app)
 
+    async def _send_kept_back_volume(self, volume_level: int) -> None:
+        """
+        Send a volume that was kept back while idle, now that playback has started.
+
+        :param volume_level: The volume level (0..100) to send.
+        """
+        try:
+            await asyncio.to_thread(self.cc.set_volume, round(volume_level / 100, 2))
+        except PyChromecastError as err:
+            self.logger.warning("Could not apply the volume on %s: %s", self.display_name, err)
+
     def _handle_cast_status(self, status: CastStatus) -> None:
         """Process CastStatus on the event loop thread."""
         if self.mass.closing:
@@ -610,11 +638,13 @@ class ChromecastPlayer(Player):
         # device that is a player in its own right always reports its own volume.
         volume_level = round(status.volume_level * 100)
         cast_idle = self.cc.app_id in (None, IDLE_APP_ID)
-        self._attr_volume_level = (
-            None
-            if cast_idle and volume_level == 0 and self.type == PlayerType.PROTOCOL
-            else volume_level
-        )
+        if cast_idle and self._pending_volume is not None:
+            # the device keeps reporting its old level while a volume set is kept back
+            self._attr_volume_level = self._pending_volume
+        elif cast_idle and volume_level == 0 and self.type == PlayerType.PROTOCOL:
+            self._attr_volume_level = None
+        else:
+            self._attr_volume_level = volume_level
         self._attr_volume_muted = status.volume_muted
         self.update_state()
         if self.on_app_status_changed is not None:
@@ -658,7 +688,7 @@ class ChromecastPlayer(Player):
 
         self._update_playback_state(status, is_playing)
         self._update_elapsed_time(status, is_playing)
-        self._update_active_source(group_player)
+        self._update_active_source(status, group_player)
         self._update_current_media(status, is_idle)
         self._update_multichannel_group_members()
         self.update_state()
@@ -743,15 +773,18 @@ class ChromecastPlayer(Player):
             status.adjusted_current_time if is_playing else status.current_time
         )
 
-    def _update_active_source(self, group_player: ChromecastPlayer | None) -> None:
+    def _update_active_source(
+        self, status: MediaStatus, group_player: ChromecastPlayer | None
+    ) -> None:
         """
         Apply the active source, exposing a foreign Cast app as a selectable source.
 
+        :param status: Media status as reported by the receiver.
         :param group_player: Cast group player whose status is being followed, if any.
         """
         if group_player:
             self._attr_active_source = group_player.active_source or group_player.player_id
-        elif self.cc.app_id in (MASS_APP_ID, APP_MEDIA_RECEIVER, SENDSPIN_CAST_APP_ID):
+        elif self.cc.app_id == SENDSPIN_CAST_APP_ID or self._is_own_session(status):
             self._attr_active_source = None
         elif self.cc.app_id in (None, IDLE_APP_ID):
             # a released device sits on its backdrop with no app running, which is
@@ -761,18 +794,35 @@ class ChromecastPlayer(Player):
             app_name = self.cc.app_display_name or "Unknown App"
             app_id = app_name.lower().replace(" ", "_")
             self._attr_active_source = app_id
-            has_controls = app_name in ("Spotify", "Qobuz", "YouTube Music", "Deezer", "Tidal")
-            if not any(source.id == app_id for source in self._attr_source_list):
-                self._attr_source_list.append(
-                    PlayerSource(
-                        id=app_id,
-                        name=app_name,
-                        passive=True,
-                        can_play_pause=has_controls,
-                        can_seek=has_controls,
-                        can_next_previous=has_controls,
-                    )
-                )
+            # apps name themselves in their own spelling ("TIDAL")
+            known_app = app_name.lower() in (
+                "spotify",
+                "qobuz",
+                "youtube music",
+                "deezer",
+                "tidal",
+            )
+            # any other app announces the commands it takes in its media status,
+            # which only means something once it has loaded media
+            reports_commands = status.media_session_id is not None
+            source = PlayerSource(
+                id=app_id,
+                name=app_name,
+                passive=True,
+                can_play_pause=known_app or (reports_commands and bool(status.supports_pause)),
+                can_seek=known_app or (reports_commands and bool(status.supports_seek)),
+                can_next_previous=known_app
+                or (
+                    reports_commands
+                    and bool(status.supports_queue_next)
+                    and bool(status.supports_queue_prev)
+                ),
+            )
+            current = next((s for s in self._attr_source_list if s.id == app_id), None)
+            if current is None:
+                self._attr_source_list.append(source)
+            elif reports_commands and current != source:
+                self._attr_source_list[self._attr_source_list.index(current)] = source
 
     def _update_current_media(self, status: MediaStatus, is_idle: bool) -> None:
         """
@@ -942,3 +992,13 @@ class ChromecastPlayer(Player):
             self.mass.create_task(queue_command(queue.queue_id))
 
         self.mass.loop.call_soon_threadsafe(dispatch)
+
+    def _is_own_session(self, status: MediaStatus) -> bool:
+        """Return whether the running receiver app plays a Music Assistant session."""
+        if self.cc.app_id == MASS_APP_ID:
+            return True
+        if self.cc.app_id != APP_MEDIA_RECEIVER:
+            return False
+        # other apps cast through the Default Media Receiver too, so only our own stream
+        # (or nothing loaded yet, right after we launched it) makes the session ours
+        return not status.content_id or status.content_id.startswith(self.mass.streams.base_url)

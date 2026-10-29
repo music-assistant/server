@@ -71,6 +71,7 @@ from music_assistant.controllers.metadata import MetaDataController
 from music_assistant.controllers.music import MusicController
 from music_assistant.controllers.player_queues import PlayerQueuesController
 from music_assistant.controllers.players import PlayerController
+from music_assistant.controllers.statistics import StatisticsController
 from music_assistant.controllers.storage import StorageController
 from music_assistant.controllers.streams import StreamsController
 from music_assistant.controllers.tasks import TasksController
@@ -79,6 +80,7 @@ from music_assistant.controllers.webserver import WebserverController
 from music_assistant.controllers.webserver.helpers.auth_middleware import get_current_user
 from music_assistant.helpers.aiohttp_client import create_clientsession
 from music_assistant.helpers.api import APICommandHandler, api_command
+from music_assistant.helpers.build_info import get_official_build_info
 from music_assistant.helpers.diagnostics import install_diagnostics_log_handler
 from music_assistant.helpers.images import detect_provider_icons
 from music_assistant.helpers.provider_access import visible_music_sources
@@ -233,6 +235,7 @@ class MusicAssistant:
     translations: TranslationController
     diagnostics: DiagnosticsController
     dashboard: DashboardController
+    statistics: StatisticsController
     storage: StorageController
 
     def __init__(self, storage_path: str, cache_path: str, safe_mode: bool = False) -> None:
@@ -255,6 +258,7 @@ class MusicAssistant:
         self._provider_ready_events: dict[str, asyncio.Event] = {}
         self.running_as_hass_addon: bool = False
         self.version: str = "0.0.0"
+        self.build_info: dict[str, str] | None = None
         self.logger = LOGGER
         self.dev_mode = (
             os.environ.get("PYTHONDEVMODE") == "1"
@@ -263,7 +267,7 @@ class MusicAssistant:
         self._http_session: ClientSession | None = None
         self._http_session_no_ssl: ClientSession | None = None
 
-    async def start(self) -> None:
+    async def start(self) -> None:  # noqa: PLR0915
         """Start running the Music Assistant server."""
         self.loop = asyncio.get_running_loop()
         # start() runs on the event loop thread, so this is the loop's thread id.
@@ -274,6 +278,7 @@ class MusicAssistant:
         install_diagnostics_log_handler()
         self.running_as_hass_addon = await is_hass_supervisor()
         self.version = await get_package_version("music_assistant") or "0.0.0"
+        self.build_info = await get_official_build_info()
         # setup config controller first and fetch important config values
         self.config = ConfigController(self)
         await self.config.setup()
@@ -292,6 +297,12 @@ class MusicAssistant:
             self.running_as_hass_addon,
             self.safe_mode,
         )
+        if self.unsupported_install:
+            LOGGER.warning(
+                "This server is not installed through one of the supported installation methods "
+                "(see https://music-assistant.io/installation/). Some features may not work as "
+                "expected, and issues reported from it may be closed without support."
+            )
         await warn_if_missing_x86_64_v2(LOGGER)
         # setup other core controllers
         await self._load_core_controllers()
@@ -318,6 +329,7 @@ class MusicAssistant:
             tg.create_task(setup_controller(self.player_queues))
             tg.create_task(setup_controller(self.diagnostics))
             tg.create_task(setup_controller(self.dashboard))
+            tg.create_task(setup_controller(self.statistics))
             tg.create_task(setup_controller(self.storage))
 
         for controller_name in (
@@ -436,6 +448,11 @@ class MusicAssistant:
         return self._state in (CoreState.STOPPING, CoreState.STOPPED)
 
     @property
+    def unsupported_install(self) -> bool:
+        """Return whether the server does not run from an official release build."""
+        return self.build_info is None
+
+    @property
     def server_id(self) -> str:
         """Return unique ID of this server."""
         if not self.config.initialized:
@@ -477,6 +494,7 @@ class MusicAssistant:
             internal_url=self.webserver.base_url,
             external_url=self.webserver.external_url,
             has_remote_access=self.webserver.remote_access.is_enabled,
+            unsupported_install=self.unsupported_install,
             homeassistant_addon=self.running_as_hass_addon,
             onboard_done=self.config.onboard_done,
             status=self._state,
@@ -1112,7 +1130,7 @@ class MusicAssistant:
                 return
             retry_delay = round(
                 PROVIDER_RETRY_DELAYS[min(retry_attempt, len(PROVIDER_RETRY_DELAYS) - 1)]
-                + random.uniform(-PROVIDER_RETRY_JITTER, PROVIDER_RETRY_JITTER)
+                + random.uniform(-PROVIDER_RETRY_JITTER, PROVIDER_RETRY_JITTER)  # noqa: S311 - retry jitter
             )
             self.call_later(
                 retry_delay,
@@ -1255,6 +1273,7 @@ class MusicAssistant:
             self.streams.audio_analysis,
             self.diagnostics,
             self.dashboard,
+            self.statistics,
             self.storage,
         ):
             for attr_name in dir(cls):
@@ -1292,6 +1311,7 @@ class MusicAssistant:
         self.translations = TranslationController(self)
         self.diagnostics = DiagnosticsController(self)
         self.dashboard = DashboardController(self)
+        self.statistics = StatisticsController(self)
         self.storage = StorageController(self)
         # add manifests for core controllers
         for controller_name in CONFIGURABLE_CORE_CONTROLLERS:

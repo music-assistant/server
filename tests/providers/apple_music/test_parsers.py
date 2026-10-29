@@ -1,20 +1,25 @@
 """Regression tests for Apple Music parser and library fallbacks."""
 
+import asyncio
 from datetime import UTC, datetime
 from typing import Any
 from unittest.mock import ANY, AsyncMock, MagicMock
 
 import pytest
 from music_assistant_models.enums import ExternalID, MediaType
-from music_assistant_models.media_items import Album, ItemMapping
+from music_assistant_models.errors import MediaNotFoundError
+from music_assistant_models.media_items import Album, ItemMapping, Radio
 
+from music_assistant.controllers.cache.constants import BYPASS_CACHE
 from music_assistant.providers.apple_music.library import _TRACK_PAGE_SIZE, AppleMusicLibraryManager
 from music_assistant.providers.apple_music.media import AppleMusicMediaManager
 from music_assistant.providers.apple_music.parsers import (
     parse_album,
     parse_artwork_image,
+    parse_station,
     parse_track,
 )
+from music_assistant.providers.apple_music.provider import AppleMusicProvider
 from tests.common import use_real_create_task
 
 BLOBSTORE_ARTWORK = {
@@ -411,6 +416,194 @@ async def test_media_manager_get_playlist_applies_can_edit_hint() -> None:
     assert playlist.is_editable is True
 
 
+def test_parse_station_returns_dynamic_radio() -> None:
+    """A station parses to a dynamic radio whose expiring artwork is stored as a radio token."""
+    provider = _create_provider_mock()
+
+    radio = parse_station(
+        provider, {"id": "ra.123", "attributes": {"name": "Chill", "artwork": BLOBSTORE_ARTWORK}}
+    )
+
+    assert isinstance(radio, Radio)
+    assert (radio.item_id, radio.name, radio.is_dynamic) == ("ra.123", "Chill", True)
+    assert [image.path for image in radio.metadata.images or []] == ["radio/ra.123"]
+
+
+@pytest.mark.asyncio
+async def test_search_radio_returns_stations_without_live_ones() -> None:
+    """A radio search asks for stations and leaves out live broadcast stations."""
+    provider = _create_provider_mock()
+    provider.api_client.get_data = AsyncMock(
+        return_value={
+            "results": {
+                "stations": {
+                    "data": [
+                        {"id": "ra.1", "type": "stations", "attributes": {"name": "Chill"}},
+                        {
+                            "id": "ra.2",
+                            "type": "stations",
+                            "attributes": {"name": "Live", "isLive": True},
+                        },
+                    ]
+                }
+            }
+        }
+    )
+
+    result = await AppleMusicMediaManager(provider).search("chill", [MediaType.RADIO])
+
+    assert provider.api_client.get_data.call_args.kwargs["types"] == "stations"
+    assert [(type(radio), radio.item_id) for radio in result.radio] == [(Radio, "ra.1")]
+
+
+def _create_playlist_tracks_manager(
+    cache_store: dict[str, Any], last_modified: dict[str, str]
+) -> tuple[AppleMusicMediaManager, AsyncMock]:
+    """Build a media manager backed by a dict cache, answering playlist and tracks requests."""
+    provider = _create_provider_mock()
+
+    async def _cache_get(key: str, **kwargs: Any) -> tuple[Any, bool, bool]:
+        # like the real cache, an entry that honours the bypass flag misses under force refresh
+        if kwargs.get("allow_bypass") and BYPASS_CACHE.get():
+            return None, False, False
+        return cache_store.get(key), True, key in cache_store
+
+    async def _cache_set(key: str, data: Any, **_kwargs: Any) -> None:
+        cache_store[key] = data
+
+    provider.mass.cache.get_with_freshness = AsyncMock(side_effect=_cache_get)
+    provider.mass.cache.set = AsyncMock(side_effect=_cache_set)
+
+    async def _get_data(endpoint: str, **_kwargs: Any) -> dict[str, Any]:
+        if endpoint.startswith("me/library/playlists/"):
+            # a library row that follows a catalog playlist, with both dates
+            return {
+                "data": [
+                    {
+                        "id": "p.1",
+                        "attributes": {"lastModifiedDate": "2025-11-02T13:24:04Z"},
+                        "relationships": {
+                            "catalog": {
+                                "data": [
+                                    {
+                                        "id": "pl.1",
+                                        "attributes": {"lastModifiedDate": last_modified["value"]},
+                                    }
+                                ]
+                            }
+                        },
+                    }
+                ]
+            }
+        if endpoint.endswith("/tracks"):
+            song = {
+                "id": "1",
+                "type": "songs",
+                "attributes": {
+                    "name": "Track 1",
+                    "artistName": "Artist 1",
+                    "playParams": {"id": "1"},
+                },
+            }
+            return {"data": [song]}
+        return {
+            "data": [{"id": "pl.1", "attributes": {"lastModifiedDate": last_modified["value"]}}]
+        }
+
+    provider.api_client.get_data = AsyncMock(side_effect=_get_data)
+    return AppleMusicMediaManager(provider), provider.api_client.get_data
+
+
+def _tracks_requests(get_data: AsyncMock) -> int:
+    """Count the playlist tracks requests made through the api mock."""
+    return sum(1 for call in get_data.call_args_list if call.args[0].endswith("/tracks"))
+
+
+@pytest.mark.asyncio
+async def test_get_playlist_tracks_reuses_cached_pages_while_unchanged() -> None:
+    """An unchanged lastModifiedDate serves the tracks from cache."""
+    cache_store: dict[str, Any] = {}
+    manager, get_data = _create_playlist_tracks_manager(
+        cache_store, {"value": "2026-10-01T10:00:00Z"}
+    )
+
+    first = await manager.get_playlist_tracks("pl.1")
+    await asyncio.sleep(0)
+    second = await manager.get_playlist_tracks("pl.1")
+
+    assert _tracks_requests(get_data) == 1
+    assert len(first) == 1
+    assert len(second) == 1
+
+
+@pytest.mark.asyncio
+async def test_get_playlist_tracks_refetches_when_last_modified_changes() -> None:
+    """A moved lastModifiedDate refetches the tracks."""
+    cache_store: dict[str, Any] = {}
+    last_modified = {"value": "2026-10-01T10:00:00Z"}
+    manager, get_data = _create_playlist_tracks_manager(cache_store, last_modified)
+
+    await manager.get_playlist_tracks("pl.1")
+    await asyncio.sleep(0)
+    del cache_store["_get_playlist_last_modified.pl.1"]
+    last_modified["value"] = "2026-10-02T10:00:00Z"
+    await manager.get_playlist_tracks("pl.1")
+
+    assert _tracks_requests(get_data) == 2
+
+
+@pytest.mark.asyncio
+async def test_get_playlist_tracks_library_playlist_follows_catalog_date() -> None:
+    """A library playlist refetches when only its catalog playlist's date moved."""
+    cache_store: dict[str, Any] = {}
+    last_modified = {"value": "2026-10-13T10:00:00Z"}
+    manager, get_data = _create_playlist_tracks_manager(cache_store, last_modified)
+
+    await manager.get_playlist_tracks("p.1")
+    await asyncio.sleep(0)
+    del cache_store["_get_playlist_last_modified.p.1"]
+    last_modified["value"] = "2026-10-14T10:00:00Z"
+    await manager.get_playlist_tracks("p.1")
+
+    assert _tracks_requests(get_data) == 2
+    assert get_data.call_args_list[0].kwargs == {"include": "catalog"}
+
+
+@pytest.mark.asyncio
+async def test_get_playlist_tracks_force_refresh_keeps_last_modified_cached() -> None:
+    """A forced refresh reads the pages fresh but looks the marker up once."""
+    cache_store: dict[str, Any] = {}
+    manager, get_data = _create_playlist_tracks_manager(
+        cache_store, {"value": "2026-10-01T10:00:00Z"}
+    )
+
+    token = BYPASS_CACHE.set(True)
+    try:
+        await manager.get_playlist_tracks("pl.1")
+        await asyncio.sleep(0)
+        await manager.get_playlist_tracks("pl.1", page=1)
+    finally:
+        BYPASS_CACHE.reset(token)
+
+    assert _tracks_requests(get_data) == 2
+    assert get_data.call_count == 3
+
+
+@pytest.mark.asyncio
+async def test_station_id_is_not_looked_up_as_playlist() -> None:
+    """A station id is answered locally by the playlist getters and artwork, without an API request."""
+    provider = _create_provider_mock()
+    provider.api_client.get_data = AsyncMock()
+    provider.media_manager = AppleMusicMediaManager(provider)
+
+    with pytest.raises(MediaNotFoundError):
+        await AppleMusicProvider.get_playlist(provider, "ra.123")
+    assert await AppleMusicProvider.get_playlist_tracks(provider, "ra.123") == []
+    assert await AppleMusicProvider.resolve_image(provider, "playlist/ra.123") == ""
+
+    provider.api_client.get_data.assert_not_awaited()
+
+
 @pytest.mark.asyncio
 async def test_library_playlists_preserve_can_edit_for_catalog_copy() -> None:
     """Library playlist sync should preserve canEdit when loading via catalog copy."""
@@ -460,6 +653,7 @@ async def test_library_tracks_request_includes_album_relations() -> None:
         include="catalog,albums,artists",
         extend="dateAdded",
         page_size=_TRACK_PAGE_SIZE,
+        **{"include[songs]": "artists,albums"},
     )
 
 
@@ -480,21 +674,7 @@ async def test_library_tracks_falls_back_to_library_item_when_catalog_missing() 
                     "playParams": {"catalogId": "999999"},
                     "durationInMillis": 180000,
                 },
-                "relationships": {
-                    "catalog": {
-                        "data": [
-                            {
-                                "id": "999999",
-                                "attributes": {
-                                    "name": "Missing Catalog Track",
-                                    "artistName": "Artist 2",
-                                    "durationInMillis": 180000,
-                                    "playParams": {"id": "999999"},
-                                },
-                            }
-                        ]
-                    }
-                },
+                "relationships": {"catalog": {"data": []}},
             }
         ]
     )
@@ -845,21 +1025,6 @@ async def test_get_album_tracks_uses_library_endpoint_for_library_id() -> None:
                     }
                 ]
             },
-            # Second call: get_album (called internally)
-            {
-                "data": [
-                    {
-                        "id": "l.PnamISl",
-                        "type": "library-albums",
-                        "attributes": {
-                            "name": "Uploaded Album",
-                            "artistName": "Uploaded Artist",
-                            "playParams": {"id": "l.PnamISl", "isLibrary": True},
-                        },
-                        "relationships": {},
-                    }
-                ]
-            },
         ]
     )
     provider.api_client.get_ratings = AsyncMock(return_value={})
@@ -867,10 +1032,13 @@ async def test_get_album_tracks_uses_library_endpoint_for_library_id() -> None:
     manager = AppleMusicMediaManager(provider)
     tracks = await manager.get_album_tracks("l.PnamISl")
 
+    provider.api_client.get_data.assert_awaited_once()
     first_call_args = provider.api_client.get_data.call_args_list[0]
     assert first_call_args[0][0] == "me/library/albums/l.PnamISl/tracks"
     assert len(tracks) == 1
     assert tracks[0].name == "Track 1"
+    # no album name standing in as its id: the caller attaches the album it asked for
+    assert tracks[0].album is None
 
 
 @pytest.mark.asyncio
@@ -1034,6 +1202,22 @@ async def test_get_artwork_url_routes_catalog_tracks_to_catalog_endpoint() -> No
 
     provider.api_client.get_data.assert_called_once_with(
         "catalog/us/songs/1440783625", include="catalog"
+    )
+
+
+async def test_get_artwork_url_routes_stations_to_catalog_endpoint() -> None:
+    """Station tokens resolve via the catalog stations endpoint."""
+    provider = _create_provider_mock()
+    provider.api_client.get_data = AsyncMock(
+        return_value={"data": [{"id": "ra.123", "attributes": {"artwork": BLOBSTORE_ARTWORK}}]}
+    )
+
+    manager = AppleMusicMediaManager(provider)
+    url = await manager.get_artwork_url("radio", "ra.123")
+
+    assert url == BLOBSTORE_ARTWORK["url"]
+    provider.api_client.get_data.assert_called_once_with(
+        "catalog/us/stations/ra.123", include="catalog"
     )
 
 

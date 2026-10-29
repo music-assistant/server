@@ -22,6 +22,7 @@ import time
 import weakref
 from collections.abc import AsyncIterator
 from contextlib import suppress
+from copy import deepcopy
 from typing import TYPE_CHECKING, Any, cast
 
 from music_assistant_models.auth import Scope, UserRole
@@ -54,6 +55,7 @@ from music_assistant_models.errors import (
     PlayerCommandFailed,
     PlayerUnavailableError,
     ProviderUnavailableError,
+    ResourceBusyError,
     UnsupportedFeaturedException,
 )
 from music_assistant_models.media_items import AudioSource
@@ -86,6 +88,7 @@ from music_assistant.constants import (
     CONF_ENTRY_MAX_VOLUME,
     CONF_ENTRY_MIN_VOLUME,
     CONF_GROUP_MEMBERS,
+    CONF_LINKED_PROTOCOL_IDS,
     CONF_MAX_VOLUME,
     CONF_MIN_VOLUME,
     CONF_MUTE_CONTROL,
@@ -121,7 +124,12 @@ from music_assistant.models.plugin import PluginProvider, SourceControlValue
 
 from .announcements import AnnouncementsMixin
 from .audio_sources import AudioSourceMixin, AudioSourceSession
-from .constants import PlayerLockPurpose
+from .constants import (
+    PLAYER_LOCK_SLOW_THRESHOLD,
+    PLAYER_LOCK_STRICT_TIMEOUT,
+    PLAYER_LOCK_TIMEOUT,
+    PlayerLockPurpose,
+)
 from .helpers import handle_player_command, wait_for_power_on
 from .protocol_linking import ProtocolLinkingMixin
 
@@ -218,7 +226,10 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
 
     @contextlib.asynccontextmanager
     async def get_player_lock(
-        self, player_id: str, purpose: PlayerLockPurpose = PlayerLockPurpose.PLAYBACK
+        self,
+        player_id: str,
+        purpose: PlayerLockPurpose = PlayerLockPurpose.PLAYBACK,
+        strict: bool = False,
     ) -> AsyncIterator[None]:
         """
         Acquire a purpose-scoped lock for a player, with re-entrant support.
@@ -229,6 +240,8 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
 
         If the lock can't be acquired within 30s the body runs anyway, to keep
         the player responsive when a previous holder is stuck on a hung command.
+        A strict acquisition never runs without the lock: it keeps waiting, up to
+        120s per lock, and then raises ResourceBusyError.
 
         Ordering rule: when a command needs both a group/leader lock and a member
         lock, it must take the group's first. The group players themselves always
@@ -239,6 +252,10 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         :param player_id: The player to lock.
         :param purpose: Lock category. Commands with different purposes can run
             concurrently on the same player.
+        :param strict: Fail once the strict timeout is over instead of running the
+            body without the lock, for work that corrupts shared state when it
+            overlaps with the holder (the queue play actions).
+        :raises ResourceBusyError: When a strict acquisition timed out.
         """
         lock_key = f"{purpose.value}_{player_id}"
         task = asyncio.current_task()
@@ -248,30 +265,7 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
             return
 
         lock = self._player_command_locks.setdefault(lock_key, asyncio.Lock())
-        # Two-stage acquire: a slow-acquire log at 5s and a hard give-up at 30s.
-        # If the previous holder is stuck (e.g. on a dead provider socket), we
-        # proceed without the lock so this player stays responsive.
-        acquired = False
-        try:
-            async with asyncio.timeout(5):
-                await lock.acquire()
-            acquired = True
-        except TimeoutError:
-            self.logger.debug(
-                "Acquiring %s lock for player %s is slow (>5s)", purpose.value, player_id
-            )
-            try:
-                async with asyncio.timeout(25):
-                    await lock.acquire()
-                acquired = True
-            except TimeoutError:
-                self.logger.warning(
-                    "Timed out (30s) acquiring %s lock for player %s — "
-                    "previous holder appears stuck; proceeding without lock",
-                    purpose.value,
-                    player_id,
-                )
-
+        acquired = await self._acquire_player_lock(lock, purpose, player_id, strict)
         if acquired and task is not None:
             self._task_held_locks.setdefault(task, set()).add(lock_key)
         try:
@@ -285,7 +279,9 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
                 lock.release()
 
     @contextlib.asynccontextmanager
-    async def get_group_and_player_lock(self, player_id: str) -> AsyncIterator[None]:
+    async def get_group_and_player_lock(
+        self, player_id: str, strict: bool = False
+    ) -> AsyncIterator[None]:
         """
         Acquire the playback lock of a player, preceded by that of the group holding it.
 
@@ -295,16 +291,19 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         that is not part of a group only takes its own lock.
 
         :param player_id: The player to lock.
+        :param strict: Never run without either lock, see get_player_lock. Each lock has
+            its own strict timeout, so a player held by a group waits for both in turn.
+        :raises ResourceBusyError: When a strict acquisition timed out.
         """
         async with contextlib.AsyncExitStack() as stack:
             if (player := self.get_player(player_id)) and (
                 owner := self._resolve_playback_owner(player)
             ) is not player:
                 await stack.enter_async_context(
-                    self.get_player_lock(owner.player_id, PlayerLockPurpose.PLAYBACK)
+                    self.get_player_lock(owner.player_id, PlayerLockPurpose.PLAYBACK, strict=strict)
                 )
             await stack.enter_async_context(
-                self.get_player_lock(player_id, PlayerLockPurpose.PLAYBACK)
+                self.get_player_lock(player_id, PlayerLockPurpose.PLAYBACK, strict=strict)
             )
             yield
 
@@ -1505,7 +1504,8 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
     async def cmd_ungroup_many(self, player_ids: list[str]) -> None:
         """Handle UNGROUP command for all the given players."""
         for player_id in list(player_ids):
-            await self.cmd_ungroup(player_id)
+            with suppress(PlayerUnavailableError):
+                await self.cmd_ungroup(player_id)
 
     @api_command("players/create_group_player", required_scope=Scope.CONFIG_PLAYERS_WRITE)
     async def create_group_player(
@@ -1949,6 +1949,61 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
                 self.mass.webserver.auth.remove_from_user_filters(player_ids=player_ids)
             )
 
+    def carry_over_player_config(self, player_id: str, replacement_player_id: str) -> None:
+        """
+        Copy a player's stored config onto the player that replaces it under a new id.
+
+        The replacement keeps the name, values and DSP settings it already has and takes
+        over the protocol parent of the replaced player. Call this before the replacement
+        registers, then delete the old config with delete_player_config once it has.
+
+        :param player_id: Player ID of the player that is replaced.
+        :param replacement_player_id: Player ID that takes its place.
+        """
+        source_raw = self.mass.config.get(f"{CONF_PLAYERS}/{player_id}")
+        if not isinstance(source_raw, dict):
+            return
+        target_key = f"{CONF_PLAYERS}/{replacement_player_id}"
+        target_raw = self.mass.config.get(target_key)
+        previous_parent_id = self._get_cached_protocol_parent_id(replacement_player_id)
+        if not isinstance(target_raw, dict):
+            self.mass.config.set(
+                target_key, {**deepcopy(source_raw), "player_id": replacement_player_id}
+            )
+        else:
+            if source_raw.get("name") and not target_raw.get("name"):
+                self.mass.config.set_raw_player_config_value(
+                    replacement_player_id, "name", source_raw["name"]
+                )
+            source_values = source_raw.get("values")
+            target_values = target_raw.get("values")
+            target_values = target_values if isinstance(target_values, dict) else {}
+            for key, value in (source_values if isinstance(source_values, dict) else {}).items():
+                if key in target_values and key != CONF_PROTOCOL_PARENT_ID:
+                    continue
+                self.mass.config.set_raw_player_config_value(
+                    replacement_player_id, key, deepcopy(value)
+                )
+        source_dsp = self.mass.config.get(f"{CONF_PLAYER_DSP}/{player_id}")
+        if source_dsp and not self.mass.config.get(f"{CONF_PLAYER_DSP}/{replacement_player_id}"):
+            self.mass.config.set(f"{CONF_PLAYER_DSP}/{replacement_player_id}", deepcopy(source_dsp))
+        # a parent that gets enabled or disabled only cascades to the protocol players it lists
+        parent_id = self._get_cached_protocol_parent_id(replacement_player_id)
+        if previous_parent_id and previous_parent_id != parent_id:
+            if previous_parent := self.get_player(previous_parent_id):
+                self._remove_protocol_ids_from_parent(previous_parent, {replacement_player_id})
+            else:
+                self._remove_protocol_id_from_cache(previous_parent_id, replacement_player_id)
+        if parent_id and (parent := self.get_player(parent_id)):
+            self._migrate_protocol_ids_to_parent(parent, {replacement_player_id})
+        elif parent_id and isinstance(self.mass.config.get(f"{CONF_PLAYERS}/{parent_id}"), dict):
+            cached_ids = self._get_cached_protocol_ids(parent_id)
+            if replacement_player_id not in cached_ids:
+                self.mass.config.set(
+                    f"{CONF_PLAYERS}/{parent_id}/values/{CONF_LINKED_PROTOCOL_IDS}",
+                    [*cached_ids, replacement_player_id],
+                )
+
     def scale_volume_to_device(self, player_id: str, logical_volume: int) -> int:
         """Scale logical volume (0-100) to device volume (min_volume-max_volume)."""
         min_volume, max_volume = self._get_volume_limits(player_id)
@@ -2007,6 +2062,14 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
 
         # ignore updates for disabled players
         if not player.state.enabled and ATTR_ENABLED not in changed_values:
+            return
+
+        # register() publishes the player itself once its config is loaded
+        if not player.initialized.is_set():
+            return
+
+        # a debounced update can still run on a player that was unregistered meanwhile
+        if self._players.get(player_id) is not player:
             return
 
         # The current_media position anchor only changes on discrete events
@@ -2498,22 +2561,55 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
                     1, self.mass.player_queues.resume, resume_queue.queue_id, False
                 )
 
-    async def on_player_dsp_change(self, player_id: str) -> None:
-        """Call (by config manager) when the DSP settings of a player change."""
+    async def on_player_dsp_change(
+        self, player_id: str, *, after_group_change: bool = False
+    ) -> None:
+        """
+        Restart playback so a changed DSP setup is applied.
+
+        :param player_id: The player whose DSP settings (or group shape) changed.
+        :param after_group_change: Whether the call follows a group membership change
+            instead of an edit of the DSP settings themselves.
+        """
         # signal player provider that the config changed
         if not (player := self.get_player(player_id)):
             return
-        if player.state.playback_state == PlaybackState.PLAYING:
-            self.logger.info("Restarting playback of Player %s after DSP change", player_id)
-            # this will restart the queue stream/playback
-            if self.get_active_queue(player):
-                self.mass.call_later(
-                    0, self.mass.player_queues.resume, player.state.active_source, False
+        if player.state.playback_state != PlaybackState.PLAYING:
+            return
+        if active_queue := self.get_active_queue(player):
+            # a group change the provider reported can hand this player a queue it is not
+            # rendering (a Sonos that becomes coordinator of a group playing another
+            # player's queue falls back to its own, idle queue); resuming that would
+            # replace the music with the wrong queue. Only checked after a group change;
+            # an edit of the DSP settings needs no such evidence.
+            if after_group_change and not self.mass.player_queues.is_playing_queue(
+                active_queue.queue_id, player
+            ):
+                self.logger.debug(
+                    "Not restarting %s after DSP change: it is not playing queue %s",
+                    player.display_name,
+                    active_queue.queue_id,
                 )
                 return
-            # if the player is not using a queue, we need to stop and start playback
-            await self.cmd_stop(player_id)
-            await self.cmd_play(player_id)
+            self.logger.info("Restarting playback of Player %s after DSP change", player_id)
+            # this will restart the queue stream/playback
+            self.mass.call_later(0, self._resume_queue_after_dsp_change, active_queue.queue_id)
+            return
+        if after_group_change and not self._is_ma_managed_source(
+            player, player.state.active_source
+        ):
+            # an external source (a tv input, a connect session) has no stream of ours
+            # to rebuild; stopping and starting it would only interrupt it
+            self.logger.debug(
+                "Not restarting %s after DSP change: it is playing external source %s",
+                player.display_name,
+                player.state.active_source,
+            )
+            return
+        self.logger.info("Restarting playback of Player %s after DSP change", player_id)
+        # if the player is not using a queue, we need to stop and start playback
+        await self.cmd_stop(player_id)
+        await self.cmd_play(player_id)
 
     def schedule_active_output_protocol_clear(self, player: Player) -> None:
         """
@@ -2536,6 +2632,66 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
     def __iter__(self) -> Iterator[Player]:
         """Iterate over all players."""
         return iter(self._players.values())
+
+    async def _acquire_player_lock(
+        self, lock: asyncio.Lock, purpose: PlayerLockPurpose, player_id: str, strict: bool
+    ) -> bool:
+        """
+        Wait for a player lock, logging a wait that gets long.
+
+        :param lock: The lock to acquire.
+        :param purpose: The lock's category, named in the log lines and the error.
+        :param player_id: The player the lock belongs to.
+        :param strict: Keep waiting past the lock timeout and fail at the strict timeout,
+            instead of giving up on the lock.
+        :return: Whether the lock was acquired. A non-strict wait gives up at the lock
+            timeout and returns False, so the caller runs without the lock; a strict
+            wait raises ResourceBusyError at the strict timeout instead.
+        """
+        try:
+            async with asyncio.timeout(PLAYER_LOCK_SLOW_THRESHOLD):
+                await lock.acquire()
+            return True
+        except TimeoutError:
+            self.logger.debug(
+                "Acquiring %s lock for player %s is slow (>%ss)",
+                purpose.value,
+                player_id,
+                PLAYER_LOCK_SLOW_THRESHOLD,
+            )
+        try:
+            async with asyncio.timeout(PLAYER_LOCK_TIMEOUT - PLAYER_LOCK_SLOW_THRESHOLD):
+                await lock.acquire()
+            return True
+        except TimeoutError:
+            if not strict:
+                self.logger.warning(
+                    "Timed out (%ss) acquiring %s lock for player %s — "
+                    "previous holder appears stuck; proceeding without lock",
+                    PLAYER_LOCK_TIMEOUT,
+                    purpose.value,
+                    player_id,
+                )
+                return False
+            self.logger.info(
+                "Waited %ss for the %s lock of player %s — previous holder is still busy; "
+                "waiting on, giving up after %ss in total",
+                PLAYER_LOCK_TIMEOUT,
+                purpose.value,
+                player_id,
+                PLAYER_LOCK_STRICT_TIMEOUT,
+            )
+        try:
+            async with asyncio.timeout(PLAYER_LOCK_STRICT_TIMEOUT - PLAYER_LOCK_TIMEOUT):
+                await lock.acquire()
+            return True
+        except TimeoutError:
+            name = player.display_name if (player := self.get_player(player_id)) else player_id
+            msg = (
+                f"Player {name} is still busy with a previous {purpose.value} command "
+                f"after {PLAYER_LOCK_STRICT_TIMEOUT}s"
+            )
+            raise ResourceBusyError(msg) from None
 
     async def _resolve_mac_addresses(self, player: Player) -> None:
         """
@@ -2627,8 +2783,11 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
             # (hidden) bridge client with nothing playing on it, or is already serving its
             # parent, where a stop would cut that parent's stream short. A protocol player
             # has no active group of its own either, so there is nothing to detach here.
+            # the queue goes first, so its final update cannot re-add it after the removal
+            self.mass.player_queues.on_player_remove(
+                player.player_id, permanent=False, release_audio=False
+            )
             self.mass.signal_event(EventType.PLAYER_REMOVED, player.player_id)
-            self.mass.player_queues.on_player_remove(player.player_id, permanent=False)
             return
         # the player surfaces on its own, which leaves it unusable without a queue
         self.mass.signal_event(EventType.PLAYER_ADDED, object_id=player.player_id, data=player)
@@ -3304,6 +3463,11 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         """Handle DSP reload when group membership changes."""
         # reset cached group volume snapshot since membership changed
         player.extra_data.pop(ATTR_GROUP_VOLUME_SNAPSHOT, None)
+        if player.state.synced_to and player.state.synced_to != player.player_id:
+            # a sync child renders its leader's stream, so its own DSP setting cannot
+            # require a restart (a leader that just became a child reports its members
+            # as gone, which would otherwise read as the group shrinking)
+            return
         prev_child_count = len(prev_group_members)
         new_child_count = len(new_group_members)
         is_player_group = player.state.type == PlayerType.GROUP
@@ -3348,7 +3512,19 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
             # - we switched from a group with multiple players to a single player
             #   (or vice versa)
             # - the leader has DSP enabled
-            self.mass.create_task(self.mass.players.on_player_dsp_change(player.player_id))
+            self.mass.create_task(
+                self.mass.players.on_player_dsp_change(player.player_id, after_group_change=True)
+            )
+
+    async def _resume_queue_after_dsp_change(self, queue_id: str) -> None:
+        """Resume a queue to apply a DSP change, unless it was emptied while waiting for the lock."""
+        # a running command (e.g. a leadership transfer) may move the queue away meanwhile
+        async with self.get_group_and_player_lock(queue_id, strict=True):
+            queue = self.mass.player_queues.get(queue_id)
+            if queue is None or not queue.items:
+                self.logger.debug("Not restarting queue %s after DSP change: it is empty", queue_id)
+                return
+            await self.mass.player_queues.resume(queue_id, False)
 
     def _check_external_source_takeover(self, player: Player) -> None:
         """

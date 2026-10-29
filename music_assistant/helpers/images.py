@@ -25,7 +25,7 @@ from music_assistant_models.errors import MediaNotFoundError, ProviderUnavailabl
 from PIL import Image, UnidentifiedImageError
 
 from music_assistant.constants import APPLICATION_NAME, CONF_PROVIDERS
-from music_assistant.helpers.security import is_safe_path
+from music_assistant.helpers.security import has_control_chars, is_safe_path
 from music_assistant.helpers.tags import get_embedded_image
 from music_assistant.helpers.util import join_task
 
@@ -46,6 +46,8 @@ class _NoImageError(MediaNotFoundError):
 _THUMB_CACHE_DIR = "thumbnails"
 _THUMB_MEMORY_CACHE_MAX = 50
 _ALLOWED_THUMB_FORMATS: frozenset[str] = frozenset({"PNG", "JPEG"})
+# what detect_image_content_format() reports for a source already in each output format
+_CONTENT_FORMAT: dict[str, str] = {"PNG": "png", "JPEG": "jpg"}
 
 # Bump on encoding-rule changes so stale entries (e.g. old black-bg JPEGs for
 # transparent logos) aren't served from a colliding filename after upgrade.
@@ -295,6 +297,9 @@ async def get_image_data(
     if _depth >= _MAX_IMAGEPROXY_RECURSION_DEPTH:
         msg = f"Maximum recursion depth exceeded when fetching image: {path_or_url}"
         raise FileNotFoundError(msg)
+    if has_control_chars(path_or_url):
+        msg = f"Invalid image reference: {path_or_url!r}"
+        raise FileNotFoundError(msg)
     # base64 data URIs carry their content inline; just decode them
     if path_or_url.startswith("data:image"):
         return b64decode(path_or_url.rsplit(",", maxsplit=1)[-1])
@@ -468,6 +473,10 @@ async def _fetch_source_image(
         # unknown provider does fall through - it is gone for good, so missing is honest.
         msg = f"{provider} is not available to resolve image {path_or_url}"
         raise ProviderUnavailableError(msg)
+    # a provider may have resolved the path to anything, so check its result as well
+    if has_control_chars(path_or_url):
+        msg = f"Invalid image reference: {path_or_url!r}"
+        raise FileNotFoundError(msg)
     # handle HTTP location
     if path_or_url.startswith("http"):
         # handle imageproxy URLs pointing to our own server
@@ -689,7 +698,8 @@ async def _generate_and_cache_thumb(
     if is_svg_data(img_data):
         # Pillow can't decode SVG; pass it through unchanged.
         thumb_data = img_data
-    elif not size and image_format.encode() in img_data:
+    elif not size and detect_image_content_format(img_data) == _CONTENT_FORMAT[image_format]:
+        # original size in the source's own format: skip the decode/re-encode round trip
         thumb_data = img_data
     else:
 

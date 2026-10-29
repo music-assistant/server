@@ -23,16 +23,23 @@ from music_assistant_models.media_items import (
 from music_assistant.constants import (
     DB_TABLE_ALBUM_ARTISTS,
     DB_TABLE_ALBUM_TRACKS,
-    DB_TABLE_AUDIO_ANALYSIS,
     DB_TABLE_PROVIDER_MAPPINGS,
     DB_TABLE_TRACK_ARTISTS,
     DB_TABLE_TRACKS,
 )
 from music_assistant.controllers.music.media.base import MediaControllerBase
+from music_assistant.controllers.streams.constants import AA_TABLE_ANALYSIS
 from music_assistant.mass import MusicAssistant
 
 FS_INSTANCE = "filesystem_local--AbCd"
 STREAM_INSTANCE = "spotify--EfGh"
+METADATA_INSTANCE = "local_metadata--IjKl"
+
+
+@pytest.fixture(name="mass")
+def mass_fixture(music_mass_with_audio_analysis: MusicAssistant) -> MusicAssistant:
+    """Run on a library-only instance with a real audio analysis database."""
+    return music_mass_with_audio_analysis
 
 
 def _artist_with_two_providers(name: str) -> Artist:
@@ -130,6 +137,48 @@ async def test_cleanup_filesystem_provider_does_not_reset_database(mass: MusicAs
     assert await artists.get_library_item(int(db_survivor.item_id))
 
 
+async def test_cleanup_provider_images_strips_only_that_providers_images(
+    mass: MusicAssistant,
+) -> None:
+    """Removing a metadata provider drops its images from every media type, nothing else."""
+    artists = mass.music.artists
+    podcasts = mass.music.podcasts
+    db_artist = await artists.add_item_to_library(_artist_with_two_providers("Enriched Artist"))
+    db_podcast = await podcasts.add_item_to_library(
+        Podcast(
+            item_id="show1",
+            provider=FS_INSTANCE,
+            name="Enriched Show",
+            provider_mappings={
+                ProviderMapping(
+                    item_id="show1",
+                    provider_domain="filesystem_local",
+                    provider_instance=FS_INSTANCE,
+                )
+            },
+        )
+    )
+    image = MediaItemImage(
+        type=ImageType.FANART,
+        path="Artist/fanart.jpg?v=1",
+        provider=METADATA_INSTANCE,
+        remotely_accessible=False,
+    )
+    for controller, db_id in ((artists, db_artist.item_id), (podcasts, db_podcast.item_id)):
+        await controller.replace_metadata(db_id, provider_images={METADATA_INSTANCE: [image]})
+
+    await mass.music.cleanup_provider_images(METADATA_INSTANCE)
+
+    updated_artist = await artists.get_library_item(db_artist.item_id)
+    assert [img.provider for img in updated_artist.metadata.images or []] == [
+        FS_INSTANCE,
+        STREAM_INSTANCE,
+    ]
+    assert len(updated_artist.provider_mappings) == 2
+    updated_podcast = await podcasts.get_library_item(db_podcast.item_id)
+    assert updated_podcast.metadata.images is None
+
+
 async def test_remove_single_provider_mapping_strips_provider_images(mass: MusicAssistant) -> None:
     """Removing the last mapping of a provider instance also strips its images."""
     artists = mass.music.artists
@@ -209,20 +258,23 @@ async def test_remove_single_provider_mapping_keeps_shared_domain_analysis(
         )
     )
     for prov_key in ("spotify", STREAM_INSTANCE):
-        await mass.music.database.insert(
-            DB_TABLE_AUDIO_ANALYSIS,
+        await mass.streams.audio_analysis.database.insert(
+            AA_TABLE_ANALYSIS,
             {
                 "media_type": "artist",
                 "item_id": "sp1",
                 "provider": prov_key,
                 "aa_provider_domain": "test",
-                "analysis_data": "{}",
+                "header": "{}",
+                "payload": b"",
             },
         )
 
     await artists.remove_provider_mapping(db_artist.item_id, STREAM_INSTANCE, "sp1")
 
-    rows = await mass.music.database.get_rows(DB_TABLE_AUDIO_ANALYSIS, {"item_id": "sp1"})
+    rows = await mass.streams.audio_analysis.database.get_rows(
+        AA_TABLE_ANALYSIS, {"item_id": "sp1"}
+    )
     assert [row["provider"] for row in rows] == ["spotify"]
 
 
@@ -423,8 +475,7 @@ async def test_item_without_provider_mappings_raises_media_not_found(
     )
 
     with pytest.raises(MediaNotFoundError):
-        async for _ in playlists.tracks(str(db_id), "library"):
-            pass
+        await playlists.tracks(str(db_id), "library")
 
 
 async def test_database_cleanup_removes_relations_of_deleted_items(mass: MusicAssistant) -> None:

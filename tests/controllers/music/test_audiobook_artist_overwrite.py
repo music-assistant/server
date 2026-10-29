@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import pytest
 from music_assistant_models.enums import ArtistType
 from music_assistant_models.media_items import Artist, Audiobook, ProviderMapping
 
@@ -10,6 +11,12 @@ from music_assistant.mass import MusicAssistant
 
 INSTANCE_ID = "test--1"
 BOOK_ID = "book_1"
+
+
+@pytest.fixture(name="mass")
+def mass_fixture(music_mass: MusicAssistant) -> MusicAssistant:
+    """Run on a library-only instance: these tests only touch the library."""
+    return music_mass
 
 
 def _mapping(item_id: str, instance_id: str = INSTANCE_ID) -> set[ProviderMapping]:

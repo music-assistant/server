@@ -32,6 +32,8 @@ from music_assistant.helpers.provider_access import (
 from music_assistant.helpers.util import parse_optional_bool
 
 if TYPE_CHECKING:
+    from collections.abc import Sequence
+
     from music_assistant_models.auth import User
     from music_assistant_models.config_entries import ProviderAccess
     from music_assistant_models.media_items import ItemMapping, Track
@@ -298,34 +300,69 @@ class FavoritesStore:
         return self._users[1]
 
 
-async def with_user_favorites(
-    mass: MusicAssistant, user: User | None, tracks: list[Track]
-) -> list[Track]:
+async def with_user_favorites[ItemT: MediaItem](
+    mass: MusicAssistant, user: User | None, items: Sequence[ItemT]
+) -> list[ItemT]:
     """
-    Return the given tracks carrying the favorite state of the given user.
+    Return the given items carrying the favorite state of the given user.
 
-    For a cached list somebody else filled: the state it carries is theirs. The library
-    tracks in the list are updated in place.
+    For a cached list somebody else filled: the state it carries is theirs. The items in the
+    list are updated in place; an item straight from a music source carries the state of its
+    library item, and none when it is not in the library.
 
     :param mass: The MusicAssistant instance.
-    :param user: The user asking; without one the tracks carry no state at all.
-    :param tracks: The tracks to update.
+    :param user: The user asking; without one the items carry no state at all.
+    :param items: The items to update, of any media type.
     """
-    if not tracks:
-        return tracks
-    states: dict[int, bool | None] = {}
-    if user:
+    library_states: dict[tuple[str, int], bool | None] = {}
+    source_states: dict[tuple[str, str, str], bool | None] = {}
+    if user and items:
+        # one query for the whole list, bound by the states the user holds rather than by the
+        # length of the list: each state comes with the source ids of its library item
         rows = await mass.music.database.get_rows_from_query(
-            f"SELECT item_id, favorite FROM {DB_TABLE_FAVORITES} "
-            "WHERE user_id = :user_id AND media_type = :media_type",
-            {"user_id": user.user_id, "media_type": MediaType.TRACK.value},
+            "SELECT favorites.media_type, favorites.item_id, favorites.favorite, "
+            "mappings.provider_instance, mappings.provider_item_id "
+            f"FROM {DB_TABLE_FAVORITES} AS favorites "
+            f"LEFT JOIN {DB_TABLE_PROVIDER_MAPPINGS} AS mappings "
+            "ON mappings.media_type = favorites.media_type "
+            "AND mappings.item_id = favorites.item_id "
+            "AND mappings.provider_instance IN :instances "
+            "WHERE favorites.user_id = :user_id AND favorites.media_type IN :media_types",
+            {
+                "user_id": user.user_id,
+                "media_types": sorted({item.media_type.value for item in items}),
+                "instances": sorted(
+                    {
+                        mapping.provider_instance
+                        for item in items
+                        if item.provider != "library"
+                        for mapping in item.provider_mappings
+                    }
+                ),
+            },
             limit=0,
         )
-        states = {row["item_id"]: parse_optional_bool(row["favorite"]) for row in rows}
-    for track in tracks:
-        if track.provider == "library":
-            track.favorite = states.get(int(track.item_id))
-    return tracks
+        for row in rows:
+            state = parse_optional_bool(row["favorite"])
+            library_states[(row["media_type"], row["item_id"])] = state
+            if row["provider_instance"] is not None:
+                source_key = (row["media_type"], row["provider_instance"], row["provider_item_id"])
+                source_states[source_key] = state
+    for item in items:
+        media_type = item.media_type.value
+        if item.provider == "library":
+            item.favorite = library_states.get((media_type, int(item.item_id)))
+            continue
+        item.favorite = next(
+            (
+                source_states[source_key]
+                for mapping in item.provider_mappings
+                if (source_key := (media_type, mapping.provider_instance, mapping.item_id))
+                in source_states
+            ),
+            None,
+        )
+    return list(items)
 
 
 async def without_disliked_tracks(

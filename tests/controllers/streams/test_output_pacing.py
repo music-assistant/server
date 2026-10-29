@@ -86,7 +86,7 @@ def test_a_track_of_a_slow_source_earns_the_room_for_a_fade() -> None:
 
 def test_the_opening_burst_outlasts_a_source_starting_up() -> None:
     """
-    A fade holds the stream back until the next track's source delivers.
+    A track change without a fade holds the stream back until the next track's source delivers.
 
     At the first track change of any stream the burst is all a player is sure to
     hold, however short that first track is.

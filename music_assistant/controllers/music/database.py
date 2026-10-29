@@ -25,8 +25,6 @@ from music_assistant.constants import (
     DB_TABLE_ALBUM_TRACKS,
     DB_TABLE_ALBUMS,
     DB_TABLE_ARTISTS,
-    DB_TABLE_AUDIO_ANALYSIS,
-    DB_TABLE_AUDIO_ANALYSIS_FAILURES,
     DB_TABLE_AUDIOBOOK_ARTISTS,
     DB_TABLE_AUDIOBOOKS,
     DB_TABLE_EXTERNAL_ID_LOOKUP,
@@ -34,8 +32,10 @@ from music_assistant.constants import (
     DB_TABLE_GENRE_MEDIA_ITEM_EXCLUSION,
     DB_TABLE_GENRE_MEDIA_ITEM_MAPPING,
     DB_TABLE_GENRES,
+    DB_TABLE_LEGACY_PLAYLOG,
+    DB_TABLE_MEDIA_PROGRESS,
+    DB_TABLE_PLAY_HISTORY,
     DB_TABLE_PLAYLISTS,
-    DB_TABLE_PLAYLOG,
     DB_TABLE_PODCASTS,
     DB_TABLE_PROVIDER_MAPPINGS,
     DB_TABLE_RADIOS,
@@ -47,7 +47,10 @@ from music_assistant.constants import (
 )
 from music_assistant.controllers.music.constants import DB_SCHEMA_VERSION
 from music_assistant.controllers.music.media.genres import GenreController
-from music_assistant.controllers.music.migrations import migrate_database
+from music_assistant.controllers.music.migrations import (
+    migrate_database,
+    move_legacy_audio_analysis,
+)
 from music_assistant.controllers.tasks.context import update_current_task_progress_text
 from music_assistant.helpers.database import DatabaseConnection
 
@@ -118,7 +121,7 @@ class MusicDatabaseSetupMixin:
         update_current_task_progress_text("Cleaning old playlog entries")
         # Remove playlog entries older than 90 days
         await self.database.delete_where_query(
-            DB_TABLE_PLAYLOG, f"timestamp < strftime('%s','now') - {3600 * 24 * 90}"
+            DB_TABLE_MEDIA_PROGRESS, f"timestamp < strftime('%s','now') - {3600 * 24 * 90}"
         )
         # db tables cleanup
         for ctrl in (
@@ -154,7 +157,7 @@ class MusicDatabaseSetupMixin:
                 f"media_type = '{ctrl.media_type}' AND provider = 'library' "
                 f"AND item_id not in (select item_id from {ctrl.db_table})"
             )
-            await self.mass.music.database.delete_where_query(DB_TABLE_PLAYLOG, where_clause)
+            await self.mass.music.database.delete_where_query(DB_TABLE_MEDIA_PROGRESS, where_clause)
             # Cleanup removed db items from the favorites
             query = (
                 f"media_type = '{ctrl.media_type}' "
@@ -230,6 +233,9 @@ class MusicDatabaseSetupMixin:
                 await self.mass.cache.clear()
                 await self.__create_database_tables()
                 prev_version = 0
+        elif prev_version == DB_SCHEMA_VERSION:
+            # retry an audio analysis move that an earlier start skipped for lack of disk space
+            await move_legacy_audio_analysis(self.mass, self.database, self.logger)
 
         # store current schema version
         await self._database.insert_or_replace(
@@ -277,8 +283,11 @@ class MusicDatabaseSetupMixin:
                     [type] TEXT
                 );"""
         )
-        await self.database.execute(
-            f"""CREATE TABLE IF NOT EXISTS {DB_TABLE_PLAYLOG}(
+        if not await self.database.get_row(
+            "sqlite_master", {"type": "table", "name": DB_TABLE_LEGACY_PLAYLOG}
+        ):
+            await self.database.execute(
+                f"""CREATE TABLE IF NOT EXISTS {DB_TABLE_MEDIA_PROGRESS}(
                 [id] INTEGER PRIMARY KEY AUTOINCREMENT,
                 [item_id] TEXT NOT NULL,
                 [provider] TEXT NOT NULL,
@@ -294,6 +303,21 @@ class MusicDatabaseSetupMixin:
                 [user_initiated] BOOLEAN NOT NULL DEFAULT 1,
                 [playback_speed] REAL NOT NULL DEFAULT 1.0,
                 UNIQUE(item_id, provider, media_type, userid));"""
+            )
+        await self.database.execute(
+            f"""CREATE TABLE IF NOT EXISTS {DB_TABLE_PLAY_HISTORY}(
+                [id] INTEGER PRIMARY KEY AUTOINCREMENT,
+                [item_id] TEXT NOT NULL,
+                [provider] TEXT NOT NULL,
+                [media_type] TEXT NOT NULL,
+                [userid] TEXT NOT NULL,
+                [queue_id] TEXT,
+                [timestamp] INTEGER NOT NULL,
+                [user_initiated] BOOLEAN NOT NULL DEFAULT 1,
+                [name] TEXT NOT NULL,
+                [image] json,
+                [artists] json
+            );"""
         )
         await self.database.execute(
             f"""CREATE TABLE IF NOT EXISTS {DB_TABLE_FAVORITES}(
@@ -389,7 +413,8 @@ class MusicDatabaseSetupMixin:
             [timestamp_modified] INTEGER NOT NULL DEFAULT 0,
             [search_name] TEXT NOT NULL,
             [search_sort_name] TEXT NOT NULL,
-            [is_dynamic] BOOLEAN NOT NULL DEFAULT 0
+            [is_dynamic] BOOLEAN NOT NULL DEFAULT 0,
+            [is_endless] BOOLEAN DEFAULT 1 NOT NULL
             );"""
         )
         await self.database.execute(
@@ -542,33 +567,6 @@ class MusicDatabaseSetupMixin:
             );"""
         )
 
-        await self.database.execute(
-            f"""CREATE TABLE IF NOT EXISTS {DB_TABLE_AUDIO_ANALYSIS}(
-                    [id] INTEGER PRIMARY KEY AUTOINCREMENT,
-                    [media_type] TEXT NOT NULL,
-                    [item_id] TEXT NOT NULL,
-                    [provider] TEXT NOT NULL,
-                    [aa_provider_domain] TEXT NOT NULL,
-                    [analysis_data] json NOT NULL,
-                    [analysis_version] INTEGER DEFAULT 1,
-                    [timestamp_created] INTEGER DEFAULT (cast(strftime('%s','now') as int)),
-                    UNIQUE(item_id,provider,aa_provider_domain,media_type));"""
-        )
-
-        await self.database.execute(
-            f"""CREATE TABLE IF NOT EXISTS {DB_TABLE_AUDIO_ANALYSIS_FAILURES}(
-                    [id] INTEGER PRIMARY KEY AUTOINCREMENT,
-                    [media_type] TEXT NOT NULL,
-                    [item_id] TEXT NOT NULL,
-                    [provider] TEXT NOT NULL,
-                    [aa_provider_domain] TEXT NOT NULL,
-                    [reason] TEXT NOT NULL,
-                    [analysis_version] INTEGER NOT NULL DEFAULT 1,
-                    [next_retry] INTEGER,
-                    [timestamp_created] INTEGER DEFAULT (cast(strftime('%s','now') as int)),
-                    UNIQUE(item_id,provider,aa_provider_domain,media_type));"""
-        )
-
         # full-text search tables (trigram tokenizer for substring matching on search_name)
         for db_table in MEDIA_ITEM_DB_TABLES:
             try:
@@ -718,20 +716,24 @@ class MusicDatabaseSetupMixin:
         )
         # unique index on playlog table
         await self.database.execute(
-            f"CREATE UNIQUE INDEX IF NOT EXISTS {DB_TABLE_PLAYLOG}_unique_idx "
-            f"on {DB_TABLE_PLAYLOG}(item_id,provider,media_type,userid);"
+            f"CREATE UNIQUE INDEX IF NOT EXISTS {DB_TABLE_MEDIA_PROGRESS}_unique_idx "
+            f"on {DB_TABLE_MEDIA_PROGRESS}(item_id,provider,media_type,userid);"
         )
         # speed up recency lookups (smart shuffle / dedup) by user and time window
         await self.database.execute(
-            f"CREATE INDEX IF NOT EXISTS {DB_TABLE_PLAYLOG}_userid_timestamp_idx "
-            f"on {DB_TABLE_PLAYLOG}(userid,timestamp);"
+            f"CREATE INDEX IF NOT EXISTS {DB_TABLE_MEDIA_PROGRESS}_userid_timestamp_idx "
+            f"on {DB_TABLE_MEDIA_PROGRESS}(userid,timestamp);"
         )
         # serves the podcast episode resume lookup, which no existing index can: they all
         # lead with item_id or userid, neither of which that query filters on. Column order
         # matches its filter, so with a userid it needs no sort for the ORDER BY either
         await self.database.execute(
-            f"CREATE INDEX IF NOT EXISTS {DB_TABLE_PLAYLOG}_provider_media_type_idx "
-            f"on {DB_TABLE_PLAYLOG}(provider,media_type,userid,timestamp);"
+            f"CREATE INDEX IF NOT EXISTS {DB_TABLE_MEDIA_PROGRESS}_provider_media_type_idx "
+            f"on {DB_TABLE_MEDIA_PROGRESS}(provider,media_type,userid,timestamp);"
+        )
+        await self.database.execute(
+            f"CREATE INDEX IF NOT EXISTS {DB_TABLE_PLAY_HISTORY}_user_timestamp_cov_idx "
+            f"on {DB_TABLE_PLAY_HISTORY}(userid,timestamp,media_type,provider,item_id);"
         )
         await self.database.commit()
 

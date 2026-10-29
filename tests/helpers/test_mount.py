@@ -6,6 +6,7 @@ import pytest
 from music_assistant_models.errors import LoginFailed, SetupFailedError, UnsupportedSystemError
 
 from music_assistant.helpers.mount import (
+    UNMOUNT_TIMEOUT,
     build_cifs_mount_cmd,
     build_nfs_mount_cmd,
     classify_mount_error,
@@ -129,6 +130,19 @@ def test_cifs_command_on_linux_keeps_names_as_they_are() -> None:
 
     assert cmd[5] == "//nas.local/My Music/albums"
     assert "username=user@realm" in cmd[4]
+
+
+@pytest.mark.parametrize(
+    ("username", "share"),
+    [("user,uid=1000", "music"), ("user=x", "music"), ("marcel", "music,uid=1000")],
+)
+def test_cifs_command_on_linux_rejects_option_separators(username: str, share: str) -> None:
+    """A user or share that would add options to the Linux mount command is refused."""
+    with pytest.raises(SetupFailedError):
+        build_cifs_mount_cmd("Linux", "nas.local", share, MOUNT_PATH, username=username)
+
+    # the macOS URL encodes them instead
+    build_cifs_mount_cmd("Darwin", "nas.local", share, MOUNT_PATH, username=username)
 
 
 @pytest.mark.parametrize(("username", "password"), [(None, None), ("Guest", "pw"), ("", "pw")])
@@ -275,7 +289,7 @@ async def test_unmount_success() -> None:
         patch(CHECK_OUTPUT, AsyncMock(return_value=(0, b""))) as check_output,
     ):
         await unmount(MOUNT_PATH, logger)
-    check_output.assert_awaited_once_with("umount", MOUNT_PATH)
+    check_output.assert_awaited_once_with("umount", MOUNT_PATH, timeout=UNMOUNT_TIMEOUT)
     logger.warning.assert_not_called()
 
 
@@ -327,3 +341,26 @@ async def test_unmount_no_raise_when_detached() -> None:
         patch(CHECK_OUTPUT, check_output),
     ):
         await unmount(MOUNT_PATH, MagicMock())
+
+
+async def test_unmount_without_answer_escalates() -> None:
+    """A umount that does not finish in time is escalated to a detach."""
+    check_output = AsyncMock(side_effect=[TimeoutError, (0, b"")])
+    with (
+        patch(ISMOUNT, return_value=True),
+        patch(CHECK_OUTPUT, check_output),
+        patch(PLATFORM_SYSTEM, return_value="Linux"),
+    ):
+        await unmount(MOUNT_PATH, MagicMock())
+    assert check_output.await_args_list[1].args == ("umount", "-l", MOUNT_PATH)
+
+
+async def test_unmount_raises_when_detach_has_no_answer() -> None:
+    """A mountpoint that no umount answers for in time is reported as a setup failure."""
+    with (
+        patch(ISMOUNT, return_value=True),
+        patch(CHECK_OUTPUT, AsyncMock(side_effect=TimeoutError)),
+        pytest.raises(SetupFailedError) as exc_info,
+    ):
+        await unmount(MOUNT_PATH, MagicMock())
+    assert exc_info.value.translation_key == "unmount_failed"

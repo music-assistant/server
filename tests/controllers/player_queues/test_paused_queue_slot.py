@@ -161,7 +161,7 @@ class _Rig:
         )
 
     @contextlib.asynccontextmanager
-    async def playback_lock(self, player_id: str) -> AsyncIterator[None]:
+    async def playback_lock(self, player_id: str, strict: bool = False) -> AsyncIterator[None]:
         """Hold a player's playback lock, re-entrant within one task like the real one."""
         task = asyncio.current_task()
         if self._lock_owners.get(player_id) is task:
@@ -203,6 +203,7 @@ async def test_a_paused_queue_hands_its_slot_to_a_start_on_another_queue(rig: _R
         starting_item, reason="prepare", capacity_wait_timeout=2
     )
 
+    assert buffer is not None
     assert buffer.is_buffering
     rig.stop_device.assert_awaited_once_with(PAUSED_QUEUE)
     assert rig.queues._queue_data[PAUSED_QUEUE].session_id is None
@@ -223,6 +224,7 @@ async def test_a_paused_player_that_cannot_be_reached_still_hands_over_its_slot(
         starting_item, reason="prepare", capacity_wait_timeout=2
     )
 
+    assert buffer is not None
     assert buffer.is_buffering
     assert rig.queues._queue_data[PAUSED_QUEUE].session_id is None
     assert paused_buffer.cancelled
@@ -457,6 +459,7 @@ async def test_a_member_starting_from_its_paused_group_takes_the_groups_slot(rig
             starting_item, reason="prepare", capacity_wait_timeout=2
         )
 
+    assert buffer is not None
     assert buffer.is_buffering
     rig.stop_device.assert_awaited_once_with(PAUSED_QUEUE)
     assert paused_buffer.cancelled

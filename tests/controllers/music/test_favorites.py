@@ -42,6 +42,10 @@ async def favorites_mass(
 ) -> MusicAssistant:
     """Return the library-only instance with a stand-in for the (unset up) cache."""
     monkeypatch.setattr(music_mass_module.cache, "delete", AsyncMock())
+    # remove_item_from_library routes audio analysis cleanup through the AA controller
+    streams = MagicMock()
+    streams.audio_analysis.delete_audio_analysis = AsyncMock()
+    monkeypatch.setattr(music_mass_module, "streams", streams, raising=False)
     # the store remembers the users of a sync burst; every test names its own
     music_mass_module.music.favorites._users = None
     return music_mass_module

@@ -7,7 +7,13 @@ from json import loads as json_loads
 from typing import TYPE_CHECKING, Any, Literal, cast, overload
 
 from music_assistant_models.auth import Scope
-from music_assistant_models.enums import ArtistType, MediaType, ProviderFeature
+from music_assistant_models.enums import (
+    ArtistType,
+    MediaType,
+    ProviderFeature,
+    SortDirection,
+    SortField,
+)
 from music_assistant_models.helpers import create_safe_string
 from music_assistant_models.media_items import (
     Artist,
@@ -24,7 +30,7 @@ from music_assistant.constants import (
     DB_TABLE_ARTISTS,
     DB_TABLE_AUDIOBOOK_ARTISTS,
     DB_TABLE_AUDIOBOOKS,
-    DB_TABLE_PLAYLOG,
+    DB_TABLE_MEDIA_PROGRESS,
     DB_TABLE_PROVIDER_MAPPINGS,
 )
 from music_assistant.controllers.webserver.helpers.auth_middleware import get_current_user
@@ -71,7 +77,7 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
         """
         Return the base SELECT query for audiobooks and its bound query params.
 
-        The playlog table is joined to hydrate per-user resume info (fully_played,
+        The media progress table is joined to hydrate per-user resume info (fully_played,
         resume_position_ms). When a session user is present the join is scoped to that
         user, so multi-user installs don't surface each other's resume state.
         """
@@ -102,8 +108,8 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
             playlog.seconds_played AS seconds_played,
             playlog.seconds_played * 1000 as resume_position_ms
             FROM audiobooks
-            LEFT JOIN playlog ON playlog.id = (
-                SELECT p2.id FROM playlog p2
+            LEFT JOIN {DB_TABLE_MEDIA_PROGRESS} AS playlog ON playlog.id = (
+                SELECT p2.id FROM {DB_TABLE_MEDIA_PROGRESS} AS p2
                 WHERE p2.item_id = CAST(audiobooks.item_id AS TEXT)
                 AND p2.media_type = 'audiobook'
                 {playlog_user_clause}ORDER BY p2.timestamp DESC LIMIT 1)
@@ -115,7 +121,7 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
         """
         Return the slim SELECT query used for audiobook summary listings.
 
-        Joins the playlog table the same way as the base query to hydrate the
+        Joins the media progress table the same way as the base query to hydrate the
         per-user resume info (fully_played, resume_position_ms).
         """
         params: dict[str, Any] = {}
@@ -139,8 +145,8 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
             playlog.fully_played AS fully_played,
             playlog.seconds_played * 1000 as resume_position_ms
             FROM audiobooks
-            LEFT JOIN playlog ON playlog.id = (
-                SELECT p2.id FROM playlog p2
+            LEFT JOIN {DB_TABLE_MEDIA_PROGRESS} AS playlog ON playlog.id = (
+                SELECT p2.id FROM {DB_TABLE_MEDIA_PROGRESS} AS p2
                 WHERE p2.item_id = CAST(audiobooks.item_id AS TEXT)
                 AND p2.media_type = 'audiobook'
                 {playlog_user_clause}ORDER BY p2.timestamp DESC LIMIT 1)
@@ -156,14 +162,17 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
             search: str | None = None,
             limit: int = 500,
             offset: int = 0,
-            order_by: str = "sort_name",
+            order_by: str | None = None,
             provider: str | list[str] | None = None,
             genre: int | list[int] | None = None,
             played_only: bool = False,
             *,
+            sort_field: SortField | None = None,
+            sort_direction: SortDirection | None = None,
             summary: bool = True,
             collapse_collections: Literal[False] = False,
             reachable_via: list[str] | None = None,
+            random_seed: int | None = None,
             **kwargs: Any,
         ) -> list[Audiobook]: ...
 
@@ -174,14 +183,17 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
             search: str | None = None,
             limit: int = 500,
             offset: int = 0,
-            order_by: str = "sort_name",
+            order_by: str | None = None,
             provider: str | list[str] | None = None,
             genre: int | list[int] | None = None,
             played_only: bool = False,
             *,
+            sort_field: SortField | None = None,
+            sort_direction: SortDirection | None = None,
             summary: bool = True,
             collapse_collections: Literal[True],
             reachable_via: list[str] | None = None,
+            random_seed: int | None = None,
             **kwargs: Any,
         ) -> list[Audiobook] | list[Audiobook | MediaCollection[Audiobook]]: ...
 
@@ -192,14 +204,17 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
             search: str | None = None,
             limit: int = 500,
             offset: int = 0,
-            order_by: str = "sort_name",
+            order_by: str | None = None,
             provider: str | list[str] | None = None,
             genre: int | list[int] | None = None,
             played_only: bool = False,
             *,
+            sort_field: SortField | None = None,
+            sort_direction: SortDirection | None = None,
             summary: bool = True,
             collapse_collections: bool,
             reachable_via: list[str] | None = None,
+            random_seed: int | None = None,
             **kwargs: Any,
         ) -> list[Audiobook] | list[Audiobook | MediaCollection[Audiobook]]: ...
 
@@ -209,14 +224,17 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
         search: str | None = None,
         limit: int = 500,
         offset: int = 0,
-        order_by: str = "sort_name",
+        order_by: str | None = None,
         provider: str | list[str] | None = None,
         genre: int | list[int] | None = None,
         played_only: bool = False,
         *,
+        sort_field: SortField | None = None,
+        sort_direction: SortDirection | None = None,
         summary: bool = True,
         collapse_collections: bool = False,
         reachable_via: list[str] | None = None,
+        random_seed: int | None = None,
         **kwargs: Any,
     ) -> list[Audiobook] | list[Audiobook | MediaCollection[Audiobook]]:
         """
@@ -226,9 +244,13 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
         :param search: Filter by search query.
         :param limit: Maximum number of items to return.
         :param offset: Number of items to skip.
-        :param order_by: Order by field (e.g. 'sort_name', 'timestamp_added').
+        :param random_seed: Keep random ordering stable across pages with the same seed.
+        :param order_by: DEPRECATED - use sort_field and sort_direction instead.
         :param provider: Filter by provider instance ID (single string or list).
         :param genre: Filter by genre id(s).
+        :param played_only: Only include audiobooks that have been played.
+        :param sort_field: Sort field to use.
+        :param sort_direction: Sort direction, the field's default when omitted.
         :param summary: When True (default), return slim summary items containing only the
             fields needed for a list view. Set to False to get fully hydrated items.
         :param collapse_collections: Collapse available collections. Items in a collection won't
@@ -237,6 +259,7 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
             through one of these provider instance ids (OR semantics). See
             `MediaControllerBase.library_items` for the full semantics.
         """
+        field, direction = self.resolve_sort(sort_field, sort_direction, order_by)
         reachable_via = self._resolve_reachable_via(reachable_via)
         if reachable_via is not None and not reachable_via:
             return []
@@ -248,7 +271,8 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
             genre_ids=genre,
             limit=limit,
             offset=offset,
-            order_by=order_by,
+            sort_field=field,
+            sort_direction=direction,
             provider_filter=self._provider_filter_considering_reachability(provider, reachable_via),
             extra_query_parts=extra_query_parts,
             extra_query_params=extra_query_params,
@@ -257,6 +281,7 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
             summary=summary,
             collapse_collections=collapse_collections,
             reachable_via=reachable_via,
+            random_seed=random_seed,
         )
         if search and len(result) < 25 and not offset:
             # append author items to result
@@ -269,7 +294,8 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
                 search=None,
                 genre_ids=genre,
                 limit=limit,
-                order_by=order_by,
+                sort_field=field,
+                sort_direction=direction,
                 provider_filter=self._provider_filter_considering_reachability(
                     provider, reachable_via
                 ),
@@ -279,6 +305,7 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
                 summary=summary,
                 collapse_collections=collapse_collections,
                 reachable_via=reachable_via,
+                random_seed=random_seed,
             )
         return result
 
@@ -286,25 +313,38 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
         self,
         item_id: str,
         provider_instance_id_or_domain: str,
-    ) -> UniqueList[Audiobook]:
-        """Return all versions of an audiobook we can find on all providers."""
-        audiobook = await self.get_provider_item(item_id, provider_instance_id_or_domain)
-        search_query = audiobook.name
-        result: UniqueList[Audiobook] = UniqueList()
-        for provider_id in self.mass.music.get_unique_providers():
-            provider = self.mass.get_provider(provider_id)
-            if not isinstance(provider, MusicProvider):
-                continue
-            if MediaType.AUDIOBOOK not in provider.supported_media_types:
-                continue
-            result.extend(
-                prov_item
-                for prov_item in await self.search(search_query, provider_id)
-                if loose_compare_strings(audiobook.name, prov_item.name)
-                # make sure that the 'base' version is NOT included
-                and not audiobook.provider_mappings.intersection(prov_item.provider_mappings)
-            )
-        return result
+        search: str | None = None,
+        sort_field: SortField | None = None,
+        sort_direction: SortDirection | None = None,
+        limit: int | None = 500,
+        offset: int = 0,
+        random_seed: int | None = None,
+    ) -> list[Audiobook]:
+        """
+        Return the versions of an audiobook on all providers, searched, sorted and paged.
+
+        :param item_id: The audiobook id on the provider, or its library id.
+        :param provider_instance_id_or_domain: The provider the id belongs to, or "library".
+        :param search: Only list the versions whose name contains this text.
+        :param sort_field: Sort field, the order the providers list them in (ORIGINAL) when
+            omitted.
+        :param sort_direction: Sort direction, the field's default when omitted.
+        :param limit: Maximum number of versions to return; 0 returns them all.
+        :param offset: Number of versions to skip.
+        :param random_seed: Keep random ordering stable across pages with the same seed.
+        :raises InvalidDataError: When the sort field is not offered for versions.
+        """
+        return await self._versions_listing(
+            item_id,
+            provider_instance_id_or_domain,
+            lambda provider_id: self._assemble_versions(item_id, provider_id),
+            search=search,
+            sort_field=sort_field,
+            sort_direction=sort_direction,
+            limit=limit,
+            offset=offset,
+            random_seed=random_seed,
+        )
 
     async def match_provider(
         self, db_audiobook: Audiobook, provider: MusicProvider, strict: bool = True
@@ -335,7 +375,7 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
                 fallback=search_result_item,
             )
             if compare_audiobook(db_audiobook, prov_audiobook, strict=strict):
-                # 100% match
+                # exact match
                 matches.extend(prov_audiobook.provider_mappings)
         if not matches:
             self.logger.debug(
@@ -374,11 +414,32 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
     async def remove_item_from_library(self, item_id: str | int, recursive: bool = True) -> None:
         """Delete item from the library(database)."""
         db_id = int(item_id)  # ensure integer
+        # remove the item before its relations so failed analysis cleanup leaves it intact
+        await super().remove_item_from_library(item_id)
         # delete entry(s) from album artists table
         await self.mass.music.database.delete(DB_TABLE_AUDIOBOOK_ARTISTS, {"audiobook_id": db_id})
-        # delete the album itself from db
-        # this will raise if the item still has references and recursive is false
-        await super().remove_item_from_library(item_id)
+
+    async def _assemble_versions(
+        self, item_id: str, provider_instance_id_or_domain: str
+    ) -> UniqueList[Audiobook]:
+        """Return all versions of an audiobook we can find on all providers."""
+        audiobook = await self.get_provider_item(item_id, provider_instance_id_or_domain)
+        search_query = audiobook.name
+        result: UniqueList[Audiobook] = UniqueList()
+        for provider_id in self.mass.music.get_unique_providers():
+            provider = self.mass.get_provider(provider_id)
+            if not isinstance(provider, MusicProvider):
+                continue
+            if MediaType.AUDIOBOOK not in provider.supported_media_types:
+                continue
+            result.extend(
+                prov_item
+                for prov_item in await self.search(search_query, provider_id)
+                if loose_compare_strings(audiobook.name, prov_item.name)
+                # make sure that the 'base' version is NOT included
+                and not audiobook.provider_mappings.intersection(prov_item.provider_mappings)
+            )
+        return result
 
     async def _add_library_item(self, item: Audiobook, overwrite_existing: bool = False) -> int:
         """Add a new record to the database."""
@@ -600,7 +661,7 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
         for prov_mapping in media_item.provider_mappings:
             for user_id in user_ids:
                 await self.mass.music.database.delete(
-                    DB_TABLE_PLAYLOG,
+                    DB_TABLE_MEDIA_PROGRESS,
                     {
                         "media_type": self.media_type.value,
                         "item_id": prov_mapping.item_id,
@@ -613,7 +674,7 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
 
         for user_id in user_ids:
             cur_entry = await self.mass.music.database.get_row(
-                DB_TABLE_PLAYLOG,
+                DB_TABLE_MEDIA_PROGRESS,
                 {
                     "media_type": self.media_type.value,
                     "item_id": db_id,
@@ -631,7 +692,7 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
                 return
 
             await self.mass.music.database.insert(
-                DB_TABLE_PLAYLOG,
+                DB_TABLE_MEDIA_PROGRESS,
                 {
                     "item_id": db_id,
                     "provider": "library",
@@ -687,8 +748,8 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
             , playlog.seconds_played * 1000 AS resume_position_ms
         """
         extra_joins = (
-            f"LEFT JOIN {DB_TABLE_PLAYLOG} ON playlog.id = ("
-            f"SELECT p2.id FROM {DB_TABLE_PLAYLOG} p2 "
+            f"LEFT JOIN {DB_TABLE_MEDIA_PROGRESS} AS playlog ON playlog.id = ("
+            f"SELECT p2.id FROM {DB_TABLE_MEDIA_PROGRESS} p2 "
             "WHERE p2.item_id = CAST(audiobooks.item_id AS TEXT) "
             "AND p2.media_type = 'audiobook' "
             f"{playlog_user_clause}ORDER BY p2.timestamp DESC LIMIT 1)"
@@ -716,9 +777,11 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
             resume_position_ms=int(resume_position_ms) if resume_position_ms is not None else None,
         )
 
-    def _parse_summary_row(self, db_row: Mapping[str, Any]) -> AudiobookSummary:
+    def _parse_summary_row(
+        self, db_row: Mapping[str, Any], hidden_sources: set[str]
+    ) -> AudiobookSummary:
         """Parse a raw summary db row into an AudiobookSummary object."""
-        item = cast("AudiobookSummary", super()._parse_summary_row(db_row))
+        item = cast("AudiobookSummary", super()._parse_summary_row(db_row, hidden_sources))
         item.version = db_row["version"] or ""
         item.publisher = db_row["publisher"]
         item.duration = db_row["duration"] or 0

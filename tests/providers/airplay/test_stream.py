@@ -17,6 +17,7 @@ from music_assistant_models.enums import ContentType, PlaybackState
 from music_assistant_models.errors import PlayerCommandFailed
 from music_assistant_models.media_items import AudioFormat
 
+from music_assistant.constants import CONF_PASSWORD
 from music_assistant.helpers.named_pipe import WRITE_POLL_INTERVAL_MS, AsyncNamedPipeWriter
 from music_assistant.helpers.process import AsyncProcess
 from music_assistant.providers.airplay.constants import (
@@ -26,7 +27,6 @@ from music_assistant.providers.airplay.constants import (
     CONF_AIRPLAY_CREDENTIALS,
     CONF_BUFFER_DEPTH,
     CONF_ENCRYPTION,
-    CONF_PASSWORD,
     STREAMING_MODE_AP2_COMPAT,
     STREAMING_MODE_AP2_NTP,
     STREAMING_MODE_AP2_PTP,
@@ -36,6 +36,7 @@ from music_assistant.providers.airplay.constants import (
     ClockReadiness,
     StreamingProtocol,
 )
+from music_assistant.providers.airplay.helpers import CLI_CLOCK_OFFSET_NS
 from music_assistant.providers.airplay.stream import AirPlayStream, CliError
 
 START_UNIX_MS = 1_750_000_000_000
@@ -183,6 +184,7 @@ async def test_cli_args_default_auto() -> None:
     # default format
     assert _arg_value(args, "--samplerate") == "44100"
     assert _arg_value(args, "--bitdepth") == "16"
+    assert _arg_value(args, "--clock-offset-ns") == str(CLI_CLOCK_OFFSET_NS)
     # no explicit latency override configured
     assert "--latency" not in args
     # PTP daemon is running: stream attaches to the shared clock
@@ -407,6 +409,42 @@ async def test_cli_args_raop_only_device() -> None:
     assert "--cmdpipe" in args
     assert args[-1] == "192.168.1.50"
     assert "-" not in args
+
+
+@pytest.mark.asyncio
+async def test_cli_args_pass_advertised_metadata_capabilities() -> None:
+    """The receiver's advertised metadata capabilities are passed on as-is."""
+    player = _make_player()
+    player.protocol = StreamingProtocol.RAOP
+    player.raop_discovery_info.decoded_properties["md"] = "0,2"
+
+    args = await _build_args(player)
+
+    assert _arg_value(args, "--md") == "0,2"
+
+
+@pytest.mark.asyncio
+async def test_cli_args_raop_without_md_disables_metadata() -> None:
+    """A legacy RAOP receiver that advertises no md gets no metadata pushed."""
+    player = _make_player()
+    player.airplay_discovery_info = None
+    player.protocol = StreamingProtocol.RAOP
+    del player.raop_discovery_info.decoded_properties["md"]
+
+    args = await _build_args(player)
+
+    assert _arg_value(args, "--md") == ""
+
+
+@pytest.mark.asyncio
+async def test_cli_args_airplay2_without_md_keeps_binary_default() -> None:
+    """AirPlay 2 flows keep the binary's metadata default when md is not advertised."""
+    player = _make_player()
+    del player.raop_discovery_info.decoded_properties["md"]
+
+    args = await _build_args(player)
+
+    assert "--md" not in args
 
 
 @pytest.mark.asyncio
@@ -2798,25 +2836,80 @@ async def test_force_stop_does_not_wait_for_artwork_render() -> None:
     process.kill.assert_awaited_once()
 
 
-@pytest.mark.asyncio
-async def test_process_eof_cleans_up_command_pipe() -> None:
-    """A naturally ended CLI stream removes its command pipe."""
+async def _run_stderr_reader_to(
+    status_line: str,
+) -> tuple[MagicMock, AirPlayStream, AsyncMock, list[Any]]:
+    """
+    Drive the stderr reader through one terminal status line.
+
+    :param status_line: The line the binary ends the stream with.
+    :return: The player, the stream, the mocked command pipe removal and the
+        awaitables the stream handed to ``mass.create_task``.
+    """
     player = _make_player()
     stream = AirPlayStream(player)
     process = MagicMock()
     stream._cli_proc = process
+    scheduled: list[Any] = []
+
+    def create_task(target: Any, **_kwargs: Any) -> MagicMock:
+        scheduled.append(target)
+        return MagicMock()
+
+    player.provider.mass.create_task.side_effect = create_task
 
     async def _stderr_lines() -> AsyncGenerator[str]:
-        yield "[STATUS] eof"
+        yield status_line
 
     with (
         patch.object(process, "iter_stderr", return_value=_stderr_lines()),
         patch.object(stream.commands_pipe, "remove", new_callable=AsyncMock) as remove_pipe,
     ):
         await stream._stderr_reader()
+    return player, stream, remove_pipe, scheduled
+
+
+@pytest.mark.asyncio
+async def test_process_eof_tells_the_binary_to_stop() -> None:
+    """
+    A stream whose input ended has the binary end the receiver session.
+
+    The binary reports eof once its drain is done but keeps the session open
+    awaiting a new START, so the stream stops it instead of only removing the
+    command pipe, which would leave the session to the binary's idle timeout.
+    """
+    player, stream, remove_pipe, scheduled = await _run_stderr_reader_to("[STATUS] eof")
+
+    assert stream._stopped is True
+    remove_pipe.assert_not_awaited()
+    assert len(scheduled) == 1
+    process = cast("MagicMock", stream._cli_proc)
+    process.closed = False
+    process.write_eof = AsyncMock()
+    process.close = AsyncMock()
+
+    with (
+        patch.object(
+            stream.commands_pipe, "write", new_callable=AsyncMock, return_value=True
+        ) as write_pipe,
+        patch.object(stream.commands_pipe, "remove", new_callable=AsyncMock) as remove_pipe,
+    ):
+        await scheduled[0]
+
+    write_pipe.assert_awaited_once_with(b"ACTION=STOP\n")
+    remove_pipe.assert_awaited_once()
+    process.close.assert_awaited_once()
+    player.schedule_group_rejoin.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_process_idle_timeout_cleans_up_command_pipe() -> None:
+    """A binary that ended the session on its idle timeout only leaves its pipe behind."""
+    player, stream, remove_pipe, scheduled = await _run_stderr_reader_to("[STATUS] idle_timeout")
 
     assert stream._stopped is True
     remove_pipe.assert_awaited_once()
+    assert not scheduled
     player.schedule_group_rejoin.assert_not_called()
 
 

@@ -231,7 +231,7 @@ class SonosCloudQueue:
         json_body = await request.json()
         for item in json_body["items"]:
             if error := item.get("error"):
-                self._log_reported_playback_error(player, item, error)
+                self._handle_reported_playback_error(player, item, error)
                 continue
             if item["type"] != "update":
                 continue
@@ -278,11 +278,11 @@ class SonosCloudQueue:
             },
         }
 
-    def _log_reported_playback_error(
+    def _handle_reported_playback_error(
         self, player: SonosPlayer, item: dict[str, Any], error: dict[str, Any]
     ) -> None:
         """
-        Log a playback failure the speaker reported for one of its queue items.
+        Log a playback failure the speaker reported for one of its queue items and release it.
 
         :param player: The speaker that sent the report.
         :param item: The reported queue item the failure belongs to.
@@ -323,3 +323,5 @@ class SonosCloudQueue:
             error.get("status", "an unknown error"),
             error.get("type", "unknown"),
         )
+        if wire_id:
+            player.release_failed_item(wire_id)

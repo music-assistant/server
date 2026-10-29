@@ -3,19 +3,22 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 from music_assistant_models.enums import MediaType, StreamType
-from music_assistant_models.errors import UnplayableMediaError
 from music_assistant_models.streamdetails import StreamDetails, StreamMetadata
-from niconico.objects.video.watch import (  # noqa: TC002 - Using by StreamConversionData(BaseModel Serialization)
+from niconico.objects.video.watch import (  # noqa: TC002 - pydantic resolves the StreamConversionData field types at runtime
     WatchData,
-    WatchMediaDomandAudio,
+    WatchMediaAudio,
 )
 from pydantic import BaseModel
 
 from music_assistant.helpers.hls import HLSMediaPlaylist, HLSMediaPlaylistParser
 from music_assistant.providers.nicovideo.converters.base import NicovideoConverterBase
 from music_assistant.providers.nicovideo.helpers import create_audio_format
+
+if TYPE_CHECKING:
+    from music_assistant_models.media_items import Track
 
 
 @dataclass
@@ -39,7 +42,7 @@ class StreamConversionData(BaseModel):
     """Data needed for StreamDetails conversion."""
 
     watch_data: WatchData
-    selected_audio: WatchMediaDomandAudio
+    selected_audio: WatchMediaAudio
     hls_url: str
     domand_bid: str
     hls_playlist_text: str
@@ -53,32 +56,23 @@ class NicovideoStreamConverter(NicovideoConverterBase):
     using StreamType.CUSTOM for optimized HLS streaming with fast seeking support.
     """
 
-    def convert_from_conversion_data(self, conversion_data: StreamConversionData) -> StreamDetails:
+    def convert_from_conversion_data(
+        self, conversion_data: StreamConversionData, track: Track
+    ) -> StreamDetails:
         """
-        Convert StreamConversionData into StreamDetails.
+        Convert StreamConversionData into StreamDetails for custom HLS streaming with seeking.
 
-        Args:
-            conversion_data: Data containing video info, audio selection, and HLS details
-
-        Returns:
-            StreamDetails configured for custom HLS streaming with seek optimization
-
-        Raises:
-            UnplayableMediaError: If track data cannot be converted
+        :param conversion_data: Data containing video info, audio selection, and HLS details.
+        :param track: The track of the video, used for the stream metadata.
         """
         watch_data = conversion_data.watch_data
         selected_audio = conversion_data.selected_audio
         video_id = watch_data.video.id_
 
-        # Get track information for stream metadata
-        track = self.converter_manager.track.convert_by_watch_data(watch_data)
-        if not track:
-            raise UnplayableMediaError(f"Cannot convert track data for video {video_id}")
-
         # Get album and image information
         album = track.album
         # Do not use album image intentionally
-        image = track.image if track else None
+        image = track.image
 
         parsed_playlist = HLSMediaPlaylistParser(conversion_data.hls_playlist_text).parse()
 

@@ -18,7 +18,7 @@ import pytest
 from fastmcp import Client, Context, FastMCP
 from fastmcp.exceptions import ToolError
 from fastmcp.server.auth import AccessToken
-from music_assistant_models.auth import AuthProviderType, Scope
+from music_assistant_models.auth import AuthProviderType, Scope, User, UserRole
 from music_assistant_models.config_entries import ConfigActionResult, ConfigEntry
 from music_assistant_models.enums import ConfigEntryType
 from music_assistant_models.errors import InsufficientPermissions, UserNotFoundError
@@ -212,15 +212,15 @@ async def test_search_tools_schema_advertises_pagination() -> None:
     mcp, _adapter = _server()
     async with Client(mcp) as client:
         tool = next(item for item in await client.list_tools() if item.name == "search_tools")
-    assert set(tool.inputSchema["properties"]) == {
+    assert set(tool.input_schema["properties"]) == {
         "query",
         "cursor",
         "limit",
         "include_top_schema",
     }
-    assert tool.outputSchema is not None
+    assert tool.output_schema is not None
     assert {"mode", "items", "total", "next_cursor", "catalog_revision"} <= set(
-        tool.outputSchema["properties"]
+        tool.output_schema["properties"]
     )
 
 
@@ -229,12 +229,12 @@ async def test_call_tool_advertises_the_command_envelope_schema() -> None:
     mcp, _adapter = _server()
     async with Client(mcp) as client:
         tool = next(item for item in await client.list_tools() if item.name == "call_tool")
-    assert tool.outputSchema is not None
+    assert tool.output_schema is not None
     assert {"command", "data", "truncated", "returned_count", "bytes", "applied"} <= set(
-        tool.outputSchema["properties"]
+        tool.output_schema["properties"]
     )
     assert tool.annotations is not None
-    assert tool.annotations.readOnlyHint is False
+    assert tool.annotations.read_only_hint is False
 
 
 async def test_search_can_include_only_the_top_result_schema() -> None:
@@ -724,10 +724,34 @@ async def test_impersonation_resolves_a_builtin_ma_user(
         resolve,
     )
 
-    result = await adapter._resolve_impersonated_user(None, "listener")
+    result = await adapter._resolve_impersonated_user(None, "listener", "library.read")
 
     assert result is expected_user
-    resolve.assert_awaited_once_with(adapter.mass, AuthProviderType.BUILTIN, "listener")
+    resolve.assert_awaited_once_with(
+        adapter.mass, AuthProviderType.BUILTIN, "listener", required_scope=Scope.LIBRARY_READ
+    )
+
+
+@pytest.mark.parametrize(
+    ("required_scope", "allowed"),
+    [("library.read", True), ("library.write", False)],
+    ids=["target_holds_the_scope", "target_lacks_the_scope"],
+)
+async def test_impersonation_needs_the_target_to_hold_the_commands_scope(
+    required_scope: str, allowed: bool
+) -> None:
+    """A SERVICE caller may act as a guest only for commands the guest may run itself."""
+    service = User(user_id="service", username="service", role=UserRole.SERVICE)
+    guest = User(user_id="guest", username="guest", role=UserRole.GUEST)
+    adapter = _real_adapter(_handler("music/search", lambda: None), user=service)
+    adapter.mass.webserver.auth.get_user = AsyncMock(return_value=guest)
+    auth = (AccessToken(token="secret", client_id="u1", scopes=[]), service)
+    if allowed:
+        target = await adapter._resolve_impersonated_user(auth, "guest", required_scope)
+        assert target.user_id == "guest"
+    else:
+        with pytest.raises(ToolError):
+            await adapter._resolve_impersonated_user(auth, "guest", required_scope)
 
 
 @pytest.mark.parametrize(
@@ -827,6 +851,58 @@ async def test_music_source_visibility_comes_from_ma_provider_access(
     )
 
     assert [row["name"] for row in result["data"]["tracks"]] == ["mine"]
+
+
+async def test_member_tool_call_sees_only_playlists_shared_with_them() -> None:
+    """MA's playlist access check sees the member, not an internal caller."""
+    from music_assistant_models.access import PlaylistAccess  # noqa: PLC0415
+    from music_assistant_models.auth import User, UserRole  # noqa: PLC0415
+    from music_assistant_models.enums import ProviderSharing  # noqa: PLC0415
+
+    from music_assistant.controllers.music.media.playlists import (  # noqa: PLC0415
+        PlaylistController,
+    )
+
+    playlists = {
+        "own": PlaylistAccess(owner="u1"),
+        "household": None,
+        "members": PlaylistAccess(owner="u2", sharing=ProviderSharing.MEMBERS),
+        "shared with me": PlaylistAccess(
+            owner="u2", sharing=ProviderSharing.SELECTED, shared_users=["u1"]
+        ),
+        "private": PlaylistAccess(owner="u2"),
+        "shared with others": PlaylistAccess(
+            owner="u2", sharing=ProviderSharing.SELECTED, shared_users=["u3"]
+        ),
+    }
+
+    async def library_items() -> list[dict[str, str]]:
+        return [
+            {"name": name, "provider": "library"}
+            for name, access in playlists.items()
+            if PlaylistController.visible_to_caller(
+                cast("Any", None), cast("Any", SimpleNamespace(access=access))
+            )
+        ]
+
+    member = User(user_id="u1", username="member", role=UserRole.USER, enabled=True)
+    adapter = _real_adapter(_handler("music/playlists/library_items", library_items), user=member)
+
+    result = await adapter.call(
+        "ma_api:music/playlists/library_items",
+        {},
+        response_mode="compact",
+        fields=None,
+        max_items=None,
+        ctx=MagicMock(),
+    )
+
+    assert [row["name"] for row in result["data"]] == [
+        "own",
+        "household",
+        "members",
+        "shared with me",
+    ]
 
 
 async def test_adapter_discovers_handler_and_compiles_schema() -> None:

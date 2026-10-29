@@ -169,7 +169,7 @@ jobs:
 
       - name: Create immutable-settings token
         id: immutable_token
-        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
         with:
           client-id: ${{ vars.MUSIC_ASSISTANT_BOT_CLIENT_ID }}
           private-key: ${{ secrets.MUSIC_ASSISTANT_BOT_PRIVATE_KEY }}
@@ -346,6 +346,7 @@ jobs:
     uses: ./.github/workflows/test.yml
     with:
       ref: ${{ needs.resolve.outputs.source_sha }}
+      base_image_version: ${{ needs.resolve.outputs.base_image_version }}
 
   build_artifacts:
     name: Build or recover release assets
@@ -432,7 +433,7 @@ jobs:
       - name: Create appvars token
         if: needs.resolve.outputs.assets_ready != 'true'
         id: appvars_token
-        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
         with:
           client-id: ${{ vars.MUSIC_ASSISTANT_BOT_CLIENT_ID }}
           private-key: ${{ secrets.MUSIC_ASSISTANT_BOT_PRIVATE_KEY }}
@@ -454,7 +455,7 @@ jobs:
 
       - name: Set up Python
         if: needs.resolve.outputs.assets_ready != 'true'
-        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version-file: "source/.python-version"
           check-latest: true
@@ -462,16 +463,6 @@ jobs:
       - name: Install build dependencies
         if: needs.resolve.outputs.assets_ready != 'true'
         run: python3 -m pip install build tomli tomli-w
-
-      - name: Provision app secrets
-        if: needs.resolve.outputs.assets_ready != 'true'
-        env:
-          GH_TOKEN: ${{ steps.appvars_token.outputs.token }}
-        run: |
-          gh api \
-            -H "Accept: application/vnd.github.raw" \
-            "repos/music-assistant/appvars/contents/app_secrets.json" \
-            > source/music_assistant/helpers/app_secrets.json
 
       - name: Set package version
         if: needs.resolve.outputs.assets_ready != 'true'
@@ -490,10 +481,27 @@ jobs:
           with open("pyproject.toml", "wb") as file_handle:
               tomli_w.dump(pyproject, file_handle)
 
-      - name: Build wheel and source distribution
+      # The app secrets are not covered by the Apache-2.0 license (see NOTICE), so they ship in
+      # the wheel (and the image built from it) but never in the source distribution.
+      - name: Build source distribution
         if: needs.resolve.outputs.assets_ready != 'true'
         working-directory: source
-        run: python3 -m build
+        run: python3 -m build --sdist
+
+      - name: Provision app secrets
+        if: needs.resolve.outputs.assets_ready != 'true'
+        env:
+          GH_TOKEN: ${{ steps.appvars_token.outputs.token }}
+        run: |
+          gh api \
+            -H "Accept: application/vnd.github.raw" \
+            "repos/music-assistant/appvars/contents/app_secrets.json" \
+            > source/music_assistant/helpers/app_secrets.json
+
+      - name: Build wheel
+        if: needs.resolve.outputs.assets_ready != 'true'
+        working-directory: source
+        run: python3 -m build --wheel
 
       - name: Verify exact assets
         id: assets
@@ -511,8 +519,16 @@ jobs:
             "${extra_args[@]}" \
             --github-output "$GITHUB_OUTPUT"
 
+      - name: Verify bundled app secrets
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          python3 .release-workflow/scripts/release_workflow.py verify-app-secrets \
+            --version "$VERSION" \
+            --directory source/dist
+
       - name: Preserve release assets
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: release-dists-${{ github.run_id }}
           path: source/dist/
@@ -554,7 +570,7 @@ jobs:
           persist-credentials: false
 
       - name: Restore release assets
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: release-dists-${{ github.run_id }}
           path: source/dist/
@@ -846,13 +862,13 @@ jobs:
 
       - name: Restore release assets
         if: needs.resolve.outputs.release_state != 'published'
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: release-dists-${{ github.run_id }}
           path: source/dist/
 
       - name: Log in to GitHub Container Registry
-        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4.7.0
         with:
           registry: ghcr.io
           username: ${{ github.repository_owner }}
@@ -908,6 +924,8 @@ jobs:
           provenance: true
           build-args: |
             MASS_VERSION=${{ inputs.version }}
+            MASS_REVISION=${{ needs.resolve.outputs.source_sha }}
+            MASS_WHEEL_SHA256=${{ needs.prepare_draft.outputs.wheel_sha256 }}
             BASE_IMAGE_VERSION=${{ needs.resolve.outputs.base_image_version }}
           labels: |
             org.opencontainers.image.version=${{ inputs.version }}
@@ -967,6 +985,30 @@ jobs:
                .config.Labels["io.music-assistant.wheel.sha256"] == $wheel' \
               "$RUNNER_TEMP/image-config.json" > /dev/null
           done
+
+      # Runs the server's own official build check inside the image, without starting the
+      # server, so a release can never flag all of its installs as unsupported. A release
+      # source without that check has nothing to verify.
+      - name: Verify official build info
+        if: hashFiles('source/music_assistant/helpers/build_info.py') != ''
+        env:
+          DIGEST: ${{ steps.verify.outputs.digest }}
+          IMAGE_REPOSITORY: ghcr.io/${{ github.repository_owner }}/server
+          SOURCE_SHA: ${{ needs.resolve.outputs.source_sha }}
+          VERSION: ${{ inputs.version }}
+          WHEEL_SHA256: ${{ needs.resolve.outputs.release_state == 'published' && needs.resolve.outputs.wheel_sha256 || needs.prepare_draft.outputs.wheel_sha256 }}
+        run: |
+          docker run --rm --platform linux/amd64 --network none \
+            --entrypoint python "$IMAGE_REPOSITORY@$DIGEST" -c '
+          import asyncio, json
+          from music_assistant.helpers.build_info import get_official_build_info
+          print(json.dumps(asyncio.run(get_official_build_info())))
+          ' > "$RUNNER_TEMP/build-info.json"
+          python3 .release-workflow/scripts/release_workflow.py verify-build-info \
+            --build-info-json "$RUNNER_TEMP/build-info.json" \
+            --version "$VERSION" \
+            --source-sha "$SOURCE_SHA" \
+            --wheel-sha256 "$WHEEL_SHA256"
 
   publish_release:
     name: Publish and verify immutable release
@@ -1053,7 +1095,7 @@ jobs:
 
       - name: Restore draft assets
         if: steps.publication_state.outputs.already_published != 'true'
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: release-dists-${{ github.run_id }}
           path: source/dist/
@@ -1082,7 +1124,7 @@ jobs:
       - name: Create publication settings token
         if: steps.publication_state.outputs.already_published != 'true'
         id: immutable_token
-        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
         with:
           client-id: ${{ vars.MUSIC_ASSISTANT_BOT_CLIENT_ID }}
           private-key: ${{ secrets.MUSIC_ASSISTANT_BOT_PRIVATE_KEY }}
@@ -1204,7 +1246,7 @@ jobs:
           done
 
       - name: Log in to GitHub Container Registry
-        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4.7.0
         with:
           registry: ghcr.io
           username: ${{ github.repository_owner }}
@@ -1250,7 +1292,7 @@ jobs:
           persist-credentials: false
 
       - name: Log in to GitHub Container Registry
-        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4.7.0
         with:
           registry: ghcr.io
           username: ${{ github.repository_owner }}
@@ -1391,7 +1433,7 @@ jobs:
 
       - name: Create add-on repository token
         id: addon_token
-        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
         with:
           client-id: ${{ vars.MUSIC_ASSISTANT_BOT_CLIENT_ID }}
           private-key: ${{ secrets.MUSIC_ASSISTANT_BOT_PRIVATE_KEY }}
@@ -1569,7 +1611,7 @@ jobs:
 
       - name: Create app repository token
         id: app_token
-        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
         with:
           client-id: ${{ vars.MUSIC_ASSISTANT_BOT_CLIENT_ID }}
           private-key: ${{ secrets.MUSIC_ASSISTANT_BOT_PRIVATE_KEY }}

@@ -312,11 +312,11 @@ async def test_uri_parsing() -> None:
 
 async def test_apple_music_uri_parsing() -> None:
     """Test parsing of Apple Music share URLs."""
-    # station — should resolve as PLAYLIST (is_dynamic)
+    # station — should resolve as RADIO (is_dynamic)
     media_type, provider, item_id = await uri.parse_uri(
         "https://music.apple.com/de/station/dead-sara-essentials/ra.331701075"
     )
-    assert media_type == MediaType.PLAYLIST
+    assert media_type == MediaType.RADIO
     assert provider == "apple_music"
     assert item_id == "ra.331701075"
     # playlist
@@ -351,7 +351,7 @@ async def test_apple_music_uri_parsing() -> None:
     media_type, provider, item_id = await uri.parse_uri(
         "https://music.apple.com/de/station/some-station/ra.111222333/"
     )
-    assert media_type == MediaType.PLAYLIST
+    assert media_type == MediaType.RADIO
     assert item_id == "ra.111222333"
     # query string stripped (non-track query params)
     media_type, provider, item_id = await uri.parse_uri(
@@ -909,6 +909,18 @@ def test_cap_native_thread_pools_sets_env() -> None:
         assert util.cap_native_thread_pools() == 2
         for env_var in env_vars:
             assert os.environ[env_var] == "2"
+
+
+def test_set_model_cache_dirs_points_torch_hub_into_cache_dir(tmp_path: Path) -> None:
+    """Model downloads land in the MA cache dir instead of the possibly unwritable ~/.cache."""
+    import torch  # noqa: PLC0415
+
+    with patch.dict(os.environ):
+        os.environ.pop("TORCH_HOME", None)
+        os.environ.pop("HF_HOME", None)
+        util.set_model_cache_dirs(str(tmp_path))
+        assert torch.hub.get_dir() == str(tmp_path / "torch" / "hub")
+        assert os.environ["HF_HOME"] == str(tmp_path / "huggingface")
 
 
 def test_cap_native_thread_pools_respects_operator_value() -> None:

@@ -195,7 +195,7 @@ async def test_migration_verification_retries_stale_provider_read(
             yield track
 
     with (
-        patch.object(music.playlists, "tracks", iter_tracks),
+        patch.object(music.playlists, "iter_tracks", iter_tracks),
         patch(
             "music_assistant.controllers.music.media.playlists._MIGRATION_VERIFY_RETRY_DELAYS",
             (1,),
@@ -281,7 +281,7 @@ async def test_migration_resolves_tracks_in_bounded_batches(
             "get_library_item",
             AsyncMock(return_value=source_playlist),
         ),
-        patch.object(music.playlists, "tracks", iter_source_tracks),
+        patch.object(music.playlists, "iter_tracks", iter_source_tracks),
         patch.object(
             music.tracks,
             "enrich_provider_mappings",
@@ -646,16 +646,18 @@ async def test_playlist_tracks_strict_provider_lookup_rejects_fallback(
                 unavailable_provider if return_unavailable else outside_scope_provider
             ),
         ),
-        pytest.raises(ProviderUnavailableError, match="qobuz_1"),
     ):
-        _ = [
-            item
-            async for item in music.playlists.tracks(
-                "source",
-                "qobuz_1",
-                strict_provider_instance=True,
-            )
-        ]
+        with pytest.raises(ProviderUnavailableError, match="qobuz_1"):
+            await music.playlists.tracks("source", "qobuz_1", strict_provider_instance=True)
+        with pytest.raises(ProviderUnavailableError, match="qobuz_1"):
+            _ = [
+                item
+                async for item in music.playlists.iter_tracks(
+                    "source",
+                    "qobuz_1",
+                    strict_provider_instance=True,
+                )
+            ]
 
 
 async def test_create_playlist_strict_provider_lookup_rejects_fallback(
@@ -726,7 +728,7 @@ async def test_migration_reports_unsupported_source_items(
             "get_library_item",
             AsyncMock(return_value=source_playlist),
         ),
-        patch.object(music.playlists, "tracks", iter_source_items),
+        patch.object(music.playlists, "iter_tracks", iter_source_items),
         patch.object(
             music.tracks,
             "enrich_provider_mappings",
@@ -815,7 +817,7 @@ async def test_migration_reports_unsupported_source_items(
         ),
     ],
 )
-async def test_streaming_migration_handles_provider_duplicate_policy(
+async def test_streaming_migration_handles_provider_duplicate_policy(  # noqa: PLR0915
     music: MusicController,
     duplicates_supported: bool,
     expected_target_ids: list[str],
@@ -886,7 +888,7 @@ async def test_streaming_migration_handles_provider_duplicate_policy(
 
     with (
         patch.object(music.playlists, "get_library_item", AsyncMock(return_value=source_playlist)),
-        patch.object(music.playlists, "tracks", iter_playlist_tracks),
+        patch.object(music.playlists, "iter_tracks", iter_playlist_tracks),
         patch.object(music.tracks, "get_library_match", AsyncMock(return_value=None)),
         patch.object(music.tracks, "find_provider_match", find_match),
         patch.object(
@@ -908,6 +910,9 @@ async def test_streaming_migration_handles_provider_duplicate_policy(
             return_value=("tidal_1", "target"),
         ),
         patch.object(music.playlists, "update_item_in_library", AsyncMock()),
+        patch(
+            "music_assistant.controllers.music.media.playlists.invalidate_listings", AsyncMock()
+        ) as invalidate_listings,
         patch(
             "music_assistant.controllers.music.media.playlists._MIGRATION_VERIFY_RETRY_DELAYS",
             (),
@@ -949,6 +954,8 @@ async def test_streaming_migration_handles_provider_duplicate_policy(
         "target",
         expected_target_ids,
     )
+    # a listing of the destination read while the tracks were added is dropped
+    invalidate_listings.assert_awaited_once_with(music.mass, target_playlist)
     assert find_match.await_count == 3
     assert all(
         call.kwargs["allowed_provider_instances"] == {"spotify_1", "tidal_1"}
@@ -1014,7 +1021,7 @@ async def test_builtin_migration_keeps_all_enriched_mappings(
 
     with (
         patch.object(music.playlists, "get_library_item", AsyncMock(return_value=source_playlist)),
-        patch.object(music.playlists, "tracks", iter_source_tracks),
+        patch.object(music.playlists, "iter_tracks", iter_source_tracks),
         patch.object(
             music.tracks,
             "enrich_provider_mappings",

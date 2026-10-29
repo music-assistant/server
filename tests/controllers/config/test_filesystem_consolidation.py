@@ -533,7 +533,9 @@ async def _run_library_maintenance(mass: MusicAssistant) -> None:
     await mass.music.correct_multi_instance_provider_mappings()
     await mass.music._cleanup_database()
     for table in (DB_TABLE_AUDIO_ANALYSIS, DB_TABLE_AUDIO_ANALYSIS_FAILURES):
-        assert await mass.music.database.get_rows(table, {"provider": SMB_ID}) == []
+        assert (
+            await mass.streams.audio_analysis.database.get_rows(table, {"provider": SMB_ID}) == []
+        )
 
 
 def _library_on_disk(storage_path: Path) -> tuple[list[tuple[str, str, str, str]], int]:

@@ -2,13 +2,18 @@
 
 from __future__ import annotations
 
+import asyncio
+import re
 from collections.abc import AsyncGenerator
+from contextlib import suppress
 from datetime import UTC, datetime
 from time import time
 from typing import TYPE_CHECKING, Any
 
-from aiohttp import ClientTimeout
+from aiohttp import ClientConnectionError, ClientPayloadError, ClientTimeout, ContentTypeError
+from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption
 from music_assistant_models.enums import (
+    ConfigEntryType,
     ContentType,
     ImageType,
     MediaType,
@@ -20,6 +25,7 @@ from music_assistant_models.errors import (
     InvalidDataError,
     LoginFailed,
     MediaNotFoundError,
+    RateLimited,
     ResourceTemporarilyUnavailable,
 )
 from music_assistant_models.media_items import (
@@ -34,6 +40,7 @@ from music_assistant_models.media_items import (
     Playlist,
     ProviderMapping,
     RecommendationFolder,
+    SearchResults,
     Track,
     UniqueList,
 )
@@ -45,18 +52,26 @@ from music_assistant.constants import (
     CONF_USERNAME,
 )
 from music_assistant.controllers.cache import use_cache
+from music_assistant.helpers.compare import compare_strings
 from music_assistant.helpers.json import json_loads
+from music_assistant.helpers.throttle_retry import (
+    ThrottlerManager,
+    parse_retry_after,
+    throttle_with_retries,
+)
 from music_assistant.helpers.util import infer_album_type, parse_title_and_version
 from music_assistant.models.music_provider import MusicProvider
 
 if TYPE_CHECKING:
-    from music_assistant_models.config_entries import ConfigEntry, ProviderConfig
+    from aiohttp import ClientResponse
+    from music_assistant_models.config_entries import ProviderConfig
     from music_assistant_models.provider import ProviderManifest
 
     from music_assistant.mass import MusicAssistant
     from music_assistant.models import ProviderInstanceType
 
 SUPPORTED_FEATURES = {
+    ProviderFeature.SEARCH,
     ProviderFeature.BROWSE,
     ProviderFeature.LIBRARY_ARTISTS,
     ProviderFeature.LIBRARY_ALBUMS,
@@ -64,6 +79,12 @@ SUPPORTED_FEATURES = {
     ProviderFeature.ARTIST_ALBUMS,
     ProviderFeature.RECOMMENDATIONS,
 }
+
+CONF_QUALITY = "quality"
+QUALITY_LOSSY = "lossy"
+QUALITY_LOSSLESS = "lossless"
+# platformID values nugs.net's own clients send to subPlayer.aspx for each quality
+PLATFORM_IDS = {QUALITY_LOSSY: -1, QUALITY_LOSSLESS: 2}
 
 
 async def setup(
@@ -78,14 +99,66 @@ class NugsProvider(MusicProvider):
 
     _auth_token: str | None = None
     _token_expiry: float = 0
+    _plan_quality_logged: bool = False
+    throttler = ThrottlerManager(rate_limit=5, period=1)
+    # the legacy search endpoint queues requests rather than returning 429s and slows
+    # to timeouts above roughly one search per second, so it has its own tighter gate
+    search_throttler = ThrottlerManager(rate_limit=1, period=1)
+
+    @property
+    def supported_media_types(self) -> set[MediaType]:
+        """Return the media types this provider can serve."""
+        return super().supported_media_types | {MediaType.TRACK}
 
     async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
         """Return Config entries to configure this provider."""
-        return (CONF_ENTRY_UNOFFICIAL_PROVIDER,)
+        return (
+            CONF_ENTRY_UNOFFICIAL_PROVIDER,
+            ConfigEntry(
+                key=CONF_QUALITY,
+                type=ConfigEntryType.STRING,
+                default_value=QUALITY_LOSSLESS,
+                options=[
+                    ConfigValueOption(QUALITY_LOSSLESS),
+                    ConfigValueOption(QUALITY_LOSSY),
+                ],
+            ),
+        )
 
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
+        # a reload may follow a switch to another account, which the cached details cannot tell
+        for cached in (self._get_subscription_info, self._get_user_id):
+            await self.mass.cache.delete(cached.__name__, provider=self.instance_id)
         await self.login()
+
+    async def search(
+        self, search_query: str, media_types: list[MediaType], limit: int = 5
+    ) -> SearchResults:
+        """
+        Search the Nugs catalog for artists, releases and recorded performances.
+
+        :param search_query: Search query.
+        :param media_types: Media types to include.
+        :param limit: Maximum number of results per media type.
+        """
+        query = search_query.strip()
+        if (
+            not query
+            or limit <= 0
+            or not {MediaType.ARTIST, MediaType.ALBUM, MediaType.TRACK}.intersection(media_types)
+        ):
+            return SearchResults()
+        if not {MediaType.ARTIST, MediaType.ALBUM}.intersection(media_types):
+            return SearchResults(tracks=await self._search_recordings(query, limit))
+        if MediaType.TRACK not in media_types:
+            artists, albums = await self._search_catalog(query, media_types, limit)
+            return SearchResults(artists=artists, albums=albums)
+        (artists, albums), tracks = await asyncio.gather(
+            self._search_catalog(query, media_types, limit),
+            self._search_recordings(query, limit),
+        )
+        return SearchResults(artists=artists, albums=albums, tracks=tracks)
 
     async def get_library_artists(self) -> AsyncGenerator[Artist]:
         """Retrieve library artists from nugs.net."""
@@ -151,6 +224,14 @@ class NugsProvider(MusicProvider):
         )
         if cached:
             return cached
+        search_hit: Track | None = await self.mass.cache.get(
+            f"nugs_search_track_{prov_track_id}", provider=self.instance_id, base_class=Track
+        )
+        if search_hit and search_hit.album:
+            for track in await self.get_album_tracks(search_hit.album.item_id):
+                if track.item_id == prov_track_id:
+                    await self._cache_tracks([track])
+                    return track
         raise MediaNotFoundError(f"Track {prov_track_id} not found")
 
     @use_cache(3600 * 24 * 14, allow_expired_cache=True)  # Cache for 14 days
@@ -161,7 +242,7 @@ class NugsProvider(MusicProvider):
         album_data = response["Response"]
         artist = await self.get_artist(album_data["artistID"])
         album = self._get_item_mapping(
-            MediaType.ALBUM, album_data["containerID"], album_data["containerInfo"]
+            MediaType.ALBUM, str(album_data["containerID"]), album_data["containerInfo"]
         )
         image = f"https://api.livedownloads.com{album_data['img']['url']}"
         tracks = [
@@ -226,15 +307,16 @@ class NugsProvider(MusicProvider):
             return UniqueList()
         return folder.items
 
-    async def _cache_tracks(self, tracks: list[Track]) -> None:
-        """Cache individual tracks persistently for later lookup by get_track."""
+    async def _cache_tracks(self, tracks: list[Track], *, search_results: bool = False) -> None:
+        """Cache tracks or partial search results for later lookup by get_track."""
+        prefix = "nugs_search_track" if search_results else "nugs_track"
         for track in tracks:
             await self.mass.cache.set(
-                f"nugs_track_{track.item_id}",
+                f"{prefix}_{track.item_id}",
                 track.to_dict(),
-                expiration=3600 * 24 * 14,
+                expiration=3600 * 24 if search_results else 3600 * 24 * 14,
                 provider=self.instance_id,
-                persistent=True,
+                persistent=not search_results,
             )
 
     async def get_stream_details(self, item_id: str, media_type: MediaType) -> StreamDetails:
@@ -302,7 +384,9 @@ class NugsProvider(MusicProvider):
             "name": album_obj["artistName"],
         }
         if artist_obj.get("name") and artist_obj.get("id"):
-            album.artists.append(self._parse_artist(artist_obj))
+            album.artists.append(
+                self._get_item_mapping(MediaType.ARTIST, str(artist_obj["id"]), artist_obj["name"])
+            )
 
         path: str | None = None
         if album_obj.get("image"):
@@ -318,13 +402,18 @@ class NugsProvider(MusicProvider):
                     remotely_accessible=True,
                 )
             )
-        year = album_obj.get("performanceDateYear", False)
+        year = album_obj.get("performanceDateYear")
         if not year:
-            date = album_obj.get("performanceDate", False) or album_obj.get(
-                "albumreleaseDate", False
+            # studio albums carry no performance date; releases spell their date
+            # albumReleaseDate (2000-01-01T00:00:00), shows/{id} releaseDateFormatted (2000/01/01)
+            date = (
+                album_obj.get("performanceDate")
+                or album_obj.get("albumReleaseDate")
+                or album_obj.get("albumreleaseDate")
+                or album_obj.get("releaseDateFormatted")
             )
-            if date:
-                year = date.split("-")[0]
+            if date and (year_match := re.match(r"\d{4}", date)):
+                year = year_match[0]
         if year:
             album.year = int(year)
 
@@ -364,7 +453,7 @@ class NugsProvider(MusicProvider):
     def _parse_track(
         self,
         track_obj: dict[str, Any],
-        artist: Artist | None = None,
+        artist: Artist | ItemMapping | None = None,
         album: Album | ItemMapping | None = None,
         image_url: str | None = None,
     ) -> Track:
@@ -424,8 +513,290 @@ class NugsProvider(MusicProvider):
             track.duration = int(duration)
         return track
 
-    async def _get_stream_url(self, item_id: str) -> Any:
-        subscription_info = await self._get_data("subscription", "")
+    def _get_search_filters(self, query: str, data: dict[str, Any]) -> dict[str, str]:
+        """Resolve explicit artist, venue, year and ISO-date queries to release filters."""
+
+        def normalize(value: str) -> str:
+            # Core search removes apostrophes before invoking providers.
+            return " ".join(
+                re.findall(r"\w+", value.casefold().replace("'", "").replace("\u2019", ""))
+            )
+
+        filters: dict[str, str] = {}
+        remaining = query.casefold()
+        if date_match := re.search(r"\b(\d{4})-(\d{2})-(\d{2})\b", remaining):
+            try:
+                date = datetime.strptime(date_match[0], "%Y-%m-%d").replace(tzinfo=UTC)
+            except ValueError:
+                return {}
+            filters.update(
+                years=str(date.year),
+                monthDayFrom=date.strftime("%m-%d"),
+                monthDayTo=date.strftime("%m-%d"),
+            )
+            remaining = remaining.replace(date_match[0], " ", 1)
+        elif year_match := re.search(r"\b(?:19|20)\d{2}\b", remaining):
+            filters["years"] = year_match[0]
+            remaining = remaining.replace(year_match[0], " ", 1)
+        remaining = normalize(remaining)
+        # Match the longest complete artist name before resolving the remaining venue.
+        artists = sorted(
+            data.get("artists") or [], key=lambda item: len(item.get("name") or ""), reverse=True
+        )
+        for artist in artists:
+            name = normalize(artist.get("name") or "")
+            if name and artist.get("id") and f" {name} " in f" {remaining} ":
+                filters["artistIds"] = str(artist["id"])
+                remaining = f" {remaining} ".replace(f" {name} ", " ", 1).strip()
+                break
+        if filters:
+            remaining = re.sub(r"^(?:at|in)\s+", "", remaining)
+        if remaining:
+            venue_ids: list[str] = []
+            for venue in data.get("venues") or []:
+                name = normalize(venue.get("name") or "")
+                # A complete artist match constrains abbreviated venue searches.
+                # Consume all remaining words; never discard an unknown artist
+                # or other query terms just because a venue was recognized.
+                if venue.get("id") and (
+                    name == remaining
+                    or (len(remaining.split()) >= 2 and name.startswith(f"{remaining} "))
+                    or ("artistIds" in filters and f" {remaining} " in f" {name} ")
+                ):
+                    venue_ids.append(str(venue["id"]))
+            if not venue_ids:
+                return {}
+            filters["venueIds"] = ",".join(dict.fromkeys(venue_ids))
+        return filters
+
+    async def _search_catalog(
+        self, query: str, media_types: list[MediaType], limit: int
+    ) -> tuple[list[Artist], list[Album]]:
+        """
+        Search the authenticated catalog for artists and releases.
+
+        :param query: Search query.
+        :param media_types: Media types to include.
+        :param limit: Maximum number of results per media type.
+        """
+        data = await self._get_catalog_search(query)
+        filters = self._get_search_filters(query, data)
+        artist_filter = filters.get("artistIds")
+        artists: list[Artist] = []
+        albums: list[Album] = []
+        seen: set[str] = set()
+        if MediaType.ARTIST in media_types:
+            for item in data.get("artists") or []:
+                item_id = str(item.get("id") or "")
+                if not item_id or not item.get("name") or item_id in seen:
+                    continue
+                if artist_filter and item_id != artist_filter:
+                    continue
+                artists.append(self._parse_artist(item))
+                seen.add(item_id)
+                if len(artists) == limit:
+                    break
+        if MediaType.ALBUM in media_types:
+            if filters:
+                albums = [
+                    self._parse_album(item)
+                    for item in await self._get_search_releases(filters, limit)
+                ]
+            seen = {album.item_id for album in albums}
+            for item in data.get("albums") or []:
+                if len(albums) >= limit:
+                    break
+                item_id = str(item.get("id") or "")
+                if not item_id or not item.get("title") or item_id in seen:
+                    continue
+                # Discovery supplies titles and covers, but no artist or availability.
+                # Full details are resolved through get_album when the item is opened.
+                albums.append(
+                    self._parse_album(
+                        {
+                            **item,
+                            "artistID": None,
+                            "artistName": None,
+                            "image": {"url": item["coverImage"]}
+                            if item.get("coverImage")
+                            else None,
+                        }
+                    )
+                )
+                seen.add(item_id)
+        return artists, albums
+
+    @use_cache(3600)
+    async def _get_catalog_search(self, query: str) -> dict[str, Any]:
+        """Discover catalog entities using the authenticated Nugs search API."""
+        data = await self._get_data("catalog", "search", query=query)
+        result = data.get("result") if isinstance(data, dict) else None
+        if not isinstance(result, dict):
+            raise InvalidDataError("Invalid Nugs search response")
+        return result
+
+    @use_cache(3600)
+    async def _get_search_releases(
+        self, filters: dict[str, str], limit: int
+    ) -> list[dict[str, Any]]:
+        """Return available audio releases matching catalog filters."""
+        items: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        offset = 0
+        # Bound foreground search latency even when pages contain unavailable
+        # or duplicate releases. All venue IDs share one intersected request.
+        for _ in range(3):
+            data = await self._get_data(
+                "catalog",
+                "releases",
+                **filters,
+                contentType="audio",
+                orderBy="date",
+                order="desc",
+                limit=min(limit, 100),
+                offset=offset,
+            )
+            if (
+                not isinstance(data, dict)
+                or not isinstance(data.get("items"), list)
+                or not isinstance(data.get("total"), int)
+            ):
+                raise InvalidDataError("Invalid Nugs releases response")
+            page = data["items"]
+            if not page:
+                break
+            for item in page:
+                item_id = str(item.get("id") or "")
+                if (
+                    not item_id
+                    or item_id in seen
+                    or not item.get("title")
+                    or item.get("status") != "available"
+                    or item.get("isInSubscriptionCatalog") is False
+                ):
+                    continue
+                items.append(item)
+                seen.add(item_id)
+                if len(items) == limit:
+                    break
+            offset += len(page)
+            if len(items) >= limit or offset >= data["total"]:
+                break
+        return items
+
+    async def _search_recordings(
+        self, query: str, limit: int, artist_name: str | None = None
+    ) -> list[Track]:
+        """Find individual song recordings with their album context."""
+        data = await self._get_search_data(query)
+        tracks: list[Track] = []
+        seen: set[str] = set()
+        for group in data.get("catalogSearchTypeContainers") or []:
+            if group.get("matchType") != 2:
+                continue
+            for section in group.get("catalogSearchContainers") or []:
+                title = section.get("scHeader", "").removeprefix("Song: ")
+                for item in section.get("catalogSearchResultItems") or []:
+                    track_id = str(item.get("trackID") or "0")
+                    artist_id = str(item.get("artistID") or "0")
+                    album_id = str(item.get("containerID") or "0")
+                    if (
+                        item.get("availability") != 1
+                        or track_id == "0"
+                        or track_id in seen
+                        or artist_id == "0"
+                        or album_id == "0"
+                        or not title
+                        or not item.get("artistName")
+                        or not item.get("containerName")
+                    ):
+                        continue
+                    if artist_name and not compare_strings(artist_name, item["artistName"]):
+                        continue
+                    album = self._parse_search_album(item)
+                    tracks.append(
+                        self._parse_track(
+                            {"trackID": track_id, "songTitle": title},
+                            artist=self._get_item_mapping(
+                                MediaType.ARTIST, artist_id, item["artistName"]
+                            ),
+                            album=self._get_item_mapping(MediaType.ALBUM, album_id, album.name),
+                            image_url=album.image.path if album.image else None,
+                        )
+                    )
+                    seen.add(track_id)
+                    if len(tracks) == limit:
+                        await self._cache_tracks(tracks, search_results=True)
+                        return tracks
+        if not tracks and artist_name is None and " - " in query:
+            # Core matching supplies Artist - Track. Try the literal query first
+            # so song titles containing the separator retain their meaning.
+            artist, title = query.split(" - ", 1)
+            if artist.strip() and title.strip():
+                return await self._search_recordings(title.strip(), limit, artist.strip())
+        await self._cache_tracks(tracks, search_results=True)
+        return tracks
+
+    def _parse_search_album(self, item: dict[str, Any]) -> Album:
+        """Normalize a legacy search result before parsing its album metadata."""
+        album_data = {**item, "containerInfo": item["containerName"]}
+        date = album_data.pop("performanceDate", None)
+        if date:
+            with suppress(ValueError):
+                album_data["performanceDateYear"] = (
+                    datetime.strptime(date, "%m/%d/%Y").replace(tzinfo=UTC).year
+                )
+        return self._parse_album(album_data)
+
+    @use_cache(3600)
+    @throttle_with_retries
+    async def _get_search_data(self, query: str) -> dict[str, Any]:
+        """Retrieve cached search metadata from the public Nugs catalog."""
+        try:
+            async with (
+                self.search_throttler.acquire(),
+                self.mass.http_session.get(
+                    "https://streamapi.nugs.net/api.aspx",
+                    params={"method": "catalog.search", "searchStr": query},
+                    timeout=ClientTimeout(total=30),
+                ) as response,
+            ):
+                self._check_response_status(response)
+                # The legacy endpoint returns JSON with a text/html content type.
+                data = json_loads(await response.text())
+        except (ClientConnectionError, ClientPayloadError, TimeoutError) as err:
+            raise ResourceTemporarilyUnavailable("Nugs search connection failed") from err
+        except ValueError as err:
+            raise InvalidDataError("Invalid Nugs catalog search response") from err
+        if not isinstance(data, dict) or data.get("responseAvailabilityCode") != 0:
+            raise InvalidDataError("Nugs catalog search failed")
+        result = data.get("Response")
+        if not isinstance(result, dict):
+            raise InvalidDataError("Invalid Nugs catalog search response")
+        if result.get("searchError"):
+            raise InvalidDataError("Nugs catalog search failed")
+        return result
+
+    # both are fixed for the account, so track starts spend no requests on account lookups
+    @use_cache(3600 * 4)  # Cache for 4 hours
+    async def _get_subscription_info(self) -> dict[str, Any]:
+        """Return the subscription details of the nugs.net account."""
+        subscription_info: dict[str, Any] = await self._get_data("subscription", "")
+        return subscription_info
+
+    @use_cache(3600 * 4)  # Cache for 4 hours
+    async def _get_user_id(self) -> str:
+        """Return the user id of the nugs.net account."""
+        user_info = await self._get_data("user", "")
+        return str(user_info["userId"])
+
+    async def _get_stream_url(self, item_id: str) -> str:
+        """
+        Return the stream url for a track in the configured quality, or lossy when unavailable.
+
+        :param item_id: The nugs.net track id.
+        """
+        subscription_info = await self._get_subscription_info()
         # trial and promo accounts have no regular plan: their plan sits on the promo object
         plan = subscription_info.get("plan") or (subscription_info.get("promo") or {}).get("plan")
         if not plan:
@@ -437,11 +808,7 @@ class NugsProvider(MusicProvider):
         dt_end = datetime.strptime(subscription_info["endsAt"], "%m/%d/%Y %H:%M:%S").replace(
             tzinfo=UTC
         )
-        user_info = await self._get_data("user", "")
-        url = "https://streamapi.nugs.net/bigriver/subplayer.aspx"
-        timeout = ClientTimeout(total=120)
-        params = {
-            "platformID": -1,
+        params: dict[str, Any] = {
             "app": 1,
             "HLS": 1,
             "orgn": "websdk",
@@ -450,18 +817,53 @@ class NugsProvider(MusicProvider):
             "subCostplanIDAccessList": plan["id"],
             "startDateStamp": int(dt_start.timestamp()),
             "endDateStamp": int(dt_end.timestamp()),
-            "nn_userID": user_info["userId"],
+            "nn_userID": await self._get_user_id(),
             "subscriptionID": subscription_info["legacySubscriptionId"],
         }
+        quality = self._get_quality(plan)
+        if quality != QUALITY_LOSSY:
+            if stream_url := await self._request_stream_link(
+                {**params, "platformID": PLATFORM_IDS[quality]}
+            ):
+                return stream_url
+            self.logger.debug("No %s stream for track %s, falling back to lossy", quality, item_id)
+        if stream_url := await self._request_stream_link(
+            {**params, "platformID": PLATFORM_IDS[QUALITY_LOSSY]}
+        ):
+            return stream_url
+        raise MediaNotFoundError(f"No stream found for song {item_id}.")
+
+    def _get_quality(self, plan: dict[str, Any]) -> str:
+        """
+        Return the configured stream quality, capped at what the subscription plan includes.
+
+        :param plan: The plan object of the user's nugs.net subscription.
+        """
+        quality = str(self.config.get_value(CONF_QUALITY))
+        if quality != QUALITY_LOSSY and not plan.get("isHighQuality"):
+            if not self._plan_quality_logged:
+                self.logger.info(
+                    "Your nugs.net plan does not include %s streaming, using lossy instead",
+                    quality,
+                )
+                self._plan_quality_logged = True
+            return QUALITY_LOSSY
+        return quality
+
+    async def _request_stream_link(self, params: dict[str, Any]) -> str | None:
+        """
+        Request a stream link from the nugs.net stream API, returning None when there is none.
+
+        :param params: The query parameters for the subPlayer request.
+        """
+        url = "https://streamapi.nugs.net/bigriver/subplayer.aspx"
+        timeout = ClientTimeout(total=120)
         async with (
             self.mass.http_session.get(url, params=params, ssl=True, timeout=timeout) as response,
         ):
             response.raise_for_status()
-            content = await response.text()
-            stream = json_loads(content)
-            if not stream.get("streamLink"):
-                raise MediaNotFoundError("No stream found for song %s.", item_id)
-            return stream["streamLink"]
+            stream = json_loads(await response.text())
+        return stream.get("streamLink") or None
 
     def _get_item_mapping(self, media_type: MediaType, key: str, name: str) -> ItemMapping:
         return ItemMapping(
@@ -505,7 +907,8 @@ class NugsProvider(MusicProvider):
             self._token_expiry = time() + token["expires_in"]
         return token["access_token"]
 
-    async def _get_data(self, nugs_api: str, endpoint: str, **kwargs: Any) -> Any:
+    @throttle_with_retries
+    async def _get_data(self, /, nugs_api: str, endpoint: str, **kwargs: Any) -> Any:
         """Return the requested data from one of various nugs.net API."""
         headers = {}
         url: str | None = None
@@ -524,15 +927,36 @@ class NugsProvider(MusicProvider):
             url = "https://stash.nugs.net/api/v1/stash"
         if not url:
             raise MediaNotFoundError(f"{nugs_api} not found")
-        async with (
-            self.mass.http_session.get(
+        try:
+            async with self.mass.http_session.get(
                 url, headers=headers, params=kwargs, ssl=True, timeout=timeout
-            ) as response,
-        ):
-            if response.status == 404:
-                raise MediaNotFoundError(f"{url} not found")
-            response.raise_for_status()
-            return await response.json()
+            ) as response:
+                self._check_response_status(response)
+                return await response.json()
+        except LoginFailed:
+            self._auth_token = None
+            raise
+        except (ClientConnectionError, ClientPayloadError, TimeoutError) as err:
+            raise ResourceTemporarilyUnavailable("Nugs API connection failed") from err
+        except (ContentTypeError, ValueError) as err:
+            raise InvalidDataError("Invalid Nugs API response") from err
+
+    @staticmethod
+    def _check_response_status(response: ClientResponse) -> None:
+        """Translate Nugs HTTP errors into provider errors."""
+        if response.status == 429:
+            raise RateLimited(
+                "Nugs API rate limited",
+                backoff_time=parse_retry_after(response.headers.get("Retry-After")),
+            )
+        if response.status in (500, 502, 503, 504):
+            raise ResourceTemporarilyUnavailable("Nugs API temporarily unavailable")
+        if response.status == 401:
+            raise LoginFailed("Nugs authentication expired or was rejected")
+        if response.status == 404:
+            raise MediaNotFoundError("Nugs item not found")
+        if response.status >= 400:
+            raise InvalidDataError(f"Nugs API request failed with HTTP {response.status}")
 
     async def _get_all_items(
         self, nugs_api: str, endpoint: str, **kwargs: Any

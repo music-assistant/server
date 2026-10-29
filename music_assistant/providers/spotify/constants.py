@@ -4,9 +4,12 @@ from __future__ import annotations
 
 # Configuration Keys
 CONF_CLIENT_ID = "client_id"
-CONF_REFRESH_TOKEN_DEPRECATED = "refresh_token"  # Legacy key for migration, will be removed
-CONF_REFRESH_TOKEN_GLOBAL = "refresh_token_global"  # Token authenticated with MA's client ID
-CONF_REFRESH_TOKEN_DEV = "refresh_token_dev"  # Token authenticated with user's custom client ID
+# Legacy key for migration, will be removed
+CONF_REFRESH_TOKEN_DEPRECATED = "refresh_token"  # noqa: S105 - config key
+# Token authenticated with MA's client ID
+CONF_REFRESH_TOKEN_GLOBAL = "refresh_token_global"  # noqa: S105 - config key
+# Token authenticated with user's custom client ID
+CONF_REFRESH_TOKEN_DEV = "refresh_token_dev"  # noqa: S105 - config key
 CONF_SYNC_PODCAST_PROGRESS = "sync_podcast_progress"
 CONF_SYNC_AUDIOBOOK_PROGRESS = "sync_audiobook_progress"
 CONF_LIBRESPOT_CREDENTIALS = "librespot_credentials"  # librespot's reusable stored credential
@@ -65,6 +68,8 @@ PAIRING_DEVICE_NAME = "Music Assistant Pairing"
 PAIRING_TIMEOUT = 300  # seconds the pairing step waits for the user to pick the device
 CHECK_AUTH_TIMEOUT = 30  # seconds
 CREDENTIALS_FILE = "credentials.json"
+# seconds a playlist search waits on the global session, leaving room for the fallback
+GLOBAL_SEARCH_TIMEOUT = 4
 
 # OAuth Settings
 SCOPE = [

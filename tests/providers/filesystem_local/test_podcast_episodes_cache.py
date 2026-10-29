@@ -72,7 +72,7 @@ def _parse_tags_spy(chapters: bool = False, slow_first: bool = False) -> AsyncMo
         task completion order comes out in a different order than the directory listing.
     """
 
-    async def _parse(path: str, _size: int | None = None) -> AudioTags:
+    async def _parse(path: str, _size: int | None = None, **_kwargs: Any) -> AudioTags:
         if slow_first and path.endswith("episode-01.mp3"):
             await asyncio.sleep(0.05)
         return _audio_tags(path, chapters)
@@ -157,7 +157,7 @@ async def test_parsing_stays_within_the_concurrency_limit(
     in_flight = 0
     peak = 0
 
-    async def _parse(path: str, _size: int | None = None) -> AudioTags:
+    async def _parse(path: str, _size: int | None = None, **_kwargs: Any) -> AudioTags:
         nonlocal in_flight, peak
         in_flight += 1
         peak = max(peak, in_flight)
@@ -436,7 +436,7 @@ async def test_partial_listing_is_cached_only_briefly(
             expirations.append(kwargs.get("expiration"))
         return await original_set(*args, **kwargs)
 
-    def _side_effect(path: str, _size: int | None = None) -> AudioTags:
+    def _side_effect(path: str, _size: int | None = None, **_kwargs: Any) -> AudioTags:
         if path.endswith("episode-02.mp3"):
             raise InvalidDataError("Unable to parse file")
         return _audio_tags(path)
@@ -535,3 +535,32 @@ async def test_episode_gets_the_release_date(provider: LocalFileSystemProvider) 
         episode = await provider.get_podcast_episode(f"{PODCAST_FOLDER}/episode-01.mp3")
 
     assert episode.metadata.release_date == datetime(2026, 8, 31, tzinfo=UTC)
+
+
+async def test_episode_gets_the_track_and_disc_numbers(provider: LocalFileSystemProvider) -> None:
+    """The track tag becomes the episode number and the disc tag the season."""
+    tags = _audio_tags(f"{PODCAST_FOLDER}/episode-01.mp3")
+    tags.tags["track"] = "12/40"
+    tags.tags["disc"] = "3"
+    parse_tags = AsyncMock(return_value=tags)
+
+    with patch(PARSE_TAGS_TARGET, new=parse_tags):
+        episode = await provider.get_podcast_episode(f"{PODCAST_FOLDER}/episode-01.mp3")
+
+    assert (episode.episode_number, episode.season) == (12, 3)
+
+
+async def test_episode_number_is_not_guessed_from_the_file_name(
+    provider: LocalFileSystemProvider,
+) -> None:
+    """A file without a track tag gets no episode number, even with a number in its name."""
+    tags = _audio_tags(f"{PODCAST_FOLDER}/episode-01.mp3")
+    del tags.tags["track"]
+    tags.filename = "2024-05-01 news.mp3"
+    parse_tags = AsyncMock(return_value=tags)
+
+    with patch(PARSE_TAGS_TARGET, new=parse_tags):
+        episode = await provider.get_podcast_episode(f"{PODCAST_FOLDER}/episode-01.mp3")
+
+    assert tags.track == 2024
+    assert (episode.episode_number, episode.season) == (None, None)

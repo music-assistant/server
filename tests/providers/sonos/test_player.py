@@ -2,7 +2,8 @@
 
 import asyncio
 import logging
-from typing import Any, cast
+from collections.abc import Coroutine
+from typing import TYPE_CHECKING, Any, cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -12,6 +13,7 @@ from aiosonos.api.models import PlayBackState as SonosPlayBackState
 from aiosonos.const import EventType as SonosEventType
 from aiosonos.const import PlaybackErrorEvent
 from aiosonos.exceptions import CannotConnect, FailedCommand
+from aiosonos.group import PlaybackActions
 from music_assistant_models.constants import PLAYER_CONTROL_NATIVE, PLAYER_CONTROL_NONE
 from music_assistant_models.enums import PlaybackState, RepeatMode
 from music_assistant_models.errors import PlayerUnavailableError
@@ -26,6 +28,14 @@ from music_assistant.providers.sonos.const import (
     SOURCE_SPOTIFY,
 )
 from music_assistant.providers.sonos.player import SonosPlayer, _is_wakeable
+
+if TYPE_CHECKING:
+    from aiosonos.api.models import PlaybackActions as PlaybackActionsData
+
+
+def _actions(flags: dict[str, bool]) -> PlaybackActions:
+    """Build the playback actions a speaker reports, from the flags it sent."""
+    return PlaybackActions(cast("PlaybackActionsData", flags))
 
 
 def _bind_player(mass: MusicAssistant | MagicMock) -> tuple[SonosPlayer, MagicMock]:
@@ -43,6 +53,12 @@ def _bind_player(mass: MusicAssistant | MagicMock) -> tuple[SonosPlayer, MagicMo
     player._wol_mac = None
     player._marked_asleep = False
     player._woken_from_sleep = False
+    player.cloud_queue_id = None
+    player.cloud_queue_item_generation = 0
+    player._evicted_cloud_queue = None
+    player._flow_queue_id = None
+    player._queue_session_id = None
+    player._hand_over_tasks = set()
     player.client = client
     player._on_unload_callbacks = []
     player.update_state = MagicMock()  # type: ignore[misc, method-assign]
@@ -84,6 +100,13 @@ def _playback_error(**fields: object) -> PlaybackErrorEvent:
         },
     )
     return PlaybackErrorEvent(SonosEventType.PLAYBACK_ERROR, "group1", body)
+
+
+def _scheduled_tasks(mass: MagicMock) -> list[Coroutine[Any, Any, None]]:
+    """Collect the coroutines the player schedules on the given mass instead of running them."""
+    scheduled: list[Coroutine[Any, Any, None]] = []
+    mass.create_task.side_effect = lambda coro, **_kwargs: scheduled.append(coro)
+    return scheduled
 
 
 async def _connect_player(player: SonosPlayer, client: MagicMock) -> None:
@@ -223,6 +246,33 @@ async def test_on_unload_cancels_an_airplay_group_restore_that_already_started(
 
     with pytest.raises(asyncio.CancelledError):
         await task
+
+
+@pytest.mark.asyncio
+async def test_on_unload_cancels_every_pending_hand_over_of_a_moved_group(
+    timer_mass: MusicAssistant,
+) -> None:
+    """Test each hand-over waiting on a group's new coordinator is aborted on unload."""
+    player, _ = _bind_player(timer_mass)
+    waiting = [asyncio.Event(), asyncio.Event()]
+
+    async def _hand_over(started: asyncio.Event) -> None:
+        started.set()
+        await asyncio.sleep(5)
+
+    tasks = [
+        timer_mass.create_task(_hand_over(started), task_id=f"hand_over_{index}")
+        for index, started in enumerate(waiting)
+    ]
+    player._hand_over_tasks.update(tasks)
+    for started in waiting:
+        await started.wait()
+
+    await player.on_unload()
+
+    for task in tasks:
+        with pytest.raises(asyncio.CancelledError):
+            await task
 
 
 @pytest.mark.asyncio
@@ -617,6 +667,77 @@ def test_a_group_member_leaves_reporting_playback_errors_to_the_coordinator(
     assert not caplog.records
 
 
+@pytest.mark.parametrize("item_id", ["abc@3", "abc"], ids=["current load", "legacy bare id"])
+async def test_a_failed_track_hands_its_source_to_the_track_the_speaker_moves_on_to(
+    item_id: str,
+) -> None:
+    """Test the queue is asked to release the failed track's source, by its bare item id."""
+    player = _make_named_player("Kantoor")
+    player.cloud_queue_id = "queue1"
+    player.cloud_queue_item_generation = 3
+    mass = cast("MagicMock", player.mass)
+    mass.player_queues.release_failed_item_source = AsyncMock()
+    scheduled = _scheduled_tasks(mass)
+
+    player._on_playback_error(_playback_error(reason="ERROR_BUFFERING", itemId=item_id))
+
+    assert len(scheduled) == 1
+    await scheduled[0]
+    mass.player_queues.release_failed_item_source.assert_awaited_once_with("queue1", "abc")
+
+
+def test_a_failure_of_an_earlier_load_of_a_track_leaves_its_fresh_source_alone(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """
+    Test a delayed report about the load a reload replaced is ignored.
+
+    A seek or replay serves the same track under a new generation, and the source the queue
+    item holds then belongs to that load; the old load's failure must not cancel it.
+    """
+    player = _make_named_player("Kantoor")
+    player.cloud_queue_id = "queue1"
+    player.cloud_queue_item_generation = 4
+
+    with caplog.at_level(logging.DEBUG, logger="test.sonos.player"):
+        player._on_playback_error(_playback_error(reason="ERROR_BUFFERING", itemId="abc@3"))
+
+    cast("MagicMock", player.mass).create_task.assert_not_called()
+    assert "Ignoring the failure of abc@3" in caplog.text
+
+
+def test_a_track_refused_by_our_stream_server_has_no_source_to_release() -> None:
+    """Test our own 404 never started a source for the track, so there is nothing to free."""
+    player = _make_named_player("Kantoor")
+    player.cloud_queue_id = "queue1"
+
+    player._on_playback_error(_playback_error(httpStatus=404, serviceName="192.168.1.10:9097"))
+
+    cast("MagicMock", player.mass).create_task.assert_not_called()
+
+
+def test_a_group_member_leaves_releasing_a_failed_track_to_the_coordinator() -> None:
+    """Test a speaker synced to another one does not act on the group's failure."""
+    player = _make_named_player("Kantoor")
+    player.cloud_queue_id = "queue1"
+    client = cast("MagicMock", player.client)
+    client.player.is_coordinator = False
+    client.player.group.coordinator_id = "coordinator"
+
+    player._on_playback_error(_playback_error(reason="ERROR_BUFFERING"))
+
+    cast("MagicMock", player.mass).create_task.assert_not_called()
+
+
+def test_a_failure_outside_a_cloud_queue_releases_nothing() -> None:
+    """Test a failure while the speaker plays another source has no queue item behind it."""
+    player = _make_named_player("Kantoor")
+
+    player._on_playback_error(_playback_error(reason="ERROR_BUFFERING"))
+
+    cast("MagicMock", player.mass).create_task.assert_not_called()
+
+
 def _report_paused_qobuz(group: MagicMock) -> None:
     """Let the given group report a paused session of a service we did not map."""
     group.playback_state = SonosPlayBackState.PLAYBACK_STATE_PAUSED
@@ -627,17 +748,19 @@ def _report_paused_qobuz(group: MagicMock) -> None:
         "container": {"name": "Chill Mix", "service": {"name": "Qobuz"}},
         "currentItem": {"id": "1", "track": {"name": "Shout"}},
     }
-    group.playback_actions.raw_data = {
-        "canShuffle": True,
-        "canRepeat": True,
-        "canRepeatOne": True,
-        # paused, so the speaker offers play but not pause
-        "canPlay": True,
-        "canPause": False,
-        "canSeek": True,
-        "canSkip": True,
-        "canSkipBack": False,
-    }
+    group.playback_actions = _actions(
+        {
+            "canShuffle": True,
+            "canRepeat": True,
+            "canRepeatOne": True,
+            # paused, so the speaker offers play but not pause
+            "canPlay": True,
+            "canPause": False,
+            "canSeek": True,
+            "canSkip": True,
+            "canSkipToPrevious": False,
+        }
+    )
     # a bare MagicMock attribute is truthy, so the play modes are spelled out
     group.play_modes.shuffle = True
     group.play_modes.repeat = True
@@ -672,8 +795,8 @@ def test_a_service_we_did_not_map_gets_a_source_entry_with_its_play_modes() -> N
     # either play or pause being available means the source can be paused and resumed
     assert source.can_play_pause is True
     assert source.can_seek is True
-    # skipping is only offered when the speaker allows it in both directions
-    assert source.can_next_previous is False
+    # one flag for both buttons: kept while either direction works
+    assert source.can_next_previous is True
     # the entry only exists while the speaker plays it, there is no template for it
     assert "Qobuz" not in PLAYER_SOURCE_MAP
 
@@ -726,14 +849,16 @@ def test_the_entry_of_a_service_we_did_not_map_follows_what_the_speaker_reports(
     player, _ = _speaker_reporting_paused_qobuz()
     player.on_player_event(None)
     group = cast("MagicMock", player.client.player.group)
-    group.playback_actions.raw_data = {
-        "canShuffle": False,
-        "canRepeat": False,
-        "canPause": False,
-        "canSeek": False,
-        "canSkip": True,
-        "canSkipBack": True,
-    }
+    group.playback_actions = _actions(
+        {
+            "canShuffle": False,
+            "canRepeat": False,
+            "canPause": False,
+            "canSeek": False,
+            "canSkip": True,
+            "canSkipToPrevious": True,
+        }
+    )
     group.play_modes.shuffle = False
 
     player.on_player_event(None)
@@ -744,6 +869,70 @@ def test_the_entry_of_a_service_we_did_not_map_follows_what_the_speaker_reports(
     assert source.can_play_pause is False
     assert source.can_next_previous is True
     assert len([x for x in player._attr_source_list if x.id == "Qobuz"]) == 1
+
+
+@pytest.mark.parametrize(
+    ("flags", "offered"),
+    [
+        ({"canSkip": True, "canSkipToPrevious": False}, True),
+        ({"canSkip": False, "canSkipToPrevious": True}, True),
+        ({"canSkip": False, "canSkipToPrevious": False}, False),
+    ],
+    ids=["first_track", "last_track", "neither"],
+)
+def test_skipping_is_offered_while_either_direction_works(
+    flags: dict[str, bool], offered: bool
+) -> None:
+    """Test the speaker's first and last track keep the buttons; a source with neither has none."""
+    player, _ = _speaker_reporting_paused_qobuz()
+    group = cast("MagicMock", player.client.player.group)
+    group.playback_actions = _actions(flags)
+
+    player.on_player_event(None)
+
+    source = next(x for x in player._attr_source_list if x.id == "Qobuz")
+    assert source.can_next_previous is offered
+
+
+@pytest.mark.parametrize("available", [True, False], ids=["offered", "not_offered"])
+@pytest.mark.parametrize(
+    ("command", "flag", "speaker_call"),
+    [
+        ("next_track", "canSkip", "skip_to_next_track"),
+        ("previous_track", "canSkipToPrevious", "skip_to_previous_track"),
+    ],
+    ids=["next", "previous"],
+)
+async def test_a_skip_is_sent_only_in_a_direction_the_speaker_offers(
+    command: str, flag: str, speaker_call: str, available: bool
+) -> None:
+    """Test a skip the speaker does not offer is not sent: it refuses it (DISALLOWED_BY_POLICY)."""
+    player, _ = _speaker_reporting_paused_qobuz()
+    # the debug line names the player
+    player._cache = {}
+    player._attr_name = "Office"
+    player._config = MagicMock()
+    player._config.name = None
+    group = cast("MagicMock", player.client.player.group)
+    group.playback_actions = _actions({flag: available})
+    setattr(group, speaker_call, AsyncMock())
+
+    await getattr(player, command)()
+
+    assert getattr(group, speaker_call).await_count == (1 if available else 0)
+
+
+def test_skipping_back_follows_the_deprecated_key_on_older_firmware() -> None:
+    """Test a speaker that only reports canSkipBack (before API 1.36.0) still offers skipping."""
+    player, _ = _speaker_reporting_paused_qobuz()
+    group = cast("MagicMock", player.client.player.group)
+    # only the old key is there to offer skipping at all
+    group.playback_actions = _actions({"canSkip": False, "canSkipBack": True})
+
+    player.on_player_event(None)
+
+    source = next(x for x in player._attr_source_list if x.id == "Qobuz")
+    assert source.can_next_previous is True
 
 
 def test_a_group_child_does_not_take_over_the_line_in_of_its_coordinator() -> None:

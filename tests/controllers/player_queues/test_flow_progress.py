@@ -4,7 +4,9 @@ from types import SimpleNamespace
 from typing import Any, cast
 from unittest.mock import MagicMock
 
+import pytest
 from music_assistant_models.enums import PlaybackState
+from music_assistant_models.player_queue import PlayLogEntry
 
 from music_assistant.controllers.player_queues.playback_tracker import PlaybackTrackerMixin
 
@@ -25,7 +27,7 @@ def _queue_item(item_id: str, seconds_streamed: float | None) -> SimpleNamespace
 
 def _flow_progress(
     elapsed: float,
-    log: list[SimpleNamespace],
+    log: list[PlayLogEntry],
     items: list[SimpleNamespace],
 ) -> tuple[int | None, float]:
     """Calculate Flow Mode progress with a minimal playback tracker."""
@@ -59,8 +61,8 @@ def test_flow_progress_recovers_unfinished_non_tail_probe_entry() -> None:
     """An abandoned probe entry must not pin progress to the previous track."""
     items = [_queue_item("track-1", 100.0), _queue_item("track-2", None)]
     log = [
-        SimpleNamespace(queue_item_id="track-1", seconds_streamed=None),
-        SimpleNamespace(queue_item_id="track-2", seconds_streamed=None),
+        PlayLogEntry(queue_item_id="track-1", seconds_streamed=None),
+        PlayLogEntry(queue_item_id="track-2", seconds_streamed=None),
     ]
 
     index, elapsed = _flow_progress(125.0, log, items)
@@ -69,10 +71,25 @@ def test_flow_progress_recovers_unfinished_non_tail_probe_entry() -> None:
     assert elapsed == 25.0
 
 
+@pytest.mark.parametrize(("seek_position", "expected"), [(None, 84.0), (0.0, 25.0), (10.5, 35.5)])
+def test_flow_progress_uses_optional_recorded_offset(
+    seek_position: float | None, expected: float
+) -> None:
+    """Only an unspecified offset falls back to the queue item's mutable offset."""
+    item = _queue_item("track-1", None)
+    item.streamdetails.seek_position = 59
+    log = [PlayLogEntry("track-1", seek_position=seek_position)]
+
+    index, elapsed = _flow_progress(25.0, log, [item])
+
+    assert index == 0
+    assert elapsed == expected
+
+
 def test_flow_progress_keeps_unfinished_tail_as_active_entry() -> None:
     """The unfinished tail entry remains the sentinel for the active track."""
     items = [_queue_item("track-1", None)]
-    log = [SimpleNamespace(queue_item_id="track-1", seconds_streamed=None)]
+    log = [PlayLogEntry(queue_item_id="track-1", seconds_streamed=None)]
 
     index, elapsed = _flow_progress(25.0, log, items)
 

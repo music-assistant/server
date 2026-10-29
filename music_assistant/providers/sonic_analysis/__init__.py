@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING, Any
 import numpy as np
 import soxr
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption
-from music_assistant_models.enums import ConfigEntryType, ContentType
+from music_assistant_models.enums import ConfigEntryType, ContentType, MediaType
 from music_assistant_models.errors import SetupFailedError, UnsupportedSystemError
 
 from music_assistant.helpers.datetime import utc
@@ -55,8 +55,6 @@ BLOCK_SECONDS: int = 10
 # Must equal helpers._CHROMA_SR — filterbanks in helpers.py are baked at this rate.
 ANALYSIS_SAMPLE_RATE: int = 22050
 OVERLAP_SAMPLES: int = 2048
-
-EXTRA_DATA_CLAP_EMBEDDING: str = "clap_embedding"
 
 # CLAP's HTSAT audio encoder takes a fixed 7-second input at 44.1 kHz.
 CLAP_WINDOW_SECONDS: int = 7
@@ -168,13 +166,6 @@ def compute_clap_target_starts(
 
     positions = np.linspace(usable_start, usable_end, effective_n)
     return [int(p * source_sr) for p in positions]
-
-
-def _store_clap_embedding(analysis: AudioAnalysisData, embedding: np.ndarray) -> None:
-    """Store the CLAP audio embedding on the analysis object for downstream consumers."""
-    if analysis.extra_data is None:
-        analysis.extra_data = {}
-    analysis.extra_data[EXTRA_DATA_CLAP_EMBEDDING] = embedding.tolist()
 
 
 def _dispatch_clap_chunk(
@@ -515,6 +506,10 @@ class SonicAnalysisProvider(AudioAnalysisProvider):
         :param streamdetails: Stream details for the item being analyzed.
         :param audio_format: PCM format of the audio stream.
         """
+        if streamdetails.media_type != MediaType.TRACK:
+            # the embeddings only serve music similarity, nothing reads them for
+            # audiobooks, podcasts or radio
+            return False
         if self._clap_model is None:
             self.logger.debug(
                 "Skipping analysis for %s: CLAP model not yet available",
@@ -636,7 +631,7 @@ class SonicAnalysisProvider(AudioAnalysisProvider):
         for scalar_name, value in score_scalars(mean_sim).items():
             setattr(analysis, scalar_name, value)
 
-        _store_clap_embedding(analysis, mean_emb)
+        analysis.clap_embedding = mean_emb.tolist()
         self.logger.debug(
             "Live CLAP for %s/%s: %d/%d windows completed",
             sd.provider,
