@@ -625,8 +625,9 @@ async def test_link_item_persists_an_album_without_touching_its_refresh_marker()
 async def test_link_item_resolves_an_artists_musicbrainz_id_first() -> None:
     """An artist without a MusicBrainz id gets it resolved before it is linked and stored."""
     ctrl = _controller(stub_link=False)
-    ctrl._get_artist_mbid = AsyncMock(return_value=ARTIST_ID)  # type: ignore[method-assign]
+    ctrl._get_artist_mbid = AsyncMock(return_value=(ARTIST_ID, False))  # type: ignore[method-assign]
     ctrl._link_artist_to_musicbrainz = AsyncMock()  # type: ignore[method-assign]
+    _mass(ctrl).music.artists.merge_library_artists_by_mbid = AsyncMock(return_value=1)
     artist = Artist(item_id="1", provider="library", name="Radiohead", provider_mappings=set())
 
     await ctrl.link_item_to_musicbrainz(artist)
@@ -634,6 +635,7 @@ async def test_link_item_resolves_an_artists_musicbrainz_id_first() -> None:
     assert artist.mbid == ARTIST_ID
     ctrl._link_artist_to_musicbrainz.assert_awaited_once_with(artist)
     _mass(ctrl).music.artists.update_item_in_library.assert_awaited_once_with("1", artist)
+    _mass(ctrl).music.artists.merge_library_artists_by_mbid.assert_awaited_once_with(1, ARTIST_ID)
 
 
 async def test_link_item_persists_a_track() -> None:

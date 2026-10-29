@@ -113,6 +113,7 @@ from music_assistant.helpers.audio import (
     create_streaming_wave_header,
     get_content_length,
     get_mime_type,
+    pcm_container_bit_depth,
     store_content_length_in_cache,
 )
 from music_assistant.helpers.ffmpeg import (
@@ -1542,7 +1543,9 @@ class StreamsController(CoreController):
             # see for example: https://github.com/music-assistant/support/issues/3717
             # one continuous stream, so the player gains nothing from running far ahead
             extra_input_args=output_pacing_args(PacingProfile.NEAR_REALTIME),
-            chunk_size=icy_meta_interval if enable_icy else calculate_content_length(output_format),
+            # without ICY framing, pass on whatever ffmpeg has encoded: an exact 1s read
+            # holds back FLAC on quiet passages until the player gives up waiting
+            chunk_size=icy_meta_interval if enable_icy else None,
         )
         client_disconnected = False
         # same registry as the single-item route: a forced-flow player (overlay)
@@ -1949,7 +1952,7 @@ class StreamsController(CoreController):
         pcm_format = AudioFormat(
             content_type=ContentType.from_bit_depth(streamdetails.audio_format.bit_depth),
             sample_rate=streamdetails.audio_format.sample_rate,
-            bit_depth=streamdetails.audio_format.bit_depth,
+            bit_depth=pcm_container_bit_depth(streamdetails.audio_format.bit_depth),
             channels=streamdetails.audio_format.channels,
         )
         async for chunk in get_ffmpeg_stream(

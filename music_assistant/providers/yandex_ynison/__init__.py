@@ -19,7 +19,9 @@ SUPPORTED_FEATURES = {ProviderFeature.AUDIO_SOURCE}
 
 
 async def setup(
-    mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
+    mass: MusicAssistant,
+    manifest: ProviderManifest,
+    config: ProviderConfig,
 ) -> ProviderInstanceType:
-    """Initialize provider(instance) with given configuration."""
+    """Initialize one Ynison provider instance."""
     return YandexYnisonProvider(mass, manifest, config, SUPPORTED_FEATURES)

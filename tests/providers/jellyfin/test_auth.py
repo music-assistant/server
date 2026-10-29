@@ -25,6 +25,8 @@ async def jellyfin_provider(mass: MusicAssistant) -> JellyfinProvider:
     client = mock.Mock()
     client.get_track = mock.AsyncMock()
     client.audio_url = mock.Mock()
+    client._access_token = "CURRENT_TOKEN"
+    client.base_url = "https://jellyfin.example.com"
 
     with mock.patch(
         "music_assistant.providers.jellyfin.authenticate_by_name",
@@ -78,26 +80,30 @@ async def test_get_stream_details_normalizes_legacy_audio_url(
     [
         (
             "https://jellyfin.example.com/Items/track-1/art.jpg?api_key=a%2Fb%3D&x=1",
-            "https://jellyfin.example.com/Items/track-1/art.jpg?apiKey=a%2Fb%3D&x=1",
+            "https://jellyfin.example.com/Items/track-1/art.jpg?x=1&apiKey=CURRENT_TOKEN",
         ),
         (
             "https://jellyfin.example.com/Items/track-1/art.jpg?foo&api_key=a%2Fb%3D&foo=bar&foo=",
-            "https://jellyfin.example.com/Items/track-1/art.jpg?foo=&apiKey=a%2Fb%3D&foo=bar&foo=",
+            "https://jellyfin.example.com/Items/track-1/art.jpg?foo=&foo=bar&foo=&apiKey=CURRENT_TOKEN",
         ),
         (
             "https://jellyfin.example.com/Items/track-1/art.jpg?apiKey=a%2Fb%3D&x=1",
-            "https://jellyfin.example.com/Items/track-1/art.jpg?apiKey=a%2Fb%3D&x=1",
+            "https://jellyfin.example.com/Items/track-1/art.jpg?x=1&apiKey=CURRENT_TOKEN",
         ),
         (
             "https://jellyfin.example.com/Items/track-1/art.jpg?x=1",
-            "https://jellyfin.example.com/Items/track-1/art.jpg?x=1",
+            "https://jellyfin.example.com/Items/track-1/art.jpg?x=1&apiKey=CURRENT_TOKEN",
+        ),
+        (
+            "https://jellyfin.example.com.evil.test/cover.png?api_key=a%2Fb%3D",
+            "https://jellyfin.example.com.evil.test/cover.png",
         ),
     ],
 )
 async def test_resolve_image_normalizes_legacy_urls(
     jellyfin_provider: JellyfinProvider, raw_url: str, expected_url: str
 ) -> None:
-    """Return artwork URLs with Jellyfin's supported auth parameter name."""
+    """Return artwork URLs authenticated with the provider's current access token."""
     assert await jellyfin_provider.resolve_image(raw_url) == expected_url
 
 

@@ -97,6 +97,7 @@ from .constants import (
     CONF_SYNC_AUDIOBOOK_PROGRESS,
     CONF_SYNC_PODCAST_PROGRESS,
     CREDENTIALS_FILE,
+    GLOBAL_SEARCH_TIMEOUT,
     LIKED_SONGS_FAKE_PLAYLIST_ID_PREFIX,
     SOLOIST_DATA_DIR_NAME,
 )
@@ -520,7 +521,9 @@ class SpotifyProvider(MusicProvider):
                 searches.append((other_types, False))
         await asyncio.gather(
             *(
-                self._search_pages(search_query, types, limit, searchresult, use_global)
+                self._search_playlists_on_global_session(search_query, limit, searchresult)
+                if use_global
+                else self._search_pages(search_query, types, limit, searchresult, False)
                 for types, use_global in searches
             )
         )
@@ -1280,6 +1283,24 @@ class SpotifyProvider(MusicProvider):
             offset += page_limit
             if offset >= limit or items_received < page_limit:
                 break
+
+    async def _search_playlists_on_global_session(
+        self, search_query: str, limit: int, searchresult: SearchResults
+    ) -> None:
+        """Search playlists on the global session, topped up by the dev session if it fails."""
+        global_result = SearchResults()
+        try:
+            async with asyncio.timeout(GLOBAL_SEARCH_TIMEOUT):
+                await self._search_pages(
+                    search_query, [MediaType.PLAYLIST], limit, global_result, True
+                )
+        except RetriesExhausted, TimeoutError:
+            self.logger.debug("Global session is slow or rate limited, topping up on the dev one")
+            if (missing := limit - len(UniqueList(global_result.playlists))) > 0:
+                await self._search_pages(
+                    search_query, [MediaType.PLAYLIST], missing, global_result, False
+                )
+        searchresult.playlists = UniqueList(global_result.playlists)[:limit]
 
     def _build_search_types(self, media_types: list[MediaType]) -> str:
         """Build comma-separated search types string from media types."""

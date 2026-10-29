@@ -7,7 +7,8 @@ from unittest.mock import ANY, AsyncMock, MagicMock
 
 import pytest
 from music_assistant_models.enums import ExternalID, MediaType
-from music_assistant_models.media_items import Album, ItemMapping
+from music_assistant_models.errors import MediaNotFoundError
+from music_assistant_models.media_items import Album, ItemMapping, Radio
 
 from music_assistant.controllers.cache.constants import BYPASS_CACHE
 from music_assistant.providers.apple_music.library import _TRACK_PAGE_SIZE, AppleMusicLibraryManager
@@ -15,8 +16,10 @@ from music_assistant.providers.apple_music.media import AppleMusicMediaManager
 from music_assistant.providers.apple_music.parsers import (
     parse_album,
     parse_artwork_image,
+    parse_station,
     parse_track,
 )
+from music_assistant.providers.apple_music.provider import AppleMusicProvider
 from tests.common import use_real_create_task
 
 BLOBSTORE_ARTWORK = {
@@ -413,6 +416,46 @@ async def test_media_manager_get_playlist_applies_can_edit_hint() -> None:
     assert playlist.is_editable is True
 
 
+def test_parse_station_returns_dynamic_radio() -> None:
+    """A station parses to a dynamic radio whose expiring artwork is stored as a radio token."""
+    provider = _create_provider_mock()
+
+    radio = parse_station(
+        provider, {"id": "ra.123", "attributes": {"name": "Chill", "artwork": BLOBSTORE_ARTWORK}}
+    )
+
+    assert isinstance(radio, Radio)
+    assert (radio.item_id, radio.name, radio.is_dynamic) == ("ra.123", "Chill", True)
+    assert [image.path for image in radio.metadata.images or []] == ["radio/ra.123"]
+
+
+@pytest.mark.asyncio
+async def test_search_radio_returns_stations_without_live_ones() -> None:
+    """A radio search asks for stations and leaves out live broadcast stations."""
+    provider = _create_provider_mock()
+    provider.api_client.get_data = AsyncMock(
+        return_value={
+            "results": {
+                "stations": {
+                    "data": [
+                        {"id": "ra.1", "type": "stations", "attributes": {"name": "Chill"}},
+                        {
+                            "id": "ra.2",
+                            "type": "stations",
+                            "attributes": {"name": "Live", "isLive": True},
+                        },
+                    ]
+                }
+            }
+        }
+    )
+
+    result = await AppleMusicMediaManager(provider).search("chill", [MediaType.RADIO])
+
+    assert provider.api_client.get_data.call_args.kwargs["types"] == "stations"
+    assert [(type(radio), radio.item_id) for radio in result.radio] == [(Radio, "ra.1")]
+
+
 def _create_playlist_tracks_manager(
     cache_store: dict[str, Any], last_modified: dict[str, str]
 ) -> tuple[AppleMusicMediaManager, AsyncMock]:
@@ -547,14 +590,18 @@ async def test_get_playlist_tracks_force_refresh_keeps_last_modified_cached() ->
 
 
 @pytest.mark.asyncio
-async def test_get_playlist_tracks_station_skips_last_modified_lookup() -> None:
-    """Station tracks never look up the playlist's lastModifiedDate."""
-    manager, get_data = _create_playlist_tracks_manager({}, {"value": "2026-10-01T10:00:00Z"})
-    manager._get_station_tracks = AsyncMock(return_value=[])  # type: ignore[method-assign]
+async def test_station_id_is_not_looked_up_as_playlist() -> None:
+    """A station id is answered locally by the playlist getters and artwork, without an API request."""
+    provider = _create_provider_mock()
+    provider.api_client.get_data = AsyncMock()
+    provider.media_manager = AppleMusicMediaManager(provider)
 
-    await manager.get_playlist_tracks("ra.123")
+    with pytest.raises(MediaNotFoundError):
+        await AppleMusicProvider.get_playlist(provider, "ra.123")
+    assert await AppleMusicProvider.get_playlist_tracks(provider, "ra.123") == []
+    assert await AppleMusicProvider.resolve_image(provider, "playlist/ra.123") == ""
 
-    get_data.assert_not_called()
+    provider.api_client.get_data.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -1155,6 +1202,22 @@ async def test_get_artwork_url_routes_catalog_tracks_to_catalog_endpoint() -> No
 
     provider.api_client.get_data.assert_called_once_with(
         "catalog/us/songs/1440783625", include="catalog"
+    )
+
+
+async def test_get_artwork_url_routes_stations_to_catalog_endpoint() -> None:
+    """Station tokens resolve via the catalog stations endpoint."""
+    provider = _create_provider_mock()
+    provider.api_client.get_data = AsyncMock(
+        return_value={"data": [{"id": "ra.123", "attributes": {"artwork": BLOBSTORE_ARTWORK}}]}
+    )
+
+    manager = AppleMusicMediaManager(provider)
+    url = await manager.get_artwork_url("radio", "ra.123")
+
+    assert url == BLOBSTORE_ARTWORK["url"]
+    provider.api_client.get_data.assert_called_once_with(
+        "catalog/us/stations/ra.123", include="catalog"
     )
 
 
