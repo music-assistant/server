@@ -272,6 +272,7 @@ class SqueezelitePlayer(Player):
                 send_flush=True,
                 auto_play=False,
             )
+            self._sync_elapsed_after_flush()
             return
 
         # this is a syncgroup; we need to handle this with a multi client stream.
@@ -332,6 +333,7 @@ class SqueezelitePlayer(Player):
                         mime_type=get_mime_type(member_codec),
                     )
                 )
+        self._sync_elapsed_after_flush()
 
     async def enqueue_next_media(self, media: PlayerMedia) -> None:
         """Handle enqueuing next media item."""
@@ -796,6 +798,11 @@ class SqueezelitePlayer(Player):
         return self.mass.config.get_raw_player_config_value(
             member_player_id, CONF_OUTPUT_CODEC, "flac"
         )
+
+    def _sync_elapsed_after_flush(self) -> None:
+        """Drop an old-stream heartbeat that landed before the flush."""
+        self._attr_elapsed_time = self.client.elapsed_seconds
+        self._attr_elapsed_time_last_updated = time.time()
 
 
 async def pause_and_unpause(slim_client: SlimClient, pause_duration_ms: int) -> None:
