@@ -2945,6 +2945,8 @@
   "provider.yandex_smarthome.setup_flow.skill_token.title": "Enter the skill OAuth token",
   "provider.yandex_smarthome.setup_flow.user.description": "Select a connection mode and the Yandex account to use. Cloud is the simplest; Cloud Plus and Direct set up a private skill.",
   "provider.yandex_smarthome.setup_flow.user.title": "Choose how to connect",
+  "provider.yandex_station.config_entries.alice_text_commands.description": "Enables the yandex_station/command API command, which hands any text to Alice as if it had been spoken on a Station. Alice can then control everything linked to the Yandex account, such as smart home devices, so only turn this on if every Music Assistant user and integration with player control may do that. Changes apply after the provider reloads.",
+  "provider.yandex_station.config_entries.alice_text_commands.label": "Allow text requests to Alice through the API",
   "provider.yandex_station.config_entries.cookies.label": "Browser Cookies",
   "provider.yandex_station.config_entries.intercept_enabled.description": "When the Station starts native Yandex Music playback (typically triggered by an Alice voice command, but also a touch on the Station UI), silence the Station (setVolume 0; the Station keeps playing its own queue in the background so we see every next track) and play the same track on the chosen target player. Requires the provider-level intercept feature to be enabled and a configured 'yandex_music' music provider.",
   "provider.yandex_station.config_entries.intercept_enabled.label": "Experimental: Intercept native Station playback",
