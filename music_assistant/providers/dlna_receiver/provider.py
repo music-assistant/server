@@ -21,11 +21,10 @@ from typing import TYPE_CHECKING, ClassVar
 from urllib.parse import urljoin
 
 import aiohttp
-from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption
+from music_assistant_models.config_entries import ConfigEntry
 from music_assistant_models.enums import (
     ConfigEntryType,
     ContentType,
-    IdentifierType,
     MediaType,
     PlayerFeature,
     ProviderFeature,
@@ -44,25 +43,23 @@ from music_assistant_models.media_items.audio_format import AudioFormat
 from music_assistant_models.streamdetails import StreamDetails, StreamMetadata
 
 from music_assistant.constants import CONF_BIND_IP
+from music_assistant.helpers.config_entries import (
+    CONF_CONNECTED_PLAYERS,
+    create_connected_players_entry,
+)
 from music_assistant.helpers.util import get_ip_addresses
 from music_assistant.models.plugin import PluginProvider
 
 from .constants import (
     CONF_FRIENDLY_NAME,
     CONF_HTTP_PORT,
-    CONF_TARGET_PLAYERS,
     DEFAULT_FRIENDLY_NAME,
     DEFAULT_HTTP_PORT,
     TRANSPORT_STATE_PAUSED,
     TRANSPORT_STATE_PLAYING,
     TRANSPORT_STATE_STOPPED,
 )
-from .lifecycle import (
-    RendererCallbacks,
-    RendererRegistry,
-    deterministic_udn,
-    normalize_udn_uuid,
-)
+from .lifecycle import RendererCallbacks, RendererRegistry
 from .metadata import (
     clear_playback,
     freeze_elapsed,
@@ -79,7 +76,6 @@ if TYPE_CHECKING:
     from music_assistant_models.provider import ProviderManifest
 
     from music_assistant.mass import MusicAssistant
-    from music_assistant.models.player import Player
 
 LOGGER = logging.getLogger(__name__)
 
@@ -143,13 +139,9 @@ class DLNAReceiverProvider(PluginProvider):
                 default_value=DEFAULT_FRIENDLY_NAME,
                 required=True,
             ),
-            ConfigEntry(
-                key=CONF_TARGET_PLAYERS,
-                type=ConfigEntryType.STRING,
-                default_value=[],
-                required=False,
-                options=self._target_player_options(),
-                multi_value=True,
+            create_connected_players_entry(
+                self.mass,
+                sorted(self._configured_target_player_ids()),
             ),
             ConfigEntry(
                 key=CONF_BIND_IP,
@@ -211,6 +203,8 @@ class DLNAReceiverProvider(PluginProvider):
                 on_pause=self._on_pause,
                 on_stop=self._on_stop,
                 on_get_position=position_for,
+                on_get_volume=self._on_get_volume,
+                on_get_mute=self._on_get_mute,
                 on_set_volume=self._on_set_volume,
                 on_set_mute=self._on_set_mute,
                 on_instance_removed=self._on_instance_removed,
@@ -256,6 +250,17 @@ class DLNAReceiverProvider(PluginProvider):
         return [
             self._audio_source_for(source_id, inst) for source_id, inst in self._instances.items()
         ]
+
+    def get_player_audio_sources(self, player_id: str) -> list[AudioSource]:
+        """
+        Return the AudioSource bound to the given Music Assistant player.
+
+        :param player_id: The player whose bound receiver source is requested.
+        """
+        inst = self._instances.get(player_id)
+        if inst is None:
+            return []
+        return [self._audio_source_for(player_id, inst)]
 
     async def get_stream_details(self, item_id: str, media_type: MediaType) -> StreamDetails:
         """
@@ -425,41 +430,11 @@ class DLNAReceiverProvider(PluginProvider):
             clear_playback(inst)
 
     def _configured_target_player_ids(self) -> frozenset[str]:
-        """Return the configured exact player allowlist, or empty for all players."""
-        value = self.config.get_value(CONF_TARGET_PLAYERS)
+        """Return the configured connected-player allowlist, or empty for all players."""
+        value = self.config.get_value(CONF_CONNECTED_PLAYERS)
         if not isinstance(value, list):
             return frozenset()
         return frozenset(item for item in value if isinstance(item, str) and item)
-
-    def _target_player_options(self) -> list[ConfigValueOption]:
-        """Return selectable MA players plus unavailable saved selections."""
-        selected_ids = self._configured_target_player_ids()
-        players: list[Player] = self.mass.players.all_players(
-            return_unavailable=True,
-            return_protocol_players=False,
-        )
-        candidate_uuids = {
-            normalize_udn_uuid(deterministic_udn(player_id))
-            for player_id in ({player.player_id for player in players} | set(selected_ids))
-        }
-        available_players = [
-            player
-            for player in players
-            if not (
-                (identifier := player.device_info.identifiers.get(IdentifierType.UUID))
-                and normalize_udn_uuid(identifier) in candidate_uuids
-            )
-        ]
-        options = [
-            ConfigValueOption(player.player_id, title=player.display_name)
-            for player in available_players
-        ]
-        available_ids = {player.player_id for player in available_players}
-        options.extend(
-            ConfigValueOption(player_id, title=player_id, disabled=True)
-            for player_id in selected_ids - available_ids
-        )
-        return sorted(options, key=lambda option: (str(option.title).casefold(), str(option.value)))
 
     # ------------------------------------------------------------------
     # AudioSource helpers
@@ -556,6 +531,9 @@ class DLNAReceiverProvider(PluginProvider):
             return True
 
         if previous_state == TRANSPORT_STATE_PAUSED:
+            if not self._has_claim(inst):
+                LOGGER.warning("Ignoring resume for %s: source is no longer owned", target)
+                return False
             LOGGER.info("Resuming playback on player %s", target)
             player = self.mass.players.get_player(target)
             if player is None:
@@ -617,6 +595,9 @@ class DLNAReceiverProvider(PluginProvider):
         """Handle Pause for this instance's player."""
         if not inst.player_id:
             return False
+        if not self._has_claim(inst):
+            LOGGER.warning("Ignoring Pause for %s: source is no longer owned", inst.player_id)
+            return False
         player = self.mass.players.get_player(inst.player_id)
         if player is None:
             return False
@@ -632,11 +613,38 @@ class DLNAReceiverProvider(PluginProvider):
         inst.metadata_dirty = True
         return True
 
-    async def _on_stop(self, inst: RendererInstance) -> None:
+    async def _on_stop(self, inst: RendererInstance) -> bool:
         """Handle Stop for this instance's player."""
-        if inst.player_id:
+        if not inst.player_id or not self._has_claim(inst):
+            LOGGER.warning("Ignoring Stop for %s: source is no longer owned", inst.player_id)
+            return False
+        try:
             await self.mass.players.cmd_stop(inst.player_id)
+        except MusicAssistantError as err:
+            LOGGER.warning("Could not stop playback on %s: %s", inst.player_id, err)
+            return False
         clear_playback(inst)
+        return True
+
+    async def _on_get_volume(self, inst: RendererInstance) -> int | None:
+        """Return the bound player's current volume for UPnP RenderingControl."""
+        if inst.player_id:
+            player = self.mass.players.get_player(inst.player_id)
+            if player is not None and player.volume_level is not None:
+                return int(player.volume_level)
+        return getattr(inst.renderer, "volume", None)
+
+    async def _on_get_mute(self, inst: RendererInstance) -> bool | None:
+        """Return the bound player's current mute state for UPnP RenderingControl."""
+        if inst.player_id:
+            player = self.mass.players.get_player(inst.player_id)
+            if player is not None and player.volume_muted is not None:
+                return bool(player.volume_muted)
+        return getattr(inst.renderer, "mute", None)
+
+    def _has_claim(self, inst: RendererInstance) -> bool:
+        """Return True while this renderer's source is owned by a MA queue."""
+        return self._source_id_for(inst) in self._claims
 
     async def _on_set_volume(self, inst: RendererInstance, volume: int) -> None:
         """Handle volume change for this instance's player."""

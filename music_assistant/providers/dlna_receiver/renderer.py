@@ -36,11 +36,18 @@ from .eventing import EventingManager
 LOGGER = logging.getLogger(__name__)
 
 SCPD_DIR = Path(__file__).parent / "scpd"
+SCPD_CACHE: dict[str, bytes] = {
+    name: (SCPD_DIR / name).read_bytes()
+    for name in ("AVTransport.xml", "RenderingControl.xml", "ConnectionManager.xml")
+}
 
 SoapCallback = Callable[..., Awaitable[None]]
 PlayCallback = Callable[[str], Awaitable[bool]]
 PauseCallback = Callable[[], Awaitable[bool]]
+StopCallback = Callable[[], Awaitable[bool]]
 PositionCallback = Callable[[], tuple[int, int]]
+VolumeGetterCallback = Callable[[], Awaitable[int | None]]
+MuteGetterCallback = Callable[[], Awaitable[bool | None]]
 
 # Extra entity mapping for XML attribute values (default escape() handles only &, <, >).
 _ATTR_ENTITIES = {'"': "&quot;"}
@@ -95,12 +102,6 @@ class UPnPRenderer:
         # HTTP server
         self._app = web.Application()
         self._runner: web.AppRunner | None = None
-        # Pre-load SCPD XML bytes once: each request should not do sync
-        # file I/O on the event loop.
-        self._scpd_cache: dict[str, bytes] = {
-            name: (SCPD_DIR / name).read_bytes()
-            for name in ("AVTransport.xml", "RenderingControl.xml", "ConnectionManager.xml")
-        }
         self._setup_routes()
 
         # GENA eventing managers (one per service). Share the provided
@@ -114,8 +115,10 @@ class UPnPRenderer:
         self.on_set_av_transport_uri: SoapCallback | None = None
         self.on_play: PlayCallback | None = None
         self.on_pause: PauseCallback | None = None
-        self.on_stop: SoapCallback | None = None
+        self.on_stop: StopCallback | None = None
         self.on_get_position: PositionCallback | None = None
+        self.on_get_volume: VolumeGetterCallback | None = None
+        self.on_get_mute: MuteGetterCallback | None = None
         self.on_set_volume: SoapCallback | None = None
         self.on_set_mute: SoapCallback | None = None
 
@@ -174,6 +177,25 @@ class UPnPRenderer:
             return
         self.transport_state = state
         await self._notify_av_transport_change()
+
+    async def apply_volume(self, volume: int | None, mute: bool | None) -> None:
+        """
+        Mirror the bound player's volume and mute state into the renderer.
+
+        :param volume: New volume level (0-100), or None when unknown.
+        :param mute: New mute state, or None when unknown.
+        """
+        changed = False
+        if volume is not None:
+            clamped = max(0, min(100, volume))
+            if clamped != self.volume:
+                self.volume = clamped
+                changed = True
+        if mute is not None and mute != self.mute:
+            self.mute = mute
+            changed = True
+        if changed:
+            await self._notify_rendering_control_change()
 
     def _setup_routes(self) -> None:
         """Register HTTP routes for UPnP description, control, and eventing."""
@@ -309,8 +331,8 @@ class UPnPRenderer:
         return self._serve_scpd("ConnectionManager.xml")
 
     def _serve_scpd(self, filename: str) -> web.Response:
-        """Serve a SCPD XML file from the startup-populated cache."""
-        return web.Response(body=self._scpd_cache[filename], content_type="text/xml")
+        """Serve a SCPD XML file from the module-level cache."""
+        return web.Response(body=SCPD_CACHE[filename], content_type="text/xml")
 
     # ------------------------------------------------------------------
     # SOAP Action Handlers
@@ -357,8 +379,8 @@ class UPnPRenderer:
             return self._soap_response(action_name, UPNP_SERVICE_AV_TRANSPORT)
 
         if action_name == "Stop":
-            if self.on_stop:
-                await self.on_stop()
+            if self.on_stop and not await self.on_stop():
+                return self._soap_error(701, "Transition not available")
             await self.set_transport_state(TRANSPORT_STATE_STOPPED)
             return self._soap_response(action_name, UPNP_SERVICE_AV_TRANSPORT)
 
@@ -426,6 +448,7 @@ class UPnPRenderer:
         LOGGER.debug("RenderingControl action: %s", action_name)
 
         if action_name == "GetVolume":
+            await self._refresh_rendering_state()
             return self._soap_response(
                 action_name,
                 UPNP_SERVICE_RENDERING_CONTROL,
@@ -450,6 +473,7 @@ class UPnPRenderer:
             )
 
         if action_name == "GetMute":
+            await self._refresh_rendering_state()
             return self._soap_response(
                 action_name,
                 UPNP_SERVICE_RENDERING_CONTROL,
@@ -618,6 +642,7 @@ class UPnPRenderer:
         request: web.Request,
     ) -> web.Response:
         """Handle SUBSCRIBE for RenderingControl events."""
+        await self._refresh_rendering_state()
         return await self._handle_subscribe(
             request,
             self._evt_rendering_control,
@@ -723,10 +748,21 @@ class UPnPRenderer:
     # Event Notification Helpers
     # ------------------------------------------------------------------
 
+    async def _refresh_rendering_state(self) -> None:
+        """Pull the current volume and mute state from the bound player."""
+        if self.on_get_volume is not None:
+            volume = await self.on_get_volume()
+            if volume is not None:
+                self.volume = max(0, min(100, volume))
+        if self.on_get_mute is not None:
+            mute = await self.on_get_mute()
+            if mute is not None:
+                self.mute = mute
+
     def _get_av_transport_vars(self) -> dict[str, str]:
         """Get current AVTransport state as a LastChange XML fragment."""
         last_change = self._build_last_change(
-            "urn:schemas-upnp-org:service:AVTransport:1",
+            "urn:schemas-upnp-org:metadata-1-0/AVT/",
             {
                 "TransportState": self.transport_state,
                 "TransportStatus": "OK",
@@ -742,7 +778,7 @@ class UPnPRenderer:
     def _get_rendering_control_vars(self) -> dict[str, str]:
         """Get current RenderingControl state as a LastChange XML fragment."""
         last_change = self._build_last_change(
-            "urn:schemas-upnp-org:service:RenderingControl:1",
+            "urn:schemas-upnp-org:metadata-1-0/RCS/",
             {
                 "Volume": str(self.volume),
                 "Mute": "1" if self.mute else "0",

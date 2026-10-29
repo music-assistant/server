@@ -19,9 +19,9 @@ from typing import Any, Self, cast
 import pytest
 from music_assistant_models.enums import (
     ContentType,
-    IdentifierType,
     MediaType,
     PlayerFeature,
+    PlayerType,
     QueueOption,
     StreamType,
 )
@@ -35,9 +35,9 @@ from music_assistant_models.streamdetails import StreamMetadata
 
 from music_assistant.constants import CONF_BIND_IP
 from music_assistant.controllers.players.audio_sources import AudioSourceMixin, AudioSourceSession
+from music_assistant.helpers.config_entries import CONF_CONNECTED_PLAYERS
 from music_assistant.providers.dlna_receiver import __file__ as provider_package_file
 from music_assistant.providers.dlna_receiver.constants import (
-    CONF_TARGET_PLAYERS,
     TRANSPORT_STATE_PAUSED,
     TRANSPORT_STATE_PLAYING,
     TRANSPORT_STATE_STOPPED,
@@ -316,6 +316,8 @@ class _RendererStub:
     def __init__(self, friendly_name: str) -> None:
         self.friendly_name = friendly_name
         self.transport_state = TRANSPORT_STATE_STOPPED
+        self.volume = 50
+        self.mute = False
 
     async def set_transport_state(self, state: str) -> None:
         """Apply an externally reported state change."""
@@ -350,7 +352,7 @@ def _make_contract_provider(
             "Any",
             _mass_stub(
                 cache=None,
-                players=types.SimpleNamespace(all_players=lambda **_kwargs: []),
+                players=types.SimpleNamespace(all_players=lambda *_args, **_kwargs: []),
             ),
         ),
         cast("Any", types.SimpleNamespace(domain="dlna_receiver")),
@@ -378,6 +380,23 @@ def test_get_audio_sources_one_per_instance(provider_cls) -> None:  # type: igno
         assert source.exclusive is True
         assert source.can_initiate is False
         assert source.allow_external_trigger is True
+
+
+def test_get_player_audio_sources_returns_only_the_bound_source(provider_cls) -> None:  # type: ignore[no-untyped-def]
+    """A player only sees the renderer source bound to that player."""
+    prov = _make_contract_provider(
+        provider_cls,
+        {
+            "player_kitchen": _make_instance("player_kitchen", "Kitchen"),
+            "player_bedroom": _make_instance("player_bedroom", "Bedroom"),
+        },
+    )
+
+    kitchen_sources = prov.get_player_audio_sources("player_kitchen")
+    unknown_sources = prov.get_player_audio_sources("player_office")
+
+    assert [source.item_id for source in kitchen_sources] == ["player_kitchen"]
+    assert unknown_sources == []
 
 
 def test_get_audio_sources_use_unknown_content_type(provider_cls) -> None:  # type: ignore[no-untyped-def]
@@ -683,6 +702,7 @@ def test_on_play_resumes_paused_player_without_restarting_stream(provider_cls) -
     inst.elapsed_offset = 37
     inst.metadata_dirty = False
     prov = _make_contract_provider(provider_cls, {"player_kitchen": inst})
+    prov._claims["player_kitchen"] = ("player_kitchen", "session")
 
     play_commands: list[str] = []
     play_media_calls: list[tuple[object, ...]] = []
@@ -724,6 +744,7 @@ async def test_sender_pause_controls_supported_output_player() -> None:
     inst = _make_instance("player_kitchen", "Kitchen", "http://cp.local/track.flac")
     inst.play_start_time = 100.0
     prov = _make_contract_provider(DLNAReceiverProvider, {"player_kitchen": inst})
+    prov._claims["player_kitchen"] = ("player_kitchen", "session")
     commands: list[str] = []
 
     async def _pause() -> None:
@@ -758,6 +779,7 @@ async def test_sender_pause_rejects_output_without_pause() -> None:
     inst = _make_instance("player_kitchen", "Kitchen", "http://cp.local/track.flac")
     inst.play_start_time = 100.0
     prov = _make_contract_provider(DLNAReceiverProvider, {"player_kitchen": inst})
+    prov._claims["player_kitchen"] = ("player_kitchen", "session")
     output = types.SimpleNamespace(supported_features=set())
     prov.mass = cast(
         "Any",
@@ -822,13 +844,105 @@ def test_on_stop_clears_only_that_instance(provider_cls) -> None:  # type: ignor
     async def _scenario() -> None:
         await prov._on_play(inst_a, TRANSPORT_STATE_STOPPED)
         await prov._on_play(inst_b, TRANSPORT_STATE_STOPPED)
-        await prov._on_stop(inst_a)
+        prov._claims["player_kitchen"] = ("player_kitchen", "session-a")
+        prov._claims["player_bedroom"] = ("player_bedroom", "session-b")
+        assert await prov._on_stop(inst_a) is True
 
     asyncio.run(_scenario())
 
     assert inst_a.stream_metadata is None
     assert inst_a.current_stream_url == "http://cp.local/a.flac"
     assert inst_b.stream_metadata is not None
+
+
+@pytest.mark.asyncio
+async def test_on_stop_without_claim_does_not_touch_the_player() -> None:
+    """A late sender Stop must not stop a player another source now owns."""
+    inst = _make_instance("player_kitchen", "Kitchen", "http://cp.local/a.flac")
+    inst.stream_metadata = StreamMetadata(title="Song")
+    prov = _make_contract_provider(DLNAReceiverProvider, {"player_kitchen": inst})
+    stopped: list[str] = []
+
+    async def _record_stop(player_id: str) -> None:
+        stopped.append(player_id)
+
+    prov.mass = cast(
+        "Any",
+        _mass_stub(players=types.SimpleNamespace(cmd_stop=_record_stop)),
+    )
+
+    assert await prov._on_stop(inst) is False
+    assert stopped == []
+    assert inst.stream_metadata is not None
+
+
+@pytest.mark.asyncio
+async def test_on_stop_turns_player_error_into_soap_failure() -> None:
+    """A failed player stop is reported to the SOAP layer instead of swallowed."""
+    inst = _make_instance("player_kitchen", "Kitchen", "http://cp.local/a.flac")
+    inst.stream_metadata = StreamMetadata(title="Song")
+    prov = _make_contract_provider(DLNAReceiverProvider, {"player_kitchen": inst})
+    prov._claims["player_kitchen"] = ("player_kitchen", "session")
+
+    async def _reject_stop(_player_id: str) -> None:
+        raise MusicAssistantError("player unavailable")
+
+    prov.mass = cast(
+        "Any",
+        _mass_stub(players=types.SimpleNamespace(cmd_stop=_reject_stop)),
+    )
+
+    assert await prov._on_stop(inst) is False
+    assert inst.stream_metadata is not None
+
+
+@pytest.mark.asyncio
+async def test_on_pause_and_resume_require_an_active_claim() -> None:
+    """Pause and resume are rejected once another queue owns the source."""
+    inst = _make_instance("player_kitchen", "Kitchen", "http://cp.local/a.flac")
+    inst.play_start_time = 100.0
+    prov = _make_contract_provider(DLNAReceiverProvider, {"player_kitchen": inst})
+
+    assert await prov._on_pause(inst) is False
+    assert await prov._on_play(inst, TRANSPORT_STATE_PAUSED) is False
+    assert inst.play_start_time == 100.0
+
+
+@pytest.mark.asyncio
+async def test_volume_getters_follow_the_bound_player() -> None:
+    """RenderingControl reads the player's real volume and mute state."""
+    inst = _make_instance("player_kitchen", "Kitchen", "http://cp.local/a.flac")
+    prov = _make_contract_provider(DLNAReceiverProvider, {"player_kitchen": inst})
+    player = types.SimpleNamespace(volume_level=17, volume_muted=True)
+    prov.mass = cast(
+        "Any",
+        _mass_stub(players=types.SimpleNamespace(get_player=lambda _player_id: player)),
+    )
+
+    assert await prov._on_get_volume(inst) == 17
+    assert await prov._on_get_mute(inst) is True
+
+
+@pytest.mark.asyncio
+async def test_volume_getters_fall_back_to_renderer_state() -> None:
+    """Missing player volume information keeps the last known renderer value."""
+    inst = _make_instance("player_kitchen", "Kitchen", "http://cp.local/a.flac")
+    inst.renderer.volume = 42
+    inst.renderer.mute = True
+    prov = _make_contract_provider(DLNAReceiverProvider, {"player_kitchen": inst})
+    prov.mass = cast(
+        "Any",
+        _mass_stub(
+            players=types.SimpleNamespace(
+                get_player=lambda _player_id: types.SimpleNamespace(
+                    volume_level=None, volume_muted=None
+                )
+            )
+        ),
+    )
+
+    assert await prov._on_get_volume(inst) == 42
+    assert await prov._on_get_mute(inst) is True
 
 
 def test_on_source_unselected_stops_elapsed_tracking(provider_cls) -> None:  # type: ignore[no-untyped-def]
@@ -1120,64 +1234,66 @@ def test_is_concrete_ipv4_rejects_non_routable(value: str) -> None:
 
 
 async def test_instance_config_entries_expose_runtime_options(provider_cls) -> None:  # type: ignore[no-untyped-def]
-    """Loaded provider instances expose all four editable options."""
+    """Loaded provider instances expose the connected-player selector."""
     prov = _make_contract_provider(provider_cls, {})
 
     entries = await prov.get_config_entries()
 
     assert {entry.key for entry in entries} == {
         "friendly_name",
-        "target_players",
+        CONF_CONNECTED_PLAYERS,
         "bind_ip",
         "http_port",
     }
-    target_entry = next(entry for entry in entries if entry.key == CONF_TARGET_PLAYERS)
-    assert target_entry.multi_value is True
-    assert target_entry.default_value == []
+    connected_entry = next(entry for entry in entries if entry.key == CONF_CONNECTED_PLAYERS)
+    assert connected_entry.multi_value is True
+    assert connected_entry.default_value == []
 
 
-async def test_target_player_options_are_sorted_and_keep_missing_selection(
+async def test_connected_player_options_are_sorted_and_keep_missing_selection(
     provider_cls: type[DLNAReceiverProvider],
 ) -> None:
-    """Player options use stable IDs and retain a missing saved target disabled."""
-    own_uuid = deterministic_udn("kitchen").removeprefix("uuid:").upper()
+    """Connected-player options list playback targets and retain a missing selection."""
     players = [
         types.SimpleNamespace(
             player_id="bedroom",
             display_name="Bedroom",
             name="Bedroom",
+            type=PlayerType.PLAYER,
             device_info=types.SimpleNamespace(identifiers={}),
         ),
         types.SimpleNamespace(
             player_id="kitchen",
             display_name="Kitchen",
             name="Kitchen",
+            type=PlayerType.PLAYER,
             device_info=types.SimpleNamespace(identifiers={}),
         ),
         types.SimpleNamespace(
-            player_id="own-renderer",
-            display_name="Music Assistant — Kitchen",
-            name="Music Assistant — Kitchen",
-            device_info=types.SimpleNamespace(identifiers={IdentifierType.UUID: own_uuid}),
+            player_id="kitchen-display",
+            display_name="Kitchen Display",
+            name="Kitchen Display",
+            type=PlayerType.DISPLAY,
+            device_info=types.SimpleNamespace(identifiers={}),
         ),
     ]
     mass = _mass_stub(
         cache=None,
-        players=types.SimpleNamespace(all_players=lambda **_kwargs: players),
+        players=types.SimpleNamespace(all_players=lambda *_args, **_kwargs: players),
     )
     prov = provider_cls(
         cast("Any", mass),
         cast("Any", types.SimpleNamespace(domain="dlna_receiver")),
-        cast("Any", _StubConfig({CONF_TARGET_PLAYERS: ["kitchen", "missing"]})),
+        cast("Any", _StubConfig({CONF_CONNECTED_PLAYERS: ["kitchen", "missing"]})),
     )
 
     entries = await prov.get_config_entries()
 
-    target_entry = next(entry for entry in entries if entry.key == CONF_TARGET_PLAYERS)
-    assert [(option.value, option.title, option.disabled) for option in target_entry.options] == [
-        ("bedroom", "Bedroom", False),
-        ("kitchen", "Kitchen", False),
-        ("missing", "missing", True),
+    connected_entry = next(entry for entry in entries if entry.key == CONF_CONNECTED_PLAYERS)
+    assert [(option.value, option.title) for option in connected_entry.options] == [
+        ("bedroom", "Bedroom"),
+        ("kitchen", "Kitchen"),
+        ("missing", "missing"),
     ]
 
 

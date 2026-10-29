@@ -10,8 +10,9 @@ import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
+from music_assistant.providers.dlna_receiver.constants import SUPPORTED_MIME_TYPES
 from music_assistant.providers.dlna_receiver.metadata import parse_didl_metadata
-from music_assistant.providers.dlna_receiver.renderer import UPnPRenderer
+from music_assistant.providers.dlna_receiver.renderer import SCPD_CACHE, UPnPRenderer
 
 if TYPE_CHECKING:
     from aiohttp.web import Application, Request
@@ -95,6 +96,22 @@ async def test_get_protocol_info(client: TestClient[Request, Application]) -> No
     assert resp.status == 200
     text = await resp.text()
     assert "audio/flac" in text
+    assert "audio/L16" not in text
+
+
+def test_scpd_files_are_cached_once_at_module_level() -> None:
+    """SCPD XML is loaded once for all renderer instances."""
+    assert set(SCPD_CACHE) == {
+        "AVTransport.xml",
+        "RenderingControl.xml",
+        "ConnectionManager.xml",
+    }
+    assert all(SCPD_CACHE.values())
+
+
+def test_headerless_pcm_is_not_advertised() -> None:
+    """audio/L16 cannot be probed by ffmpeg and must not be advertised."""
+    assert "audio/L16" not in SUPPORTED_MIME_TYPES
 
 
 # ------------------------------------------------------------------
@@ -539,3 +556,88 @@ async def test_set_mute(client: TestClient[Request, Application], renderer: UPnP
     assert resp.status == 200
     text = await resp.text()
     assert "1" in text
+
+
+async def test_get_volume_reads_the_bound_player(
+    client: TestClient[Request, Application], renderer: UPnPRenderer
+) -> None:
+    """GetVolume asks the provider for the player's real volume."""
+    renderer.volume = 50
+
+    async def _volume() -> int:
+        return 17
+
+    renderer.on_get_volume = _volume
+
+    resp = await client.post(
+        "/RenderingControl/control",
+        headers={
+            "SOAPACTION": '"urn:schemas-upnp-org:service:RenderingControl:1#GetVolume"',
+        },
+        data="<dummy/>",
+    )
+
+    assert resp.status == 200
+    assert "<CurrentVolume>17</CurrentVolume>" in await resp.text()
+    assert renderer.volume == 17
+
+
+async def test_apply_volume_updates_rendering_state(renderer: UPnPRenderer) -> None:
+    """Player volume updates are mirrored into the renderer state."""
+    await renderer.apply_volume(17, True)
+
+    assert renderer.volume == 17
+    assert renderer.mute is True
+
+
+async def test_refresh_rendering_state_pulls_player_values(renderer: UPnPRenderer) -> None:
+    """The initial RenderingControl event uses the bound player's state."""
+
+    async def _volume() -> int:
+        return 17
+
+    async def _mute() -> bool:
+        return True
+
+    renderer.on_get_volume = _volume
+    renderer.on_get_mute = _mute
+
+    await renderer._refresh_rendering_state()
+    variables = renderer._get_rendering_control_vars()["LastChange"]
+
+    assert 'Volume val="17"' in variables
+    assert 'Mute val="1"' in variables
+
+
+def test_last_change_uses_metadata_namespaces(renderer: UPnPRenderer) -> None:
+    """Namespace-aware control points accept only the metadata-1-0 namespaces."""
+    avt = renderer._get_av_transport_vars()["LastChange"]
+    rcs = renderer._get_rendering_control_vars()["LastChange"]
+
+    assert 'xmlns="urn:schemas-upnp-org:metadata-1-0/AVT/"' in avt
+    assert 'xmlns="urn:schemas-upnp-org:metadata-1-0/RCS/"' in rcs
+
+
+async def test_stop_rejection_returns_soap_fault(
+    client: TestClient[Request, Application], renderer: UPnPRenderer
+) -> None:
+    """A Stop refused by the provider becomes UPnP error 701."""
+
+    async def _reject() -> bool:
+        return False
+
+    renderer.on_stop = _reject
+    renderer.transport_state = "PLAYING"
+
+    resp = await client.post(
+        "/AVTransport/control",
+        headers={
+            "SOAPACTION": '"urn:schemas-upnp-org:service:AVTransport:1#Stop"',
+        },
+        data="<dummy/>",
+    )
+
+    assert resp.status == 500
+    text = await resp.text()
+    assert "<errorCode>701</errorCode>" in text
+    assert renderer.transport_state == "PLAYING"

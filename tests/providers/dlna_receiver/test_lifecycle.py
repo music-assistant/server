@@ -8,7 +8,7 @@ from types import SimpleNamespace
 from typing import Any, ClassVar, cast
 
 import pytest
-from music_assistant_models.enums import EventType, IdentifierType
+from music_assistant_models.enums import EventType, IdentifierType, PlayerType
 from music_assistant_models.event import MassEvent
 
 from music_assistant.providers.dlna_receiver.lifecycle import (
@@ -39,6 +39,16 @@ class _FakeRenderer:
         self.http_port = http_port
         self.udn = udn
         self.description_url = f"http://192.0.2.10:{http_port}/description.xml"
+        self.volume = 50
+        self.mute = False
+
+    async def apply_volume(self, volume: int | None, mute: bool | None) -> None:
+        """Record a volume/mute sync from the bound player."""
+        self.actions.append(("renderer-volume", self.udn))
+        if volume is not None:
+            self.volume = volume
+        if mute is not None:
+            self.mute = mute
 
     async def start(self) -> None:
         """Record startup."""
@@ -142,12 +152,23 @@ class _Mass:
         await asyncio.gather(*self.tasks)
 
 
-def _player(player_id: str, name: str, uuid_value: str) -> object:
+def _player(
+    player_id: str,
+    name: str,
+    uuid_value: str,
+    player_type: PlayerType = PlayerType.PLAYER,
+    *,
+    volume_level: int | None = 50,
+    volume_muted: bool | None = False,
+) -> object:
     """Build a complete player shape consumed by RendererRegistry."""
     return SimpleNamespace(
         player_id=player_id,
         display_name=name,
         name=name,
+        type=player_type,
+        volume_level=volume_level,
+        volume_muted=volume_muted,
         device_info=SimpleNamespace(identifiers={IdentifierType.UUID: uuid_value}),
     )
 
@@ -161,14 +182,31 @@ async def _play(*_args: object) -> bool:
     return True
 
 
+async def _stop(*_args: object) -> bool:
+    """Accept Stop for callbacks not under test."""
+    return True
+
+
+async def _volume(_instance: object) -> int:
+    """Return a default volume for callbacks not under test."""
+    return 50
+
+
+async def _mute(_instance: object) -> bool:
+    """Return a default mute state for callbacks not under test."""
+    return False
+
+
 def _callbacks() -> RendererCallbacks:
     """Return callback bindings accepted by fake renderers."""
     return RendererCallbacks(
         on_set_av_transport_uri=cast("Any", _noop),
         on_play=cast("Any", _play),
         on_pause=cast("Any", _play),
-        on_stop=cast("Any", _noop),
+        on_stop=cast("Any", _stop),
         on_get_position=lambda _instance: (0, 0),
+        on_get_volume=_volume,
+        on_get_mute=_mute,
         on_set_volume=cast("Any", _noop),
         on_set_mute=cast("Any", _noop),
         on_instance_removed=lambda _source_id, _instance: None,
@@ -209,8 +247,62 @@ async def test_start_subscribes_before_initial_player_scan() -> None:
 
     assert set(registry.instances) == {"kitchen"}
     assert mass.subscription is not None
-    assert mass.subscription[1] == (EventType.PLAYER_ADDED, EventType.PLAYER_REMOVED)
+    assert mass.subscription[1] == (
+        EventType.PLAYER_ADDED,
+        EventType.PLAYER_REMOVED,
+        EventType.PLAYER_UPDATED,
+    )
     await registry.stop()
+
+
+async def test_non_playback_players_do_not_get_renderers() -> None:
+    """Display, light and source clients are never offered as playback targets."""
+    mass = _Mass(
+        [
+            _player("kitchen", "Kitchen", "device-kitchen"),
+            _player("display", "Kitchen Display", "device-display", PlayerType.DISPLAY),
+            _player("light", "Kitchen Light", "device-light", PlayerType.LIGHT),
+            _player("source", "Line In", "device-source", PlayerType.SOURCE),
+        ]
+    )
+    registry = RendererRegistry(
+        mass=cast("Any", mass),
+        target_player_ids=frozenset(),
+        friendly_prefix="Music Assistant",
+        bind_ip="192.0.2.10",
+        base_port=8298,
+        callbacks=_callbacks(),
+    )
+
+    await registry.start()
+    try:
+        assert set(registry.instances) == {"kitchen"}
+    finally:
+        await registry.stop()
+
+
+async def test_player_update_mirrors_volume_and_mute() -> None:
+    """A player volume change is pushed to its renderer's GENA state."""
+    player = cast("Any", _player("kitchen", "Kitchen", "device-kitchen"))
+    mass = _Mass([player])
+    registry = RendererRegistry(
+        mass=cast("Any", mass),
+        target_player_ids=frozenset(),
+        friendly_prefix="Music Assistant",
+        bind_ip="192.0.2.10",
+        base_port=8298,
+        callbacks=_callbacks(),
+    )
+    await registry.start()
+    try:
+        player.volume_level = 17
+        player.volume_muted = True
+        await mass.emit(EventType.PLAYER_UPDATED, "kitchen")
+        renderer = registry.instances["kitchen"].renderer
+        assert renderer.volume == 17
+        assert renderer.mute is True
+    finally:
+        await registry.stop()
 
 
 async def test_explicit_targets_skip_unselected_and_missing_players() -> None:

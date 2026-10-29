@@ -72,7 +72,8 @@ class EventingManager:
     async def start(self) -> None:
         """Start the periodic subscription cleanup task."""
         if self._session is None:
-            self._session = aiohttp.ClientSession(
+            # Standalone fallback only: the provider always injects mass.http_session.
+            self._session = aiohttp.ClientSession(  # ma-allow: MA001 no mass instance
                 timeout=aiohttp.ClientTimeout(total=5),
             )
             self._owns_session = True

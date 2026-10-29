@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING
 
 from music_assistant_models.enums import EventType, IdentifierType
 
+from music_assistant.helpers.config_entries import PLAYBACK_TARGET_TYPES
 from music_assistant.models.player import Player
 
 from .constants import UDN_NAMESPACE
@@ -28,8 +29,10 @@ LOGGER = logging.getLogger(__name__)
 SetTransportUriCallback = Callable[[RendererInstance, str, str | None], Awaitable[None]]
 PlayCallback = Callable[[RendererInstance, str], Awaitable[bool]]
 PauseCallback = Callable[[RendererInstance], Awaitable[bool]]
-InstanceCallback = Callable[[RendererInstance], Awaitable[None]]
+StopCallback = Callable[[RendererInstance], Awaitable[bool]]
 PositionCallback = Callable[[RendererInstance], tuple[int, int]]
+VolumeGetterCallback = Callable[[RendererInstance], Awaitable[int | None]]
+MuteGetterCallback = Callable[[RendererInstance], Awaitable[bool | None]]
 VolumeCallback = Callable[[RendererInstance, int], Awaitable[None]]
 MuteCallback = Callable[[RendererInstance, bool], Awaitable[None]]
 RemovedCallback = Callable[[str, RendererInstance], None]
@@ -42,8 +45,10 @@ class RendererCallbacks:
     on_set_av_transport_uri: SetTransportUriCallback
     on_play: PlayCallback
     on_pause: PauseCallback
-    on_stop: InstanceCallback
+    on_stop: StopCallback
     on_get_position: PositionCallback
+    on_get_volume: VolumeGetterCallback
+    on_get_mute: MuteGetterCallback
     on_set_volume: VolumeCallback
     on_set_mute: MuteCallback
     on_instance_removed: RemovedCallback
@@ -87,7 +92,7 @@ class RendererRegistry:
         self._unloading.clear()
         self._unsubscribe = self.mass.subscribe(
             self._on_player_event,
-            (EventType.PLAYER_ADDED, EventType.PLAYER_REMOVED),
+            (EventType.PLAYER_ADDED, EventType.PLAYER_REMOVED, EventType.PLAYER_UPDATED),
         )
         try:
             async with self._lock:
@@ -117,10 +122,30 @@ class RendererRegistry:
                 raise ExceptionGroup("Failed to stop renderer registry", errors)
 
     def _on_player_event(self, event: MassEvent) -> None:
-        """Schedule reconciliation for an added or removed player."""
+        """Schedule reconciliation or volume sync for an updated player."""
         if self._unloading.is_set() or not event.object_id:
             return
+        if event.event == EventType.PLAYER_UPDATED:
+            self.mass.create_task(
+                self._sync_player_volume,
+                event.object_id,
+                task_id=f"dlna_receiver_volume_{event.object_id}",
+                abort_existing=True,
+            )
+            return
         self.mass.create_task(self._reconcile_player, event.object_id)
+
+    async def _sync_player_volume(self, player_id: str) -> None:
+        """Mirror the bound player's volume and mute state into its renderer."""
+        if self._unloading.is_set():
+            return
+        instance = self.instances.get(player_id)
+        if instance is None:
+            return
+        player = self.mass.players.get_player(player_id)
+        if player is None:
+            return
+        await instance.renderer.apply_volume(player.volume_level, player.volume_muted)
 
     async def _reconcile_player(self, player_id: str) -> None:
         """Converge one player to its final desired renderer state."""
@@ -164,6 +189,8 @@ class RendererRegistry:
         }
         result: list[Player] = []
         for player in players:
+            if player.type not in PLAYBACK_TARGET_TYPES:
+                continue
             identifier = player.device_info.identifiers.get(IdentifierType.UUID)
             if identifier and normalize_udn_uuid(identifier) in candidate_uuids:
                 LOGGER.debug(
@@ -212,6 +239,8 @@ class RendererRegistry:
         renderer.on_pause = lambda: self._callbacks.on_pause(instance)
         renderer.on_stop = lambda: self._callbacks.on_stop(instance)
         renderer.on_get_position = lambda: self._callbacks.on_get_position(instance)
+        renderer.on_get_volume = lambda: self._callbacks.on_get_volume(instance)
+        renderer.on_get_mute = lambda: self._callbacks.on_get_mute(instance)
         renderer.on_set_volume = lambda volume: self._callbacks.on_set_volume(instance, volume)
         renderer.on_set_mute = lambda mute: self._callbacks.on_set_mute(instance, mute)
 
