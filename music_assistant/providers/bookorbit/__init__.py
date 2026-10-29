@@ -705,7 +705,7 @@ class BookOrbitProvider(MusicProvider):
         }
         try:
             listening = await self._client.get_continue_listening_book_ids(CONTINUE_LISTENING_LIMIT)
-        except (ClientError, TimeoutError, LoginFailed, OSError) as err:
+        except (ClientError, TimeoutError, LoginFailed) as err:
             self.logger.debug("BookOrbit continue-listening fetch failed: %s", err)
             listening = []
         return playlog_ids | set(listening)
@@ -714,7 +714,7 @@ class BookOrbitProvider(MusicProvider):
         """Return BookOrbit continue-listening ids only (poll must not walk full playlog)."""
         try:
             listening = await self._client.get_continue_listening_book_ids(CONTINUE_LISTENING_LIMIT)
-        except (ClientError, TimeoutError, LoginFailed, OSError) as err:
+        except (ClientError, TimeoutError, LoginFailed) as err:
             self.logger.debug("BookOrbit continue-listening fetch failed: %s", err)
             return set()
         return set(listening)

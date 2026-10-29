@@ -157,13 +157,10 @@ async def resolve_remote_progress_seconds(
 
     :returns: Tuple when usable progress exists; ``None`` when playback-state and
         legacy audio-progress are both absent.
-    :raises TypeError: When remote progress exists but cannot be converted.
     :raises ValueError: When remote progress exists but cannot be converted.
-    :raises KeyError: When remote progress exists but cannot be converted.
     :raises InvalidDataError: When remote progress exists but cannot be converted.
     :raises ClientError: On BookOrbit HTTP client failures.
     :raises TimeoutError: On BookOrbit request timeouts.
-    :raises OSError: On underlying transport failures.
     :raises LoginFailed: When re-authentication fails.
     """
     state = await client.get_playback_state(book_id)
@@ -222,10 +219,10 @@ async def apply_book_progress(
         resolved = await resolve_remote_progress_seconds(client, book_id, memory=memory)
     except LoginFailed:
         raise
-    except (ClientError, TimeoutError, OSError) as err:
+    except (ClientError, TimeoutError) as err:
         LOGGER.warning("BookOrbit progress fetch for %s failed: %s", book_id, err)
         return None
-    except (TypeError, ValueError, KeyError, InvalidDataError) as err:
+    except (ValueError, InvalidDataError) as err:
         LOGGER.warning("BookOrbit progress for %s is unusable: %s", book_id, err)
         return None
     if not _remote_has_progress(resolved):
@@ -307,14 +304,14 @@ async def _discard_cleared_playlog_entry(
                 err,
             )
             return False
-        except (ClientError, TimeoutError, OSError) as err:
+        except (ClientError, TimeoutError) as err:
             LOGGER.warning(
                 "BookOrbit progress recheck for %s failed; skipping clear: %s",
                 item_id,
                 err,
             )
             return True
-        except (TypeError, ValueError, KeyError, InvalidDataError) as err:
+        except (ValueError, InvalidDataError) as err:
             LOGGER.warning(
                 "BookOrbit progress recheck for %s is unusable; skipping clear: %s",
                 item_id,
