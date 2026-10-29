@@ -258,6 +258,10 @@ class SqueezelitePlayer(Player):
             msg = "A synced player cannot receive play commands directly"
             raise InvalidCommand(msg)
 
+        # don't report the old stream's position until the new stream's first heartbeat
+        self._attr_elapsed_time = 0
+        self._attr_elapsed_time_last_updated = time.time()
+
         # Clean up any existing multi-client stream before starting a new one
         if self.multi_client_stream is not None:
             await self.multi_client_stream.stop()
@@ -278,6 +282,7 @@ class SqueezelitePlayer(Player):
                 send_flush=True,
                 auto_play=False,
             )
+            self._sync_elapsed_after_flush()
             return
 
         # this is a syncgroup; we need to handle this with a multi client stream.
@@ -337,6 +342,7 @@ class SqueezelitePlayer(Player):
                         is_group_playback=True,
                     )
                 )
+        self._sync_elapsed_after_flush()
 
     async def enqueue_next_media(self, media: PlayerMedia) -> None:
         """Handle enqueuing next media item."""
@@ -799,6 +805,11 @@ class SqueezelitePlayer(Player):
         return self.mass.config.get_raw_player_config_value(
             member_player_id, CONF_OUTPUT_CODEC, "flac"
         )
+
+    def _sync_elapsed_after_flush(self) -> None:
+        """Drop an old-stream heartbeat that landed before the flush."""
+        self._attr_elapsed_time = self.client.elapsed_seconds
+        self._attr_elapsed_time_last_updated = time.time()
 
 
 async def pause_and_unpause(slim_client: SlimClient, pause_duration_ms: int) -> None:
