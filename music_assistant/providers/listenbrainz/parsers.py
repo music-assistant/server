@@ -4,10 +4,43 @@ from __future__ import annotations
 
 from typing import Any
 
-from music_assistant_models.enums import ExternalID
-from music_assistant_models.media_items import Artist, ProviderMapping, UniqueList
+from music_assistant_models.enums import ExternalID, MediaType
+from music_assistant_models.media_items import (
+    Artist,
+    ItemMapping,
+    ProviderMapping,
+    Track,
+    UniqueList,
+)
 
 JSPF_TRACK_EXTENSION = "https://musicbrainz.org/doc/jspf#track"
+
+
+def parse_track(track_data: dict[str, Any], provider_instance: str, provider_domain: str) -> Track:
+    """Parse a JSPF playlist entry into an unavailable ListenBrainz track."""
+    recording_mbid = track_data["identifier"][0].rsplit("/", 1)[-1]
+    return Track(
+        item_id=recording_mbid,
+        provider=provider_instance,
+        name=track_data["title"],
+        duration=track_data["duration"] // 1000,
+        artists=UniqueList(parse_artists(track_data, provider_instance, provider_domain)),
+        album=ItemMapping(
+            item_id=track_data["album"],
+            provider=provider_instance,
+            name=track_data["album"],
+            media_type=MediaType.ALBUM,
+        ),
+        provider_mappings={
+            ProviderMapping(
+                item_id=recording_mbid,
+                provider_domain=provider_domain,
+                provider_instance=provider_instance,
+                available=False,
+            )
+        },
+        external_ids={(ExternalID.MB_RECORDING, recording_mbid)},
+    )
 
 
 def parse_artists(

@@ -28,6 +28,7 @@ def _provider(
     library_artist: Artist,
     library_track: Track | None = None,
     streaming_track: Track | None = None,
+    persisted_track: Track | None = None,
 ) -> ListenBrainzProvider:
     """Create a provider with optional library and streaming-provider items."""
     provider = ListenBrainzProvider.__new__(ListenBrainzProvider)
@@ -52,6 +53,8 @@ def _provider(
         )
     )
     mass.music.tracks.search = AsyncMock(return_value=[streaming_track] if streaming_track else [])
+    mass.cache.get = AsyncMock(return_value=persisted_track)
+    mass.cache.set = AsyncMock()
     if streaming_track:
         streaming_provider = MagicMock(
             instance_id="test_music--instance",
@@ -143,6 +146,70 @@ async def test_playlist_tracks_link_artists_by_musicbrainz_id() -> None:
 
 
 @pytest.mark.asyncio
+async def test_playlist_tracks_reuse_artist_resolution_within_playlist() -> None:
+    """Repeated resolved artist MBIDs require one library lookup during a playlist load."""
+    library_artist = Artist(
+        item_id="42", provider="library", name="Library Artist", provider_mappings=set()
+    )
+    provider = _provider(library_artist)
+    artist_cache: dict[str, Artist] = {}
+
+    first = await provider._parse_track(
+        _track_data(
+            UNMATCHED_RECORDING_MBID,
+            [("Library Artist", LIBRARY_ARTIST_MBID)],
+        ),
+        1,
+        artist_cache=artist_cache,
+    )
+    second = await provider._parse_track(
+        _track_data(
+            LIBRARY_RECORDING_MBID,
+            [("Library Artist", LIBRARY_ARTIST_MBID)],
+        ),
+        2,
+        artist_cache=artist_cache,
+    )
+
+    artist_lookup = cast("AsyncMock", provider.mass.music.artists.get_library_item_by_external_id)
+    assert artist_lookup.await_count == 1
+    assert first.artists[0] is library_artist
+    assert second.artists[0] is library_artist
+
+
+@pytest.mark.asyncio
+async def test_playlist_tracks_do_not_cache_unresolved_artists() -> None:
+    """Unavailable artist placeholders are reconsidered for every track."""
+    library_artist = Artist(
+        item_id="42", provider="library", name="Library Artist", provider_mappings=set()
+    )
+    provider = _provider(library_artist)
+    artist_cache: dict[str, Artist] = {}
+
+    first = await provider._parse_track(
+        _track_data(
+            UNMATCHED_RECORDING_MBID,
+            [("Unmatched Artist", UNMATCHED_ARTIST_MBID)],
+        ),
+        1,
+        artist_cache=artist_cache,
+    )
+    second = await provider._parse_track(
+        _track_data(
+            LIBRARY_RECORDING_MBID,
+            [("Unmatched Artist", UNMATCHED_ARTIST_MBID)],
+        ),
+        2,
+        artist_cache=artist_cache,
+    )
+
+    artist_lookup = cast("AsyncMock", provider.mass.music.artists.get_library_item_by_external_id)
+    assert artist_lookup.await_count == 2
+    assert first.artists[0] is not second.artists[0]
+    assert UNMATCHED_ARTIST_MBID not in artist_cache
+
+
+@pytest.mark.asyncio
 async def test_playlist_tracks_reuse_library_track_by_recording_mbid() -> None:
     """An exact recording MBID match returns the existing playable library track."""
     library_artist = Artist(
@@ -176,6 +243,8 @@ async def test_playlist_tracks_reuse_library_track_by_recording_mbid() -> None:
 
     assert track is library_track
     assert track.position == 1
+    cast("AsyncMock", provider.mass.cache.get).assert_not_awaited()
+    cast("AsyncMock", provider.mass.cache.set).assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -203,6 +272,62 @@ async def test_playlist_tracks_reuse_matching_streaming_provider_track() -> None
 
 
 @pytest.mark.asyncio
+async def test_playlist_tracks_reuse_persisted_streaming_provider_track() -> None:
+    """A persisted provider match avoids another streaming-provider search."""
+    library_artist = Artist(
+        item_id="42", provider="library", name="Library Artist", provider_mappings=set()
+    )
+    cached_track = _streaming_track()
+    provider = _provider(library_artist, persisted_track=cached_track)
+
+    track = await provider._parse_track(
+        _track_data(
+            UNMATCHED_RECORDING_MBID,
+            [("Library Artist", LIBRARY_ARTIST_MBID)],
+        ),
+        1,
+    )
+
+    assert track is cached_track
+    assert track.position == 1
+    cast("AsyncMock", provider.mass.cache.get).assert_awaited_once_with(
+        key=UNMATCHED_RECORDING_MBID,
+        category=1,
+        provider="listenbrainz--test",
+        base_class=Track,
+    )
+    cast("AsyncMock", provider.mass.music.tracks.search).assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_playlist_tracks_persist_resolved_streaming_provider_track() -> None:
+    """A successful streaming-provider resolution is persisted by recording MBID."""
+    library_artist = Artist(
+        item_id="42", provider="library", name="Library Artist", provider_mappings=set()
+    )
+    streaming_track = _streaming_track()
+    cached_data = streaming_track.to_dict()
+    provider = _provider(library_artist, streaming_track=streaming_track)
+
+    track = await provider._parse_track(
+        _track_data(
+            UNMATCHED_RECORDING_MBID,
+            [("Library Artist", LIBRARY_ARTIST_MBID)],
+        ),
+        1,
+    )
+
+    assert track is streaming_track
+    cast("AsyncMock", provider.mass.cache.set).assert_awaited_once_with(
+        key=UNMATCHED_RECORDING_MBID,
+        data=cached_data,
+        category=1,
+        provider="listenbrainz--test",
+        expiration=60 * 60 * 24 * 30,
+    )
+
+
+@pytest.mark.asyncio
 async def test_playlist_tracks_reject_streaming_track_with_different_title() -> None:
     """A provider result with a different title is not used for the playlist entry."""
     library_artist = Artist(
@@ -221,6 +346,7 @@ async def test_playlist_tracks_reject_streaming_track_with_different_title() -> 
 
     assert track is not candidate
     assert track.provider == "listenbrainz--test"
+    cast("AsyncMock", provider.mass.cache.set).assert_not_awaited()
 
 
 @pytest.mark.asyncio
