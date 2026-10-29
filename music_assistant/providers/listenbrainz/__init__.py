@@ -18,6 +18,7 @@ from music_assistant_models.media_items import (
 )
 
 from music_assistant.models.plugin import PluginProvider
+from music_assistant.providers.listenbrainz.parsers import parse_artists
 
 if TYPE_CHECKING:
     from music_assistant_models.config_entries import ProviderConfig
@@ -27,7 +28,6 @@ if TYPE_CHECKING:
     from music_assistant.models import ProviderInstanceType
 
 SUPPORTED_FEATURES = {ProviderFeature.BROWSE}
-JSPF_TRACK_EXTENSION = "https://musicbrainz.org/doc/jspf#track"
 SAMPLE_RESPONSE: dict[str, Any] = json.loads(
     Path(__file__).with_name("sample_playlist.json").read_text(encoding="utf-8")
 )
@@ -92,13 +92,13 @@ class ListenBrainzProvider(PluginProvider):
         ):
             library_track.position = position
             return library_track
-        artists = item["extension"][JSPF_TRACK_EXTENSION]["additional_metadata"]["artists"]
+        parsed_artists = parse_artists(item, self.instance_id, self.domain)
         track = Track(
             item_id=recording_mbid,
             provider=self.instance_id,
             name=item["title"],
             duration=item["duration"] // 1000,
-            artists=UniqueList([await self._resolve_artist(artist) for artist in artists]),
+            artists=UniqueList([await self._resolve_artist(artist) for artist in parsed_artists]),
             album=ItemMapping(
                 item_id=item["album"],
                 provider=self.instance_id,
@@ -118,24 +118,12 @@ class ListenBrainzProvider(PluginProvider):
         track.position = position
         return track
 
-    async def _resolve_artist(self, artist_data: dict[str, str]) -> Artist:
-        """Return an existing library artist or an unavailable MBID-backed artist."""
-        mbid = artist_data["artist_mbid"]
-        if artist := await self.mass.music.artists.get_library_item_by_external_id(
+    async def _resolve_artist(self, artist: Artist) -> Artist:
+        """Return an existing library artist or the parsed unavailable artist."""
+        mbid = artist.get_external_id(ExternalID.MB_ARTIST)
+        assert mbid is not None
+        if library_artist := await self.mass.music.artists.get_library_item_by_external_id(
             mbid, ExternalID.MB_ARTIST
         ):
-            return artist
-        return Artist(
-            item_id=mbid,
-            provider=self.instance_id,
-            name=artist_data["artist_credit_name"],
-            provider_mappings={
-                ProviderMapping(
-                    item_id=mbid,
-                    provider_domain=self.domain,
-                    provider_instance=self.instance_id,
-                    available=False,
-                )
-            },
-            external_ids={(ExternalID.MB_ARTIST, mbid)},
-        )
+            return library_artist
+        return artist
