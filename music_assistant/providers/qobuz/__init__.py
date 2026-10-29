@@ -36,12 +36,16 @@ from music_assistant_models.media_items import (
     Album,
     Artist,
     AudioFormat,
+    BrowseFolder,
+    ItemMapping,
     MediaItemImage,
     MediaItemType,
     Playlist,
     ProviderMapping,
+    RecommendationFolder,
     SearchResults,
     Track,
+    UniqueList,
 )
 from music_assistant_models.streamdetails import StreamDetails
 
@@ -103,6 +107,7 @@ SUPPORTED_FEATURES = {
     ProviderFeature.ARTIST_TOPTRACKS,
     ProviderFeature.TRACK_BY_EXTERNAL_ID,
     ProviderFeature.ALBUM_BY_EXTERNAL_ID,
+    ProviderFeature.RECOMMENDATIONS,
 }
 
 VARIOUS_ARTISTS_ID = "145383"
@@ -110,6 +115,17 @@ VARIOUS_ARTISTS_ID = "145383"
 PARSED_ITEM_CACHE_CHECKSUM = "instance_id_provider_v2"
 
 CONF_QUALITY = "quality"
+
+# Discover rows, keyed on their (stable) row id: (Qobuz featured album type, name, icon)
+RECOMMENDATION_ROWS = {
+    "new_releases": ("new-releases", "New Releases", "mdi-new-box"),
+    "best_sellers": ("best-sellers", "Best Sellers", "mdi-chart-line"),
+    "most_streamed": ("most-streamed", "Most Streamed", "mdi-trending-up"),
+    "press_awards": ("press-awards", "Press Awards", "mdi-trophy"),
+    "editor_picks": ("editor-picks", "Editor's Picks", "mdi-star"),
+    "qobuzissime": ("qobuzissims", "Qobuzissime", "mdi-star-circle"),
+    "ideal_discography": ("ideal-discography", "Ideal Discography", "mdi-bookshelf"),
+}
 
 _LookupItemT = TypeVar("_LookupItemT", Track, Album)
 
@@ -449,6 +465,31 @@ class QobuzProvider(MusicProvider):
                 and str(item["performer"]["id"]) == str(prov_artist_id)
             )
         ]
+
+    async def get_recommendations(self) -> list[RecommendationFolder]:
+        """Get this provider's available recommendation rows, without items."""
+        return [
+            RecommendationFolder(
+                item_id=row_id,
+                provider=self.instance_id,
+                name=name,
+                translation_key=row_id,
+                icon=icon,
+            )
+            for row_id, (_, name, icon) in RECOMMENDATION_ROWS.items()
+        ]
+
+    async def get_recommendation_items(
+        self, item_id: str
+    ) -> UniqueList[MediaItemType | ItemMapping | BrowseFolder]:
+        """
+        Get the items for a single recommendation row.
+
+        :param item_id: The item_id of the row, as returned by get_recommendations.
+        """
+        if item_id not in RECOMMENDATION_ROWS:
+            return UniqueList()
+        return UniqueList(await self._get_featured_albums(RECOMMENDATION_ROWS[item_id][0]))
 
     async def library_add(self, item: MediaItemType) -> bool:
         """Add item to library."""
@@ -861,6 +902,24 @@ class QobuzProvider(MusicProvider):
         if timestamp := playlist_obj.get("subscribed_at") or playlist_obj.get("created_at"):
             playlist.date_added = datetime.datetime.fromtimestamp(timestamp, tz=datetime.UTC)
         return playlist
+
+    @use_cache(
+        3600 * 6, cache_checksum=PARSED_ITEM_CACHE_CHECKSUM, allow_expired_cache=True
+    )  # Cache for 6 hours
+    async def _get_featured_albums(self, featured_type: str) -> list[Album]:
+        """
+        Get the albums of a Qobuz editorial list.
+
+        :param featured_type: The Qobuz featured album type, e.g. 'press-awards'.
+        """
+        result = await self._get_data("album/getFeatured", type=featured_type, limit=50)
+        if not result:
+            return []
+        return [
+            await self._parse_album(item)
+            for item in result["albums"]["items"]
+            if item and item.get("id")
+        ]
 
     async def _get_item_by_external_id(
         self,
