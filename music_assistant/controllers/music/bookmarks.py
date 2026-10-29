@@ -9,7 +9,7 @@ the podcast copy and leave with it.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, NamedTuple
+from typing import TYPE_CHECKING, NamedTuple
 
 from music_assistant_models.auth import Scope
 from music_assistant_models.enums import EventType, MediaType, ProviderFeature
@@ -29,6 +29,7 @@ from music_assistant.helpers.provider_access import exact_provider, visible_musi
 from music_assistant.models.music_provider import MusicProvider
 
 if TYPE_CHECKING:
+    from music_assistant_models.auth import User
     from music_assistant_models.media_items import Audiobook, Podcast
 
     from music_assistant import MusicAssistant
@@ -79,8 +80,7 @@ class BookmarksController:
         :param item_id: The id on the provider, or the library id of an audiobook.
         :param provider_instance_id_or_domain: The provider the id belongs to, or "library".
         """
-        if not (user := get_current_user()):
-            raise AuthenticationRequired("Bookmarks belong to a user")
+        user = self._user()
         features = self._features(media_type)
         if media_type == MediaType.AUDIOBOOK:
             audiobook = await self.mass.music.audiobooks.get(
@@ -150,16 +150,30 @@ class BookmarksController:
         :param start: Position of the bookmark in seconds.
         :param name: Name of the bookmark.
         """
-        row, provider = await self._bookmark_storage(
-            media_type, provider_instance_id, provider_item_id
+        user = self._user()
+        provider, podcast_item_id = await self._bookmark_storage(
+            user, media_type, provider_instance_id, provider_item_id
         )
         if provider:
             await provider.set_bookmark(media_type, provider_item_id, start, name)
         else:
             await self.mass.music.database.insert_or_replace(
-                DB_TABLE_BOOKMARKS, {**row, "start": start, "name": name}
+                DB_TABLE_BOOKMARKS,
+                {
+                    "user_id": user.user_id,
+                    "media_type": media_type,
+                    "provider_instance": provider_instance_id,
+                    "provider_item_id": provider_item_id,
+                    "podcast_item_id": podcast_item_id,
+                    "start": start,
+                    "name": name,
+                },
             )
-        self._signal_updated(row)
+        self.mass.signal_event(
+            EventType.BOOKMARKS_UPDATED,
+            create_uri(media_type, provider_instance_id, provider_item_id),
+            user.user_id,
+        )
 
     async def remove_bookmark(
         self, media_type: MediaType, provider_instance_id: str, provider_item_id: str, start: float
@@ -172,24 +186,34 @@ class BookmarksController:
         :param provider_item_id: The id of the audiobook or episode on the provider.
         :param start: Position of the bookmark in seconds.
         """
-        row, provider = await self._bookmark_storage(
-            media_type, provider_instance_id, provider_item_id
+        user = self._user()
+        provider, _ = await self._bookmark_storage(
+            user, media_type, provider_instance_id, provider_item_id
         )
         if provider:
             await provider.remove_bookmark(media_type, provider_item_id, start)
         else:
-            match = {**row, "start": start}
+            match = {
+                "user_id": user.user_id,
+                "media_type": media_type,
+                "provider_instance": provider_instance_id,
+                "provider_item_id": provider_item_id,
+                "start": start,
+            }
             if not await self.mass.music.database.get_row(DB_TABLE_BOOKMARKS, match):
                 raise MediaNotFoundError(f"No bookmark at {start}s on {provider_item_id}")
             await self.mass.music.database.delete(DB_TABLE_BOOKMARKS, match)
-        self._signal_updated(row)
-
-    def _signal_updated(self, row: dict[str, Any]) -> None:
         self.mass.signal_event(
             EventType.BOOKMARKS_UPDATED,
-            create_uri(row["media_type"], row["provider_instance"], row["provider_item_id"]),
-            row["user_id"],
+            create_uri(media_type, provider_instance_id, provider_item_id),
+            user.user_id,
         )
+
+    @staticmethod
+    def _user() -> User:
+        if not (user := get_current_user()):
+            raise AuthenticationRequired("Bookmarks belong to a user")
+        return user
 
     @staticmethod
     def _features(media_type: MediaType) -> BookmarkFeatures:
@@ -198,16 +222,14 @@ class BookmarksController:
         return BOOKMARK_FEATURES[media_type]
 
     async def _bookmark_storage(
-        self, media_type: MediaType, provider_instance_id: str, provider_item_id: str
-    ) -> tuple[dict[str, Any], MusicProvider | None]:
+        self, user: User, media_type: MediaType, provider_instance_id: str, provider_item_id: str
+    ) -> tuple[MusicProvider | None, str | None]:
         """
-        Return the user's row of a copy, and the provider storing its bookmarks.
+        Return the provider storing the bookmarks of a copy, and the podcast of an episode copy.
 
         The provider is None when Music Assistant stores the bookmarks, which it does for library
-        copies only.
+        copies only; an episode's rows then carry its podcast copy.
         """
-        if not (user := get_current_user()):
-            raise AuthenticationRequired("Bookmarks belong to a user")
         edit_feature = self._features(media_type).edit
         visible = visible_music_sources(self.mass, user)
         if visible is not None and provider_instance_id not in visible:
@@ -215,12 +237,6 @@ class BookmarksController:
         provider = exact_provider(self.mass, provider_instance_id)
         if not isinstance(provider, MusicProvider):
             raise ProviderUnavailableError(f"Provider {provider_instance_id} is not available")
-        row: dict[str, Any] = {
-            "user_id": user.user_id,
-            "media_type": media_type,
-            "provider_instance": provider_instance_id,
-            "provider_item_id": provider_item_id,
-        }
         if provider.supports_feature(edit_feature):
             # the provider keeps them, MA does not stand in for an account the user may not write to
             account = ProviderMapping(
@@ -232,12 +248,13 @@ class BookmarksController:
                 raise InsufficientPermissions(
                     f"Bookmarks on {provider.name} can only be changed by its owner"
                 )
-            return row, provider
+            return provider, None
         library_item: Audiobook | Podcast | None
+        podcast_item_id: str | None = None
         # the library copy of an episode is its podcast
         if media_type == MediaType.PODCAST_EPISODE:
             episode = await provider.get_podcast_episode(provider_item_id)
-            row["podcast_item_id"] = mapping_item_id = episode.podcast.item_id
+            podcast_item_id = mapping_item_id = episode.podcast.item_id
             library_item = await self.mass.music.podcasts.get_library_item_by_prov_id(
                 mapping_item_id, provider_instance_id
             )
@@ -258,4 +275,4 @@ class BookmarksController:
             raise MediaNotFoundError(
                 f"{mapping_item_id} on {provider_instance_id} is not in the library"
             )
-        return row, None
+        return None, podcast_item_id
