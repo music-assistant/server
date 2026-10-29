@@ -14,7 +14,6 @@ from music_assistant.helpers.compare import (
     TrackMatchConfidence,
     compare_album,
     compare_artist,
-    compare_track_artist_credits,
     compare_track_evidence,
     compare_track_title,
 )
@@ -194,13 +193,7 @@ class ShareLinkResolver:
             search_non_streaming_without_mapping=True,
         )
         matches = [
-            match
-            for match in enrichment.matches
-            if match.confidence >= TrackMatchConfidence.LIKELY
-            and (
-                not payload.isrc
-                or self._core_isrc_candidate_corroborated(shared_track, match.track)
-            )
+            match for match in enrichment.matches if match.confidence >= TrackMatchConfidence.LIKELY
         ]
         if not matches:
             return None
@@ -217,13 +210,6 @@ class ShareLinkResolver:
             ),
         )
         return primary_match.track
-
-    @staticmethod
-    def _core_isrc_candidate_corroborated(base_track: Track, candidate: Track) -> bool:
-        """Require compatible credited artists for Core ISRC matches."""
-        return compare_track_title(
-            base_track.name, candidate.name
-        ) and compare_track_artist_credits(base_track, candidate)
 
     @staticmethod
     def _isrc_candidate_corroborated(base_track: Track, candidate: Track) -> bool:
