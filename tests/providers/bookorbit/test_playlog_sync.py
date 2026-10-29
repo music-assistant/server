@@ -683,7 +683,7 @@ async def test_provider_sync_playlog_swallows_errors(provider: BookOrbitProvider
 async def test_on_played_notes_inbound_guard_and_progress_memory(
     provider: BookOrbitProvider, book_multifile: dict[str, Any]
 ) -> None:
-    """Outbound play reports arm cool-down and record sent progress for skip-stamps."""
+    """Successful outbound reports arm cool-down and record sent progress for skip-stamps."""
     provider._inbound_progress_guard = InboundProgressGuard()
     provider._playlog_progress_memory = PlaylogProgressMemory()
     book_id = int(book_multifile["id"])
@@ -701,6 +701,35 @@ async def test_on_played_notes_inbound_guard_and_progress_memory(
     assert provider._inbound_progress_guard.allow_inbound(book_id) is False
     assert provider._playlog_progress_memory.matches_progress(book_id, False, 150)
     save.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_on_played_skips_progress_memory_when_upload_fails(
+    provider: BookOrbitProvider, book_multifile: dict[str, Any]
+) -> None:
+    """Failed BookOrbit uploads must not record progress as sent."""
+    provider._inbound_progress_guard = InboundProgressGuard()
+    provider._playlog_progress_memory = PlaylogProgressMemory()
+    book_id = int(book_multifile["id"])
+    with (
+        patch.object(
+            provider,
+            "_sync_playback_state",
+            new_callable=AsyncMock,
+            side_effect=ClientError("bo down"),
+        ),
+        patch.object(provider, "_save_playlog_progress_memory", new_callable=AsyncMock) as save,
+    ):
+        await provider.on_played(
+            MediaType.AUDIOBOOK,
+            str(book_id),
+            fully_played=False,
+            position=150,
+            media_item=Mock(),
+        )
+    assert provider._inbound_progress_guard.allow_inbound(book_id) is False
+    assert provider._playlog_progress_memory.get_progress(book_id) is None
+    save.assert_not_awaited()
 
 
 @pytest.mark.asyncio

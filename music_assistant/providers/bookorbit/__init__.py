@@ -575,8 +575,6 @@ class BookOrbitProvider(MusicProvider):
         # playlog is already advanced when on_played runs, so inbound must not apply a
         # lagging remote stamp while this report is in flight.
         self._inbound_progress_guard.note_outbound(book_id)
-        # Record sent progress so inbound sync skips a no-op re-stamp of the same values.
-        self._playlog_progress_memory.note_progress(book_id, fully_played, position)
         generation = self._progress_generation.get(book_id, 0) + 1
         self._progress_generation[book_id] = generation
         # Stamp before waiting on the lock or any BookOrbit I/O so 409 retries can
@@ -602,6 +600,9 @@ class BookOrbitProvider(MusicProvider):
         ) as err:
             self.logger.warning("Updating BookOrbit progress of %s failed: %s", prov_item_id, err)
         else:
+            # Only record progress BookOrbit accepted so a failed upload cannot block
+            # inbound from correcting local resume on the next poll.
+            self._playlog_progress_memory.note_progress(book_id, fully_played, position)
             await self._save_playlog_progress_memory()
 
     async def browse(self, path: str) -> Sequence[MediaItemType | ItemMapping | BrowseFolder]:
