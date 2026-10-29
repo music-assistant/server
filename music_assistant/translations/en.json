@@ -178,7 +178,7 @@
   "common.config_entries.mute_control.options.follow_protocol": "Auto-select (based on active/preferred protocol)",
   "common.config_entries.mute_control.options.native": "Native mute control",
   "common.config_entries.mute_control.options.none": "None",
-  "common.config_entries.native_volume.description": "Optional fixed softvol/protocol volume applied on the player itself when volume control is mapped to an external device (for example an AVR). Leave unset to leave the player's own softvol unchanged. The UI volume slider still controls the mapped device. Applied on connect/reconnect and when this value changes.",
+  "common.config_entries.native_volume.description": "Optional fixed softvol/protocol volume applied on the player itself when volume control is mapped to an external device (for example an AVR). Leave unset to leave the player's own softvol unchanged. The UI volume slider still controls the mapped device. Applied when the player connects or comes back online, and when this value changes.",
   "common.config_entries.native_volume.label": "Native player volume",
   "common.config_entries.output_channels.description": "You can configure this player to play only the left or right channel, for example to create a stereo pair with 2 players.",
   "common.config_entries.output_channels.label": "Output Channel Mode",

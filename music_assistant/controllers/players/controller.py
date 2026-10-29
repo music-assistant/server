@@ -100,6 +100,7 @@ from music_assistant.constants import (
     CONF_POWER_CONTROL,
     CONF_PROTOCOL_PARENT_ID,
     CONF_REPORTED_MAC,
+    CONF_VALUE_AUTO,
     CONF_VOLUME_CONTROL,
     CONF_VOLUME_STEP,
     PLAYER_CONTROL_PROTOCOL,
@@ -179,6 +180,10 @@ AUDIO_SOURCE_CLAIM_TIMEOUT = 30
 # stop the music. Long enough to sit out a reloading integration or a device missing a
 # poll, short enough that a real power off is not left streaming.
 EXTERNAL_POWER_OFF_STOP_DELAY = 15
+
+# How long after a player comes back online its native volume pin is applied. Lets the
+# connection settle and folds a quick drop-and-return into a single write.
+NATIVE_VOLUME_PIN_DELAY = 2.0
 
 # Player types that must be detached from their (sync)group when they power off.
 # A stereo pair joins a group and leads a sync session exactly like a single speaker does.
@@ -1720,18 +1725,8 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
                 player_id,
                 player.state.name,
             )
-            # Pin native softvol when UI volume is mapped externally (e.g. to an AVR).
-            # Must run after provider setup defaults (e.g. squeezelite DEFAULT_PLAYER_VOLUME).
-            # Catch expected command/config errors so a device rejection cannot abort
-            # registration; config-save lets the same helper raise so
-            # save_player_config can roll back. Programming errors still surface.
-            try:
-                await self._apply_native_volume_pin(player)
-            except MusicAssistantError:
-                self.logger.exception(
-                    "Failed to apply native volume pin on player %s",
-                    player.display_name,
-                )
+            # runs after provider setup defaults (e.g. squeezelite DEFAULT_PLAYER_VOLUME)
+            await self._apply_native_volume_pin_logged(player)
             if self._registration_aborted(player):
                 return
             # signal event that a player was added
@@ -1790,15 +1785,8 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
                 self._save_underlying_player_id(player)
                 if role_changed:
                     await self._finish_player_type_transition(player)
-                # Re-apply softvol pin on reconnect/replacement (provider setup may
-                # have restored a low default before calling register_or_update).
-                try:
-                    await self._apply_native_volume_pin(player)
-                except MusicAssistantError:
-                    self.logger.exception(
-                        "Failed to apply native volume pin on player %s",
-                        player.display_name,
-                    )
+                # provider setup may have restored a low default before calling us
+                await self._apply_native_volume_pin_logged(player)
                 # Also schedule update when replacing existing player
                 self._schedule_update_all_players()
                 return
@@ -2161,6 +2149,15 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         if changed_values.keys() & {ATTR_AVAILABLE, ATTR_ENABLED, ATTR_POWERED}:
             self._handle_membership_cleanup_on_state_change(player, changed_values)
             self._handle_external_power_off(player, changed_values)
+
+        # a player that comes back online (reconnect, or one that registered while
+        # unavailable) does not pass through register again, so pin it from here
+        if (
+            ATTR_AVAILABLE in changed_values
+            and changed_values[ATTR_AVAILABLE][1] is True
+            and player.initialized.is_set()
+        ):
+            self._schedule_native_volume_pin(player_id)
 
         # enforce volume limits when volume changes externally
         if "volume_level" in changed_values:
@@ -2560,9 +2557,7 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
             else None
         )
 
-        # Apply the Softvol pin before mutating the live Player config so a
-        # failing volume_set leaves the in-memory Player untouched while
-        # save_player_config rolls storage back.
+        # before set_config, so a rejected pin leaves the live config untouched on rollback
         await self._maybe_apply_native_volume_pin_on_config_change(player, changed_keys)
         # ensure player state gets updated with any updated config
         player.set_config(config)
@@ -4367,7 +4362,7 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         self, player: Player, changed_keys: set[str]
     ) -> None:
         """
-        Re-apply the native softvol pin when its config or volume_control changed.
+        Re-apply the native volume pin when it or the volume control changed.
 
         :param player: The player whose config changed.
         :param changed_keys: Config keys that changed (values/<key> form).
@@ -4375,24 +4370,59 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         if {f"values/{CONF_NATIVE_VOLUME}", f"values/{CONF_VOLUME_CONTROL}"} & changed_keys:
             await self._apply_native_volume_pin(player)
 
-    async def _apply_native_volume_pin(self, player: Player) -> None:
+    def _schedule_native_volume_pin(self, player_id: str) -> None:
         """
-        Apply the configured native softvol pin when UI volume is mapped externally.
+        Schedule the native volume pin for a player that came back online.
 
-        Uses player.volume_set directly so the value never goes through the mapped
-        AVR/UI volume path. Callers on register/reconnect catch failures; the
-        config-change path lets them raise so save_player_config can roll back.
+        :param player_id: The player to pin native volume on.
+        """
+        self.mass.call_later(
+            NATIVE_VOLUME_PIN_DELAY,
+            self._apply_scheduled_native_volume_pin,
+            player_id,
+            task_id=f"native_volume_pin_{player_id}",
+        )
+
+    async def _apply_scheduled_native_volume_pin(self, player_id: str) -> None:
+        """
+        Apply the native volume pin scheduled by _schedule_native_volume_pin.
+
+        :param player_id: The player to pin native volume on.
+        """
+        # look the player up again, the provider may have replaced the instance meanwhile
+        if not self.mass.closing and (player := self.get_player(player_id)):
+            await self._apply_native_volume_pin_logged(player)
+
+    async def _apply_native_volume_pin_logged(self, player: Player) -> None:
+        """
+        Apply the native volume pin, logging an expected failure instead of raising it.
 
         :param player: The player to pin native volume on.
         """
-        if not player.available:
+        # this write supersedes one still pending from an online transition
+        self.mass.cancel_timer(f"native_volume_pin_{player.player_id}")
+        try:
+            await self._apply_native_volume_pin(player)
+        except MusicAssistantError:
+            self.logger.exception(
+                "Failed to apply native volume pin on player %s",
+                player.display_name,
+            )
+
+    async def _apply_native_volume_pin(self, player: Player) -> None:
+        """
+        Apply the configured native volume pin when UI volume is mapped externally.
+
+        :param player: The player to pin native volume on.
+        :raises InvalidDataError: If the stored pin is not a level between 0 and 100.
+        :raises PlayerCommandFailed: If the player rejects the volume command.
+        """
+        if not player.state.available:
             return
         if not player.supports_feature(PlayerFeature.VOLUME_SET):
             return
-        # Serialize with cmd_volume_set / member volume so an in-flight VOLUME
-        # command cannot overwrite the Softvol pin (and vice versa). Re-read the
-        # stored control and pin under the lock so a config save that clears the
-        # pin or switches back to native while we waited does not send a stale level.
+        # serialize with other volume commands and read the config under the lock,
+        # so a save that changed it while we waited does not send a stale level
         async with self.get_player_lock(player.player_id, PlayerLockPurpose.VOLUME):
             stored_volume_control = self.mass.config.get_raw_player_config_value(
                 player.player_id, CONF_VOLUME_CONTROL
@@ -4401,10 +4431,10 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
                 None,
                 PLAYER_CONTROL_NATIVE,
                 PLAYER_CONTROL_PROTOCOL,
-                "auto",
+                CONF_VALUE_AUTO,
             ):
                 return
-            # Opt-in: skip when unset so upgrades do not force Softvol 100.
+            # opt-in: unset leaves the player's own volume alone
             raw_level = self.mass.config.get_raw_player_config_value(
                 player.player_id,
                 CONF_NATIVE_VOLUME,
@@ -4419,8 +4449,8 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
             if not 0 <= level <= 100:
                 msg = f"Native volume pin out of range for player {player.display_name}: {level}"
                 raise InvalidDataError(msg)
-            # Match handle_player_command: keep typed MA errors, normalize other
-            # provider/device failures so register can catch PlayerCommandFailed.
+            # player.volume_set directly, so the level never takes the mapped volume path;
+            # device errors are normalized like handle_player_command does
             try:
                 await player.volume_set(level)
             except MusicAssistantError:

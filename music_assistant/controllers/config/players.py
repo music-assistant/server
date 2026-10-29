@@ -932,11 +932,8 @@ class PlayerConfigMixin:
             # member's own control, so a group only gets the (opt-in) power control
             return [power_entry]
         volume_control_default = _first_enabled_control_value(volume_options)
-        # Keep the Softvol pin visible whenever the player supports native
-        # volume_set. The frontend treats `hidden` as absolute and does not
-        # reevaluate it when draft volume_control changes, so hiding based on
-        # the stored selection would block setting the pin while switching to
-        # an external control. Runtime apply already no-ops for native/protocol.
+        # not hidden by the stored volume control: the frontend does not re-evaluate
+        # `hidden` while the user switches it to an external control in the same edit
         native_volume_entry = ConfigEntry.from_dict(CONF_ENTRY_NATIVE_VOLUME.to_dict())
         native_volume_entry.hidden = not has_native_volume_control
         # return final config entries for all options
