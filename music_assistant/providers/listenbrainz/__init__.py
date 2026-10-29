@@ -2,12 +2,10 @@
 
 from __future__ import annotations
 
-import json
-from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from music_assistant_models.enums import ExternalID, MediaType, ProviderFeature
-from music_assistant_models.errors import MediaNotFoundError, MusicAssistantError
+from music_assistant_models.errors import MusicAssistantError
 from music_assistant_models.media_items import (
     Artist,
     ItemMapping,
@@ -17,8 +15,10 @@ from music_assistant_models.media_items import (
     UniqueList,
 )
 
+from music_assistant.constants import CONF_USERNAME
 from music_assistant.helpers.compare import compare_strings
 from music_assistant.models.plugin import PluginProvider
+from music_assistant.providers.listenbrainz.api_client import ListenBrainzAPIClient
 from music_assistant.providers.listenbrainz.parsers import parse_artists
 
 if TYPE_CHECKING:
@@ -29,11 +29,6 @@ if TYPE_CHECKING:
     from music_assistant.models import ProviderInstanceType
 
 SUPPORTED_FEATURES = {ProviderFeature.BROWSE}
-SAMPLE_RESPONSE: dict[str, Any] = json.loads(
-    Path(__file__).with_name("sample_playlist.json").read_text(encoding="utf-8")
-)
-SAMPLE_PLAYLIST: dict[str, Any] = SAMPLE_RESPONSE["playlist"]
-SAMPLE_PLAYLIST_ID = SAMPLE_PLAYLIST["identifier"].rsplit("/", 1)[-1]
 
 
 async def setup(
@@ -44,7 +39,12 @@ async def setup(
 
 
 class ListenBrainzProvider(PluginProvider):
-    """Expose a static ListenBrainz playlist for initial development."""
+    """Expose ListenBrainz recommendation playlists."""
+
+    async def handle_async_init(self) -> None:
+        """Initialize the ListenBrainz API client."""
+        self.api = ListenBrainzAPIClient(self)
+        self.username = str(self.config.get_value(CONF_USERNAME) or "")
 
     def __init__(
         self,
@@ -59,42 +59,46 @@ class ListenBrainzProvider(PluginProvider):
 
     async def browse(self, path: str) -> list[Playlist]:
         """
-        Return the static sample playlist.
+        Return the user's recommendation playlists.
 
         :param path: Provider browse path.
         """
-        return [await self.get_playlist(SAMPLE_PLAYLIST_ID)]
+        playlists = await self.api.get_recommendation_playlists(self.username)
+        return [self._parse_playlist(item) for item in playlists]
 
     async def get_playlist(self, prov_playlist_id: str) -> Playlist:
-        """Return the static sample playlist."""
-        if prov_playlist_id != SAMPLE_PLAYLIST_ID:
-            raise MediaNotFoundError(f"Unknown ListenBrainz playlist: {prov_playlist_id}")
+        """Return a ListenBrainz playlist."""
+        playlist = await self.api.get_playlist(prov_playlist_id)
+        return self._parse_playlist(playlist)
+
+    async def get_playlist_tracks(self, prov_playlist_id: str, page: int = 0) -> list[Track]:
+        """Return metadata-only tracks from a ListenBrainz playlist."""
+        if page > 0:
+            return []
+        playlist = await self.api.get_playlist(prov_playlist_id)
+        tracks: list[Track] = []
+        for position, item in enumerate(playlist["track"], 1):
+            tracks.append(await self._parse_track(item, position))
+        return tracks
+
+    def _parse_playlist(self, playlist: dict[str, Any]) -> Playlist:
+        """Parse a ListenBrainz JSPF playlist."""
+        playlist_id = playlist["identifier"].rsplit("/", 1)[-1]
         return Playlist(
-            item_id=SAMPLE_PLAYLIST_ID,
+            item_id=playlist_id,
             provider=self.instance_id,
-            name=SAMPLE_PLAYLIST["title"],
+            name=playlist["title"],
             owner="listenbrainz",
             is_editable=False,
             provider_mappings={
                 ProviderMapping(
-                    item_id=SAMPLE_PLAYLIST_ID,
+                    item_id=playlist_id,
                     provider_domain=self.domain,
                     provider_instance=self.instance_id,
                     is_unique=True,
                 )
             },
         )
-
-    async def get_playlist_tracks(self, prov_playlist_id: str, page: int = 0) -> list[Track]:
-        """Return metadata-only tracks from the static sample playlist."""
-        if prov_playlist_id != SAMPLE_PLAYLIST_ID:
-            raise MediaNotFoundError(f"Unknown ListenBrainz playlist: {prov_playlist_id}")
-        if page > 0:
-            return []
-        tracks: list[Track] = []
-        for position, item in enumerate(SAMPLE_PLAYLIST["track"], 1):
-            tracks.append(await self._parse_track(item, position))
-        return tracks
 
     async def _parse_track(self, item: dict[str, Any], position: int) -> Track:
         """Return a matching library track or parse a metadata-only playlist entry."""
