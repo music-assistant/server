@@ -11,6 +11,7 @@ import ytmusicapi
 from aiohttp import ClientError, ServerDisconnectedError
 from music_assistant_models.enums import AlbumType, MediaType
 from music_assistant_models.errors import LoginFailed, SetupFailedError
+from requests.exceptions import ReadTimeout
 from ytmusicapi import LikeStatus
 from ytmusicapi.exceptions import YTMusicServerError
 
@@ -1067,6 +1068,23 @@ async def test_on_played_ignores_tracks_and_untracked_episodes(
     cast("MagicMock", reporting_provider.mass.http_session.get).assert_not_called()
 
 
+async def test_on_played_announces_again_after_a_failed_announcement(
+    reporting_provider: YoutubeMusicProvider,
+) -> None:
+    """A playback whose announcement failed is announced with its next report, and its stop sent."""
+    tracking = AsyncMock(side_effect=[ReadTimeout("timed out"), _tracking()])
+    with patch("music_assistant.providers.ytmusic.get_playback_tracking", tracking):
+        with pytest.raises(ReadTimeout):
+            await _played(reporting_provider, 100, is_playing=True)
+        await _played(reporting_provider, 130, is_playing=True)
+        await _played(reporting_provider, 400, is_playing=False)
+
+    assert tracking.await_count == 2
+    start, stop = _reported(reporting_provider)
+    assert start["url"] == ["https://s.youtube.com/api/stats/playback"]
+    assert (stop["st"], stop["et"]) == (["100"], ["400"])
+
+
 @pytest.mark.parametrize(
     ("percentage", "expected"),
     [(0, (False, 0, None)), (50, (False, 1_800_000, None)), (100, (True, 3_600_000, None))],
@@ -1088,7 +1106,12 @@ async def test_get_resume_position_from_progress(
 
 
 @pytest.mark.parametrize(
-    "error", [YTMusicServerError("Server returned HTTP 500"), KeyError("progress")]
+    "error",
+    [
+        YTMusicServerError("Server returned HTTP 500"),
+        ReadTimeout("timed out"),
+        KeyError("progress"),
+    ],
 )
 async def test_get_resume_position_unavailable(
     provider: YoutubeMusicProvider, error: Exception
