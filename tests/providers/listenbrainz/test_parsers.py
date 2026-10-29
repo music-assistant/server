@@ -2,7 +2,29 @@
 
 from music_assistant_models.enums import ExternalID
 
-from music_assistant.providers.listenbrainz.parsers import parse_artists, parse_track
+from music_assistant.providers.listenbrainz.parsers import (
+    parse_artists,
+    parse_playlist,
+    parse_track,
+)
+
+
+def test_parse_playlist_from_jspf_response() -> None:
+    """A JSPF playlist response becomes a provider-owned playlist."""
+    playlist_mbid = "88888888-8888-4888-8888-888888888888"
+    playlist_data = {
+        "identifier": f"https://listenbrainz.org/playlist/{playlist_mbid}",
+        "title": "Synthetic Playlist",
+    }
+
+    playlist = parse_playlist(playlist_data, "listenbrainz--test", "listenbrainz")
+
+    assert playlist.item_id == playlist_mbid
+    assert playlist.name == "Synthetic Playlist"
+    assert playlist.owner == "listenbrainz"
+    assert playlist.is_editable is False
+    assert playlist.provider == "listenbrainz--test"
+    assert playlist.available is True
 
 
 def test_parse_artists_from_jspf_track_extension() -> None:

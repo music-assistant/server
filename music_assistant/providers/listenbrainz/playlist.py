@@ -6,10 +6,10 @@ from typing import TYPE_CHECKING, Any
 
 from music_assistant_models.enums import ExternalID
 from music_assistant_models.errors import MusicAssistantError
-from music_assistant_models.media_items import Artist, Playlist, ProviderMapping, Track, UniqueList
+from music_assistant_models.media_items import Artist, Playlist, Track, UniqueList
 
 from music_assistant.helpers.compare import compare_strings
-from music_assistant.providers.listenbrainz.parsers import parse_track
+from music_assistant.providers.listenbrainz.parsers import parse_playlist, parse_track
 
 if TYPE_CHECKING:
     from music_assistant.providers.listenbrainz import ListenBrainzProvider
@@ -29,12 +29,15 @@ class ListenBrainzPlaylistManager:
     async def browse(self) -> list[Playlist]:
         """Return the user's recommendation playlists."""
         playlists = await self.provider.api.get_recommendation_playlists(self.provider.username)
-        return [self._parse_playlist(item) for item in playlists]
+        return [
+            parse_playlist(item, self.provider.instance_id, self.provider.domain)
+            for item in playlists
+        ]
 
     async def get_playlist(self, prov_playlist_id: str) -> Playlist:
         """Return a ListenBrainz playlist."""
         playlist = await self.provider.api.get_playlist(prov_playlist_id)
-        return self._parse_playlist(playlist)
+        return parse_playlist(playlist, self.provider.instance_id, self.provider.domain)
 
     async def get_playlist_tracks(self, prov_playlist_id: str, page: int = 0) -> list[Track]:
         """Return resolved tracks from a ListenBrainz playlist."""
@@ -46,25 +49,6 @@ class ListenBrainzPlaylistManager:
         for position, item in enumerate(playlist["track"], 1):
             tracks.append(await self._parse_track(item, position, artist_cache))
         return tracks
-
-    def _parse_playlist(self, playlist: dict[str, Any]) -> Playlist:
-        """Parse a ListenBrainz JSPF playlist."""
-        playlist_id = playlist["identifier"].rsplit("/", 1)[-1]
-        return Playlist(
-            item_id=playlist_id,
-            provider=self.provider.instance_id,
-            name=playlist["title"],
-            owner="listenbrainz",
-            is_editable=False,
-            provider_mappings={
-                ProviderMapping(
-                    item_id=playlist_id,
-                    provider_domain=self.provider.domain,
-                    provider_instance=self.provider.instance_id,
-                    is_unique=True,
-                )
-            },
-        )
 
     async def _parse_track(
         self,

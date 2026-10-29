@@ -8,12 +8,35 @@ from music_assistant_models.enums import ExternalID, MediaType
 from music_assistant_models.media_items import (
     Artist,
     ItemMapping,
+    Playlist,
     ProviderMapping,
     Track,
     UniqueList,
 )
 
 JSPF_TRACK_EXTENSION = "https://musicbrainz.org/doc/jspf#track"
+
+
+def parse_playlist(
+    playlist_data: dict[str, Any], provider_instance: str, provider_domain: str
+) -> Playlist:
+    """Parse a ListenBrainz JSPF playlist."""
+    playlist_id = playlist_data["identifier"].rsplit("/", 1)[-1]
+    return Playlist(
+        item_id=playlist_id,
+        provider=provider_instance,
+        name=playlist_data["title"],
+        owner="listenbrainz",
+        is_editable=False,
+        provider_mappings={
+            ProviderMapping(
+                item_id=playlist_id,
+                provider_domain=provider_domain,
+                provider_instance=provider_instance,
+                is_unique=True,
+            )
+        },
+    )
 
 
 def parse_track(track_data: dict[str, Any], provider_instance: str, provider_domain: str) -> Track:
