@@ -54,6 +54,8 @@ _LINE_BREAK_TABLE: Final = str.maketrans(dict.fromkeys(_LINE_BREAK_CHARS, " "))
 # playlist content-type does not pull an endless body into memory
 MAX_PLAYLIST_SIZE = 64 * 1024
 PLAYLIST_READ_TIMEOUT = 5
+# the only image references a playlist file may contribute: fetched over http(s) or inline
+_REMOTE_IMAGE_PREFIXES: Final[tuple[str, ...]] = ("http://", "https://", "data:image")
 
 
 class IsHLSPlaylist(InvalidDataError):
@@ -614,6 +616,13 @@ def construct_media_item_from_playlist_item(
             image_type = ImageType(img.type)
         except ValueError:
             continue
+        # nothing in the file proves who owns a local path, so only remote references are
+        # imported, and only from builtin or a provider that is loaded
+        if not img.path.startswith(_REMOTE_IMAGE_PREFIXES) or not (
+            img.provider == "builtin" or mass.get_provider(img.provider) is not None
+        ):
+            LOGGER.debug("Skipping playlist image %s of provider %s", img.path, img.provider)
+            continue
         media_item.metadata.add_image(
             MediaItemImage(
                 type=image_type,
@@ -895,10 +904,16 @@ def media_item_to_playlist_item(full_item: MediaItem) -> PlaylistItem:
         "media_type": full_item.media_type.value,
         "name": full_item.name,
     }
-    if hasattr(full_item, "authors") and full_item.authors:
-        metadata["authors"] = "; ".join(full_item.authors)
-    if hasattr(full_item, "narrators") and full_item.narrators:
-        metadata["narrators"] = "; ".join(full_item.narrators)
+    if isinstance(full_item, Audiobook) and full_item.authors:
+        metadata["authors"] = "; ".join(
+            author.name if isinstance(author, Artist | ItemMapping) else author
+            for author in full_item.authors
+        )
+    if isinstance(full_item, Audiobook) and full_item.narrators:
+        metadata["narrators"] = "; ".join(
+            narrator.name if isinstance(narrator, Artist | ItemMapping) else narrator
+            for narrator in full_item.narrators
+        )
     if full_item.version:
         metadata["version"] = full_item.version
     if isrc := _unambiguous_external_id(full_item, ExternalID.ISRC):

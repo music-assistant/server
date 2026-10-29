@@ -16,6 +16,7 @@ CONF_APP_KEY = "app_key"
 # e.g. http://1.2.3.4:8091/Xml/AVTransport3.xml
 UPNP_PORT = 8091
 UPNP_CONTROL_ENDPOINT = "AVTransport/Control"
+UPNP_USER_AGENT = "MusicAssistant"
 
 # physical favorite/preset buttons available on the SoundTouch speakers.
 PRESET_IDS = range(1, 7)

@@ -21,7 +21,7 @@ from uuid import uuid4
 from music_assistant_models.enums import PlaybackState
 from music_assistant_models.errors import PlayerCommandFailed
 
-from music_assistant.constants import VERBOSE_LOG_LEVEL
+from music_assistant.constants import CONF_PASSWORD, VERBOSE_LOG_LEVEL
 from music_assistant.helpers.images import _extract_imageproxy_id, get_image_thumb_path
 from music_assistant.helpers.named_pipe import AsyncNamedPipeWriter
 from music_assistant.helpers.process import AsyncProcess
@@ -37,7 +37,6 @@ from music_assistant.providers.airplay.constants import (
     CONF_AIRPLAY_CREDENTIALS,
     CONF_BUFFER_DEPTH,
     CONF_ENCRYPTION,
-    CONF_PASSWORD,
     CONF_RAOP_CREDENTIALS,
     RAOP_DEFAULT_PORT,
     STREAMING_MODE_AP2_COMPAT,
@@ -48,6 +47,7 @@ from music_assistant.providers.airplay.constants import (
     StreamingProtocol,
 )
 from music_assistant.providers.airplay.helpers import (
+    CLI_CLOCK_OFFSET_NS,
     default_buffer_depth,
     generate_active_remote_id,
     get_cli_binary,
@@ -157,9 +157,12 @@ class AirPlayStream:
         # password) fails right away instead of running out its timeout.
         self._process_ended = asyncio.Event()
         # Whether the binary reported the end of the stream itself ([STATUS] eof
-        # or its idle timeout) instead of dying. Both leave the process gone and
-        # `running` reading False, so this is what tells the two apart.
+        # or its idle timeout) instead of dying. Both leave `running` reading
+        # False, so this is what tells the two apart.
         self.ended_cleanly: bool = False
+        # Whether that end was [STATUS] eof: unlike its idle timeout, the binary
+        # stays alive after it, holding the receiver session until it is stopped.
+        self._input_ended: bool = False
         # Structured fatal failure the binary reported before exiting; stays
         # None when it exited without reporting one.
         self._connect_error: CliError | None = None
@@ -1063,6 +1066,8 @@ class AirPlayStream:
             str(self.pcm_format.sample_rate),
             "--bitdepth",
             str(self.pcm_format.bit_depth),
+            "--clock-offset-ns",
+            str(CLI_CLOCK_OFFSET_NS),
         ]
         if timing_arg:
             args += ["--timing", timing_arg]
@@ -1084,9 +1089,16 @@ class AirPlayStream:
         # mDNS properties from the RAOP service (needed by the RAOP-based flows)
         if raop_info:
             args += ["--udn", raop_info.name]
-            for prop in ("et", "md", "am", "pk", "pw", "cn"):
+            for prop in ("et", "am", "pk", "pw", "cn"):
                 if prop_value := raop_info.decoded_properties.get(prop):
                     args += [f"--{prop}", prop_value]
+            # A legacy RAOP receiver without an md TXT key accepts no metadata at all
+            # (some answer a metadata push with a 500 and drop the connection), but the
+            # binary assumes full metadata support when --md is omitted. AirPlay 2 flows
+            # keep that default: some receivers need metadata before they render audio.
+            metadata_caps = raop_info.decoded_properties.get("md")
+            if metadata_caps or target_protocol == StreamingProtocol.RAOP:
+                args += ["--md", metadata_caps or ""]
         if target_protocol == StreamingProtocol.RAOP and self.player.config.get_value(
             CONF_ENCRYPTION, True
         ):
@@ -1500,7 +1512,13 @@ class AirPlayStream:
                         return
                 player.set_state_from_stream(state=PlaybackState.IDLE, elapsed_time=0, stream=self)
             finally:
-                await self.commands_pipe.remove()
+                if self._input_ended:
+                    # the binary reports eof only once its drain is done, yet keeps the
+                    # receiver session open awaiting a new START: stop it (which also
+                    # removes the command pipe) in a task, as stop() waits for this reader
+                    self.mass.create_task(self.stop())
+                else:
+                    await self.commands_pipe.remove()
 
     def _handle_status_line(self, line: str) -> bool:  # noqa: C901, PLR0912, PLR0915
         """Dispatch one cliairplay status line; True ends the stderr loop."""
@@ -1610,6 +1628,7 @@ class AirPlayStream:
             return True
         elif "[STATUS] eof" in line:
             player.logger.debug("End of stream reached")
+            self._input_ended = True
             return True
         elif "[STATUS] REANCHOR" in line:
             self._parse_reanchor_status(line)

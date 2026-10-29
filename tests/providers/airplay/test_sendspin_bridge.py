@@ -526,7 +526,7 @@ async def test_cold_start_connects_then_anchors_first_start() -> None:
             return_value=stream,
         ),
         patch(
-            "music_assistant.providers.airplay.sendspin_bridge.time.time",
+            "music_assistant.providers.airplay.sendspin_bridge.cli_clock_time",
             return_value=UNIX_NOW_S,
         ),
     ):
@@ -564,7 +564,7 @@ async def test_a_fresh_process_releases_a_foreign_mute_latch_before_it_connects(
             return_value=stream,
         ),
         patch(
-            "music_assistant.providers.airplay.sendspin_bridge.time.time",
+            "music_assistant.providers.airplay.sendspin_bridge.cli_clock_time",
             return_value=UNIX_NOW_S,
         ),
     ):
@@ -594,7 +594,7 @@ async def test_a_kept_process_keeps_a_mute_latch_owned_by_another_control() -> N
     bridge._airplay_stream_start_task = asyncio.current_task()
 
     with patch(
-        "music_assistant.providers.airplay.sendspin_bridge.time.time",
+        "music_assistant.providers.airplay.sendspin_bridge.cli_clock_time",
         return_value=UNIX_NOW_S,
     ):
         await bridge._start_protocol_from_chunk()
@@ -624,7 +624,7 @@ async def test_a_failed_warm_handover_releases_the_latch_before_its_cold_retry()
             return_value=cold_stream,
         ),
         patch(
-            "music_assistant.providers.airplay.sendspin_bridge.time.time",
+            "music_assistant.providers.airplay.sendspin_bridge.cli_clock_time",
             return_value=UNIX_NOW_S,
         ),
     ):
@@ -657,7 +657,7 @@ async def test_a_superseded_cold_start_never_reaches_the_receiver() -> None:
             return_value=stream,
         ),
         patch(
-            "music_assistant.providers.airplay.sendspin_bridge.time.time",
+            "music_assistant.providers.airplay.sendspin_bridge.cli_clock_time",
             return_value=UNIX_NOW_S,
         ),
     ):
@@ -761,7 +761,7 @@ async def test_cold_start_superseded_during_the_anchor_stops_its_transport() -> 
     stream.start = AsyncMock(side_effect=start)
 
     with patch(
-        "music_assistant.providers.airplay.sendspin_bridge.time.time",
+        "music_assistant.providers.airplay.sendspin_bridge.cli_clock_time",
         return_value=UNIX_NOW_S,
     ):
         assert await bridge._start_cold_stream(stream) is False
@@ -788,7 +788,7 @@ async def test_superseded_cold_stream_teardown_spares_the_newer_owner() -> None:
     stream.start = AsyncMock(side_effect=start)
 
     with patch(
-        "music_assistant.providers.airplay.sendspin_bridge.time.time",
+        "music_assistant.providers.airplay.sendspin_bridge.cli_clock_time",
         return_value=UNIX_NOW_S,
     ):
         assert await bridge._start_cold_stream(stream) is False
@@ -836,7 +836,7 @@ async def test_cold_start_stops_a_native_session_before_it_spawns_a_process() ->
             return_value=stream,
         ),
         patch(
-            "music_assistant.providers.airplay.sendspin_bridge.time.time",
+            "music_assistant.providers.airplay.sendspin_bridge.cli_clock_time",
             return_value=UNIX_NOW_S,
         ),
     ):
@@ -948,7 +948,7 @@ async def _bridge_start_racing_a_native_start(
             return_value=bridge_stream,
         ),
         patch(
-            "music_assistant.providers.airplay.sendspin_bridge.time.time",
+            "music_assistant.providers.airplay.sendspin_bridge.cli_clock_time",
             return_value=UNIX_NOW_S,
         ),
     ):
@@ -1042,7 +1042,7 @@ async def test_a_bridge_start_cannot_slip_into_a_native_start() -> None:
             return_value=bridge_stream,
         ),
         patch(
-            "music_assistant.providers.airplay.sendspin_bridge.time.time",
+            "music_assistant.providers.airplay.sendspin_bridge.cli_clock_time",
             return_value=UNIX_NOW_S,
         ),
     ):
@@ -1245,7 +1245,7 @@ async def test_a_displaced_stream_that_cannot_be_stopped_blocks_the_start() -> N
             return_value=stream,
         ),
         patch(
-            "music_assistant.providers.airplay.sendspin_bridge.time.time",
+            "music_assistant.providers.airplay.sendspin_bridge.cli_clock_time",
             return_value=UNIX_NOW_S,
         ),
     ):
@@ -1272,7 +1272,7 @@ async def test_failed_session_bookkeeping_still_lets_the_start_proceed() -> None
             return_value=stream,
         ),
         patch(
-            "music_assistant.providers.airplay.sendspin_bridge.time.time",
+            "music_assistant.providers.airplay.sendspin_bridge.cli_clock_time",
             return_value=UNIX_NOW_S,
         ),
     ):
@@ -1319,7 +1319,7 @@ async def test_cold_start_stops_a_sessionless_native_stream_directly() -> None:
             return_value=stream,
         ),
         patch(
-            "music_assistant.providers.airplay.sendspin_bridge.time.time",
+            "music_assistant.providers.airplay.sendspin_bridge.cli_clock_time",
             return_value=UNIX_NOW_S,
         ),
     ):
@@ -1339,7 +1339,7 @@ async def test_warm_reuse_never_displaces_the_stream_it_reuses() -> None:
     bridge.airplay_player.stream = kept_stream
 
     with patch(
-        "music_assistant.providers.airplay.sendspin_bridge.time.time",
+        "music_assistant.providers.airplay.sendspin_bridge.cli_clock_time",
         return_value=UNIX_NOW_S,
     ):
         await bridge._start_protocol_from_chunk()
@@ -1416,7 +1416,7 @@ def _prepare_anchor(
 async def _anchor(bridge: SendspinAirPlayBridge, stream: MagicMock, *, warm: bool = False) -> bool:
     """Run ``_anchor_stream`` with the unix clock pinned to UNIX_NOW_S."""
     with patch(
-        "music_assistant.providers.airplay.sendspin_bridge.time.time",
+        "music_assistant.providers.airplay.sendspin_bridge.cli_clock_time",
         return_value=UNIX_NOW_S,
     ):
         return await bridge._anchor_stream(stream, warm=warm)
@@ -2127,7 +2127,7 @@ async def test_warm_stream_flushes_and_reanchors_on_kept_instance() -> None:
     bridge._airplay_stream_start_task = asyncio.current_task()
 
     with patch(
-        "music_assistant.providers.airplay.sendspin_bridge.time.time",
+        "music_assistant.providers.airplay.sendspin_bridge.cli_clock_time",
         return_value=UNIX_NOW_S,
     ):
         committed = await bridge._start_warm_stream(kept_stream)
@@ -2222,7 +2222,7 @@ async def test_warm_handover_superseded_during_the_anchor_keeps_the_stream() -> 
             return_value=cold_stream,
         ),
         patch(
-            "music_assistant.providers.airplay.sendspin_bridge.time.time",
+            "music_assistant.providers.airplay.sendspin_bridge.cli_clock_time",
             return_value=UNIX_NOW_S,
         ),
     ):
@@ -3486,7 +3486,7 @@ async def test_a_cold_start_spawns_the_cli_with_the_groups_decision() -> None:
     stream = _make_anchor_stream(ack=UNIX_NOW_MS + COLD_LEAD_MS)
 
     with patch(
-        "music_assistant.providers.airplay.sendspin_bridge.time.time",
+        "music_assistant.providers.airplay.sendspin_bridge.cli_clock_time",
         return_value=UNIX_NOW_S,
     ):
         assert await joiner._start_cold_stream(stream) is True
@@ -3521,7 +3521,7 @@ async def test_a_daemon_lost_mid_start_cannot_split_the_group() -> None:
         await bridge._start_cold_stream(stream)
 
     with patch(
-        "music_assistant.providers.airplay.sendspin_bridge.time.time",
+        "music_assistant.providers.airplay.sendspin_bridge.cli_clock_time",
         return_value=UNIX_NOW_S,
     ):
         await asyncio.gather(cold_start(first, first_stream), cold_start(second, second_stream))
@@ -3673,7 +3673,7 @@ async def test_the_real_chunk_path_records_the_decision_it_spawns_with() -> None
             return_value=stream,
         ),
         patch(
-            "music_assistant.providers.airplay.sendspin_bridge.time.time",
+            "music_assistant.providers.airplay.sendspin_bridge.cli_clock_time",
             return_value=UNIX_NOW_S,
         ),
     ):

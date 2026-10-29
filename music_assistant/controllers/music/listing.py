@@ -17,13 +17,26 @@ from typing import Any, Final
 from music_assistant_models.enums import ListingType, SortDirection, SortField
 from music_assistant_models.errors import InvalidDataError
 from music_assistant_models.helpers import create_safe_string, create_sort_name
-from music_assistant_models.media_items import BrowseFolder, ItemMapping, MediaItem
+from music_assistant_models.media_items import BrowseFolder, ItemMapping, MediaCollection, MediaItem
 
 from music_assistant.controllers.music.constants import LEGACY_SORT_KEYS
 from music_assistant.controllers.music.sorting import LISTING_SORT_OPTIONS
 
 # anything a listing holds: a media item, a bare reference to one or a browse folder
 type ListingItem = MediaItem | ItemMapping | BrowseFolder
+
+
+def legacy_sort(sort_key: str) -> tuple[SortField, SortDirection | None]:
+    """
+    Return the sort field and direction a deprecated sort key stands for.
+
+    :param sort_key: The deprecated sort key an outdated client sends.
+    :return: The sort field and its direction, None for a field without a direction.
+    :raises InvalidDataError: When the key is unknown.
+    """
+    if (sort := LEGACY_SORT_KEYS.get(sort_key)) is None:
+        raise InvalidDataError(f"Unknown sort key: {sort_key}")
+    return sort
 
 
 def resolve_listing_sort(
@@ -46,9 +59,7 @@ def resolve_listing_sort(
     :raises InvalidDataError: When the listing does not offer the field or the key is unknown.
     """
     if sort_field is None and order_by:
-        if (legacy_sort := LEGACY_SORT_KEYS.get(order_by)) is None:
-            raise InvalidDataError(f"Unknown sort key: {order_by}")
-        sort_field, sort_direction = legacy_sort
+        sort_field, sort_direction = legacy_sort(order_by)
     # without a requested field the first option, the listing's default, matches
     options = LISTING_SORT_OPTIONS[listing]
     option = next((x for x in options if sort_field in (None, x.field)), None)
@@ -68,11 +79,13 @@ def apply_listing[ItemT: ListingItem](
     sort_direction: SortDirection | None = None,
     limit: int | None = None,
     offset: int = 0,
+    random_seed: int | None = None,
 ) -> list[ItemT]:
     """
     Search, sort and page a listing assembled in memory.
 
-    Items that sort the same keep the order the source lists them in.
+    Items that sort the same keep the order the source lists them in, the tracks of one album
+    their disc and track order.
 
     :param items: The whole listing, in the order the source lists it.
     :param listing: The listing the items belong to, which decides the sort options.
@@ -82,16 +95,31 @@ def apply_listing[ItemT: ListingItem](
     :param sort_direction: Sort direction, the field's default for this listing when omitted.
     :param limit: Maximum number of items to return; None (or 0) returns them all.
     :param offset: Number of items to skip.
+    :param random_seed: Keep random ordering stable across pages with the same seed.
     :raises InvalidDataError: When the listing does not offer the sort field.
     """
     field, direction = resolve_listing_sort(listing, sort_field, sort_direction)
     term = _normalize(search) if search else ""
     result = [item for item in items if _matches(item, term)] if term else list(items)
     if field == SortField.RANDOM:
-        random.shuffle(result)
+        if random_seed is None:
+            random.shuffle(result)
+        else:
+            # A cache refill can reorder identical contents; anchor the shuffle to identities
+            # without deduplicating repeated playlist entries.
+            result.sort(
+                key=lambda item: (
+                    item.media_type.value,
+                    item.provider,
+                    item.path if isinstance(item, BrowseFolder) else item.item_id,
+                )
+            )
+            random.Random(random_seed).shuffle(result)  # noqa: S311 - reproducible order, not security
     elif field != SortField.ORIGINAL:
         if (sort_key := _SORT_KEYS.get(field)) is None:
             raise InvalidDataError(f"Sort field {field.value} cannot be sorted in memory")
+        if tie_key := _TIE_KEYS.get(field):
+            result.sort(key=tie_key)
         result.sort(key=sort_key, reverse=direction == SortDirection.DESC)
     return result[offset : offset + limit] if limit else result[offset:]
 
@@ -103,11 +131,16 @@ def _normalize(name: str) -> str:
 
 def _matches(item: ListingItem, term: str) -> bool:
     """Return whether the name of the item, of its album or of one of its artists holds the term."""
-    names = [item.name]
+    names = [_name(item)]
     if album := getattr(item, "album", None):
         names.append(album.name)
     names.extend(artist.name for artist in getattr(item, "artists", ()))
     return any(term in _normalize(name) for name in names)
+
+
+def _name(item: ListingItem) -> str:
+    # a folder can go by its translation key alone, translated only when sent to a client
+    return item.name or getattr(item, "translation_key", None) or ""
 
 
 def _sort_name(item: ListingItem) -> str:
@@ -120,14 +153,22 @@ def _date_added(item: ListingItem) -> float:
     return date_added.timestamp() if date_added else 0.0
 
 
+def _duration(item: ListingItem) -> int:
+    # a collection carries the duration of all its items in its metadata
+    if isinstance(item, MediaCollection):
+        return item.metadata.duration or 0
+    return getattr(item, "duration", 0) or 0
+
+
 def _artist_name(item: ListingItem) -> str:
     artists = getattr(item, "artists", None)
     return _normalize(artists[0].name) if artists else ""
 
 
-def _album_name(item: ListingItem) -> str:
+def _album_name(item: ListingItem) -> tuple[str, str]:
+    # albums that share a name stay apart
     album = getattr(item, "album", None)
-    return _normalize(album.name) if album else ""
+    return (_normalize(album.name), album.uri or "") if album else ("", "")
 
 
 def _track_number(item: ListingItem) -> tuple[int, int]:
@@ -137,15 +178,21 @@ def _track_number(item: ListingItem) -> tuple[int, int]:
 
 # the sort key of every field an item carries itself; ORIGINAL and RANDOM need none
 _SORT_KEYS: Final[dict[SortField, Callable[[ListingItem], Any]]] = {
-    SortField.NAME: lambda item: _normalize(item.name),
+    SortField.NAME: lambda item: _normalize(_name(item)),
     SortField.SORT_NAME: _sort_name,
     SortField.TIMESTAMP_ADDED: _date_added,
     SortField.LAST_PLAYED: lambda item: getattr(item, "last_played", 0) or 0,
-    SortField.DURATION: lambda item: getattr(item, "duration", 0) or 0,
+    SortField.DURATION: _duration,
     SortField.YEAR: lambda item: getattr(item, "year", 0) or 0,
     SortField.POSITION: lambda item: getattr(item, "position", 0) or 0,
     SortField.ARTIST_NAME: _artist_name,
     SortField.TRACK_NUMBER: _track_number,
     SortField.ALBUM_NAME: _album_name,
     SortField.PROVIDER: lambda item: item.provider,
+}
+
+# the order among the items a sort field ties, whichever the direction
+_TIE_KEYS: Final[dict[SortField, Callable[[ListingItem], Any]]] = {
+    # the tracks of one album keep their disc and track order
+    SortField.ALBUM_NAME: _track_number,
 }

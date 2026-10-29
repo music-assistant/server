@@ -21,6 +21,7 @@ from music_assistant_models.media_items import Album, ProviderMapping, Track
 from music_assistant.controllers.music.media.albums import AlbumsController
 from music_assistant.controllers.music.media.base import MediaControllerBase
 from music_assistant.controllers.music.media.tracks import TracksController
+from music_assistant.helpers.compare import set_keep_remasters_apart
 from music_assistant.providers.musicbrainz.models import (
     MusicBrainzMedia,
     MusicBrainzRecording,
@@ -182,6 +183,7 @@ def _harness(
     loaded: dict[str, list[str]],
     owners: dict[tuple[str, str], str] | None = None,
     provider_errors: dict[str, Exception] | None = None,
+    provider_items: dict[str, Track] | None = None,
 ) -> Iterator[_Harness]:
     """
     Yield the item's controller with every IO boundary mocked.
@@ -190,6 +192,7 @@ def _harness(
     :param loaded: Provider instance ids per loaded provider domain.
     :param owners: Library item id per (provider instance, provider item id) already held.
     :param provider_errors: Error the provider raises per provider item id.
+    :param provider_items: Track the provider returns per provider item id.
     """
     ctrl: MediaControllerBase[Any]
     if isinstance(db_item, Album):
@@ -210,10 +213,10 @@ def _harness(
             return _library_album(owner_id)
         return None
 
-    async def _provider_item(item_id: str, _instance: str, **_kwargs: object) -> Album:
+    async def _provider_item(item_id: str, _instance: str, **_kwargs: object) -> Album | Track:
         if error := (provider_errors or {}).get(item_id):
             raise error
-        return _library_album(item_id)
+        return (provider_items or {}).get(item_id) or _library_album(item_id)
 
     set_provider_mappings = AsyncMock()
     merge = AsyncMock()
@@ -322,6 +325,33 @@ async def test_linker_trusts_apple_music_track_links() -> None:
 
     assert [m.provider_domain for m in added] == ["apple_music", "spotify"]
     harness.get_provider_item.assert_not_awaited()
+
+
+@pytest.mark.parametrize(
+    ("keep_apart", "linked_title", "expected_domains"),
+    [
+        (False, "Song - Remastered 2009", ["spotify"]),
+        (True, "Song - Remastered 2009", []),
+        (True, "Song", ["spotify"]),
+    ],
+    ids=["setting_off", "remaster_kept_apart", "same_version"],
+)
+async def test_linker_checks_the_version_of_a_track_link_while_remasters_are_kept_apart(
+    keep_apart: bool, linked_title: str, expected_domains: list[str]
+) -> None:
+    """A recording also covers its remasters, so a linked copy has to carry the same version."""
+    set_keep_remasters_apart(keep_apart)
+    spotify_id = SPOTIFY_TRACK_URL.rsplit("/", maxsplit=1)[-1]
+    track = _library_track("1", 1, name="Song", isrcs=["GBUM71029604"], mbid=RECORDING_ID)
+    linked_track = _provider_track(spotify_id, 1, name=linked_title, isrcs=["GBUM71029604"])
+    with _harness(
+        track, loaded={"spotify": ["spotify_1"]}, provider_items={spotify_id: linked_track}
+    ) as harness:
+        added = await harness.ctrl.link_musicbrainz_mappings(track, [SPOTIFY_TRACK_URL])
+
+    assert [m.provider_domain for m in added] == expected_domains
+    # with the setting off a link is taken as is, without asking the provider
+    assert harness.get_provider_item.await_count == int(keep_apart)
 
 
 async def test_unclaimed_mappings_never_merge_library_items() -> None:
@@ -545,6 +575,137 @@ async def test_release_tracks_that_gain_nothing_are_not_rewritten() -> None:
     with _album_harness() as harness:
         await harness.ctrl.link_album_tracks(_library_album(), [complete], release)
     harness.tracks.update_item_in_library.assert_not_awaited()
+
+
+SPOTIFY_TRACK = ProviderMapping(
+    item_id="sp", provider_domain="spotify", provider_instance="spotify_1"
+)
+THIRD_RECORDING_ID = "7f6e5d4c-3b2a-4c1d-8e0f-a1b2c3d4e5f6"
+
+
+def _two_disc_release() -> MusicBrainzRelease:
+    """Return a release of two mediums whose titles name the work as well as the movement."""
+    return _release(
+        [
+            _recording(RECORDING_ID, "Symphony no. 5: I. Allegro con brio", 442000),
+            _recording(OTHER_RECORDING_ID, "Symphony no. 5: II. Andante con moto", 590000),
+        ],
+        [_recording(THIRD_RECORDING_ID, "Symphony no. 5: III. Allegro", 312000)],
+    )
+
+
+def _service_tracks(*durations: int, numbers: Sequence[int] = (1, 2, 3)) -> list[Track]:
+    """Return a streaming service's tracks of the album on one disc, titled with the composer."""
+    return [
+        _library_track(
+            f"t{number}",
+            number,
+            name=f"Beethoven: Symphony No. 5: Movement {number}",
+            duration=duration,
+            disc_number=1,
+            mappings=[SPOTIFY_TRACK],
+        )
+        for number, duration in zip(numbers, durations, strict=True)
+    ]
+
+
+async def test_release_tracks_of_a_service_album_lining_up_match_in_order() -> None:
+    """A service's tracks matching the release in count and every length take its recordings."""
+    with _album_harness() as harness:
+        await harness.ctrl.link_album_tracks(
+            _library_album(), _service_tracks(440, 593, 311), _two_disc_release()
+        )
+
+    assert [(track.item_id, track.mbid) for track in harness.updated_tracks()] == [
+        ("t1", RECORDING_ID),
+        ("t2", OTHER_RECORDING_ID),
+        ("t3", THIRD_RECORDING_ID),
+    ]
+
+
+@pytest.mark.parametrize(
+    "db_tracks",
+    [
+        pytest.param(_service_tracks(440, 593, 340), id="one length off"),
+        pytest.param(_service_tracks(440, 593, 0), id="one length unknown"),
+        pytest.param(_service_tracks(440, 593, numbers=(1, 2)), id="fewer tracks"),
+        pytest.param(_service_tracks(440, 593, 311, numbers=(1, 2, 4)), id="numbering gap"),
+    ],
+)
+async def test_release_tracks_of_a_service_album_not_lining_up_need_their_titles(
+    db_tracks: list[Track],
+) -> None:
+    """A service whose tracks differ from the release in count, length or numbering keeps the title check."""
+    with _album_harness() as harness:
+        await harness.ctrl.link_album_tracks(_library_album(), db_tracks, _two_disc_release())
+
+    assert harness.updated_tracks() == []
+
+
+async def test_release_tracks_in_order_win_over_a_repeated_title_at_the_same_position() -> None:
+    """A service splitting the discs elsewhere keeps the order match where a title repeats."""
+    release = _release(
+        [
+            _recording(RECORDING_ID, "Aria", 180000),
+            _recording(OTHER_RECORDING_ID, "Variatio 1", 120000),
+        ],
+        [_recording(THIRD_RECORDING_ID, "Variatio 1", 125000)],
+    )
+    db_tracks = [
+        _library_track("t1", 1, name="Aria", duration=180, disc_number=1, mappings=[SPOTIFY_TRACK]),
+        _library_track(
+            "t2", 1, name="Variatio 1", duration=120, disc_number=2, mappings=[SPOTIFY_TRACK]
+        ),
+        _library_track(
+            "t3", 2, name="Variatio 1", duration=125, disc_number=2, mappings=[SPOTIFY_TRACK]
+        ),
+    ]
+    with _album_harness() as harness:
+        await harness.ctrl.link_album_tracks(_library_album(), db_tracks, release)
+
+    assert [(track.item_id, track.mbid) for track in harness.updated_tracks()] == [
+        ("t1", RECORDING_ID),
+        ("t2", OTHER_RECORDING_ID),
+        ("t3", THIRD_RECORDING_ID),
+    ]
+
+
+async def test_release_tracks_also_from_local_files_are_not_matched_in_order() -> None:
+    """A streaming track that is also a local file keeps the title check, as its tags number it."""
+    local_file = ProviderMapping(
+        item_id="f", provider_domain="filesystem_local", provider_instance="filesystem_local_1"
+    )
+    db_tracks = _service_tracks(440, 593, 311)
+    db_tracks[0].provider_mappings.add(local_file)
+    streaming = {"spotify_1": Mock(is_streaming_provider=True)}
+    providers = Mock(
+        side_effect=lambda instance, **_: streaming.get(instance, Mock(is_streaming_provider=False))
+    )
+    with _album_harness() as harness, patch.object(harness.ctrl.mass, "get_provider", providers):
+        await harness.ctrl.link_album_tracks(_library_album(), db_tracks, _two_disc_release())
+
+    assert harness.updated_tracks() == []
+
+
+async def test_release_tracks_in_order_keep_another_recording_id() -> None:
+    """A track holding another recording id is left alone by the order match."""
+    db_tracks = _service_tracks(440, 593, 311)
+    db_tracks[1].mbid = "5a4f3e2d-1c0b-4a9f-8e7d-6c5b4a3f2e11"
+    with _album_harness() as harness:
+        await harness.ctrl.link_album_tracks(_library_album(), db_tracks, _two_disc_release())
+
+    assert [track.item_id for track in harness.updated_tracks()] == ["t1", "t3"]
+
+
+async def test_release_tracks_of_local_files_are_not_matched_in_order() -> None:
+    """Local files keep the title check, as their tags carry their own recording ids."""
+    local_files = Mock(return_value=Mock(is_streaming_provider=False))
+    with _album_harness() as harness, patch.object(harness.ctrl.mass, "get_provider", local_files):
+        await harness.ctrl.link_album_tracks(
+            _library_album(), _service_tracks(440, 593, 311), _two_disc_release()
+        )
+
+    assert harness.updated_tracks() == []
 
 
 async def test_provider_tracks_are_matched_by_isrc_before_position() -> None:

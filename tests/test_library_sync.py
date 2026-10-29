@@ -136,6 +136,7 @@ async def test_add_item_to_library_sets_in_library_true() -> None:
 
     music_ctrl = MusicController.__new__(MusicController)
     music_ctrl.mass = mass
+    music_ctrl.genres = AsyncMock()
     mass.get_provider.return_value = provider_mock
     mass.metadata = AsyncMock()
 
@@ -169,6 +170,7 @@ async def test_add_item_to_library_sets_in_library_even_when_sync_back_disabled(
 
     music_ctrl = MusicController.__new__(MusicController)
     music_ctrl.mass = mass
+    music_ctrl.genres = AsyncMock()
     mass.get_provider.return_value = provider_mock
     mass.metadata = AsyncMock()
 
@@ -201,6 +203,7 @@ async def test_add_item_to_library_sets_in_library_even_when_edit_not_supported(
 
     music_ctrl = MusicController.__new__(MusicController)
     music_ctrl.mass = mass
+    music_ctrl.genres = AsyncMock()
     mass.get_provider.return_value = provider_mock
     mass.metadata = AsyncMock()
 
@@ -240,6 +243,7 @@ async def test_add_album_imports_tracks_when_enabled() -> None:
 
     music_ctrl = MusicController.__new__(MusicController)
     music_ctrl.mass = mass
+    music_ctrl.genres = AsyncMock()
     _answer_lookups_with(mass, provider_mock)
     mass.metadata = AsyncMock()
 
@@ -272,6 +276,7 @@ async def test_add_album_does_not_import_tracks_when_disabled() -> None:
 
     music_ctrl = MusicController.__new__(MusicController)
     music_ctrl.mass = mass
+    music_ctrl.genres = AsyncMock()
     _answer_lookups_with(mass, provider_mock)
     mass.metadata = AsyncMock()
 
@@ -320,6 +325,7 @@ async def test_add_album_only_imports_tracks_for_added_instance() -> None:
 
     music_ctrl = MusicController.__new__(MusicController)
     music_ctrl.mass = mass
+    music_ctrl.genres = AsyncMock()
     _answer_lookups_with(mass, provider_mock)
     mass.metadata = AsyncMock()
 

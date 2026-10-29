@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from typing import Any, cast
-from unittest.mock import MagicMock, Mock
+from unittest.mock import AsyncMock, MagicMock, Mock
 
 from music_assistant_models.enums import MediaType, PlaybackState, RepeatMode
 from music_assistant_models.media_items import ItemMapping, ProviderMapping, Track
@@ -168,14 +168,15 @@ def test_inserting_a_track_after_the_buffered_one_dethrones_the_cached_next() ->
     ctrl = _controller(current_index=0, index_in_buffer=1)
     data = ctrl._queue_data["q1"]
     data.last_served_item_id = _item_id_at(ctrl, 1)
+    requested_after = _item_id_at(ctrl, 1)
     stale_next = _item_id_at(ctrl, 2)
     guest = QueueItem.from_media_item("q1", _track("guest"))
 
     data.items.insert(2, guest)
     data.queue.items = len(data.items)
 
-    assert not ctrl.is_current_window_item("q1", stale_next)
-    assert ctrl.is_current_window_item("q1", guest.queue_item_id)
+    assert not ctrl.is_current_window_item("q1", stale_next, requested_after)
+    assert ctrl.is_current_window_item("q1", guest.queue_item_id, requested_after)
 
 
 def test_the_item_after_the_last_one_served_is_allowed() -> None:
@@ -232,3 +233,65 @@ def test_a_track_the_player_gave_up_on_before_it_streamed_does_not_pin_the_windo
 
     assert ctrl.is_current_window_item("q1", _item_id_at(ctrl, 2))
     assert not ctrl.is_current_window_item("q1", _item_id_at(ctrl, 3))
+
+
+def test_a_track_the_player_gave_up_waiting_for_does_not_pin_the_window() -> None:
+    """
+    A player that gave up on a slow track asks for the one after it.
+
+    The slow track was asked for but never delivered a byte, so neither the last served
+    item nor the playhead the player reports moved onto it. Refusing the track after it
+    strands the player: it walks its cached queue to the end and stops.
+    """
+    ctrl = _controller(current_index=0, index_in_buffer=1)
+    ctrl._queue_data["q1"].last_served_item_id = _item_id_at(ctrl, 1)
+    slow_track = _item_id_at(ctrl, 2)
+
+    assert ctrl.is_current_window_item("q1", _item_id_at(ctrl, 3), slow_track)
+    assert not ctrl.is_current_window_item("q1", _item_id_at(ctrl, 4), slow_track)
+    # the track after the slow one does not vouch for itself
+    assert not ctrl.is_current_window_item("q1", _item_id_at(ctrl, 3), _item_id_at(ctrl, 3))
+
+
+async def test_a_new_load_drops_what_the_old_one_fetched_and_asked_for() -> None:
+    """Neither the item last fetched nor the one last asked for vouches across a restart."""
+    ctrl = _controller(current_index=1)
+    data = ctrl._queue_data["q1"]
+    data.last_served_item_id = _item_id_at(ctrl, 2)
+    data.last_requested_item_id = _item_id_at(ctrl, 2)
+    ctrl._preload_next_item = Mock()
+    ctrl._cleanup_stale_queue_buffers = Mock()
+    ctrl._load_item = AsyncMock()
+    ctrl._check_player_permission = Mock()
+    ctrl._set_transitioning = Mock()
+    ctrl.player_media_from_queue_item = AsyncMock()
+    ctrl.mark_ended = Mock()
+    ctrl.mass.streams.is_smart_fades_active.return_value = False
+    ctrl.mass.players.play_media = AsyncMock()
+
+    await ctrl.play_index("q1", 0)
+
+    assert data.last_served_item_id is None
+    assert data.last_requested_item_id is None
+
+
+def test_a_track_asked_for_before_a_queue_edit_does_not_vouch_for_its_old_successor() -> None:
+    """
+    A track moved to play next is not skipped by requests that overlap the move.
+
+    The player asked for the track after the buffered one, then the user moved another
+    track ahead of it. The requested track is no longer up next, so the player's cached
+    track after it must be refused too, or the moved track is played over.
+    """
+    ctrl = _controller(current_index=0, index_in_buffer=1)
+    ctrl._queue_data["q1"].last_served_item_id = _item_id_at(ctrl, 1)
+    requested = _item_id_at(ctrl, 2)
+    cached_next = _item_id_at(ctrl, 3)
+    moved_up = _item_id_at(ctrl, 4)
+    assert ctrl.is_current_window_item("q1", cached_next, requested)
+
+    ctrl.move_item("q1", moved_up, pos_shift=-2)
+
+    assert _item_id_at(ctrl, 2) == moved_up
+    assert not ctrl.is_current_window_item("q1", cached_next, requested)
+    assert ctrl.is_current_window_item("q1", moved_up, requested)

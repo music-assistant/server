@@ -470,6 +470,42 @@ async def test_background_streaming_ffmpeg_startup_failure() -> None:
     assert "ffmpeg startup failed" in failure_args[1]
 
 
+@pytest.mark.asyncio
+async def test_background_streaming_sizes_dsd_in_wavpack_as_32_bit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The PCM format requested for an 8-bit probed source matches the S32 bytes ffmpeg emits."""
+    controller = _make_controller()
+    streamdetails = _make_streamdetails(path="/music/test.wv")
+    streamdetails.audio_format = AudioFormat(
+        content_type=ContentType.WAVPACK,
+        codec_type=ContentType.WAVPACK,
+        sample_rate=352800,
+        bit_depth=8,
+        channels=2,
+    )
+    p = _make_aa_provider("p1", available=True)
+    p.start_analysis = AsyncMock(return_value=True)
+    p.finalize = AsyncMock(return_value=None)
+    controller.mass.get_provider = MagicMock(return_value=p)  # type: ignore[method-assign]
+    captured: list[AudioFormat] = []
+
+    async def _stream(
+        _streamdetails: object, pcm_format: AudioFormat, **_kwargs: object
+    ) -> AsyncGenerator[bytes]:
+        captured.append(pcm_format)
+        yield b"\x00" * 8
+
+    controller.mass.streams.audio.get_media_stream = _stream  # type: ignore[method-assign,assignment]
+    monkeypatch.setattr(audio_analysis_mod, "BACKGROUND_PACE_INTERVAL_SECONDS_FLOOR", 0.0)
+
+    await controller._run_background_streaming_for_track(streamdetails, [p])
+
+    assert captured[0].content_type == ContentType.PCM_S32LE
+    assert captured[0].bit_depth == 32
+    assert captured[0].pcm_sample_size == 352800 * 4 * 2
+
+
 def _make_streamdetails(
     *, path: str, item_id: str = "test-item", duration: int | None = None
 ) -> MagicMock:
@@ -1300,6 +1336,27 @@ async def test_iter_merged_audio_analysis_rows_skips_unavailable_providers() -> 
 
 
 @pytest.mark.asyncio
+async def test_iter_merged_audio_analysis_rows_unpacks_only_the_requested_arrays() -> None:
+    """The ``arrays`` selection reaches the row parser, so unrequested arrays stay None."""
+    row = _aa_row(SONIC_ANALYSIS_DOMAIN, 1, bpm=100.0, beats=[0.5, 1.0], rms_energy=[0.25, 0.75])
+    c, _ = _stub_controller(iter_rows=[row])
+    c.mass.get_providers = MagicMock(return_value=[_aa_provider_stub(SONIC_ANALYSIS_DOMAIN)])  # type: ignore[method-assign]
+
+    result = [
+        x
+        async for x in c.iter_merged_audio_analysis_rows(
+            SONIC_ANALYSIS_DOMAIN, arrays=("rms_energy",)
+        )
+    ]
+
+    assert len(result) == 1
+    merged = result[0][2]
+    assert merged.bpm == 100.0
+    assert merged.rms_energy == pytest.approx([0.25, 0.75], abs=1e-3)
+    assert merged.beats is None
+
+
+@pytest.mark.asyncio
 async def test_iter_merged_audio_analysis_rows_groups_by_item_provider() -> None:
     """Rows from different (item_id, provider) pairs are emitted as separate entries."""
     rows: list[dict[str, Any]] = [
@@ -1899,6 +1956,7 @@ async def test_get_track_audio_metadata_prefers_smart_fades() -> None:
     assert result is not None
     assert result.bpm == 128.0
     assert result.musical_key == "F# minor"
+    assert result.camelot_key == "11A"
 
 
 @pytest.mark.asyncio
@@ -1909,6 +1967,7 @@ async def test_get_track_audio_metadata_key_without_mode() -> None:
     assert result is not None
     assert result.bpm is None
     assert result.musical_key == "C"
+    assert result.camelot_key is None
 
 
 @pytest.mark.asyncio
