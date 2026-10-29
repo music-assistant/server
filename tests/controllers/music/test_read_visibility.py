@@ -41,7 +41,7 @@ from music_assistant_models.media_items import (
     UniqueList,
 )
 
-from music_assistant.constants import DB_TABLE_ALBUM_TRACKS
+from music_assistant.constants import CONF_PROVIDERS, DB_TABLE_ALBUM_TRACKS
 from music_assistant.controllers.music import MusicController
 from music_assistant.helpers.collections import get_collection_item_id
 from music_assistant.mass import MusicAssistant
@@ -191,10 +191,16 @@ async def test_resolve_visible_provider(music: MusicController) -> None:
         # ...unless exactly the hidden account is required
         with pytest.raises(InsufficientPermissions):
             music.resolve_visible_provider(THEIRS, strict=True)
-    # an unavailable hidden account is replaced the same way, own account first
+    # an unavailable hidden account is replaced the same way, own account first, also when
+    # it is not loaded at all
     _mock(music, THEIRS).available = False
     with _as_user(MEMBER):
         assert music.resolve_visible_provider(THEIRS).instance_id == MY_SPOTIFY
+    their_spotify = music.mass._providers.pop(THEIRS)
+    music.mass.config.set(f"{CONF_PROVIDERS}/{THEIRS}/domain", "spotify")
+    with _as_user(MEMBER):
+        assert music.resolve_visible_provider(THEIRS).instance_id == MY_SPOTIFY
+    music.mass._providers[THEIRS] = their_spotify
     # a visible source that is not loaded is unavailable, not forbidden
     _mock(music, MINE).available = False
     with _as_user(MEMBER), pytest.raises(ProviderUnavailableError):

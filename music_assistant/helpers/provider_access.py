@@ -199,6 +199,21 @@ def visible_provider(
         provider = exact_provider(mass, instance_id_or_domain)
     else:
         provider = mass.get_provider(instance_id_or_domain)
+        if provider is None and user is not None:
+            # an account that is not loaded at all hands the request to another loaded account
+            # of its streaming service, as an unavailable one does
+            domain = next(
+                (s.domain for s in _music_sources(mass) if s.instance_id == instance_id_or_domain),
+                None,
+            )
+            provider = next(
+                (
+                    other
+                    for other in (mass.get_provider_instances(domain) if domain else [])
+                    if getattr(other, "is_streaming_provider", False)
+                ),
+                None,
+            )
     if provider is None or user is None or provider.type != ProviderType.MUSIC:
         return provider
     hidden = hidden_music_sources(mass, user)
