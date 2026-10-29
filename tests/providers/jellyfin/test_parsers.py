@@ -130,6 +130,8 @@ def test_parse_loudness(track: dict[str, Any], expected: tuple[float, float | No
 def test_parse_loudness_without_gain(track: dict[str, Any]) -> None:
     """Test no loudness is returned when Jellyfin has no track gain."""
     assert parse_loudness(cast("JellyTrack", track)) is None
+
+
 async def test_parse_track_does_not_leak_access_token(connection: Connection) -> None:
     """Parsed tracks must not expose the Jellyfin access token to API clients."""
     async with aiofiles.open(FIXTURES_DIR / "tracks/do_i_wanna_know.json", encoding="utf-8") as fp:
