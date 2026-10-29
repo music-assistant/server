@@ -30,7 +30,15 @@ from music_assistant_models.errors import (
     RetriesExhausted,
 )
 from music_assistant_models.helpers import get_global_cache_value
-from music_assistant_models.media_items import Album, Artist, MediaItemImage, Track
+from music_assistant_models.media_items import (
+    Album,
+    Artist,
+    MediaItemImage,
+    MediaItemMetadata,
+    Track,
+)
+from music_assistant_models.media_items.metadata import LifeSpan
+from music_assistant_models.unique_list import UniqueList
 
 from music_assistant.constants import VARIOUS_ARTISTS_MBID, VARIOUS_ARTISTS_NAME
 from music_assistant.controllers.music.helpers import (
@@ -58,7 +66,6 @@ if TYPE_CHECKING:
 
     from music_assistant_models.config_entries import CoreConfig
     from music_assistant_models.media_items import Audiobook, MediaItemType, Playlist, Podcast
-    from music_assistant_models.unique_list import UniqueList
 
     from music_assistant import MusicAssistant
     from music_assistant.models.media_capabilities import MusicDiscoveryMixin
@@ -83,6 +90,8 @@ _TEMPORARY_ERRORS = (
     RetriesExhausted,
     TimeoutError,
 )
+# the artist values of a local metadata provider that replace those of the other sources
+_LOCAL_ARTIST_FIELDS = ("style", "mood", "artist_entity_type")
 
 
 class MetadataEnrichmentMixin:
@@ -124,7 +133,8 @@ class MetadataEnrichmentMixin:
         # The bio is re-derived from the providers on every refresh. Each provider's
         # description is collected as a (language, text) candidate and excluded from the
         # field merge; _select_description picks the winner below. Candidates are appended
-        # in priority order: music providers first, then metadata providers (TADB, Wikipedia).
+        # in priority order: local metadata providers first, then music providers, then the
+        # other metadata providers (TADB, Wikipedia).
         prev_description = artist.metadata.description
         prev_description_language = artist.metadata.description_language
         description_candidates: list[tuple[str | None, str]] = []
@@ -165,11 +175,24 @@ class MetadataEnrichmentMixin:
 
         # The musicbrainz ID is mandatory for all metadata lookups
         merge_mbid: str | None = None
+        retry_soon = False
         if not artist.mbid:
-            if found := await self._get_artist_mbid(artist):
+            try:
+                found = await self._get_artist_mbid(artist)
+            except _TEMPORARY_ERRORS as err:
+                found = None
+                retry_soon = True
+                self.logger.debug(
+                    "Artist %s could not be identified on MusicBrainz right now: %s",
+                    artist.name,
+                    err,
+                )
+            if found:
                 artist.mbid, by_name = found
                 merge_mbid = None if by_name else artist.mbid
-        retry_soon = await self._link_artist_to_musicbrainz(artist)
+        # a failed identification leaves the MusicBrainz lookup marker unset for a later retry
+        if not retry_soon:
+            retry_soon = await self._link_artist_to_musicbrainz(artist)
 
         # don't merge online genres on top of source-supplied ones; propagation-derived
         # genres also count as a local source so they survive metadata refreshes
@@ -180,51 +203,76 @@ class MetadataEnrichmentMixin:
             )
         )
 
-        # collect metadata from all (online)[metadata] providers
+        # collect metadata from all [metadata] providers, the online ones only when enabled
         # TODO: Utilize a global (cloud) cache for metadata lookups to save on API calls
-        if self.config.get_value(CONF_ENABLE_ONLINE_METADATA) and artist.mbid:
-            for provider in self.providers:
-                if ProviderFeature.ARTIST_METADATA not in provider.supported_features:
-                    continue
-                try:
-                    metadata = await provider.get_artist_metadata(artist)
-                except _TEMPORARY_ERRORS as err:
-                    retry_soon = True
-                    self.logger.debug(
-                        "Metadata for Artist %s is not available from provider %s right now: %s",
-                        artist.name,
-                        provider.name,
-                        err,
-                    )
-                    continue
-                except Exception as err:
-                    self.logger.warning(
-                        "Error fetching metadata for Artist %s from provider %s: %s",
-                        artist.name,
-                        provider.name,
-                        err,
-                        exc_info=err if self.logger.isEnabledFor(10) else None,
-                    )
-                    continue
-                if metadata:
-                    if prefer_local_genres:
-                        metadata = replace(metadata, genres=None)
-                    if metadata.description:
-                        description_candidates.append(
-                            (metadata.description_language, metadata.description)
-                        )
-                        metadata = replace(metadata, description=None, description_language=None)
-                    merge_metadata(artist.metadata, metadata)
-                    self.logger.debug(
-                        "Fetched metadata for Artist %s on provider %s",
-                        artist.name,
-                        provider.name,
-                    )
-        artist.metadata.description, artist.metadata.description_language = (
-            self._select_description(
-                description_candidates, prev_description, prev_description_language
-            )
+        online_enabled = bool(self.config.get_value(CONF_ENABLE_ONLINE_METADATA) and artist.mbid)
+        local_candidates: list[tuple[str | None, str]] = []
+        # a local provider's values and images replace the stored ones instead of filling gaps
+        local_fields: set[str] = set()
+        local_images: dict[str, list[MediaItemImage]] = {}
+        for provider in self.providers:
+            if ProviderFeature.ARTIST_METADATA not in provider.supported_features:
+                continue
+            if not (online_enabled or provider.is_local):
+                continue
+            try:
+                metadata = await provider.get_artist_metadata(artist)
+            except _TEMPORARY_ERRORS as err:
+                retry_soon = True
+                self.logger.debug(
+                    "Metadata for Artist %s is not available from provider %s right now: %s",
+                    artist.name,
+                    provider.name,
+                    err,
+                )
+                continue
+            except Exception as err:
+                self.logger.warning(
+                    "Error fetching metadata for Artist %s from provider %s: %s",
+                    artist.name,
+                    provider.name,
+                    err,
+                    exc_info=err if self.logger.isEnabledFor(10) else None,
+                )
+                continue
+            if provider.is_local:
+                _drop_provider_images(artist.metadata, provider.instance_id)
+                local_images[provider.instance_id] = list(metadata.images or []) if metadata else []
+            if metadata:
+                if provider.is_local:
+                    local_fields |= _apply_local_values(artist.metadata, metadata)
+                    if metadata.genres and self.config.get_value(CONF_PREFER_LOCAL_GENRES):
+                        prefer_local_genres = True
+                if prefer_local_genres and not provider.is_local:
+                    metadata = replace(metadata, genres=None)
+                if metadata.description:
+                    candidates = local_candidates if provider.is_local else description_candidates
+                    candidates.append((metadata.description_language, metadata.description))
+                    metadata = replace(metadata, description=None, description_language=None)
+                merge_metadata(artist.metadata, metadata)
+                self.logger.debug(
+                    "Fetched metadata for Artist %s on provider %s",
+                    artist.name,
+                    provider.name,
+                )
+        description, description_language = self._select_description(
+            [*local_candidates, *description_candidates],
+            prev_description,
+            prev_description_language,
         )
+        artist.metadata.description = description
+        artist.metadata.description_language = description_language
+        replacements = {name: getattr(artist.metadata, name) for name in local_fields}
+        # the library keeps a stored bio in the same language, so a local bio is written over it
+        if description and (description_language, description) in local_candidates:
+            replacements |= {
+                "description": description,
+                "description_language": description_language,
+            }
+        if replacements or local_images:
+            await self.mass.music.artists.replace_metadata(
+                artist.item_id, replacements, local_images
+            )
 
         # update final item in library database
         # set timestamp, used to determine when this function was last called
@@ -246,7 +294,7 @@ class MetadataEnrichmentMixin:
         Return the chosen ``(description, language)`` for the artist this refresh.
 
         :param candidates: ``(language, text)`` tuples in provider-priority order
-            (music providers first, then TADB, then Wikipedia).
+            (local metadata providers first, then music providers, then TADB, then Wikipedia).
         :param prev_description: Bio stored before this refresh.
         :param prev_description_language: Language of the bio stored before this refresh.
         """
@@ -937,6 +985,32 @@ def _tracks_named(
                 named.append(track)
                 seen.add(track.uri)
     return named
+
+
+def _apply_local_values(target: MediaItemMetadata, local: MediaItemMetadata) -> set[str]:
+    """Overwrite target with the artist values a local provider supplies, returning their names."""
+    replaced = {name for name in _LOCAL_ARTIST_FIELDS if getattr(local, name) is not None}
+    for name in replaced:
+        setattr(target, name, getattr(local, name))
+    if span := local.life_span:
+        # dates the local provider leaves out are still completed from the other sources
+        current = target.life_span or LifeSpan()
+        target.life_span = LifeSpan(
+            begin=span.begin or current.begin,
+            end=span.end or current.end,
+            ended=span.ended or current.ended,
+        )
+        replaced.add("life_span")
+    return replaced
+
+
+def _drop_provider_images(metadata: MediaItemMetadata, provider_instance_id: str) -> None:
+    """Remove the images of a provider from metadata (in-place)."""
+    if metadata.images:
+        metadata.images = (
+            UniqueList(img for img in metadata.images if img.provider != provider_instance_id)
+            or None
+        )
 
 
 def _refresh_timestamp(retry_soon: bool) -> int:

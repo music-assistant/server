@@ -17,7 +17,7 @@ from music_assistant_models.enums import (
     SortField,
     TaskStatus,
 )
-from music_assistant_models.errors import MusicAssistantError
+from music_assistant_models.errors import MediaNotFoundError, MusicAssistantError
 from music_assistant_models.event import MassEvent
 from music_assistant_models.media_items import (
     Album,
@@ -127,6 +127,8 @@ def _controller(
         controller.get_library_items_by_query = AsyncMock(return_value=[])
         controller.update_item_in_library = AsyncMock()
     mass.music.active_sync_tasks = []
+    # every queued item is still in the library unless a test says otherwise
+    mass.music.get_controller.return_value.get_library_item = AsyncMock()
     stored = (
         None
         if linked_domains is None
@@ -377,6 +379,26 @@ async def test_link_run_reports_an_item_whose_lookup_gave_up() -> None:
     assert ctrl._musicbrainz_link_summary["processed"] == {"albums": 2}
     assert ctrl._musicbrainz_link_summary["failed"] == 1
     assert ctrl._musicbrainz_link_summary["not_found"] == 0
+
+
+async def test_link_run_skips_an_item_that_left_the_library_during_the_run() -> None:
+    """An item merged into another earlier in the run is skipped, neither linked nor failed."""
+    ctrl = _controller()
+    gone, kept = _albums(2)
+    _queue(ctrl, albums=[gone, kept])
+    _mass(ctrl).music.get_controller.return_value.get_library_item = AsyncMock(
+        side_effect=[MediaNotFoundError("merged"), kept]
+    )
+
+    with patch(_REPORT_FAILURE) as report_failure:
+        await ctrl._link_library_to_musicbrainz()
+
+    _linked(ctrl).assert_awaited_once_with(kept)
+    report_failure.assert_not_called()
+    _logger(ctrl).warning.assert_not_called()
+    assert ctrl._musicbrainz_link_summary is not None
+    assert ctrl._musicbrainz_link_summary["processed"] == {"albums": 1}
+    assert ctrl._musicbrainz_link_summary["failed"] == 0
 
 
 async def test_link_run_stops_when_musicbrainz_starts_rate_limiting() -> None:

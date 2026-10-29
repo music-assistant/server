@@ -21,16 +21,14 @@ from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption
 from music_assistant_models.enums import ConfigEntryType
 from music_assistant_models.errors import LoginFailed
 
+from music_assistant.constants import CONF_PASSWORD, CONF_USERNAME, CONF_VERIFY_SSL
 from music_assistant.models.setup_flow import SetupFlowError, StepExpiredError
 
 from . import (
     CONF_DEVICE_ID,
-    CONF_PASSWORD,
     CONF_TOKEN_NC,
     CONF_URL,
     CONF_URL_NC,
-    CONF_USERNAME,
-    CONF_VERIFY_SSL,
 )
 
 if TYPE_CHECKING:

@@ -135,19 +135,39 @@ def filter_search_results(
 
 
 def metadata_for_update(
-    stored: MediaItemMetadata, update: MediaItemMetadata, overwrite: bool
+    stored: MediaItemMetadata,
+    update: MediaItemMetadata,
+    overwrite: bool,
+    stored_mappings: Iterable[ProviderMapping] = (),
+    update_mappings: Iterable[ProviderMapping] = (),
 ) -> MediaItemMetadata:
     """
     Return the metadata to store for a library item update.
 
     An overwrite replaces the stored metadata, unless the given item carries none at
     all: providers embed a bare stub of an album or artist in their track payloads.
+    The images of the other music sources the item is linked to are kept, the way
+    provider_mappings_for_update keeps their mappings, so a refresh from one user's
+    source does not drop the artwork of another user's source.
 
     :param stored: Metadata currently stored for the library item.
     :param update: Metadata of the item as delivered by the provider.
     :param overwrite: Whether the given item replaces the stored one.
+    :param stored_mappings: Provider mappings currently stored for the library item.
+    :param update_mappings: Provider mappings of the item as delivered by the provider.
     """
     if overwrite and any(getattr(update, field.name) for field in fields(update)):
+        update_sources = {x.provider_instance for x in update_mappings} | {
+            x.provider_domain for x in update_mappings
+        }
+        kept_sources = {
+            x.provider_instance
+            for x in stored_mappings
+            if x.provider_instance not in update_sources
+        }
+        for image in stored.images or ():
+            if image.provider in kept_sources:
+                update.add_image(image)
         return update
     return merge_metadata(stored, update)
 
@@ -196,6 +216,34 @@ def provider_mappings_for_update(
     }
 
 
+def usable_thumb(
+    images: Iterable[dict[str, Any]] | None, hidden_sources: AbstractSet[str]
+) -> dict[str, Any] | None:
+    """
+    Return the first thumb of a library item's stored (raw) images the viewer can be shown.
+
+    :param images: The stored (raw) images of the item.
+    :param hidden_sources: Music sources hidden from the viewer.
+    """
+    # same semantics as the MediaItem.available property: an empty cache means unknown
+    available_providers: AbstractSet[str] = get_global_cache_value("available_providers") or set()
+    return next(
+        (
+            image
+            for image in images or ()
+            if image["type"] == ImageType.THUMB.value
+            and (
+                image.get("remotely_accessible")
+                or (
+                    image["provider"] not in hidden_sources
+                    and (not available_providers or image["provider"] in available_providers)
+                )
+            )
+        ),
+        None,
+    )
+
+
 def preferred_thumb(
     images: Iterable[dict[str, Any]] | None, hidden_sources: AbstractSet[str]
 ) -> dict[str, Any] | None:
@@ -210,20 +258,7 @@ def preferred_thumb(
     :param hidden_sources: Music sources hidden from the viewer.
     """
     thumbs = [image for image in images or () if image["type"] == ImageType.THUMB.value]
-    # same semantics as the MediaItem.available property: an empty cache means unknown
-    available_providers: AbstractSet[str] = get_global_cache_value("available_providers") or set()
-    return next(
-        (
-            image
-            for image in thumbs
-            if image.get("remotely_accessible")
-            or (
-                image["provider"] not in hidden_sources
-                and (not available_providers or image["provider"] in available_providers)
-            )
-        ),
-        thumbs[0] if thumbs else None,
-    )
+    return usable_thumb(thumbs, hidden_sources) or (thumbs[0] if thumbs else None)
 
 
 def sibling_instance_mappings(

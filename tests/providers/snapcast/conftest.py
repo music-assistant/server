@@ -195,6 +195,7 @@ def fake_provider(fake_snapserver: FakeSnapserver) -> MagicMock:
     provider._snapserver = fake_snapserver
     provider._snapcast_stream_idle_threshold = 60000
     provider._use_builtin_server = False
+    provider._snapcast_server_buffer_size = 0
     provider.stream_audio_format = DEFAULT_SNAPCAST_FORMAT
     provider.logger = MagicMock()
     return provider

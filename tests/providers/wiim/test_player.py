@@ -18,6 +18,7 @@ from wiim.exceptions import (
 from music_assistant.models.player import PlayerMedia
 from music_assistant.providers.wiim import player as wiim_player
 from music_assistant.providers.wiim.constants import (
+    INPUT_MODE_SOURCES,
     PLAYER_ID_PREFIX,
     SOURCE_NETWORK,
     SOURCE_UNKNOWN,
@@ -319,6 +320,65 @@ class TestActiveSourceMapping:
         player._update_ma_state_from_sdk_cache()
 
         assert player._attr_active_source == "aux_in"
+
+
+class TestInputTakeover:
+    """A physical input the device switches to takes over from the MA queue it played."""
+
+    @staticmethod
+    async def _player_that_played_the_queue(
+        mock_provider: MagicMock, mock_wiim_device: MagicMock
+    ) -> WiimPlayer:
+        """
+        Return a player that was playing its own MA queue in Network mode.
+
+        :param mock_provider: The mocked WiiM provider.
+        :param mock_wiim_device: The mocked device the player wraps.
+        """
+        mass = mock_provider.mass
+        mass.closing = False
+        mass.config.get_raw_player_config_value = MagicMock(
+            side_effect=lambda _player_id, _key, default=None: default
+        )
+        mass.players.get_audio_source_session = MagicMock(return_value=None)
+        mass.players.scale_volume_from_device = MagicMock(
+            side_effect=lambda _player_id, volume: volume
+        )
+        mass.player_queues.get.return_value.current_item = MagicMock()
+        mock_wiim_device.supported_input_modes = tuple(INPUT_MODE_SOURCES)
+        mock_wiim_device.playing_status = PlayingStatus.PLAYING
+        mock_wiim_device.play_mode = SOURCE_NETWORK
+        player = WiimPlayer(provider=mock_provider, player_id="uuid:test", device=mock_wiim_device)
+        await player.setup()
+        player.set_active_mass_source(player.player_id)
+        player._update_ma_state_from_sdk_cache()
+        assert player.state.active_source == player.player_id
+        return player
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("play_mode", "source_id"),
+        [("TV", "hdmi"), ("Optical In", "optical"), ("Phono In", "phono_in"), ("Aux In", "aux_in")],
+    )
+    async def test_input_switch_ends_the_ma_source(
+        self,
+        mock_provider: MagicMock,
+        mock_wiim_device: MagicMock,
+        play_mode: str,
+        source_id: str,
+    ) -> None:
+        """
+        Switching to an input, such as TV over HDMI ARC, makes that input the active source.
+
+        :param play_mode: The input mode the device switched to.
+        :param source_id: The source id that input is listed under.
+        """
+        player = await self._player_that_played_the_queue(mock_provider, mock_wiim_device)
+
+        mock_wiim_device.play_mode = play_mode
+        player._update_ma_state_from_sdk_cache()
+
+        assert player.state.active_source == source_id
 
 
 class TestSupportedFeatures:
@@ -871,6 +931,28 @@ class TestPollRefreshesTransportState:
         await player.poll()
 
         mock_wiim_device.async_update_http_status.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_playback_started_while_idle_is_polled_at_playing_rate(
+        self, mock_provider: MagicMock, mock_wiim_device: MagicMock
+    ) -> None:
+        """Playback that starts between idle polls must not wait out the idle poll interval."""
+        stream_url = "http://192.168.1.80:8097/single/abc/queue/item/uuid:test.flac"
+        mock_provider.mass.streams.resolve_stream_url = AsyncMock(return_value=stream_url)
+        player = self._make_player(mock_provider, mock_wiim_device)
+        await player.poll()
+        assert player.poll_interval == 30
+        mock_wiim_device.play_mode = SOURCE_NETWORK
+
+        async def _report_playing(**_: Any) -> None:
+            mock_wiim_device.current_media = MagicMock(uri=stream_url)
+            mock_wiim_device.playing_status = PlayingStatus.PLAYING
+
+        mock_wiim_device.async_play = AsyncMock(side_effect=_report_playing)
+
+        await player.play_media(PlayerMedia(uri="library://track/1", title="Short Track"))
+
+        assert player.poll_interval == 5
 
 
 class TestSetMembersDelegation:
