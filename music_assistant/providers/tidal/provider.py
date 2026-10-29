@@ -108,6 +108,11 @@ class TidalProvider(RecommendationPayloadMixin, MusicProvider):
         return True
 
     @property
+    def account_id(self) -> str | None:
+        """Return the Tidal user id of the logged-in account."""
+        return str(self.auth.user_id) if self.auth.user_id else None
+
+    @property
     def max_concurrent_streams(self) -> int:
         """Tidal accounts allow a single active playback stream."""
         return 1

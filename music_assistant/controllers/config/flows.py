@@ -549,10 +549,6 @@ class SetupFlowMixin:
         self.set(f"{conf_key}/setup_data", {**snapshot, **self._encrypt_values(values)})
         try:
             config = await self.get_provider_config(instance_id)
-            # the cache was filled with the previous credentials, which may be another
-            # account's, so it goes before the instance loads again
-            await self.mass.unload_provider(instance_id)
-            await self.mass.music.clear_provider_cache(instance_id)
             await self.mass.load_provider_config(config)
         except asyncio.CancelledError:
             self.set(f"{conf_key}/setup_data", snapshot)
