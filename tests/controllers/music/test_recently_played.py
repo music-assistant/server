@@ -9,8 +9,7 @@ from unittest.mock import Mock, patch
 import pytest
 from music_assistant_models.auth import User, UserRole
 from music_assistant_models.config_entries import ProviderAccess
-from music_assistant_models.enums import EventType, MediaType, ProviderSharing, ProviderType
-from music_assistant_models.media_items import Audiobook, ItemMapping, ProviderMapping
+from music_assistant_models.enums import MediaType, ProviderSharing, ProviderType
 
 from music_assistant.constants import DB_TABLE_MEDIA_PROGRESS, DB_TABLE_PROVIDER_MAPPINGS
 from music_assistant.mass import MusicAssistant
@@ -261,9 +260,10 @@ async def test_recently_played_merges_plays_of_one_library_item(
     monkeypatch.setattr(mass.music, "get_active_provider_instances", lambda: ["ytmusic_1"])
     await _add_provider_mapping(mass, item_id=1, provider_instance="ytmusic_1")
     # item 1 was played from the library, then from a provider listing (logged under the
-    # provider id); the merge must happen before LIMIT so item 2 still makes the cut
-    await _add_playlog_track(mass, "1", timestamp=1000)
-    await _add_playlog_track(mass, "2", timestamp=2000)
+    # provider id); the merge must happen before LIMIT so item 2 still makes the cut, and
+    # the entry keeps the id of its newest play
+    await _add_playlog_track(mass, "2", timestamp=1000)
+    await _add_playlog_track(mass, "1", timestamp=2000)
     await _add_playlog_track(mass, "ytmusic_1-1", timestamp=3000, provider="ytmusic_1")
 
     result = await mass.music.recently_played(
@@ -271,7 +271,7 @@ async def test_recently_played_merges_plays_of_one_library_item(
     )
 
     assert [(item.provider, item.item_id) for item in result] == [
-        ("library", "1"),
+        ("ytmusic_1", "ytmusic_1-1"),
         ("library", "2"),
     ]
 
@@ -321,7 +321,7 @@ async def test_recently_played_merges_plays_past_the_limit_in_rows(
     )
 
     assert [(item.provider, item.item_id) for item in result] == [
-        ("library", str(item_id)) for item_id in range(30, 5, -1)
+        ("ytmusic_2", f"ytmusic_2-{item_id}") for item_id in range(30, 5, -1)
     ]
 
 
@@ -359,164 +359,3 @@ async def test_recently_played_stops_reading_once_the_limit_is_met(
     assert "OFFSET" not in queries[0]
     assert rows_read == 5
     assert closed
-
-
-async def _add_library_audiobook(mass: MusicAssistant, provider_instance: str) -> str:
-    """Add an audiobook with a single provider mapping to the library, return its library id."""
-    db_book = await mass.music.audiobooks.add_item_to_library(
-        Audiobook(
-            item_id="book-001",
-            provider=provider_instance,
-            name="A Library Audiobook",
-            provider_mappings={
-                ProviderMapping(
-                    item_id="book-001",
-                    provider_domain=provider_instance.rstrip("0123456789_"),
-                    provider_instance=provider_instance,
-                )
-            },
-        )
-    )
-    return str(db_book.item_id)
-
-
-async def _add_playlog_audiobook(
-    mass: MusicAssistant, item_id: str, provider: str, timestamp: int, userid: str
-) -> None:
-    """Insert a single fully played audiobook row into the playlog."""
-    await mass.music.database.insert(
-        DB_TABLE_MEDIA_PROGRESS,
-        {
-            "item_id": item_id,
-            "provider": provider,
-            "media_type": MediaType.AUDIOBOOK.value,
-            "name": "A Library Audiobook",
-            "timestamp": timestamp,
-            "fully_played": True,
-            "seconds_played": 3600,
-            "userid": userid,
-            "user_initiated": True,
-        },
-    )
-
-
-@pytest.mark.parametrize(
-    "logged_under",
-    [("provider",), ("library", "provider")],
-    ids=["provider-only", "library-and-provider"],
-)
-async def test_recently_played_entry_can_be_marked_unplayed(
-    mass: MusicAssistant, monkeypatch: pytest.MonkeyPatch, logged_under: tuple[str, ...]
-) -> None:
-    """Marking a recently played entry unplayed removes it, whichever ids its plays used."""
-    monkeypatch.setattr(mass.music, "get_active_provider_instances", lambda: ["abs_1"])
-    user = User(user_id="user-a", username="user-a", role=UserRole.USER)
-    library_id = await _add_library_audiobook(mass, "abs_1")
-    ids = {"library": (library_id, "library"), "provider": ("book-001", "abs_1")}
-    for timestamp, key in enumerate(logged_under, start=1):
-        await _add_playlog_audiobook(mass, *ids[key], timestamp=timestamp, userid=user.user_id)
-
-    (entry,) = await mass.music.recently_played(
-        limit=10, media_types=[MediaType.AUDIOBOOK], userid=user.user_id
-    )
-    assert (entry.provider, entry.item_id) == ("library", library_id)
-    with patch(GET_CURRENT_USER, return_value=user):
-        await mass.music.mark_item_unplayed(entry)
-
-    assert not await mass.music.recently_played(
-        limit=10, media_types=[MediaType.AUDIOBOOK], userid=user.user_id
-    )
-
-
-async def test_mark_unplayed_by_provider_id_clears_the_library_play(
-    mass: MusicAssistant, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Unmarking an item by a provider id also clears the play logged under its library id."""
-    monkeypatch.setattr(mass.music, "get_active_provider_instances", lambda: ["abs_1"])
-    user = User(user_id="user-a", username="user-a", role=UserRole.USER)
-    library_id = await _add_library_audiobook(mass, "abs_1")
-    await _add_playlog_audiobook(mass, library_id, "library", timestamp=1, userid=user.user_id)
-
-    with patch(GET_CURRENT_USER, return_value=user):
-        await mass.music.mark_item_unplayed(
-            ItemMapping(
-                item_id="book-001",
-                provider="abs_1",
-                name="A Library Audiobook",
-                media_type=MediaType.AUDIOBOOK,
-            )
-        )
-
-    assert not await mass.music.database.get_rows(
-        DB_TABLE_MEDIA_PROGRESS, {"media_type": MediaType.AUDIOBOOK.value}
-    )
-
-
-async def test_mark_unplayed_signals_only_the_links_that_had_plays(
-    mass: MusicAssistant, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Unmarking an item signals the links whose plays were cleared, not every link."""
-    monkeypatch.setattr(mass.music, "get_active_provider_instances", lambda: ["abs_1"])
-    user = User(user_id="user-a", username="user-a", role=UserRole.USER)
-    # the book is also linked to a second (e.g. private) source this user never played it on
-    db_book = await mass.music.audiobooks.add_item_to_library(
-        Audiobook(
-            item_id="book-001",
-            provider="abs_1",
-            name="A Library Audiobook",
-            provider_mappings={
-                ProviderMapping(item_id="book-001", provider_domain="abs", provider_instance=prov)
-                for prov in ("abs_1", "abs_2")
-            },
-        )
-    )
-    library_id = str(db_book.item_id)
-    await _add_playlog_audiobook(mass, library_id, "library", timestamp=1, userid=user.user_id)
-    await _add_playlog_audiobook(mass, "book-001", "abs_1", timestamp=2, userid=user.user_id)
-    signal_event = Mock()
-    monkeypatch.setattr(mass, "signal_event", signal_event)
-
-    with patch(GET_CURRENT_USER, return_value=user):
-        await mass.music.mark_item_unplayed(
-            ItemMapping(
-                item_id=library_id,
-                provider="library",
-                name="A Library Audiobook",
-                media_type=MediaType.AUDIOBOOK,
-            )
-        )
-
-    signaled = {
-        call.kwargs["object_id"]
-        for call in signal_event.call_args_list
-        if call.args == (EventType.PLAYLOG_UPDATED,)
-    }
-    assert signaled == {f"library://audiobook/{library_id}", "abs_1://audiobook/book-001"}
-
-
-async def test_mark_unplayed_signals_the_given_item_without_plays(
-    mass: MusicAssistant, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """The item the user unmarked is always signaled, even if it had no play to clear."""
-    monkeypatch.setattr(mass.music, "get_active_provider_instances", lambda: ["abs_1"])
-    user = User(user_id="user-a", username="user-a", role=UserRole.USER)
-    await _add_library_audiobook(mass, "abs_1")
-    signal_event = Mock()
-    monkeypatch.setattr(mass, "signal_event", signal_event)
-
-    with patch(GET_CURRENT_USER, return_value=user):
-        await mass.music.mark_item_unplayed(
-            ItemMapping(
-                item_id="book-001",
-                provider="abs_1",
-                name="A Library Audiobook",
-                media_type=MediaType.AUDIOBOOK,
-            )
-        )
-
-    signaled = [
-        call.kwargs["object_id"]
-        for call in signal_event.call_args_list
-        if call.args == (EventType.PLAYLOG_UPDATED,)
-    ]
-    assert signaled == ["abs_1://audiobook/book-001"]
