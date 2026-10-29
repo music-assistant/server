@@ -22,7 +22,7 @@ from music_assistant_models.errors import (
     ProviderUnavailableError,
 )
 from music_assistant_models.helpers import create_uri
-from music_assistant_models.media_items import MediaItemBookmark
+from music_assistant_models.media_items import MediaItemBookmark, ProviderMapping
 
 from music_assistant.constants import DB_TABLE_BOOKMARKS
 from music_assistant.controllers.webserver.helpers.auth_middleware import get_current_user
@@ -88,10 +88,20 @@ class BookmarksController:
                 item_id, provider_instance_id_or_domain, allow_update_metadata=False
             )
             copies = sorted((x.provider_instance, x.item_id) for x in audiobook.provider_mappings)
-        elif provider := self.mass.get_provider(provider_instance_id_or_domain):
-            copies = [(provider.instance_id, item_id)]
         else:
-            raise ProviderUnavailableError(f"Provider {provider_instance_id_or_domain} not found")
+            # an instance id names its copy even while unavailable: widening to another account
+            # of the same service would list that account's bookmarks. A domain names any of its
+            # instances, an available one first
+            provider = self.mass.get_provider(
+                provider_instance_id_or_domain, return_unavailable=True
+            )
+            if provider is not None and provider.instance_id != provider_instance_id_or_domain:
+                provider = self.mass.get_provider(provider_instance_id_or_domain) or provider
+            if provider is None:
+                raise ProviderUnavailableError(
+                    f"Provider {provider_instance_id_or_domain} not found"
+                )
+            copies = [(provider.instance_id, item_id)]
         visible = visible_music_sources(self.mass, user)
         bookmarks: list[MediaItemBookmark] = []
         for provider_instance_id, provider_item_id in copies:
@@ -133,7 +143,7 @@ class BookmarksController:
         name: str,
     ) -> None:
         """
-        Add a bookmark of the user to a library copy, or rename the one at start.
+        Add a bookmark of the user to a copy, or rename the one at start.
 
         :param media_type: MediaType.AUDIOBOOK or MediaType.PODCAST_EPISODE.
         :param provider_instance_id: The provider instance of the copy.
@@ -156,7 +166,7 @@ class BookmarksController:
         self, media_type: MediaType, provider_instance_id: str, provider_item_id: str, start: float
     ) -> None:
         """
-        Remove a bookmark of the user from a library copy.
+        Remove a bookmark of the user from a copy.
 
         :param media_type: MediaType.AUDIOBOOK or MediaType.PODCAST_EPISODE.
         :param provider_instance_id: The provider instance of the copy.
@@ -198,9 +208,10 @@ class BookmarksController:
         self, media_type: MediaType, provider_instance_id: str, provider_item_id: str
     ) -> tuple[dict[str, Any], MusicProvider | None]:
         """
-        Return the user's row of a library copy, and the provider storing its bookmarks.
+        Return the user's row of a copy, and the provider storing its bookmarks.
 
-        The provider is None when Music Assistant stores the bookmarks of the copy.
+        The provider is None when Music Assistant stores the bookmarks, which it does for library
+        copies only.
         """
         if not (user := get_current_user()):
             raise AuthenticationRequired("Bookmarks belong to a user")
@@ -217,6 +228,18 @@ class BookmarksController:
             "provider_instance": provider_instance_id,
             "provider_item_id": provider_item_id,
         }
+        if provider.supports_feature(edit_feature):
+            # the provider keeps them, MA does not stand in for an account the user may not write to
+            account = ProviderMapping(
+                item_id=provider_item_id,
+                provider_domain=provider.domain,
+                provider_instance=provider_instance_id,
+            )
+            if not self.mass.music._write_target_mappings([account]):
+                raise InsufficientPermissions(
+                    f"Bookmarks on {provider.name} can only be changed by its owner"
+                )
+            return row, provider
         library_item: Audiobook | Podcast | None
         # the library copy of an episode is its podcast
         if media_type == MediaType.PODCAST_EPISODE:
@@ -242,11 +265,4 @@ class BookmarksController:
             raise MediaNotFoundError(
                 f"{mapping_item_id} on {provider_instance_id} is not in the library"
             )
-        if not provider.supports_feature(edit_feature):
-            return row, None
-        # the provider keeps them, MA does not stand in for an account the user may not write to
-        if not self.mass.music._write_target_mappings([mapping]):
-            raise InsufficientPermissions(
-                f"Bookmarks on {provider.name} can only be changed by its owner"
-            )
-        return row, provider
+        return row, None

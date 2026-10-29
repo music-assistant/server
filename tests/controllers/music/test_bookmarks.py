@@ -21,6 +21,7 @@ from music_assistant_models.media_items import (
     ProviderMapping,
 )
 
+from music_assistant.constants import DB_TABLE_BOOKMARKS
 from music_assistant.controllers.webserver.helpers.auth_middleware import set_current_user
 from music_assistant.models.music_provider import MusicProvider
 from tests.common import set_music_source_access
@@ -271,3 +272,91 @@ async def test_bookmarks_of_a_hidden_copy(
     assert await bookmarks.bookmarks(AUDIOBOOK, book.item_id, "library") == []
     with pytest.raises(MediaNotFoundError):
         await bookmarks.set_bookmark(AUDIOBOOK, ABS, "book1", 60.0, "Hidden")
+
+
+@pytest.mark.parametrize(("write_target", "refused"), [(True, False), (False, True)])
+async def test_provider_keeps_bookmarks_of_a_copy_outside_the_library(
+    music_mass: MusicAssistant,
+    monkeypatch: pytest.MonkeyPatch,
+    write_target: bool,
+    refused: bool,
+) -> None:
+    """A provider that can edit bookmarks takes them for any copy of an account the user owns."""
+    set_current_user(LISTENER)
+    provider = _provider({READ, EDIT})
+    monkeypatch.setattr(EXACT_PROVIDER, lambda _mass, _instance_id: provider)
+    monkeypatch.setattr(
+        music_mass.music,
+        "_write_target_mappings",
+        lambda mappings: list(mappings) if write_target else [],
+    )
+
+    with pytest.raises(InsufficientPermissions) if refused else nullcontext():
+        await music_mass.music.bookmarks.set_bookmark(AUDIOBOOK, ABS, "book1", 754.5, "Arrakis")
+
+    assert provider.set_bookmark.await_count == (0 if refused else 1)
+
+
+@pytest.mark.parametrize(
+    ("requested", "expected"),
+    [
+        # the unavailable account lists its own stored bookmarks, never another account's
+        (ABS, [(ABS, "Mine")]),
+        # a domain names any of its accounts, the available one first
+        ("audiobookshelf", [("audiobookshelf--other", "Other account")]),
+    ],
+)
+async def test_episode_bookmarks_of_an_unavailable_account(
+    music_mass: MusicAssistant,
+    monkeypatch: pytest.MonkeyPatch,
+    requested: str,
+    expected: list[tuple[str, str]],
+) -> None:
+    """An episode lists the bookmarks of the account it names, available or not."""
+    set_current_user(LISTENER)
+    other_account = _provider({ProviderFeature.PODCAST_EPISODE_BOOKMARKS})
+    other_account.instance_id = "audiobookshelf--other"
+    other_account.get_bookmarks = AsyncMock(
+        return_value=[
+            MediaItemBookmark(
+                name="Other account",
+                start=10.0,
+                provider_instance_id=other_account.instance_id,
+                provider_item_id="episode1",
+            )
+        ]
+    )
+    unavailable = _provider(set())
+
+    def get_provider(instance_id_or_domain: str, return_unavailable: bool = False) -> Mock:
+        # like a streaming provider: an unavailable instance widens to another of its domain
+        if return_unavailable and instance_id_or_domain in (ABS, "audiobookshelf"):
+            return unavailable
+        return other_account
+
+    monkeypatch.setattr(music_mass, "get_provider", get_provider)
+    monkeypatch.setattr(
+        EXACT_PROVIDER,
+        lambda _mass, instance_id: (
+            other_account if instance_id == other_account.instance_id else None
+        ),
+    )
+    await music_mass.music.database.insert(
+        DB_TABLE_BOOKMARKS,
+        {
+            "user_id": LISTENER.user_id,
+            "media_type": EPISODE,
+            "provider_instance": ABS,
+            "provider_item_id": "episode1",
+            "podcast_item_id": "show1",
+            "start": 30.0,
+            "name": "Mine",
+        },
+    )
+
+    listed = [
+        (x.provider_instance_id, x.name)
+        for x in await music_mass.music.bookmarks.bookmarks(EPISODE, "episode1", requested)
+    ]
+
+    assert listed == expected
