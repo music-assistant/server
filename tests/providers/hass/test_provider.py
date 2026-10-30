@@ -14,6 +14,7 @@ from unittest.mock import ANY, AsyncMock, MagicMock, patch
 import pytest
 from aiohttp import ClientResponseError
 from hass_client.exceptions import BaseHassClientError, FailedCommand, NotConnected
+from multidict import CIMultiDict
 from music_assistant_models.enums import EventType, ProviderFeature
 from music_assistant_models.errors import (
     MusicAssistantError,
@@ -881,7 +882,7 @@ async def test_ai_generate_image_reports_a_rate_limited_image_download() -> None
             (),
             status=429,
             message="Too Many Requests",
-            headers={"Retry-After": "120"},
+            headers=CIMultiDict({"Retry-After": "120"}),
         )
         with (
             patch.object(provider, "_fetch_image", AsyncMock(side_effect=failed)),

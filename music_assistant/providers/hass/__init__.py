@@ -771,7 +771,7 @@ class HomeAssistantProvider(PluginProvider):
             # its message names the full (signed) URL
             msg = f"Home Assistant answered the image request with {err.status}"
             if err.status == 429:
-                retry_after = (err.headers or {}).get("Retry-After", "")
+                retry_after = err.headers.get("Retry-After", "") if err.headers else ""
                 backoff_time = int(retry_after) if retry_after.isdigit() else 0
                 raise RateLimited(msg, backoff_time=backoff_time) from None
             if err.status == 408 or err.status >= 500:
