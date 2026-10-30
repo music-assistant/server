@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
+import pytest
 from music_assistant_models.enums import PlaybackState
 from music_assistant_models.player import PlayerMedia
 
@@ -156,3 +157,17 @@ async def test_stop_ends_the_ma_session(player: HomeAssistantPlayer) -> None:
     await player.stop()
 
     assert player._ma_playback_active is False
+
+
+@pytest.mark.parametrize("content_id", [42, {"id": 42, "type": "movie"}], ids=["int", "dict"])
+async def test_non_text_media_content_id_is_ignored(content_id: object) -> None:
+    """An entity reporting a library id instead of a URL does not break its state updates."""
+    player = _make_player()
+
+    player.update_from_compressed_state(
+        {"s": "playing", "a": {"media_content_id": content_id, "media_title": "Some Movie"}}
+    )
+
+    assert player._reports_stream_url is False
+    assert player._attr_active_source is None
+    assert player._attr_current_media is None
