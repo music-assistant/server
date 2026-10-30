@@ -33,7 +33,7 @@ _T = TypeVar("_T")
 # Key of the persistent payload cache entry (stored with provider=instance_id).
 # Kept identical to the key the previous @use_cache-based implementation produced,
 # so payloads persisted before the redesign still warm cold instances.
-_PAYLOAD_CACHE_KEY = "_cached_recommendation_payload"
+RECOMMENDATION_PAYLOAD_CACHE_KEY = "_cached_recommendation_payload"
 
 
 class RecommendationPayloadMixin(_MixinBase):
@@ -171,7 +171,7 @@ class RecommendationPayloadMixin(_MixinBase):
         """Load the payload on a cold instance: persisted cache entry or backend fetch."""
         if not self._recommendation_payload_cache_checked:
             data, is_fresh, found = await self.mass.cache.get_with_freshness(
-                _PAYLOAD_CACHE_KEY,
+                RECOMMENDATION_PAYLOAD_CACHE_KEY,
                 provider=self.instance_id,
                 checksum=self.recommendation_payload_version,
                 base_class=RecommendationFolder,
@@ -202,7 +202,7 @@ class RecommendationPayloadMixin(_MixinBase):
         self._recommendation_payload_timestamp = time.monotonic()
         self._start_recommendation_task(
             self.mass.cache.set(
-                key=_PAYLOAD_CACHE_KEY,
+                key=RECOMMENDATION_PAYLOAD_CACHE_KEY,
                 data=cast("SerializableType", payload),
                 expiration=self.recommendation_payload_ttl,
                 provider=self.instance_id,

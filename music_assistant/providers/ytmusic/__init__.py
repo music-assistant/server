@@ -214,6 +214,11 @@ class YoutubeMusicProvider(RecommendationPayloadMixin, MusicProvider):
         """Allow a few parallel fetches and leave YouTube to enforce its account allowance."""
         return 3
 
+    @property
+    def account_id(self) -> str | None:
+        """Return the username (or brand account id) the library is read from."""
+        return str(self.get_setup_value(CONF_USERNAME) or "") or None
+
     async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
         """Return Config entries to configure this provider."""
         return (
