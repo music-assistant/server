@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import AsyncGenerator
 from types import SimpleNamespace
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from music_assistant_models.enums import ContentType
@@ -15,6 +15,7 @@ from music_assistant.helpers import audio as audio_helper
 from music_assistant.helpers.audio import (
     build_concat_filelist,
     calculate_content_length,
+    get_content_length,
     get_output_format_key,
     parse_loudnorm,
     realtime_pcm_pacer,
@@ -182,3 +183,35 @@ def test_the_content_length_key_moves_with_the_encoder_settings(
     monkeypatch.setattr(audio_helper, "OUTPUT_ENCODING_REVISION", 99)
 
     assert get_output_format_key(fmt) != before
+
+
+# real encoded sizes of one 128 s track ("Stranded", 44.1 kHz) as the server streams them
+@pytest.mark.parametrize(
+    ("content_type", "bit_depth", "encoded_size"),
+    [
+        (ContentType.FLAC, 24, 27_442_621),
+        (ContentType.FLAC, 16, 16_107_032),
+        (ContentType.MP3, 16, 5_144_076),
+        (ContentType.AAC, 16, 4_214_274),
+        # 128.57 s of 16-bit stereo PCM behind ffmpeg's 78-byte WAV header
+        (ContentType.WAV, 16, 22_680_414),
+    ],
+)
+async def test_an_unmeasured_content_length_is_never_shorter_than_the_stream(
+    content_type: ContentType, bit_depth: int, encoded_size: int
+) -> None:
+    """Without a measurement the announced length still covers the whole encoded stream."""
+    fmt = AudioFormat(content_type=content_type, sample_rate=44100, bit_depth=bit_depth)
+    mass = MagicMock()
+    mass.cache.get = AsyncMock(return_value=None)
+
+    assert await get_content_length(mass, "library://track/2", fmt, 128) >= encoded_size
+
+
+async def test_a_measured_content_length_is_used_as_measured() -> None:
+    """A size measured on an earlier full play of the same duration is announced as is."""
+    fmt = AudioFormat(content_type=ContentType.FLAC, sample_rate=44100, bit_depth=24)
+    mass = MagicMock()
+    mass.cache.get = AsyncMock(return_value={"size": 27_442_621, "duration": 128.6})
+
+    assert await get_content_length(mass, "library://track/2", fmt, 128) == 27_442_621
