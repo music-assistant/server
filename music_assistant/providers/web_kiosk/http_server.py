@@ -1,0 +1,1351 @@
+"""Embedded HTTP server for the Web Kiosk Provider."""
+
+from __future__ import annotations
+
+import asyncio
+import json
+import logging
+import math
+import secrets
+from collections.abc import Callable
+from html import escape as html_escape
+from pathlib import Path
+from typing import TYPE_CHECKING, Any, TypeGuard, cast
+from urllib.parse import quote, urlsplit, urlunsplit
+
+from aiohttp import ClientError, WSCloseCode, WSMsgType, web
+from music_assistant_models.enums import PlaybackState
+from music_assistant_models.errors import MusicAssistantError
+
+from music_assistant.constants import HOMEASSISTANT_SYSTEM_USER, SENDSPIN_SERVER_PORT
+
+from .constants import (
+    CONF_SHOW_STOP_NOTIFICATION,
+    CONF_URL_BUILDER_REQUIRE_AUTH,
+    DEFAULT_SHOW_STOP_NOTIFICATION,
+    DEFAULT_URL_BUILDER_REQUIRE_AUTH,
+    PLAYER_ID_SANITIZE_RE,
+    WEB_KIOSK_PLAYER_ID_PREFIX,
+    normalize_sendspin_client_id,
+)
+from .ownership import (
+    SendspinClaimChallenge,
+    SendspinIdentityConflictError,
+    VerifiedSendspinClaim,
+)
+from .party import PartyAdapter
+from .player import END_MARGIN, WebKioskPlayer, media_timeline
+
+if TYPE_CHECKING:
+    from music_assistant.models.player import Player, PlayerMedia
+
+    from .provider import WebKioskProvider
+
+logger = logging.getLogger(__name__)
+
+STATIC_DIR = Path(__file__).parent / "static"
+
+_KNOWN_EXTENSIONS = (".mp3", ".json", ".flac", ".aac")
+
+# The page calls Music Assistant through POST /api because it is served from the
+# kiosk port while the MA webserver listens on another origin. Forward only the
+# commands the page sends: a general proxy would re-expose the whole MA API,
+# including unauthenticated commands such as login, on the kiosk port.
+PAGE_API_COMMANDS = frozenset(
+    {
+        "audio_analysis/wave_form",
+        "player_queues/get_active_queue",
+        "player_queues/items",
+        "players/cmd/next",
+        "players/cmd/pause",
+        "players/cmd/play",
+        "players/cmd/previous",
+        "players/cmd/seek",
+        "players/cmd/volume_set",
+    }
+)
+
+
+def _is_finite_position(value: object) -> TypeGuard[int | float]:
+    """Return whether a position can safely represent non-negative elapsed time."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or value < 0:
+        return False
+    try:
+        return math.isfinite(value)
+    except OverflowError:
+        return False
+
+
+def _strip_known_extension(value: str) -> str:
+    """Strip only known audio/data extensions from a value."""
+    for ext in _KNOWN_EXTENSIONS:
+        if value.endswith(ext):
+            return value[: -len(ext)]
+    return value
+
+
+def _is_audio_path(path: str) -> bool:
+    """Check whether the path is the audio route."""
+    return path.startswith("/stream/")
+
+
+def rewrite_stream_host(request: web.Request, url: str) -> str:
+    """Point a stream URL at the host the client already uses to reach MA."""
+    client_host = request.url.host
+    if not client_host:
+        return url
+    parts = urlsplit(url)
+    if ":" in client_host:
+        client_host = f"[{client_host}]"
+    netloc = f"{client_host}:{parts.port}" if parts.port else client_host
+    return urlunsplit((parts.scheme, netloc, parts.path, parts.query, parts.fragment))
+
+
+class WebKioskHTTPServer:
+    """HTTP server that serves the kiosk SPA, push WebSocket, and stream redirect."""
+
+    def __init__(self, provider: WebKioskProvider, port: int) -> None:
+        """Initialize the HTTP server."""
+        self.provider = provider
+        self.port = port
+        self.app = web.Application(middlewares=[self._cache_middleware])
+        self.app.on_response_prepare.append(self._deny_framing)
+        self.app.on_startup.append(self._subscribe_player_updates)
+        self.app.on_cleanup.append(self._unsubscribe_player_updates)
+        self._unsubscribe_state_updates: Callable[[], None] | None = None
+        self._media_signatures: dict[str, tuple[Any, ...]] = {}
+        # Per player: the playback generation and queue item its pages last
+        # received metadata for during a flow stream.
+        self._flow_items: dict[str, tuple[str, str | None]] = {}
+        self._player_names: dict[str, str | None] = {}
+        self._group_signatures: dict[str, tuple[str | None, str | None]] = {}
+        self._runner: web.AppRunner | None = None
+        self._ws_clients: dict[str, set[web.WebSocketResponse]] = {}
+        self._ws_volume_support: dict[web.WebSocketResponse, bool] = {}
+        self._ws_claims: dict[web.WebSocketResponse, VerifiedSendspinClaim] = {}
+        self._ws_peers: dict[web.WebSocketResponse, tuple[str | None, str | None]] = {}
+        self._ws_lyrics: set[web.WebSocketResponse] = set()
+        # The playback generation of the last play message each page was sent.
+        self._ws_played: dict[web.WebSocketResponse, str] = {}
+        self._ws_tasks: dict[web.WebSocketResponse, set[asyncio.Future[Any]]] = {}
+        self._outbound_locks: dict[str, asyncio.Lock] = {}
+        self.party = PartyAdapter(provider)
+        self._setup_routes()
+
+    async def start(self) -> None:
+        """Start the HTTP server."""
+        self._runner = web.AppRunner(self.app)
+        await self._runner.setup()
+        # 0.0.0.0 is required: kiosk devices on LAN must reach this server by host IP.
+        site = web.TCPSite(
+            self._runner,
+            "0.0.0.0",  # noqa: S104
+            self.port,
+            reuse_address=True,
+            reuse_port=True,
+        )
+        await site.start()
+        logger.info("Web Kiosk HTTP server started on port %s", self.port)
+
+    async def stop(self) -> None:
+        """Stop the HTTP server."""
+        for clients in list(self._ws_clients.values()):
+            for ws in list(clients):
+                if not ws.closed:
+                    await ws.close()
+        self._ws_clients.clear()
+        self._ws_volume_support.clear()
+        self._ws_claims.clear()
+        self._outbound_locks.clear()
+        if self._runner:
+            await self._runner.cleanup()
+            self._runner = None
+        logger.info("Web Kiosk HTTP server stopped")
+
+    def broadcast_play(self, player: WebKioskPlayer) -> None:
+        """
+        Send the player's current stream and its metadata to the player's pages.
+
+        :param player: The kiosk player that started new media.
+        """
+        player_id = player.player_id
+        clients = self._ws_clients.get(player_id, set())
+        if not clients:
+            logger.debug("broadcast_play: no WebSocket clients for player_id=%s", player_id)
+            return
+        seq = self.provider.next_wave_seq(player_id)
+        msg = self._play_message(player, wave_seq=seq)
+        for ws in list(clients):
+            if not ws.closed:
+                self._post(ws, msg, player_id)
+                self._ws_played[ws] = player.playback_generation
+        # The browser may have no Music Assistant token. The curve still
+        # belongs to the track this player is already decoding.
+        self.provider.spawn_wave(player_id, seq, player.current_media)
+        self.provider.spawn_lyrics(player_id, seq, player.current_media)
+
+    def broadcast_wave(self, player_id: str, seq: int, bins: list[float] | None) -> None:
+        """Send the stored energy curve for the track that just started."""
+        clients = self._ws_clients.get(player_id, set())
+        if not clients:
+            return
+        msg = json.dumps({"type": "wave", "seq": seq, "bins": bins or []})
+        for ws in list(clients):
+            if not ws.closed:
+                self._post(ws, msg, player_id)
+
+    def broadcast_lyrics(self, player_id: str, seq: int, lines: list[dict[str, Any]]) -> None:
+        """Send lyric lines for the track that just started."""
+        clients = self._ws_clients.get(player_id, set())
+        if not clients:
+            return
+        msg = json.dumps({"type": "lyrics", "seq": seq, "lines": lines})
+        for ws in list(clients):
+            if not ws.closed:
+                self._post(ws, msg, player_id)
+
+    def broadcast_player_name(self, player: WebKioskPlayer) -> None:
+        """Send configured display-name changes to connected kiosk pages."""
+        if player.player_id not in self._ws_clients:
+            return
+        name = player.config.name
+        if player.player_id in self._player_names and self._player_names[player.player_id] == name:
+            return
+        self._player_names[player.player_id] = name
+        message = json.dumps({"type": "player", "custom_name": name})
+        for ws in tuple(self._ws_clients.get(player.player_id, set())):
+            if not ws.closed:
+                self._post(ws, message, player.player_id)
+
+    def broadcast_media(self, player_id: str, seq: int, media: PlayerMedia | None) -> None:
+        """Send effective track metadata without opening an HTML5 audio stream."""
+        msg = json.dumps(
+            {
+                "type": "media",
+                "wave_seq": seq,
+                "title": media.title if media else "",
+                "artist": media.artist if media else "",
+                "image_url": media.image_url if media else None,
+                "duration": media.duration if media else None,
+            }
+        )
+        for ws in list(self._ws_clients.get(player_id, set())):
+            if not ws.closed:
+                self._post(ws, msg, player_id)
+
+    def broadcast_sendspin(self, player_id: str, url: str) -> None:
+        """Notify WebSocket clients to open the kiosk in Sendspin mode."""
+        clients = self._ws_clients.get(player_id, set())
+        if not clients:
+            return
+        msg = json.dumps({"type": "sendspin", "url": url, "player_id": player_id})
+        for ws in list(clients):
+            if not ws.closed:
+                self._post(ws, msg, player_id)
+
+    def broadcast_pause(self, player_id: str) -> None:
+        """Notify subscribed WebSocket clients to pause playback."""
+        clients = self._ws_clients.get(player_id, set())
+        if not clients:
+            return
+        msg = json.dumps({"type": "pause"})
+        for ws in list(clients):
+            if not ws.closed:
+                self._post(ws, msg, player_id)
+
+    def broadcast_resume(self, player_id: str) -> None:
+        """Notify subscribed WebSocket clients to resume playback."""
+        clients = self._ws_clients.get(player_id, set())
+        if not clients:
+            return
+        msg = json.dumps({"type": "resume"})
+        for ws in list(clients):
+            if not ws.closed:
+                self._post(ws, msg, player_id)
+
+    def broadcast_stop(self, player_id: str) -> None:
+        """Notify subscribed WebSocket clients to stop playback."""
+        clients = self._ws_clients.get(player_id, set())
+        if not clients:
+            return
+        show_notification = self.provider.config.get_value(
+            CONF_SHOW_STOP_NOTIFICATION, DEFAULT_SHOW_STOP_NOTIFICATION
+        )
+        payload: dict[str, Any] = {
+            "type": "stop",
+            "showNotification": bool(show_notification),
+        }
+        msg = json.dumps(payload)
+        for ws in list(clients):
+            if not ws.closed:
+                self._post(ws, msg, player_id)
+
+    def broadcast_seek(self, player_id: str, position_seconds: int) -> None:
+        """Notify subscribed WebSocket clients to seek to a position."""
+        clients = self._ws_clients.get(player_id, set())
+        if not clients:
+            return
+        msg = json.dumps({"type": "seek", "position": position_seconds})
+        for ws in list(clients):
+            if not ws.closed:
+                self._post(ws, msg, player_id)
+
+    def broadcast_volume(self, player_id: str, volume_level: int) -> None:
+        """Notify subscribed WebSocket clients of a volume change."""
+        clients = self._ws_clients.get(player_id, set())
+        if not clients:
+            return
+        msg = json.dumps({"type": "volume", "level": volume_level})
+        for ws in list(clients):
+            if not ws.closed:
+                self._post(ws, msg, player_id)
+
+    def broadcast_mute(self, player_id: str, muted: bool) -> None:
+        """Notify subscribed WebSocket clients of a mute change."""
+        msg = json.dumps({"type": "mute", "muted": muted})
+        for ws in list(self._ws_clients.get(player_id, set())):
+            if not ws.closed:
+                self._post(ws, msg, player_id)
+
+    def client_count(self, player_id: str) -> int:
+        """Return how many browser sockets are open for this player."""
+        return len(self._ws_clients.get(player_id, ()))
+
+    def lyrics_requested(self, player_id: str) -> bool:
+        """Return whether any connected page of this player shows lyrics."""
+        return any(ws in self._ws_lyrics for ws in self._ws_clients.get(player_id, ()))
+
+    async def reattach_player(self, player_id: str) -> None:
+        """Register a player again for its connected browser after it was enabled."""
+        clients = [ws for ws in self._ws_clients.get(player_id, ()) if not ws.closed]
+        if not clients:
+            return
+        # The Sendspin owner defines the registered identity; any tab will do otherwise.
+        ws = self._owner_socket(player_id) or clients[-1]
+        remote_ip, user_agent = self._ws_peers.get(ws, (None, None))
+        claim = self._ws_claims.get(ws)
+        player = await self.provider.get_or_register_player(
+            player_id,
+            display_name=self.provider.player_display_name(player_id, remote_ip=remote_ip),
+            ip_address=remote_ip,
+            sendspin_client_id=claim.client_id if claim else None,
+            sendspin_claim=claim,
+            user_agent=user_agent,
+        )
+        if player is None or self.provider.mass.players.get_player(player_id) is not player:
+            return
+        player.on_ws_connected()
+        self._update_volume_support(player_id)
+        self._update_output_mode(player_id)
+        self.broadcast_player_name(player)
+        for client in clients:
+            await self._send_snapshot(client, player)
+
+    def _setup_routes(self) -> None:
+        """Register all HTTP routes."""
+        self.app.router.add_get("/", self._handle_root)
+        self.app.router.add_get("/kiosk", self._handle_web_app)
+        self.app.router.add_get("/web", self._handle_web_app)
+        self.app.router.add_post("/builder-auth", self._handle_builder_auth)
+        self.app.router.add_static("/web/", STATIC_DIR / "web")
+        self.app.router.add_get("/health", self._handle_health)
+        self.app.router.add_get("/ws", self._handle_ws)
+        self.app.router.add_get("/stream/{player_id}", self._handle_stream)
+        self.app.router.add_get("/stream/{player_id}.mp3", self._handle_stream)
+        self.app.router.add_get("/api/party", self._handle_party_info)
+        self.app.router.add_get("/api/party/qr.svg", self._handle_party_qr)
+        self.app.router.add_get("/api/party/qr.png", self._handle_party_qr)
+        # Same-origin stand-in for the MA webserver. The SPA is on this port and
+        # the MA API is on another, so a browser will not call MA directly.
+        self.app.router.add_post("/api", self._handle_ma_api)
+        self.app.router.add_get("/imageproxy/{image_id:.*}", self._handle_imageproxy)
+
+    async def _deny_framing(self, request: web.Request, response: web.StreamResponse) -> None:
+        """Prevent embedding credential and playback pages in another document."""
+        response.headers["X-Frame-Options"] = "DENY"
+        response.headers["Content-Security-Policy"] = "frame-ancestors 'none'"
+
+    async def _subscribe_player_updates(self, app: web.Application) -> None:
+        """Observe effective MA player state while this HTTP server is running."""
+        self._unsubscribe_state_updates = self.provider.mass.players.subscribe_player_state_update(
+            self._on_player_state_updated
+        )
+
+    async def _unsubscribe_player_updates(self, app: web.Application) -> None:
+        """Release state subscriptions and connection metadata."""
+        if self._unsubscribe_state_updates:
+            self._unsubscribe_state_updates()
+            self._unsubscribe_state_updates = None
+        self._media_signatures.clear()
+        self._flow_items.clear()
+        self._player_names.clear()
+        self._group_signatures.clear()
+
+    def _on_player_state_updated(
+        self, player: Player, changed_values: dict[str, tuple[Any, Any]]
+    ) -> None:
+        """Publish effective Sendspin track changes to this server's connected browsers."""
+        if isinstance(player, WebKioskPlayer) and player.player_id in self._ws_clients:
+            self.broadcast_player_name(player)
+            self._publish_effective_media(player)
+        for player_id in tuple(self._ws_clients):
+            kiosk = self.provider.mass.players.get_player(player_id)
+            if kiosk is not None:
+                self._publish_group(kiosk)
+
+    def _publish_group(self, player: Player, *, force: bool = False) -> None:
+        """Publish actual MA group membership, including changes to the leader name."""
+        state = player.state
+        group_id = state.active_group or state.synced_to
+        # A linked output can join a group before the native player's state is refreshed.
+        output = self.provider.mass.players.get_player(player.active_output_protocol or "")
+        if not group_id and output is not None:
+            group_id = output.state.active_group or output.state.synced_to
+            if not group_id and len(output.state.group_members) > 1:
+                group_id = player.player_id
+        if not group_id and len(state.group_members) > 1:
+            group_id = player.player_id
+        group = self.provider.mass.players.get_player(group_id) if group_id else None
+        signature = (group_id, group.state.name if group else None)
+        if not force and self._group_signatures.get(player.player_id) == signature:
+            return
+        self._group_signatures[player.player_id] = signature
+        message = json.dumps(
+            {"type": "group", "group_id": signature[0], "group_name": signature[1]}
+        )
+        for ws in self._ws_clients.get(player.player_id, set()):
+            if not ws.closed:
+                self._post(ws, message, player.player_id)
+
+    def _publish_effective_media(self, player: WebKioskPlayer, *, force: bool = False) -> None:
+        """Publish a new metadata generation when the track the pages hear changes."""
+        if (
+            not player.sendspin_client_id
+            or player.active_output_protocol != player.sendspin_client_id
+        ):
+            if player.serves_flow:
+                self._publish_flow_item(player)
+            return
+        media = (
+            player.state.current_media
+            if player.state.playback_state in (PlaybackState.PLAYING, PlaybackState.PAUSED)
+            else None
+        )
+        signature = (
+            (
+                media.uri,
+                media.source_id,
+                media.queue_item_id,
+                media.title,
+                media.artist,
+                media.image_url,
+                media.duration,
+            )
+            if media
+            else ()
+        )
+        if not force and self._media_signatures.get(player.player_id) == signature:
+            return
+        self._media_signatures[player.player_id] = signature
+        seq = self.provider.next_wave_seq(player.player_id)
+        self.broadcast_media(player.player_id, seq, media)
+        if media:
+            self.provider.spawn_wave(player.player_id, seq)
+            self.provider.spawn_lyrics(player.player_id, seq)
+        else:
+            self.broadcast_wave(player.player_id, seq, None)
+            self.broadcast_lyrics(player.player_id, seq, [])
+
+    def _publish_flow_item(self, player: WebKioskPlayer) -> None:
+        """Send the pages the queue's new current item while they play its flow stream."""
+        state = player.state
+        media = state.current_media
+        if (
+            state.playback_state not in (PlaybackState.PLAYING, PlaybackState.PAUSED)
+            or media is None
+            or not media.queue_item_id
+        ):
+            return
+        player_id = player.player_id
+        generation = player.playback_generation
+        shown = self._flow_items.get(player_id)
+        if shown is None or shown[0] != generation:
+            # The play message of this stream announced its first item. Music
+            # Assistant signals state changes inside play_media(), before that
+            # message is sent, so the first item is known from the media.
+            started = player.current_media
+            shown = (generation, started.queue_item_id if started else None)
+        if shown == (generation, media.queue_item_id):
+            return
+        self._flow_items[player_id] = (generation, media.queue_item_id)
+        queue = self.provider.mass.player_queues.get(media.source_id) if media.source_id else None
+        speed = queue.playback_speed if queue and queue.playback_speed > 0 else 1.0
+        song = queue.corrected_elapsed_time if queue else 0.0
+        stream = player.corrected_elapsed_time or 0.0
+        seq = self.provider.next_wave_seq(player_id)
+        message = json.dumps(
+            {
+                "type": "media",
+                "wave_seq": seq,
+                "title": media.title or "",
+                "artist": media.artist or "",
+                "image_url": media.image_url,
+                "duration": media.duration,
+                # The song second at stream second 0: the page draws the song
+                # clock as start + its stream position x speed.
+                "start": song - stream * speed,
+                "playback_speed": speed,
+            }
+        )
+        for ws in list(self._ws_clients.get(player_id, set())):
+            if not ws.closed:
+                self._post(ws, message, player_id)
+        self.provider.spawn_wave(player_id, seq)
+        self.provider.spawn_lyrics(player_id, seq)
+
+    @web.middleware
+    async def _cache_middleware(self, request: web.Request, handler: Any) -> web.StreamResponse:
+        """Keep kiosk pages fresh without exposing responses to other origins."""
+        response: web.StreamResponse = await handler(request)
+        if request.path in ("/", "/kiosk", "/web", "/builder-auth") or request.path.startswith(
+            "/web/"
+        ):
+            response.headers["Cache-Control"] = "no-store"
+        return response
+
+    async def _handle_root(self, request: web.Request) -> web.Response:
+        """Serve the status dashboard with a kiosk URL builder."""
+        if self.provider.config.get_value(
+            CONF_URL_BUILDER_REQUIRE_AUTH, DEFAULT_URL_BUILDER_REQUIRE_AUTH
+        ):
+            token = request.cookies.get("wk_builder_auth", "")
+            authorization = request.headers.get("Authorization", "")
+            if authorization.lower().startswith("bearer "):
+                token = authorization[7:]
+            user = (
+                await self.provider.mass.webserver.auth.authenticate_with_token(token)
+                if token
+                else None
+            )
+            if not user or user.username == HOMEASSISTANT_SYSTEM_USER:
+                return cast(
+                    "web.Response",
+                    web.FileResponse(STATIC_DIR / "web" / "builder-login.html", status=401),
+                )
+        prefix = self._get_prefix(request)
+        players = (
+            "".join(
+                f"<li>{html_escape(p.display_name)} — {html_escape(p.state.playback_state.value)}</li>"
+                for p in self.provider.players
+            )
+            or "<li>No players registered</li>"
+        )
+        hostname = request.url.host or request.host.split(":")[0]
+        host_addr = f"[{hostname}]" if ":" in hostname else hostname
+        sendspin_url = f"http://{host_addr}:{SENDSPIN_SERVER_PORT}"
+        html = f"""<!DOCTYPE html>
+<html>
+<head><title>Web Kiosk</title>
+<style>
+body {{ font-family: system-ui, sans-serif; max-width: 760px; margin: 40px auto; padding: 20px; }}
+.info {{ background: #1a1a20; color: #e8e8ee; padding: 16px; border-radius: 10px; margin: 12px 0; }}
+code, input[readonly] {{ font-family: ui-monospace, monospace; word-break: break-all; }}
+.row {{ display: flex; flex-wrap: wrap; align-items: center; gap: 12px; margin: 8px 0; }}
+label {{ cursor: pointer; margin-right: 14px; }}
+input[readonly] {{ flex: 1; min-width: 0; padding: 8px; border-radius: 6px; border: 1px solid #444; background: #101014; color: #e8e8ee; }}
+input[type=text], input[type=password] {{ padding: 8px; border-radius: 6px; border: 1px solid #444; background: #101014; color: #e8e8ee; width: 100%; }}
+.btn {{ padding: 8px 14px; border-radius: 6px; border: 1px solid #4f8cff; background: #4f8cff; color: white; cursor: pointer; }}
+a {{ color: #4f8cff; }}
+small {{ color: #9a9aa6; display: block; margin-top: 4px; }}
+</style>
+</head>
+<body>
+<h1>Web Kiosk</h1>
+
+<div class="info">
+<h3>Kiosk URL Builder</h3>
+<div class="row">
+<label><input type="radio" name="mode" value="html5"> HTML5</label>
+<label><input type="radio" name="mode" value="sendspin" checked> Sendspin</label>
+<label><input type="checkbox" id="controls"> Controls</label>
+<label><input type="checkbox" id="party"> Party QR</label>
+<label><input type="checkbox" id="viz"> Visualizer</label>
+<label><input type="checkbox" id="lyrics"> Lyrics</label>
+<label><input type="checkbox" id="queue"> Queue</label>
+<label><input type="checkbox" id="show_player_id"> Player ID</label>
+<label><input type="checkbox" id="show_group"> Group name</label>
+<label><input type="checkbox" id="remote"> TV remote navigation</label>
+<label><input type="checkbox" id="lite"> Lightweight visuals</label>
+<label><input type="checkbox" id="wake_lock"> Keep screen awake when supported</label>
+<label><input type="checkbox" id="fullscreen"> Fullscreen button</label>
+</div>
+<div class="row">
+<input type="password" id="token" placeholder="MA auth token (optional)">
+</div>
+<div class="row">
+<input type="text" id="device_id" placeholder="Device id (optional, stored in the browser)">
+</div>
+<div class="row">
+<input type="text" id="sendspin_url" placeholder="Sendspin URL override (optional; HTTPS page needs HTTPS/WSS)">
+</div>
+<div class="row">
+<input readonly id="url" data-base="{html_escape(prefix)}">
+<button class="btn" id="copy">Copy</button>
+<button class="btn" id="open" style="background:#2f6f3f;border-color:#2f6f3f">Open</button>
+</div>
+<small>Choose music in Music Assistant. This page only plays it. Transport and queue commands need an auth token. The party code is shown when guest access is on. The Sendspin server is assumed at {html_escape(sendspin_url)}.</small>
+</div>
+
+<div class="info">
+<h3>Players</h3>
+<ul>{players}</ul>
+</div>
+
+<script src="/web/url-builder.js"></script>
+</body>
+</html>"""
+        return web.Response(
+            text=html, content_type="text/html", headers={"Cache-Control": "no-store"}
+        )
+
+    async def _handle_builder_auth(self, request: web.Request) -> web.Response:
+        """Validate MA sign-in and store its token in a private browser cookie."""
+        if rejected := self._reject_cross_site(request):
+            return rejected
+        try:
+            credentials = await request.json()
+        except ValueError, TypeError:
+            return web.json_response({"error": "Invalid sign-in request"}, status=400)
+        if not isinstance(credentials, dict):
+            return web.json_response({"error": "Invalid sign-in request"}, status=400)
+        token = credentials.get("token")
+        if not token:
+            username = credentials.get("username")
+            password = credentials.get("password")
+            if not isinstance(username, str) or not isinstance(password, str):
+                return web.json_response({"error": "MA sign-in required"}, status=401)
+            result = await self.provider.mass.webserver.auth.login(
+                username=username, password=password, device_name="Web Kiosk URL Builder"
+            )
+            token = (
+                result.get("access_token")
+                if isinstance(result, dict) and result.get("success")
+                else None
+            )
+        if not isinstance(token, str) or not token:
+            return web.json_response({"error": "MA sign-in failed"}, status=401)
+        user = await self.provider.mass.webserver.auth.authenticate_with_token(token)
+        if not user or user.username == HOMEASSISTANT_SYSTEM_USER:
+            return web.json_response({"error": "MA sign-in failed"}, status=401)
+        response = web.json_response({"success": True}, headers={"Cache-Control": "no-store"})
+        response.set_cookie(
+            "wk_builder_auth",
+            token,
+            httponly=True,
+            samesite="Strict",
+            secure=request.secure,
+            max_age=86400,
+            path="/",
+        )
+        return response
+
+    async def _handle_web_app(self, _request: web.Request) -> web.Response:
+        """Serve the web kiosk SPA."""
+        response = cast("web.Response", web.FileResponse(STATIC_DIR / "web" / "index.html"))
+        response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+        return response
+
+    async def _handle_health(self, _request: web.Request) -> web.Response:
+        """Health check endpoint."""
+        return web.json_response(
+            {
+                "status": "ok",
+                "provider": "web_kiosk",
+                "players": len(self.provider.players),
+            }
+        )
+
+    async def _verify_sendspin_claim(
+        self, request: web.Request, ws: web.WebSocketResponse
+    ) -> VerifiedSendspinClaim | None:
+        """Authenticate the announced SDK identity before touching any MA player."""
+        announced = normalize_sendspin_client_id(request.query.get("sendspin_client_id"))
+        if not announced:
+            return None
+        player_id, _ = self._get_player_id_and_device_param(request)
+        existing = self._get_kiosk_player(player_id)
+        if existing and existing.sendspin_client_id and existing.sendspin_client_id != announced:
+            await ws.close(code=1008, message=b"Use a new device ID for a new Sendspin identity")
+            return None
+        challenge = SendspinClaimChallenge(player_id, announced)
+        await ws.send_json(challenge.payload())
+        try:
+            response = await ws.receive_json(timeout=10)
+            proof = (
+                response.get("proof")
+                if isinstance(response, dict) and response.get("type") == "sendspin_proof"
+                else None
+            )
+            claim = challenge.verify(proof)
+        except ValueError, TypeError, TimeoutError:
+            claim = None
+        if claim is None:
+            await ws.close(code=1008, message=b"Sendspin ownership verification failed")
+        return claim
+
+    async def _handle_ws(self, request: web.Request) -> web.WebSocketResponse:
+        """
+        WebSocket for push playback — clients subscribe by player_id.
+
+        Uses the same player_id derivation (device_id or IP) as the stream
+        endpoint so broadcast_stop reaches the correct client. Registers the
+        player in MA on connect so the player appears when the kiosk starts.
+        """
+        if self._reject_cross_site(request):
+            raise web.HTTPForbidden
+        ws = web.WebSocketResponse(heartbeat=30)
+        await ws.prepare(request)
+
+        claim = await self._verify_sendspin_claim(request, ws)
+        if ws.closed:
+            return ws
+        registered = await self._register_socket_player(request, ws, claim)
+        if registered is None:
+            return ws
+        player_id, player = registered
+        # Count this socket before any await. A reload's old socket can close
+        # during that await, and it must still see a live client.
+        self._track_socket(player_id, ws, request, claim)
+        preparation: asyncio.Task[None] | None = None
+        try:
+            self._update_volume_support(player_id)
+            self.provider.cancel_player_close(player_id)
+            logger.info(
+                "WebSocket connected: player_id=%s, clients_for_player=%d",
+                player_id,
+                len(self._ws_clients[player_id]),
+            )
+            if player and isinstance(player, WebKioskPlayer):
+                player.on_ws_connected()
+            # Tell the kiosk its server-derived player_id so it can target MA
+            # JSON-RPC playback commands before the first "play" push arrives.
+            custom_name = player.config.name if player else None
+            self._player_names[player_id] = custom_name
+            self._update_output_mode(player_id)
+            welcome = json.dumps(
+                {
+                    "type": "welcome",
+                    "player_id": player_id,
+                    "custom_name": custom_name,
+                    "server_version": self.provider.mass.version,
+                    # Seconds a seek leaves before the end of a song; the
+                    # same rule as the kiosk's own resumes.
+                    "end_margin": END_MARGIN,
+                    "device_info": {
+                        "model": player.device_info.model,
+                        "manufacturer": player.device_info.manufacturer,
+                        "software_version": player.device_info.software_version,
+                    }
+                    if player
+                    else {},
+                }
+            )
+            async with self._outbound_lock(player_id):
+                await self._ws_send(ws, welcome)
+            # A reconnecting/reloaded kiosk needs the current play state, otherwise it
+            # stays silent until the next playback command. Preparing it can wait
+            # for the playback lock, so it runs beside the receive loop: the page's
+            # own reports (such as the end of an announcement) keep flowing.
+            preparation = self._start_page_preparation(ws, player)
+            async for msg in ws:
+                if msg.type == WSMsgType.TEXT:
+                    self._handle_ws_message(player_id, msg.data, ws)
+        finally:
+            if preparation is not None:
+                preparation.cancel()
+                await asyncio.gather(preparation, return_exceptions=True)
+            await self._close_socket(player_id, ws)
+            logger.debug("WebSocket client disconnected for player %s", player_id)
+
+        return ws
+
+    async def _close_socket(self, player_id: str, ws: web.WebSocketResponse) -> None:
+        """Forget a closed page and settle what its player still needs."""
+        played = self._ws_played.get(ws)
+        self._forget_socket(player_id, ws)
+        self._update_volume_support(player_id)
+        self._update_output_mode(player_id)
+        if not self._ws_clients.get(player_id):
+            self._media_signatures.pop(player_id, None)
+            self._player_names.pop(player_id, None)
+            self._group_signatures.pop(player_id, None)
+            self._ws_clients.pop(player_id, None)
+            lock = self._outbound_locks.get(player_id)
+            if lock is not None and not lock.locked():
+                del self._outbound_locks[player_id]
+            offline_player = self.provider.mass.players.get_player(player_id)
+            if offline_player and isinstance(offline_player, WebKioskPlayer):
+                offline_player.on_ws_disconnected()
+            # Gone for good only if nothing reconnects. A reload does.
+            self.provider.schedule_player_close(player_id)
+            self._flow_items.pop(player_id, None)
+        elif (
+            isinstance(kiosk := self.provider.mass.players.get_player(player_id), WebKioskPlayer)
+            and kiosk.serves_flow
+            and played == kiosk.playback_generation
+        ):
+            try:
+                await self.provider.run_owned(self._rebuild_flow_for_pages(kiosk))
+            except Exception:
+                # Nothing else awaits this. The pages keep playing; only the
+                # queue's position may stop following them.
+                logger.exception("Rebuilding the flow stream for %s failed", player_id)
+
+    async def _prepare_page(self, ws: web.WebSocketResponse, player: WebKioskPlayer | None) -> None:
+        """Move playback to the page's output if needed and send it the play state."""
+        try:
+            # Moving playback is provider work: it completes even if this page
+            # goes away while the queue resumes.
+            if player is not None and self._needs_native_output(player):
+                await self.provider.run_owned(self._move_playback_to_native_output(player))
+            await self._send_snapshot(ws, player)
+        except Exception:
+            # Nothing else awaits this task. A page without its play state would
+            # stay silent, so report the failure and close the socket: the page
+            # reconnects and gets a new attempt.
+            logger.exception("Preparing the kiosk page failed")
+            await ws.close(code=WSCloseCode.INTERNAL_ERROR, message=b"Kiosk setup failed")
+
+    def _needs_native_output(self, player: WebKioskPlayer) -> bool:
+        """Return whether an HTML5 tab needs playback moved off the Sendspin output."""
+        return bool(
+            player.html5_requested
+            and player.sendspin_client_id
+            and not player.sendspin_fallback
+            and player.active_output_protocol == player.sendspin_client_id
+        )
+
+    async def _move_playback_to_native_output(self, player: WebKioskPlayer) -> None:
+        """Move Sendspin playback to native output once an HTML5 tab needs it."""
+        if not self._needs_native_output(player):
+            return
+        try:
+            # The same handover as the no-audio fallback: a running queue resumes
+            # natively, a paused one stays paused at its position.
+            await self.provider.fallback_sendspin(
+                player.player_id, expected_client_id=player.sendspin_client_id
+            )
+        except MusicAssistantError, TimeoutError:
+            logger.warning(
+                "Moving playback to native output failed for %s", player.player_id, exc_info=True
+            )
+
+    async def _send_snapshot(
+        self, ws: web.WebSocketResponse, player: WebKioskPlayer | None
+    ) -> None:
+        """Push the current play state to a freshly connected kiosk."""
+        if player is None:
+            return
+        self._publish_group(player, force=True)
+        if player.sendspin_client_id and player.active_output_protocol == player.sendspin_client_id:
+            self._publish_effective_media(player, force=True)
+            return
+        # A stream that started after this page connected (moving playback off
+        # Sendspin, a play meanwhile) already reached it and starts where the
+        # queue is. Rebuilding it would restart it on every page.
+        if self._ws_played.get(ws) == player.playback_generation:
+            async with self._outbound_lock(player.player_id):
+                for message in self._volume_messages(player):
+                    await self._ws_send(ws, message, player.player_id)
+            return
+        # Rebuilding the stream seeks (and re-pauses) the player: provider work
+        # that finishes even when this page goes away meanwhile.
+        refreshed = player.can_refresh_stream() and await self.provider.run_owned(
+            player.refresh_stream()
+        )
+        # Messages to the player's pages are ordered. Holding the order from the
+        # first read of the play state to the last snapshot message means a
+        # track change made meanwhile reaches every page after the snapshot,
+        # never before an obsolete part of it.
+        async with self._outbound_lock(player.player_id):
+            stream = self._stream_messages(player)
+            messages = self._volume_messages(player)
+            if stream is None:
+                for message in messages:
+                    await self._ws_send(ws, message, player.player_id)
+                return
+            wave_seq, play = stream
+            messages = [*play, *messages]
+            # A rebuilt stream replaces the one every page plays. Other pages get
+            # it through their own sockets, queued right behind this snapshot.
+            if refreshed:
+                for client in tuple(self._ws_clients.get(player.player_id, ())):
+                    if client is not ws:
+                        for message in play:
+                            self._post(client, message, player.player_id)
+                        self._ws_played[client] = player.playback_generation
+            for message in messages:
+                await self._ws_send(ws, message, player.player_id)
+            self._ws_played[ws] = player.playback_generation
+        self.provider.spawn_wave(player.player_id, wave_seq)
+        self.provider.spawn_lyrics(player.player_id, wave_seq)
+
+    async def _rebuild_flow_for_pages(self, player: WebKioskPlayer) -> None:
+        """Rebuild a flow stream for the pages still playing it after another page left."""
+        # Every page plays its own copy of the flow stream, and the queue
+        # follows only the copy opened last. When that page closes, the queue
+        # loses track of the rest, so all remaining pages get a new stream.
+        if not await player.refresh_stream():
+            return
+        async with self._outbound_lock(player.player_id):
+            if (stream := self._stream_messages(player)) is None:
+                return
+            wave_seq, play = stream
+            for client in tuple(self._ws_clients.get(player.player_id, ())):
+                if not client.closed:
+                    for message in play:
+                        self._post(client, message, player.player_id)
+                    self._ws_played[client] = player.playback_generation
+        self.provider.spawn_wave(player.player_id, wave_seq)
+        self.provider.spawn_lyrics(player.player_id, wave_seq)
+
+    def _stream_messages(self, player: WebKioskPlayer) -> tuple[int, list[str]] | None:
+        """Return the curve generation and the messages that start the player's stream."""
+        if player.current_media is None:
+            return None
+        wave_seq = self.provider.next_wave_seq(player.player_id)
+        messages = [self._play_message(player, wave_seq=wave_seq)]
+        # Position inside the served audio, including while paused. The song
+        # clock on screen is start + this value. A paused reconnect used to skip
+        # it and open the track at 0:00. A flow stream cannot be entered at a
+        # position: it is rebuilt at the queue position instead.
+        if not player.serves_flow and (elapsed := player.elapsed_time) is not None and elapsed >= 1:
+            messages.append(json.dumps({"type": "seek", "position": int(elapsed)}))
+        if player.playback_state == PlaybackState.PAUSED:
+            messages.append(json.dumps({"type": "pause"}))
+        return wave_seq, messages
+
+    def _volume_messages(self, player: WebKioskPlayer) -> list[str]:
+        """Return the MA volume level and mute state for freshly connected pages."""
+        # The slider and audio element start at 100 and unmuted. Send the real
+        # state so a reconnect neither jumps the volume nor plays a muted kiosk.
+        messages = []
+        if player.volume_level is not None:
+            messages.append(json.dumps({"type": "volume", "level": int(player.volume_level)}))
+        messages.append(json.dumps({"type": "mute", "muted": bool(player.volume_muted)}))
+        return messages
+
+    async def _handle_stream(self, request: web.Request) -> web.StreamResponse:
+        """Redirect the kiosk audio element to the MA Streamserver URL."""
+        player_id = _strip_known_extension(request.match_info["player_id"])
+
+        player = self._get_kiosk_player(player_id)
+        if player is None:
+            return web.Response(status=404, text="Player not found")
+        if rejected := self._reject_invalid_stream_token(request, player_id):
+            return rejected
+        self.provider.on_player_activity(player_id)
+
+        media = player.current_media
+        if not media:
+            return web.Response(status=404, text="No active stream")
+
+        stream_url = await self.provider.get_ma_stream_url(player_id, media)
+        if not stream_url:
+            return web.Response(status=502, text="Unable to resolve stream URL")
+        raise web.HTTPFound(location=rewrite_stream_host(request, stream_url))
+
+    async def _handle_party_info(self, request: web.Request) -> web.Response:
+        """Return the active party caption. The join URL stays inside the QR image."""
+        if not self.provider.party_qr_enabled:
+            return web.json_response({"active": False})
+        party = await self.party.get_active_party()
+        if party is None:
+            return web.json_response({"active": False})
+        return web.json_response(
+            {
+                "active": True,
+                "name": party.name,
+                "qr_text": party.qr_text,
+                "version": party.qr_version,
+            }
+        )
+
+    async def _handle_party_qr(self, request: web.Request) -> web.Response:
+        """Serve the guest join URL as a QR code image (SVG or PNG by route)."""
+        if not self.provider.party_qr_enabled:
+            return web.Response(status=404, text="Party QR is disabled")
+        return await self.party.handle_qr(request)
+
+    async def _handle_ma_api(self, request: web.Request) -> web.Response:
+        """Forward one page command to the Music Assistant webserver on this host."""
+        body = await request.read()
+        if self._page_command(body) is None:
+            logger.debug("Kiosk API proxy refused a request outside the page commands")
+            return web.Response(status=403, text="Command not allowed")
+        base = self._ma_internal_base()
+        if not base:
+            return web.Response(status=503, text="Music Assistant API is unavailable")
+        return await self._forward_to_mass(request, "POST", f"{base}/api", body)
+
+    async def _handle_imageproxy(self, request: web.Request) -> web.Response:
+        """Forward a cover-art request to the Music Assistant image proxy."""
+        base = self._ma_internal_base()
+        if not base:
+            return web.Response(status=503, text="Music Assistant API is unavailable")
+        path = request.path
+        if not path.startswith("/imageproxy/") or ".." in path:
+            return web.Response(status=400, text="Invalid image path")
+        url = f"{base}{path}"
+        if request.query_string:
+            url = f"{url}?{request.query_string}"
+        return await self._forward_to_mass(request, "GET", url, None)
+
+    def _ma_internal_base(self) -> str | None:
+        """Return a URL this process can use to reach the MA webserver."""
+        webserver = getattr(self.provider.mass, "webserver", None)
+        if webserver is None:
+            return None
+        for attr in ("internal_base_url", "base_url"):
+            value = getattr(webserver, attr, None)
+            if isinstance(value, str) and value.startswith("http"):
+                return value.rstrip("/")
+        return None
+
+    @staticmethod
+    def _page_command(body: bytes) -> str | None:
+        """
+        Return the page command in a JSON-RPC body, or None when it is not allowed.
+
+        :param body: Raw request body the page sent to the proxy.
+        """
+        try:
+            payload = json.loads(body)
+        except ValueError:
+            return None
+        if not isinstance(payload, dict):
+            return None
+        command = payload.get("command")
+        return command if isinstance(command, str) and command in PAGE_API_COMMANDS else None
+
+    async def _forward_to_mass(
+        self, request: web.Request, method: str, url: str, body: bytes | None
+    ) -> web.Response:
+        """Perform one request against the local MA webserver and return its body."""
+        headers: dict[str, str] = {}
+        if auth := request.headers.get("Authorization"):
+            headers["Authorization"] = auth
+        if method == "POST":
+            headers["Content-Type"] = request.headers.get("Content-Type", "application/json")
+        try:
+            async with self.provider.mass.http_session.request(
+                method, url, data=body, headers=headers, allow_redirects=False
+            ) as resp:
+                payload = await resp.read()
+                response_headers: dict[str, str] = {}
+                if content_type := resp.headers.get("Content-Type"):
+                    response_headers["Content-Type"] = content_type
+                if location := resp.headers.get("Location"):
+                    response_headers["Location"] = location
+                return web.Response(status=resp.status, body=payload, headers=response_headers)
+        except ClientError, TimeoutError, OSError:
+            logger.exception("Music Assistant proxy failed for %s", url.split("?", 1)[0])
+            return web.Response(status=502, text="Music Assistant is unreachable")
+
+    def _outbound_lock(self, player_id: str) -> asyncio.Lock:
+        """Return the lock that orders every message to the pages of one player."""
+        return self._outbound_locks.setdefault(player_id, asyncio.Lock())
+
+    def _post(self, ws: web.WebSocketResponse, text: str, player_id: str) -> None:
+        """Queue a message behind earlier messages and snapshots for the player."""
+        task = self.provider.mass.create_task(self._send_in_order(ws, text, player_id))
+        self._own_socket_task(ws, task)
+
+    def _start_page_preparation(
+        self, ws: web.WebSocketResponse, player: WebKioskPlayer | None
+    ) -> asyncio.Task[None]:
+        """Prepare a connected page beside its receive loop, owned by its socket."""
+        task = asyncio.create_task(self._prepare_page(ws, player))
+        self._own_socket_task(ws, task)
+        return task
+
+    def _own_socket_task(self, ws: web.WebSocketResponse, task: asyncio.Future[Any]) -> None:
+        """Make a task part of the socket's work, cancelled when the socket goes."""
+        tasks = self._ws_tasks.setdefault(ws, set())
+        tasks.add(task)
+        task.add_done_callback(tasks.discard)
+
+    async def _send_in_order(self, ws: web.WebSocketResponse, text: str, player_id: str) -> None:
+        async with self._outbound_lock(player_id):
+            await self._ws_send(ws, text, player_id)
+
+    async def _ws_send(
+        self, ws: web.WebSocketResponse, text: str, player_id: str | None = None
+    ) -> None:
+        """Send text to WebSocket; on failure warn and remove the stale client."""
+        try:
+            await ws.send_str(text)
+        except (ConnectionError, RuntimeError) as exc:
+            logger.warning("WebSocket send failed (player=%s): %s", player_id, exc)
+            if player_id:
+                self._ws_clients.get(player_id, set()).discard(ws)
+                self._ws_volume_support.pop(ws, None)
+                self._update_volume_support(player_id)
+
+    def _update_output_mode(self, player_id: str) -> None:
+        """Use native output for an HTML5 tab unless the verified Sendspin owner is connected."""
+        clients = self._ws_clients.get(player_id, set())
+        if clients and (player := self._get_kiosk_player(player_id)):
+            # A device ID is not a credential. While a socket that proved the
+            # Sendspin identity is connected, unverified tabs cannot move its
+            # output; once the owner is gone, an HTML5 reload switches to native.
+            owner_connected = bool(
+                player.sendspin_client_id
+                and self._owner_socket(player_id, player.sendspin_client_id) is not None
+            )
+            player.set_html5_requested(
+                not owner_connected and any(ws not in self._ws_claims for ws in clients)
+            )
+
+    def _update_volume_support(self, player_id: str) -> None:
+        """Require all connected outputs to support the shared volume command."""
+        clients = self._ws_clients.get(player_id, set())
+        if player := self._get_kiosk_player(player_id):
+            player.set_volume_control_supported(
+                bool(clients) and all(self._ws_volume_support.get(ws, False) for ws in clients)
+            )
+
+    def _handle_ws_message(
+        self, player_id: str, data: str, ws: web.WebSocketResponse | None = None
+    ) -> None:
+        """Process an inbound WebSocket message from the kiosk."""
+        try:
+            msg = json.loads(data)
+        except json.JSONDecodeError, TypeError:
+            logger.debug("Invalid WS message from %s: %s", player_id, data)
+            return
+
+        if not isinstance(msg, dict):
+            return
+        msg_type = msg.get("type")
+        if msg_type == "capabilities":
+            supported = msg.get("volume_control")
+            if (
+                ws is not None
+                and ws in self._ws_clients.get(player_id, set())
+                and isinstance(supported, bool)
+            ):
+                self._ws_volume_support[ws] = supported
+                self._update_volume_support(player_id)
+        elif msg_type in ("position", "seek"):
+            position = msg.get("position")
+            player = self._reporting_player(player_id, msg)
+            if player is not None and _is_finite_position(position):
+                if msg_type == "seek":
+                    player.note_seek(float(position))
+                else:
+                    player.update_position(float(position))
+                self.provider.on_player_activity(player_id)
+        elif msg_type == "sendspin_fallback":
+            claim = self._ws_claims.get(ws) if ws else None
+            player = self._get_kiosk_player(player_id)
+            if claim and player and player.sendspin_client_id == claim.client_id:
+                self.provider.request_sendspin_fallback(player_id, claim.client_id)
+        elif msg_type == "playback_error":
+            generation = msg.get("playback_generation")
+            if isinstance(generation, str) and generation:
+                logger.warning(
+                    "Kiosk %s could not play its stream: %s", player_id, msg.get("reason")
+                )
+                self.provider.playback_failed(player_id, generation)
+        elif msg_type == "ended":
+            generation = msg.get("playback_generation")
+            if isinstance(generation, str) and generation:
+                self.provider.track_ended(player_id, generation)
+            self.provider.on_player_activity(player_id)
+        else:
+            logger.debug("Unknown WS message type from %s: %s", player_id, msg_type)
+
+    def _play_message(self, player: WebKioskPlayer, *, wave_seq: int) -> str:
+        """Build the one play message used for live playback and reconnect snapshots."""
+        player_id = player.player_id
+        media = player.current_media
+        duration, start = media_timeline(media)
+        payload: dict[str, Any] = {
+            "type": "play",
+            "path": f"/stream/{player_id}?token={self.provider.get_stream_token(player_id)}",
+            "player_id": player_id,
+            "playback_generation": player.playback_generation,
+            # Where audio.currentTime 0 sits in the song. Non-zero after a seek,
+            # because the stream Music Assistant serves then starts at that point.
+            "start": start,
+            "playback_speed": player.playback_speed,
+        }
+        optional = {
+            "title": media.title if media else None,
+            "artist": media.artist if media else None,
+            "image_url": media.image_url if media else None,
+            "duration": duration,
+            "wave_seq": wave_seq,
+        }
+        payload.update({key: value for key, value in optional.items() if value is not None})
+        return json.dumps(payload)
+
+    def _owner_socket(
+        self, player_id: str, client_id: str | None = None
+    ) -> web.WebSocketResponse | None:
+        """Return a connected socket that proved a Sendspin identity, optionally a given one."""
+        for ws in self._ws_clients.get(player_id, ()):
+            claim = self._ws_claims.get(ws)
+            if not ws.closed and claim is not None and client_id in (None, claim.client_id):
+                return ws
+        return None
+
+    def _reporting_player(self, player_id: str, msg: dict[str, Any]) -> WebKioskPlayer | None:
+        """Return the player only when a playback report belongs to its current stream."""
+        # Every report about audio progress names the playback it describes. A
+        # delayed report from a previous stream or another tab is dropped here.
+        generation = msg.get("playback_generation")
+        player = self._get_kiosk_player(player_id)
+        if player is None or not isinstance(generation, str) or not generation:
+            return None
+        return player if generation == player.playback_generation else None
+
+    def _reject_invalid_stream_token(
+        self, request: web.Request, player_id: str
+    ) -> web.Response | None:
+        """
+        Reject an audio request that does not carry the player's own stream token.
+
+        A kiosk cannot send an auth header, so the token travels in the URL the
+        provider itself generated. This stops a request that was never handed out.
+        """
+        expected = self.provider.get_stream_token(player_id)
+        if not secrets.compare_digest(request.query.get("token", ""), expected):
+            return web.Response(status=403, text="Invalid or missing stream token")
+        return None
+
+    @staticmethod
+    def _reject_cross_site(request: web.Request) -> web.Response | None:
+        """
+        Reject browser requests from other origins (CSRF guard).
+
+        Legitimate callers are same-origin (kiosk SPA) or non-browser clients that
+        omit the header entirely — both pass.
+        """
+        if request.headers.get("Sec-Fetch-Site", "").lower() not in {"", "same-origin", "none"}:
+            return web.json_response({"error": "Cross-site request rejected"}, status=403)
+        origin = request.headers.get("Origin")
+        if origin is not None and origin != f"{request.scheme}://{request.host}":
+            return web.json_response({"error": "Cross-site request rejected"}, status=403)
+        return None
+
+    def _get_kiosk_player(self, player_id: str) -> WebKioskPlayer | None:
+        """Return the WebKioskPlayer for player_id if it belongs to this provider, else None."""
+        player = self.provider.mass.players.get_player(player_id, raise_unavailable=False)
+        if isinstance(player, WebKioskPlayer) and player.provider == self.provider:
+            return player
+        return None
+
+    def _get_prefix(self, request: web.Request) -> str:
+        """
+        Build URL prefix for content, using our known port.
+
+        Uses aiohttp's parsed URL host (IPv6-safe, no port) and substitutes
+        self.port. Note: host is still derived from the Host header; a crafted
+        header can influence the returned host, but the server binds to 0.0.0.0
+        so there is no single canonical IP to validate against.
+        """
+        host: str = request.url.host or request.host.split(":")[0]
+        host_addr = f"[{host}]" if ":" in host else host
+        return f"http://{host_addr}:{self.port}"
+
+    def _get_player_id_and_device_param(self, request: web.Request) -> tuple[str, str]:
+        """
+        Extract player_id and device_id query param from request.
+
+        Returns (player_id, device_param) where device_param is e.g. "device_id=xxx"
+        or "" if using IP fallback.
+        """
+        device_id = request.query.get("device_id")
+        remote_ip = request.remote or "unknown"
+
+        if device_id:
+            device_id = device_id[:64]  # clamp before sanitizing (UUIDs are 36 chars)
+            sanitized = PLAYER_ID_SANITIZE_RE.sub("_", device_id).strip("_") or "device"
+            player_id = f"{WEB_KIOSK_PLAYER_ID_PREFIX}{sanitized}"
+            param = f"device_id={quote(device_id, safe='')}"
+        else:
+            ip = remote_ip if remote_ip != "unknown" else "0_0_0_0"
+            sanitized = PLAYER_ID_SANITIZE_RE.sub("_", ip.replace(".", "_")).strip("_") or "ip"
+            player_id = f"{WEB_KIOSK_PLAYER_ID_PREFIX}{sanitized}"
+            param = ""
+        return player_id, param
+
+    def _track_socket(
+        self,
+        player_id: str,
+        ws: web.WebSocketResponse,
+        request: web.Request,
+        claim: VerifiedSendspinClaim | None,
+    ) -> None:
+        """Record a connected socket and everything known about it."""
+        # Every per-socket field is added here and removed in _forget_socket, so
+        # a new field cannot be left behind when the socket closes.
+        self._ws_clients.setdefault(player_id, set()).add(ws)
+        if claim:
+            self._ws_claims[ws] = claim
+        self._ws_peers[ws] = (request.remote, request.headers.get("User-Agent"))
+        if request.query.get("lyrics") == "1":
+            self._ws_lyrics.add(ws)
+        self._ws_volume_support[ws] = request.query.get("volume_control") == "1"
+
+    def _forget_socket(self, player_id: str, ws: web.WebSocketResponse) -> None:
+        """Remove a closed socket and everything recorded about it."""
+        self._ws_clients.get(player_id, set()).discard(ws)
+        self._ws_claims.pop(ws, None)
+        self._ws_peers.pop(ws, None)
+        self._ws_lyrics.discard(ws)
+        self._ws_volume_support.pop(ws, None)
+        self._ws_played.pop(ws, None)
+        # Work for a page ends with its socket. The handler awaits its own task.
+        current = asyncio.current_task()
+        for task in self._ws_tasks.pop(ws, set()):
+            if task is not current:
+                task.cancel()
+
+    async def _register_socket_player(
+        self,
+        request: web.Request,
+        ws: web.WebSocketResponse,
+        claim: VerifiedSendspinClaim | None,
+    ) -> tuple[str, WebKioskPlayer | None] | None:
+        """Register the socket's player, closing the socket on an identity conflict."""
+        try:
+            player_id, _, player = await self._ensure_player_for_request(request, claim)
+        except SendspinIdentityConflictError:
+            await ws.close(code=1008, message=b"Use a new device ID for a new Sendspin identity")
+            return None
+        return player_id, player
+
+    async def _ensure_player_for_request(
+        self, request: web.Request, claim: VerifiedSendspinClaim | None = None
+    ) -> tuple[str, str, WebKioskPlayer | None]:
+        """
+        Get or register player for this request.
+
+        Returns (player_id, device_param, player).
+        Player may be None if registration failed.
+        """
+        player_id, device_param = self._get_player_id_and_device_param(request)
+        remote_ip = request.remote
+        display_name = self.provider.player_display_name(player_id, remote_ip=remote_ip)
+        player = await self.provider.get_or_register_player(
+            player_id,
+            display_name=display_name,
+            ip_address=remote_ip,
+            sendspin_client_id=claim.client_id if claim else None,
+            sendspin_claim=claim,
+            user_agent=request.headers.get("User-Agent"),
+        )
+        return player_id, device_param, player

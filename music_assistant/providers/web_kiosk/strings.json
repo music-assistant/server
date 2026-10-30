@@ -1,0 +1,34 @@
+{
+  "config_entries": {
+    "http_port": {
+      "label": "HTTP Server Port",
+      "description": "Port for the Web Kiosk HTTP server."
+    },
+    "show_stop_notification": {
+      "label": "Show notification when playback stops",
+      "description": "Show an informational notification in the kiosk after playback is stopped from MA."
+    },
+    "enable_sendspin_bridge": {
+      "label": "Sendspin bridge (experimental)",
+      "description": "Register each kiosk under its browser Sendspin identity so it can join sample-synchronized playback groups. When a synchronized stream starts, the kiosk opens in Sendspin mode. Playback falls back to the regular HTTP player when the kiosk cannot connect."
+    },
+    "enable_party_qr": {
+      "label": "Show the Party guest QR",
+      "description": "Show the Party join QR on the kiosk page. The QR contains a guest login, and anyone who can reach the kiosk port can scan it, so enable this only when that port is limited to a trusted network."
+    },
+    "kiosk_url": {
+      "label": "Kiosk URL",
+      "description": "Open this URL for a minimal Sendspin player. Use the URL builder at the server root to enable additions or select HTML5."
+    },
+    "url_builder_require_auth": {
+      "label": "Require MA sign-in for URL builder",
+      "description": "Require a valid Music Assistant account or access token before the URL builder and player list can be opened. Player URLs remain available without sign-in."
+    }
+  },
+  "manifest": {
+    "description": "Turn any browser into a fullscreen kiosk player"
+  },
+  "errors": {
+    "player_offline": "Web kiosk {0} is offline."
+  }
+}

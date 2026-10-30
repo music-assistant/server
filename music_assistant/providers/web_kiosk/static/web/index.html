@@ -1,0 +1,189 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Web Kiosk</title>
+<script>
+try {
+  var q = new URLSearchParams(location.search);
+  if (q.get('sendspin') !== '0') document.documentElement.classList.add('sendspin');
+  if (q.get('controls') === '1') document.documentElement.classList.add('controls');
+} catch (e) {}
+</script>
+<style>
+:root { --bg:#0c0c10; --fg:#ececf2; --muted:#9a9aa6; --accent:#4f8cff; }
+* { box-sizing:border-box; margin:0; padding:0; }
+html,body { height:100%; background:var(--bg); color:var(--fg); font-family:system-ui,sans-serif; overflow:hidden; }
+body.kiosk { background:#000; }
+#kiosk { display:none; position:fixed; top:0; right:0; bottom:0; left:0; background:#000; color:#fff; overflow:hidden; }
+body.kiosk #kiosk { display:block; }
+#kiosk-bg { position:absolute; top:0; right:0; bottom:0; left:0; background-size:cover; background-position:center; filter:blur(40px) brightness(.4); transform:scale(1.1); transition:opacity .8s; }
+#kiosk-bg img { width:100%; height:100%; object-fit:cover; opacity:0; transition:opacity .8s; }
+#kiosk-center { position:absolute; top:0; right:0; bottom:0; left:0; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:0; padding:40px 40px 24px; z-index:2; min-height:0; }
+html.controls #kiosk-center { bottom:calc(var(--kiosk-bar-height) + 16px); }
+#kiosk-artbox { position:relative; width:46vw; height:46vw; max-width:46vh; width:min(46vh,46vw); height:min(46vh,46vw); max-height:46vh; max-height:min(46vh,46vw); flex:0 1 auto; min-height:0; border-radius:14px; background:#16161c; box-shadow:0 20px 60px rgba(0,0,0,.6); overflow:hidden; }
+#kiosk-art { position:absolute; top:0; right:0; bottom:0; left:0; width:100%; height:100%; object-fit:cover; display:none; }
+#kiosk-artbox.has-art #kiosk-art { display:block; }
+#kiosk-title { font-size:32px; font-size:clamp(20px,4vw,44px); font-weight:700; text-align:center; text-shadow:0 2px 20px rgba(0,0,0,.8); max-width:92vw; }
+#kiosk-artist { font-size:20px; font-size:clamp(15px,2.6vw,26px); color:#cfcfe0; text-align:center; max-width:92vw; }
+#kiosk-viz { position:absolute; top:0; right:0; bottom:0; left:0; z-index:1; width:100%; height:100%; }
+#kiosk-lyrics { margin-top:14px; width:92vw; max-width:720px; width:min(720px,92vw); text-align:center; }
+#kiosk-lyrics .l { margin:0; line-height:1.3; min-height:1.3em; color:rgba(255,255,255,.4); font-size:16px; font-size:clamp(13px,1.8vw,18px); }
+#kiosk-lyrics .l.current { color:#fff; font-weight:600; font-size:22px; font-size:clamp(16px,2.6vw,26px); }
+#kiosk-queue { position:absolute; right:16px; top:16px; width:340px; max-width:calc(100vw - 32px); width:min(340px,calc(100vw - 32px)); max-height:55vh; overflow-y:auto; z-index:4; background:rgba(10,10,14,.55); border-radius:12px; padding:12px; backdrop-filter:blur(8px); }
+#kiosk-queue .qrow { display:flex; align-items:center; gap:10px; padding:6px; border-radius:8px; font-size:14px; }
+#kiosk-queue .qrow.active { background:rgba(255,255,255,.12); }
+#kiosk-queue .qrow img { width:34px; height:34px; border-radius:5px; object-fit:cover; flex-shrink:0; }
+#kiosk-queue .qmeta { flex:1; min-width:0; display:flex; flex-direction:column; }
+#kiosk-queue .qt { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+#kiosk-queue .qa { color:#9a9aa6; font-size:12px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+#kiosk-sync { position:absolute; top:16px; left:50%; transform:translateX(-50%); z-index:6; font-size:12px; letter-spacing:1px; color:#9a9aa6; padding:6px 12px; border-radius:20px; background:rgba(10,10,14,.5); }
+#kiosk-sync.synced { color:#7ce38b; }
+#kiosk-sync.error { color:#ff8a8a; }
+#k-fullscreen { position:absolute; top:16px; top:max(16px,env(safe-area-inset-top,0px)); right:16px; right:max(16px,env(safe-area-inset-right,0px)); z-index:9; width:40px; height:40px; border-radius:20px; background:rgba(10,10,14,.5); }
+html.fullscreen-button #kiosk-queue { top:64px; top:max(64px,calc(env(safe-area-inset-top,0px) + 48px)); }
+#kiosk-pair { position:absolute; left:50%; top:64px; transform:translateX(-50%); z-index:7; padding:14px 22px; border-radius:12px; background:rgba(10,10,14,.82); font-size:22px; letter-spacing:2px; text-align:center; }
+#kiosk-status { position:absolute; top:48px; left:50%; transform:translateX(-50%); z-index:8; max-width:calc(100vw - 32px); max-width:min(420px,calc(100vw - 32px)); font-size:13px; color:#ffd2d2; background:rgba(10,10,14,.72); padding:8px 12px; border-radius:8px; text-align:center; }
+#kiosk-status.audio-prompt { top:50%; transform:translate(-50%,-50%); font-size:22px; font-size:clamp(16px,2.4vw,22px); padding:16px 22px; cursor:pointer; }
+@media (max-width:1100px) {
+  #kiosk-queue { top:52px; right:12px; left:12px; width:auto; max-height:22vh; }
+  html.queue-active body.kiosk #kiosk-center { justify-content:flex-start; padding:28vh 16px 24px; }
+}
+.hidden { display:none !important; }
+</style>
+<link rel="stylesheet" href="/web/player-controls.css">
+</head>
+<body class="kiosk">
+<!-- Icons from @lucide/vue 1.51.0, as used by MA frontend 2.17.339. -->
+<svg id="kiosk-icon-sprite" xmlns="http://www.w3.org/2000/svg" aria-hidden="true" focusable="false">
+  <desc>ISC License
+
+Copyright (c) 2026 Lucide Icons and Contributors
+
+Permission to use, copy, modify, and/or distribute this software for any
+purpose with or without fee is hereby granted, provided that the above
+copyright notice and this permission notice appear in all copies.
+
+THE SOFTWARE IS PROVIDED &quot;AS IS&quot; AND THE AUTHOR DISCLAIMS ALL WARRANTIES
+WITH REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF
+MERCHANTABILITY AND FITNESS. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR
+ANY SPECIAL, DIRECT, INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
+WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN AN
+ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
+OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
+
+---
+
+The following Lucide icons are derived from the Feather project:
+
+airplay, alert-circle, alert-octagon, alert-triangle, aperture, arrow-down-circle, arrow-down-left, arrow-down-right, arrow-down, arrow-left-circle, arrow-left, arrow-right-circle, arrow-right, arrow-up-circle, arrow-up-left, arrow-up-right, arrow-up, at-sign, calendar, cast, check, chevron-down, chevron-left, chevron-right, chevron-up, chevrons-down, chevrons-left, chevrons-right, chevrons-up, circle, clipboard, clock, code, columns, command, compass, corner-down-left, corner-down-right, corner-left-down, corner-left-up, corner-right-down, corner-right-up, corner-up-left, corner-up-right, crosshair, database, divide-circle, divide-square, dollar-sign, download, external-link, feather, frown, hash, headphones, help-circle, info, italic, key, layout, life-buoy, link-2, link, loader, lock, log-in, log-out, maximize, meh, minimize, minimize-2, minus-circle, minus-square, minus, monitor, moon, more-horizontal, more-vertical, move, music, navigation-2, navigation, octagon, pause-circle, percent, plus-circle, plus-square, plus, power, radio, rss, search, server, share, shopping-bag, sidebar, smartphone, smile, square, table-2, tablet, target, terminal, trash-2, trash, triangle, tv, type, upload, x-circle, x-octagon, x-square, x, zoom-in, zoom-out
+
+The MIT License (MIT) (for the icons listed above)
+
+Copyright (c) 2013-present Cole Bemis
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the &quot;Software&quot;), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED &quot;AS IS&quot;, WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.</desc>
+  <defs>
+  <symbol id="k-icon-play" viewBox="0 0 24 24"><path d="M5 5a2 2 0 0 1 3.008-1.728l11.997 6.998a2 2 0 0 1 .003 3.458l-12 7A2 2 0 0 1 5 19z"></path></symbol>
+  <symbol id="k-icon-pause" viewBox="0 0 24 24"><rect x="14" y="3" width="5" height="18" rx="1"></rect><rect x="5" y="3" width="5" height="18" rx="1"></rect></symbol>
+  <symbol id="k-icon-skip-back" viewBox="0 0 24 24"><path d="M17.971 4.285A2 2 0 0 1 21 6v12a2 2 0 0 1-3.029 1.715l-9.997-5.998a2 2 0 0 1-.003-3.432z"></path><path d="M3 20V4"></path></symbol>
+  <symbol id="k-icon-skip-forward" viewBox="0 0 24 24"><path d="M21 4v16"></path><path d="M6.029 4.285A2 2 0 0 0 3 6v12a2 2 0 0 0 3.029 1.715l9.997-5.998a2 2 0 0 0 .003-3.432z"></path></symbol>
+  <symbol id="k-icon-volume-2" viewBox="0 0 24 24"><path d="M11 4.702a.705.705 0 0 0-1.203-.498L6.413 7.587A1.4 1.4 0 0 1 5.416 8H3a1 1 0 0 0-1 1v6a1 1 0 0 0 1 1h2.416a1.4 1.4 0 0 1 .997.413l3.383 3.384A.705.705 0 0 0 11 19.298z"></path><path d="M16 9a5 5 0 0 1 0 6"></path><path d="M19.364 18.364a9 9 0 0 0 0-12.728"></path></symbol>
+  <symbol id="k-icon-volume-1" viewBox="0 0 24 24"><path d="M11 4.702a.705.705 0 0 0-1.203-.498L6.413 7.587A1.4 1.4 0 0 1 5.416 8H3a1 1 0 0 0-1 1v6a1 1 0 0 0 1 1h2.416a1.4 1.4 0 0 1 .997.413l3.383 3.384A.705.705 0 0 0 11 19.298z"></path><path d="M16 9a5 5 0 0 1 0 6"></path></symbol>
+  <symbol id="k-icon-volume-x" viewBox="0 0 24 24"><path d="M11 4.702a.7.7 0 0 0-1.203-.498L6.413 7.587A1.4 1.4 0 0 1 5.416 8H3a1 1 0 0 0-1 1v6a1 1 0 0 0 1 1h2.416a1.4 1.4 0 0 1 .997.413l3.383 3.384A.7.7 0 0 0 11 19.298z"></path><path d="m16.5 14.5 5-5"></path><path d="m16.5 9.5 5 5"></path></symbol>
+  <symbol id="k-icon-music" viewBox="0 0 24 24"><path d="M9 18V5l12-2v13"></path><circle cx="6" cy="18" r="3"></circle><circle cx="18" cy="16" r="3"></circle></symbol>
+  <symbol id="k-icon-x" viewBox="0 0 24 24"><path d="M18 6 6 18"></path><path d="m6 6 12 12"></path></symbol>
+  <symbol id="k-icon-maximize" viewBox="0 0 24 24"><path d="M8 3H5a2 2 0 0 0-2 2v3m13-5h3a2 2 0 0 1 2 2v3m0 8v3a2 2 0 0 1-2 2h-3M8 21H5a2 2 0 0 1-2-2v-3"></path></symbol>
+  <symbol id="k-icon-minimize" viewBox="0 0 24 24"><path d="M8 3v3a2 2 0 0 1-2 2H3m18 0h-3a2 2 0 0 1-2-2V3M3 16h3a2 2 0 0 1 2 2v3m8 0v-3a2 2 0 0 1 2-2h3"></path></symbol>
+  </defs>
+</svg>
+
+<div id="kiosk">
+  <button type="button" id="k-fullscreen" class="kiosk-control hidden" aria-label="Enter fullscreen" title="Enter fullscreen" aria-pressed="false"><svg class="kiosk-icon" viewBox="0 0 24 24" aria-hidden="true"><use id="k-fullscreen-icon" href="#k-icon-maximize" xlink:href="#k-icon-maximize"></use></svg></button>
+  <canvas id="kiosk-viz"></canvas>
+  <div id="kiosk-bg"><img id="kiosk-bg-img" alt=""></div>
+  <div id="kiosk-center">
+    <div id="kiosk-media-details">
+      <div id="kiosk-artbox">
+        <img id="kiosk-art" alt="HTML5" src="/web/html5.svg">
+        <button type="button" id="kiosk-party-expanded" class="hidden" aria-label="Close Party QR" title="Close Party QR">
+          <img id="kiosk-party-art" alt="Join Party">
+        </button>
+      </div>
+      <div id="kiosk-title">—</div>
+      <div id="kiosk-artist">—</div>
+    </div>
+    <div id="kiosk-lyrics" class="hidden" aria-live="polite"></div>
+  </div>
+  <div id="kiosk-sync"></div>
+  <div id="kiosk-player-labels"><div id="kiosk-player-id" class="hidden"></div><div id="kiosk-group" class="hidden"></div></div>
+  <div id="kiosk-pair" class="hidden"></div>
+  <div id="kiosk-status" class="hidden" role="status"></div>
+  <div id="kiosk-queue" class="hidden"></div>
+  <div id="kiosk-controls" role="region" aria-label="Player controls">
+    <div id="kiosk-bar-track">
+      <div id="kiosk-bar-artbox">
+        <img id="kiosk-bar-art" alt="" class="hidden">
+        <svg class="kiosk-icon" viewBox="0 0 24 24" aria-hidden="true"><use href="#k-icon-music" xlink:href="#k-icon-music"></use></svg>
+        <button type="button" id="kiosk-party" class="hidden" aria-label="Enlarge Party QR" aria-expanded="false" aria-controls="kiosk-party-expanded">
+          <img id="kiosk-party-thumbnail" alt="Join Party">
+        </button>
+      </div>
+      <div id="kiosk-bar-meta">
+        <div id="kiosk-bar-title">Nothing playing</div>
+        <div id="kiosk-bar-artist">Web Kiosk</div>
+      </div>
+    </div>
+    <div id="kiosk-player-center">
+      <div id="kiosk-transport">
+        <button type="button" id="k-prev" class="kiosk-control" aria-label="Previous" title="Previous"><svg class="kiosk-icon" viewBox="0 0 24 24" aria-hidden="true"><use href="#k-icon-skip-back" xlink:href="#k-icon-skip-back"></use></svg></button>
+        <button type="button" id="k-play" class="kiosk-control" aria-label="Play" title="Play"><svg class="kiosk-icon" viewBox="0 0 24 24" aria-hidden="true"><use id="k-play-icon" href="#k-icon-play" xlink:href="#k-icon-play"></use></svg></button>
+        <button type="button" id="k-next" class="kiosk-control" aria-label="Next" title="Next"><svg class="kiosk-icon" viewBox="0 0 24 24" aria-hidden="true"><use href="#k-icon-skip-forward" xlink:href="#k-icon-skip-forward"></use></svg></button>
+      </div>
+      <div id="kiosk-progress">
+        <input type="range" id="kiosk-seek" class="kiosk-slider" min="0" max="1000" value="0" aria-label="Position">
+        <div id="kiosk-time-labels"><span id="kiosk-time">0:00</span><span id="kiosk-dur">0:00</span></div>
+      </div>
+    </div>
+    <div id="kiosk-bar-actions">
+      <div id="kiosk-volume-control">
+        <button type="button" id="k-volume-button" class="kiosk-control" aria-label="Volume: 100%" aria-controls="kiosk-volume-panel" aria-expanded="false" title="Volume">
+          <svg class="kiosk-icon" viewBox="0 0 24 24" aria-hidden="true"><use id="k-volume-icon" href="#k-icon-volume-2" xlink:href="#k-icon-volume-2"></use></svg>
+          <span id="k-volume-level">100%</span>
+        </button>
+        <div id="kiosk-volume-panel" role="group" aria-label="Volume">
+          <div class="volume-panel-heading">
+            <span>Volume</span>
+            <button type="button" id="k-volume-close" class="kiosk-control" aria-label="Close volume" title="Close"><svg class="kiosk-icon" viewBox="0 0 24 24" aria-hidden="true"><use href="#k-icon-x" xlink:href="#k-icon-x"></use></svg></button>
+          </div>
+          <div class="volume-range-row">
+            <svg class="kiosk-icon" viewBox="0 0 24 24" aria-hidden="true"><use id="k-volume-slider-icon" href="#k-icon-volume-2" xlink:href="#k-icon-volume-2"></use></svg>
+            <input type="range" id="kiosk-volume" class="kiosk-slider" min="0" max="100" value="100" aria-label="Volume">
+            <span id="k-volume-panel-level">100%</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script src="/web/web.js"></script>
+</body>
+</html>
