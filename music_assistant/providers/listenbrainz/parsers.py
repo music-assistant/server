@@ -14,6 +14,7 @@ from music_assistant_models.media_items import (
     UniqueList,
 )
 
+JSPF_PLAYLIST_EXTENSION = "https://musicbrainz.org/doc/jspf#playlist"
 JSPF_TRACK_EXTENSION = "https://musicbrainz.org/doc/jspf#track"
 
 
@@ -37,6 +38,17 @@ def parse_playlist(
             )
         },
     )
+
+
+def parse_playlist_source_patch(playlist_data: dict[str, Any]) -> str | None:
+    """Return the ListenBrainz algorithm source patch for a JSPF playlist."""
+    try:
+        source_patch = playlist_data["extension"][JSPF_PLAYLIST_EXTENSION]["additional_metadata"][
+            "algorithm_metadata"
+        ]["source_patch"]
+    except KeyError, TypeError:
+        return None
+    return source_patch if isinstance(source_patch, str) else None
 
 
 def parse_track(track_data: dict[str, Any], provider_instance: str, provider_domain: str) -> Track:

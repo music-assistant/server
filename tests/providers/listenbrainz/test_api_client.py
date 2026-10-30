@@ -45,7 +45,7 @@ async def test_get_createdfor_playlists_uses_username_path() -> None:
 
     playlists = await client.get_createdfor_playlists("synthetic-user")
 
-    get_data.assert_awaited_once_with("/1/user/synthetic-user/playlists/createdfor?count=5")
+    get_data.assert_awaited_once_with("/1/user/synthetic-user/playlists/createdfor")
     assert playlists == [
         {
             "identifier": f"https://listenbrainz.org/playlist/{PLAYLIST_MBID}",
@@ -93,8 +93,8 @@ async def test_get_createdfor_playlists_fetches_all_pages() -> None:
     ]
     get_data.assert_has_awaits(
         [
-            call("/1/user/synthetic-user/playlists/createdfor?count=5"),
-            call("/1/user/synthetic-user/playlists/createdfor?count=5&offset=1"),
+            call("/1/user/synthetic-user/playlists/createdfor"),
+            call("/1/user/synthetic-user/playlists/createdfor?offset=1"),
         ]
     )
     assert get_data.await_count == 2

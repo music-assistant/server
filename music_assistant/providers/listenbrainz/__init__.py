@@ -5,11 +5,18 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from music_assistant_models.background_task import TaskSchedule
-from music_assistant_models.enums import ProviderFeature
+from music_assistant_models.config_entries import ConfigEntry
+from music_assistant_models.enums import ConfigEntryType, ProviderFeature
 
 from music_assistant.constants import CONF_USERNAME
 from music_assistant.models.plugin import PluginProvider
 from music_assistant.providers.listenbrainz.api_client import ListenBrainzAPIClient
+from music_assistant.providers.listenbrainz.constants import (
+    CONF_ENABLE_WEEKLY_EXPLORATION,
+    CONF_ENABLE_WEEKLY_JAMS,
+    CONF_ENABLE_YEARLY_MISSED_TRACKS,
+    CONF_ENABLE_YEARLY_TOP_DISCOVERIES,
+)
 from music_assistant.providers.listenbrainz.playlist import ListenBrainzPlaylistManager
 
 if TYPE_CHECKING:
@@ -35,6 +42,39 @@ async def setup(
 
 class ListenBrainzProvider(PluginProvider):
     """Expose ListenBrainz recommendation playlists."""
+
+    async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
+        """Return the playlist filtering options."""
+        return (
+            ConfigEntry(
+                key=CONF_ENABLE_WEEKLY_JAMS,
+                type=ConfigEntryType.BOOLEAN,
+                default_value=True,
+                required=False,
+                category="playlists",
+            ),
+            ConfigEntry(
+                key=CONF_ENABLE_WEEKLY_EXPLORATION,
+                type=ConfigEntryType.BOOLEAN,
+                default_value=True,
+                required=False,
+                category="playlists",
+            ),
+            ConfigEntry(
+                key=CONF_ENABLE_YEARLY_MISSED_TRACKS,
+                type=ConfigEntryType.BOOLEAN,
+                default_value=False,
+                required=False,
+                category="playlists",
+            ),
+            ConfigEntry(
+                key=CONF_ENABLE_YEARLY_TOP_DISCOVERIES,
+                type=ConfigEntryType.BOOLEAN,
+                default_value=False,
+                required=False,
+                category="playlists",
+            ),
+        )
 
     async def handle_async_init(self) -> None:
         """Initialize the ListenBrainz API client."""

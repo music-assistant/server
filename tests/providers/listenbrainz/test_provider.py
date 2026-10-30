@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING, cast
 from unittest.mock import MagicMock
 
 from music_assistant_models.background_task import TaskSchedule
+from music_assistant_models.enums import ConfigEntryType
 
 from music_assistant.constants import CONF_USERNAME
 from music_assistant.providers.listenbrainz import ListenBrainzProvider
@@ -44,6 +45,20 @@ def test_provider_defers_playlist_manager_until_async_initialization() -> None:
     provider = ListenBrainzProvider(mass, manifest, config)
 
     assert not hasattr(provider, "playlists_manager")
+
+
+async def test_playlist_filter_options_default_to_weekly_playlists() -> None:
+    """Weekly playlist types are enabled by default while yearly types are disabled."""
+    provider = _provider()
+
+    entries = await provider.get_config_entries()
+
+    assert [(entry.key, entry.type, entry.default_value) for entry in entries] == [
+        ("enable_weekly_jams", ConfigEntryType.BOOLEAN, True),
+        ("enable_weekly_exploration", ConfigEntryType.BOOLEAN, True),
+        ("enable_yearly_missed_tracks", ConfigEntryType.BOOLEAN, False),
+        ("enable_yearly_top_discoveries", ConfigEntryType.BOOLEAN, False),
+    ]
 
 
 async def test_provider_initializes_and_schedules_playlist_refreshes() -> None:

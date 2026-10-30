@@ -12,7 +12,21 @@ from music_assistant_models.errors import MediaNotFoundError, MusicAssistantErro
 from music_assistant_models.media_items import Playlist, Track
 
 from music_assistant.controllers.music.helpers import provider_mappings_from_urls
-from music_assistant.providers.listenbrainz.parsers import parse_playlist, parse_track
+from music_assistant.providers.listenbrainz.constants import (
+    CONF_ENABLE_WEEKLY_EXPLORATION,
+    CONF_ENABLE_WEEKLY_JAMS,
+    CONF_ENABLE_YEARLY_MISSED_TRACKS,
+    CONF_ENABLE_YEARLY_TOP_DISCOVERIES,
+    SOURCE_PATCH_WEEKLY_EXPLORATION,
+    SOURCE_PATCH_WEEKLY_JAMS,
+    SOURCE_PATCH_YEARLY_MISSED_TRACKS_PREFIX,
+    SOURCE_PATCH_YEARLY_TOP_DISCOVERIES_PREFIX,
+)
+from music_assistant.providers.listenbrainz.parsers import (
+    parse_playlist,
+    parse_playlist_source_patch,
+    parse_track,
+)
 from music_assistant.providers.musicbrainz.provider import relation_urls
 
 if TYPE_CHECKING:
@@ -46,6 +60,7 @@ class ListenBrainzPlaylistManager:
         refreshed = tuple(
             parse_playlist(item, self.provider.instance_id, self.provider.domain)
             for item in playlists
+            if self._is_playlist_enabled(item)
         )
         refreshed_tracks: dict[str, tuple[Track, ...]] = {}
 
@@ -144,3 +159,21 @@ class ListenBrainzPlaylistManager:
             return None
         track.provider_mappings = set(mappings)
         return track
+
+    def _is_playlist_enabled(self, playlist_data: dict[str, Any]) -> bool:
+        """Return whether the ListenBrainz playlist type is enabled."""
+        source_patch = parse_playlist_source_patch(playlist_data)
+        if source_patch is None:
+            return False
+        config = {
+            SOURCE_PATCH_WEEKLY_JAMS: (CONF_ENABLE_WEEKLY_JAMS, True),
+            SOURCE_PATCH_WEEKLY_EXPLORATION: (CONF_ENABLE_WEEKLY_EXPLORATION, True),
+        }.get(source_patch)
+        if source_patch.startswith(SOURCE_PATCH_YEARLY_MISSED_TRACKS_PREFIX):
+            config = (CONF_ENABLE_YEARLY_MISSED_TRACKS, False)
+        elif source_patch.startswith(SOURCE_PATCH_YEARLY_TOP_DISCOVERIES_PREFIX):
+            config = (CONF_ENABLE_YEARLY_TOP_DISCOVERIES, False)
+        if config is None:
+            return False
+        key, default = config
+        return bool(self.provider.config.get_value(key, default))

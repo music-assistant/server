@@ -5,6 +5,7 @@ from music_assistant_models.enums import ExternalID
 from music_assistant.providers.listenbrainz.parsers import (
     parse_artists,
     parse_playlist,
+    parse_playlist_source_patch,
     parse_track,
 )
 
@@ -25,6 +26,26 @@ def test_parse_playlist_from_jspf_response() -> None:
     assert playlist.is_editable is False
     assert playlist.provider == "listenbrainz--test"
     assert playlist.available is True
+
+
+def test_parse_playlist_source_patch_from_algorithm_metadata() -> None:
+    """The playlist algorithm source is read from its JSPF extension."""
+    playlist_data = {
+        "extension": {
+            "https://musicbrainz.org/doc/jspf#playlist": {
+                "additional_metadata": {
+                    "algorithm_metadata": {"source_patch": "synthetic-playlist-type"}
+                }
+            }
+        }
+    }
+
+    assert parse_playlist_source_patch(playlist_data) == "synthetic-playlist-type"
+
+
+def test_parse_playlist_source_patch_returns_none_when_metadata_is_missing() -> None:
+    """A playlist without algorithm metadata has no supported source patch."""
+    assert parse_playlist_source_patch({}) is None
 
 
 def test_parse_artists_from_jspf_track_extension() -> None:

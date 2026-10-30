@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import pytest
 from music_assistant_models.enums import ExternalID, MediaType
 from music_assistant_models.media_items import ProviderMapping, Track
 
@@ -20,6 +21,19 @@ if TYPE_CHECKING:
 RECORDING_MBID = "11111111-1111-4111-8111-111111111111"
 
 
+def _playlist_data(playlist_mbid: str, title: str, source_patch: str) -> dict[str, object]:
+    """Return synthetic ListenBrainz playlist metadata."""
+    return {
+        "extension": {
+            "https://musicbrainz.org/doc/jspf#playlist": {
+                "additional_metadata": {"algorithm_metadata": {"source_patch": source_patch}}
+            }
+        },
+        "identifier": f"https://listenbrainz.org/playlist/{playlist_mbid}",
+        "title": title,
+    }
+
+
 def _manager() -> ListenBrainzPlaylistManager:
     """Return a playlist manager backed by synthetic provider dependencies."""
     provider = ListenBrainzProvider.__new__(ListenBrainzProvider)
@@ -28,7 +42,10 @@ def _manager() -> ListenBrainzPlaylistManager:
         "ProviderConfig",
         MagicMock(instance_id="listenbrainz--test", name=None),
     )
-    provider.api = MagicMock()
+    api = MagicMock()
+    api.get_createdfor_playlists = AsyncMock()
+    api.get_playlist = AsyncMock()
+    provider.api = api
 
     mass = MagicMock()
     mass.music.tracks.get_library_item_by_external_id = AsyncMock(return_value=None)
@@ -49,6 +66,74 @@ def _track() -> Track:
         provider_mappings=set(),
         external_ids={(ExternalID.MB_RECORDING, RECORDING_MBID)},
     )
+
+
+@pytest.mark.parametrize(
+    ("yearly_enabled", "expected_names"),
+    [
+        (False, ["Synthetic Playlist One", "Synthetic Playlist Two"]),
+        (
+            True,
+            [
+                "Synthetic Playlist One",
+                "Synthetic Playlist Two",
+                "Synthetic Playlist Three",
+                "Synthetic Playlist Four",
+            ],
+        ),
+    ],
+)
+async def test_refresh_only_loads_enabled_playlist_types(
+    yearly_enabled: bool, expected_names: list[str]
+) -> None:
+    """Disabled playlist types are filtered before their tracks are requested."""
+    manager = _manager()
+    manager.provider.username = "synthetic-user"
+    playlist_data = [
+        _playlist_data(
+            "11111111-1111-4111-8111-111111111111",
+            "Synthetic Playlist One",
+            "weekly-jams",
+        ),
+        _playlist_data(
+            "22222222-2222-4222-8222-222222222222",
+            "Synthetic Playlist Two",
+            "weekly-exploration",
+        ),
+        _playlist_data(
+            "33333333-3333-4333-8333-333333333333",
+            "Synthetic Playlist Three",
+            "top-missed-recordings-of-2025",
+        ),
+        _playlist_data(
+            "44444444-4444-4444-8444-444444444444",
+            "Synthetic Playlist Four",
+            "top-discoveries-of-2025",
+        ),
+    ]
+    get_createdfor_playlists = cast("AsyncMock", manager.api.get_createdfor_playlists)
+    get_createdfor_playlists.return_value = playlist_data
+    get_playlist = cast("AsyncMock", manager.api.get_playlist)
+    get_playlist.return_value = {"track": []}
+    enabled = {
+        "enable_weekly_jams": True,
+        "enable_weekly_exploration": True,
+        "enable_yearly_missed_tracks": yearly_enabled,
+        "enable_yearly_top_discoveries": yearly_enabled,
+    }
+    cast("MagicMock", manager.provider.config.get_value).side_effect = lambda key, default=None: (
+        enabled.get(key, default)
+    )
+
+    await manager.refresh()
+
+    assert [playlist.name for playlist in await manager.browse()] == expected_names
+    assert [request.args[0] for request in get_playlist.await_args_list] == [
+        "11111111-1111-4111-8111-111111111111",
+        "22222222-2222-4222-8222-222222222222",
+        "33333333-3333-4333-8333-333333333333",
+        "44444444-4444-4444-8444-444444444444",
+    ][: len(expected_names)]
 
 
 async def test_musicbrainz_links_become_provider_mappings_without_provider_lookup() -> None:
