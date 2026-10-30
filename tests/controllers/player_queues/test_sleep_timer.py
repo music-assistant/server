@@ -12,7 +12,7 @@ import pytest
 from music_assistant_models.enums import PlaybackState, RepeatMode, SleepTimerMode
 from music_assistant_models.errors import InvalidDataError
 from music_assistant_models.media_items import Audiobook, MediaItemChapter
-from music_assistant_models.player_queue import PlayerQueue
+from music_assistant_models.player_queue import PlayerQueue, PlayLogEntry
 from music_assistant_models.queue_item import QueueItem
 
 from music_assistant.controllers.player_queues import PlayerQueuesController
@@ -386,11 +386,16 @@ async def test_sleep_timer_stop_on_the_last_item_ends_the_queue(
     assert queue_data.sleep_timer_stopped is False
 
 
-def test_chapter_stop_in_the_last_item_keeps_the_queue_resumable() -> None:
+@pytest.mark.parametrize("flow_mode", [False, True])
+def test_chapter_stop_in_the_last_item_keeps_the_queue_resumable(flow_mode: bool) -> None:
     """A chapter stop inside the only item is a plain stop, the queue does not end."""
     ctrl, queue, mass = _controller()
     queue_data = ctrl._queue_data["q1"]
     queue_data.items = queue_data.items[:1]
+    queue.flow_mode = flow_mode
+    # a stop leaves the flow entry of the item it cut short unfinished, see
+    # test_flow_ends_unfinished_when_its_source_is_released
+    queue_data.flow_mode_stream_log = [PlayLogEntry(queue_item_id="item_1")]
     ctrl.set_sleep_timer_target("q1", SleepTimerMode.END_OF_CHAPTER)
     queue.elapsed_time = 100
     queue.elapsed_time_last_updated = time.time()
