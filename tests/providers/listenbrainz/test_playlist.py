@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, cast
+import logging
+from typing import TYPE_CHECKING, Any, cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -21,12 +22,13 @@ if TYPE_CHECKING:
 RECORDING_MBID = "11111111-1111-4111-8111-111111111111"
 
 
-def _playlist_data(playlist_mbid: str, title: str, source_patch: str) -> dict[str, object]:
+def _playlist_data(playlist_mbid: str, title: str, source_patch: str) -> dict[str, Any]:
     """Return synthetic ListenBrainz playlist metadata."""
     return {
         "extension": {
             "https://musicbrainz.org/doc/jspf#playlist": {
-                "additional_metadata": {"algorithm_metadata": {"source_patch": source_patch}}
+                "additional_metadata": {"algorithm_metadata": {"source_patch": source_patch}},
+                "last_modified_at": f"2026-01-01T00:00:{(hash(playlist_mbid) % 60):02d}.000000+00:00",
             }
         },
         "identifier": f"https://listenbrainz.org/playlist/{playlist_mbid}",
@@ -46,6 +48,7 @@ def _manager() -> ListenBrainzPlaylistManager:
     api.get_createdfor_playlists = AsyncMock()
     api.get_playlist = AsyncMock()
     provider.api = api
+    provider.logger = logging.getLogger("listenbrainz")
 
     mass = MagicMock()
     mass.music.tracks.get_library_item_by_external_id = AsyncMock(return_value=None)
@@ -134,6 +137,91 @@ async def test_refresh_only_loads_enabled_playlist_types(
         "33333333-3333-4333-8333-333333333333",
         "44444444-4444-4444-8444-444444444444",
     ][: len(expected_names)]
+
+
+async def test_unchanged_playlists_skip_get_playlist_on_refresh() -> None:
+    """A second refresh with the same modification times skips per-playlist fetches."""
+    manager = _manager()
+    manager.provider.username = "synthetic-user"
+    cast("MagicMock", manager.provider.config.get_value).return_value = True
+    playlist_data = [
+        _playlist_data("11111111-1111-4111-8111-111111111111", "Playlist One", "weekly-jams"),
+        _playlist_data(
+            "22222222-2222-4222-8222-222222222222", "Playlist Two", "weekly-exploration"
+        ),
+    ]
+    cast("AsyncMock", manager.api.get_createdfor_playlists).return_value = playlist_data
+    cast("AsyncMock", manager.api.get_playlist).return_value = {"track": []}
+
+    await manager.refresh()
+    get_playlist = cast("AsyncMock", manager.api.get_playlist)
+    assert get_playlist.await_count == 2
+
+    # Second refresh: same last_modified_at → should skip get_playlist entirely
+    get_playlist.reset_mock()
+    await manager.refresh()
+    get_playlist.assert_not_awaited()
+
+
+async def test_changed_playlists_trigger_get_playlist_on_refresh() -> None:
+    """A playlist whose modification time changed is re-fetched on the next refresh."""
+    manager = _manager()
+    manager.provider.username = "synthetic-user"
+    cast("MagicMock", manager.provider.config.get_value).return_value = True
+
+    playlist_mbid = "11111111-1111-4111-8111-111111111111"
+    first_page = [
+        _playlist_data(playlist_mbid, "Playlist One", "weekly-jams"),
+    ]
+    cast("AsyncMock", manager.api.get_createdfor_playlists).return_value = first_page
+    cast("AsyncMock", manager.api.get_playlist).return_value = {"track": []}
+
+    await manager.refresh()
+    get_playlist = cast("AsyncMock", manager.api.get_playlist)
+
+    # Second refresh: last_modified_at changed → must re-fetch
+    changed_page = [
+        _playlist_data(playlist_mbid, "Playlist One", "weekly-jams"),
+    ]
+    # Override the last_modified_at to something different
+    ext_key = "https://musicbrainz.org/doc/jspf#playlist"
+    changed_page[0]["extension"][ext_key]["last_modified_at"] = "2026-06-01T12:00:00.000000+00:00"
+    cast("AsyncMock", manager.api.get_createdfor_playlists).return_value = changed_page
+
+    get_playlist.reset_mock()
+    await manager.refresh()
+    get_playlist.assert_awaited_once_with(playlist_mbid)
+
+
+async def test_removed_playlists_are_evicted_from_cache() -> None:
+    """Playlists that disappear from the created-for list are evicted on refresh."""
+    manager = _manager()
+    manager.provider.username = "synthetic-user"
+    cast("MagicMock", manager.provider.config.get_value).return_value = True
+
+    mbid_one = "11111111-1111-4111-8111-111111111111"
+    mbid_two = "22222222-2222-4222-8222-222222222222"
+
+    # First refresh: two playlists
+    cast("AsyncMock", manager.api.get_createdfor_playlists).return_value = [
+        _playlist_data(mbid_one, "Playlist One", "weekly-jams"),
+        _playlist_data(mbid_two, "Playlist Two", "weekly-exploration"),
+    ]
+    cast("AsyncMock", manager.api.get_playlist).return_value = {"track": []}
+    await manager.refresh()
+
+    assert mbid_one in manager._raw_tracks
+    assert mbid_two in manager._raw_tracks
+
+    # Second refresh: playlist two is gone
+    cast("AsyncMock", manager.api.get_createdfor_playlists).return_value = [
+        _playlist_data(mbid_one, "Playlist One", "weekly-jams"),
+    ]
+    await manager.refresh()
+
+    assert mbid_one in manager._raw_tracks
+    assert mbid_two not in manager._raw_tracks
+    assert mbid_two not in manager._playlist_modified_at
 
 
 async def test_musicbrainz_links_become_provider_mappings_without_provider_lookup() -> None:

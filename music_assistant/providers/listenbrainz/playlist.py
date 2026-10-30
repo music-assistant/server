@@ -24,6 +24,7 @@ from music_assistant.providers.listenbrainz.constants import (
 )
 from music_assistant.providers.listenbrainz.parsers import (
     parse_playlist,
+    parse_playlist_last_modified,
     parse_playlist_source_patch,
     parse_track,
 )
@@ -48,6 +49,8 @@ class ListenBrainzPlaylistManager:
         self._playlists: tuple[Playlist, ...] = ()
         self._playlist_tracks: dict[str, tuple[Track, ...]] = {}
         self._resolved_tracks: dict[str, Track] = {}
+        self._raw_tracks: dict[str, tuple[Track, ...]] = {}
+        self._playlist_modified_at: dict[str, str | None] = {}
 
     @property
     def logger(self) -> logging.Logger:
@@ -55,23 +58,58 @@ class ListenBrainzPlaylistManager:
         return self.provider.logger
 
     async def refresh(self) -> None:
-        """Refresh the active ListenBrainz playlists."""
+        """
+        Refresh the active ListenBrainz playlists.
+
+        Only playlists whose ``last_modified_at`` has changed are re-fetched
+        from the API. Tracks in unchanged playlists are still re-resolved
+        (fast via the resolution cache) so matches discovered late — or after a
+        cache expiry — are picked up without an extra API call.
+        """
         playlists = await self.api.get_createdfor_playlists(self.provider.username)
-        refreshed = tuple(
-            parse_playlist(item, self.provider.instance_id, self.provider.domain)
-            for item in playlists
-            if self._is_playlist_enabled(item)
-        )
+        refreshed: list[Playlist] = []
         refreshed_tracks: dict[str, tuple[Track, ...]] = {}
 
-        for playlist in refreshed:
-            playlist_data = await self.api.get_playlist(playlist.item_id)
+        for item in playlists:
+            if not self._is_playlist_enabled(item):
+                continue
+            playlist = parse_playlist(item, self.provider.instance_id, self.provider.domain)
+            refreshed.append(playlist)
+
+            last_modified = parse_playlist_last_modified(item)
+            if last_modified is not None and self._is_playlist_unchanged(
+                playlist.item_id, last_modified
+            ):
+                # Unchanged: reuse stored raw tracks, re-resolve (no API call)
+                raw_tracks = self._raw_tracks.get(playlist.item_id, ())
+            else:
+                # Changed or new: fetch full playlist from API
+                playlist_data = await self.api.get_playlist(playlist.item_id)
+                raw_tracks = tuple(
+                    parse_track(tr, self.provider.instance_id, self.provider.domain)
+                    for tr in playlist_data["track"]
+                )
+                self._raw_tracks[playlist.item_id] = raw_tracks
+                self._playlist_modified_at[playlist.item_id] = last_modified
+
+            # Resolve (or re-resolve) tracks — cache hits for already-resolved,
+            # fresh attempts for previously unresolved
             tracks: list[Track] = []
-            for position, item in enumerate(playlist_data["track"], 1):
-                if track := await self._parse_track(item, position):
-                    tracks.append(track)
+            for position, raw_track in enumerate(raw_tracks, 1):
+                if resolved := await self._get_or_resolve_track(raw_track):
+                    playlist_track = copy(resolved)
+                    playlist_track.position = position
+                    tracks.append(playlist_track)
             refreshed_tracks[playlist.item_id] = tuple(tracks)
-        self._playlists = refreshed
+
+        # Evict playlists that no longer appear in the created-for list
+        active_ids = {p.item_id for p in refreshed}
+        for mbid in list(self._raw_tracks):
+            if mbid not in active_ids:
+                del self._raw_tracks[mbid]
+                self._playlist_modified_at.pop(mbid, None)
+
+        self._playlists = tuple(refreshed)
         self._playlist_tracks = refreshed_tracks
         self.logger.debug(
             "Refreshed %d ListenBrainz playlists with %d playable tracks",
@@ -96,23 +134,18 @@ class ListenBrainzPlaylistManager:
             return []
         return list(self._playlist_tracks.get(prov_playlist_id, ()))
 
-    async def _parse_track(
-        self,
-        item: dict[str, Any],
-        position: int,
-    ) -> Track | None:
-        """Parse and resolve a playlist track."""
-        track = parse_track(item, self.provider.instance_id, self.provider.domain)
-        if resolved_track := await self._get_or_resolve_track(track):
-            playlist_track = copy(resolved_track)
-            playlist_track.position = position
-            return playlist_track
-        return None
+    def _is_playlist_unchanged(self, playlist_mbid: str, last_modified: str) -> bool:
+        """Return whether the playlist's modification time matches the last refresh."""
+        return self._playlist_modified_at.get(playlist_mbid) == last_modified
 
     async def _get_or_resolve_track(self, track: Track) -> Track | None:
         """Return a cached, library, or streaming-provider match for a parsed track."""
         recording_mbid = track.get_external_id(ExternalID.MB_RECORDING)
-        assert recording_mbid is not None
+        if recording_mbid is None:
+            self.logger.debug(
+                "Cannot resolve ListenBrainz track %s (no recording MBID)", track.name
+            )
+            return None
         self.logger.debug(
             "Resolving ListenBrainz track %s (%s)",
             track.name,

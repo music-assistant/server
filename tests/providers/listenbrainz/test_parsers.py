@@ -5,6 +5,7 @@ from music_assistant_models.enums import ExternalID
 from music_assistant.providers.listenbrainz.parsers import (
     parse_artists,
     parse_playlist,
+    parse_playlist_last_modified,
     parse_playlist_source_patch,
     parse_track,
 )
@@ -46,6 +47,30 @@ def test_parse_playlist_source_patch_from_algorithm_metadata() -> None:
 def test_parse_playlist_source_patch_returns_none_when_metadata_is_missing() -> None:
     """A playlist without algorithm metadata has no supported source patch."""
     assert parse_playlist_source_patch({}) is None
+
+
+def test_parse_playlist_last_modified_from_extension() -> None:
+    """The playlist modification timestamp is read from its JSPF extension."""
+    playlist_data = {
+        "extension": {
+            "https://musicbrainz.org/doc/jspf#playlist": {
+                "last_modified_at": "2026-10-20T22:18:49.794546+00:00"
+            }
+        }
+    }
+
+    assert parse_playlist_last_modified(playlist_data) == "2026-10-20T22:18:49.794546+00:00"
+
+
+def test_parse_playlist_last_modified_returns_none_when_missing() -> None:
+    """A playlist without a last_modified_at timestamp returns None."""
+    assert parse_playlist_last_modified({}) is None
+    assert (
+        parse_playlist_last_modified(
+            {"extension": {"https://musicbrainz.org/doc/jspf#playlist": {}}}
+        )
+        is None
+    )
 
 
 def test_parse_artists_from_jspf_track_extension() -> None:

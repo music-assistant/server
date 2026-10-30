@@ -51,6 +51,15 @@ def parse_playlist_source_patch(playlist_data: dict[str, Any]) -> str | None:
     return source_patch if isinstance(source_patch, str) else None
 
 
+def parse_playlist_last_modified(playlist_data: dict[str, Any]) -> str | None:
+    """Return the ``last_modified_at`` timestamp for a JSPF playlist, if present."""
+    try:
+        last_modified = playlist_data["extension"][JSPF_PLAYLIST_EXTENSION]["last_modified_at"]
+    except KeyError, TypeError:
+        return None
+    return last_modified if isinstance(last_modified, str) else None
+
+
 def parse_track(track_data: dict[str, Any], provider_instance: str, provider_domain: str) -> Track:
     """Parse a JSPF playlist entry into an unavailable ListenBrainz track."""
     recording_mbid = track_data["identifier"][0].rsplit("/", 1)[-1]
