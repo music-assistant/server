@@ -7,14 +7,14 @@ from typing import TYPE_CHECKING
 import shortuuid
 from music_assistant_models.enums import PlayerType
 
-from music_assistant.constants import CONF_DYNAMIC_GROUP_MEMBERS, CONF_GROUP_MEMBERS
+from music_assistant.constants import CONF_DYNAMIC_GROUP_MEMBERS, CONF_GROUP_MEMBERS, CONF_PLAYERS
 from music_assistant.models.player_provider import PlayerProvider
 
 from .constants import SGP_PREFIX
 from .player import SyncGroupPlayer
 
 if TYPE_CHECKING:
-    from music_assistant_models.config_entries import ConfigEntry
+    from music_assistant_models.config_entries import ConfigEntry, ConfigValueType
 
     from music_assistant.models.player import Player
 
@@ -66,6 +66,48 @@ class SyncGroupProvider(PlayerProvider):
             },
         )
         return await self._register_player(player_id)
+
+    async def ensure_owned_group_player(
+        self,
+        player_id: str,
+        name: str,
+        members: list[str],
+        values: dict[str, ConfigValueType],
+    ) -> Player:
+        """
+        Create or update a static sync group that another provider owns.
+
+        :param player_id: Fixed player id of the group, starting with SGP_PREFIX.
+        :param name: Name of the group player when it is created.
+        :param members: Member player ids, in leader preference order.
+        :param values: Extra (raw) config values the owner marks the group with.
+        """
+        # the owner (e.g. the AirPlay provider for an Apple group it discovered) picks a
+        # stable id, so the same group found again gets the same player, and removes the
+        # group again with remove_group_player once it no longer exists
+        assert player_id.startswith(SGP_PREFIX)
+        all_values: dict[str, ConfigValueType] = {
+            **values,
+            CONF_GROUP_MEMBERS: members,
+            CONF_DYNAMIC_GROUP_MEMBERS: False,
+        }
+        if not self.mass.config.get(f"{CONF_PLAYERS}/{player_id}"):
+            self.mass.config.create_default_player_config(
+                player_id=player_id,
+                provider=self.instance_id,
+                player_type=PlayerType.GROUP,
+                name=name,
+                enabled=True,
+                values=all_values,
+            )
+            return await self._register_player(player_id)
+        for key, value in all_values.items():
+            self.mass.config.set_raw_player_config_value(player_id, key, value)
+        if (player := self.mass.players.get_player(player_id)) is None:
+            return await self._register_player(player_id)
+        await player.on_config_updated()
+        player.update_state()
+        return player
 
     async def remove_group_player(self, player_id: str) -> None:
         """
