@@ -16,6 +16,7 @@ from music_assistant_models.media_items import (
     MediaItemImage,
     Playlist,
     ProviderMapping,
+    Radio,
     Track,
     UniqueList,
 )
@@ -355,15 +356,15 @@ def parse_playlist(
     return playlist
 
 
-def parse_station_as_playlist(
+def parse_station(
     provider: AppleMusicProvider,
     station_obj: dict[str, Any],
-) -> Playlist:
-    """Parse a station object into a dynamic Playlist."""
+) -> Radio:
+    """Parse a station object into a dynamic Radio."""
     station_id = station_obj["id"]
     attributes = station_obj.get("attributes", {})
     name = attributes.get("name", station_id)
-    playlist = Playlist(
+    radio = Radio(
         item_id=station_id,
         provider=provider.instance_id,
         name=name,
@@ -376,9 +377,9 @@ def parse_station_as_playlist(
             )
         },
     )
-    if image := parse_artwork_image(provider, MediaType.PLAYLIST, station_id, attributes):
-        playlist.metadata.add_image(image)
-    return playlist
+    if image := parse_artwork_image(provider, MediaType.RADIO, station_id, attributes):
+        radio.metadata.add_image(image)
+    return radio
 
 
 def _parse_album_artists(

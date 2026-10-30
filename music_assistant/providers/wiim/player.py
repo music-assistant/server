@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import asyncio
 import time
 import typing
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 from music_assistant_models.enums import IdentifierType, PlaybackState, PlayerFeature, PlayerType
-from music_assistant_models.errors import PlayerCommandFailed
+from music_assistant_models.errors import MusicAssistantError, PlayerCommandFailed
 from music_assistant_models.player import DeviceInfo
 from pywiim import WiiMClient
 from wiim import PlayingStatus, WiimDevice
@@ -46,6 +48,22 @@ SDK_TO_MA_STATE: dict[PlayingStatus, PlaybackState] = {
     PlayingStatus.LOADING: PlaybackState.PLAYING,
 }
 
+# seconds to wait after a first follower join for the firmware to restart the leader's stream
+JOIN_RESTART_TIMEOUT = 2
+
+
+@dataclass
+class _JoinRestartWatch:
+    """The leader's stream and queue position captured when its first follower joins."""
+
+    uri: str
+    queue_id: str
+    anchor: float
+    anchor_at: float
+    speed: float
+    duration: int
+    restarted: asyncio.Event = field(default_factory=asyncio.Event)
+
 
 class WiimPlayer(Player):
     """Wiim Player in Music Assistant."""
@@ -55,6 +73,9 @@ class WiimPlayer(Player):
     # the device reports a source the app released as plain 'paused', indistinguishable
     # from a real pause, so only the grace period can tell us the session is over.
     _attr_external_pause_idle_timeout = EXTERNAL_PAUSE_IDLE_TIMEOUT
+    # the source comes from the device's own input mode, and the source list leaves out
+    # the network input our stream arrives on, so a listed source (e.g. TV) is a takeover.
+    _attr_trusts_reported_source = True
 
     def __init__(
         self,
@@ -101,6 +122,8 @@ class WiimPlayer(Player):
         self._last_logged_sdk_uri: str | None = None
         self._last_logged_sdk_status: PlayingStatus | None = None
         self._ma_stream_uri: str | None = None
+        self._join_restart_watch: _JoinRestartWatch | None = None
+        self._pending_join_resume: _JoinRestartWatch | None = None
         self._native_groups: NativeGroupCoordinator = provider.native_groups
         # a copy of the low-level client's detected capabilities, reused to pre-seed each
         # fresh command client so topology reads do not re-probe the device
@@ -138,6 +161,11 @@ class WiimPlayer(Player):
         # of; locking here keeps core from offering it as a grouping target for a regroup
         # the coordinator would then have to refuse.
         return self._native_groups.is_unknown_leader_follower(self.player_id)
+
+    @property
+    def poll_interval(self) -> int:
+        """Return the poll interval in seconds, short while playing to keep the position fresh."""
+        return 5 if self.playback_state == PlaybackState.PLAYING else 30
 
     def is_native_group_compatible(self, other: Player) -> bool:
         """Only reachable coordinator-approved peers of either backend group natively."""
@@ -186,7 +214,6 @@ class WiimPlayer(Player):
         self._attr_source_list.append(PASSIVE_SOURCES[SOURCE_SPOTIFY])
         self._attr_source_list.append(PASSIVE_SOURCES[SOURCE_UNKNOWN])
         self._attr_needs_poll = True
-        self._attr_poll_interval = 5
 
     async def poll(self) -> None:
         """Poll player for transport state and position updates."""
@@ -194,7 +221,6 @@ class WiimPlayer(Player):
         await self._refresh_device_status()
         # slow, TTL-gated re-read of the native slave list (no busy polling loop)
         await self._native_groups.refresh_leader(self)
-        self._attr_poll_interval = 5 if self._attr_playback_state == PlaybackState.PLAYING else 30
 
     async def on_unload(self) -> None:
         """Handle logic when the player is unloaded from the Player controller."""
@@ -227,6 +253,7 @@ class WiimPlayer(Player):
 
     async def play_media(self, media: PlayerMedia) -> None:
         """Play media command."""
+        self._drop_join_restart_resume()
         stream_url = await self.mass.streams.resolve_stream_url(self.player_id, media)
         didl_metadata = create_didl_metadata(media, url=stream_url)
         self.set_current_media(
@@ -282,6 +309,7 @@ class WiimPlayer(Player):
 
     async def pause(self) -> None:
         """Pause command."""
+        self._drop_join_restart_resume()
         try:
             await self.device.async_pause()
         except WiimException as err:
@@ -291,6 +319,7 @@ class WiimPlayer(Player):
 
     async def stop(self) -> None:
         """Stop command."""
+        self._drop_join_restart_resume()
         self._attr_active_source = None
         self._attr_current_media = None
         self._ma_stream_uri = None
@@ -366,9 +395,13 @@ class WiimPlayer(Player):
             entry_sdk_uri,
             self.device.playing_status,
         )
+        self._join_restart_watch = self._create_join_restart_watch(player_ids_to_add)
         try:
             await self._native_groups.set_members(self, player_ids_to_add, player_ids_to_remove)
         finally:
+            # a restart that fired before a later follower failed still needs the resume
+            await self._resume_after_join_restart()
+            self._join_restart_watch = None
             exit_sdk_uri = self.device.current_media.uri if self.device.current_media else None
             self.logger.debug(
                 "set_members exit on %s: sdk.current_uri=%s, sdk.playing_status=%s, "
@@ -404,6 +437,15 @@ class WiimPlayer(Player):
             except ValueError:
                 pass
             else:
+                watch = self._join_restart_watch
+                media = self.device.current_media
+                if (
+                    watch
+                    and sdk_status == PlayingStatus.LOADING
+                    and media
+                    and media.uri == watch.uri
+                ):
+                    watch.restarted.set()
                 if sdk_status in (
                     PlayingStatus.PLAYING,
                     PlayingStatus.PAUSED,
@@ -591,8 +633,13 @@ class WiimPlayer(Player):
             self.logger.debug("Failed to sync position for %s: %s", self._attr_name, err)
             return
         media = self.device.current_media
-        device_uri = media.uri if media else None
-        if device_uri and device_uri == self._ma_stream_uri:
+        # Right after taking our stream the device briefly reports it as being at its end.
+        if (
+            media is not None
+            and media.uri
+            and media.uri == self._ma_stream_uri
+            and media.position != media.duration
+        ):
             self._ma_stream_uri = None
         # The device reports its previous content's position until it loads our stream URI.
         if self._ma_stream_uri is None and media is not None and media.position is not None:
@@ -638,3 +685,80 @@ class WiimPlayer(Player):
             self._native_groups.refresh_leader(self, force=True),
             task_id=f"wiim_topology_{self.player_id}",
         )
+
+    def _create_join_restart_watch(
+        self, player_ids_to_add: list[str] | None
+    ) -> _JoinRestartWatch | None:
+        """Return a watch when this join makes the playing leader group its first follower."""
+        # the firmware only restarts a stream it started while it had no followers
+        if not player_ids_to_add:
+            return None
+        if [m for m in self._native_groups.members_of(self.player_id) if m != self.player_id]:
+            return None
+        if self._attr_playback_state != PlaybackState.PLAYING:
+            return None
+        # the leader's own queue or the syncgroup queue it renders, never an external source
+        queue = self.mass.players.get_active_queue(self)
+        if not queue or queue.queue_id != self.state.active_source:
+            return None
+        if not queue.active or not queue.current_item:
+            return None
+        # live streams have no duration and cannot be seeked, the restart is harmless there
+        if not queue.current_item.duration:
+            return None
+        media = self.device.current_media
+        if not media or not media.uri:
+            return None
+        return _JoinRestartWatch(
+            uri=media.uri,
+            queue_id=queue.queue_id,
+            anchor=queue.elapsed_time,
+            anchor_at=queue.elapsed_time_last_updated,
+            speed=queue.playback_speed,
+            duration=queue.current_item.duration,
+        )
+
+    async def _resume_after_join_restart(self) -> None:
+        """Resume the queue at the pre-join position if the firmware restarted the stream."""
+        if not (watch := self._join_restart_watch):
+            return
+        try:
+            await asyncio.wait_for(watch.restarted.wait(), timeout=JOIN_RESTART_TIMEOUT)
+        except TimeoutError:
+            return
+        # pause takes no playback lock, so a newer command can land while the join runs
+        if self._join_restart_watch is not watch:
+            return
+        self._join_restart_watch = None
+        # past the end the last second plays out and the queue completes the track as usual
+        position = min(
+            int(watch.anchor + (time.time() - watch.anchor_at) * watch.speed), watch.duration - 1
+        )
+        self.logger.info(
+            "WiiM firmware restarted the stream of %s on the first follower join, resuming at %s s",
+            self._attr_name,
+            position,
+        )
+        # the seek takes the group's lock before the player's, while the join may run under
+        # the player's lock alone, so it waits for the join to return to keep that order
+        self._pending_join_resume = watch
+        self.mass.create_task(self._seek_after_join_restart(watch, position))
+
+    def _drop_join_restart_resume(self) -> None:
+        """Let a newer playback command win over a join-restart resume."""
+        self._join_restart_watch = None
+        self._pending_join_resume = None
+
+    async def _seek_after_join_restart(self, watch: _JoinRestartWatch, position: int) -> None:
+        """Seek the queue, which rebuilds the stream at a position the firmware keeps."""
+        try:
+            async with self.mass.players.get_group_and_player_lock(watch.queue_id, strict=True):
+                # a command that waited behind the join ran first and dropped the resume
+                if self._pending_join_resume is not watch:
+                    return
+                self._pending_join_resume = None
+                await self.mass.player_queues.seek(watch.queue_id, position)
+        except MusicAssistantError as err:
+            self.logger.warning(
+                "Failed to resume %s after the stream restart: %s", self._attr_name, err
+            )

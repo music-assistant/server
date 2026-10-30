@@ -25,7 +25,6 @@ music_assistant/providers/internet_archive/helpers.py	6
 music_assistant/providers/internet_archive/provider.py	13
 music_assistant/providers/itunes_podcasts/__init__.py	5
 music_assistant/providers/jellyfin/__init__.py	14
-music_assistant/providers/lastfm_recommendations/__init__.py	3
 music_assistant/providers/lastfm_recommendations/api_client.py	12
 music_assistant/providers/lastfm_recommendations/recommendations.py	2
 music_assistant/providers/mpd/player.py	7
@@ -59,5 +58,3 @@ music_assistant/providers/tidal/tidal_page_parser.py	2
 music_assistant/providers/tunein/__init__.py	2
 music_assistant/providers/vban_receiver/stats.py	2
 music_assistant/providers/webdav/provider.py	4
-music_assistant/providers/yousee/auth_manager.py	1
-music_assistant/providers/yousee/media.py	5

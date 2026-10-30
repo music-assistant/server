@@ -15,6 +15,7 @@ from music_assistant_models.enums import (
     MediaType,
     ProviderFeature,
     ProviderSharing,
+    ProviderType,
     SortDirection,
     SortField,
 )
@@ -615,7 +616,7 @@ async def _seed_author_audiobooks(mass: MusicAssistant) -> str:
         )
     )
     for index, (name, duration, series) in enumerate(
-        (("Zebra", 300, None), ("Apple", 100, "Saga"), ("Mango", 200, "Saga"))
+        (("Zebra", 250, None), ("Apple", 100, "Saga"), ("Mango", 200, "Saga"))
     ):
         metadata = MediaItemMetadata()
         if series:
@@ -661,7 +662,7 @@ async def test_artist_audiobooks_follow_the_listing_contract(mass: MusicAssistan
 async def test_collapsed_artist_audiobooks_sort_a_collection_by_its_title(
     mass: MusicAssistant,
 ) -> None:
-    """A collapsed collection sorts and searches by its title, and has no duration of its own."""
+    """A collapsed collection searches by its title and sorts by the duration of all its books."""
     author_id = await _seed_author_audiobooks(mass)
 
     async def _books(**kwargs: Any) -> list[Audiobook | MediaCollection[Audiobook]]:
@@ -672,5 +673,50 @@ async def test_collapsed_artist_audiobooks_sort_a_collection_by_its_title(
     books = await _books()
     assert _names(books) == ["Saga", "Zebra"]
     assert isinstance(books[0], MediaCollection)
-    assert _names(await _books(sort_field=SortField.DURATION)) == ["Saga", "Zebra"]
+    # Saga's 300 seconds sort after Zebra's 250
+    assert _names(await _books(sort_field=SortField.DURATION)) == ["Zebra", "Saga"]
     assert _names(await _books(search="saga")) == ["Saga"]
+
+
+@pytest.mark.parametrize(
+    ("method", "fetch", "kind"),
+    [
+        ("top_tracks", "get_library_artist_toptracks", "track"),
+        ("similar_artists", "get_library_artist_similar_artists", "artist"),
+    ],
+)
+async def test_library_artist_rankings_leave_out_hidden_sources(
+    mass: MusicAssistant, method: str, fetch: str, kind: str
+) -> None:
+    """A metadata provider's ranking never lists an item on a source the user may not see."""
+    set_music_source_access(
+        mass,
+        {
+            "open_1": None,
+            "hidden_1": ProviderAccess(owner="user-b", sharing=ProviderSharing.PRIVATE),
+        },
+    )
+    sources = {
+        source: SimpleNamespace(instance_id=source, type=ProviderType.MUSIC)
+        for source in ("open_1", "hidden_1")
+    }
+    items = _items(kind)[:2]
+    for item, source in zip(items, sources, strict=True):
+        item.provider_mappings = {
+            ProviderMapping(item_id=item.item_id, provider_domain="x", provider_instance=source)
+        }
+    user = User(user_id="user-a", username="user-a", role=UserRole.USER)
+    with (
+        patch("music_assistant.controllers.music.media.base.get_current_user", return_value=user),
+        patch(
+            "music_assistant.controllers.music.media.artists.get_current_user", return_value=user
+        ),
+        patch.object(
+            mass,
+            "get_provider",
+            side_effect=lambda instance_id, **_kwargs: sources.get(instance_id),
+        ),
+        patch.object(mass.music.artists, fetch, AsyncMock(return_value=Listing(items))),
+    ):
+        listing = await getattr(mass.music.artists, method)("1", "library")
+    assert _names(listing) == ["Zebra"]

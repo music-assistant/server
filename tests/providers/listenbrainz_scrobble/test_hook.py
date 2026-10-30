@@ -66,6 +66,7 @@ class _FakeSession:
         *,
         payload: dict[str, bool] | None = None,
         error: Exception | None = None,
+        status: int = 200,
         json_error: Exception | None = None,
         post_error: Exception | None = None,
         post_statuses: list[int] | None = None,
@@ -73,6 +74,7 @@ class _FakeSession:
     ) -> None:
         self._payload = payload or {}
         self._error = error
+        self._status = status
         self._json_error = json_error
         self._post_error = post_error
         # one status per POST attempt; the last value is reused once the list is exhausted
@@ -100,7 +102,9 @@ class _FakeSession:
         self.requested_timeout = timeout
         if self._error is not None:
             raise self._error
-        return _FakeResponse(payload=self._payload, json_error=self._json_error)
+        return _FakeResponse(
+            status=self._status, payload=self._payload, json_error=self._json_error
+        )
 
     def post(
         self,
@@ -227,15 +231,60 @@ async def test_an_invalid_token_fails_setup() -> None:
         await provider.handle_async_init()
 
 
-async def test_an_unreachable_service_fails_setup() -> None:
-    """A ListenBrainz that cannot be reached surfaces as a setup error, not a raw one."""
+async def test_an_unauthorized_response_is_retryable() -> None:
+    """An ambiguous HTTP rejection does not permanently disable the provider."""
     provider = _provider(
-        {CONF_USER_TOKEN: "token"},
-        http_session=_FakeSession(error=aiohttp.ClientConnectionError()),
+        {CONF_USER_TOKEN: "token", CONF_API_BASE_URL: "https://lb.example.com"},
+        http_session=_FakeSession(status=401),
     )
 
-    with pytest.raises(SetupFailedError):
+    with pytest.raises(SetupFailedError, match="refused access") as exc_info:
         await provider.handle_async_init()
+
+    assert exc_info.value.translation_key == "access_denied"
+    assert exc_info.value.translation_owner == "provider.listenbrainz_scrobble"
+
+
+async def test_a_missing_endpoint_reports_the_bad_base_url() -> None:
+    """An HTTP 404 tells the setup form that the configured API base URL is wrong."""
+    provider = _provider(
+        {CONF_USER_TOKEN: "token", CONF_API_BASE_URL: "https://lb.example.com/wrong"},
+        http_session=_FakeSession(status=404),
+    )
+
+    with pytest.raises(SetupFailedError, match="endpoint was not found") as exc_info:
+        await provider.handle_async_init()
+
+    assert exc_info.value.translation_key == "endpoint_not_found"
+    assert exc_info.value.translation_owner == "provider.listenbrainz_scrobble"
+
+
+@pytest.mark.parametrize(
+    ("error", "error_name"),
+    [
+        (aiohttp.ClientConnectionError(), "ClientConnectionError"),
+        (TimeoutError(), "TimeoutError"),
+    ],
+    ids=["connection-error", "timeout"],
+)
+async def test_an_unreachable_custom_service_logs_the_setup_failure(
+    error: Exception,
+    error_name: str,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """An unreachable custom server leaves a useful diagnostic in the log."""
+    provider = _provider(
+        {CONF_USER_TOKEN: "token", CONF_API_BASE_URL: "https://lb.example.com"},
+        http_session=_FakeSession(error=error),
+    )
+
+    with pytest.raises(SetupFailedError) as exc_info:
+        await provider.handle_async_init()
+
+    assert exc_info.value.translation_key == "connection_failed"
+    assert exc_info.value.translation_owner == "provider.listenbrainz_scrobble"
+    assert "Unable to validate ListenBrainz token at https://lb.example.com" in caplog.text
+    assert error_name in caplog.text
 
 
 async def test_a_malformed_response_fails_setup() -> None:
@@ -254,6 +303,22 @@ async def test_an_unexpected_response_is_a_setup_error() -> None:
 
     with pytest.raises(SetupFailedError):
         await provider.handle_async_init()
+
+
+async def test_an_unexpected_response_is_logged(caplog: pytest.LogCaptureFixture) -> None:
+    """An incompatible custom server response leaves a useful diagnostic in the log."""
+    provider = _provider(
+        {CONF_USER_TOKEN: "token", CONF_API_BASE_URL: "https://lb.example.com"},
+        http_session=_FakeSession(payload={}),
+    )
+
+    with pytest.raises(SetupFailedError):
+        await provider.handle_async_init()
+
+    assert (
+        "Unexpected response while validating ListenBrainz token at https://lb.example.com"
+        in caplog.text
+    )
 
 
 async def test_a_trailing_slash_in_the_base_url_is_normalized() -> None:

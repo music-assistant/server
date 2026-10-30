@@ -9,11 +9,11 @@ from hass_client.utils import base_url, get_auth_url, get_long_lived_token, get_
 from music_assistant_models.config_entries import ConfigEntry
 from music_assistant_models.enums import ConfigEntryType
 
-from music_assistant.constants import MASS_LOGO_ONLINE
+from music_assistant.constants import CONF_VERIFY_SSL, MASS_LOGO_ONLINE
 from music_assistant.helpers.pkce import generate_pkce_pair
 from music_assistant.models.setup_flow import AbortFlow, SetupFlowError
 
-from . import CONF_AUTH_TOKEN, CONF_URL, CONF_VERIFY_SSL
+from . import CONF_AUTH_TOKEN, CONF_URL
 
 if TYPE_CHECKING:
     from music_assistant.models.setup_flow import SetupSession

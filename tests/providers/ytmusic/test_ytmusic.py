@@ -279,6 +279,26 @@ def test_parse_owned_playlist_is_editable_without_privacy(
     assert playlist.is_editable is True
 
 
+@pytest.mark.parametrize(
+    ("album_data", "expected_url"),
+    [
+        ({}, "https://music.youtube.com/browse/MPREb_test"),
+        ({"audioPlaylistId": None}, "https://music.youtube.com/browse/MPREb_test"),
+        ({"audioPlaylistId": ""}, "https://music.youtube.com/browse/MPREb_test"),
+        (
+            {"audioPlaylistId": "OLAK5uy_test"},
+            "https://music.youtube.com/playlist?list=OLAK5uy_test",
+        ),
+    ],
+)
+def test_album_public_link_without_playlist_id(
+    provider: YoutubeMusicProvider, album_data: dict[str, Any], expected_url: str
+) -> None:
+    """An album from a search or library listing still has a usable public link."""
+    album = provider._parse_album({"title": "Test album", **album_data}, "MPREb_test")
+    assert next(iter(album.provider_mappings)).url == expected_url
+
+
 async def test_search_is_not_translated(provider: YoutubeMusicProvider) -> None:
     """A search must run in English, whatever language the server is set to."""
     # ytmusicapi matches the (translated) result shelf title against the English filter
@@ -832,6 +852,86 @@ async def test_get_artist_albums_dedupes_across_sections(
         albums = await _get_artist_albums_unwrapped()(provider, "UCtest")
 
     assert [a.item_id for a in albums] == ["MPREb_a2", "MPREb_a1", "MPREb_s1"]
+
+
+async def test_video_search_setting_defaults_off(provider: YoutubeMusicProvider) -> None:
+    """Existing installations retain song-only filtered searches."""
+    entries = await provider.get_config_entries()
+    entry = next(entry for entry in entries if entry.key == "include_videos_in_search")
+    assert entry.default_value is False
+
+
+@pytest.mark.parametrize(
+    ("changed_key", "cleared"),
+    [("values/include_videos_in_search", True), ("values/log_level", False)],
+)
+async def test_video_search_setting_change_clears_search_caches(
+    provider: YoutubeMusicProvider, changed_key: str, cleared: bool
+) -> None:
+    """Toggling the video setting drops search results cached under the previous setting."""
+    provider.mass.music.domain = "music"
+    with patch.object(MusicProvider, "update_config", AsyncMock()):
+        await provider.update_config(MagicMock(), {changed_key})
+    delete = cast("AsyncMock", provider.mass.cache.delete)
+    deleted = {call.kwargs["provider"] for call in delete.await_args_list}
+    assert deleted == ({provider.instance_id, "music"} if cleared else set())
+
+
+def _search_track(item_id: str, result_type: str = "song") -> dict[str, Any]:
+    """Return a parseable YouTube Music search result."""
+    return {
+        "resultType": result_type,
+        "videoId": item_id,
+        "title": "Nightcore - Ocean Eyes (But it hits hard) (Lyrics)",
+        "artists": [{"id": "UC_artist", "name": "Eiden XII"}],
+    }
+
+
+@pytest.mark.parametrize("enabled", [False, True])
+async def test_search_includes_videos_only_when_enabled(
+    provider: YoutubeMusicProvider, enabled: bool
+) -> None:
+    """An explicit video search finds items absent from the songs shelf."""
+
+    async def backend(**kwargs: Any) -> list[dict[str, Any]]:
+        return [_search_track("Om6ae_QDZgI", "video")] if kwargs["ytm_filter"] == "videos" else []
+
+    cast("MagicMock", provider.config.get_value).return_value = enabled
+    search = cast("Any", YoutubeMusicProvider.search).__wrapped__
+    with patch("music_assistant.providers.ytmusic.search", side_effect=backend) as backend_search:
+        results = await search(provider, "Ocean Eyes", [MediaType.TRACK], 5)
+    assert [track.item_id for track in results.tracks] == (["Om6ae_QDZgI"] if enabled else [])
+    assert backend_search.await_count == (2 if enabled else 1)
+    assert backend_search.call_args_list[0].kwargs["ytm_filter"] == "songs"
+
+
+async def test_video_search_interleaves_full_shelves(provider: YoutubeMusicProvider) -> None:
+    """Videos keep a place within the limit when the songs shelf is full."""
+
+    async def backend(**kwargs: Any) -> list[dict[str, Any]]:
+        prefix = "video" if kwargs["ytm_filter"] == "videos" else "song"
+        return [_search_track(f"{prefix}{index}", prefix) for index in range(1, 5)]
+
+    cast("MagicMock", provider.config.get_value).return_value = True
+    search = cast("Any", YoutubeMusicProvider.search).__wrapped__
+    with patch("music_assistant.providers.ytmusic.search", side_effect=backend):
+        results = await search(provider, "query", [MediaType.TRACK], 4)
+    assert [track.item_id for track in results.tracks] == ["song1", "video1", "song2", "video2"]
+
+
+@pytest.mark.parametrize(
+    ("media_types", "ytm_filter"),
+    [([MediaType.ARTIST], "artists"), ([MediaType.ARTIST, MediaType.TRACK], None)],
+)
+async def test_search_fetches_videos_only_for_song_searches(
+    provider: YoutubeMusicProvider, media_types: list[MediaType], ytm_filter: str | None
+) -> None:
+    """Other filtered searches skip videos and unfiltered searches already include them."""
+    cast("MagicMock", provider.config.get_value).return_value = True
+    search = cast("Any", YoutubeMusicProvider.search).__wrapped__
+    with patch("music_assistant.providers.ytmusic.search", AsyncMock(return_value=[])) as backend:
+        await search(provider, "query", media_types, 5)
+    backend.assert_awaited_once_with(query="query", ytm_filter=ytm_filter, limit=5)
 
 
 async def test_stream_from_signed_out_session_keeps_stored_cookie(

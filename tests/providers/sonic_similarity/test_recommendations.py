@@ -14,12 +14,14 @@ the stored cache entry without a second backend fetch.
 from __future__ import annotations
 
 import asyncio
+from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, call
 
 import pytest
 from music_assistant_models.media_items import ProviderMapping, Track
 
+from music_assistant.providers.sonic_similarity import provider as provider_module
 from tests.providers.sonic_similarity.conftest import make_item_mapping, make_track
 
 if TYPE_CHECKING:
@@ -94,3 +96,21 @@ async def test_get_recommendation_items_warm_cache_hit_serves_stored_items(
     assert plugin._handle_similar.await_count == 1
     assert list(first) == [resolved]
     assert list(second) == [resolved]
+
+
+@pytest.mark.asyncio
+async def test_get_recommendation_items_builds_row_per_user(
+    make_plugin: Callable[..., Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Each calling user reaches the cached builder with their own id."""
+    plugin = make_plugin()
+    builder = AsyncMock(return_value=None)
+    plugin._get_inspired_recommendations = builder
+    for user_id in ("user-a", "user-b"):
+        monkeypatch.setattr(
+            provider_module,
+            "get_current_user",
+            lambda uid=user_id: SimpleNamespace(user_id=uid),
+        )
+        await plugin.get_recommendation_items(ROW_ID)
+    assert builder.await_args_list == [call("user-a"), call("user-b")]

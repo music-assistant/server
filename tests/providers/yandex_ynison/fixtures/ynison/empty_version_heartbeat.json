@@ -1,0 +1,15 @@
+{
+  "player_state": {
+    "status": {
+      "paused": false,
+      "progress_ms": "120001",
+      "duration_ms": "240000",
+      "playback_speed": 1.0,
+      "version": {
+        "device_id": "",
+        "version": "0",
+        "timestamp_ms": "0"
+      }
+    }
+  }
+}

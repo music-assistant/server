@@ -52,6 +52,7 @@ from music_assistant_models.media_items import (
     Podcast,
     PodcastEpisode,
     ProviderMapping,
+    Radio,
     RecommendationFolder,
     SearchResults,
     SoundEffect,
@@ -161,8 +162,10 @@ from music_assistant.helpers.provider_access import (
     own_music_sources,
     playback_instance_for,
     source_owner,
+    visible_items,
     visible_music_sources,
     visible_playback_sources,
+    visible_provider,
 )
 from music_assistant.helpers.tags import split_artists
 from music_assistant.helpers.throttle_retry import RequestPriority, request_priority
@@ -1624,6 +1627,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
                 full_item = await cast(
                     "MediaControllerBase[MediaItemType]", ctrl
                 ).add_item_to_library(full_item)
+                await self._link_genres_if_unmapped(full_item)
         elif (
             favorite
             and (own_mappings := self._write_target_mappings(full_item.provider_mappings))
@@ -1795,6 +1799,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         await self.mass.metadata.update_metadata(library_item, overwrite_existing)
         if isinstance(library_item, Artist):
             library_item = await self.artists.get_merged_library_item(library_item)
+        await self._link_genres_if_unmapped(library_item)
         return library_item
 
     @api_command("music/refresh_item", required_scope=Scope.LIBRARY_WRITE)
@@ -1994,14 +1999,9 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             user = provider_user
 
         play_history_written = False
-        user_ids: list[str] = []
+        user_ids = await self._get_playlog_user_ids(user) if not is_playing else []
         # update generic playlog table (when not playing)
         if not is_playing:
-            if user:
-                user_ids = [user.user_id]
-            else:
-                # NOTE: if no user was found, we will alter the playlog for all users
-                user_ids = [user.user_id for user in await self.mass.webserver.auth.list_users()]
             # Leaving the speed out keeps whatever is already stored for this item/user
             # (a provider sync reporting progress has no speed to offer), and falls back to
             # the column default of 1.0 for a brand new row.
@@ -2042,6 +2042,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             fully_played=fully_played,
             position=seconds_played,
             is_playing=is_playing,
+            provider_instance_id=provider_instance_id,
         )
 
         # also update playcount in library table (if fully played)
@@ -2139,7 +2140,13 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         )
 
         # forward to provider(s) to sync resume state (e.g. for audiobooks)
-        await self._forward_play_report(media_item, user, fully_played=False, position=0)
+        await self._forward_play_report(
+            media_item,
+            user,
+            fully_played=False,
+            position=0,
+            provider_instance_id=provider_instance_id,
+        )
 
     @api_command("music/track_by_name", required_scope=Scope.LIBRARY_READ)
     async def get_track_by_name(
@@ -2556,6 +2563,29 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             self.logger.warning(
                 "Provider %s was not not fully removed from library", provider_instance
             )
+
+    async def cleanup_provider_images(self, provider_instance: str) -> None:
+        """
+        Remove the images of a removed metadata provider from all library items.
+
+        :param provider_instance: The instance ID of the removed provider.
+        """
+        # no per-item MEDIA_ITEM_UPDATED events for this bulk removal, to not flood subscribers
+        token = SUPPRESS_MEDIA_ITEM_UPDATES.set(True)
+        try:
+            for ctrl in (
+                self.artists,
+                self.albums,
+                self.tracks,
+                self.playlists,
+                self.radio,
+                self.audiobooks,
+                self.podcasts,
+                self.genres,
+            ):
+                await ctrl.remove_all_provider_images(provider_instance)
+        finally:
+            SUPPRESS_MEDIA_ITEM_UPDATES.reset(token)
 
     async def cleanup_provider_shortcuts(self, provider_instance: str) -> None:
         """
@@ -3017,6 +3047,15 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             sources.extend(provider.get_player_audio_sources(allowed_player_id) or [])
         return sources
 
+    async def _link_genres_if_unmapped(self, item: MediaItemType) -> None:
+        """Link a library item to the genres it carries, if it has no genre links yet."""
+        if item.metadata.genres and not await self.genres.has_genre_mappings(
+            item.media_type, item.item_id
+        ):
+            await self.genres.sync_media_item_genres(
+                item.media_type, item.item_id, set(item.metadata.genres)
+            )
+
     def _write_target_mappings(
         self,
         provider_mappings: Iterable[ProviderMapping],
@@ -3068,12 +3107,23 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
 
         :param mapping: The provider mapping to resolve.
         """
-        # an unavailable account of a streaming service resolves to another loaded account
-        # of that service, so the account actually serving the mapping is the one to check
-        provider = self.mass.get_provider(mapping.provider_instance)
-        if provider is None or not self._apply_user_provider_filter([provider]):
-            return None
-        return provider
+        return visible_provider(self.mass, mapping.provider_instance, get_current_user())
+
+    def _visible_search_results(self, results: SearchResults) -> SearchResults:
+        """Return the search results with only the items the current user may see."""
+        if (user := get_current_user()) is None:
+            return results
+        return SearchResults(
+            artists=visible_items(self.mass, results.artists, user),
+            albums=visible_items(self.mass, results.albums, user),
+            genres=visible_items(self.mass, results.genres, user),
+            tracks=visible_items(self.mass, results.tracks, user),
+            playlists=visible_items(self.mass, results.playlists, user),
+            radio=visible_items(self.mass, results.radio, user),
+            audiobooks=visible_items(self.mass, results.audiobooks, user),
+            podcasts=visible_items(self.mass, results.podcasts, user),
+            sound_effects=visible_items(self.mass, results.sound_effects, user),
+        )
 
     async def _search_shareable_url(self, search_query: str) -> SearchResults | None:
         """
@@ -3113,6 +3163,8 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             return SearchResults(audiobooks=[cast("Audiobook", item)])
         if media_type == MediaType.PODCAST:
             return SearchResults(podcasts=[cast("Podcast", item)])
+        if media_type == MediaType.RADIO:
+            return SearchResults(radio=[cast("Radio", item)])
         return SearchResults()
 
     async def _search_provider(
@@ -3165,7 +3217,10 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
                 base_class=SearchResults,
             )
         ) is not None:
-            return filter_search_results(cast("SearchResults", cache), prov.domain, skip_item_ids)
+            # the cache is shared by all users, so the results are narrowed on every read
+            return self._visible_search_results(
+                filter_search_results(cast("SearchResults", cache), prov.domain, skip_item_ids)
+            )
         # run the provider search as a separate task (deduplicated by task_id so
         # identical concurrent searches share a single provider call); with a soft
         # timeout a slow provider contributes no results now, while its search
@@ -3186,7 +3241,9 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             return None
         if prov_search_results is None:
             return None
-        return filter_search_results(prov_search_results, prov.domain, skip_item_ids)
+        return self._visible_search_results(
+            filter_search_results(prov_search_results, prov.domain, skip_item_ids)
+        )
 
     async def _execute_provider_search(
         self,
@@ -3733,6 +3790,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         fully_played: bool,
         position: int,
         is_playing: bool = False,
+        provider_instance_id: str | None = None,
     ) -> None:
         """
         Report the play to the music sources that may serve this user, once per account.
@@ -3745,6 +3803,8 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         :param fully_played: Whether the item was played to the end.
         :param position: The last known position of the item in seconds.
         :param is_playing: Whether the item is still playing.
+        :param provider_instance_id: The provider instance reporting the play of its own
+            account, which then is not reported to any music source.
         """
         # the cached episode listing of a podcast holds the played state its music sources
         # report, so it is assembled anew from what they took in
@@ -3754,6 +3814,9 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             else None
         )
         allowed = visible_playback_sources(self.mass, user) if user else None
+        if provider_instance_id:
+            # a report of a provider's own account must not reach any other account
+            allowed = []
         reported_to: set[str] = set()
         reports: list[Coroutine[Any, Any, None]] = []
         for prov_mapping in media_item.provider_mappings:
@@ -3855,6 +3918,12 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             progress,
         )
         return True
+
+    async def _get_playlog_user_ids(self, user: User | None) -> list[str]:
+        """Return users whose playlog rows are updated by this report."""
+        if user:
+            return [user.user_id]
+        return [user.user_id for user in await self.mass.webserver.auth.list_users()]
 
     def _signal_playlog_updated(
         self,
