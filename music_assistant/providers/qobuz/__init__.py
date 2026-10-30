@@ -9,7 +9,7 @@ import time
 from collections.abc import Awaitable, Callable
 from contextlib import suppress
 from datetime import UTC
-from typing import TYPE_CHECKING, Any, TypeVar, cast
+from typing import TYPE_CHECKING, Any, NamedTuple, TypeVar, cast
 
 from aiohttp import client_exceptions
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption
@@ -116,15 +116,41 @@ PARSED_ITEM_CACHE_CHECKSUM = "instance_id_provider_v2"
 
 CONF_QUALITY = "quality"
 
-# Discover rows, keyed on their (stable) row id: (Qobuz featured album type, name, icon)
+
+class QobuzRecommendationRow(NamedTuple):
+    """A Discover row backed by a Qobuz featured album list."""
+
+    featured_type: str
+    name: str
+    icon: str
+    translation_key: str | None
+    enabled_by_default: bool = False
+
+
+# Discover rows, keyed on their (stable) row id
 RECOMMENDATION_ROWS = {
-    "new_releases": ("new-releases", "New Releases", "mdi-new-box"),
-    "best_sellers": ("best-sellers", "Best Sellers", "mdi-chart-line"),
-    "most_streamed": ("most-streamed", "Most Streamed", "mdi-trending-up"),
-    "press_awards": ("press-awards", "Press Awards", "mdi-trophy"),
-    "editor_picks": ("editor-picks", "Editor's Picks", "mdi-star"),
-    "qobuzissime": ("qobuzissims", "Qobuzissime", "mdi-star-circle"),
-    "ideal_discography": ("ideal-discography", "Ideal Discography", "mdi-bookshelf"),
+    "new_releases": QobuzRecommendationRow(
+        "new-releases", "New Releases", "mdi-new-box", "new_releases", enabled_by_default=True
+    ),
+    "best_sellers": QobuzRecommendationRow(
+        "best-sellers", "Best Sellers", "mdi-chart-line", "best_sellers"
+    ),
+    "most_streamed": QobuzRecommendationRow(
+        "most-streamed", "Most Streamed", "mdi-trending-up", "most_streamed"
+    ),
+    "press_awards": QobuzRecommendationRow(
+        "press-awards", "Press Awards", "mdi-trophy", "press_awards"
+    ),
+    "editor_picks": QobuzRecommendationRow(
+        "editor-picks", "Editor's Picks", "mdi-star", "editor_picks", enabled_by_default=True
+    ),
+    # "qobuzissims" is the actual API type value; Qobuzissime is a brand name, so not translated
+    "qobuzissime": QobuzRecommendationRow(
+        "qobuzissims", "Qobuzissime", "mdi-star-circle", translation_key=None
+    ),
+    "ideal_discography": QobuzRecommendationRow(
+        "ideal-discography", "Ideal Discography", "mdi-bookshelf", "ideal_discography"
+    ),
 }
 
 _LookupItemT = TypeVar("_LookupItemT", Track, Album)
@@ -472,11 +498,12 @@ class QobuzProvider(MusicProvider):
             RecommendationFolder(
                 item_id=row_id,
                 provider=self.instance_id,
-                name=name,
-                translation_key=row_id,
-                icon=icon,
+                name=row.name,
+                translation_key=row.translation_key,
+                icon=row.icon,
+                enabled_by_default=row.enabled_by_default,
             )
-            for row_id, (_, name, icon) in RECOMMENDATION_ROWS.items()
+            for row_id, row in RECOMMENDATION_ROWS.items()
         ]
 
     async def get_recommendation_items(
@@ -489,7 +516,9 @@ class QobuzProvider(MusicProvider):
         """
         if item_id not in RECOMMENDATION_ROWS:
             return UniqueList()
-        return UniqueList(await self._get_featured_albums(RECOMMENDATION_ROWS[item_id][0]))
+        return UniqueList(
+            await self._get_featured_albums(RECOMMENDATION_ROWS[item_id].featured_type)
+        )
 
     async def library_add(self, item: MediaItemType) -> bool:
         """Add item to library."""
@@ -915,11 +944,18 @@ class QobuzProvider(MusicProvider):
         result = await self._get_data("album/getFeatured", type=featured_type, limit=50)
         if not result:
             return []
-        return [
-            await self._parse_album(item)
-            for item in result["albums"]["items"]
-            if item and item.get("id")
-        ]
+        # skip items without artist, as _parse_album would fetch each of those in full,
+        # and unplayable (e.g. purchase-only or region-blocked) releases
+        required_keys = ("id", "artist", "streamable", "displayable")
+        albums: list[Album] = []
+        for item in result.get("albums", {}).get("items", []):
+            if not item or not all(item.get(key) for key in required_keys):
+                continue
+            try:
+                albums.append(await self._parse_album(item))
+            except (KeyError, TypeError) as err:
+                self.logger.debug("Skipping featured album %s: %s", item["id"], err)
+        return albums
 
     async def _get_item_by_external_id(
         self,
