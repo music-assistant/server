@@ -377,11 +377,18 @@ def _autoplay_entries(
         ProviderFeature.SIMILAR_TRACKS in provider.supported_features
         for provider in mass.music.providers
     )
+    similar_artists_available = any(
+        ProviderFeature.SIMILAR_ARTISTS in provider.supported_features
+        for provider in mass.music.providers
+    )
     mode_options = [
         ConfigValueOption(AutoplayMode.AUTO.value),
         ConfigValueOption(AutoplayMode.SIMILAR.value, disabled=not similar_available),
         ConfigValueOption(AutoplayMode.LIBRARY.value),
         ConfigValueOption(AutoplayMode.PLAYLIST.value),
+        ConfigValueOption(
+            AutoplayMode.SIMILAR_ARTISTS.value, disabled=not similar_artists_available
+        ),
     ]
     if per_queue:
         mode_options.append(ConfigValueOption(CONF_VALUE_GLOBAL))
