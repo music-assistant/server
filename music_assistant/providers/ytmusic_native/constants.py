@@ -32,6 +32,11 @@ DEFAULT_STREAM_URL_EXPIRATION: Final[int] = 3600
 
 # AAC 256k and Opus 256k, only served to Premium accounts.
 PREMIUM_ITAGS: Final[tuple[int, ...]] = (141, 774)
+# Premium is required. The existing YouTube Music provider checks it the same way: only
+# a Premium account is served itag 141 for this video.
+PREMIUM_CHECK_VIDEO_ID: Final[str] = "dQw4w9WgXcQ"
+# While playing, check again when no Premium format was seen for this long.
+PREMIUM_RECHECK_INTERVAL: Final[int] = 24 * 3600
 
 VARIOUS_ARTISTS_YTM_ID: Final[str] = "UCUTXlgdcKU5vfzFqHOWIvkA"
 # Joins a podcast id and an episode video id into one episode item id.
@@ -43,7 +48,9 @@ PERSONAL_PLAYLIST_IDS: Final[tuple[str, ...]] = ("LM", "SE", "RDPN")
 PERSONAL_PLAYLIST_PREFIXES: Final[tuple[str, ...]] = ("RDTMAK5uy_",)
 # Mix playlists can be endless; cap how many tracks we read from one.
 DYNAMIC_PLAYLIST_TRACK_LIMIT: Final[int] = 300
-MAX_CONTINUATIONS: Final[int] = 100
+# Only guards against a continuation loop: pages hold 25 to 100 items, so real
+# libraries end long before this. Reaching it is logged as a warning.
+MAX_CONTINUATIONS: Final[int] = 2000
 
 BROWSE_HOME: Final[str] = "FEmusic_home"
 BROWSE_LIBRARY_TRACKS: Final[str] = "FEmusic_liked_videos"

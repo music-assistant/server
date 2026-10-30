@@ -3,6 +3,8 @@
 from datetime import UTC, datetime
 from typing import Any
 
+import pytest
+
 from music_assistant.providers.ytmusic_native import parsers
 
 
@@ -148,7 +150,7 @@ def test_episode_rows_are_not_parsed_as_tracks() -> None:
     assert item is not None
     assert item["kind"] == "episode"
     assert item["podcast"] == {"id": "PLshow", "name": "Some Podcast"}
-    assert item["date"] == datetime(2021, 3, 2, tzinfo=UTC)
+    assert item["date"] == "Mar 2, 2021"
 
 
 def test_watch_queue_keeps_the_song_and_borrows_artist_ids_from_its_video() -> None:
@@ -293,6 +295,66 @@ def test_episode_page() -> None:
 
     assert episode is not None
     assert episode["podcast"] == {"id": "PLshow", "name": "The Show"}
-    assert episode["date"] == datetime(2025, 11, 2, tzinfo=UTC)
+    assert episode["date"] == "Nov 2, 2025"
     assert episode["duration"] == 6900
     assert episode["description"] == "About it"
+
+
+def _menu(*targets: tuple[str, str]) -> dict[str, Any]:
+    """Return an item menu with a "Go to ..." entry per (browse id, page type)."""
+    items = [
+        {"menuNavigationItemRenderer": {"navigationEndpoint": _browse(browse_id, page_type)}}
+        for browse_id, page_type in targets
+    ]
+    return {"menuRenderer": {"items": items}}
+
+
+def test_a_row_without_artist_links_takes_the_artist_from_its_menu() -> None:
+    """Rows on some pages credit the artist as plain text; the menu still links the artist."""
+    row = _row(
+        "Around the World",
+        [_run("Daft Punk"), _run(" • "), _run("7:09")],
+        playlistItemData={"videoId": "vid1"},
+        menu=_menu(("UCdp", "MUSIC_PAGE_TYPE_ARTIST")),
+    )
+
+    track = parsers.parse_row(row["musicResponsiveListItemRenderer"])
+
+    assert track is not None
+    assert track["artists"] == [{"id": "UCdp", "name": "Daft Punk"}]
+    assert track["duration"] == 429
+
+
+def test_a_queue_row_takes_artist_and_album_from_its_menu() -> None:
+    """A queue row without links gets both ids from its menu, the name from the short byline."""
+    panel = _panel("vid1", "One More Time", "MUSIC_VIDEO_TYPE_ATV", None)
+    panel["playlistPanelVideoRenderer"] |= {
+        "shortBylineText": {"runs": [_run("Daft Punk & Romanthony")]},
+        "menu": _menu(("UCdp", "MUSIC_PAGE_TYPE_ARTIST"), ("MPREb_disc", "MUSIC_PAGE_TYPE_ALBUM")),
+    }
+
+    tracks = parsers.parse_watch_queue({"playlistPanelRenderer": {"contents": [panel]}})
+
+    assert tracks[0]["artists"] == [{"id": "UCdp", "name": "Daft Punk"}]
+    assert tracks[0]["album"] == {"id": "MPREb_disc", "name": ""}
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("Nov 2, 2025", datetime(2025, 11, 2, tzinfo=UTC)),
+        ("Oct 20", datetime(2026, 10, 20, tzinfo=UTC)),
+        # a date without a year still ahead this year was last year
+        ("Dec 24", datetime(2025, 12, 24, tzinfo=UTC)),
+        ("2d ago", datetime(2026, 10, 29, tzinfo=UTC)),
+        ("3 weeks ago", datetime(2026, 10, 10, tzinfo=UTC)),
+        ("5h ago", datetime(2026, 10, 31, tzinfo=UTC)),
+        ("184 views", None),
+        (None, None),
+    ],
+)
+def test_release_dates(text: str | None, expected: datetime | None) -> None:
+    """Older episodes carry a full date, this year's none and the last few days a relative one."""
+    today = datetime(2026, 10, 31, 12, tzinfo=UTC)
+
+    assert parsers.parse_release_date(text, today) == expected

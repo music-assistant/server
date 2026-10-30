@@ -60,6 +60,7 @@ from music_assistant_models.streamdetails import StreamDetails
 from music_assistant.constants import CONF_ENTRY_UNOFFICIAL_PROVIDER
 from music_assistant.controllers.cache import use_cache
 from music_assistant.helpers.aiohttp_client import create_clientsession
+from music_assistant.helpers.datetime import utc
 from music_assistant.helpers.util import infer_album_type, parse_title_and_version
 from music_assistant.models.music_provider import MusicProvider
 from music_assistant.models.recommendation_payload import RecommendationPayloadMixin
@@ -87,7 +88,9 @@ from .constants import (
     PERSONAL_PLAYLIST_PREFIXES,
     PLAYLIST_ID_DELIMITER,
     PODCAST_EPISODE_SPLITTER,
+    PREMIUM_CHECK_VIDEO_ID,
     PREMIUM_ITAGS,
+    PREMIUM_RECHECK_INTERVAL,
     REPORT_PLAY_AFTER,
     ROTATE_COOKIES_INTERVAL,
     SEARCH_PARAMS,
@@ -147,6 +150,22 @@ RECOMMENDATION_ICONS = (
 CPN_ALPHABET = string.ascii_letters + string.digits + "-_"
 
 
+def _premium_served(player: dict[str, Any]) -> bool | None:
+    """
+    Return whether a player response carries the Premium-only formats.
+
+    None when it says nothing about that: the video is not playable or has no formats.
+
+    :param player: A web player response.
+    """
+    if (player.get("playabilityStatus") or {}).get("status") != "OK":
+        return None
+    formats = (player.get("streamingData") or {}).get("adaptiveFormats") or []
+    if not formats:
+        return None
+    return any(fmt.get("itag") in PREMIUM_ITAGS for fmt in formats)
+
+
 async def setup(
     mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
 ) -> ProviderInstanceType:
@@ -164,6 +183,7 @@ class YoutubeMusicNativeProvider(RecommendationPayloadMixin, MusicProvider):
     _account_name: str | None = None
     _signature_timestamp: int = 0
     _player_lock: asyncio.Lock
+    _premium_verified_at: float = 0.0
 
     @property
     def max_concurrent_streams(self) -> int:
@@ -180,7 +200,7 @@ class YoutubeMusicNativeProvider(RecommendationPayloadMixin, MusicProvider):
         )
 
     async def handle_async_init(self) -> None:
-        """Set up the provider: check the cookie and read the client config."""
+        """Set up the provider: check the cookie, the client config and Premium."""
         if not mini_racer_available():
             raise SetupFailedError(
                 "The embedded JavaScript engine (mini-racer) is not available on this system.",
@@ -188,6 +208,8 @@ class YoutubeMusicNativeProvider(RecommendationPayloadMixin, MusicProvider):
                 translation_owner=self.translation_owner,
             )
         self._session = create_clientsession(self.mass, cookie_jar=DummyCookieJar())
+        self._cipher = PlayerCipher(self.logger)
+        self._player_lock = asyncio.Lock()
         try:
             self._innertube = InnerTube(
                 self._session,
@@ -201,12 +223,12 @@ class YoutubeMusicNativeProvider(RecommendationPayloadMixin, MusicProvider):
                     await self._rotate_cookies()
             await self._innertube.bootstrap(force=True)
             self._account_name = await self._fetch_account_name()
+            await self._require_premium()
         except BaseException:
             # the provider is only registered once init succeeds, so unload won't run
+            self._cipher.close()
             await self._session.close()
             raise
-        self._cipher = PlayerCipher(self.logger)
-        self._player_lock = asyncio.Lock()
         self.logger.info("Logged in to YouTube Music as %s", self._account_name or "unknown user")
         if self._keep_session_alive_enabled:
             self._keep_alive_task = self.mass.create_task(self._keep_session_alive())
@@ -576,14 +598,12 @@ class YoutubeMusicNativeProvider(RecommendationPayloadMixin, MusicProvider):
         """Get all episodes of a podcast, newest first."""
         page = await self._podcast_page(prov_podcast_id)
         podcast = self._parse_podcast(page["podcast"])
-        episodes = page["episodes"]
-        token, pages = page["continuation"], 0
-        while token and pages < MAX_CONTINUATIONS:
-            response = await self._innertube.call("browse", {"continuation": token})
-            if not (more := parsers.parse_episodes(response, page["podcast"])):
-                break
-            episodes += more
-            token, pages = parsers.continuation_token(response), pages + 1
+        episodes = await self._continued(
+            page["episodes"],
+            page["continuation"],
+            lambda response: parsers.parse_episodes(response, page["podcast"]),
+            parsers.continuation_token,
+        )
         for index, item in enumerate(episodes):
             # bigger position = newer
             yield self._parse_episode(item, podcast, position=len(episodes) - index)
@@ -624,6 +644,11 @@ class YoutubeMusicNativeProvider(RecommendationPayloadMixin, MusicProvider):
         if status.get("status") != "OK":
             reason = status.get("reason") or status.get("status") or "unknown reason"
             raise UnplayableMediaError(f"{video_id} is not playable: {reason}")
+        if _premium_served(player):
+            self._premium_verified_at = time.monotonic()
+        elif time.monotonic() - self._premium_verified_at > PREMIUM_RECHECK_INTERVAL:
+            # not every video has Premium formats, so ask the reference video
+            await self._recheck_premium()
         fmt = self._pick_audio_format(player)
         if fmt is None:
             raise UnplayableMediaError(f"{video_id} has no audio formats")
@@ -734,12 +759,55 @@ class YoutubeMusicNativeProvider(RecommendationPayloadMixin, MusicProvider):
         async with self._player_lock:
             player_id = self._innertube.player_id
             if player_id and player_id != self._cipher.player_id:
-                base_js, self._signature_timestamp = await self._innertube.base_js()
                 try:
+                    self._cipher.check_player(player_id)
+                    base_js, signature_timestamp = await self._innertube.base_js()
                     await self._cipher.load(player_id, base_js)
                 except CipherError as err:
                     raise UnplayableMediaError(str(err)) from err
+                self._signature_timestamp = signature_timestamp
         return await self._innertube.player(video_id, self._signature_timestamp)
+
+    async def _require_premium(self) -> None:
+        """
+        Refuse an account without YouTube Music Premium.
+
+        A free account hears ads in YouTube Music, and this provider plays none, so it
+        requires Premium like the existing YouTube Music provider does.
+        """
+        premium = await self._check_premium()
+        if premium is None:
+            raise SetupFailedError(
+                "Could not check whether the account has YouTube Music Premium.",
+                translation_key="premium_check_failed",
+                translation_owner=self.translation_owner,
+            )
+        if not premium:
+            raise self._premium_required()
+        self._premium_verified_at = time.monotonic()
+
+    async def _recheck_premium(self) -> None:
+        """Check Premium again while playing, and unload the provider once it is gone."""
+        premium = await self._check_premium()
+        if premium is None:
+            # inconclusive (e.g. a network hiccup); the next track tries again
+            return
+        if not premium:
+            err = self._premium_required()
+            self.unload_with_error(err)
+            raise err
+        self._premium_verified_at = time.monotonic()
+
+    async def _check_premium(self) -> bool | None:
+        """Return whether the account is served Premium formats, None when unknown."""
+        return _premium_served(await self._player(PREMIUM_CHECK_VIDEO_ID))
+
+    def _premium_required(self) -> LoginFailed:
+        return LoginFailed(
+            "This provider needs a YouTube Music Premium subscription.",
+            translation_key="premium_required",
+            translation_owner=self.translation_owner,
+        )
 
     def _pick_audio_format(self, player: dict[str, Any]) -> dict[str, Any] | None:
         """Pick the 256k Premium format when allowed and served, else the best other one."""
@@ -765,15 +833,13 @@ class YoutubeMusicNativeProvider(RecommendationPayloadMixin, MusicProvider):
         if params:
             body["params"] = params
         response = await self._innertube.call("browse", body)
-        items = parsers.parse_items(response)
-        token, pages = parsers.continuation_token(response), 0
-        while token and pages < MAX_CONTINUATIONS and (limit is None or len(items) < limit):
-            response = await self._innertube.call("browse", {"continuation": token})
-            if not (more := parsers.parse_items(response)):
-                break
-            items += more
-            token, pages = parsers.continuation_token(response), pages + 1
-        return items[:limit] if limit else items
+        return await self._continued(
+            parsers.parse_items(response),
+            parsers.continuation_token(response),
+            parsers.parse_items,
+            parsers.continuation_token,
+            limit,
+        )
 
     async def _playlist_items(self, raw_id: str, limit: int | None = None) -> list[dict[str, Any]]:
         """Read the (uncached) entries of a playlist, with their setVideoIds."""
@@ -781,14 +847,48 @@ class YoutubeMusicNativeProvider(RecommendationPayloadMixin, MusicProvider):
             # mixes are generated on the fly and can be endless
             limit = DYNAMIC_PLAYLIST_TRACK_LIMIT
         response = await self._innertube.call("browse", {"browseId": f"VL{raw_id}"})
-        items = parsers.parse_playlist_tracks(response)
-        token, pages = parsers.playlist_continuation(response), 0
-        while token and pages < MAX_CONTINUATIONS and (limit is None or len(items) < limit):
-            response = await self._innertube.call("browse", {"continuation": token})
-            if not (more := parsers.parse_playlist_tracks(response)):
+        return await self._continued(
+            parsers.parse_playlist_tracks(response),
+            parsers.playlist_continuation(response),
+            parsers.parse_playlist_tracks,
+            parsers.playlist_continuation,
+            limit,
+        )
+
+    async def _continued(
+        self,
+        items: list[dict[str, Any]],
+        token: str | None,
+        parse: Callable[[Any], list[dict[str, Any]]],
+        next_token: Callable[[Any], str | None],
+        limit: int | None = None,
+    ) -> list[dict[str, Any]]:
+        """
+        Follow a list's continuation pages until YouTube hands out no further page.
+
+        A library sync treats what is not returned as removed, so this reads to the end.
+        It only stops early on a token it already followed or on MAX_CONTINUATIONS pages,
+        which real libraries never reach, and logs a warning then.
+
+        :param items: The items of the first page.
+        :param token: The continuation token of the first page.
+        :param parse: Parses the items out of a continuation response.
+        :param next_token: Reads the next token out of a continuation response.
+        :param limit: Stop once this many items were read.
+        """
+        followed: set[str] = set()
+        while token and (limit is None or len(items) < limit):
+            if token in followed or len(followed) >= MAX_CONTINUATIONS:
+                self.logger.warning(
+                    "Stopped paging after %s pages, the list may be incomplete", len(followed)
+                )
                 break
-            items += more
-            token, pages = parsers.playlist_continuation(response), pages + 1
+            followed.add(token)
+            response = await self._innertube.call("browse", {"continuation": token})
+            if not (more := parse(response)):
+                break
+            items = items + more
+            token = next_token(response)
         return items[:limit] if limit else items
 
     async def _album_page(self, album_id: str) -> dict[str, Any]:
@@ -1111,8 +1211,8 @@ class YoutubeMusicNativeProvider(RecommendationPayloadMixin, MusicProvider):
             episode.duration = int(item["duration"])
         if item.get("description"):
             episode.metadata.description = item["description"]
-        if item.get("date"):
-            episode.metadata.release_date = item["date"]
+        if release_date := parsers.parse_release_date(item.get("date"), utc()):
+            episode.metadata.release_date = release_date
         if images := self._images(item.get("thumbnails")):
             episode.metadata.images = images
         return episode

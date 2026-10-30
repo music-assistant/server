@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from urllib.parse import parse_qs, urlencode, urlsplit, urlunsplit
@@ -31,6 +32,9 @@ _DESCRAMBLE_TIMEOUT_SEC = 20.0
 # The sign step bails on a too-short signature, so an n-only solve signs a dummy
 # of real signature length and ignores the result.
 _DUMMY_SIGNATURE = "A" * 100
+# A build that failed to load is not downloaded and seeded again for this long, unless
+# YouTube moves on to another build first.
+_LOAD_RETRY_AFTER = 600
 
 
 class CipherError(Exception):
@@ -68,12 +72,29 @@ class PlayerCipher:
         # Set once a decorator-solved URL streamed from googlevideo for this build;
         # from then on decorator results are trusted without another probe.
         self._decorator_verified = False
+        self._failed_player_id: str | None = None
+        self._failed_at = 0.0
         self._lock = asyncio.Lock()
 
     @property
     def player_id(self) -> str | None:
         """Return the id of the player build the isolate is seeded with."""
         return self._player_id
+
+    def check_player(self, player_id: str) -> None:
+        """
+        Raise CipherError while the given build recently failed to load.
+
+        Callers check this before downloading the build's ~3 MB base.js, so a build that
+        can not be loaded is not fetched and seeded again for every play and preload.
+
+        :param player_id: The player build id (from the base.js URL).
+        """
+        if (
+            player_id == self._failed_player_id
+            and time.monotonic() - self._failed_at < _LOAD_RETRY_AFTER
+        ):
+            raise CipherError(f"player {player_id} failed to load, not retrying it yet")
 
     async def load(self, player_id: str, base_js: str) -> None:
         """
@@ -85,7 +106,11 @@ class PlayerCipher:
         async with self._lock:
             if player_id == self._player_id and self._ctx is not None:
                 return
-            ctx, setup = await asyncio.to_thread(self._seed, base_js)
+            try:
+                ctx, setup = await asyncio.to_thread(self._seed, base_js)
+            except CipherError:
+                self._failed_player_id, self._failed_at = player_id, time.monotonic()
+                raise
             old, self._ctx = self._ctx, ctx
             self._player_id = player_id
             self._has_decorator = bool(setup.get("decorator"))

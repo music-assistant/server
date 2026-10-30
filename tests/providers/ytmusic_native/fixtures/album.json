@@ -1,0 +1,3680 @@
+{
+ "contents": {
+  "twoColumnBrowseResultsRenderer": {
+   "secondaryContents": {
+    "sectionListRenderer": {
+     "contents": [
+      {
+       "musicShelfRenderer": {
+        "contents": [
+         {
+          "musicResponsiveListItemRenderer": {
+           "overlay": {
+            "musicItemThumbnailOverlayRenderer": {
+             "content": {
+              "musicPlayButtonRenderer": {
+               "playNavigationEndpoint": {
+                "watchEndpoint": {
+                 "videoId": "IluRBvnYMoY",
+                 "playlistId": "OLAK5uy_kNhM2yaBTOVwrcZJepB1C9P3-n5_Sfy5c",
+                 "index": 0,
+                 "playlistSetVideoId": "F0A8E7660032CCB3",
+                 "watchEndpointMusicSupportedConfigs": {
+                  "watchEndpointMusicConfig": {
+                   "musicVideoType": "MUSIC_VIDEO_TYPE_OMV"
+                  }
+                 }
+                }
+               },
+               "playIcon": {
+                "iconType": "PLAY_ARROW"
+               },
+               "pauseIcon": {
+                "iconType": "PAUSE"
+               },
+               "iconColor": 4294967295,
+               "backgroundColor": 0,
+               "activeBackgroundColor": 0,
+               "loadingIndicatorColor": 14745645,
+               "playingIcon": {
+                "iconType": "VOLUME_UP"
+               },
+               "iconLoadingColor": 0,
+               "activeScaleFactor": 1,
+               "buttonSize": "MUSIC_PLAY_BUTTON_SIZE_SMALL",
+               "rippleTarget": "MUSIC_PLAY_BUTTON_RIPPLE_TARGET_SELF",
+               "accessibilityPlayData": {
+                "accessibilityData": {
+                 "label": "Play Give Life Back to Music - Daft Punk"
+                }
+               },
+               "accessibilityPauseData": {
+                "accessibilityData": {
+                 "label": "Pause Give Life Back to Music - Daft Punk"
+                }
+               }
+              }
+             },
+             "displayStyle": "MUSIC_ITEM_THUMBNAIL_OVERLAY_DISPLAY_STYLE_PERSISTENT"
+            }
+           },
+           "flexColumns": [
+            {
+             "musicResponsiveListItemFlexColumnRenderer": {
+              "text": {
+               "runs": [
+                {
+                 "text": "Give Life Back to Music",
+                 "navigationEndpoint": {
+                  "watchEndpoint": {
+                   "videoId": "IluRBvnYMoY",
+                   "playlistId": "OLAK5uy_kNhM2yaBTOVwrcZJepB1C9P3-n5_Sfy5c",
+                   "watchEndpointMusicSupportedConfigs": {
+                    "watchEndpointMusicConfig": {
+                     "musicVideoType": "MUSIC_VIDEO_TYPE_OMV"
+                    }
+                   }
+                  }
+                 }
+                }
+               ]
+              }
+             }
+            },
+            {
+             "musicResponsiveListItemFlexColumnRenderer": {
+              "text": {
+               "runs": [
+                {
+                 "text": "Daft Punk",
+                 "navigationEndpoint": {
+                  "browseEndpoint": {
+                   "browseId": "UCRr1xG_2WIDs18a6cIiCxeA",
+                   "browseEndpointContextSupportedConfigs": {
+                    "browseEndpointContextMusicConfig": {
+                     "pageType": "MUSIC_PAGE_TYPE_ARTIST"
+                    }
+                   }
+                  }
+                 }
+                }
+               ]
+              }
+             }
+            },
+            {
+             "musicResponsiveListItemFlexColumnRenderer": {
+              "text": {
+               "runs": [
+                {
+                 "text": "55M plays"
+                }
+               ]
+              }
+             }
+            }
+           ],
+           "fixedColumns": [
+            {
+             "musicResponsiveListItemFixedColumnRenderer": {
+              "text": {
+               "runs": [
+                {
+                 "text": "4:36"
+                }
+               ]
+              },
+              "size": "MUSIC_RESPONSIVE_LIST_ITEM_FIXED_COLUMN_SIZE_SMALL"
+             }
+            }
+           ],
+           "menu": {
+            "menuRenderer": {
+             "items": [
+              {
+               "menuNavigationItemRenderer": {
+                "text": {
+                 "runs": [
+                  {
+                   "text": "Go to artist"
+                  }
+                 ]
+                },
+                "icon": {
+                 "iconType": "ARTIST"
+                },
+                "navigationEndpoint": {
+                 "browseEndpoint": {
+                  "browseId": "UCRr1xG_2WIDs18a6cIiCxeA",
+                  "browseEndpointContextSupportedConfigs": {
+                   "browseEndpointContextMusicConfig": {
+                    "pageType": "MUSIC_PAGE_TYPE_ARTIST"
+                   }
+                  }
+                 }
+                }
+               }
+              },
+              {
+               "menuNavigationItemRenderer": {
+                "text": {
+                 "runs": [
+                  {
+                   "text": "View song credits"
+                  }
+                 ]
+                },
+                "icon": {
+                 "iconType": "PEOPLE_GROUP"
+                },
+                "navigationEndpoint": {
+                 "browseEndpoint": {
+                  "browseId": "MPTCzKSsP2084nU",
+                  "browseEndpointContextSupportedConfigs": {
+                   "browseEndpointContextMusicConfig": {
+                    "pageType": "MUSIC_PAGE_TYPE_TRACK_CREDITS"
+                   }
+                  }
+                 }
+                }
+               }
+              }
+             ]
+            }
+           },
+           "playlistItemData": {
+            "playlistSetVideoId": "F0A8E7660032CCB3",
+            "videoId": "IluRBvnYMoY"
+           },
+           "index": {
+            "runs": [
+             {
+              "text": "1"
+             }
+            ]
+           }
+          }
+         },
+         {
+          "musicResponsiveListItemRenderer": {
+           "overlay": {
+            "musicItemThumbnailOverlayRenderer": {
+             "content": {
+              "musicPlayButtonRenderer": {
+               "playNavigationEndpoint": {
+                "watchEndpoint": {
+                 "videoId": "ajGKWk0auOc",
+                 "playlistId": "OLAK5uy_kNhM2yaBTOVwrcZJepB1C9P3-n5_Sfy5c",
+                 "index": 1,
+                 "playlistSetVideoId": "2D88C17CC05ED307",
+                 "watchEndpointMusicSupportedConfigs": {
+                  "watchEndpointMusicConfig": {
+                   "musicVideoType": "MUSIC_VIDEO_TYPE_OMV"
+                  }
+                 }
+                }
+               },
+               "playIcon": {
+                "iconType": "PLAY_ARROW"
+               },
+               "pauseIcon": {
+                "iconType": "PAUSE"
+               },
+               "iconColor": 4294967295,
+               "backgroundColor": 0,
+               "activeBackgroundColor": 0,
+               "loadingIndicatorColor": 14745645,
+               "playingIcon": {
+                "iconType": "VOLUME_UP"
+               },
+               "iconLoadingColor": 0,
+               "activeScaleFactor": 1,
+               "buttonSize": "MUSIC_PLAY_BUTTON_SIZE_SMALL",
+               "rippleTarget": "MUSIC_PLAY_BUTTON_RIPPLE_TARGET_SELF",
+               "accessibilityPlayData": {
+                "accessibilityData": {
+                 "label": "Play The Game of Love - Daft Punk"
+                }
+               },
+               "accessibilityPauseData": {
+                "accessibilityData": {
+                 "label": "Pause The Game of Love - Daft Punk"
+                }
+               }
+              }
+             },
+             "displayStyle": "MUSIC_ITEM_THUMBNAIL_OVERLAY_DISPLAY_STYLE_PERSISTENT"
+            }
+           },
+           "flexColumns": [
+            {
+             "musicResponsiveListItemFlexColumnRenderer": {
+              "text": {
+               "runs": [
+                {
+                 "text": "The Game of Love",
+                 "navigationEndpoint": {
+                  "watchEndpoint": {
+                   "videoId": "ajGKWk0auOc",
+                   "playlistId": "OLAK5uy_kNhM2yaBTOVwrcZJepB1C9P3-n5_Sfy5c",
+                   "watchEndpointMusicSupportedConfigs": {
+                    "watchEndpointMusicConfig": {
+                     "musicVideoType": "MUSIC_VIDEO_TYPE_OMV"
+                    }
+                   }
+                  }
+                 }
+                }
+               ]
+              }
+             }
+            },
+            {
+             "musicResponsiveListItemFlexColumnRenderer": {
+              "text": {
+               "runs": [
+                {
+                 "text": "Daft Punk",
+                 "navigationEndpoint": {
+                  "browseEndpoint": {
+                   "browseId": "UCRr1xG_2WIDs18a6cIiCxeA",
+                   "browseEndpointContextSupportedConfigs": {
+                    "browseEndpointContextMusicConfig": {
+                     "pageType": "MUSIC_PAGE_TYPE_ARTIST"
+                    }
+                   }
+                  }
+                 }
+                }
+               ]
+              }
+             }
+            },
+            {
+             "musicResponsiveListItemFlexColumnRenderer": {
+              "text": {
+               "runs": [
+                {
+                 "text": "28M plays"
+                }
+               ]
+              }
+             }
+            }
+           ],
+           "fixedColumns": [
+            {
+             "musicResponsiveListItemFixedColumnRenderer": {
+              "text": {
+               "runs": [
+                {
+                 "text": "5:23"
+                }
+               ]
+              },
+              "size": "MUSIC_RESPONSIVE_LIST_ITEM_FIXED_COLUMN_SIZE_SMALL"
+             }
+            }
+           ],
+           "menu": {
+            "menuRenderer": {
+             "items": [
+              {
+               "menuNavigationItemRenderer": {
+                "text": {
+                 "runs": [
+                  {
+                   "text": "Go to artist"
+                  }
+                 ]
+                },
+                "icon": {
+                 "iconType": "ARTIST"
+                },
+                "navigationEndpoint": {
+                 "browseEndpoint": {
+                  "browseId": "UCRr1xG_2WIDs18a6cIiCxeA",
+                  "browseEndpointContextSupportedConfigs": {
+                   "browseEndpointContextMusicConfig": {
+                    "pageType": "MUSIC_PAGE_TYPE_ARTIST"
+                   }
+                  }
+                 }
+                }
+               }
+              },
+              {
+               "menuNavigationItemRenderer": {
+                "text": {
+                 "runs": [
+                  {
+                   "text": "View song credits"
+                  }
+                 ]
+                },
+                "icon": {
+                 "iconType": "PEOPLE_GROUP"
+                },
+                "navigationEndpoint": {
+                 "browseEndpoint": {
+                  "browseId": "MPTC_vOcbrUsmjM",
+                  "browseEndpointContextSupportedConfigs": {
+                   "browseEndpointContextMusicConfig": {
+                    "pageType": "MUSIC_PAGE_TYPE_TRACK_CREDITS"
+                   }
+                  }
+                 }
+                }
+               }
+              }
+             ]
+            }
+           },
+           "playlistItemData": {
+            "playlistSetVideoId": "2D88C17CC05ED307",
+            "videoId": "ajGKWk0auOc"
+           },
+           "index": {
+            "runs": [
+             {
+              "text": "2"
+             }
+            ]
+           }
+          }
+         },
+         {
+          "musicResponsiveListItemRenderer": {
+           "overlay": {
+            "musicItemThumbnailOverlayRenderer": {
+             "content": {
+              "musicPlayButtonRenderer": {
+               "playNavigationEndpoint": {
+                "watchEndpoint": {
+                 "videoId": "zhl-Cs1-sG4",
+                 "playlistId": "OLAK5uy_kNhM2yaBTOVwrcZJepB1C9P3-n5_Sfy5c",
+                 "index": 2,
+                 "playlistSetVideoId": "8D490F31D25B40E3",
+                 "watchEndpointMusicSupportedConfigs": {
+                  "watchEndpointMusicConfig": {
+                   "musicVideoType": "MUSIC_VIDEO_TYPE_OMV"
+                  }
+                 }
+                }
+               },
+               "playIcon": {
+                "iconType": "PLAY_ARROW"
+               },
+               "pauseIcon": {
+                "iconType": "PAUSE"
+               },
+               "iconColor": 4294967295,
+               "backgroundColor": 0,
+               "activeBackgroundColor": 0,
+               "loadingIndicatorColor": 14745645,
+               "playingIcon": {
+                "iconType": "VOLUME_UP"
+               },
+               "iconLoadingColor": 0,
+               "activeScaleFactor": 1,
+               "buttonSize": "MUSIC_PLAY_BUTTON_SIZE_SMALL",
+               "rippleTarget": "MUSIC_PLAY_BUTTON_RIPPLE_TARGET_SELF",
+               "accessibilityPlayData": {
+                "accessibilityData": {
+                 "label": "Play Giorgio by Moroder - Daft Punk"
+                }
+               },
+               "accessibilityPauseData": {
+                "accessibilityData": {
+                 "label": "Pause Giorgio by Moroder - Daft Punk"
+                }
+               }
+              }
+             },
+             "displayStyle": "MUSIC_ITEM_THUMBNAIL_OVERLAY_DISPLAY_STYLE_PERSISTENT"
+            }
+           },
+           "flexColumns": [
+            {
+             "musicResponsiveListItemFlexColumnRenderer": {
+              "text": {
+               "runs": [
+                {
+                 "text": "Giorgio by Moroder",
+                 "navigationEndpoint": {
+                  "watchEndpoint": {
+                   "videoId": "zhl-Cs1-sG4",
+                   "playlistId": "OLAK5uy_kNhM2yaBTOVwrcZJepB1C9P3-n5_Sfy5c",
+                   "watchEndpointMusicSupportedConfigs": {
+                    "watchEndpointMusicConfig": {
+                     "musicVideoType": "MUSIC_VIDEO_TYPE_OMV"
+                    }
+                   }
+                  }
+                 }
+                }
+               ]
+              }
+             }
+            },
+            {
+             "musicResponsiveListItemFlexColumnRenderer": {
+              "text": {
+               "runs": [
+                {
+                 "text": "Daft Punk",
+                 "navigationEndpoint": {
+                  "browseEndpoint": {
+                   "browseId": "UCRr1xG_2WIDs18a6cIiCxeA",
+                   "browseEndpointContextSupportedConfigs": {
+                    "browseEndpointContextMusicConfig": {
+                     "pageType": "MUSIC_PAGE_TYPE_ARTIST"
+                    }
+                   }
+                  }
+                 }
+                }
+               ]
+              }
+             }
+            },
+            {
+             "musicResponsiveListItemFlexColumnRenderer": {
+              "text": {
+               "runs": [
+                {
+                 "text": "96M plays"
+                }
+               ]
+              }
+             }
+            }
+           ],
+           "fixedColumns": [
+            {
+             "musicResponsiveListItemFixedColumnRenderer": {
+              "text": {
+               "runs": [
+                {
+                 "text": "9:05"
+                }
+               ]
+              },
+              "size": "MUSIC_RESPONSIVE_LIST_ITEM_FIXED_COLUMN_SIZE_SMALL"
+             }
+            }
+           ],
+           "menu": {
+            "menuRenderer": {
+             "items": [
+              {
+               "menuNavigationItemRenderer": {
+                "text": {
+                 "runs": [
+                  {
+                   "text": "Go to artist"
+                  }
+                 ]
+                },
+                "icon": {
+                 "iconType": "ARTIST"
+                },
+                "navigationEndpoint": {
+                 "browseEndpoint": {
+                  "browseId": "UCRr1xG_2WIDs18a6cIiCxeA",
+                  "browseEndpointContextSupportedConfigs": {
+                   "browseEndpointContextMusicConfig": {
+                    "pageType": "MUSIC_PAGE_TYPE_ARTIST"
+                   }
+                  }
+                 }
+                }
+               }
+              },
+              {
+               "menuNavigationItemRenderer": {
+                "text": {
+                 "runs": [
+                  {
+                   "text": "View song credits"
+                  }
+                 ]
+                },
+                "icon": {
+                 "iconType": "PEOPLE_GROUP"
+                },
+                "navigationEndpoint": {
+                 "browseEndpoint": {
+                  "browseId": "MPTCZFZM6jDTWd4",
+                  "browseEndpointContextSupportedConfigs": {
+                   "browseEndpointContextMusicConfig": {
+                    "pageType": "MUSIC_PAGE_TYPE_TRACK_CREDITS"
+                   }
+                  }
+                 }
+                }
+               }
+              }
+             ]
+            }
+           },
+           "playlistItemData": {
+            "playlistSetVideoId": "8D490F31D25B40E3",
+            "videoId": "zhl-Cs1-sG4"
+           },
+           "index": {
+            "runs": [
+             {
+              "text": "3"
+             }
+            ]
+           }
+          }
+         },
+         {
+          "musicResponsiveListItemRenderer": {
+           "overlay": {
+            "musicItemThumbnailOverlayRenderer": {
+             "content": {
+              "musicPlayButtonRenderer": {
+               "playNavigationEndpoint": {
+                "watchEndpoint": {
+                 "videoId": "WLa3JlGANuU",
+                 "playlistId": "OLAK5uy_kNhM2yaBTOVwrcZJepB1C9P3-n5_Sfy5c",
+                 "index": 3,
+                 "playlistSetVideoId": "2AC2686190AD916B",
+                 "watchEndpointMusicSupportedConfigs": {
+                  "watchEndpointMusicConfig": {
+                   "musicVideoType": "MUSIC_VIDEO_TYPE_OMV"
+                  }
+                 }
+                }
+               },
+               "playIcon": {
+                "iconType": "PLAY_ARROW"
+               },
+               "pauseIcon": {
+                "iconType": "PAUSE"
+               },
+               "iconColor": 4294967295,
+               "backgroundColor": 0,
+               "activeBackgroundColor": 0,
+               "loadingIndicatorColor": 14745645,
+               "playingIcon": {
+                "iconType": "VOLUME_UP"
+               },
+               "iconLoadingColor": 0,
+               "activeScaleFactor": 1,
+               "buttonSize": "MUSIC_PLAY_BUTTON_SIZE_SMALL",
+               "rippleTarget": "MUSIC_PLAY_BUTTON_RIPPLE_TARGET_SELF",
+               "accessibilityPlayData": {
+                "accessibilityData": {
+                 "label": "Play Within - Daft Punk"
+                }
+               },
+               "accessibilityPauseData": {
+                "accessibilityData": {
+                 "label": "Pause Within - Daft Punk"
+                }
+               }
+              }
+             },
+             "displayStyle": "MUSIC_ITEM_THUMBNAIL_OVERLAY_DISPLAY_STYLE_PERSISTENT"
+            }
+           },
+           "flexColumns": [
+            {
+             "musicResponsiveListItemFlexColumnRenderer": {
+              "text": {
+               "runs": [
+                {
+                 "text": "Within",
+                 "navigationEndpoint": {
+                  "watchEndpoint": {
+                   "videoId": "WLa3JlGANuU",
+                   "playlistId": "OLAK5uy_kNhM2yaBTOVwrcZJepB1C9P3-n5_Sfy5c",
+                   "watchEndpointMusicSupportedConfigs": {
+                    "watchEndpointMusicConfig": {
+                     "musicVideoType": "MUSIC_VIDEO_TYPE_OMV"
+                    }
+                   }
+                  }
+                 }
+                }
+               ]
+              }
+             }
+            },
+            {
+             "musicResponsiveListItemFlexColumnRenderer": {
+              "text": {
+               "runs": [
+                {
+                 "text": "Daft Punk",
+                 "navigationEndpoint": {
+                  "browseEndpoint": {
+                   "browseId": "UCRr1xG_2WIDs18a6cIiCxeA",
+                   "browseEndpointContextSupportedConfigs": {
+                    "browseEndpointContextMusicConfig": {
+                     "pageType": "MUSIC_PAGE_TYPE_ARTIST"
+                    }
+                   }
+                  }
+                 }
+                }
+               ]
+              }
+             }
+            },
+            {
+             "musicResponsiveListItemFlexColumnRenderer": {
+              "text": {
+               "runs": [
+                {
+                 "text": "41M plays"
+                }
+               ]
+              }
+             }
+            }
+           ],
+           "fixedColumns": [
+            {
+             "musicResponsiveListItemFixedColumnRenderer": {
+              "text": {
+               "runs": [
+                {
+                 "text": "3:49"
+                }
+               ]
+              },
+              "size": "MUSIC_RESPONSIVE_LIST_ITEM_FIXED_COLUMN_SIZE_SMALL"
+             }
+            }
+           ],
+           "menu": {
+            "menuRenderer": {
+             "items": [
+              {
+               "menuNavigationItemRenderer": {
+                "text": {
+                 "runs": [
+                  {
+                   "text": "Go to artist"
+                  }
+                 ]
+                },
+                "icon": {
+                 "iconType": "ARTIST"
+                },
+                "navigationEndpoint": {
+                 "browseEndpoint": {
+                  "browseId": "UCRr1xG_2WIDs18a6cIiCxeA",
+                  "browseEndpointContextSupportedConfigs": {
+                   "browseEndpointContextMusicConfig": {
+                    "pageType": "MUSIC_PAGE_TYPE_ARTIST"
+                   }
+                  }
+                 }
+                }
+               }
+              },
+              {
+               "menuNavigationItemRenderer": {
+                "text": {
+                 "runs": [
+                  {
+                   "text": "View song credits"
+                  }
+                 ]
+                },
+                "icon": {
+                 "iconType": "PEOPLE_GROUP"
+                },
+                "navigationEndpoint": {
+                 "browseEndpoint": {
+                  "browseId": "MPTCiNjGNNoUjkk",
+                  "browseEndpointContextSupportedConfigs": {
+                   "browseEndpointContextMusicConfig": {
+                    "pageType": "MUSIC_PAGE_TYPE_TRACK_CREDITS"
+                   }
+                  }
+                 }
+                }
+               }
+              }
+             ]
+            }
+           },
+           "playlistItemData": {
+            "playlistSetVideoId": "2AC2686190AD916B",
+            "videoId": "WLa3JlGANuU"
+           },
+           "index": {
+            "runs": [
+             {
+              "text": "4"
+             }
+            ]
+           }
+          }
+         },
+         {
+          "musicResponsiveListItemRenderer": {
+           "overlay": {
+            "musicItemThumbnailOverlayRenderer": {
+             "content": {
+              "musicPlayButtonRenderer": {
+               "playNavigationEndpoint": {
+                "watchEndpoint": {
+                 "videoId": "a5uQMwRMHcs",
+                 "playlistId": "OLAK5uy_kNhM2yaBTOVwrcZJepB1C9P3-n5_Sfy5c",
+                 "index": 4,
+                 "playlistSetVideoId": "6834C304DD37C98B",
+                 "watchEndpointMusicSupportedConfigs": {
+                  "watchEndpointMusicConfig": {
+                   "musicVideoType": "MUSIC_VIDEO_TYPE_OMV"
+                  }
+                 }
+                }
+               },
+               "playIcon": {
+                "iconType": "PLAY_ARROW"
+               },
+               "pauseIcon": {
+                "iconType": "PAUSE"
+               },
+               "iconColor": 4294967295,
+               "backgroundColor": 0,
+               "activeBackgroundColor": 0,
+               "loadingIndicatorColor": 14745645,
+               "playingIcon": {
+                "iconType": "VOLUME_UP"
+               },
+               "iconLoadingColor": 0,
+               "activeScaleFactor": 1,
+               "buttonSize": "MUSIC_PLAY_BUTTON_SIZE_SMALL",
+               "rippleTarget": "MUSIC_PLAY_BUTTON_RIPPLE_TARGET_SELF",
+               "accessibilityPlayData": {
+                "accessibilityData": {
+                 "label": "Play Instant Crush (feat. Julian Casablancas) - Daft Punk"
+                }
+               },
+               "accessibilityPauseData": {
+                "accessibilityData": {
+                 "label": "Pause Instant Crush (feat. Julian Casablancas) - Daft Punk"
+                }
+               }
+              }
+             },
+             "displayStyle": "MUSIC_ITEM_THUMBNAIL_OVERLAY_DISPLAY_STYLE_PERSISTENT"
+            }
+           },
+           "flexColumns": [
+            {
+             "musicResponsiveListItemFlexColumnRenderer": {
+              "text": {
+               "runs": [
+                {
+                 "text": "Instant Crush (feat. Julian Casablancas)",
+                 "navigationEndpoint": {
+                  "watchEndpoint": {
+                   "videoId": "a5uQMwRMHcs",
+                   "playlistId": "OLAK5uy_kNhM2yaBTOVwrcZJepB1C9P3-n5_Sfy5c",
+                   "watchEndpointMusicSupportedConfigs": {
+                    "watchEndpointMusicConfig": {
+                     "musicVideoType": "MUSIC_VIDEO_TYPE_OMV"
+                    }
+                   }
+                  }
+                 }
+                }
+               ]
+              }
+             }
+            },
+            {
+             "musicResponsiveListItemFlexColumnRenderer": {
+              "text": {
+               "runs": [
+                {
+                 "text": "Daft Punk",
+                 "navigationEndpoint": {
+                  "browseEndpoint": {
+                   "browseId": "UCRr1xG_2WIDs18a6cIiCxeA",
+                   "browseEndpointContextSupportedConfigs": {
+                    "browseEndpointContextMusicConfig": {
+                     "pageType": "MUSIC_PAGE_TYPE_ARTIST"
+                    }
+                   }
+                  }
+                 }
+                },
+                {
+                 "text": " & "
+                },
+                {
+                 "text": "Julian Casablancas",
+                 "navigationEndpoint": {
+                  "browseEndpoint": {
+                   "browseId": "UCWhpbdGLnR8XtXLr0yl2nYA",
+                   "browseEndpointContextSupportedConfigs": {
+                    "browseEndpointContextMusicConfig": {
+                     "pageType": "MUSIC_PAGE_TYPE_ARTIST"
+                    }
+                   }
+                  }
+                 }
+                }
+               ]
+              }
+             }
+            },
+            {
+             "musicResponsiveListItemFlexColumnRenderer": {
+              "text": {
+               "runs": [
+                {
+                 "text": "1.2B plays"
+                }
+               ]
+              }
+             }
+            }
+           ],
+           "fixedColumns": [
+            {
+             "musicResponsiveListItemFixedColumnRenderer": {
+              "text": {
+               "runs": [
+                {
+                 "text": "5:38"
+                }
+               ]
+              },
+              "size": "MUSIC_RESPONSIVE_LIST_ITEM_FIXED_COLUMN_SIZE_SMALL"
+             }
+            }
+           ],
+           "menu": {
+            "menuRenderer": {
+             "items": [
+              {
+               "menuNavigationItemRenderer": {
+                "text": {
+                 "runs": [
+                  {
+                   "text": "Go to artist"
+                  }
+                 ]
+                },
+                "icon": {
+                 "iconType": "ARTIST"
+                },
+                "navigationEndpoint": {
+                 "browseEndpoint": {
+                  "browseId": "UCRr1xG_2WIDs18a6cIiCxeA",
+                  "browseEndpointContextSupportedConfigs": {
+                   "browseEndpointContextMusicConfig": {
+                    "pageType": "MUSIC_PAGE_TYPE_ARTIST"
+                   }
+                  }
+                 }
+                }
+               }
+              },
+              {
+               "menuNavigationItemRenderer": {
+                "text": {
+                 "runs": [
+                  {
+                   "text": "View song credits"
+                  }
+                 ]
+                },
+                "icon": {
+                 "iconType": "PEOPLE_GROUP"
+                },
+                "navigationEndpoint": {
+                 "browseEndpoint": {
+                  "browseId": "MPTCkhnokW3Mw24",
+                  "browseEndpointContextSupportedConfigs": {
+                   "browseEndpointContextMusicConfig": {
+                    "pageType": "MUSIC_PAGE_TYPE_TRACK_CREDITS"
+                   }
+                  }
+                 }
+                }
+               }
+              }
+             ]
+            }
+           },
+           "playlistItemData": {
+            "playlistSetVideoId": "6834C304DD37C98B",
+            "videoId": "a5uQMwRMHcs"
+           },
+           "index": {
+            "runs": [
+             {
+              "text": "5"
+             }
+            ]
+           }
+          }
+         },
+         {
+          "musicResponsiveListItemRenderer": {
+           "overlay": {
+            "musicItemThumbnailOverlayRenderer": {
+             "content": {
+              "musicPlayButtonRenderer": {
+               "playNavigationEndpoint": {
+                "watchEndpoint": {
+                 "videoId": "NF-kLy44Hls",
+                 "playlistId": "OLAK5uy_kNhM2yaBTOVwrcZJepB1C9P3-n5_Sfy5c",
+                 "index": 5,
+                 "playlistSetVideoId": "5C3AC79E313AB00A",
+                 "watchEndpointMusicSupportedConfigs": {
+                  "watchEndpointMusicConfig": {
+                   "musicVideoType": "MUSIC_VIDEO_TYPE_OMV"
+                  }
+                 }
+                }
+               },
+               "playIcon": {
+                "iconType": "PLAY_ARROW"
+               },
+               "pauseIcon": {
+                "iconType": "PAUSE"
+               },
+               "iconColor": 4294967295,
+               "backgroundColor": 0,
+               "activeBackgroundColor": 0,
+               "loadingIndicatorColor": 14745645,
+               "playingIcon": {
+                "iconType": "VOLUME_UP"
+               },
+               "iconLoadingColor": 0,
+               "activeScaleFactor": 1,
+               "buttonSize": "MUSIC_PLAY_BUTTON_SIZE_SMALL",
+               "rippleTarget": "MUSIC_PLAY_BUTTON_RIPPLE_TARGET_SELF",
+               "accessibilityPlayData": {
+                "accessibilityData": {
+                 "label": "Play Lose Yourself to Dance (feat. Pharrell Williams) - Daft Punk"
+                }
+               },
+               "accessibilityPauseData": {
+                "accessibilityData": {
+                 "label": "Pause Lose Yourself to Dance (feat. Pharrell Williams) - Daft Punk"
+                }
+               }
+              }
+             },
+             "displayStyle": "MUSIC_ITEM_THUMBNAIL_OVERLAY_DISPLAY_STYLE_PERSISTENT"
+            }
+           },
+           "flexColumns": [
+            {
+             "musicResponsiveListItemFlexColumnRenderer": {
+              "text": {
+               "runs": [
+                {
+                 "text": "Lose Yourself to Dance (feat. Pharrell Williams)",
+                 "navigationEndpoint": {
+                  "watchEndpoint": {
+                   "videoId": "NF-kLy44Hls",
+                   "playlistId": "OLAK5uy_kNhM2yaBTOVwrcZJepB1C9P3-n5_Sfy5c",
+                   "watchEndpointMusicSupportedConfigs": {
+                    "watchEndpointMusicConfig": {
+                     "musicVideoType": "MUSIC_VIDEO_TYPE_OMV"
+                    }
+                   }
+                  }
+                 }
+                }
+               ]
+              }
+             }
+            },
+            {
+             "musicResponsiveListItemFlexColumnRenderer": {
+              "text": {
+               "runs": [
+                {
+                 "text": "Daft Punk",
+                 "navigationEndpoint": {
+                  "browseEndpoint": {
+                   "browseId": "UCRr1xG_2WIDs18a6cIiCxeA",
+                   "browseEndpointContextSupportedConfigs": {
+                    "browseEndpointContextMusicConfig": {
+                     "pageType": "MUSIC_PAGE_TYPE_ARTIST"
+                    }
+                   }
+                  }
+                 }
+                },
+                {
+                 "text": " & "
+                },
+                {
+                 "text": "Pharrell Williams",
+                 "navigationEndpoint": {
+                  "browseEndpoint": {
+                   "browseId": "UCJw8VyO6e3v6S0327AsgwcQ",
+                   "browseEndpointContextSupportedConfigs": {
+                    "browseEndpointContextMusicConfig": {
+                     "pageType": "MUSIC_PAGE_TYPE_ARTIST"
+                    }
+                   }
+                  }
+                 }
+                }
+               ]
+              }
+             }
+            },
+            {
+             "musicResponsiveListItemFlexColumnRenderer": {
+              "text": {
+               "runs": [
+                {
+                 "text": "389M plays"
+                }
+               ]
+              }
+             }
+            }
+           ],
+           "fixedColumns": [
+            {
+             "musicResponsiveListItemFixedColumnRenderer": {
+              "text": {
+               "runs": [
+                {
+                 "text": "5:54"
+                }
+               ]
+              },
+              "size": "MUSIC_RESPONSIVE_LIST_ITEM_FIXED_COLUMN_SIZE_SMALL"
+             }
+            }
+           ],
+           "menu": {
+            "menuRenderer": {
+             "items": [
+              {
+               "menuNavigationItemRenderer": {
+                "text": {
+                 "runs": [
+                  {
+                   "text": "Go to artist"
+                  }
+                 ]
+                },
+                "icon": {
+                 "iconType": "ARTIST"
+                },
+                "navigationEndpoint": {
+                 "browseEndpoint": {
+                  "browseId": "UCRr1xG_2WIDs18a6cIiCxeA",
+                  "browseEndpointContextSupportedConfigs": {
+                   "browseEndpointContextMusicConfig": {
+                    "pageType": "MUSIC_PAGE_TYPE_ARTIST"
+                   }
+                  }
+                 }
+                }
+               }
+              },
+              {
+               "menuNavigationItemRenderer": {
+                "text": {
+                 "runs": [
+                  {
+                   "text": "View song credits"
+                  }
+                 ]
+                },
+                "icon": {
+                 "iconType": "PEOPLE_GROUP"
+                },
+                "navigationEndpoint": {
+                 "browseEndpoint": {
+                  "browseId": "MPTCiU7oF4OXZSE",
+                  "browseEndpointContextSupportedConfigs": {
+                   "browseEndpointContextMusicConfig": {
+                    "pageType": "MUSIC_PAGE_TYPE_TRACK_CREDITS"
+                   }
+                  }
+                 }
+                }
+               }
+              }
+             ]
+            }
+           },
+           "playlistItemData": {
+            "playlistSetVideoId": "5C3AC79E313AB00A",
+            "videoId": "NF-kLy44Hls"
+           },
+           "index": {
+            "runs": [
+             {
+              "text": "6"
+             }
+            ]
+           }
+          }
+         },
+         {
+          "musicResponsiveListItemRenderer": {
+           "overlay": {
+            "musicItemThumbnailOverlayRenderer": {
+             "content": {
+              "musicPlayButtonRenderer": {
+               "playNavigationEndpoint": {
+                "watchEndpoint": {
+                 "videoId": "0Gkhol2Q1og",
+                 "playlistId": "OLAK5uy_kNhM2yaBTOVwrcZJepB1C9P3-n5_Sfy5c",
+                 "index": 6,
+                 "playlistSetVideoId": "4A133FAD7E0ADE31",
+                 "watchEndpointMusicSupportedConfigs": {
+                  "watchEndpointMusicConfig": {
+                   "musicVideoType": "MUSIC_VIDEO_TYPE_OMV"
+                  }
+                 }
+                }
+               },
+               "playIcon": {
+                "iconType": "PLAY_ARROW"
+               },
+               "pauseIcon": {
+                "iconType": "PAUSE"
+               },
+               "iconColor": 4294967295,
+               "backgroundColor": 0,
+               "activeBackgroundColor": 0,
+               "loadingIndicatorColor": 14745645,
+               "playingIcon": {
+                "iconType": "VOLUME_UP"
+               },
+               "iconLoadingColor": 0,
+               "activeScaleFactor": 1,
+               "buttonSize": "MUSIC_PLAY_BUTTON_SIZE_SMALL",
+               "rippleTarget": "MUSIC_PLAY_BUTTON_RIPPLE_TARGET_SELF",
+               "accessibilityPlayData": {
+                "accessibilityData": {
+                 "label": "Play Touch (feat. Paul Williams) - Daft Punk"
+                }
+               },
+               "accessibilityPauseData": {
+                "accessibilityData": {
+                 "label": "Pause Touch (feat. Paul Williams) - Daft Punk"
+                }
+               }
+              }
+             },
+             "displayStyle": "MUSIC_ITEM_THUMBNAIL_OVERLAY_DISPLAY_STYLE_PERSISTENT"
+            }
+           },
+           "flexColumns": [
+            {
+             "musicResponsiveListItemFlexColumnRenderer": {
+              "text": {
+               "runs": [
+                {
+                 "text": "Touch (feat. Paul Williams)",
+                 "navigationEndpoint": {
+                  "watchEndpoint": {
+                   "videoId": "0Gkhol2Q1og",
+                   "playlistId": "OLAK5uy_kNhM2yaBTOVwrcZJepB1C9P3-n5_Sfy5c",
+                   "watchEndpointMusicSupportedConfigs": {
+                    "watchEndpointMusicConfig": {
+                     "musicVideoType": "MUSIC_VIDEO_TYPE_OMV"
+                    }
+                   }
+                  }
+                 }
+                }
+               ]
+              }
+             }
+            },
+            {
+             "musicResponsiveListItemFlexColumnRenderer": {
+              "text": {
+               "runs": [
+                {
+                 "text": "Daft Punk",
+                 "navigationEndpoint": {
+                  "browseEndpoint": {
+                   "browseId": "UCRr1xG_2WIDs18a6cIiCxeA",
+                   "browseEndpointContextSupportedConfigs": {
+                    "browseEndpointContextMusicConfig": {
+                     "pageType": "MUSIC_PAGE_TYPE_ARTIST"
+                    }
+                   }
+                  }
+                 }
+                },
+                {
+                 "text": " & "
+                },
+                {
+                 "text": "Paul Williams",
+                 "navigationEndpoint": {
+                  "browseEndpoint": {
+                   "browseId": "UCPtp29kketDMCRawl_lT2oQ",
+                   "browseEndpointContextSupportedConfigs": {
+                    "browseEndpointContextMusicConfig": {
+                     "pageType": "MUSIC_PAGE_TYPE_ARTIST"
+                    }
+                   }
+                  }
+                 }
+                }
+               ]
+              }
+             }
+            },
+            {
+             "musicResponsiveListItemFlexColumnRenderer": {
+              "text": {
+               "runs": [
+                {
+                 "text": "35M plays"
+                }
+               ]
+              }
+             }
+            }
+           ],
+           "fixedColumns": [
+            {
+             "musicResponsiveListItemFixedColumnRenderer": {
+              "text": {
+               "runs": [
+                {
+                 "text": "8:19"
+                }
+               ]
+              },
+              "size": "MUSIC_RESPONSIVE_LIST_ITEM_FIXED_COLUMN_SIZE_SMALL"
+             }
+            }
+           ],
+           "menu": {
+            "menuRenderer": {
+             "items": [
+              {
+               "menuNavigationItemRenderer": {
+                "text": {
+                 "runs": [
+                  {
+                   "text": "Go to artist"
+                  }
+                 ]
+                },
+                "icon": {
+                 "iconType": "ARTIST"
+                },
+                "navigationEndpoint": {
+                 "browseEndpoint": {
+                  "browseId": "UCRr1xG_2WIDs18a6cIiCxeA",
+                  "browseEndpointContextSupportedConfigs": {
+                   "browseEndpointContextMusicConfig": {
+                    "pageType": "MUSIC_PAGE_TYPE_ARTIST"
+                   }
+                  }
+                 }
+                }
+               }
+              },
+              {
+               "menuNavigationItemRenderer": {
+                "text": {
+                 "runs": [
+                  {
+                   "text": "View song credits"
+                  }
+                 ]
+                },
+                "icon": {
+                 "iconType": "PEOPLE_GROUP"
+                },
+                "navigationEndpoint": {
+                 "browseEndpoint": {
+                  "browseId": "MPTCRRMbhEdmhYw",
+                  "browseEndpointContextSupportedConfigs": {
+                   "browseEndpointContextMusicConfig": {
+                    "pageType": "MUSIC_PAGE_TYPE_TRACK_CREDITS"
+                   }
+                  }
+                 }
+                }
+               }
+              }
+             ]
+            }
+           },
+           "playlistItemData": {
+            "playlistSetVideoId": "4A133FAD7E0ADE31",
+            "videoId": "0Gkhol2Q1og"
+           },
+           "index": {
+            "runs": [
+             {
+              "text": "7"
+             }
+            ]
+           }
+          }
+         },
+         {
+          "musicResponsiveListItemRenderer": {
+           "overlay": {
+            "musicItemThumbnailOverlayRenderer": {
+             "content": {
+              "musicPlayButtonRenderer": {
+               "playNavigationEndpoint": {
+                "watchEndpoint": {
+                 "videoId": "5NV6Rdv1a3I",
+                 "playlistId": "OLAK5uy_kNhM2yaBTOVwrcZJepB1C9P3-n5_Sfy5c",
+                 "index": 7,
+                 "playlistSetVideoId": "113C69D6A2AD6656",
+                 "watchEndpointMusicSupportedConfigs": {
+                  "watchEndpointMusicConfig": {
+                   "musicVideoType": "MUSIC_VIDEO_TYPE_OMV"
+                  }
+                 }
+                }
+               },
+               "playIcon": {
+                "iconType": "PLAY_ARROW"
+               },
+               "pauseIcon": {
+                "iconType": "PAUSE"
+               },
+               "iconColor": 4294967295,
+               "backgroundColor": 0,
+               "activeBackgroundColor": 0,
+               "loadingIndicatorColor": 14745645,
+               "playingIcon": {
+                "iconType": "VOLUME_UP"
+               },
+               "iconLoadingColor": 0,
+               "activeScaleFactor": 1,
+               "buttonSize": "MUSIC_PLAY_BUTTON_SIZE_SMALL",
+               "rippleTarget": "MUSIC_PLAY_BUTTON_RIPPLE_TARGET_SELF",
+               "accessibilityPlayData": {
+                "accessibilityData": {
+                 "label": "Play Get Lucky (feat. Pharrell Williams and Nile Rodgers) - Daft Punk"
+                }
+               },
+               "accessibilityPauseData": {
+                "accessibilityData": {
+                 "label": "Pause Get Lucky (feat. Pharrell Williams and Nile Rodgers) - Daft Punk"
+                }
+               }
+              }
+             },
+             "displayStyle": "MUSIC_ITEM_THUMBNAIL_OVERLAY_DISPLAY_STYLE_PERSISTENT"
+            }
+           },
+           "flexColumns": [
+            {
+             "musicResponsiveListItemFlexColumnRenderer": {
+              "text": {
+               "runs": [
+                {
+                 "text": "Get Lucky (feat. Pharrell Williams and Nile Rodgers)",
+                 "navigationEndpoint": {
+                  "watchEndpoint": {
+                   "videoId": "5NV6Rdv1a3I",
+                   "playlistId": "OLAK5uy_kNhM2yaBTOVwrcZJepB1C9P3-n5_Sfy5c",
+                   "watchEndpointMusicSupportedConfigs": {
+                    "watchEndpointMusicConfig": {
+                     "musicVideoType": "MUSIC_VIDEO_TYPE_OMV"
+                    }
+                   }
+                  }
+                 }
+                }
+               ]
+              }
+             }
+            },
+            {
+             "musicResponsiveListItemFlexColumnRenderer": {
+              "text": {
+               "runs": [
+                {
+                 "text": "Daft Punk",
+                 "navigationEndpoint": {
+                  "browseEndpoint": {
+                   "browseId": "UCRr1xG_2WIDs18a6cIiCxeA",
+                   "browseEndpointContextSupportedConfigs": {
+                    "browseEndpointContextMusicConfig": {
+                     "pageType": "MUSIC_PAGE_TYPE_ARTIST"
+                    }
+                   }
+                  }
+                 }
+                },
+                {
+                 "text": ", "
+                },
+                {
+                 "text": "Pharrell Williams",
+                 "navigationEndpoint": {
+                  "browseEndpoint": {
+                   "browseId": "UCJw8VyO6e3v6S0327AsgwcQ",
+                   "browseEndpointContextSupportedConfigs": {
+                    "browseEndpointContextMusicConfig": {
+                     "pageType": "MUSIC_PAGE_TYPE_ARTIST"
+                    }
+                   }
+                  }
+                 }
+                },
+                {
+                 "text": " & "
+                },
+                {
+                 "text": "Nile Rodgers",
+                 "navigationEndpoint": {
+                  "browseEndpoint": {
+                   "browseId": "UCThde8ccpEr6sP8dIHZ-ceQ",
+                   "browseEndpointContextSupportedConfigs": {
+                    "browseEndpointContextMusicConfig": {
+                     "pageType": "MUSIC_PAGE_TYPE_ARTIST"
+                    }
+                   }
+                  }
+                 }
+                }
+               ]
+              }
+             }
+            },
+            {
+             "musicResponsiveListItemFlexColumnRenderer": {
+              "text": {
+               "runs": [
+                {
+                 "text": "1.9B plays"
+                }
+               ]
+              }
+             }
+            }
+           ],
+           "fixedColumns": [
+            {
+             "musicResponsiveListItemFixedColumnRenderer": {
+              "text": {
+               "runs": [
+                {
+                 "text": "6:10"
+                }
+               ]
+              },
+              "size": "MUSIC_RESPONSIVE_LIST_ITEM_FIXED_COLUMN_SIZE_SMALL"
+             }
+            }
+           ],
+           "menu": {
+            "menuRenderer": {
+             "items": [
+              {
+               "menuNavigationItemRenderer": {
+                "text": {
+                 "runs": [
+                  {
+                   "text": "Go to artist"
+                  }
+                 ]
+                },
+                "icon": {
+                 "iconType": "ARTIST"
+                },
+                "navigationEndpoint": {
+                 "browseEndpoint": {
+                  "browseId": "UCRr1xG_2WIDs18a6cIiCxeA",
+                  "browseEndpointContextSupportedConfigs": {
+                   "browseEndpointContextMusicConfig": {
+                    "pageType": "MUSIC_PAGE_TYPE_ARTIST"
+                   }
+                  }
+                 }
+                }
+               }
+              },
+              {
+               "menuNavigationItemRenderer": {
+                "text": {
+                 "runs": [
+                  {
+                   "text": "View song credits"
+                  }
+                 ]
+                },
+                "icon": {
+                 "iconType": "PEOPLE_GROUP"
+                },
+                "navigationEndpoint": {
+                 "browseEndpoint": {
+                  "browseId": "MPTC4D7u5KF7SP8",
+                  "browseEndpointContextSupportedConfigs": {
+                   "browseEndpointContextMusicConfig": {
+                    "pageType": "MUSIC_PAGE_TYPE_TRACK_CREDITS"
+                   }
+                  }
+                 }
+                }
+               }
+              }
+             ]
+            }
+           },
+           "playlistItemData": {
+            "playlistSetVideoId": "113C69D6A2AD6656",
+            "videoId": "5NV6Rdv1a3I"
+           },
+           "index": {
+            "runs": [
+             {
+              "text": "8"
+             }
+            ]
+           }
+          }
+         },
+         {
+          "musicResponsiveListItemRenderer": {
+           "overlay": {
+            "musicItemThumbnailOverlayRenderer": {
+             "content": {
+              "musicPlayButtonRenderer": {
+               "playNavigationEndpoint": {
+                "watchEndpoint": {
+                 "videoId": "3T0NqvdUiWI",
+                 "playlistId": "OLAK5uy_kNhM2yaBTOVwrcZJepB1C9P3-n5_Sfy5c",
+                 "index": 8,
+                 "playlistSetVideoId": "81B1B4B0D5F5FBDD",
+                 "watchEndpointMusicSupportedConfigs": {
+                  "watchEndpointMusicConfig": {
+                   "musicVideoType": "MUSIC_VIDEO_TYPE_OMV"
+                  }
+                 }
+                }
+               },
+               "playIcon": {
+                "iconType": "PLAY_ARROW"
+               },
+               "pauseIcon": {
+                "iconType": "PAUSE"
+               },
+               "iconColor": 4294967295,
+               "backgroundColor": 0,
+               "activeBackgroundColor": 0,
+               "loadingIndicatorColor": 14745645,
+               "playingIcon": {
+                "iconType": "VOLUME_UP"
+               },
+               "iconLoadingColor": 0,
+               "activeScaleFactor": 1,
+               "buttonSize": "MUSIC_PLAY_BUTTON_SIZE_SMALL",
+               "rippleTarget": "MUSIC_PLAY_BUTTON_RIPPLE_TARGET_SELF",
+               "accessibilityPlayData": {
+                "accessibilityData": {
+                 "label": "Play Beyond - Daft Punk"
+                }
+               },
+               "accessibilityPauseData": {
+                "accessibilityData": {
+                 "label": "Pause Beyond - Daft Punk"
+                }
+               }
+              }
+             },
+             "displayStyle": "MUSIC_ITEM_THUMBNAIL_OVERLAY_DISPLAY_STYLE_PERSISTENT"
+            }
+           },
+           "flexColumns": [
+            {
+             "musicResponsiveListItemFlexColumnRenderer": {
+              "text": {
+               "runs": [
+                {
+                 "text": "Beyond",
+                 "navigationEndpoint": {
+                  "watchEndpoint": {
+                   "videoId": "3T0NqvdUiWI",
+                   "playlistId": "OLAK5uy_kNhM2yaBTOVwrcZJepB1C9P3-n5_Sfy5c",
+                   "watchEndpointMusicSupportedConfigs": {
+                    "watchEndpointMusicConfig": {
+                     "musicVideoType": "MUSIC_VIDEO_TYPE_OMV"
+                    }
+                   }
+                  }
+                 }
+                }
+               ]
+              }
+             }
+            },
+            {
+             "musicResponsiveListItemFlexColumnRenderer": {
+              "text": {
+               "runs": [
+                {
+                 "text": "Daft Punk",
+                 "navigationEndpoint": {
+                  "browseEndpoint": {
+                   "browseId": "UCRr1xG_2WIDs18a6cIiCxeA",
+                   "browseEndpointContextSupportedConfigs": {
+                    "browseEndpointContextMusicConfig": {
+                     "pageType": "MUSIC_PAGE_TYPE_ARTIST"
+                    }
+                   }
+                  }
+                 }
+                }
+               ]
+              }
+             }
+            },
+            {
+             "musicResponsiveListItemFlexColumnRenderer": {
+              "text": {
+               "runs": [
+                {
+                 "text": "16M plays"
+                }
+               ]
+              }
+             }
+            }
+           ],
+           "fixedColumns": [
+            {
+             "musicResponsiveListItemFixedColumnRenderer": {
+              "text": {
+               "runs": [
+                {
+                 "text": "4:51"
+                }
+               ]
+              },
+              "size": "MUSIC_RESPONSIVE_LIST_ITEM_FIXED_COLUMN_SIZE_SMALL"
+             }
+            }
+           ],
+           "menu": {
+            "menuRenderer": {
+             "items": [
+              {
+               "menuNavigationItemRenderer": {
+                "text": {
+                 "runs": [
+                  {
+                   "text": "Go to artist"
+                  }
+                 ]
+                },
+                "icon": {
+                 "iconType": "ARTIST"
+                },
+                "navigationEndpoint": {
+                 "browseEndpoint": {
+                  "browseId": "UCRr1xG_2WIDs18a6cIiCxeA",
+                  "browseEndpointContextSupportedConfigs": {
+                   "browseEndpointContextMusicConfig": {
+                    "pageType": "MUSIC_PAGE_TYPE_ARTIST"
+                   }
+                  }
+                 }
+                }
+               }
+              },
+              {
+               "menuNavigationItemRenderer": {
+                "text": {
+                 "runs": [
+                  {
+                   "text": "View song credits"
+                  }
+                 ]
+                },
+                "icon": {
+                 "iconType": "PEOPLE_GROUP"
+                },
+                "navigationEndpoint": {
+                 "browseEndpoint": {
+                  "browseId": "MPTCRE_XX6jk2Lo",
+                  "browseEndpointContextSupportedConfigs": {
+                   "browseEndpointContextMusicConfig": {
+                    "pageType": "MUSIC_PAGE_TYPE_TRACK_CREDITS"
+                   }
+                  }
+                 }
+                }
+               }
+              }
+             ]
+            }
+           },
+           "playlistItemData": {
+            "playlistSetVideoId": "81B1B4B0D5F5FBDD",
+            "videoId": "3T0NqvdUiWI"
+           },
+           "index": {
+            "runs": [
+             {
+              "text": "9"
+             }
+            ]
+           }
+          }
+         },
+         {
+          "musicResponsiveListItemRenderer": {
+           "overlay": {
+            "musicItemThumbnailOverlayRenderer": {
+             "content": {
+              "musicPlayButtonRenderer": {
+               "playNavigationEndpoint": {
+                "watchEndpoint": {
+                 "videoId": "wz7YiQdNmZ8",
+                 "playlistId": "OLAK5uy_kNhM2yaBTOVwrcZJepB1C9P3-n5_Sfy5c",
+                 "index": 9,
+                 "playlistSetVideoId": "9C161AA0EC007D06",
+                 "watchEndpointMusicSupportedConfigs": {
+                  "watchEndpointMusicConfig": {
+                   "musicVideoType": "MUSIC_VIDEO_TYPE_OMV"
+                  }
+                 }
+                }
+               },
+               "playIcon": {
+                "iconType": "PLAY_ARROW"
+               },
+               "pauseIcon": {
+                "iconType": "PAUSE"
+               },
+               "iconColor": 4294967295,
+               "backgroundColor": 0,
+               "activeBackgroundColor": 0,
+               "loadingIndicatorColor": 14745645,
+               "playingIcon": {
+                "iconType": "VOLUME_UP"
+               },
+               "iconLoadingColor": 0,
+               "activeScaleFactor": 1,
+               "buttonSize": "MUSIC_PLAY_BUTTON_SIZE_SMALL",
+               "rippleTarget": "MUSIC_PLAY_BUTTON_RIPPLE_TARGET_SELF",
+               "accessibilityPlayData": {
+                "accessibilityData": {
+                 "label": "Play Motherboard - Daft Punk"
+                }
+               },
+               "accessibilityPauseData": {
+                "accessibilityData": {
+                 "label": "Pause Motherboard - Daft Punk"
+                }
+               }
+              }
+             },
+             "displayStyle": "MUSIC_ITEM_THUMBNAIL_OVERLAY_DISPLAY_STYLE_PERSISTENT"
+            }
+           },
+           "flexColumns": [
+            {
+             "musicResponsiveListItemFlexColumnRenderer": {
+              "text": {
+               "runs": [
+                {
+                 "text": "Motherboard",
+                 "navigationEndpoint": {
+                  "watchEndpoint": {
+                   "videoId": "wz7YiQdNmZ8",
+                   "playlistId": "OLAK5uy_kNhM2yaBTOVwrcZJepB1C9P3-n5_Sfy5c",
+                   "watchEndpointMusicSupportedConfigs": {
+                    "watchEndpointMusicConfig": {
+                     "musicVideoType": "MUSIC_VIDEO_TYPE_OMV"
+                    }
+                   }
+                  }
+                 }
+                }
+               ]
+              }
+             }
+            },
+            {
+             "musicResponsiveListItemFlexColumnRenderer": {
+              "text": {
+               "runs": [
+                {
+                 "text": "Daft Punk",
+                 "navigationEndpoint": {
+                  "browseEndpoint": {
+                   "browseId": "UCRr1xG_2WIDs18a6cIiCxeA",
+                   "browseEndpointContextSupportedConfigs": {
+                    "browseEndpointContextMusicConfig": {
+                     "pageType": "MUSIC_PAGE_TYPE_ARTIST"
+                    }
+                   }
+                  }
+                 }
+                }
+               ]
+              }
+             }
+            },
+            {
+             "musicResponsiveListItemFlexColumnRenderer": {
+              "text": {
+               "runs": [
+                {
+                 "text": "11M plays"
+                }
+               ]
+              }
+             }
+            }
+           ],
+           "fixedColumns": [
+            {
+             "musicResponsiveListItemFixedColumnRenderer": {
+              "text": {
+               "runs": [
+                {
+                 "text": "5:42"
+                }
+               ]
+              },
+              "size": "MUSIC_RESPONSIVE_LIST_ITEM_FIXED_COLUMN_SIZE_SMALL"
+             }
+            }
+           ],
+           "menu": {
+            "menuRenderer": {
+             "items": [
+              {
+               "menuNavigationItemRenderer": {
+                "text": {
+                 "runs": [
+                  {
+                   "text": "Go to artist"
+                  }
+                 ]
+                },
+                "icon": {
+                 "iconType": "ARTIST"
+                },
+                "navigationEndpoint": {
+                 "browseEndpoint": {
+                  "browseId": "UCRr1xG_2WIDs18a6cIiCxeA",
+                  "browseEndpointContextSupportedConfigs": {
+                   "browseEndpointContextMusicConfig": {
+                    "pageType": "MUSIC_PAGE_TYPE_ARTIST"
+                   }
+                  }
+                 }
+                }
+               }
+              },
+              {
+               "menuNavigationItemRenderer": {
+                "text": {
+                 "runs": [
+                  {
+                   "text": "View song credits"
+                  }
+                 ]
+                },
+                "icon": {
+                 "iconType": "PEOPLE_GROUP"
+                },
+                "navigationEndpoint": {
+                 "browseEndpoint": {
+                  "browseId": "MPTC3x-Q-iRvib4",
+                  "browseEndpointContextSupportedConfigs": {
+                   "browseEndpointContextMusicConfig": {
+                    "pageType": "MUSIC_PAGE_TYPE_TRACK_CREDITS"
+                   }
+                  }
+                 }
+                }
+               }
+              }
+             ]
+            }
+           },
+           "playlistItemData": {
+            "playlistSetVideoId": "9C161AA0EC007D06",
+            "videoId": "wz7YiQdNmZ8"
+           },
+           "index": {
+            "runs": [
+             {
+              "text": "10"
+             }
+            ]
+           }
+          }
+         },
+         {
+          "musicResponsiveListItemRenderer": {
+           "overlay": {
+            "musicItemThumbnailOverlayRenderer": {
+             "content": {
+              "musicPlayButtonRenderer": {
+               "playNavigationEndpoint": {
+                "watchEndpoint": {
+                 "videoId": "_ScM9pKlCfo",
+                 "playlistId": "OLAK5uy_kNhM2yaBTOVwrcZJepB1C9P3-n5_Sfy5c",
+                 "index": 10,
+                 "playlistSetVideoId": "CF375893B41EAE6F",
+                 "watchEndpointMusicSupportedConfigs": {
+                  "watchEndpointMusicConfig": {
+                   "musicVideoType": "MUSIC_VIDEO_TYPE_OMV"
+                  }
+                 }
+                }
+               },
+               "playIcon": {
+                "iconType": "PLAY_ARROW"
+               },
+               "pauseIcon": {
+                "iconType": "PAUSE"
+               },
+               "iconColor": 4294967295,
+               "backgroundColor": 0,
+               "activeBackgroundColor": 0,
+               "loadingIndicatorColor": 14745645,
+               "playingIcon": {
+                "iconType": "VOLUME_UP"
+               },
+               "iconLoadingColor": 0,
+               "activeScaleFactor": 1,
+               "buttonSize": "MUSIC_PLAY_BUTTON_SIZE_SMALL",
+               "rippleTarget": "MUSIC_PLAY_BUTTON_RIPPLE_TARGET_SELF",
+               "accessibilityPlayData": {
+                "accessibilityData": {
+                 "label": "Play Fragments of Time (feat. Todd Edwards) - Daft Punk"
+                }
+               },
+               "accessibilityPauseData": {
+                "accessibilityData": {
+                 "label": "Pause Fragments of Time (feat. Todd Edwards) - Daft Punk"
+                }
+               }
+              }
+             },
+             "displayStyle": "MUSIC_ITEM_THUMBNAIL_OVERLAY_DISPLAY_STYLE_PERSISTENT"
+            }
+           },
+           "flexColumns": [
+            {
+             "musicResponsiveListItemFlexColumnRenderer": {
+              "text": {
+               "runs": [
+                {
+                 "text": "Fragments of Time (feat. Todd Edwards)",
+                 "navigationEndpoint": {
+                  "watchEndpoint": {
+                   "videoId": "_ScM9pKlCfo",
+                   "playlistId": "OLAK5uy_kNhM2yaBTOVwrcZJepB1C9P3-n5_Sfy5c",
+                   "watchEndpointMusicSupportedConfigs": {
+                    "watchEndpointMusicConfig": {
+                     "musicVideoType": "MUSIC_VIDEO_TYPE_OMV"
+                    }
+                   }
+                  }
+                 }
+                }
+               ]
+              }
+             }
+            },
+            {
+             "musicResponsiveListItemFlexColumnRenderer": {
+              "text": {
+               "runs": [
+                {
+                 "text": "Daft Punk",
+                 "navigationEndpoint": {
+                  "browseEndpoint": {
+                   "browseId": "UCRr1xG_2WIDs18a6cIiCxeA",
+                   "browseEndpointContextSupportedConfigs": {
+                    "browseEndpointContextMusicConfig": {
+                     "pageType": "MUSIC_PAGE_TYPE_ARTIST"
+                    }
+                   }
+                  }
+                 }
+                },
+                {
+                 "text": " & "
+                },
+                {
+                 "text": "Todd Edwards",
+                 "navigationEndpoint": {
+                  "browseEndpoint": {
+                   "browseId": "UCk_ezssvR9Os0VrMbmA3SWg",
+                   "browseEndpointContextSupportedConfigs": {
+                    "browseEndpointContextMusicConfig": {
+                     "pageType": "MUSIC_PAGE_TYPE_ARTIST"
+                    }
+                   }
+                  }
+                 }
+                }
+               ]
+              }
+             }
+            },
+            {
+             "musicResponsiveListItemFlexColumnRenderer": {
+              "text": {
+               "runs": [
+                {
+                 "text": "20M plays"
+                }
+               ]
+              }
+             }
+            }
+           ],
+           "fixedColumns": [
+            {
+             "musicResponsiveListItemFixedColumnRenderer": {
+              "text": {
+               "runs": [
+                {
+                 "text": "4:40"
+                }
+               ]
+              },
+              "size": "MUSIC_RESPONSIVE_LIST_ITEM_FIXED_COLUMN_SIZE_SMALL"
+             }
+            }
+           ],
+           "menu": {
+            "menuRenderer": {
+             "items": [
+              {
+               "menuNavigationItemRenderer": {
+                "text": {
+                 "runs": [
+                  {
+                   "text": "Go to artist"
+                  }
+                 ]
+                },
+                "icon": {
+                 "iconType": "ARTIST"
+                },
+                "navigationEndpoint": {
+                 "browseEndpoint": {
+                  "browseId": "UCRr1xG_2WIDs18a6cIiCxeA",
+                  "browseEndpointContextSupportedConfigs": {
+                   "browseEndpointContextMusicConfig": {
+                    "pageType": "MUSIC_PAGE_TYPE_ARTIST"
+                   }
+                  }
+                 }
+                }
+               }
+              },
+              {
+               "menuNavigationItemRenderer": {
+                "text": {
+                 "runs": [
+                  {
+                   "text": "View song credits"
+                  }
+                 ]
+                },
+                "icon": {
+                 "iconType": "PEOPLE_GROUP"
+                },
+                "navigationEndpoint": {
+                 "browseEndpoint": {
+                  "browseId": "MPTC3rpQTqpFTF4",
+                  "browseEndpointContextSupportedConfigs": {
+                   "browseEndpointContextMusicConfig": {
+                    "pageType": "MUSIC_PAGE_TYPE_TRACK_CREDITS"
+                   }
+                  }
+                 }
+                }
+               }
+              }
+             ]
+            }
+           },
+           "playlistItemData": {
+            "playlistSetVideoId": "CF375893B41EAE6F",
+            "videoId": "_ScM9pKlCfo"
+           },
+           "index": {
+            "runs": [
+             {
+              "text": "11"
+             }
+            ]
+           }
+          }
+         },
+         {
+          "musicResponsiveListItemRenderer": {
+           "overlay": {
+            "musicItemThumbnailOverlayRenderer": {
+             "content": {
+              "musicPlayButtonRenderer": {
+               "playNavigationEndpoint": {
+                "watchEndpoint": {
+                 "videoId": "LL-gyhZVvx0",
+                 "playlistId": "OLAK5uy_kNhM2yaBTOVwrcZJepB1C9P3-n5_Sfy5c",
+                 "index": 11,
+                 "playlistSetVideoId": "D6129706B65710D9",
+                 "watchEndpointMusicSupportedConfigs": {
+                  "watchEndpointMusicConfig": {
+                   "musicVideoType": "MUSIC_VIDEO_TYPE_OMV"
+                  }
+                 }
+                }
+               },
+               "playIcon": {
+                "iconType": "PLAY_ARROW"
+               },
+               "pauseIcon": {
+                "iconType": "PAUSE"
+               },
+               "iconColor": 4294967295,
+               "backgroundColor": 0,
+               "activeBackgroundColor": 0,
+               "loadingIndicatorColor": 14745645,
+               "playingIcon": {
+                "iconType": "VOLUME_UP"
+               },
+               "iconLoadingColor": 0,
+               "activeScaleFactor": 1,
+               "buttonSize": "MUSIC_PLAY_BUTTON_SIZE_SMALL",
+               "rippleTarget": "MUSIC_PLAY_BUTTON_RIPPLE_TARGET_SELF",
+               "accessibilityPlayData": {
+                "accessibilityData": {
+                 "label": "Play Doin' it Right (feat. Panda Bear) - Daft Punk"
+                }
+               },
+               "accessibilityPauseData": {
+                "accessibilityData": {
+                 "label": "Pause Doin' it Right (feat. Panda Bear) - Daft Punk"
+                }
+               }
+              }
+             },
+             "displayStyle": "MUSIC_ITEM_THUMBNAIL_OVERLAY_DISPLAY_STYLE_PERSISTENT"
+            }
+           },
+           "flexColumns": [
+            {
+             "musicResponsiveListItemFlexColumnRenderer": {
+              "text": {
+               "runs": [
+                {
+                 "text": "Doin' it Right (feat. Panda Bear)",
+                 "navigationEndpoint": {
+                  "watchEndpoint": {
+                   "videoId": "LL-gyhZVvx0",
+                   "playlistId": "OLAK5uy_kNhM2yaBTOVwrcZJepB1C9P3-n5_Sfy5c",
+                   "watchEndpointMusicSupportedConfigs": {
+                    "watchEndpointMusicConfig": {
+                     "musicVideoType": "MUSIC_VIDEO_TYPE_OMV"
+                    }
+                   }
+                  }
+                 }
+                }
+               ]
+              }
+             }
+            },
+            {
+             "musicResponsiveListItemFlexColumnRenderer": {
+              "text": {
+               "runs": [
+                {
+                 "text": "Daft Punk",
+                 "navigationEndpoint": {
+                  "browseEndpoint": {
+                   "browseId": "UCRr1xG_2WIDs18a6cIiCxeA",
+                   "browseEndpointContextSupportedConfigs": {
+                    "browseEndpointContextMusicConfig": {
+                     "pageType": "MUSIC_PAGE_TYPE_ARTIST"
+                    }
+                   }
+                  }
+                 }
+                },
+                {
+                 "text": " & "
+                },
+                {
+                 "text": "Panda Bear",
+                 "navigationEndpoint": {
+                  "browseEndpoint": {
+                   "browseId": "UCB2qO9T8dkxOhIvZVqVkVcg",
+                   "browseEndpointContextSupportedConfigs": {
+                    "browseEndpointContextMusicConfig": {
+                     "pageType": "MUSIC_PAGE_TYPE_ARTIST"
+                    }
+                   }
+                  }
+                 }
+                }
+               ]
+              }
+             }
+            },
+            {
+             "musicResponsiveListItemFlexColumnRenderer": {
+              "text": {
+               "runs": [
+                {
+                 "text": "42M plays"
+                }
+               ]
+              }
+             }
+            }
+           ],
+           "fixedColumns": [
+            {
+             "musicResponsiveListItemFixedColumnRenderer": {
+              "text": {
+               "runs": [
+                {
+                 "text": "4:12"
+                }
+               ]
+              },
+              "size": "MUSIC_RESPONSIVE_LIST_ITEM_FIXED_COLUMN_SIZE_SMALL"
+             }
+            }
+           ],
+           "menu": {
+            "menuRenderer": {
+             "items": [
+              {
+               "menuNavigationItemRenderer": {
+                "text": {
+                 "runs": [
+                  {
+                   "text": "Go to artist"
+                  }
+                 ]
+                },
+                "icon": {
+                 "iconType": "ARTIST"
+                },
+                "navigationEndpoint": {
+                 "browseEndpoint": {
+                  "browseId": "UCRr1xG_2WIDs18a6cIiCxeA",
+                  "browseEndpointContextSupportedConfigs": {
+                   "browseEndpointContextMusicConfig": {
+                    "pageType": "MUSIC_PAGE_TYPE_ARTIST"
+                   }
+                  }
+                 }
+                }
+               }
+              },
+              {
+               "menuNavigationItemRenderer": {
+                "text": {
+                 "runs": [
+                  {
+                   "text": "View song credits"
+                  }
+                 ]
+                },
+                "icon": {
+                 "iconType": "PEOPLE_GROUP"
+                },
+                "navigationEndpoint": {
+                 "browseEndpoint": {
+                  "browseId": "MPTCwmSkU6R9Zi8",
+                  "browseEndpointContextSupportedConfigs": {
+                   "browseEndpointContextMusicConfig": {
+                    "pageType": "MUSIC_PAGE_TYPE_TRACK_CREDITS"
+                   }
+                  }
+                 }
+                }
+               }
+              }
+             ]
+            }
+           },
+           "playlistItemData": {
+            "playlistSetVideoId": "D6129706B65710D9",
+            "videoId": "LL-gyhZVvx0"
+           },
+           "index": {
+            "runs": [
+             {
+              "text": "12"
+             }
+            ]
+           }
+          }
+         },
+         {
+          "musicResponsiveListItemRenderer": {
+           "overlay": {
+            "musicItemThumbnailOverlayRenderer": {
+             "content": {
+              "musicPlayButtonRenderer": {
+               "playNavigationEndpoint": {
+                "watchEndpoint": {
+                 "videoId": "ZbbTmR6Xaag",
+                 "playlistId": "OLAK5uy_kNhM2yaBTOVwrcZJepB1C9P3-n5_Sfy5c",
+                 "index": 12,
+                 "playlistSetVideoId": "A2C229BA66BEBF7B",
+                 "watchEndpointMusicSupportedConfigs": {
+                  "watchEndpointMusicConfig": {
+                   "musicVideoType": "MUSIC_VIDEO_TYPE_OMV"
+                  }
+                 }
+                }
+               },
+               "playIcon": {
+                "iconType": "PLAY_ARROW"
+               },
+               "pauseIcon": {
+                "iconType": "PAUSE"
+               },
+               "iconColor": 4294967295,
+               "backgroundColor": 0,
+               "activeBackgroundColor": 0,
+               "loadingIndicatorColor": 14745645,
+               "playingIcon": {
+                "iconType": "VOLUME_UP"
+               },
+               "iconLoadingColor": 0,
+               "activeScaleFactor": 1,
+               "buttonSize": "MUSIC_PLAY_BUTTON_SIZE_SMALL",
+               "rippleTarget": "MUSIC_PLAY_BUTTON_RIPPLE_TARGET_SELF",
+               "accessibilityPlayData": {
+                "accessibilityData": {
+                 "label": "Play Contact - Daft Punk"
+                }
+               },
+               "accessibilityPauseData": {
+                "accessibilityData": {
+                 "label": "Pause Contact - Daft Punk"
+                }
+               }
+              }
+             },
+             "displayStyle": "MUSIC_ITEM_THUMBNAIL_OVERLAY_DISPLAY_STYLE_PERSISTENT"
+            }
+           },
+           "flexColumns": [
+            {
+             "musicResponsiveListItemFlexColumnRenderer": {
+              "text": {
+               "runs": [
+                {
+                 "text": "Contact",
+                 "navigationEndpoint": {
+                  "watchEndpoint": {
+                   "videoId": "ZbbTmR6Xaag",
+                   "playlistId": "OLAK5uy_kNhM2yaBTOVwrcZJepB1C9P3-n5_Sfy5c",
+                   "watchEndpointMusicSupportedConfigs": {
+                    "watchEndpointMusicConfig": {
+                     "musicVideoType": "MUSIC_VIDEO_TYPE_OMV"
+                    }
+                   }
+                  }
+                 }
+                }
+               ]
+              }
+             }
+            },
+            {
+             "musicResponsiveListItemFlexColumnRenderer": {
+              "text": {
+               "runs": [
+                {
+                 "text": "Daft Punk",
+                 "navigationEndpoint": {
+                  "browseEndpoint": {
+                   "browseId": "UCRr1xG_2WIDs18a6cIiCxeA",
+                   "browseEndpointContextSupportedConfigs": {
+                    "browseEndpointContextMusicConfig": {
+                     "pageType": "MUSIC_PAGE_TYPE_ARTIST"
+                    }
+                   }
+                  }
+                 }
+                }
+               ]
+              }
+             }
+            },
+            {
+             "musicResponsiveListItemFlexColumnRenderer": {
+              "text": {
+               "runs": [
+                {
+                 "text": "23M plays"
+                }
+               ]
+              }
+             }
+            }
+           ],
+           "fixedColumns": [
+            {
+             "musicResponsiveListItemFixedColumnRenderer": {
+              "text": {
+               "runs": [
+                {
+                 "text": "6:24"
+                }
+               ]
+              },
+              "size": "MUSIC_RESPONSIVE_LIST_ITEM_FIXED_COLUMN_SIZE_SMALL"
+             }
+            }
+           ],
+           "menu": {
+            "menuRenderer": {
+             "items": [
+              {
+               "menuNavigationItemRenderer": {
+                "text": {
+                 "runs": [
+                  {
+                   "text": "Go to artist"
+                  }
+                 ]
+                },
+                "icon": {
+                 "iconType": "ARTIST"
+                },
+                "navigationEndpoint": {
+                 "browseEndpoint": {
+                  "browseId": "UCRr1xG_2WIDs18a6cIiCxeA",
+                  "browseEndpointContextSupportedConfigs": {
+                   "browseEndpointContextMusicConfig": {
+                    "pageType": "MUSIC_PAGE_TYPE_ARTIST"
+                   }
+                  }
+                 }
+                }
+               }
+              },
+              {
+               "menuNavigationItemRenderer": {
+                "text": {
+                 "runs": [
+                  {
+                   "text": "View song credits"
+                  }
+                 ]
+                },
+                "icon": {
+                 "iconType": "PEOPLE_GROUP"
+                },
+                "navigationEndpoint": {
+                 "browseEndpoint": {
+                  "browseId": "MPTCUoF1dFWKsVk",
+                  "browseEndpointContextSupportedConfigs": {
+                   "browseEndpointContextMusicConfig": {
+                    "pageType": "MUSIC_PAGE_TYPE_TRACK_CREDITS"
+                   }
+                  }
+                 }
+                }
+               }
+              }
+             ]
+            }
+           },
+           "playlistItemData": {
+            "playlistSetVideoId": "A2C229BA66BEBF7B",
+            "videoId": "ZbbTmR6Xaag"
+           },
+           "index": {
+            "runs": [
+             {
+              "text": "13"
+             }
+            ]
+           }
+          }
+         }
+        ],
+        "shelfDivider": {
+         "musicShelfDividerRenderer": {
+          "hidden": true
+         }
+        },
+        "contentsMultiSelectable": true
+       }
+      },
+      {
+       "musicCarouselShelfRenderer": {
+        "header": {
+         "musicCarouselShelfBasicHeaderRenderer": {
+          "title": {
+           "runs": [
+            {
+             "text": "Other versions"
+            }
+           ]
+          },
+          "accessibilityData": {
+           "accessibilityData": {
+            "label": "Other versions"
+           }
+          },
+          "headerStyle": "MUSIC_CAROUSEL_SHELF_BASIC_HEADER_STYLE_DEFAULT"
+         }
+        },
+        "contents": [
+         {
+          "musicTwoRowItemRenderer": {
+           "thumbnailRenderer": {
+            "musicThumbnailRenderer": {
+             "thumbnail": {
+              "thumbnails": [
+               {
+                "url": "https://yt3.googleusercontent.com/R5gMfIj_BHfnfJv_X24gjqUskPT9gwonal56ydS9bIkxsHxaaebzNwHjbIruM54pvcMwcI9PpTJpYPAJ=w226-h226-l90-rj",
+                "width": 226,
+                "height": 226
+               },
+               {
+                "url": "https://yt3.googleusercontent.com/R5gMfIj_BHfnfJv_X24gjqUskPT9gwonal56ydS9bIkxsHxaaebzNwHjbIruM54pvcMwcI9PpTJpYPAJ=w544-h544-l90-rj",
+                "width": 544,
+                "height": 544
+               }
+              ]
+             }
+            }
+           },
+           "aspectRatio": "MUSIC_TWO_ROW_ITEM_THUMBNAIL_ASPECT_RATIO_SQUARE",
+           "title": {
+            "runs": [
+             {
+              "text": "Random Access Memories (10th Anniversary Edition)",
+              "navigationEndpoint": {
+               "browseEndpoint": {
+                "browseId": "MPREb_eMBjPmWySjR",
+                "params": "ggMrGilPTEFLNXV5X25ZTDlhaVQyNWpYV2ZYcEFONkItV3pNbk10dHZyekl4QQ%3D%3D",
+                "browseEndpointContextSupportedConfigs": {
+                 "browseEndpointContextMusicConfig": {
+                  "pageType": "MUSIC_PAGE_TYPE_ALBUM"
+                 }
+                }
+               }
+              }
+             }
+            ]
+           },
+           "subtitle": {
+            "runs": [
+             {
+              "text": "Album"
+             },
+             {
+              "text": " • "
+             },
+             {
+              "text": "Daft Punk",
+              "navigationEndpoint": {
+               "browseEndpoint": {
+                "browseId": "UCRr1xG_2WIDs18a6cIiCxeA",
+                "browseEndpointContextSupportedConfigs": {
+                 "browseEndpointContextMusicConfig": {
+                  "pageType": "MUSIC_PAGE_TYPE_ARTIST"
+                 }
+                }
+               }
+              }
+             }
+            ]
+           },
+           "navigationEndpoint": {
+            "browseEndpoint": {
+             "browseId": "MPREb_eMBjPmWySjR",
+             "params": "ggMrGilPTEFLNXV5X25ZTDlhaVQyNWpYV2ZYcEFONkItV3pNbk10dHZyekl4QQ%3D%3D",
+             "browseEndpointContextSupportedConfigs": {
+              "browseEndpointContextMusicConfig": {
+               "pageType": "MUSIC_PAGE_TYPE_ALBUM"
+              }
+             }
+            }
+           },
+           "menu": {
+            "menuRenderer": {
+             "items": [
+              {
+               "menuNavigationItemRenderer": {
+                "text": {
+                 "runs": [
+                  {
+                   "text": "Go to artist"
+                  }
+                 ]
+                },
+                "icon": {
+                 "iconType": "ARTIST"
+                },
+                "navigationEndpoint": {
+                 "browseEndpoint": {
+                  "browseId": "UCRr1xG_2WIDs18a6cIiCxeA",
+                  "browseEndpointContextSupportedConfigs": {
+                   "browseEndpointContextMusicConfig": {
+                    "pageType": "MUSIC_PAGE_TYPE_ARTIST"
+                   }
+                  }
+                 }
+                }
+               }
+              }
+             ]
+            }
+           },
+           "thumbnailOverlay": {
+            "musicItemThumbnailOverlayRenderer": {
+             "content": {
+              "musicPlayButtonRenderer": {
+               "playNavigationEndpoint": {
+                "watchPlaylistEndpoint": {
+                 "playlistId": "OLAK5uy_nYL9aiT25jXWfXpAN6B-WzMnMttvrzIxA"
+                }
+               },
+               "playIcon": {
+                "iconType": "PLAY_ARROW"
+               },
+               "pauseIcon": {
+                "iconType": "PAUSE"
+               },
+               "iconColor": 4294967295,
+               "backgroundColor": 2566914048,
+               "activeBackgroundColor": 4278190080,
+               "loadingIndicatorColor": 14745645,
+               "playingIcon": {
+                "iconType": "VOLUME_UP"
+               },
+               "iconLoadingColor": 1308622847,
+               "activeScaleFactor": 1.2,
+               "buttonSize": "MUSIC_PLAY_BUTTON_SIZE_MEDIUM",
+               "rippleTarget": "MUSIC_PLAY_BUTTON_RIPPLE_TARGET_SELF",
+               "accessibilityPlayData": {
+                "accessibilityData": {
+                 "label": "Play Random Access Memories (10th Anniversary Edition)"
+                }
+               },
+               "accessibilityPauseData": {
+                "accessibilityData": {
+                 "label": "Pause Random Access Memories (10th Anniversary Edition)"
+                }
+               }
+              }
+             },
+             "displayStyle": "MUSIC_ITEM_THUMBNAIL_OVERLAY_DISPLAY_STYLE_HOVER"
+            }
+           }
+          }
+         }
+        ],
+        "itemSize": "COLLECTION_STYLE_ITEM_SIZE_MEDIUM"
+       }
+      },
+      {
+       "musicCarouselShelfRenderer": {
+        "header": {
+         "musicCarouselShelfBasicHeaderRenderer": {
+          "title": {
+           "runs": [
+            {
+             "text": "Releases for you"
+            }
+           ]
+          },
+          "accessibilityData": {
+           "accessibilityData": {
+            "label": "Releases for you"
+           }
+          },
+          "headerStyle": "MUSIC_CAROUSEL_SHELF_BASIC_HEADER_STYLE_DEFAULT"
+         }
+        },
+        "contents": [
+         {
+          "musicTwoRowItemRenderer": {
+           "thumbnailRenderer": {
+            "musicThumbnailRenderer": {
+             "thumbnail": {
+              "thumbnails": [
+               {
+                "url": "https://yt3.googleusercontent.com/j885-9Bg7l-wBxrh8Ej3cbdYatoLFI1fAkk69ko3pu1ow9-6s9ckTMdn_tMYsldyKCtENmydy-p_xBmc=w226-h226-l90-rj",
+                "width": 226,
+                "height": 226
+               },
+               {
+                "url": "https://yt3.googleusercontent.com/j885-9Bg7l-wBxrh8Ej3cbdYatoLFI1fAkk69ko3pu1ow9-6s9ckTMdn_tMYsldyKCtENmydy-p_xBmc=w544-h544-l90-rj",
+                "width": 544,
+                "height": 544
+               }
+              ]
+             }
+            }
+           },
+           "aspectRatio": "MUSIC_TWO_ROW_ITEM_THUMBNAIL_ASPECT_RATIO_SQUARE",
+           "title": {
+            "runs": [
+             {
+              "text": "Spider Man - Music From And Inspired By",
+              "navigationEndpoint": {
+               "browseEndpoint": {
+                "browseId": "MPREb_S7yml7XOROk",
+                "params": "ggMrGilPTEFLNXV5X2theWlXcWEyaFFVNHNfS2RqOFNPY29YcTNZaExXVV9hVQ%3D%3D",
+                "browseEndpointContextSupportedConfigs": {
+                 "browseEndpointContextMusicConfig": {
+                  "pageType": "MUSIC_PAGE_TYPE_ALBUM"
+                 }
+                }
+               }
+              }
+             }
+            ]
+           },
+           "subtitle": {
+            "runs": [
+             {
+              "text": "Album"
+             },
+             {
+              "text": " • "
+             },
+             {
+              "text": "Various Artists"
+             }
+            ]
+           },
+           "navigationEndpoint": {
+            "browseEndpoint": {
+             "browseId": "MPREb_S7yml7XOROk",
+             "params": "ggMrGilPTEFLNXV5X2theWlXcWEyaFFVNHNfS2RqOFNPY29YcTNZaExXVV9hVQ%3D%3D",
+             "browseEndpointContextSupportedConfigs": {
+              "browseEndpointContextMusicConfig": {
+               "pageType": "MUSIC_PAGE_TYPE_ALBUM"
+              }
+             }
+            }
+           },
+           "menu": {
+            "menuRenderer": {
+             "items": []
+            }
+           },
+           "thumbnailOverlay": {
+            "musicItemThumbnailOverlayRenderer": {
+             "content": {
+              "musicPlayButtonRenderer": {
+               "playNavigationEndpoint": {
+                "watchPlaylistEndpoint": {
+                 "playlistId": "OLAK5uy_kayiWqa2hQU4s_Kdj8SOcoXq3YhLWU_aU"
+                }
+               },
+               "playIcon": {
+                "iconType": "PLAY_ARROW"
+               },
+               "pauseIcon": {
+                "iconType": "PAUSE"
+               },
+               "iconColor": 4294967295,
+               "backgroundColor": 2566914048,
+               "activeBackgroundColor": 4278190080,
+               "loadingIndicatorColor": 14745645,
+               "playingIcon": {
+                "iconType": "VOLUME_UP"
+               },
+               "iconLoadingColor": 1308622847,
+               "activeScaleFactor": 1.2,
+               "buttonSize": "MUSIC_PLAY_BUTTON_SIZE_MEDIUM",
+               "rippleTarget": "MUSIC_PLAY_BUTTON_RIPPLE_TARGET_SELF",
+               "accessibilityPlayData": {
+                "accessibilityData": {
+                 "label": "Play Spider Man - Music From And Inspired By"
+                }
+               },
+               "accessibilityPauseData": {
+                "accessibilityData": {
+                 "label": "Pause Spider Man - Music From And Inspired By"
+                }
+               }
+              }
+             },
+             "displayStyle": "MUSIC_ITEM_THUMBNAIL_OVERLAY_DISPLAY_STYLE_HOVER"
+            }
+           }
+          }
+         },
+         {
+          "musicTwoRowItemRenderer": {
+           "thumbnailRenderer": {
+            "musicThumbnailRenderer": {
+             "thumbnail": {
+              "thumbnails": [
+               {
+                "url": "https://yt3.googleusercontent.com/KWKJfEfasVPd53ha--VXKCrjQPtCYMbjtTAg25IhmODgYDud5bqPgZXwzaLY4Mhq1MTEjjvyFRbLSuw=w226-h226-l90-rj",
+                "width": 226,
+                "height": 226
+               },
+               {
+                "url": "https://yt3.googleusercontent.com/KWKJfEfasVPd53ha--VXKCrjQPtCYMbjtTAg25IhmODgYDud5bqPgZXwzaLY4Mhq1MTEjjvyFRbLSuw=w544-h544-l90-rj",
+                "width": 544,
+                "height": 544
+               }
+              ]
+             }
+            }
+           },
+           "aspectRatio": "MUSIC_TWO_ROW_ITEM_THUMBNAIL_ASPECT_RATIO_SQUARE",
+           "title": {
+            "runs": [
+             {
+              "text": "Something About Us (Love Theme from Interstella)",
+              "navigationEndpoint": {
+               "browseEndpoint": {
+                "browseId": "MPREb_DYSzDJvUSDu",
+                "params": "ggMrGilPTEFLNXV5X2s3VmpreDcwY2J0N2dhU0tjbXlJYnV2MGd3NmtFQTJIYw%3D%3D",
+                "browseEndpointContextSupportedConfigs": {
+                 "browseEndpointContextMusicConfig": {
+                  "pageType": "MUSIC_PAGE_TYPE_ALBUM"
+                 }
+                }
+               }
+              }
+             }
+            ]
+           },
+           "subtitle": {
+            "runs": [
+             {
+              "text": "Single"
+             },
+             {
+              "text": " • "
+             },
+             {
+              "text": "Daft Punk",
+              "navigationEndpoint": {
+               "browseEndpoint": {
+                "browseId": "UCRr1xG_2WIDs18a6cIiCxeA",
+                "browseEndpointContextSupportedConfigs": {
+                 "browseEndpointContextMusicConfig": {
+                  "pageType": "MUSIC_PAGE_TYPE_ARTIST"
+                 }
+                }
+               }
+              }
+             }
+            ]
+           },
+           "navigationEndpoint": {
+            "browseEndpoint": {
+             "browseId": "MPREb_DYSzDJvUSDu",
+             "params": "ggMrGilPTEFLNXV5X2s3VmpreDcwY2J0N2dhU0tjbXlJYnV2MGd3NmtFQTJIYw%3D%3D",
+             "browseEndpointContextSupportedConfigs": {
+              "browseEndpointContextMusicConfig": {
+               "pageType": "MUSIC_PAGE_TYPE_ALBUM"
+              }
+             }
+            }
+           },
+           "menu": {
+            "menuRenderer": {
+             "items": [
+              {
+               "menuNavigationItemRenderer": {
+                "text": {
+                 "runs": [
+                  {
+                   "text": "Go to artist"
+                  }
+                 ]
+                },
+                "icon": {
+                 "iconType": "ARTIST"
+                },
+                "navigationEndpoint": {
+                 "browseEndpoint": {
+                  "browseId": "UCRr1xG_2WIDs18a6cIiCxeA",
+                  "browseEndpointContextSupportedConfigs": {
+                   "browseEndpointContextMusicConfig": {
+                    "pageType": "MUSIC_PAGE_TYPE_ARTIST"
+                   }
+                  }
+                 }
+                }
+               }
+              }
+             ]
+            }
+           },
+           "thumbnailOverlay": {
+            "musicItemThumbnailOverlayRenderer": {
+             "content": {
+              "musicPlayButtonRenderer": {
+               "playNavigationEndpoint": {
+                "watchPlaylistEndpoint": {
+                 "playlistId": "OLAK5uy_k7Vjkx70cbt7gaSKcmyIbuv0gw6kEA2Hc"
+                }
+               },
+               "playIcon": {
+                "iconType": "PLAY_ARROW"
+               },
+               "pauseIcon": {
+                "iconType": "PAUSE"
+               },
+               "iconColor": 4294967295,
+               "backgroundColor": 2566914048,
+               "activeBackgroundColor": 4278190080,
+               "loadingIndicatorColor": 14745645,
+               "playingIcon": {
+                "iconType": "VOLUME_UP"
+               },
+               "iconLoadingColor": 1308622847,
+               "activeScaleFactor": 1.2,
+               "buttonSize": "MUSIC_PLAY_BUTTON_SIZE_MEDIUM",
+               "rippleTarget": "MUSIC_PLAY_BUTTON_RIPPLE_TARGET_SELF",
+               "accessibilityPlayData": {
+                "accessibilityData": {
+                 "label": "Play Something About Us (Love Theme from Interstella)"
+                }
+               },
+               "accessibilityPauseData": {
+                "accessibilityData": {
+                 "label": "Pause Something About Us (Love Theme from Interstella)"
+                }
+               }
+              }
+             },
+             "displayStyle": "MUSIC_ITEM_THUMBNAIL_OVERLAY_DISPLAY_STYLE_HOVER"
+            }
+           }
+          }
+         },
+         {
+          "musicTwoRowItemRenderer": {
+           "thumbnailRenderer": {
+            "musicThumbnailRenderer": {
+             "thumbnail": {
+              "thumbnails": [
+               {
+                "url": "https://yt3.googleusercontent.com/7XBCMOwR2NNvQ0X_OuoyPthJUC2wD0863g-qyLgi0QaGrsvETACOAgh4YKHX8Twb9k9IwKSCCwdGLlAb=w226-h226-l90-rj",
+                "width": 226,
+                "height": 226
+               },
+               {
+                "url": "https://yt3.googleusercontent.com/7XBCMOwR2NNvQ0X_OuoyPthJUC2wD0863g-qyLgi0QaGrsvETACOAgh4YKHX8Twb9k9IwKSCCwdGLlAb=w544-h544-l90-rj",
+                "width": 544,
+                "height": 544
+               }
+              ]
+             }
+            }
+           },
+           "aspectRatio": "MUSIC_TWO_ROW_ITEM_THUMBNAIL_ASPECT_RATIO_SQUARE",
+           "title": {
+            "runs": [
+             {
+              "text": "The New Abnormal",
+              "navigationEndpoint": {
+               "browseEndpoint": {
+                "browseId": "MPREb_Yjuw9jDLBok",
+                "params": "ggMrGilPTEFLNXV5X21iY3VpbGlwUW1DbVdTbEh1MXlVbDBibzI0eXhHR2hCTQ%3D%3D",
+                "browseEndpointContextSupportedConfigs": {
+                 "browseEndpointContextMusicConfig": {
+                  "pageType": "MUSIC_PAGE_TYPE_ALBUM"
+                 }
+                }
+               }
+              }
+             }
+            ]
+           },
+           "subtitle": {
+            "runs": [
+             {
+              "text": "Album"
+             },
+             {
+              "text": " • "
+             },
+             {
+              "text": "The Strokes",
+              "navigationEndpoint": {
+               "browseEndpoint": {
+                "browseId": "UC8N13xhRG78YQK7Ppc4Ytrg",
+                "browseEndpointContextSupportedConfigs": {
+                 "browseEndpointContextMusicConfig": {
+                  "pageType": "MUSIC_PAGE_TYPE_ARTIST"
+                 }
+                }
+               }
+              }
+             }
+            ]
+           },
+           "navigationEndpoint": {
+            "browseEndpoint": {
+             "browseId": "MPREb_Yjuw9jDLBok",
+             "params": "ggMrGilPTEFLNXV5X21iY3VpbGlwUW1DbVdTbEh1MXlVbDBibzI0eXhHR2hCTQ%3D%3D",
+             "browseEndpointContextSupportedConfigs": {
+              "browseEndpointContextMusicConfig": {
+               "pageType": "MUSIC_PAGE_TYPE_ALBUM"
+              }
+             }
+            }
+           },
+           "menu": {
+            "menuRenderer": {
+             "items": [
+              {
+               "menuNavigationItemRenderer": {
+                "text": {
+                 "runs": [
+                  {
+                   "text": "Go to artist"
+                  }
+                 ]
+                },
+                "icon": {
+                 "iconType": "ARTIST"
+                },
+                "navigationEndpoint": {
+                 "browseEndpoint": {
+                  "browseId": "UC8N13xhRG78YQK7Ppc4Ytrg",
+                  "browseEndpointContextSupportedConfigs": {
+                   "browseEndpointContextMusicConfig": {
+                    "pageType": "MUSIC_PAGE_TYPE_ARTIST"
+                   }
+                  }
+                 }
+                }
+               }
+              }
+             ]
+            }
+           },
+           "thumbnailOverlay": {
+            "musicItemThumbnailOverlayRenderer": {
+             "content": {
+              "musicPlayButtonRenderer": {
+               "playNavigationEndpoint": {
+                "watchPlaylistEndpoint": {
+                 "playlistId": "OLAK5uy_mbcuilipQmCmWSlHu1yUl0bo24yxGGhBM"
+                }
+               },
+               "playIcon": {
+                "iconType": "PLAY_ARROW"
+               },
+               "pauseIcon": {
+                "iconType": "PAUSE"
+               },
+               "iconColor": 4294967295,
+               "backgroundColor": 2566914048,
+               "activeBackgroundColor": 4278190080,
+               "loadingIndicatorColor": 14745645,
+               "playingIcon": {
+                "iconType": "VOLUME_UP"
+               },
+               "iconLoadingColor": 1308622847,
+               "activeScaleFactor": 1.2,
+               "buttonSize": "MUSIC_PLAY_BUTTON_SIZE_MEDIUM",
+               "rippleTarget": "MUSIC_PLAY_BUTTON_RIPPLE_TARGET_SELF",
+               "accessibilityPlayData": {
+                "accessibilityData": {
+                 "label": "Play The New Abnormal"
+                }
+               },
+               "accessibilityPauseData": {
+                "accessibilityData": {
+                 "label": "Pause The New Abnormal"
+                }
+               }
+              }
+             },
+             "displayStyle": "MUSIC_ITEM_THUMBNAIL_OVERLAY_DISPLAY_STYLE_HOVER"
+            }
+           },
+           "subtitleBadges": [
+            {
+             "musicInlineBadgeRenderer": {
+              "icon": {
+               "iconType": "MUSIC_EXPLICIT_BADGE"
+              },
+              "accessibilityData": {
+               "accessibilityData": {
+                "label": "Explicit"
+               }
+              }
+             }
+            }
+           ]
+          }
+         }
+        ],
+        "itemSize": "COLLECTION_STYLE_ITEM_SIZE_SMALL"
+       }
+      }
+     ]
+    }
+   },
+   "tabs": [
+    {
+     "tabRenderer": {
+      "content": {
+       "sectionListRenderer": {
+        "contents": [
+         {
+          "musicResponsiveHeaderRenderer": {
+           "thumbnail": {
+            "musicThumbnailRenderer": {
+             "thumbnail": {
+              "thumbnails": [
+               {
+                "url": "https://yt3.googleusercontent.com/N55arCGj69gtw6thXK8JUPisxoVYiwuIEQ7I6SGlkEyNcSJ7xIWPe76Vuu1SiUqRyx5w9qvR_zV8fV3CWQ=w226-h226-l90-rj",
+                "width": 226,
+                "height": 226
+               },
+               {
+                "url": "https://yt3.googleusercontent.com/N55arCGj69gtw6thXK8JUPisxoVYiwuIEQ7I6SGlkEyNcSJ7xIWPe76Vuu1SiUqRyx5w9qvR_zV8fV3CWQ=w544-h544-l90-rj",
+                "width": 544,
+                "height": 544
+               }
+              ]
+             }
+            }
+           },
+           "buttons": [
+            {
+             "toggleButtonRenderer": {
+              "isToggled": false,
+              "isDisabled": false,
+              "defaultIcon": {
+               "iconType": "BOOKMARK_BORDER"
+              },
+              "toggledIcon": {
+               "iconType": "BOOKMARK"
+              },
+              "defaultNavigationEndpoint": {
+               "modalEndpoint": {
+                "modal": {
+                 "modalWithTitleAndButtonRenderer": {
+                  "title": {
+                   "runs": [
+                    {
+                     "text": "Save this for later"
+                    }
+                   ]
+                  },
+                  "content": {
+                   "runs": [
+                    {
+                     "text": "Save favorites to your library after signing in"
+                    }
+                   ]
+                  },
+                  "button": {
+                   "buttonRenderer": {
+                    "style": "STYLE_BLUE_TEXT",
+                    "isDisabled": false,
+                    "text": {
+                     "runs": [
+                      {
+                       "text": "Sign in"
+                      }
+                     ]
+                    },
+                    "navigationEndpoint": {
+                     "signInEndpoint": {
+                      "hack": true
+                     }
+                    }
+                   }
+                  }
+                 }
+                }
+               }
+              },
+              "accessibilityData": {
+               "accessibilityData": {
+                "label": "Save to library"
+               }
+              },
+              "toggledAccessibilityData": {
+               "accessibilityData": {
+                "label": "Remove from library"
+               }
+              }
+             }
+            },
+            {
+             "musicPlayButtonRenderer": {
+              "playNavigationEndpoint": {
+               "watchPlaylistEndpoint": {
+                "playlistId": "OLAK5uy_kNhM2yaBTOVwrcZJepB1C9P3-n5_Sfy5c"
+               }
+              },
+              "playIcon": {
+               "iconType": "PLAY_ARROW"
+              },
+              "pauseIcon": {
+               "iconType": "PAUSE"
+              },
+              "iconColor": 4278387459,
+              "backgroundColor": 0,
+              "activeBackgroundColor": 0,
+              "loadingIndicatorColor": 14745645,
+              "playingIcon": {
+               "iconType": "PAUSE"
+              },
+              "iconLoadingColor": 0,
+              "activeScaleFactor": 1,
+              "accessibilityPlayData": {
+               "accessibilityData": {
+                "label": "Play Random Access Memories"
+               }
+              },
+              "accessibilityPauseData": {
+               "accessibilityData": {
+                "label": "Pause Random Access Memories"
+               }
+              }
+             }
+            },
+            {
+             "menuRenderer": {
+              "items": [
+               {
+                "menuNavigationItemRenderer": {
+                 "text": {
+                  "runs": [
+                   {
+                    "text": "Shuffle play"
+                   }
+                  ]
+                 },
+                 "icon": {
+                  "iconType": "MUSIC_SHUFFLE"
+                 },
+                 "navigationEndpoint": {
+                  "watchPlaylistEndpoint": {
+                   "playlistId": "OLAK5uy_kNhM2yaBTOVwrcZJepB1C9P3-n5_Sfy5c",
+                   "params": "wAEB8gECKAE%3D"
+                  }
+                 }
+                }
+               },
+               {
+                "menuNavigationItemRenderer": {
+                 "text": {
+                  "runs": [
+                   {
+                    "text": "Start mix"
+                   }
+                  ]
+                 },
+                 "icon": {
+                  "iconType": "MIX"
+                 },
+                 "navigationEndpoint": {
+                  "watchPlaylistEndpoint": {
+                   "playlistId": "RDAMPLOLAK5uy_kNhM2yaBTOVwrcZJepB1C9P3-n5_Sfy5c",
+                   "params": "wAEB"
+                  }
+                 }
+                }
+               },
+               {
+                "menuServiceItemRenderer": {
+                 "text": {
+                  "runs": [
+                   {
+                    "text": "Play next"
+                   }
+                  ]
+                 },
+                 "icon": {
+                  "iconType": "QUEUE_PLAY_NEXT"
+                 },
+                 "serviceEndpoint": {
+                  "queueAddEndpoint": {
+                   "queueTarget": {
+                    "playlistId": "OLAK5uy_kNhM2yaBTOVwrcZJepB1C9P3-n5_Sfy5c",
+                    "onEmptyQueue": {
+                     "watchEndpoint": {
+                      "playlistId": "OLAK5uy_kNhM2yaBTOVwrcZJepB1C9P3-n5_Sfy5c"
+                     }
+                    }
+                   },
+                   "queueInsertPosition": "INSERT_AFTER_CURRENT_VIDEO",
+                   "commands": [
+                    {
+                     "addToToastAction": {
+                      "item": {
+                       "notificationTextRenderer": {
+                        "successResponseText": {
+                         "runs": [
+                          {
+                           "text": "Album will play next"
+                          }
+                         ]
+                        }
+                       }
+                      }
+                     }
+                    }
+                   ]
+                  }
+                 }
+                }
+               },
+               {
+                "menuServiceItemRenderer": {
+                 "text": {
+                  "runs": [
+                   {
+                    "text": "Add to queue"
+                   }
+                  ]
+                 },
+                 "icon": {
+                  "iconType": "ADD_TO_REMOTE_QUEUE"
+                 },
+                 "serviceEndpoint": {
+                  "queueAddEndpoint": {
+                   "queueTarget": {
+                    "playlistId": "OLAK5uy_kNhM2yaBTOVwrcZJepB1C9P3-n5_Sfy5c",
+                    "onEmptyQueue": {
+                     "watchEndpoint": {
+                      "playlistId": "OLAK5uy_kNhM2yaBTOVwrcZJepB1C9P3-n5_Sfy5c"
+                     }
+                    }
+                   },
+                   "queueInsertPosition": "INSERT_AT_END",
+                   "commands": [
+                    {
+                     "addToToastAction": {
+                      "item": {
+                       "notificationTextRenderer": {
+                        "successResponseText": {
+                         "runs": [
+                          {
+                           "text": "Album added to queue"
+                          }
+                         ]
+                        }
+                       }
+                      }
+                     }
+                    }
+                   ]
+                  }
+                 }
+                }
+               },
+               {
+                "menuNavigationItemRenderer": {
+                 "text": {
+                  "runs": [
+                   {
+                    "text": "Save to playlist"
+                   }
+                  ]
+                 },
+                 "icon": {
+                  "iconType": "ADD_TO_PLAYLIST"
+                 },
+                 "navigationEndpoint": {
+                  "modalEndpoint": {
+                   "modal": {
+                    "modalWithTitleAndButtonRenderer": {
+                     "title": {
+                      "runs": [
+                       {
+                        "text": "Save this for later"
+                       }
+                      ]
+                     },
+                     "content": {
+                      "runs": [
+                       {
+                        "text": "Make playlists and share them after signing in"
+                       }
+                      ]
+                     },
+                     "button": {
+                      "buttonRenderer": {
+                       "style": "STYLE_BLUE_TEXT",
+                       "isDisabled": false,
+                       "text": {
+                        "runs": [
+                         {
+                          "text": "Sign in"
+                         }
+                        ]
+                       },
+                       "navigationEndpoint": {
+                        "signInEndpoint": {
+                         "hack": true
+                        }
+                       }
+                      }
+                     }
+                    }
+                   }
+                  }
+                 }
+                }
+               },
+               {
+                "menuNavigationItemRenderer": {
+                 "text": {
+                  "runs": [
+                   {
+                    "text": "Go to artist"
+                   }
+                  ]
+                 },
+                 "icon": {
+                  "iconType": "ARTIST"
+                 },
+                 "navigationEndpoint": {
+                  "browseEndpoint": {
+                   "browseId": "UCRr1xG_2WIDs18a6cIiCxeA",
+                   "browseEndpointContextSupportedConfigs": {
+                    "browseEndpointContextMusicConfig": {
+                     "pageType": "MUSIC_PAGE_TYPE_ARTIST"
+                    }
+                   }
+                  }
+                 }
+                }
+               },
+               {
+                "menuNavigationItemRenderer": {
+                 "text": {
+                  "runs": [
+                   {
+                    "text": "Share"
+                   }
+                  ]
+                 },
+                 "icon": {
+                  "iconType": "SHARE"
+                 },
+                 "navigationEndpoint": {}
+                }
+               }
+              ]
+             }
+            }
+           ],
+           "title": {
+            "runs": [
+             {
+              "text": "Random Access Memories"
+             }
+            ]
+           },
+           "subtitle": {
+            "runs": [
+             {
+              "text": "Album"
+             },
+             {
+              "text": " • "
+             },
+             {
+              "text": "2013"
+             }
+            ]
+           },
+           "straplineTextOne": {
+            "runs": [
+             {
+              "text": "Daft Punk",
+              "navigationEndpoint": {
+               "browseEndpoint": {
+                "browseId": "UCRr1xG_2WIDs18a6cIiCxeA",
+                "browseEndpointContextSupportedConfigs": {
+                 "browseEndpointContextMusicConfig": {
+                  "pageType": "MUSIC_PAGE_TYPE_ARTIST"
+                 }
+                }
+               }
+              }
+             }
+            ]
+           },
+           "straplineThumbnail": {
+            "musicThumbnailRenderer": {
+             "thumbnail": {
+              "thumbnails": [
+               {
+                "url": "https://lh3.googleusercontent.com/qLhu6Py_4_xoBsoubKQsXlhOQGqU9YU1ZRAbFusF0LlrPkXbbpu7bEh-k_ZtE4JwLgubvucAQqcK1hRk=w226-h226-p-l90-rj",
+                "width": 226,
+                "height": 226
+               },
+               {
+                "url": "https://lh3.googleusercontent.com/qLhu6Py_4_xoBsoubKQsXlhOQGqU9YU1ZRAbFusF0LlrPkXbbpu7bEh-k_ZtE4JwLgubvucAQqcK1hRk=w544-h544-p-l90-rj",
+                "width": 544,
+                "height": 544
+               }
+              ]
+             }
+            }
+           },
+           "description": {
+            "musicDescriptionShelfRenderer": {
+             "description": {
+              "runs": [
+               {
+                "text": "Random Access Memories is the fourth and final studio album by the French electronic music duo Daft Punk. It was released on 17 May 2013 through Columbia Records. The album pays tribute to late 1970s and early 1980s American music, particularly from Los Angeles. This theme is reflected in the packaging and promotional campaign, which included billboards, television advertisements and a web series. Recording sessions took place from 2008 to 2012 at Henson, Conway and Capitol Studios in California, Electric Lady Studios in New York City, and Gang Recording Studio in Paris, France.\nFollowing the minimal production of their previous album, Human After All, Daft Punk recruited session musicians with the help of Chris Caswell to perform live instrumentation and limited the use of electronic instruments to drum machines, a custom-built modular synthesizer and vintage vocoders. It combines disco, progressive rock and pop, with contributions by Paul Jackson Jr., Giorgio Moroder, Chilly Gonzales, Julian Casablancas, Paul Williams, Caswell, Pharrell Williams, Nile Rodgers, Todd Edwards, Panda Bear and DJ Falcon.\n\nFrom Wikipedia ("
+               },
+               {
+                "text": "https://en.wikipedia.org/wiki/Random_...",
+                "navigationEndpoint": {
+                 "urlEndpoint": {
+                  "url": "https://en.wikipedia.org/wiki/Random_Access_Memories",
+                  "target": "TARGET_NEW_WINDOW"
+                 }
+                }
+               },
+               {
+                "text": ") under Creative Commons Attribution CC-BY-SA 3.0 ("
+               },
+               {
+                "text": "https://creativecommons.org/licenses/...",
+                "navigationEndpoint": {
+                 "urlEndpoint": {
+                  "url": "https://creativecommons.org/licenses/by-sa/3.0/legalcode",
+                  "target": "TARGET_NEW_WINDOW"
+                 }
+                }
+               },
+               {
+                "text": ")"
+               }
+              ]
+             },
+             "moreButton": {
+              "toggleButtonRenderer": {
+               "isToggled": false,
+               "isDisabled": false,
+               "defaultIcon": {
+                "iconType": "EXPAND"
+               },
+               "defaultText": {
+                "runs": [
+                 {
+                  "text": "More"
+                 }
+                ]
+               },
+               "toggledIcon": {
+                "iconType": "COLLAPSE"
+               },
+               "toggledText": {
+                "runs": [
+                 {
+                  "text": "Less"
+                 }
+                ]
+               }
+              }
+             },
+             "shelfStyle": "MUSIC_SHELF_STYLE_OPEN_DIALOG_ON_CLICK"
+            }
+           },
+           "secondSubtitle": {
+            "runs": [
+             {
+              "text": "13 songs"
+             },
+             {
+              "text": " • "
+             },
+             {
+              "text": "1 hour, 14 minutes"
+             }
+            ]
+           }
+          }
+         }
+        ]
+       }
+      }
+     }
+    }
+   ]
+  }
+ }
+}

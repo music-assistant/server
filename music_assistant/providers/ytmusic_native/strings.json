@@ -2,11 +2,11 @@
   "config_entries": {
     "cookie": {
       "label": "Login Cookie",
-      "description": "The full cookie header of a logged-in music.youtube.com session. Open the browser's developer tools, pick any request to music.youtube.com in the Network tab and copy the value of its Cookie request header."
+      "description": "The full cookie header of a logged-in music.youtube.com session of an account with YouTube Music Premium. Open the browser's developer tools, pick any request to music.youtube.com in the Network tab and copy the value of its Cookie request header."
     },
     "high_quality": {
       "label": "Premium audio quality",
-      "description": "Stream the 256 kbps formats when your account has YouTube Music Premium. Without Premium, or with this off, the best standard format (about 160 kbps Opus) is used."
+      "description": "Stream the 256 kbps formats. With this off, the best standard format (about 160 kbps Opus) is used."
     },
     "include_videos_in_search": {
       "label": "Include videos in search results",
@@ -24,9 +24,11 @@
   "errors": {
     "cookies_expired": "Your YouTube Music session has expired. Reconfigure this provider with a fresh cookie.",
     "invalid_cookie": "The cookie has no SAPISID. Copy the full cookie header of a request to music.youtube.com while you are logged in.",
-    "no_javascript_engine": "The embedded JavaScript engine (mini-racer) is not available on this system, so stream URLs can not be solved."
+    "no_javascript_engine": "The embedded JavaScript engine (mini-racer) is not available on this system, so stream URLs can not be solved.",
+    "premium_required": "This provider needs a YouTube Music Premium subscription, and the account of this cookie has none.",
+    "premium_check_failed": "Could not check whether the account has YouTube Music Premium. Try again later."
   },
   "manifest": {
-    "description": "Stream songs, albums, playlists and podcasts from YouTube Music through its own web API, without ytmusicapi, yt-dlp or a PO token server."
+    "description": "Stream songs, albums, playlists and podcasts from YouTube Music Premium through its own web API, without ytmusicapi, yt-dlp or a PO token server."
   }
 }

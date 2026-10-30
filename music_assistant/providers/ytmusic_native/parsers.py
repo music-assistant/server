@@ -14,11 +14,18 @@ titles, episode dates) are English.
 from __future__ import annotations
 
 import re
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 _DURATION_RE = re.compile(r"^\d{1,2}(?::\d{2}){1,2}$")
 _SPOKEN_DURATION_RE = re.compile(r"(\d+)\s*(hr|hour|min|sec)", re.IGNORECASE)
+_AGO_RE = re.compile(
+    r"^(\d+)\s*(m|mins?|minutes?|h|hrs?|hours?|d|days?|w|wks?|weeks?|mo|months?|y|yrs?|years?)"
+    r"\s+ago$",
+    re.IGNORECASE,
+)
+# A leap year, so any date text can be recognised against it.
+_ANY_TIME = datetime(2000, 6, 15, tzinfo=UTC)
 _YEAR_RE = re.compile(r"^(?:19|20)\d{2}$")
 _IMAGE_SIZE_RE = re.compile(r"=(?:w\d+-h\d+|s\d+)(?:-[a-z0-9]+)*$", re.IGNORECASE)
 
@@ -807,12 +814,47 @@ def parse_episode_page(response: Any, video_id: str) -> dict[str, Any] | None:
     }
 
 
-def _episode_date(parts: Any) -> datetime | None:
+def parse_release_date(text: str | None, today: datetime) -> datetime | None:
+    """
+    Turn an episode's release date, as YouTube Music shows it, into a date.
+
+    Older episodes show "Nov 2, 2025", episodes of the last twelve months "Oct 20" and
+    the last few days "2d ago".
+
+    :param text: The date text.
+    :param today: The current time, timezone aware.
+    """
+    text = (text or "").strip()
+    for fmt in ("%b %d, %Y", "%B %d, %Y"):
+        try:
+            return datetime.strptime(text, fmt).replace(tzinfo=UTC)
+        except ValueError:
+            continue
+    for fmt in ("%b %d %Y", "%B %d %Y"):
+        try:
+            day = datetime.strptime(f"{text} {today.year}", fmt).replace(tzinfo=UTC)
+        except ValueError:
+            continue
+        # a date without a year lies within the last twelve months
+        return day if day <= today else day.replace(year=today.year - 1)
+    if match := _AGO_RE.match(text):
+        amount, unit = int(match[1]), match[2].lower()
+        if unit.startswith("mo"):
+            delta = timedelta(days=30 * amount)
+        elif unit.startswith("m"):
+            delta = timedelta(minutes=amount)
+        else:
+            days = {"h": 1 / 24, "d": 1, "w": 7, "y": 365}[unit[0]]
+            delta = timedelta(days=days * amount)
+        return (today - delta).replace(hour=0, minute=0, second=0, microsecond=0)
+    return None
+
+
+def _episode_date(parts: Any) -> str | None:
+    """Return the part of an episode's subtitle that is its release date."""
     for part in parts:
         text = str(part).strip()
-        for fmt in ("%b %d, %Y", "%B %d, %Y"):
-            try:
-                return datetime.strptime(text, fmt).replace(tzinfo=UTC)
-            except ValueError:
-                continue
+        # any reference time tells a date apart from the other parts (views, show name)
+        if parse_release_date(text, _ANY_TIME) is not None:
+            return text
     return None
