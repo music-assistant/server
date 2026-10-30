@@ -2062,6 +2062,8 @@
   "provider.party.config_entries.skip_song_limit.label": "Skip Song Token Limit",
   "provider.party.config_entries.skip_song_refill_minutes.description": "How many minutes it takes for one 'Skip Song' token to refill. This controls how often guests can skip the currently playing song.",
   "provider.party.config_entries.skip_song_refill_minutes.label": "Skip Song Refill Rate (minutes)",
+  "provider.party.config_entries.skip_votes_required.description": "How many different guests must press 'Skip' before the currently playing song is skipped. Set to 1 to let a single guest skip a song. Votes reset when the next song starts.",
+  "provider.party.config_entries.skip_votes_required.label": "Votes Required to Skip",
   "provider.party.manifest.description": "Enable guest access with a shareable URL for party, allowing guests to add songs to the queue with rate limiting.",
   "provider.phishin.manifest.description": "Stream live audience recordings and complete setlists from Phish’s archives.",
   "provider.phishin.media.folder.browse_by_tag.name": "Browse by Tag",
