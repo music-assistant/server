@@ -148,16 +148,19 @@ class ListenBrainzPlaylistManager:
         if library_track := await self.provider.mass.music.tracks.get_library_item_by_external_id(
             recording_mbid, ExternalID.MB_RECORDING
         ):
-            self.logger.debug(
-                "Resolved ListenBrainz track %s (%s) from the library",
-                track.name,
-                recording_mbid,
-            )
             return library_track
         if provider_track := await self._resolve_track_via_musicbrainz(track, recording_mbid):
             return provider_track
-
-        # TODO: If still failing, resolve via provider search
+        artist_name = track.artists[0].name if getattr(track, "artists", None) else ""
+        query = f"{artist_name} {track.name}".strip()
+        if query:
+            try:
+                results = await self.provider.mass.music.search(query, [MediaType.TRACK])
+            except Exception:
+                results = None
+            tracks = getattr(results, "tracks", None) if results is not None else None
+            if tracks:
+                return cast("Track", tracks[0])
         return None
 
     async def _resolve_track_via_musicbrainz(
