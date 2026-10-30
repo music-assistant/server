@@ -23,6 +23,7 @@ from music_assistant_models.enums import (
     ProviderType,
 )
 from music_assistant_models.errors import (
+    InvalidDataError,
     MediaNotFoundError,
     MusicAssistantError,
     ProviderUnavailableError,
@@ -117,7 +118,7 @@ class MetadataEnrichmentMixin:
         @property
         def link_providers_via_musicbrainz(self) -> bool: ...  # noqa: D102
 
-    async def _update_artist_metadata(  # noqa: PLR0915
+    async def _update_artist_metadata(  # noqa: C901, PLR0915
         self, artist: Artist, force_refresh: bool = False
     ) -> None:
         """Get/update rich metadata for an artist."""
@@ -175,6 +176,7 @@ class MetadataEnrichmentMixin:
 
         # The musicbrainz ID is mandatory for all metadata lookups
         merge_mbid: str | None = None
+        reliable = bool(artist.mbid)
         retry_soon = False
         if not artist.mbid:
             try:
@@ -190,9 +192,14 @@ class MetadataEnrichmentMixin:
             if found:
                 artist.mbid, by_name = found
                 merge_mbid = None if by_name else artist.mbid
+                reliable = not by_name
         # a failed identification leaves the MusicBrainz lookup marker unset for a later retry
         if not retry_soon:
-            retry_soon = await self._link_artist_to_musicbrainz(artist)
+            own_mbid = artist.mbid
+            retry_soon = await self._link_artist_to_musicbrainz(artist, follow_merged=reliable)
+            if own_mbid and artist.mbid != own_mbid:
+                # the id an artist merged on MusicBrainz led to is as reliable as the old one
+                merge_mbid = artist.mbid
 
         # don't merge online genres on top of source-supplied ones; propagation-derived
         # genres also count as a local source so they survive metadata refreshes
@@ -658,11 +665,13 @@ class MetadataEnrichmentMixin:
         podcast.metadata.last_refresh = int(time())
         await self.mass.music.podcasts.update_item_in_library(podcast.item_id, podcast)
 
-    async def _link_artist_to_musicbrainz(self, artist: Artist) -> bool:
+    async def _link_artist_to_musicbrainz(self, artist: Artist, follow_merged: bool = True) -> bool:
         """
         Fill in an artist's Discogs id and link it to the music providers MusicBrainz knows.
 
         :param artist: The library artist to link.
+        :param follow_merged: Give an artist MusicBrainz merged into another the other's id; not
+            for an id only a name search found, which may belong to a namesake.
         :return: Whether the lookup failed temporarily, which makes the item due for a refresh
             again soon.
         """
@@ -672,6 +681,9 @@ class MetadataEnrichmentMixin:
         if artist.mbid and artist.mbid != VARIOUS_ARTISTS_MBID:
             try:
                 details = await musicbrainz.get_artist_details(artist.mbid)
+                if follow_merged:
+                    # MusicBrainz answers a merged artist's old id with the artist it was merged into
+                    await self._follow_merged_id(artist, details.id)
                 urls = relation_urls(details.relations)
                 if not artist.get_external_id(ExternalID.DISCOGS) and (
                     discogs := discogs_external_id(urls, MediaType.ARTIST)
@@ -718,6 +730,8 @@ class MetadataEnrichmentMixin:
             if release is None:
                 self.logger.debug("Album %s was not found on MusicBrainz", album.name)
             else:
+                if album.mbid and album.mbid.casefold() != release.id.casefold():
+                    await self._follow_merged_release(musicbrainz, album, release.id)
                 urls = relation_urls(release.relations)
                 _fill_album_from_release(album, release, urls)
                 link_providers = self.link_providers_via_musicbrainz
@@ -784,6 +798,59 @@ class MetadataEnrichmentMixin:
             return False
         track.metadata.last_musicbrainz_lookup = int(time())
         return False
+
+    async def _follow_merged_release(
+        self, musicbrainz: MusicbrainzProvider, album: Album, release_id: str
+    ) -> None:
+        """
+        Give an album the release its stored release was merged into on MusicBrainz.
+
+        A stored release MusicBrainz does not answer for is kept, as the MusicBrainz mirror may
+        not have it yet.
+
+        :param musicbrainz: The MusicBrainz provider.
+        :param album: The library album, stored with the new id.
+        :param release_id: The id of the release the album was identified as.
+        """
+        try:
+            # the identify step looked the stored release up first, so this reads its answer again
+            stored = await musicbrainz.get_release_details(album.mbid or "")
+        except InvalidDataError:
+            return
+        await self._follow_merged_id(album, stored.id)
+
+    async def _follow_merged_id(self, item: Album | Artist, mbid: str) -> None:
+        """
+        Give a library item the MusicBrainz id its own MusicBrainz id now leads to.
+
+        MusicBrainz answers the id of an item merged into another with that other item.
+
+        :param item: The library item, stored with the new id.
+        :param mbid: The id of the item MusicBrainz answered with.
+        """
+        if not item.mbid or item.mbid.casefold() == mbid.casefold():
+            return
+        self.logger.debug(
+            '%s "%s" was merged on MusicBrainz, %s now leads to %s',
+            item.media_type.value,
+            item.name,
+            item.mbid,
+            mbid,
+        )
+        await self._store_musicbrainz_id(item, mbid)
+
+    async def _store_musicbrainz_id(self, item: Album | Artist, mbid: str) -> None:
+        """Store a library item with a MusicBrainz id in place of the one it has."""
+        previous = set(item.external_ids)
+        item.mbid = mbid
+        # a library update would add the new id next to the old one, so the ids stored now are
+        # written with only the MusicBrainz id swapped, keeping any added meanwhile
+        controller = self.mass.music.get_controller(item.media_type)
+        stored = (await controller.get_library_item(item.item_id)).external_ids
+        await controller.set_external_ids(
+            item.item_id,
+            (set(stored) - (previous - item.external_ids)) | (item.external_ids - previous),
+        )
 
     async def _in_library(self, item: MediaItemType) -> bool:
         """Return whether the given library item still exists in the library."""

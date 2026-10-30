@@ -43,6 +43,7 @@ from music_assistant_models.media_items import (
     ItemMapping,
     ItemMappingSummary,
     MediaCollection,
+    MediaCollectionMetadata,
     MediaItem,
     MediaItemImage,
     MediaItemMetadata,
@@ -70,6 +71,7 @@ from music_assistant.constants import (
 from music_assistant.controllers.music.constants import (
     BASE_SORT_FIELD_SQL,
     CACHE_CATEGORY_SEARCH_RESULTS,
+    COLLECTION_COVER_COUNT,
     RANDOM_SORT_FIELDS,
 )
 from music_assistant.controllers.music.helpers import (
@@ -77,6 +79,7 @@ from music_assistant.controllers.music.helpers import (
     provider_mappings_from_urls,
     search_name_match_clause,
     sibling_instance_mappings,
+    usable_thumb,
 )
 from music_assistant.controllers.music.listing import (
     apply_listing,
@@ -892,6 +895,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
                 provider="library",
                 provider_mappings=set(),
                 items=items,
+                metadata=self._parse_collection_metadata(db_rows[0], hidden_sources),
             ),
         )
 
@@ -2058,6 +2062,21 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         if collapse_collections:
             if search:
                 query_params["search"] = f"%{search}%"
+            # the metadata of a collection ignores the filters that only narrow the view
+            scope_query = None
+            if favorite is not None or played_only or genre_ids:
+                scope_parts = list(extra_query_parts) if extra_query_parts else []
+                self._apply_filters(
+                    query_parts=scope_parts,
+                    query_params=query_params,
+                    favorite=None,
+                    search=None,
+                    genre_ids=None,
+                    provider_filter=provider_filter,
+                    in_library_only=in_library_only,
+                    reachable_via=reachable_via,
+                )
+                scope_query, _ = self._build_final_query(scope_parts, join_parts, summary=summary)
             sql_query = await self._adapt_query_for_collections(
                 sql_query,
                 query_params,
@@ -2066,6 +2085,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
                 sort_direction=sort_direction,
                 search=search,
                 random_seed=random_seed,
+                scope_query=scope_query,
             )
 
         db_rows = await self.mass.music.database.get_rows_from_query(
@@ -2098,6 +2118,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
                             items=UniqueList(
                                 [_parse_method(x) for x in json_loads(db_row["media_data"])]
                             ),
+                            metadata=self._parse_collection_metadata(db_row, hidden_sources),
                         )
                     )
             return items
@@ -3273,6 +3294,26 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
             for raw_mapping in json_loads(db_row["artists"])
         )
 
+    def _parse_collection_metadata(
+        self, db_row: Mapping[str, Any], hidden_sources: set[str]
+    ) -> MediaCollectionMetadata:
+        """Return the metadata computed over all items of a collection row."""
+        raw_metadata = db_row["collection_metadata"]
+        metadata = json_loads(raw_metadata) if raw_metadata else {}
+        # the covers of the first books with a thumb, less those the viewer can't be shown
+        thumbs = [
+            self._summary_thumb([thumb], hidden_sources)
+            for images in metadata.get("covers") or []
+            if (thumb := usable_thumb(images, hidden_sources))
+        ]
+        return MediaCollectionMetadata(
+            images=UniqueList(thumb for thumb in thumbs if thumb) or None,
+            total_items=metadata.get("total_items"),
+            duration=metadata.get("duration"),
+            fully_played=parse_optional_bool(metadata.get("fully_played")),
+            in_progress=parse_optional_bool(metadata.get("in_progress")),
+        )
+
     async def _adapt_query_for_collections(
         self,
         sql_query: str,
@@ -3283,7 +3324,15 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         collection_name: str | None = None,
         search: str | None = None,
         random_seed: int | None = None,
+        scope_query: str | None = None,
     ) -> str:
+        """
+        Wrap a listing query so the items of a collection come back as one collection row.
+
+        :param scope_query: The query of all items in scope, which the metadata of a
+            collection is computed over. None when sql_query applies no view filters
+            (favorite, genre, played).
+        """
         cache_key_json_object = f"collection_{self.api_base}"
         json_object = await self.mass.cache.get(key=cache_key_json_object, category=int(summary))
         if json_object is None:
@@ -3303,6 +3352,11 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
                 json_object = "json_object()"
 
         collections_column = "collections" if summary else "json_extract(metadata, '$.collections')"
+        images_column = "images" if summary else "json_extract(metadata, '$.images')"
+        # all books in scope make a collection's metadata, the ones in view its items
+        scope_table = f"scope_table as ({scope_query})," if scope_query else ""
+        extract_source = "scope_table" if scope_query else "joined_table"
+        in_view = "item_id IN (SELECT item_id FROM joined_table)" if scope_query else "1"
 
         # the sort fields a collapsed listing offers: those aggregated per collection below
         supported_sort_fields = {
@@ -3320,13 +3374,44 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         # single is targeting a single media item, collection the aggregated ones
         single_extra_order_keys = ""
         collection_extra_order_keys = ""
+        # the order of the items within a collection, which the covers follow as well
+        sequence_order = """
+                -- null case
+                CASE WHEN collection_sequence IS NULL THEN 1 ELSE 0 END,
+                -- numeric before text
+                CASE WHEN collection_sequence_is_numeric THEN 0 ELSE 1 END,
+                -- order NUMERIC
+                CASE WHEN collection_sequence_is_numeric
+                    THEN CAST(collection_sequence AS REAL)
+                END,
+                -- order TEXT
+                CASE WHEN NOT collection_sequence_is_numeric
+                    THEN collection_sequence
+                END COLLATE NOCASE,
+                -- order by media name if no sequence given
+                CASE
+                    WHEN collection_sequence IS NULL
+                    THEN media_name
+                END COLLATE NOCASE"""
+
+        # the played state of a collection, from the columns this media type has
+        collection_extract_keys = ""
+        fully_played_stat = in_progress_stat = duration_stat = "NULL"
         if self.media_type == MediaType.AUDIOBOOK:
             single_extra_order_keys = "duration,"
             collection_extra_order_keys = "SUM(duration) as duration,"
+            collection_extract_keys = "fully_played, resume_position_ms,"
+            duration_stat = "SUM(duration)"
+            fully_played_stat = "MIN(COALESCE(fully_played, 0))"
+            # some book started or finished, but not all of them finished
+            in_progress_stat = (
+                "MAX(COALESCE(fully_played, 0) OR COALESCE(resume_position_ms, 0) > 0)"
+                f" AND NOT {fully_played_stat}"
+            )
             supported_sort_fields.add(SortField.DURATION)
         elif self.media_type == MediaType.ALBUM:
             single_extra_order_keys = "year,"
-            collection_extra_order_keys = "MIN(year) as year,"
+            collection_extra_order_keys = "MIN(CASE WHEN in_view THEN year END) as year,"
             supported_sort_fields.add(SortField.YEAR)
 
         sql_query = f"""
@@ -3334,6 +3419,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
 
             WITH
                 joined_table as ({sql_query}),
+                {scope_table}
                 collection_extract as (
                     SELECT
                         item_id,
@@ -3343,6 +3429,13 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
                         last_played,
                         play_count,
                         {single_extra_order_keys}
+                        {collection_extract_keys}
+                        {in_view} as in_view,
+                        {images_column} as images,
+                        EXISTS(
+                            SELECT 1 FROM json_each({images_column}) as iter_img
+                            WHERE json_extract(iter_img.value, '$.type') = 'thumb'
+                        ) as has_thumb,
                         json_extract(iter_coll.value, '$.title') as collection_title,
                         json_extract(iter_coll.value, '$.sequence') as collection_sequence,
                         json_extract(iter_coll.value, '$.search_title') as collection_search_title,
@@ -3360,54 +3453,52 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
                             END
                             ELSE 0
                         END as collection_sequence_is_numeric,
-                        {json_object} as media_data
+                        -- only the items in view are listed, so only they need their data
+                        CASE WHEN {in_view} THEN {json_object} END as media_data
                     FROM (
-                        SELECT * FROM joined_table
+                        SELECT * FROM {extract_source}
                     ), json_each({collections_column}) as iter_coll
                 )
             SELECT
                 'collection' as type,
-                MIN(item_id) as random_item_id,
+                MIN(CASE WHEN in_view THEN item_id END) as random_item_id,
                 collection_title as name,
                 COALESCE(MAX(collection_search_title), replace(lower(collection_title),' ','')) AS search_name,
                 COALESCE(MAX(collection_search_sort_title), replace(lower(collection_title),' ','')) AS search_sort_name,
-                MAX(timestamp_added) as timestamp_added,
-                MAX(timestamp_modified) as timestamp_modified,
-                MAX(last_played) as last_played,
-                SUM(play_count) as play_count,
+                MAX(CASE WHEN in_view THEN timestamp_added END) as timestamp_added,
+                MAX(CASE WHEN in_view THEN timestamp_modified END) as timestamp_modified,
+                MAX(CASE WHEN in_view THEN last_played END) as last_played,
+                SUM(CASE WHEN in_view THEN play_count END) as play_count,
                 {collection_extra_order_keys}
-                json_group_array(media_data) as media_data
+                json_object(
+                    'total_items', COUNT(*),
+                    'duration', {duration_stat},
+                    'fully_played', {fully_played_stat},
+                    'in_progress', {in_progress_stat},
+                    'covers', json_group_array(json(images))
+                        FILTER (WHERE has_thumb AND cover_rank <= {COLLECTION_COVER_COUNT})
+                ) as collection_metadata,
+                json_group_array(media_data) FILTER (WHERE in_view) as media_data
             FROM (
-                SELECT * FROM collection_extract
+                SELECT *,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY collection_title, has_thumb ORDER BY {sequence_order}
+                    ) as cover_rank
+                FROM collection_extract
                 -- NOTE: The following ORDER_BY to control the aggregation order of json_group_array is undocumented sqlite behavior
                 -- Confirmed working with sqlite 3.40.1 & 3.53
                 -- Once our image moves to sqlite 3.44 we can and should make use of ORDER_BY in the aggregate itself
-                ORDER BY collection_title,
-                -- null case
-                CASE WHEN collection_sequence IS NULL THEN 1 ELSE 0 END,
-                -- numeric before text
-                CASE WHEN collection_sequence_is_numeric THEN 0 ELSE 1 END,
-                -- order NUMERIC
-                CASE WHEN collection_sequence_is_numeric
-                    THEN CAST(collection_sequence AS REAL)
-                END,
-                -- order TEXT
-                CASE WHEN NOT collection_sequence_is_numeric
-                    THEN collection_sequence
-                END COLLATE NOCASE,
-                -- order by media name if no sequence given
-                CASE
-                    WHEN collection_sequence IS NULL
-                    THEN media_name
-                END COLLATE NOCASE
+                ORDER BY collection_title, {sequence_order}
             )
             GROUP BY collection_title
+            HAVING MAX(in_view)
 
             UNION ALL
 
             SELECT 'single', item_id as random_item_id, name, search_name, search_sort_name,
                 timestamp_added, timestamp_modified, last_played, play_count,
                 {single_extra_order_keys}
+                NULL as collection_metadata,
                 {json_object} FROM joined_table
                 WHERE {collections_column} IS NULL
                     OR {collections_column} = '[]'

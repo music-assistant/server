@@ -947,8 +947,8 @@ class ArtistsController(MediaControllerBase[Artist]):
         :param artist_type: Whether the artist is listed as the author or the narrator.
         :param in_library_only: Only list the audiobooks that are in the library.
         :param search: Only list the audiobooks (or collections) whose name contains this text.
-        :param sort_field: Sort field, the sort name when omitted; a collection has no
-            duration of its own and sorts as the shortest.
+        :param sort_field: Sort field, the sort name when omitted; a collection sorts by
+            the duration of all its audiobooks.
         :param sort_direction: Sort direction, the field's default when omitted.
         :param limit: Maximum number of audiobooks to return; 0 returns them all.
         :param offset: Number of audiobooks to skip.

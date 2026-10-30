@@ -22,8 +22,8 @@ from music_assistant.controllers.storage.models import StorageKind
 
 MOUNTINFO_PATH: Final[str] = "/proc/self/mountinfo"
 
-# filesystems that can hold a music collection: never the container root (overlay) or a
-# pseudo filesystem (tmpfs, proc, sysfs, cgroup, devpts, squashfs, ...)
+# filesystems that can hold a music collection: never a pseudo filesystem (tmpfs, proc, sysfs,
+# cgroup, devpts, squashfs, ...)
 MEDIA_FSTYPES: Final[frozenset[str]] = frozenset(
     {
         "ext2",
@@ -54,6 +54,8 @@ MEDIA_FSTYPES: Final[frozenset[str]] = frozenset(
 )
 MEDIA_FSTYPE_PREFIX: Final[str] = "fuse."
 AUTOMOUNT_FSTYPE: Final[str] = "autofs"
+# in a container also a merged host folder mapped in as a volume; on a host only container roots
+OVERLAY_FSTYPE: Final[str] = "overlay"
 NETWORK_FSTYPES: Final[frozenset[str]] = frozenset({"cifs", "smb3", "nfs", "nfs4"})
 REMOVABLE_FSTYPES: Final[frozenset[str]] = frozenset(
     {"vfat", "exfat", "ntfs", "ntfs3", "hfsplus", "iso9660", "udf"}
@@ -85,6 +87,12 @@ CONTAINER_RESERVED_PATHS: Final[tuple[str, ...]] = (
 SUPERVISOR_MEDIA_PATH: Final[str] = "/media"
 
 _OCTAL_ESCAPE = re.compile(r"\\([0-7]{3})")
+# root of another container in mapped docker, podman/CRI-O or containerd/k3s storage; matched by
+# layout, not name, since a media volume can be called merged or rootfs too
+_CONTAINER_ROOT = re.compile(
+    r"/(?:overlay2?/[^/]+/merged|io\.containerd\.runtime\.[^/]+/[^/]+/[^/]+/rootfs"
+    r"|rootfs/overlayfs/[^/]+)$"
+)
 
 
 @dataclass(frozen=True)
@@ -130,7 +138,11 @@ def parse_mountinfo(
             kind=_classify(mountpoint, fstype, in_container, supervisor),
         )
         for mountpoint, (fstype, read_only) in mounts.items()
-        if (_is_media_fstype(fstype) or fstype == AUTOMOUNT_FSTYPE)
+        if (
+            _is_media_fstype(fstype)
+            or fstype == AUTOMOUNT_FSTYPE
+            or (fstype == OVERLAY_FSTYPE and in_container and not _is_container_root(mountpoint))
+        )
         and mountpoint != "/"
         and not any(is_within(mountpoint, path) for path in excluded)
     ]
@@ -226,6 +238,11 @@ def _parse_line(line: str) -> tuple[str, str, bool] | None:
 def _is_media_fstype(fstype: str) -> bool:
     """Return whether a filesystem type can hold a music collection."""
     return fstype in MEDIA_FSTYPES or fstype.startswith(MEDIA_FSTYPE_PREFIX)
+
+
+def _is_container_root(mountpoint: str) -> bool:
+    """Return whether an overlay mount is the root filesystem of a container."""
+    return _CONTAINER_ROOT.search(mountpoint) is not None
 
 
 def _classify(mountpoint: str, fstype: str, in_container: bool, supervisor: bool) -> StorageKind:
