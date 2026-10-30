@@ -240,7 +240,7 @@ async def test_create_user_with_builtin_provider(auth_manager: AuthenticationMan
     assert user.username == "testuser2"
 
 
-async def test_authenticate_with_password(auth_manager: AuthenticationManager) -> None:
+async def test_authenticate_by_name(auth_manager: AuthenticationManager) -> None:
     """
     Test authenticating with username and password.
 
@@ -353,7 +353,7 @@ async def test_password_hashing_runs_at_most_two_at_a_time(
     assert peak == 2
 
 
-async def test_authenticate_with_password_refuses_a_disabled_user(
+async def test_authenticate_by_name_refuses_a_disabled_user(
     auth_manager: AuthenticationManager,
 ) -> None:
     """
