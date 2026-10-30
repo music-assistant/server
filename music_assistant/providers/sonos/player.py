@@ -553,13 +553,18 @@ class SonosPlayer(Player):
             self._flow_queue_id = None
             self.cloud_queue_id = media.source_id
             cloud_queue_url = f"{self.mass.streams.base_url}/sonos_queue/{self.player_id}/v2.3/"
+            # the load names the session it goes into: the one the speaker holds, or a new one
+            loaded: list[str] = []
             try:
                 await self.group_controller.play_cloud_queue(
                     cloud_queue_url,
                     item_id=self.wire_item_id(media.queue_item_id),
+                    on_session=loaded.append,
                 )
             except (Exception, asyncio.CancelledError) as err:
-                self._settle_failed_load(err, media.source_id, previous_queue_id)
+                self._settle_failed_load(
+                    err, media.source_id, previous_queue_id, loaded[-1] if loaded else None
+                )
                 raise
             if not self._bind_loaded_session(media.source_id):
                 return
@@ -1355,68 +1360,68 @@ class SonosPlayer(Player):
         own_queue = queue_id == self.player_id
         if not await self._wait_for_moved_group(new_coordinator, queue_id, own_queue):
             return
-        if self.cloud_queue_item_generation != generation or self._playing_queue_id() not in (
-            queue_id,
-            None,
+        # a play started on either player while the move was waited for holds its queue's
+        # playback lock: look again and move only once it is done, and keep both locks
+        # through the move (core's transfer re-enters them)
+        async with self.mass.players.get_playback_locks(
+            queue_id, new_coordinator.player_id, strict=True
         ):
-            # this player was given something (else) to play in the meantime
-            return
-        if not self._leads_moved_group(new_coordinator):
-            # it gave the role up again before this hand-over got to run
-            self.logger.debug(
-                "%s no longer leads the moved group, leaving it alone",
-                new_coordinator.display_name,
-            )
-            return
-        group = new_coordinator.group_controller
-        if (
-            new_coordinator.cloud_queue_item_generation != new_coordinator_generation
-            or not self._plays_queue(group, queue_id)
-        ):
-            # so was the new coordinator: what it plays now is not what moved
-            self.logger.debug(
-                "%s plays something else by now, leaving it alone", new_coordinator.display_name
-            )
-            return
-        self._evicted_cloud_queue = None
-        self._forget_queue()
-        self.update_state()
-        if not own_queue:
+            if self.cloud_queue_item_generation != generation or self._playing_queue_id() not in (
+                queue_id,
+                None,
+            ):
+                # this player was given something (else) to play in the meantime
+                return
+            if not self._leads_moved_group(new_coordinator):
+                # it gave the role up again before this hand-over got to run
+                self.logger.debug(
+                    "%s no longer leads the moved group, leaving it alone",
+                    new_coordinator.display_name,
+                )
+                return
+            group = new_coordinator.group_controller
+            item_id = self._moved_item_id(group, queue_id)
+            if (
+                new_coordinator.cloud_queue_item_generation != new_coordinator_generation
+                or item_id is None
+            ):
+                # so was the new coordinator: what it plays now is not what moved
+                self.logger.debug(
+                    "%s plays something else by now, leaving it alone", new_coordinator.display_name
+                )
+                return
+            self._evicted_cloud_queue = None
+            self._forget_queue()
+            self.update_state()
+            if not own_queue:
+                self.logger.info(
+                    "The speakers moved the group of %s to %s outside Music Assistant, "
+                    "stopping playback",
+                    self.display_name,
+                    new_coordinator.display_name,
+                )
+                try:
+                    await new_coordinator.stop()
+                except FailedCommand as err:
+                    self.logger.warning(
+                        "Could not stop playback on %s: %s", new_coordinator.display_name, err
+                    )
+                return
+            # the item the speakers play must still be this queue's: a queue cleared, replaced
+            # or moved away in Music Assistant meanwhile changed nothing on them, and is not moved
+            if self.mass.player_queues.index_by_id(queue_id, item_id) is None:
+                return
+            playing = PLAYBACK_STATE_MAP.get(group.playback_state) == PlaybackState.PLAYING
             self.logger.info(
                 "The speakers moved the group of %s to %s outside Music Assistant, "
-                "stopping playback",
+                "moving its queue there",
                 self.display_name,
                 new_coordinator.display_name,
             )
-            try:
-                await new_coordinator.stop()
-            except FailedCommand as err:
-                self.logger.warning(
-                    "Could not stop playback on %s: %s", new_coordinator.display_name, err
-                )
-            return
-        playing = PLAYBACK_STATE_MAP.get(group.playback_state) == PlaybackState.PLAYING
-        self.logger.info(
-            "The speakers moved the group of %s to %s outside Music Assistant, "
-            "moving its queue there",
-            self.display_name,
-            new_coordinator.display_name,
-        )
-        await self.mass.player_queues.transfer_queue(
-            queue_id, new_coordinator.player_id, auto_play=False
-        )
-        if not playing:
-            return
-        # core's resume takes a queue that reads as playing at its own clock, and the new
-        # coordinator's does (its speaker plays the moved copy): start it where ours stopped
-        queue = self.mass.player_queues.get(new_coordinator.player_id)
-        if queue is None or (item := queue.current_item) is None:
-            return
-        # a radio stream cannot be started part way in
-        position = 0 if item.media_type == MediaType.RADIO else int(queue.resume_pos)
-        await self.mass.player_queues.play_index(
-            new_coordinator.player_id, item.queue_item_id, position
-        )
+            # core starts the moved item where this queue was
+            await self.mass.player_queues.transfer_queue(
+                queue_id, new_coordinator.player_id, auto_play=playing
+            )
 
     async def _wait_for_moved_group(
         self, new_coordinator: SonosPlayer, queue_id: str, own_queue: bool
@@ -1489,13 +1494,21 @@ class SonosPlayer(Player):
         return None
 
     @staticmethod
-    def _plays_queue(group: SonosGroup, queue_id: str) -> bool:
-        """Return whether a group plays the given MA queue, as a cloud queue or as one stream."""
-        # the speaker reports the container we served: mass:<queue> for a cloud queue,
-        # mass:<queue>:<item> for a stream
+    def _moved_item_id(group: SonosGroup, queue_id: str) -> str | None:
+        """Return the item of the given MA queue a group plays, None if it plays something else."""
+        # the speaker reports the container we served: mass:<queue> for a cloud queue, whose
+        # current item it reports under the id we served it as; mass:<queue>:<item> for a stream
         container = group.playback_metadata.get("container")
         object_id = container.get("id", {}).get("objectId", "") if container else ""
-        return object_id == f"mass:{queue_id}" or object_id.startswith(f"mass:{queue_id}:")
+        if object_id.startswith(f"mass:{queue_id}:"):
+            return object_id.removeprefix(f"mass:{queue_id}:")
+        if object_id != f"mass:{queue_id}":
+            return None
+        if (current_item := group.playback_metadata.get("currentItem")) and (
+            item_id := current_item.get("id")
+        ):
+            return SonosPlayer.bare_item_id(item_id)
+        return None
 
     def _playing_queue_id(self) -> str | None:
         """Return the MA queue the speaker plays, as a cloud queue or as one stream."""
@@ -1544,23 +1557,23 @@ class SonosPlayer(Player):
         err: BaseException,
         queue_id: str,
         previous_queue_id: str | None,
-        replaced_session_id: str | None = None,
+        session_id: str | None,
     ) -> None:
-        """Settle our queue after a load of it failed or was cancelled."""
+        """Settle our queue after a load of it into the given session failed or was cancelled."""
         if isinstance(err, FailedCommand) and err.error_code == SESSION_EVICTED_ERROR:
             # the speakers carry on with what played before, so a coordinator move that
             # follows still finds that queue
             self._release_evicted_queue(previous_queue_id or queue_id)
             return
         group = self.client.player.group
-        session_id = group.active_session_id if group is not None else None
         if (
             isinstance(err, (CommandTimeout, asyncio.CancelledError))
             and session_id
-            and session_id != replaced_session_id
+            and group is not None
+            and session_id == group.active_session_id
         ):
             # unanswered or cut off, the load may still have reached the speaker, which
-            # then plays our queue in the session it kept
+            # then plays our queue in the session it still holds
             self._queue_session_id = session_id
             return
         # the speaker never got the queue, so describing one is worse than admitting
@@ -1610,14 +1623,18 @@ class SonosPlayer(Player):
         }
         if media.image_url:
             container["imageUrl"] = media.image_url
-        # a stream always gets a session of its own, so the one held now is not ours
-        held_group = self.client.player.group
-        replaced_session_id = held_group.active_session_id if held_group is not None else None
+        # a stream always gets a session of its own, which the speaker may hand back under
+        # the id of the one it held: the load names the session it goes into
+        loaded: list[str] = []
         try:
-            await self.group_controller.play_stream_url(stream_url, container)
+            await self.group_controller.play_stream_url(
+                stream_url, container, on_session=loaded.append
+            )
         except (Exception, asyncio.CancelledError) as err:
             if flow_queue_id:
-                self._settle_failed_load(err, flow_queue_id, previous_queue_id, replaced_session_id)
+                self._settle_failed_load(
+                    err, flow_queue_id, previous_queue_id, loaded[-1] if loaded else None
+                )
             raise
         if flow_queue_id and not self._bind_loaded_session(flow_queue_id):
             return
