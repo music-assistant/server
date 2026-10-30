@@ -183,9 +183,16 @@ async def test_track_without_musicbrainz_provider_mapping_stays_unresolved() -> 
     musicbrainz.get_recording_details = AsyncMock(return_value=MagicMock(relations=[]))
     cast("MagicMock", manager.provider.mass.get_provider).return_value = musicbrainz
 
-    with patch(
-        "music_assistant.providers.listenbrainz.playlist.provider_mappings_from_urls",
-        AsyncMock(return_value=[]),
+    relation_url = "https://catalog.synthetic.invalid/track/synthetic-track-id"
+    with (
+        patch(
+            "music_assistant.providers.listenbrainz.playlist.relation_urls",
+            return_value=[relation_url],
+        ),
+        patch(
+            "music_assistant.providers.listenbrainz.playlist.provider_mappings_from_urls",
+            AsyncMock(return_value=[]),
+        ),
     ):
         resolved = await manager._get_or_resolve_track(_track())
 

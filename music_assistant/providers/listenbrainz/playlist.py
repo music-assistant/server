@@ -73,6 +73,11 @@ class ListenBrainzPlaylistManager:
             refreshed_tracks[playlist.item_id] = tuple(tracks)
         self._playlists = refreshed
         self._playlist_tracks = refreshed_tracks
+        self.logger.debug(
+            "Refreshed %d ListenBrainz playlists with %d playable tracks",
+            len(refreshed),
+            sum(len(tracks) for tracks in refreshed_tracks.values()),
+        )
 
     async def browse(self) -> list[Playlist]:
         """Return the user's recommendation playlists."""
@@ -108,13 +113,14 @@ class ListenBrainzPlaylistManager:
         """Return a cached, library, or streaming-provider match for a parsed track."""
         recording_mbid = track.get_external_id(ExternalID.MB_RECORDING)
         assert recording_mbid is not None
+        self.logger.debug(
+            "Resolving ListenBrainz track %s (%s)",
+            track.name,
+            recording_mbid,
+        )
         if cached_track := self._resolved_tracks.get(recording_mbid):
             return cached_track
-        if library_track := await self.provider.mass.music.tracks.get_library_item_by_external_id(
-            recording_mbid, ExternalID.MB_RECORDING
-        ):
-            self._resolved_tracks[recording_mbid] = library_track
-            return library_track
+
         cached_track = await self.provider.mass.cache.get(
             key=recording_mbid,
             category=CACHE_CATEGORY_RESOLVED_TRACKS,
@@ -124,16 +130,34 @@ class ListenBrainzPlaylistManager:
         if isinstance(cached_track, Track):
             self._resolved_tracks[recording_mbid] = cached_track
             return cached_track
-        if provider_track := await self._resolve_track_via_musicbrainz(track, recording_mbid):
+        resolved_track = await self._resolve_track(track, recording_mbid)
+        if resolved_track is not None:
+            self._resolved_tracks[recording_mbid] = resolved_track
             await self.provider.mass.cache.set(
                 key=recording_mbid,
-                data=provider_track.to_dict(),
+                data=resolved_track.to_dict(),
                 category=CACHE_CATEGORY_RESOLVED_TRACKS,
                 provider=self.provider.instance_id,
                 expiration=CACHE_EXPIRATION_SECONDS,
             )
-            self._resolved_tracks[recording_mbid] = provider_track
+            return resolved_track
+        return None
+
+    async def _resolve_track(self, track: Track, recording_mbid: str) -> Track | None:
+        """Resolve a track from the library or via MusicBrainz when it is not cached."""
+        if library_track := await self.provider.mass.music.tracks.get_library_item_by_external_id(
+            recording_mbid, ExternalID.MB_RECORDING
+        ):
+            self.logger.debug(
+                "Resolved ListenBrainz track %s (%s) from the library",
+                track.name,
+                recording_mbid,
+            )
+            return library_track
+        if provider_track := await self._resolve_track_via_musicbrainz(track, recording_mbid):
             return provider_track
+
+        # TODO: If still failing, resolve via provider search
         return None
 
     async def _resolve_track_via_musicbrainz(
