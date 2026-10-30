@@ -25,6 +25,7 @@ from music_assistant.controllers.statistics.base import (
     validate_statistics_limit,
 )
 from music_assistant.controllers.statistics.queries import (
+    NORMALIZED_ITEMS_CTE,
     PROVIDER_MAPPING_JOIN,
     TRACK_ALBUMS_CTE,
     TRACK_ARTISTS_CTE,
@@ -98,55 +99,15 @@ class RankingsMixin(_StatisticsBase):
             }
         else:
             query = f"""
-                WITH played_pairs AS (
-                    SELECT
-                        provider,
-                        item_id,
-                        media_type,
-                        COUNT(*) AS play_count,
-                        MAX(name) AS name,
-                        MAX(image) AS image
-                    FROM {DB_TABLE_PLAY_HISTORY}
-                    WHERE userid = :user_id
-                        AND media_type = :media_type
-                        AND timestamp >= :cutoff_timestamp
-                    GROUP BY provider, item_id, media_type
-                ), normalized_history AS (
-                    SELECT
-                        CASE
-                            WHEN played_pairs.provider = 'library' THEN played_pairs.item_id
-                            WHEN provider_mappings.item_id IS NOT NULL
-                                THEN CAST(provider_mappings.item_id AS TEXT)
-                            ELSE played_pairs.item_id
-                        END AS item_id,
-                        CASE
-                            WHEN played_pairs.provider = 'library'
-                                OR provider_mappings.item_id IS NOT NULL THEN 'library'
-                            ELSE played_pairs.provider
-                        END AS provider,
-                        played_pairs.media_type,
-                        played_pairs.play_count,
-                        played_pairs.name,
-                        played_pairs.image
-                    FROM played_pairs
-                    LEFT JOIN {DB_TABLE_PROVIDER_MAPPINGS} AS provider_mappings
-                        ON {
-                PROVIDER_MAPPING_JOIN.format(
-                    mapping="provider_mappings",
-                    media_type="played_pairs.media_type",
-                    item_id="played_pairs.item_id",
-                    provider="played_pairs.provider",
-                )
-            }
-                )
+                WITH {NORMALIZED_ITEMS_CTE.format(table=DB_TABLE_PLAY_HISTORY, total="COUNT(*)")}
                 SELECT
                     item_id,
                     provider,
                     media_type,
                     MAX(name) AS name,
                     MAX(image) AS image,
-                    SUM(play_count) AS play_count
-                FROM normalized_history
+                    SUM(total) AS play_count
+                FROM normalized_items
                 GROUP BY item_id, provider, media_type
                 ORDER BY play_count DESC, provider, item_id
             """

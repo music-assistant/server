@@ -5,6 +5,7 @@ from music_assistant_models.enums import MediaType
 from music_assistant.constants import (
     DB_TABLE_ALBUM_TRACKS,
     DB_TABLE_ALBUMS,
+    DB_TABLE_LISTENING_SESSIONS,
     DB_TABLE_PLAY_HISTORY,
     DB_TABLE_PROVIDER_MAPPINGS,
 )
@@ -43,6 +44,66 @@ PROVIDER_MAPPING_JOIN = f"""
             LIMIT 1
         )
     )
+"""
+# Format with the source `table` and the per-item `total` aggregate. Provider items resolve
+# to their library item when mapped, so both identities of one item count together.
+NORMALIZED_ITEMS_CTE = f"""
+    item_totals AS (
+        SELECT
+            provider,
+            item_id,
+            media_type,
+            {{total}} AS total,
+            MAX(name) AS name,
+            MAX(image) AS image
+        FROM {{table}}
+        WHERE userid = :user_id
+            AND media_type = :media_type
+            AND timestamp >= :cutoff_timestamp
+        GROUP BY provider, item_id, media_type
+    ), normalized_items AS (
+        SELECT
+            CASE
+                WHEN item_totals.provider = 'library' THEN item_totals.item_id
+                WHEN provider_mappings.item_id IS NOT NULL
+                    THEN CAST(provider_mappings.item_id AS TEXT)
+                ELSE item_totals.item_id
+            END AS item_id,
+            CASE
+                WHEN item_totals.provider = 'library'
+                    OR provider_mappings.item_id IS NOT NULL THEN 'library'
+                ELSE item_totals.provider
+            END AS provider,
+            item_totals.media_type,
+            item_totals.total,
+            item_totals.name,
+            item_totals.image
+        FROM item_totals
+        LEFT JOIN {DB_TABLE_PROVIDER_MAPPINGS} AS provider_mappings
+            ON {
+    PROVIDER_MAPPING_JOIN.format(
+        mapping="provider_mappings",
+        media_type="item_totals.media_type",
+        item_id="item_totals.item_id",
+        provider="item_totals.provider",
+    )
+}
+    )
+"""
+# Timed events for the time series: each row's `value` adds to the bucket of its `timestamp`.
+PLAY_EVENTS_QUERY = f"""
+    SELECT timestamp, 1 AS value
+    FROM {DB_TABLE_PLAY_HISTORY}
+    WHERE userid = :user_id
+        AND timestamp >= :cutoff_timestamp
+        AND media_type IN ({PLAY_HISTORY_EVENT_TYPE_SQL})
+"""
+LISTENING_EVENTS_QUERY = f"""
+    SELECT timestamp, seconds AS value
+    FROM {DB_TABLE_LISTENING_SESSIONS}
+    WHERE userid = :user_id
+        AND timestamp >= :cutoff_timestamp
+        AND (:media_type IS NULL OR media_type = :media_type)
 """
 TRACK_HISTORY_CTE = f"""
     played_pairs AS (

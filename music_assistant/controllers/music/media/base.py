@@ -62,6 +62,7 @@ from music_assistant.constants import (
     DB_TABLE_FAVORITES,
     DB_TABLE_GENRE_MEDIA_ITEM_EXCLUSION,
     DB_TABLE_GENRE_MEDIA_ITEM_MAPPING,
+    DB_TABLE_LISTENING_SESSIONS,
     DB_TABLE_MEDIA_PROGRESS,
     DB_TABLE_PLAY_HISTORY,
     DB_TABLE_PROVIDER_MAPPINGS,
@@ -3923,11 +3924,12 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
                 "media_type": self.media_type.value,
             },
         )
-        await self.mass.music.database.execute_write(
-            f"UPDATE {DB_TABLE_PLAY_HISTORY} SET item_id = :target_id "
-            "WHERE item_id = :source_id AND provider = 'library' AND media_type = :media_type",
-            values,
-        )
+        for table in (DB_TABLE_PLAY_HISTORY, DB_TABLE_LISTENING_SESSIONS):
+            await self.mass.music.database.execute_write(
+                f"UPDATE {table} SET item_id = :target_id "
+                "WHERE item_id = :source_id AND provider = 'library' AND media_type = :media_type",
+                values,
+            )
         if self.media_type != MediaType.ARTIST:
             return
 

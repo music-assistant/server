@@ -33,6 +33,7 @@ from music_assistant.constants import (
     DB_TABLE_GENRE_MEDIA_ITEM_MAPPING,
     DB_TABLE_GENRES,
     DB_TABLE_LEGACY_PLAYLOG,
+    DB_TABLE_LISTENING_SESSIONS,
     DB_TABLE_MEDIA_PROGRESS,
     DB_TABLE_PLAY_HISTORY,
     DB_TABLE_PLAYLISTS,
@@ -317,6 +318,21 @@ class MusicDatabaseSetupMixin:
                 [name] TEXT NOT NULL,
                 [image] json,
                 [artists] json
+            );"""
+        )
+        await self.database.execute(
+            f"""CREATE TABLE IF NOT EXISTS {DB_TABLE_LISTENING_SESSIONS}(
+                [id] INTEGER PRIMARY KEY AUTOINCREMENT,
+                [item_id] TEXT NOT NULL,
+                [provider] TEXT NOT NULL,
+                [media_type] TEXT NOT NULL,
+                [userid] TEXT NOT NULL,
+                [queue_id] TEXT NOT NULL,
+                [timestamp] REAL NOT NULL,
+                [seconds] INTEGER NOT NULL,
+                [name] TEXT NOT NULL,
+                [image] json,
+                UNIQUE(userid, queue_id, timestamp)
             );"""
         )
         await self.database.execute(
@@ -734,6 +750,10 @@ class MusicDatabaseSetupMixin:
         await self.database.execute(
             f"CREATE INDEX IF NOT EXISTS {DB_TABLE_PLAY_HISTORY}_user_timestamp_cov_idx "
             f"on {DB_TABLE_PLAY_HISTORY}(userid,timestamp,media_type,provider,item_id);"
+        )
+        await self.database.execute(
+            f"CREATE INDEX IF NOT EXISTS {DB_TABLE_LISTENING_SESSIONS}_user_timestamp_idx "
+            f"on {DB_TABLE_LISTENING_SESSIONS}(userid,timestamp,media_type);"
         )
         await self.database.commit()
 

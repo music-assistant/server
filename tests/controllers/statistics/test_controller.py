@@ -17,6 +17,7 @@ from music_assistant.constants import (
     DB_TABLE_ARTISTS,
     DB_TABLE_GENRE_MEDIA_ITEM_MAPPING,
     DB_TABLE_GENRES,
+    DB_TABLE_LISTENING_SESSIONS,
     DB_TABLE_MEDIA_PROGRESS,
     DB_TABLE_PLAY_HISTORY,
     DB_TABLE_PROVIDER_MAPPINGS,
@@ -71,7 +72,8 @@ async def test_statistics_api_registration_is_unchanged(mass: MusicAssistant) ->
         "statistics/genre_distribution": ("period", "limit", "timezone"),
         "statistics/plays_over_time": ("period", "granularity", "timezone"),
         "statistics/listening_activity": ("period", "timezone"),
-        "statistics/listening_time": ("period", "group_by", "limit", "timezone"),
+        "statistics/listening_time": ("period", "group_by", "limit", "timezone", "media_type"),
+        "statistics/listening_time_over_time": ("period", "granularity", "timezone", "media_type"),
         "statistics/decade_distribution": ("period", "limit", "timezone"),
         "statistics/play_history": ("limit", "media_types", "played_after_timestamp", "offset"),
         "statistics/play_count": ("item_id", "provider", "media_type"),
@@ -1571,3 +1573,96 @@ async def test_plays_over_time_rejects_unsupported_parameters(mass: MusicAssista
             await mass.statistics.get_plays_over_time(granularity="fortnight")
         with pytest.raises(InvalidDataError):
             await mass.statistics.get_plays_over_time(period="fortnight")
+
+
+async def _insert_listening_sessions(
+    mass: MusicAssistant, user: User, sessions: tuple[tuple[str, MediaType, str, int], ...]
+) -> None:
+    """Insert listening sessions as (item_id, media_type, UTC start, seconds)."""
+    for item_id, media_type, started, seconds in sessions:
+        await mass.music.database.insert(
+            DB_TABLE_LISTENING_SESSIONS,
+            {
+                "item_id": item_id,
+                "provider": "library",
+                "media_type": media_type.value,
+                "userid": user.user_id,
+                "queue_id": "queue_1",
+                "timestamp": datetime.fromisoformat(started).replace(tzinfo=UTC).timestamp(),
+                "seconds": seconds,
+                "name": item_id,
+            },
+        )
+
+
+@pytest.mark.parametrize(
+    ("timezone", "expected_books", "expected_all"),
+    [
+        (
+            "UTC",
+            [("2026-10-28", 1800), ("2026-10-29", 600)],
+            [("2026-10-28", 1800), ("2026-10-29", 800)],
+        ),
+        ("Europe/Berlin", [("2026-10-29", 2400)], [("2026-10-29", 2600)]),
+    ],
+)
+async def test_listening_time_over_time_sums_session_seconds(
+    mass: MusicAssistant,
+    timezone: str,
+    expected_books: list[tuple[str, int]],
+    expected_all: list[tuple[str, int]],
+) -> None:
+    """Sessions add their seconds to the local bucket they started in."""
+    user = await mass.webserver.auth.create_user("statistics-listening-series")
+    await _insert_listening_sessions(
+        mass,
+        user,
+        (
+            ("book_1", MediaType.AUDIOBOOK, "2026-10-28T23:30:00", 1800),
+            ("book_1", MediaType.AUDIOBOOK, "2026-10-29T10:00:00", 600),
+            ("track_1", MediaType.TRACK, "2026-10-29T11:00:00", 200),
+        ),
+    )
+
+    with _as_user(user), _frozen_now("2026-10-29T12:00:00"):
+        books = await mass.statistics.get_listening_time_over_time(
+            period="all_time", timezone=timezone, media_type=MediaType.AUDIOBOOK
+        )
+        everything = await mass.statistics.get_listening_time_over_time(
+            period="all_time", timezone=timezone
+        )
+
+    assert [(point.timestamp, point.value) for point in books] == expected_books
+    assert [(point.timestamp, point.value) for point in everything] == expected_all
+
+
+async def test_listening_time_groups_session_seconds_by_item(mass: MusicAssistant) -> None:
+    """Item listening time sums the sessions of one media type per item."""
+    user = await mass.webserver.auth.create_user("statistics-listening-items")
+    await _insert_listening_sessions(
+        mass,
+        user,
+        (
+            ("book_1", MediaType.AUDIOBOOK, "2026-10-28T10:00:00", 1200),
+            ("book_1", MediaType.AUDIOBOOK, "2026-10-29T10:00:00", 600),
+            ("book_2", MediaType.AUDIOBOOK, "2026-10-29T11:00:00", 600),
+            ("track_1", MediaType.TRACK, "2026-10-29T12:00:00", 6000),
+        ),
+    )
+
+    with _as_user(user):
+        results = await mass.statistics.get_listening_time(
+            period="all_time", group_by="item", media_type=MediaType.AUDIOBOOK
+        )
+        with pytest.raises(InvalidDataError):
+            await mass.statistics.get_listening_time(period="all_time", group_by="item")
+        with pytest.raises(InvalidDataError):
+            await mass.statistics.get_listening_time(
+                period="all_time", group_by="artist", media_type=MediaType.AUDIOBOOK
+            )
+
+    assert [
+        (entry.item.item_id, entry.item.media_type, entry.minutes)
+        for entry in results
+        if entry.item
+    ] == [("book_1", MediaType.AUDIOBOOK, 30.0), ("book_2", MediaType.AUDIOBOOK, 10.0)]

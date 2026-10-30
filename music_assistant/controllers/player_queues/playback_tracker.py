@@ -37,6 +37,7 @@ from music_assistant_models.media_items import (
 from music_assistant_models.playback_progress_report import MediaItemPlaybackProgressReport
 
 from music_assistant.constants import (
+    DB_TABLE_LISTENING_SESSIONS,
     PLAYBACK_REPORT_INTERVAL_SECONDS,
     VERBOSE_LOG_LEVEL,
 )
@@ -50,11 +51,13 @@ from music_assistant.controllers.player_queues.helpers import (
     origin_for,
     played_from_album,
 )
+from music_assistant.controllers.player_queues.state import ListeningSession
 from music_assistant.controllers.webserver.helpers.auth_middleware import (
     set_current_user,
 )
 from music_assistant.helpers.audio import resolve_output_player_ids
 from music_assistant.helpers.compare import compare_item_ids
+from music_assistant.helpers.json import serialize_to_json
 from music_assistant.helpers.util import get_changed_keys, percentage
 from music_assistant.models.player import Player
 from music_assistant.models.plugin import PluginProvider
@@ -70,6 +73,9 @@ if TYPE_CHECKING:
 # so it going idle means the source stopped and not that the queue ran out (marking it
 # ended would strand a later resume)
 UNENDABLE_MEDIA_TYPES = (MediaType.RADIO, MediaType.AUDIO_SOURCE)
+# a longer silence between player updates means the player stopped reporting (e.g. it went
+# offline), not that it kept playing; listening time only credits this much of such a gap
+MAX_LISTENING_GAP_SECONDS = PLAYBACK_REPORT_INTERVAL_SECONDS + 5
 
 
 class PlaybackTrackerMixin(_PlayerQueuesBase):
@@ -293,6 +299,8 @@ class PlaybackTrackerMixin(_PlayerQueuesBase):
                     streamdetails, int(queue.corrected_elapsed_time)
                 )
             )
+
+        self._update_listening_session(queue)
 
         # handle sending a playback progress report
         # we do this every 30 seconds or when the state changes
@@ -663,6 +671,56 @@ class PlaybackTrackerMixin(_PlayerQueuesBase):
             return
         self.logger.info("End of queue reached for %s, marking it as ended", queue.display_name)
         self.mark_ended(queue.queue_id)
+
+    def _update_listening_session(self, queue: PlayerQueue) -> None:
+        """Record the wall-clock time the current item plays for the queue's user."""
+        queue_data = self._queue_data[queue.queue_id]
+        now = time.time()
+        playing_item = queue.current_item if queue.state == PlaybackState.PLAYING else None
+        if session := queue_data.listening_session:
+            ended = playing_item is None or playing_item.queue_item_id != session.queue_item_id
+            session.seconds += min(now - session.last_seen_at, MAX_LISTENING_GAP_SECONDS)
+            session.last_seen_at = now
+            if ended or now - session.last_written_at >= PLAYBACK_REPORT_INTERVAL_SECONDS:
+                session.last_written_at = now
+                listened_item = session.media_item
+                self.mass.create_task(
+                    self.mass.music.database.upsert(
+                        DB_TABLE_LISTENING_SESSIONS,
+                        {
+                            "item_id": listened_item.item_id,
+                            "provider": listened_item.provider,
+                            "media_type": listened_item.media_type.value,
+                            "userid": session.userid,
+                            "queue_id": queue.queue_id,
+                            "timestamp": session.started_at,
+                            "seconds": int(session.seconds),
+                            "name": listened_item.name,
+                            "image": serialize_to_json(listened_item.image.to_dict())
+                            if listened_item.image
+                            else None,
+                        },
+                    )
+                )
+            if ended:
+                queue_data.listening_session = None
+        if (
+            queue_data.listening_session is None
+            and playing_item
+            and (media_item := playing_item.media_item)
+            and media_item.media_type not in (MediaType.SOUND_EFFECT, MediaType.AUDIO_SOURCE)
+            and queue_data.userid
+            # a player can name an item it never received audio for
+            and playing_item.queue_item_id in queue_data.served_item_ids
+        ):
+            queue_data.listening_session = ListeningSession(
+                queue_item_id=playing_item.queue_item_id,
+                media_item=media_item,
+                userid=queue_data.userid,
+                started_at=now,
+                last_seen_at=now,
+                last_written_at=now,
+            )
 
     def _handle_playback_progress_report(
         self, queue: PlayerQueue, prev_state: CompareState, new_state: CompareState

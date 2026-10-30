@@ -5,7 +5,7 @@ from __future__ import annotations
 import time
 from collections.abc import AsyncGenerator, Iterator
 from datetime import UTC, date, datetime, timedelta
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from music_assistant_models.auth import Scope
 from music_assistant_models.enums import MediaType
@@ -22,6 +22,7 @@ from music_assistant_models.statistics import (
 from music_assistant.constants import (
     DB_TABLE_GENRE_MEDIA_ITEM_MAPPING,
     DB_TABLE_GENRES,
+    DB_TABLE_LISTENING_SESSIONS,
     DB_TABLE_PLAY_HISTORY,
     DB_TABLE_TRACKS,
 )
@@ -30,6 +31,9 @@ from music_assistant.controllers.statistics.base import (
     validate_statistics_limit,
 )
 from music_assistant.controllers.statistics.queries import (
+    LISTENING_EVENTS_QUERY,
+    NORMALIZED_ITEMS_CTE,
+    PLAY_EVENTS_QUERY,
     PLAY_HISTORY_EVENT_TYPE_SQL,
     TRACK_ARTISTS_CTE,
     TRACK_HISTORY_CTE,
@@ -77,70 +81,34 @@ class TimeSeriesMixin(_StatisticsBase):
         :param granularity: Time bucket size - 'hour', 'day', 'week', 'month'.
         :param timezone: IANA timezone for calendar buckets and boundaries; defaults to UTC.
         """
-        user = get_current_user()
-        user_id = user.user_id if user else None
+        return await self._get_time_series(PLAY_EVENTS_QUERY, {}, period, granularity, timezone)
 
-        if not user_id:
-            return []
+    @api_command("statistics/listening_time_over_time", required_scope=Scope.LIBRARY_READ)
+    async def get_listening_time_over_time(
+        self,
+        period: str = "week",
+        granularity: str = "day",
+        timezone: str = "UTC",
+        media_type: MediaType | None = None,
+    ) -> list[TimeSeriesPoint]:
+        """
+        Get the seconds spent listening over time (time series data).
 
-        cutoff_timestamp = self._get_period_cutoff(period, timezone)
-        now_timestamp = time.time()
+        Counts wall-clock playback through Music Assistant, each listening session in the
+        bucket it started in. The series is complete, like `plays_over_time`.
 
-        if granularity not in TIME_SERIES_DATE_FORMATS:
-            raise InvalidDataError("granularity must be hour, day, week, or month")
-        date_format = TIME_SERIES_DATE_FORMATS[granularity]
-        zone = get_timezone(timezone)
-        buckets: dict[str, int] = {}
-        if timezone != "UTC":
-            async for local_time, count in self._iter_local_play_counts(
-                user_id, cutoff_timestamp, timezone
-            ):
-                bucket = _bucket_key(local_time, granularity)
-                buckets[bucket] = buckets.get(bucket, 0) + count
-        else:
-            bucket_seconds = 3600 if granularity == "hour" else 86400
-            bucket_expression = f"strftime('{date_format}', bucket * {bucket_seconds}, 'unixepoch')"
-            if granularity == "week":
-                bucket_expression = "date(((bucket + 3) / 7 * 7 - 3) * 86400, 'unixepoch')"
-
-            query = f"""
-                SELECT
-                    {bucket_expression} AS time_bucket,
-                    SUM(play_count) AS play_count
-                FROM (
-                    SELECT CAST(timestamp AS INTEGER) / {bucket_seconds} AS bucket,
-                        COUNT(*) AS play_count
-                    FROM {DB_TABLE_PLAY_HISTORY}
-                    WHERE userid = :user_id
-                        AND timestamp >= :cutoff_timestamp
-                        AND media_type IN ({PLAY_HISTORY_EVENT_TYPE_SQL})
-                    GROUP BY bucket
-                )
-                GROUP BY time_bucket
-                ORDER BY time_bucket ASC
-            """
-
-            params = {
-                "user_id": user_id,
-                "cutoff_timestamp": cutoff_timestamp,
-            }
-
-            rows = await self.mass.music.database.get_rows_from_query(query, params, limit=0)
-            buckets = {row["time_bucket"]: row["play_count"] for row in rows}
-
-        if not buckets:
-            return []
-        first_bucket = min(buckets)
-        if period != "all_time":
-            period_start = datetime.fromtimestamp(cutoff_timestamp, UTC).astimezone(zone)
-            first_bucket = min(first_bucket, _bucket_key(period_start, granularity))
-        current_time = datetime.fromtimestamp(now_timestamp, UTC).astimezone(zone)
-        # Plays stamped after the current bucket (clock skew) still extend the series.
-        last_bucket = max(*buckets, _bucket_key(current_time, granularity))
-        return [
-            TimeSeriesPoint(timestamp=bucket, value=buckets.get(bucket, 0))
-            for bucket in _iter_bucket_keys(first_bucket, last_bucket, granularity, zone)
-        ]
+        :param period: Time period - 'today', 'week', 'month', 'year', 'all_time'.
+        :param granularity: Time bucket size - 'hour', 'day', 'week', 'month'.
+        :param timezone: IANA timezone for calendar buckets and boundaries; defaults to UTC.
+        :param media_type: Only count this media type; all media types when omitted.
+        """
+        return await self._get_time_series(
+            LISTENING_EVENTS_QUERY,
+            {"media_type": media_type.value if media_type else None},
+            period,
+            granularity,
+            timezone,
+        )
 
     @api_command("statistics/listening_activity", required_scope=Scope.LIBRARY_READ)
     async def get_listening_activity(
@@ -164,8 +132,10 @@ class TimeSeriesMixin(_StatisticsBase):
 
         if timezone != "UTC":
             buckets: dict[tuple[int, int], int] = {}
-            async for local_time, count in self._iter_local_play_counts(
-                user_id, cutoff_timestamp, timezone
+            async for local_time, count in self._iter_local_totals(
+                PLAY_EVENTS_QUERY,
+                {"user_id": user_id, "cutoff_timestamp": cutoff_timestamp},
+                timezone,
             ):
                 bucket = (local_time.weekday(), local_time.hour)
                 buckets[bucket] = buckets.get(bucket, 0) + count
@@ -211,18 +181,22 @@ class TimeSeriesMixin(_StatisticsBase):
         group_by: str = "artist",
         limit: int = 10,
         timezone: str = "UTC",
+        media_type: MediaType | None = None,
     ) -> list[ListeningTimeItem]:
         """
-        Sum stored durations for completed plays resolvable to library tracks.
+        Sum the listening time per artist, genre or item.
 
-        Plays without a library mapping or known duration are omitted. Genre grouping also
-        requires library genre mappings. Artist results carry the artist in `item`, so
-        same-named artists stay separate; genre results have no `item`.
+        Artist and genre time is estimated from the stored durations of completed plays
+        resolvable to library tracks; plays without a library mapping or known duration are
+        omitted, and genre grouping also requires library genre mappings. Item time is the
+        measured wall-clock playback through Music Assistant. Artist and item results carry
+        the item in `item`, so same-named ones stay separate; genre results have no `item`.
 
         :param period: Time period - 'today', 'week', 'month', 'year', 'all_time'.
-        :param group_by: Group by 'artist' or 'genre' (default 'artist').
+        :param group_by: Group by 'artist', 'genre' or 'item' (default 'artist').
         :param limit: Maximum number of items to return (default 10).
         :param timezone: IANA timezone for calendar boundaries; defaults to UTC.
+        :param media_type: The media type to list, required for and only used by 'item'.
         """
         user = get_current_user()
         user_id = user.user_id if user else None
@@ -230,8 +204,10 @@ class TimeSeriesMixin(_StatisticsBase):
         if not user_id:
             return []
         limit = validate_statistics_limit(limit)
-        if group_by not in ("artist", "genre"):
-            raise InvalidDataError("group_by must be 'artist' or 'genre'")
+        if group_by not in ("artist", "genre", "item"):
+            raise InvalidDataError("group_by must be 'artist', 'genre' or 'item'")
+        if (group_by == "item") != (media_type is not None):
+            raise InvalidDataError("media_type is required for and only used by group_by 'item'")
 
         cutoff_timestamp = self._get_period_cutoff(period, timezone)
 
@@ -251,14 +227,31 @@ class TimeSeriesMixin(_StatisticsBase):
                     WHERE tracks.duration > 0
                 )
                 SELECT
-                    artist_item_id,
-                    artist_provider,
+                    artist_item_id AS item_id,
+                    artist_provider AS provider,
+                    '{MediaType.ARTIST.value}' AS media_type,
                     MAX(name) as name,
                     MAX(image) as image,
                     SUM(duration * play_count) as total_seconds
                 FROM artist_plays
                 GROUP BY artist_item_id, artist_provider
                 ORDER BY total_seconds DESC, artist_provider, artist_item_id
+            """
+        elif group_by == "item":
+            query = f"""
+                WITH {
+                NORMALIZED_ITEMS_CTE.format(table=DB_TABLE_LISTENING_SESSIONS, total="SUM(seconds)")
+            }
+                SELECT
+                    item_id,
+                    provider,
+                    media_type,
+                    MAX(name) AS name,
+                    MAX(image) AS image,
+                    SUM(total) AS total_seconds
+                FROM normalized_items
+                GROUP BY item_id, provider, media_type
+                ORDER BY total_seconds DESC, provider, item_id
             """
         else:
             query = f"""
@@ -286,7 +279,7 @@ class TimeSeriesMixin(_StatisticsBase):
 
         params = {
             "user_id": user_id,
-            "media_type": MediaType.TRACK.value,
+            "media_type": media_type.value if media_type else MediaType.TRACK.value,
             "cutoff_timestamp": cutoff_timestamp,
         }
 
@@ -297,17 +290,17 @@ class TimeSeriesMixin(_StatisticsBase):
             if row["total_seconds"] is None or row["total_seconds"] <= 0:
                 continue
             item_mapping = None
-            if group_by == "artist":
+            if group_by != "genre":
                 image = None
                 if row["image"] and (image_dict := json_loads(row["image"])):
                     image = MediaItemImage.from_dict(image_dict)
                 item_mapping = ItemMapping(
-                    item_id=row["artist_item_id"],
-                    provider=row["artist_provider"],
-                    media_type=MediaType.ARTIST,
+                    item_id=row["item_id"],
+                    provider=row["provider"],
+                    media_type=MediaType(row["media_type"]),
                     name=row["name"],
                     image=image,
-                    available=row["artist_provider"] in available_providers,
+                    available=row["provider"] in available_providers,
                 )
             result.append(
                 ListeningTimeItem(
@@ -322,27 +315,87 @@ class TimeSeriesMixin(_StatisticsBase):
         )
         return result
 
-    async def _iter_local_play_counts(
-        self, user_id: str, cutoff_timestamp: float, timezone: str
+    async def _get_time_series(
+        self,
+        events_query: str,
+        params: dict[str, Any],
+        period: str,
+        granularity: str,
+        timezone: str,
+    ) -> list[TimeSeriesPoint]:
+        """Sum the values of timed events per calendar bucket, filling empty buckets."""
+        user = get_current_user()
+        user_id = user.user_id if user else None
+
+        if not user_id:
+            return []
+
+        cutoff_timestamp = self._get_period_cutoff(period, timezone)
+        now_timestamp = time.time()
+
+        if granularity not in TIME_SERIES_DATE_FORMATS:
+            raise InvalidDataError("granularity must be hour, day, week, or month")
+        date_format = TIME_SERIES_DATE_FORMATS[granularity]
+        zone = get_timezone(timezone)
+        params = {**params, "user_id": user_id, "cutoff_timestamp": cutoff_timestamp}
+        buckets: dict[str, int] = {}
+        if timezone != "UTC":
+            async for local_time, total in self._iter_local_totals(events_query, params, timezone):
+                bucket = _bucket_key(local_time, granularity)
+                buckets[bucket] = buckets.get(bucket, 0) + total
+        else:
+            bucket_seconds = 3600 if granularity == "hour" else 86400
+            bucket_expression = f"strftime('{date_format}', bucket * {bucket_seconds}, 'unixepoch')"
+            if granularity == "week":
+                bucket_expression = "date(((bucket + 3) / 7 * 7 - 3) * 86400, 'unixepoch')"
+
+            query = f"""
+                SELECT
+                    {bucket_expression} AS time_bucket,
+                    SUM(total) AS total
+                FROM (
+                    SELECT CAST(timestamp AS INTEGER) / {bucket_seconds} AS bucket,
+                        SUM(value) AS total
+                    FROM ({events_query})
+                    GROUP BY bucket
+                )
+                GROUP BY time_bucket
+                ORDER BY time_bucket ASC
+            """
+
+            rows = await self.mass.music.database.get_rows_from_query(query, params, limit=0)
+            buckets = {row["time_bucket"]: row["total"] for row in rows}
+
+        if not buckets:
+            return []
+        first_bucket = min(buckets)
+        if period != "all_time":
+            period_start = datetime.fromtimestamp(cutoff_timestamp, UTC).astimezone(zone)
+            first_bucket = min(first_bucket, _bucket_key(period_start, granularity))
+        current_time = datetime.fromtimestamp(now_timestamp, UTC).astimezone(zone)
+        # Events stamped after the current bucket (clock skew) still extend the series.
+        last_bucket = max(*buckets, _bucket_key(current_time, granularity))
+        return [
+            TimeSeriesPoint(timestamp=bucket, value=buckets.get(bucket, 0))
+            for bucket in _iter_bucket_keys(first_bucket, last_bucket, granularity, zone)
+        ]
+
+    async def _iter_local_totals(
+        self, events_query: str, params: dict[str, Any], timezone: str
     ) -> AsyncGenerator[tuple[datetime, int]]:
-        """Yield completed play counts with their local event time."""
+        """Yield the summed values of timed events with their local event time."""
         # Recorded-history zone offsets align to 15-minute UTC buckets; grouping first keeps
         # the per-play conversion out of Python and preserves local hour/day boundaries.
         query = f"""
-            SELECT CAST(timestamp AS INTEGER) / 900 AS bucket, COUNT(*) AS play_count
-            FROM {DB_TABLE_PLAY_HISTORY}
-            WHERE userid = :user_id
-                AND timestamp >= :cutoff_timestamp
-                AND media_type IN ({PLAY_HISTORY_EVENT_TYPE_SQL})
+            SELECT CAST(timestamp AS INTEGER) / 900 AS bucket, SUM(value) AS total
+            FROM ({events_query})
             GROUP BY bucket
         """
         zone = get_timezone(timezone)
-        async for row in self.mass.music.database.iter_rows_from_query(
-            query, {"user_id": user_id, "cutoff_timestamp": cutoff_timestamp}
-        ):
+        async for row in self.mass.music.database.iter_rows_from_query(query, params):
             yield (
                 datetime.fromtimestamp(row["bucket"] * 900, UTC).astimezone(zone),
-                row["play_count"],
+                row["total"],
             )
 
 

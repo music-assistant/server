@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from music_assistant.constants import DB_TABLE_PLAY_HISTORY
+from music_assistant.constants import DB_TABLE_LISTENING_SESSIONS, DB_TABLE_PLAY_HISTORY
 from music_assistant.controllers.statistics.history import HistoryMixin
 from music_assistant.controllers.statistics.rankings import RankingsMixin
 from music_assistant.controllers.statistics.time_series import TimeSeriesMixin
@@ -36,4 +36,7 @@ class StatisticsController(RankingsMixin, HistoryMixin, TimeSeriesMixin):
         """Return diagnostics info for this controller to include in diagnostics reports."""
         return {
             "playlog_entries": await self.mass.music.database.get_count(DB_TABLE_PLAY_HISTORY),
+            "listening_sessions": await self.mass.music.database.get_count(
+                DB_TABLE_LISTENING_SESSIONS
+            ),
         }

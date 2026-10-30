@@ -40,6 +40,19 @@ _VOLATILE_CACHE_FIELDS = ("elapsed_time", "elapsed_time_last_updated", "playback
 
 
 @dataclass(slots=True)
+class ListeningSession:
+    """Uninterrupted playback of one queue item, credited to the queue's user."""
+
+    queue_item_id: str
+    media_item: MediaItemType
+    userid: str
+    started_at: float
+    last_seen_at: float
+    last_written_at: float
+    seconds: float = 0
+
+
+@dataclass(slots=True)
 class PlayerQueueData:
     """The complete server-side record for a queue: the wire `PlayerQueue` plus all server-only state."""
 
@@ -64,6 +77,7 @@ class PlayerQueueData:
 
     # runtime-only fields below; not persisted, reset to these defaults on restart
     prev_state: CompareState | None = None
+    listening_session: ListeningSession | None = None
     transitioning: bool = False
     play_action_refcount: int = 0
     # skip seconds awaiting the playback lock and the item they apply to; a burst of presses
