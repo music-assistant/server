@@ -20,6 +20,8 @@ from music_assistant_models.statistics import (
 )
 
 from music_assistant.constants import (
+    DB_TABLE_ARTISTS,
+    DB_TABLE_AUDIOBOOK_ARTISTS,
     DB_TABLE_GENRE_MEDIA_ITEM_MAPPING,
     DB_TABLE_GENRES,
     DB_TABLE_LISTENING_SESSIONS,
@@ -184,16 +186,18 @@ class TimeSeriesMixin(_StatisticsBase):
         media_type: MediaType | None = None,
     ) -> list[ListeningTimeItem]:
         """
-        Sum the listening time per artist, genre or item.
+        Sum the listening time per artist, genre, item, author or narrator.
 
         Artist and genre time is estimated from the stored durations of completed plays
         resolvable to library tracks; plays without a library mapping or known duration are
-        omitted, and genre grouping also requires library genre mappings. Item time is the
-        measured wall-clock playback through Music Assistant. Artist and item results carry
-        the item in `item`, so same-named ones stay separate; genre results have no `item`.
+        omitted, and genre grouping also requires library genre mappings. Item, author and
+        narrator time is the measured wall-clock playback through Music Assistant; author and
+        narrator time only counts audiobooks in the library. All but genre results carry the
+        item in `item`, so same-named ones stay separate; genre results have no `item`.
 
         :param period: Time period - 'today', 'week', 'month', 'year', 'all_time'.
-        :param group_by: Group by 'artist', 'genre' or 'item' (default 'artist').
+        :param group_by: Group by 'artist', 'genre', 'item', 'author' or 'narrator'
+            (default 'artist').
         :param limit: Maximum number of items to return (default 10).
         :param timezone: IANA timezone for calendar boundaries; defaults to UTC.
         :param media_type: The media type to list, required for and only used by 'item'.
@@ -204,10 +208,14 @@ class TimeSeriesMixin(_StatisticsBase):
         if not user_id:
             return []
         limit = validate_statistics_limit(limit)
-        if group_by not in ("artist", "genre", "item"):
-            raise InvalidDataError("group_by must be 'artist', 'genre' or 'item'")
+        if group_by not in ("artist", "genre", "item", "author", "narrator"):
+            raise InvalidDataError(
+                "group_by must be 'artist', 'genre', 'item', 'author' or 'narrator'"
+            )
         if (group_by == "item") != (media_type is not None):
             raise InvalidDataError("media_type is required for and only used by group_by 'item'")
+        if group_by in ("author", "narrator"):
+            media_type = MediaType.AUDIOBOOK
 
         cutoff_timestamp = self._get_period_cutoff(period, timezone)
 
@@ -253,6 +261,28 @@ class TimeSeriesMixin(_StatisticsBase):
                 GROUP BY item_id, provider, media_type
                 ORDER BY total_seconds DESC, provider, item_id
             """
+        elif group_by in ("author", "narrator"):
+            query = f"""
+                WITH {
+                NORMALIZED_ITEMS_CTE.format(table=DB_TABLE_LISTENING_SESSIONS, total="SUM(seconds)")
+            }
+                SELECT
+                    CAST(artists.item_id AS TEXT) AS item_id,
+                    'library' AS provider,
+                    '{MediaType.ARTIST.value}' AS media_type,
+                    artists.name AS name,
+                    json_extract(artists.metadata, '$.images[0]') AS image,
+                    SUM(normalized_items.total) AS total_seconds
+                FROM normalized_items
+                INNER JOIN {DB_TABLE_AUDIOBOOK_ARTISTS} AS audiobook_artists
+                    ON audiobook_artists.audiobook_id = CAST(normalized_items.item_id AS INTEGER)
+                INNER JOIN {DB_TABLE_ARTISTS} AS artists
+                    ON artists.item_id = audiobook_artists.artist_id
+                    AND artists.artist_type = :artist_type
+                WHERE normalized_items.provider = 'library'
+                GROUP BY artists.item_id
+                ORDER BY total_seconds DESC, artists.item_id
+            """
         else:
             query = f"""
                 WITH {TRACK_HISTORY_CTE}, genre_plays AS (
@@ -280,6 +310,7 @@ class TimeSeriesMixin(_StatisticsBase):
         params = {
             "user_id": user_id,
             "media_type": media_type.value if media_type else MediaType.TRACK.value,
+            "artist_type": group_by,
             "cutoff_timestamp": cutoff_timestamp,
         }
 

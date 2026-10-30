@@ -9,7 +9,12 @@ import pytest
 from music_assistant_models.auth import Scope, User
 from music_assistant_models.enums import ArtistType, MediaType
 from music_assistant_models.errors import InvalidDataError
-from music_assistant_models.media_items import AudioFormat
+from music_assistant_models.media_items import (
+    Artist,
+    Audiobook,
+    AudioFormat,
+    ProviderMapping,
+)
 
 from music_assistant.constants import (
     DB_TABLE_ALBUM_TRACKS,
@@ -1576,15 +1581,15 @@ async def test_plays_over_time_rejects_unsupported_parameters(mass: MusicAssista
 
 
 async def _insert_listening_sessions(
-    mass: MusicAssistant, user: User, sessions: tuple[tuple[str, MediaType, str, int], ...]
+    mass: MusicAssistant, user: User, sessions: tuple[tuple[str, str, MediaType, str, int], ...]
 ) -> None:
-    """Insert listening sessions as (item_id, media_type, UTC start, seconds)."""
-    for item_id, media_type, started, seconds in sessions:
+    """Insert listening sessions as (provider, item_id, media_type, UTC start, seconds)."""
+    for provider, item_id, media_type, started, seconds in sessions:
         await mass.music.database.insert(
             DB_TABLE_LISTENING_SESSIONS,
             {
                 "item_id": item_id,
-                "provider": "library",
+                "provider": provider,
                 "media_type": media_type.value,
                 "userid": user.user_id,
                 "queue_id": "queue_1",
@@ -1618,9 +1623,9 @@ async def test_listening_time_over_time_sums_session_seconds(
         mass,
         user,
         (
-            ("book_1", MediaType.AUDIOBOOK, "2026-10-28T23:30:00", 1800),
-            ("book_1", MediaType.AUDIOBOOK, "2026-10-29T10:00:00", 600),
-            ("track_1", MediaType.TRACK, "2026-10-29T11:00:00", 200),
+            ("library", "book_1", MediaType.AUDIOBOOK, "2026-10-28T23:30:00", 1800),
+            ("library", "book_1", MediaType.AUDIOBOOK, "2026-10-29T10:00:00", 600),
+            ("library", "track_1", MediaType.TRACK, "2026-10-29T11:00:00", 200),
         ),
     )
 
@@ -1643,10 +1648,10 @@ async def test_listening_time_groups_session_seconds_by_item(mass: MusicAssistan
         mass,
         user,
         (
-            ("book_1", MediaType.AUDIOBOOK, "2026-10-28T10:00:00", 1200),
-            ("book_1", MediaType.AUDIOBOOK, "2026-10-29T10:00:00", 600),
-            ("book_2", MediaType.AUDIOBOOK, "2026-10-29T11:00:00", 600),
-            ("track_1", MediaType.TRACK, "2026-10-29T12:00:00", 6000),
+            ("library", "book_1", MediaType.AUDIOBOOK, "2026-10-28T10:00:00", 1200),
+            ("library", "book_1", MediaType.AUDIOBOOK, "2026-10-29T10:00:00", 600),
+            ("library", "book_2", MediaType.AUDIOBOOK, "2026-10-29T11:00:00", 600),
+            ("library", "track_1", MediaType.TRACK, "2026-10-29T12:00:00", 6000),
         ),
     )
 
@@ -1656,13 +1661,76 @@ async def test_listening_time_groups_session_seconds_by_item(mass: MusicAssistan
         )
         with pytest.raises(InvalidDataError):
             await mass.statistics.get_listening_time(period="all_time", group_by="item")
-        with pytest.raises(InvalidDataError):
-            await mass.statistics.get_listening_time(
-                period="all_time", group_by="artist", media_type=MediaType.AUDIOBOOK
-            )
+        for group_by in ("artist", "author"):
+            with pytest.raises(InvalidDataError):
+                await mass.statistics.get_listening_time(
+                    period="all_time", group_by=group_by, media_type=MediaType.AUDIOBOOK
+                )
 
     assert [
         (entry.item.item_id, entry.item.media_type, entry.minutes)
         for entry in results
         if entry.item
     ] == [("book_1", MediaType.AUDIOBOOK, 30.0), ("book_2", MediaType.AUDIOBOOK, 10.0)]
+
+
+async def _add_library_book(mass: MusicAssistant, book_id: str, author: str, narrator: str) -> str:
+    """Add a provider audiobook with one author and one narrator to the library."""
+    book = Audiobook(
+        item_id=book_id,
+        provider="test--1",
+        name=book_id,
+        provider_mappings={
+            ProviderMapping(item_id=book_id, provider_domain="test", provider_instance="test--1")
+        },
+    )
+    for name, artist_type, people in (
+        (author, ArtistType.AUTHOR, book.authors),
+        (narrator, ArtistType.NARRATOR, book.narrators),
+    ):
+        people.append(
+            Artist(
+                item_id=name,
+                provider="test--1",
+                name=name,
+                artist_type=artist_type,
+                provider_mappings={
+                    ProviderMapping(
+                        item_id=name, provider_domain="test", provider_instance="test--1"
+                    )
+                },
+            )
+        )
+    return (await mass.music.audiobooks.add_item_to_library(book)).item_id
+
+
+@pytest.mark.parametrize(
+    ("group_by", "expected"),
+    [
+        ("author", [("Author A", 30.0)]),
+        ("narrator", [("Narrator N", 20.0), ("Narrator M", 10.0)]),
+    ],
+)
+async def test_listening_time_groups_library_audiobooks_by_author_and_narrator(
+    mass: MusicAssistant, group_by: str, expected: list[tuple[str, float]]
+) -> None:
+    """Provider and library sessions of library books count for their authors or narrators."""
+    user = await mass.webserver.auth.create_user("statistics-listening-authors")
+    await _add_library_book(mass, "book_1", "Author A", "Narrator N")
+    book_2_id = await _add_library_book(mass, "book_2", "Author A", "Narrator M")
+    await _insert_listening_sessions(
+        mass,
+        user,
+        (
+            ("test--1", "book_1", MediaType.AUDIOBOOK, "2026-10-28T10:00:00", 1200),
+            ("library", book_2_id, MediaType.AUDIOBOOK, "2026-10-29T10:00:00", 600),
+            # not in the library, so it has no linked authors or narrators
+            ("test--1", "book_3", MediaType.AUDIOBOOK, "2026-10-29T11:00:00", 6000),
+        ),
+    )
+
+    with _as_user(user):
+        results = await mass.statistics.get_listening_time(period="all_time", group_by=group_by)
+
+    assert [(entry.name, entry.minutes) for entry in results] == expected
+    assert {entry.item.media_type for entry in results if entry.item} == {MediaType.ARTIST}
