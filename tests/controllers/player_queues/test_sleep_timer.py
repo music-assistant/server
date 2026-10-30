@@ -384,3 +384,26 @@ async def test_sleep_timer_stop_on_the_last_item_ends_the_queue(
     ctrl.play_index.assert_not_called()
     ctrl.mark_ended.assert_called_once_with("q1")
     assert queue_data.sleep_timer_stopped is False
+
+
+def test_chapter_stop_in_the_last_item_keeps_the_queue_resumable() -> None:
+    """A chapter stop inside the only item is a plain stop, the queue does not end."""
+    ctrl, queue, mass = _controller()
+    queue_data = ctrl._queue_data["q1"]
+    queue_data.items = queue_data.items[:1]
+    ctrl.set_sleep_timer_target("q1", SleepTimerMode.END_OF_CHAPTER)
+    queue.elapsed_time = 100
+    queue.elapsed_time_last_updated = time.time()
+    ctrl._handle_sleep_timer(queue, *_states(PlaybackState.PLAYING, "item_1"))
+    assert _scheduled(mass) == ["_handle_stop"]
+    mass.create_task.reset_mock()
+
+    queue.state = PlaybackState.IDLE
+    prev_state, new_state = _states(PlaybackState.IDLE, "item_1", prev_elapsed=100)
+    prev_state["current_item"] = queue_data.items[0]
+    ctrl._handle_end_of_queue(queue, prev_state, new_state)
+
+    # the item did not play to its end, so the queue is not settled or ended
+    assert _scheduled(mass) == []
+    assert queue.ended is False
+    assert queue_data.sleep_timer_stopped is False
