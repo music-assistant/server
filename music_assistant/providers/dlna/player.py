@@ -180,6 +180,10 @@ class DLNAPlayer(Player):
             # a new track (or a stop) starts the position over
             self._first_position = None
             self._position_moved = False
+            if _playback_state != PlaybackState.IDLE:
+                # a device that reports no position would otherwise carry on from the last track
+                self._attr_elapsed_time = 0.0
+                self._attr_elapsed_time_last_updated = time.time()
         try:
             media_title = self.device.media_title
             media_artist = self.device.media_artist
@@ -666,7 +670,12 @@ class DLNAPlayer(Player):
         # and is adopted instead of being discarded as 'not reported'.
         assert self.device is not None  # for type checking
         media_position = self.device.media_position
-        if media_position is not None and not self._position_moved:
+        if (
+            media_position is not None
+            and not self._position_moved
+            # a stopped device may still report where it was, which is not this track's start
+            and playback_state != PlaybackState.IDLE
+        ):
             # some renderers (e.g. LinkPlay) keep reporting 00:00:00 while they play, which
             # would restart the elapsed time at every resume: until the position has moved
             # on this track, it is only adopted once and MA keeps its own clock after that

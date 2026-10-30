@@ -280,6 +280,53 @@ async def test_stop_starts_the_position_over(
     assert player.elapsed_time_last_updated == clock.now
 
 
+async def test_next_track_starts_at_0_on_a_device_that_reports_no_position(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A track the device moves on to by itself starts at 0, not where the last one was."""
+    player, device, clock = await _start(monkeypatch, None)
+    clock.now += 60
+    device.current_track_uri = "http://192.168.1.10/next.mp3"
+    await player.set_dynamic_attributes()
+
+    assert player.elapsed_time == 0.0
+    assert player.elapsed_time_last_updated == clock.now
+
+
+async def test_position_kept_from_before_a_stop_does_not_count_as_moving(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """
+    A stopped device that still reports its old position is not taken to advance.
+
+    Otherwise the 00:00:00 it reports once playing differs from that old position, and a
+    resume would start the elapsed time over again.
+    """
+    clock = _mock_clock(monkeypatch)
+    device = _mock_device(
+        transport_state=TransportState.STOPPED,
+        media_position=200,
+        media_position_updated_at=REPORTED_AT,
+        async_update=AsyncMock(),
+    )
+    player = _player(device)
+    await player.set_dynamic_attributes()
+    player._attr_playback_state = PlaybackState.PLAYING
+    player._attr_elapsed_time = 0
+    player._attr_elapsed_time_last_updated = clock.now
+    device.transport_state = TransportState.PLAYING
+    device.media_position = 0
+    device.media_position_updated_at = _stamp(clock)
+    await player.set_dynamic_attributes()
+    clock.now += 12
+    await _set_state(player, device, TransportState.PAUSED_PLAYBACK)
+    clock.now += 30
+    await _set_state(player, device, TransportState.PLAYING)
+
+    assert player.elapsed_time == 12.0
+    assert player.elapsed_time_last_updated == clock.now
+
+
 async def test_pause_noticed_late_follows_the_position_the_device_paused_at(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
