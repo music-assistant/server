@@ -184,13 +184,12 @@ def test_player_classes_declare_their_visibility() -> None:
     Sendspin device players are shared devices, so none of them are private.
 
     Visualizers and lights stay hidden by default but keep offering themselves as
-    group members. Source clients are listed as audio inputs so the device stays
-    discoverable.
+    group members. Source clients are listed as audio inputs, hidden by default.
     """
     assert SendspinVisualizerPlayer._attr_hidden_by_default is True
     assert SendspinVisualizerPlayer._attr_private is False
     assert SendspinSourcePlayer._attr_private is False
-    assert SendspinSourcePlayer._attr_hidden_by_default is False
+    assert SendspinSourcePlayer._attr_hidden_by_default is True
     assert SendspinSourcePlayer._attr_type is PlayerType.SOURCE
 
 
