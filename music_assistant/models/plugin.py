@@ -74,6 +74,16 @@ class PluginProvider(
     Plugin Provider implementations should inherit from this base model.
     """
 
+    async def on_queue_start(self, queue_id: str, start_index: int) -> int:
+        """
+        Prepare newly enqueued media before it is handed to a player.
+
+        :param queue_id: The queue about to start the newly enqueued media.
+        :param start_index: The index playback would otherwise start from.
+        :return: The index to start playback from after preparation.
+        """
+        return start_index
+
     async def get_audio_sources(self) -> list[AudioSource]:
         """
         Return all AudioSources this plugin currently exposes.

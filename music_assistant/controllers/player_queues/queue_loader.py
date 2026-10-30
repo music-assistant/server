@@ -18,6 +18,7 @@ from music_assistant_models.enums import (
     ArtistType,
     MediaType,
     PlaybackState,
+    ProviderType,
     QueueOption,
     RepeatMode,
 )
@@ -80,6 +81,7 @@ from music_assistant.helpers.throttle_retry import (
 )
 from music_assistant.helpers.uri import parse_uri
 from music_assistant.models.music_provider import MusicProvider
+from music_assistant.models.plugin import PluginProvider
 
 if TYPE_CHECKING:
     from music_assistant_models.enums import SortDirection, SortField
@@ -166,7 +168,7 @@ class QueueLoaderMixin(_PlayerQueuesBase):
                     keep_played=False,
                     shuffle=shuffle,
                 )
-            await self.play_index(queue_id, 0)
+            await self._start_queue(queue_id, 0)
             return
         # handle next: add item(s) in the index next to the playing/loaded/buffered index
         if option == QueueOption.NEXT:
@@ -215,7 +217,7 @@ class QueueLoaderMixin(_PlayerQueuesBase):
                     shuffle=shuffle,
                 )
             next_index = min(play_at_index, len(self._queue_data[queue_id].items) - 1)
-            await self.play_index(queue_id, next_index)
+            await self._start_queue(queue_id, next_index)
             return
         # handle add: add/append item(s) to the remaining queue items
         if option == QueueOption.ADD:
@@ -239,6 +241,18 @@ class QueueLoaderMixin(_PlayerQueuesBase):
                 self._continue_ended_queue(queue_id, items_before_add)
                 return
             self._ensure_current_index(queue_id)
+
+    async def _start_queue(self, queue_id: str, start_index: int) -> None:
+        """Prepare newly enqueued media with plugins, then start playback."""
+        for provider in self.mass.get_providers(ProviderType.PLUGIN):
+            if isinstance(provider, PluginProvider):
+                try:
+                    start_index = await provider.on_queue_start(queue_id, start_index)
+                except MusicAssistantError:
+                    self.logger.exception(
+                        "Plugin %s failed to prepare queue %s for playback", provider.name, queue_id
+                    )
+        await self.play_index(queue_id, start_index)
 
     async def _load_pinned_first(
         self,
@@ -1149,7 +1163,7 @@ class QueueLoaderMixin(_PlayerQueuesBase):
                 keep_played=option != QueueOption.REPLACE,
             )
             if start_playing:
-                await self.play_index(queue_id, insert_at)
+                await self._start_queue(queue_id, insert_at)
             else:
                 # give an idle/empty queue a current item without starting playback
                 self._ensure_current_index(queue_id)
