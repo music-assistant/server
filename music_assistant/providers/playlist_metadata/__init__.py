@@ -49,7 +49,7 @@ from music_assistant_models.media_items import (
     Track,
 )
 from music_assistant_models.unique_list import UniqueList
-from PIL import Image, ImageDraw, ImageFont, ImageOps
+from PIL import Image, ImageDraw, ImageOps
 
 from music_assistant.helpers.images import get_image_data
 from music_assistant.helpers.uri import parse_uri
@@ -59,6 +59,7 @@ from music_assistant.models.metadata_provider import MetadataProvider
 
 from .ai import PREVIEW_KEYS, AIArtwork
 from .ai_constants import CONF_ACTION_PREVIEW, CONF_ACTION_REGENERATE, TEMPLATE_AI
+from .fonts import get_font
 
 if TYPE_CHECKING:
     from music_assistant_models.config_entries import ProviderConfig
@@ -1084,27 +1085,6 @@ async def _render_artist_radio(
     return await asyncio.to_thread(_compose)
 
 
-def _get_font(size: int) -> ImageFont.FreeTypeFont | ImageFont.ImageFont:
-    """Return a TrueType font at the given size, falling back to Pillow's built-in."""
-    font_search_paths = [
-        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
-        "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf",
-        "/System/Library/Fonts/Helvetica.ttc",
-        "/Library/Fonts/Arial Bold.ttf",
-        "/Windows/Fonts/arialbd.ttf",
-    ]
-    for path in font_search_paths:
-        if Path(path).exists():
-            try:
-                return ImageFont.truetype(path, size)
-            except OSError:
-                pass
-    try:
-        return ImageFont.load_default(size=size)
-    except TypeError:
-        return ImageFont.load_default()
-
-
 async def _render_artist_banner(
     mass: MusicAssistant,
     images: list[MediaItemImage],
@@ -1146,7 +1126,7 @@ async def _render_artist_banner(
         # Draw playlist name at the top left
         draw = ImageDraw.Draw(canvas)
         margin = int(_CANVAS_SIZE * 0.06)
-        font = _get_font(int(_CANVAS_SIZE * 0.075))
+        font = get_font(int(_CANVAS_SIZE * 0.075))
         draw.text((margin, margin), playlist_name, fill=(255, 255, 255), font=font)
 
         buf = BytesIO()

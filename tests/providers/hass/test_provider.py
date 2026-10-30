@@ -18,6 +18,7 @@ from music_assistant_models.enums import EventType, ProviderFeature
 from music_assistant_models.errors import (
     MusicAssistantError,
     ProviderUnavailableError,
+    RateLimited,
     SetupFailedError,
     UnsupportedFeaturedException,
 )
@@ -849,6 +850,32 @@ async def test_ai_generate_image_reports_a_failing_image_download_as_unavailable
     assert str(status) in str(unavailable.value)
     assert "secret" not in str(unavailable.value)
     assert unavailable.value.__cause__ is None
+
+
+async def test_ai_generate_image_reports_a_rate_limited_image_download() -> None:
+    """Home Assistant rate limiting the image is reported with its wait, without the signature."""
+    states = [_image_state("ai_task.images", "Images", supported_features=4)]
+
+    async with _start_provider(states) as (provider, hass):
+        hass.send_command = AsyncMock(
+            return_value={"response": {"url": "/ai_task/image/x.png?authSig=secret"}}
+        )
+        failed = ClientResponseError(
+            MagicMock(real_url="http://ha/ai_task/image/x.png?authSig=secret"),
+            (),
+            status=429,
+            message="Too Many Requests",
+            headers={"Retry-After": "120"},
+        )
+        with (
+            patch.object(provider, "_fetch_image", AsyncMock(side_effect=failed)),
+            pytest.raises(RateLimited) as limited,
+        ):
+            await provider.ai_generate_image("A sunset")
+
+    assert limited.value.backoff_time == 120
+    assert "secret" not in str(limited.value)
+    assert limited.value.__cause__ is None
 
 
 async def test_ai_generate_image_refuses_a_link_outside_the_ai_task_images() -> None:

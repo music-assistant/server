@@ -112,6 +112,7 @@ from .ai_constants import (
     Style,
     TitleLayout,
 )
+from .fonts import get_font
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -1716,9 +1717,7 @@ def _preview_data_url(name: str, cover: bytes) -> str:
     label = PREVIEW_SIZE // 8
     preview = Image.new("RGB", (PREVIEW_SIZE, label + PREVIEW_SIZE), (18, 22, 32))
     draw = ImageDraw.Draw(preview)
-    draw.text(
-        (gap, label // 2), name, fill=(255, 255, 255), font=_get_font(label // 2), anchor="lm"
-    )
+    draw.text((gap, label // 2), name, fill=(255, 255, 255), font=get_font(label // 2), anchor="lm")
     with Image.open(BytesIO(cover)) as image:
         preview.paste(image.convert("RGB").resize((PREVIEW_SIZE, PREVIEW_SIZE)), (0, label))
     buffer = BytesIO()
@@ -1797,7 +1796,7 @@ def _fit_title(
     measure = ImageDraw.Draw(Image.new("L", (1, 1)))
     min_size = max(1, int(font_size * MIN_TITLE_SCALE))
     while True:
-        font = _get_font(font_size)
+        font = get_font(font_size)
         lines = _wrap_title(title, font, max_width, measure)
         if len(lines) <= MAX_TITLE_LINES or font_size <= min_size:
             return font, font_size, lines
@@ -1840,21 +1839,3 @@ def _vertical_gradient(
         alpha = int(170 * (1 - offset / height) ** 1.5)
         y = offset if from_top else size - 1 - offset
         draw.line([(0, y), (size, y)], fill=(0, 0, 0, alpha))
-
-
-def _get_font(size: int) -> ImageFont.FreeTypeFont | ImageFont.ImageFont:
-    """Return a bold TrueType font at the given size, falling back to Pillow's built-in."""
-    for path in (
-        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
-        "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf",
-        "/System/Library/Fonts/Helvetica.ttc",
-        "/Library/Fonts/Arial Bold.ttf",
-        "/Windows/Fonts/arialbd.ttf",
-    ):
-        if Path(path).exists():
-            with contextlib.suppress(OSError):
-                return ImageFont.truetype(path, size)
-    try:
-        return ImageFont.load_default(size=size)
-    except TypeError:
-        return ImageFont.load_default()

@@ -43,6 +43,7 @@ from music_assistant_models.enums import (
 from music_assistant_models.errors import (
     MusicAssistantError,
     ProviderUnavailableError,
+    RateLimited,
     SetupFailedError,
     UnsupportedFeaturedException,
 )
@@ -726,6 +727,10 @@ class HomeAssistantProvider(PluginProvider):
         except ClientResponseError as err:
             # its message names the full (signed) URL
             msg = f"Home Assistant answered the image request with {err.status}"
+            if err.status == 429:
+                retry_after = (err.headers or {}).get("Retry-After", "")
+                backoff_time = int(retry_after) if retry_after.isdigit() else 0
+                raise RateLimited(msg, backoff_time=backoff_time) from None
             if err.status == 408 or err.status >= 500:
                 # Home Assistant is down or overloaded, rather than refusing this image
                 raise ProviderUnavailableError(msg) from None
