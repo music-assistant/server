@@ -23,6 +23,11 @@ LIBRARY_ARTIST_MBID = "11111111-1111-4111-8111-111111111111"
 UNMATCHED_ARTIST_MBID = "22222222-2222-4222-8222-222222222222"
 LIBRARY_RECORDING_MBID = "33333333-3333-4333-8333-333333333333"
 UNMATCHED_RECORDING_MBID = "44444444-4444-4444-8444-444444444444"
+PLAYLIST_MBID = "99999999-9999-4999-8999-999999999999"
+PLAYLIST_DATA: dict[str, object] = {
+    "identifier": f"https://listenbrainz.org/playlist/{PLAYLIST_MBID}",
+    "title": "Synthetic Recommendations",
+}
 
 
 def _playlist_manager(
@@ -66,6 +71,23 @@ def _playlist_manager(
     else:
         mass.music.providers = []
     provider.mass = cast("MusicAssistant", mass)
+    return ListenBrainzPlaylistManager(provider)
+
+
+def _playlist_snapshot_manager() -> ListenBrainzPlaylistManager:
+    """Create a playlist manager backed by a synthetic API client."""
+    provider = ListenBrainzProvider.__new__(ListenBrainzProvider)
+    provider.manifest = cast("ProviderManifest", MagicMock(domain="listenbrainz"))
+    provider.config = cast(
+        "ProviderConfig",
+        MagicMock(instance_id="listenbrainz--test", name=None),
+    )
+    provider.mass = cast("MusicAssistant", MagicMock())
+    provider.username = "synthetic-user"
+    api = MagicMock()
+    api.get_recommendation_playlists = AsyncMock(return_value=[PLAYLIST_DATA])
+    api.get_playlist = AsyncMock()
+    provider.api = api
     return ListenBrainzPlaylistManager(provider)
 
 
@@ -424,3 +446,42 @@ async def test_playlist_tracks_cache_resolved_library_track() -> None:
     assert second is library_track
     lookup = cast("AsyncMock", manager.provider.mass.music.tracks.get_library_item_by_external_id)
     assert lookup.await_count == 1
+
+
+async def test_refresh_publishes_playlists_for_browsing() -> None:
+    """A completed refresh publishes playlists without I/O on the browse path."""
+    manager = _playlist_snapshot_manager()
+    get_recommendation_playlists = cast(
+        "AsyncMock", manager.provider.api.get_recommendation_playlists
+    )
+
+    await manager.refresh()
+    get_recommendation_playlists.reset_mock()
+    playlists = await manager.browse()
+
+    get_recommendation_playlists.assert_not_awaited()
+    assert [playlist.item_id for playlist in playlists] == [PLAYLIST_MBID]
+
+
+async def test_refresh_creates_empty_playlist_tracks_snapshot() -> None:
+    """A metadata-only refresh publishes an empty track snapshot without access-time I/O."""
+    manager = _playlist_snapshot_manager()
+    get_playlist = cast("AsyncMock", manager.provider.api.get_playlist)
+
+    await manager.refresh()
+    tracks = await manager.get_playlist_tracks(PLAYLIST_MBID)
+
+    get_playlist.assert_not_awaited()
+    assert tracks == []
+
+
+async def test_playlist_details_are_served_from_refresh_snapshot() -> None:
+    """Playlist details do not perform access-time API requests after a refresh."""
+    manager = _playlist_snapshot_manager()
+    get_playlist = cast("AsyncMock", manager.provider.api.get_playlist)
+
+    await manager.refresh()
+    playlist = await manager.get_playlist(PLAYLIST_MBID)
+
+    get_playlist.assert_not_awaited()
+    assert playlist.item_id == PLAYLIST_MBID

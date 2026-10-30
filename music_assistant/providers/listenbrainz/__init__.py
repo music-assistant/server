@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from music_assistant_models.background_task import TaskSchedule
 from music_assistant_models.enums import ProviderFeature
 
 from music_assistant.constants import CONF_USERNAME
@@ -20,6 +21,9 @@ if TYPE_CHECKING:
     from music_assistant.models import ProviderInstanceType
 
 SUPPORTED_FEATURES = {ProviderFeature.BROWSE}
+REFRESH_TASK_ID = "listenbrainz_refresh_playlists"
+REFRESH_INTERVAL_HOURS = 6
+INITIAL_REFRESH_DELAY = 20
 
 
 async def setup(
@@ -36,26 +40,36 @@ class ListenBrainzProvider(PluginProvider):
         """Initialize the ListenBrainz API client."""
         self.api = ListenBrainzAPIClient(self)
         self.username = str(self.config.get_value(CONF_USERNAME) or "")
+        self.playlists_manager = ListenBrainzPlaylistManager(self)
+        self.mass.tasks.register_scheduled_task(
+            task_id=f"{REFRESH_TASK_ID}_{self.instance_id}",
+            name="Refresh ListenBrainz playlists",
+            handler=self.playlists_manager.refresh,
+            schedule=TaskSchedule.hourly(every=REFRESH_INTERVAL_HOURS),
+        )
+        self.mass.call_later(
+            INITIAL_REFRESH_DELAY,
+            self.playlists_manager.refresh,
+            task_id=f"{REFRESH_TASK_ID}_initial_{self.instance_id}",
+        )
 
-    def __init__(
-        self,
-        mass: MusicAssistant,
-        manifest: ProviderManifest,
-        config: ProviderConfig,
-        supported_features: set[ProviderFeature] | None = None,
-    ) -> None:
-        """Initialize the ListenBrainz provider."""
-        super().__init__(mass, manifest, config, supported_features)
-        self.playlists = ListenBrainzPlaylistManager(self)
+    async def unload(self, is_removed: bool = False) -> None:
+        """Unload the provider and remove its playlist refresh tasks."""
+        self.mass.tasks.unregister_scheduled_task(
+            f"{REFRESH_TASK_ID}_{self.instance_id}",
+            clear_persisted_state=is_removed,
+        )
+        self.mass.cancel_timer(f"{REFRESH_TASK_ID}_initial_{self.instance_id}")
+        await super().unload(is_removed)
 
     async def browse(self, path: str) -> list[Playlist]:
         """Return the user's recommendation playlists."""
-        return await self.playlists.browse()
+        return await self.playlists_manager.browse()
 
     async def get_playlist(self, prov_playlist_id: str) -> Playlist:
         """Return a ListenBrainz playlist."""
-        return await self.playlists.get_playlist(prov_playlist_id)
+        return await self.playlists_manager.get_playlist(prov_playlist_id)
 
     async def get_playlist_tracks(self, prov_playlist_id: str, page: int = 0) -> list[Track]:
         """Return resolved tracks from a ListenBrainz playlist."""
-        return await self.playlists.get_playlist_tracks(prov_playlist_id, page)
+        return await self.playlists_manager.get_playlist_tracks(prov_playlist_id, page)

@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 
 from music_assistant_models.enums import ExternalID
-from music_assistant_models.errors import MusicAssistantError
+from music_assistant_models.errors import MediaNotFoundError, MusicAssistantError
 from music_assistant_models.media_items import Artist, Playlist, Track, UniqueList
 
 from music_assistant.helpers.compare import compare_strings
@@ -24,31 +24,36 @@ class ListenBrainzPlaylistManager:
     def __init__(self, provider: ListenBrainzProvider) -> None:
         """Initialize the playlist manager."""
         self.provider = provider
+        self._playlists: tuple[Playlist, ...] = ()
+        self._playlist_tracks: dict[str, tuple[Track, ...]] = {}
         self._resolved_tracks: dict[str, Track] = {}
+
+    async def refresh(self) -> None:
+        """Refresh the active ListenBrainz playlists."""
+        playlists = await self.provider.api.get_recommendation_playlists(self.provider.username)
+        refreshed = tuple(
+            parse_playlist(item, self.provider.instance_id, self.provider.domain)
+            for item in playlists
+        )
+        self._playlists = refreshed
+        self._playlist_tracks = {playlist.item_id: () for playlist in refreshed}
 
     async def browse(self) -> list[Playlist]:
         """Return the user's recommendation playlists."""
-        playlists = await self.provider.api.get_recommendation_playlists(self.provider.username)
-        return [
-            parse_playlist(item, self.provider.instance_id, self.provider.domain)
-            for item in playlists
-        ]
+        return list(self._playlists)
 
     async def get_playlist(self, prov_playlist_id: str) -> Playlist:
         """Return a ListenBrainz playlist."""
-        playlist = await self.provider.api.get_playlist(prov_playlist_id)
-        return parse_playlist(playlist, self.provider.instance_id, self.provider.domain)
+        for playlist in self._playlists:
+            if playlist.item_id == prov_playlist_id:
+                return playlist
+        raise MediaNotFoundError(f"ListenBrainz playlist {prov_playlist_id} is not available")
 
     async def get_playlist_tracks(self, prov_playlist_id: str, page: int = 0) -> list[Track]:
         """Return resolved tracks from a ListenBrainz playlist."""
         if page > 0:
             return []
-        playlist = await self.provider.api.get_playlist(prov_playlist_id)
-        tracks: list[Track] = []
-        artist_cache: dict[str, Artist] = {}
-        for position, item in enumerate(playlist["track"], 1):
-            tracks.append(await self._parse_track(item, position, artist_cache))
-        return tracks
+        return list(self._playlist_tracks.get(prov_playlist_id, ()))
 
     async def _parse_track(
         self,
