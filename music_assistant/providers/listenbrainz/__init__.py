@@ -39,14 +39,16 @@ class ListenBrainzProvider(PluginProvider):
     async def handle_async_init(self) -> None:
         """Initialize the ListenBrainz API client."""
         self.api = ListenBrainzAPIClient(self)
-        self.username = str(self.config.get_value(CONF_USERNAME) or "")
+        self.username = str(self.get_setup_value(CONF_USERNAME) or "")
         self.playlists_manager = ListenBrainzPlaylistManager(self)
+
         self.mass.tasks.register_scheduled_task(
             task_id=f"{REFRESH_TASK_ID}_{self.instance_id}",
             name="Refresh ListenBrainz playlists",
             handler=self.playlists_manager.refresh,
             schedule=TaskSchedule.hourly(every=REFRESH_INTERVAL_HOURS),
         )
+
         self.mass.call_later(
             INITIAL_REFRESH_DELAY,
             self.playlists_manager.refresh,

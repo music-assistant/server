@@ -51,13 +51,15 @@ async def test_provider_initializes_and_schedules_playlist_refreshes() -> None:
     provider = _provider()
     get_value = cast("MagicMock", provider.config.get_value)
     get_value.return_value = "synthetic-user"
+    cast("MagicMock", provider.mass.config.get).return_value = None
+    cast("MagicMock", provider.config.values.get).return_value = None
 
     await provider.handle_async_init()
 
     assert isinstance(provider.api, ListenBrainzAPIClient)
     assert isinstance(provider.playlists_manager, ListenBrainzPlaylistManager)
     assert provider.username == "synthetic-user"
-    get_value.assert_called_once_with(CONF_USERNAME)
+    get_value.assert_called_once_with(CONF_USERNAME, None)
     register_scheduled_task = cast("MagicMock", provider.mass.tasks.register_scheduled_task)
     register_scheduled_task.assert_called_once()
     scheduled_task = register_scheduled_task.call_args.kwargs

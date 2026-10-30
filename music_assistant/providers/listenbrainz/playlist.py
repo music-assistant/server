@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from copy import copy
 from typing import TYPE_CHECKING, Any, cast
 
@@ -28,20 +29,28 @@ class ListenBrainzPlaylistManager:
     def __init__(self, provider: ListenBrainzProvider) -> None:
         """Initialize the playlist manager."""
         self.provider = provider
+        self.api = provider.api
+
         self._playlists: tuple[Playlist, ...] = ()
         self._playlist_tracks: dict[str, tuple[Track, ...]] = {}
         self._resolved_tracks: dict[str, Track] = {}
 
+    @property
+    def logger(self) -> logging.Logger:
+        """Return the provider's active logger."""
+        return self.provider.logger
+
     async def refresh(self) -> None:
         """Refresh the active ListenBrainz playlists."""
-        playlists = await self.provider.api.get_recommendation_playlists(self.provider.username)
+        playlists = await self.api.get_createdfor_playlists(self.provider.username)
         refreshed = tuple(
             parse_playlist(item, self.provider.instance_id, self.provider.domain)
             for item in playlists
         )
         refreshed_tracks: dict[str, tuple[Track, ...]] = {}
+
         for playlist in refreshed:
-            playlist_data = await self.provider.api.get_playlist(playlist.item_id)
+            playlist_data = await self.api.get_playlist(playlist.item_id)
             tracks: list[Track] = []
             for position, item in enumerate(playlist_data["track"], 1):
                 if track := await self._parse_track(item, position):
