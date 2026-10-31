@@ -1032,6 +1032,14 @@ ACTIVE_PROTOCOL_FEATURES: Final[set[PlayerFeature]] = {
     PlayerFeature.PAUSE,
 }
 
+FOREIGN_PROTOCOL_FEATURES: Final[set[PlayerFeature]] = {
+    # Player features that may be copied from the protocol player that plays an app
+    # Music Assistant did not start
+    PlayerFeature.NEXT_PREVIOUS,
+    PlayerFeature.PAUSE,
+    PlayerFeature.SEEK,
+}
+
 PLAYER_CONTROL_PROTOCOL: Final[str] = "follow_protocol"
 DEFAULT_PROVIDERS: Final[set[tuple[str, bool]]] = {
     # list of providers that are setup by default once

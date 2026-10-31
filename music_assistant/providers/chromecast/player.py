@@ -38,6 +38,7 @@ from .constants import (
     APP_LAUNCH_TIMEOUT,
     APP_MEDIA_RECEIVER,
     APP_QUIT_DELAY,
+    APP_TRACK_CHANGE_TIME,
     CAST_PLAYER_CONFIG_ENTRIES,
     CONF_DEFER_IDLE_VOLUME,
     CONF_ENTRY_DEFER_IDLE_VOLUME,
@@ -70,6 +71,8 @@ class ChromecastPlayer(Player):
     """Chromecast Player."""
 
     active_cast_group: str | None = None
+    # when the track change of another party's app is taken as the end of its playback
+    _app_track_change_ends: float | None = None
     # a quit that is already on the wire cannot be recalled, so a receiver that
     # still reports our app is no longer proof that the session is usable
     app_quit_sent: bool = False
@@ -106,6 +109,7 @@ class ChromecastPlayer(Player):
         self.last_multichannel_check = 0.0
         self.flow_meta_checksum: str | None = None
         self._app_quit_task_id: str = f"cast_quit_app_{player_id}"
+        self._app_track_change_task_id: str = f"cast_app_track_change_{player_id}"
         self._media_error_reported = False
         # a volume set while idle, kept back until playback starts (see volume_set)
         self._pending_volume: int | None = None
@@ -677,6 +681,9 @@ class ChromecastPlayer(Player):
 
         self._report_media_error(status, group_player)
 
+        if group_player is None and self._in_app_track_change(status):
+            return
+
         # pychromecast reports BUFFERING as 'playing', so a Cast group that underruns the
         # LIVE flow stream at EOF never goes idle. Treat that case as idle so the queue
         # can resume/restart.
@@ -692,6 +699,42 @@ class ChromecastPlayer(Player):
         self._update_current_media(status, is_idle)
         self._update_multichannel_group_members()
         self.update_state()
+
+    def _in_app_track_change(self, status: MediaStatus) -> bool:
+        """
+        Return whether a status only shows another party's app moving to another track.
+
+        :param status: Media status as reported by the receiver.
+        """
+        if (
+            status.player_is_playing
+            or status.player_is_paused
+            or status.idle_reason == "ERROR"
+            # a stop that quit the app is no track change
+            or self.app_quit_sent
+            or self._attr_playback_state == PlaybackState.IDLE
+            # an app that just took over from Music Assistant's own playback has no track
+            or self._attr_active_source is None
+            or self.cc.app_id in (None, IDLE_APP_ID, SENDSPIN_CAST_APP_ID)
+            or self._is_own_session(status)
+        ):
+            self._app_track_change_ends = None
+            self.mass.cancel_timer(self._app_track_change_task_id)
+            return False
+        now = time.time()
+        if self._app_track_change_ends is None:
+            self._app_track_change_ends = now + APP_TRACK_CHANGE_TIME
+            self.mass.call_later(
+                APP_TRACK_CHANGE_TIME,
+                self._end_app_track_change,
+                task_id=self._app_track_change_task_id,
+            )
+        return now < self._app_track_change_ends
+
+    def _end_app_track_change(self) -> None:
+        """Apply what the receiver reports once an app did not get to its next track."""
+        self._app_track_change_ends = 0.0
+        self._handle_media_status(self.cc.media_controller.status)
 
     def _reset_to_idle(self) -> None:
         """Drop all playback state and publish the player as idle."""

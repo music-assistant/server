@@ -1083,6 +1083,15 @@ class RaumfeldPlayer(Player):
 
     async def _poll_room_playback(self, host: hassfeld.RaumfeldHost) -> None:
         """Read what the room's own renderer plays (Spotify Connect), outside any zone."""
+        if self.linked_foreign_player() is not None:
+            # the host keeps a room flagged for Spotify Connect after its session ended, and
+            # the renderer then reports the app cast to the speaker past the host
+            self._clear_external()
+            self._attr_playback_state = PlaybackState.IDLE
+            await self._update_volume(host)
+            self._update_poll_interval()
+            self.update_state()
+            return
         location = self.raumfeld.room_renderer_location(self.room)
         control_url = self.raumfeld.room_transport_url(self.room)
         if location is None or control_url is None:
