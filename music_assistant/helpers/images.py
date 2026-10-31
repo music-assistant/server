@@ -520,7 +520,7 @@ async def _fetch_remote_image(mass: MusicAssistant, url: str) -> bytes:
     # Bot-protected CDNs (e.g. Akamai) reject our normal self-identifying User-Agent,
     # and even regular browser User-Agents, while still serving well-known fetch tools.
     # We keep identifying as Music Assistant but carry a Wget compatibility token, which
-    # such CDNs allowlist, so artwork is served on the first (and only) request.
+    # such CDNs allowlist, so artwork is served on the first (and only) request (#4243).
     user_agent = f"{APPLICATION_NAME}/{mass.version} (Wget/1.24.5; +https://music-assistant.io)"
     async with mass.http_session_no_ssl.get(
         url, raise_for_status=True, headers={"User-Agent": user_agent}

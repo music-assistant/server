@@ -11,13 +11,14 @@ from collections.abc import AsyncGenerator, Sequence
 from contextlib import suppress
 from copy import copy
 from dataclasses import dataclass
+from itertools import pairwise
 from typing import TYPE_CHECKING, Final, NoReturn
 
 from music_assistant_models.enums import ContentType
 from music_assistant_models.errors import AudioError
 from music_assistant_models.helpers import get_global_cache_value, set_global_cache_values
 
-from music_assistant.constants import VERBOSE_LOG_LEVEL
+from music_assistant.constants import MASS_USER_AGENT, VERBOSE_LOG_LEVEL
 
 from .dsp import ComplexFilter, ComplexFilterInput
 from .json import json_loads
@@ -409,6 +410,21 @@ def tls_verify_args(input_path: str, verify_ssl: bool) -> list[str]:
     return ["-tls_verify", "0"]
 
 
+def user_agent_args(input_path: str, input_args: Sequence[str] = ()) -> list[str]:
+    """
+    Return the input args that identify Music Assistant to an HTTP source.
+
+    Nothing is returned for a source that is not a URL, or when the input args already set
+    a user agent of their own.
+
+    :param input_path: Local file path or URL of the source.
+    :param input_args: The input arguments the caller already passes for the source.
+    """
+    if not input_path.startswith("http") or _sets_user_agent(input_args):
+        return []
+    return ["-user_agent", MASS_USER_AGENT]
+
+
 async def probe_audio_stream(
     input_path: str,
     extra_input_args: Sequence[str] = (),
@@ -434,6 +450,7 @@ async def probe_audio_stream(
         *_INPUT_READ_ARGS,
         *extra_input_args,
         *tls_verify_args(input_path, verify_ssl),
+        *user_agent_args(input_path, extra_input_args),
         "-select_streams",
         "a:0",
         "-show_entries",
@@ -639,6 +656,7 @@ def get_ffmpeg_args(
     # extra inputs: the read args lead the group so the caller can still override them
     input_args = [*_INPUT_READ_ARGS, *extra_input_args]
     input_args += tls_verify_args(input_path, verify_ssl)
+    input_args += user_agent_args(input_path, extra_input_args)
     if "-f" not in extra_input_args:
         # without an input format of their own, the caller leaves the input spec to us
         if input_path.startswith("http"):
@@ -965,6 +983,7 @@ def _build_overlay_mixer(
             "1",
         ]
     input_args += tls_verify_args(overlay_input, verify_ssl)
+    input_args += user_agent_args(overlay_input)
     input_args += ["-stream_loop", "-1"]
     # conform the overlay to the main stream's layout so amix sees two matching inputs;
     # an unnameable count is left to FFmpeg's own negotiation
@@ -1106,3 +1125,15 @@ def _parse_ffprobe_stream_info(output: bytes) -> FFMpegStreamInfo | None:
     elif codec.is_lossless():
         info.bit_depth = _SAMPLE_FMT_BIT_DEPTH.get(stream.get("sample_fmt", ""))
     return info
+
+
+def _sets_user_agent(input_args: Sequence[str]) -> bool:
+    """Return whether the input args set a user agent, by option or inside -headers."""
+    for option, value in pairwise(input_args):
+        if option == "-user_agent":
+            return True
+        if option == "-headers" and any(
+            line.partition(":")[0].strip().lower() == "user-agent" for line in value.splitlines()
+        ):
+            return True
+    return False

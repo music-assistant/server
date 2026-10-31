@@ -1049,6 +1049,7 @@ class YoutubeMusicProvider(RecommendationPayloadMixin, MusicProvider):
     def _initialize_headers(self) -> None:
         """Initialize the headers to include in the requests."""
         headers = {
+            # mimics a browser on the YouTube Music website, which has no public API
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:72.0) Gecko/20100101 Firefox/72.0",
             "Accept": "*/*",
             "Accept-Language": "en-US,en;q=0.5",

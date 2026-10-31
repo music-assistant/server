@@ -181,6 +181,7 @@ async def _nc_start(session: ClientSession, url_nc: str, verify_ssl: bool) -> tu
     """Start the Nextcloud Login Flow v2, returning (login_url, poll_endpoint, poll_token)."""
     async with session.post(
         url_nc.rstrip("/") + "/index.php/login/v2",
+        # Nextcloud shows the user agent as the app name on its login page (#5010)
         headers={"User-Agent": "Music Assistant"},
         ssl=verify_ssl,
     ) as response:
