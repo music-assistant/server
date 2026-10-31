@@ -332,10 +332,10 @@ class SoloistBackend(SpotifyPlaybackBackend):
             async for chunk in run.stream():
                 yield chunk
         finally:
-            await run.stop()
-            async with self._run_lock:
-                if self._run is run:
-                    self._run = None
+            # As its own task the teardown survives a second cancel of the consumer
+            # (two aborts of one item land close together), which would otherwise
+            # leave the run held and every other item refused as busy.
+            self.mass.create_task(self.discard_run(run))
 
     async def discard_run(self, run: _SingleTrackRun) -> None:
         """
@@ -384,6 +384,10 @@ class SoloistBackend(SpotifyPlaybackBackend):
         waited = False
         while True:
             async with self._run_lock:
+                if (run := self._run) is not None and run.stopped:
+                    # a run whose teardown was cut short serves nobody anymore: finish it
+                    await run.stop()
+                    self._run = None
                 if (run := self._run) is None:
                     # cheap thanks to the shared verify cache; swaps in a fresh build
                     # when the installed one is nearing its 90-day expiry
@@ -794,6 +798,11 @@ class _SingleTrackRun:
                 await sink.unload()
             self._sink = None
         self._teardown_done = True
+
+    @property
+    def stopped(self) -> bool:
+        """Return whether this run's teardown has begun."""
+        return self._stopped
 
     # ---- internals ----
 
