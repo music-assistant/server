@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from aiohttp import ClientResponse
 
+from music_assistant.providers.plex.helpers import compute_client_id
 from music_assistant.providers.plex_connect.plextv import (
     PlexPin,
     PlexTvAuthError,
@@ -16,7 +17,6 @@ from music_assistant.providers.plex_connect.plextv import (
     PlexTvIdentity,
     PlexTvPinExpiredError,
     build_version,
-    compute_client_id,
 )
 
 CLIENT_ID = compute_client_id("plexprov1", "player1")
