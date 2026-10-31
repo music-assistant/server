@@ -184,6 +184,37 @@ async def test_logged_out_answer_raises_login_failed() -> None:
         await innertube.call("browse", {"browseId": "FEmusic_home"})
 
 
+async def test_loading_leaves_the_session_cookies_alone() -> None:
+    """
+    The provider never rotates the session, like the desktop app.
+
+    RotateCookies starts a new chain of session timestamps. Anything else holding the
+    same cookie then sends an outdated one, and YouTube signs the session out.
+    """
+    prov = _provider()
+    setup = {"cookie": COOKIE, "keep_session_alive": True}  # as stored by older setups
+    session = MagicMock(closed=False, close=AsyncMock())
+    response = MagicMock(status=200, cookies={})
+    session.post.return_value.__aenter__ = AsyncMock(return_value=response)
+    session.post.return_value.__aexit__ = AsyncMock(return_value=False)
+    with (
+        patch.object(prov, "get_setup_value", side_effect=lambda key, *_: setup.get(key)),
+        patch("music_assistant.providers.ytmusic_native.mini_racer_available", return_value=True),
+        patch(
+            "music_assistant.providers.ytmusic_native.create_clientsession", return_value=session
+        ),
+        patch.object(InnerTube, "bootstrap", AsyncMock()),
+        patch.object(prov, "_fetch_account_name", AsyncMock(return_value="me")),
+        patch.object(prov, "_require_premium", AsyncMock()),
+        patch.object(prov.mass, "create_task") as create_task,
+    ):
+        await prov.handle_async_init()
+
+    session.post.assert_not_called()
+    create_task.assert_not_called()
+    assert prov._innertube.cookie == COOKIE
+
+
 @pytest.mark.parametrize(
     ("player", "premium"),
     [

@@ -6,7 +6,6 @@ from typing import Final
 
 DOMAIN: Final[str] = "https://music.youtube.com"
 API_URL: Final[str] = f"{DOMAIN}/youtubei/v1/"
-ROTATE_COOKIES_URL: Final[str] = "https://accounts.youtube.com/RotateCookies"
 
 # Requests replay the web client, so they identify as the browser that holds the session.
 USER_AGENT: Final[str] = (
@@ -19,13 +18,10 @@ WEB_REMIX_CLIENT_ID: Final[str] = "67"
 CONF_COOKIE: Final[str] = "cookie"
 CONF_HIGH_QUALITY: Final[str] = "high_quality"
 CONF_INCLUDE_VIDEOS: Final[str] = "include_videos_in_search"
-CONF_KEEP_SESSION_ALIVE: Final[str] = "keep_session_alive"
 CONF_REPORT_PLAYS: Final[str] = "report_plays"
 
 # Re-read the home page config this often, so a new client version or player is used.
 BOOTSTRAP_TTL: Final[int] = 30 * 60
-# The interval YouTube's own pages refresh the session cookies at.
-ROTATE_COOKIES_INTERVAL: Final[int] = 600
 # Listened seconds after which a play is reported to the YouTube Music history.
 REPORT_PLAY_AFTER: Final[int] = 30
 DEFAULT_STREAM_URL_EXPIRATION: Final[int] = 3600

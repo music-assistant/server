@@ -28,7 +28,6 @@ from .constants import (
     API_URL,
     BOOTSTRAP_TTL,
     DOMAIN,
-    ROTATE_COOKIES_URL,
     USER_AGENT,
     WEB_REMIX_CLIENT_ID,
     WEB_REMIX_CLIENT_NAME,
@@ -51,13 +50,6 @@ _YTCFG_RE = {
 _PLAYER_ID_RE = re.compile(r"/player/([^/]+)/")
 _STS_RE = re.compile(r"signatureTimestamp:(\d+)")
 _PROBE_TIMEOUT = ClientTimeout(total=8)
-_ROTATE_TIMEOUT = ClientTimeout(total=15)
-
-
-def cookie_dict(cookie: str) -> dict[str, str]:
-    """Split a Cookie header into name/value pairs (later duplicates win)."""
-    pairs = (part.strip().partition("=") for part in cookie.split(";"))
-    return {name: value for name, sep, value in pairs if name and sep}
 
 
 class InnerTube:
@@ -225,34 +217,6 @@ class InnerTube:
         async with self._http.get(url, headers=headers) as resp:
             resp.raise_for_status()
 
-    async def rotate_cookies(self) -> bool:
-        """
-        Refresh the session's short-lived cookies, like an open YouTube tab does.
-
-        Returns True when YouTube handed out new cookie values (now in self.cookie).
-        """
-        async with self._http.post(
-            ROTATE_COOKIES_URL,
-            data='[000,"-0000000000000000000"]',
-            headers={
-                "Content-Type": "application/json",
-                "Origin": "https://accounts.youtube.com",
-                "Cookie": self.cookie,
-                "User-Agent": USER_AGENT,
-            },
-            timeout=_ROTATE_TIMEOUT,
-        ) as resp:
-            if resp.status == 401:
-                raise self._expired()
-            resp.raise_for_status()
-            updates = {name: morsel.value for name, morsel in resp.cookies.items()}
-        current = cookie_dict(self.cookie)
-        merged = current | updates
-        if merged == current:
-            return False
-        self.cookie = "; ".join(f"{name}={value}" for name, value in merged.items())
-        return True
-
     async def get_text(self, url: str, with_cookie: bool = False) -> str:
         """
         GET a page as text.
@@ -311,7 +275,9 @@ class InnerTube:
 
     def _expired(self) -> LoginFailed:
         return LoginFailed(
-            "Your YouTube Music session has expired. Reconfigure this provider with a fresh cookie.",
+            "YouTube signed this session out. Sign in to music.youtube.com in a private "
+            "browser window, copy a new cookie, close the window without signing out, and "
+            "reconfigure this provider with that cookie.",
             translation_key="cookies_expired",
             translation_owner=self._translation_owner,
         )

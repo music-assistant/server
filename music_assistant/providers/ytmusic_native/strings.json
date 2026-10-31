@@ -2,7 +2,7 @@
   "config_entries": {
     "cookie": {
       "label": "Login Cookie",
-      "description": "The full cookie header of a logged-in music.youtube.com session of an account with YouTube Music Premium. Open the browser's developer tools, pick any request to music.youtube.com in the Network tab and copy the value of its Cookie request header."
+      "description": "The full cookie header of a music.youtube.com session of an account with YouTube Music Premium. Give Music Assistant a session nothing else uses: sign in to music.youtube.com in a private browser window, open the developer tools, pick any request to music.youtube.com in the Network tab and copy the value of its Cookie request header. Then close the private window without signing out. YouTube signs out a cookie copied from a browser you keep using."
     },
     "high_quality": {
       "label": "Premium audio quality",
@@ -15,14 +15,10 @@
     "report_plays": {
       "label": "Add played songs to the YouTube Music history",
       "description": "Report songs you listened to for at least 30 seconds, like the YouTube Music app does. This keeps your history and recommendations up to date."
-    },
-    "keep_session_alive": {
-      "label": "Keep the session alive",
-      "description": "Refresh the session cookies every 10 minutes, like an open YouTube tab does, so the login does not expire. Only turn this on for a cookie nothing else uses, for example one from a browser window you closed right after copying it."
     }
   },
   "errors": {
-    "cookies_expired": "Your YouTube Music session has expired. Reconfigure this provider with a fresh cookie.",
+    "cookies_expired": "YouTube signed this session out. Sign in to music.youtube.com in a private browser window, copy a new cookie, close the window without signing out, and reconfigure this provider with that cookie.",
     "invalid_cookie": "The cookie has no SAPISID. Copy the full cookie header of a request to music.youtube.com while you are logged in.",
     "no_javascript_engine": "The embedded JavaScript engine (mini-racer) is not available on this system, so stream URLs can not be solved.",
     "premium_required": "This provider needs a YouTube Music Premium subscription, and the account of this cookie has none.",

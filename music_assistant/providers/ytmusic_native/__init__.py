@@ -78,7 +78,6 @@ from .constants import (
     CONF_COOKIE,
     CONF_HIGH_QUALITY,
     CONF_INCLUDE_VIDEOS,
-    CONF_KEEP_SESSION_ALIVE,
     CONF_REPORT_PLAYS,
     DEFAULT_STREAM_URL_EXPIRATION,
     DOMAIN,
@@ -92,7 +91,6 @@ from .constants import (
     PREMIUM_ITAGS,
     PREMIUM_RECHECK_INTERVAL,
     REPORT_PLAY_AFTER,
-    ROTATE_COOKIES_INTERVAL,
     SEARCH_PARAMS,
     VARIOUS_ARTISTS_YTM_ID,
 )
@@ -179,7 +177,6 @@ class YoutubeMusicNativeProvider(RecommendationPayloadMixin, MusicProvider):
     _session: ClientSession | None = None
     _innertube: InnerTube
     _cipher: PlayerCipher | None = None
-    _keep_alive_task: asyncio.Task[None] | None = None
     _account_name: str | None = None
     _signature_timestamp: int = 0
     _player_lock: asyncio.Lock
@@ -217,10 +214,6 @@ class YoutubeMusicNativeProvider(RecommendationPayloadMixin, MusicProvider):
                 self.logger,
                 self.translation_owner,
             )
-            if self._keep_session_alive_enabled:
-                # a cookie that sat unused (e.g. while MA was offline) needs fresh timestamps
-                with suppress(ClientError, TimeoutError):
-                    await self._rotate_cookies()
             await self._innertube.bootstrap(force=True)
             self._account_name = await self._fetch_account_name()
             await self._require_premium()
@@ -230,13 +223,9 @@ class YoutubeMusicNativeProvider(RecommendationPayloadMixin, MusicProvider):
             await self._session.close()
             raise
         self.logger.info("Logged in to YouTube Music as %s", self._account_name or "unknown user")
-        if self._keep_session_alive_enabled:
-            self._keep_alive_task = self.mass.create_task(self._keep_session_alive())
 
     async def unload(self, is_removed: bool = False) -> None:
         """Handle unload/close of the provider."""
-        if self._keep_alive_task:
-            self._keep_alive_task.cancel()
         if self._cipher:
             self._cipher.close()
         if self._session and not self._session.closed:
@@ -748,10 +737,6 @@ class YoutubeMusicNativeProvider(RecommendationPayloadMixin, MusicProvider):
                 folders.append(folder)
         return folders
 
-    @property
-    def _keep_session_alive_enabled(self) -> bool:
-        return bool(self.get_setup_value(CONF_KEEP_SESSION_ALIVE, True))
-
     async def _player(self, video_id: str) -> dict[str, Any]:
         """Call the web player, loading the current player build into the solver first."""
         assert self._cipher is not None
@@ -977,28 +962,6 @@ class YoutubeMusicNativeProvider(RecommendationPayloadMixin, MusicProvider):
         match = re.search(r'"accountName":\{"simpleText":"([^"]+)"\}[^{}]*?"isSelected":true', text)
         match = match or re.search(r'"accountName":\{"simpleText":"([^"]+)"', text)
         return match.group(1) if match else None
-
-    async def _keep_session_alive(self) -> None:
-        """Keep the YouTube session from expiring while the provider is loaded."""
-        while True:
-            await asyncio.sleep(ROTATE_COOKIES_INTERVAL)
-            try:
-                await self._rotate_cookies()
-            except LoginFailed as err:
-                self.unload_with_error(err)
-                return
-            except (ClientError, TimeoutError) as err:
-                self.logger.debug("Could not refresh the YouTube session: %s", err)
-
-    async def _rotate_cookies(self) -> None:
-        """Refresh the session cookies and store them, so a restart keeps the fresh ones."""
-        stored = self.get_setup_value(CONF_COOKIE)
-        if not await self._innertube.rotate_cookies() or self.unloading:
-            return
-        if stored != self.get_setup_value(CONF_COOKIE):
-            # the user saved a new cookie meanwhile; this (old) instance is on its way out
-            return
-        self._update_setup_data(CONF_COOKIE, self._innertube.cookie)
 
     def _raw_playlist_id(self, prov_playlist_id: str) -> str:
         return prov_playlist_id.split(PLAYLIST_ID_DELIMITER, 1)[0].removeprefix("VL")

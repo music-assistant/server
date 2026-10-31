@@ -10,17 +10,12 @@ from music_assistant_models.enums import ConfigEntryType
 
 from music_assistant.models.setup_flow import SetupFlowError
 
-from .constants import CONF_COOKIE, CONF_KEEP_SESSION_ALIVE
+from .constants import CONF_COOKIE
 
 if TYPE_CHECKING:
     from music_assistant.models.setup_flow import SetupSession
 
-# Keep-alive is asked here rather than in the options: the provider refreshes the
-# cookie on its first load already, before the options could be changed.
-_ENTRIES = (
-    ConfigEntry(key=CONF_COOKIE, type=ConfigEntryType.SECURE_STRING, required=True),
-    ConfigEntry(key=CONF_KEEP_SESSION_ALIVE, type=ConfigEntryType.BOOLEAN, default_value=True),
-)
+_ENTRIES = (ConfigEntry(key=CONF_COOKIE, type=ConfigEntryType.SECURE_STRING, required=True),)
 
 
 async def run_setup(session: SetupSession) -> None:
