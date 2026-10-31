@@ -1,0 +1,12 @@
+{
+  "type": "music",
+  "domain": "livephish",
+  "stage": "alpha",
+  "name": "Live Phish",
+  "description": "Stream official Phish concert recordings from a Live Phish subscription.",
+  "codeowners": ["@brian10048"],
+  "requirements": [],
+  "documentation": "https://music-assistant.io/music-providers/livephish/",
+  "multi_instance": true,
+  "icon": "music"
+}
