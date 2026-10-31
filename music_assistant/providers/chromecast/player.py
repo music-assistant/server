@@ -187,19 +187,7 @@ class ChromecastPlayer(Player):
             await asyncio.to_thread(self.cc.media_controller.stop)
             return
         if self.cc.app_id not in (MASS_APP_ID, APP_MEDIA_RECEIVER):
-            # Another app is casting to the device. Quitting it ends the cast session of the
-            # phone that casts, so a playing app that can pause is paused and stays connected;
-            # a stop of the paused app does end it.
-            app_source = next(
-                (x for x in self._attr_source_list if x.id == self._attr_active_source), None
-            )
-            if (
-                app_source is not None
-                and app_source.can_play_pause
-                and self._attr_playback_state == PlaybackState.PLAYING
-            ):
-                await self.pause()
-                return
+            # another app is casting to the device, release it right away
             await self._quit_app()
             return
         if self.cc.media_controller.status.media_session_id is not None:
@@ -722,6 +710,8 @@ class ChromecastPlayer(Player):
             status.player_is_playing
             or status.player_is_paused
             or status.idle_reason == "ERROR"
+            # a stop that quit the app is no track change
+            or self.app_quit_sent
             or self._attr_playback_state == PlaybackState.IDLE
             # an app that just took over from Music Assistant's own playback has no track
             or self._attr_active_source is None

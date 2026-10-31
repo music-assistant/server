@@ -221,21 +221,3 @@ async def test_seek_and_skip_go_to_the_protocol_player(
     app_next.assert_awaited_once()
     app_previous.assert_awaited_once()
     own_seek.assert_not_awaited()
-
-
-async def test_another_source_does_not_wait_for_the_app_to_go_idle(
-    provider: MockProvider, controller: PlayerController, mock_mass: MagicMock
-) -> None:
-    """An app that stops by pausing never gets the player to idle, so no time is lost on it."""
-    _linked(provider, controller)
-    mock_mass.player_queues.get = MagicMock(return_value=MagicMock())
-    with (
-        patch.object(controller, "_handle_cmd_stop", AsyncMock()) as stop,
-        patch.object(controller, "wait_for_player_update") as wait,
-        patch.object(controller, "_resolve_audio_source_uri", AsyncMock(return_value=None)),
-        patch.object(controller, "_release_audio_source", AsyncMock()),
-    ):
-        await controller._handle_select_source("player_1", "player_1")
-
-    stop.assert_awaited_once_with("player_1")
-    wait.assert_not_called()

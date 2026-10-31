@@ -192,3 +192,13 @@ def test_an_error_of_an_app_is_no_track_change() -> None:
     ChromecastPlayer._handle_media_status(fake, status)
 
     assert fake._attr_playback_state == PlaybackState.IDLE
+
+
+def test_an_app_that_was_quit_is_no_track_change() -> None:
+    """A stop quits the app, and the player goes idle without waiting for a next track."""
+    fake = _fake_playing_app()
+    fake.app_quit_sent = True
+
+    ChromecastPlayer._handle_media_status(fake, _media_status(playing=False))
+
+    assert fake._attr_playback_state == PlaybackState.IDLE
