@@ -2963,10 +2963,10 @@ class SendspinSourcePlayer(SendspinBasePlayer):
     A capture-only Sendspin player for clients that just feed audio in.
 
     Renders nothing and is never a playback or grouping target. It is listed as an
-    audio input so the device stays discoverable and its pairing, enabling and
-    line-in autostart settings are easy to reach. The sendspin_source plugin
-    exposes the audio itself.
+    audio input so its pairing, enabling and line-in autostart settings are easy to
+    reach. The sendspin_source plugin exposes the audio itself.
     """
 
     _attr_type = PlayerType.SOURCE
+    _attr_hidden_by_default = True
     _attr_expose_to_ha_by_default = False
