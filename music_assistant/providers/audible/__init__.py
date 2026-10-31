@@ -11,11 +11,14 @@ from typing import TYPE_CHECKING, cast
 from urllib.parse import quote, unquote
 
 import audible
+from music_assistant_models.background_task import TaskSchedule
 from music_assistant_models.enums import MediaType, ProviderFeature
 from music_assistant_models.errors import LoginFailed, MediaNotFoundError
 from music_assistant_models.media_items import BrowseFolder, ItemMapping
 
 from music_assistant.constants import CONF_ENTRY_UNOFFICIAL_PROVIDER
+from music_assistant.helpers.datetime import utc
+from music_assistant.helpers.provider_access import source_owner
 from music_assistant.models.music_provider import MusicProvider
 from music_assistant.providers.audible.audible_helper import (
     AudibleHelper,
@@ -24,6 +27,7 @@ from music_assistant.providers.audible.audible_helper import (
     refresh_access_token_compat,
     remove_file,
 )
+from music_assistant.providers.audible.remote_history import eligible_external_plays
 
 if TYPE_CHECKING:
     from music_assistant_models.config_entries import (
@@ -84,6 +88,13 @@ class Audibleprovider(MusicProvider):
         self._client: audible.AsyncClient | None = None
         audible.log_helper.set_level(getLevelName(self.logger.level))
         await self._login()
+        self.mass.tasks.register_scheduled_task(
+            task_id=f"{self.instance_id}_audible_history",
+            name="Sync Audible last played timestamps",
+            handler=self._sync_external_history,
+            schedule=TaskSchedule.hourly(),
+            initial_delay=180,
+        )
 
     async def _login(self) -> None:
         """Authenticate with Audible using the saved authentication file."""
@@ -425,6 +436,10 @@ class Audibleprovider(MusicProvider):
         Called when provider is deregistered (e.g. MA exiting or config reloading).
         is_removed will be set to True when the provider is removed from the configuration.
         """
+        await self.mass.tasks.unregister_scheduled_task_and_wait(
+            f"{self.instance_id}_audible_history",
+            clear_persisted_state=is_removed,
+        )
         if is_removed:
             try:
                 await self.helper.deregister()
@@ -432,3 +447,55 @@ class Audibleprovider(MusicProvider):
                 evict_cached_authenticator(self.auth_file)
                 with suppress(OSError):
                     await remove_file(self.auth_file)
+
+    async def _sync_external_history(self) -> None:
+        """
+        Import Audible app listening dates without overwriting newer MA plays.
+
+        Uses the local library's provider mappings rather than fetching every
+        Audible book again. Stores per-ASIN watermarks only after successful writes.
+        """
+        owner_id = source_owner(self.mass, self.instance_id)
+        if not owner_id or await self.mass.webserver.auth.get_user(owner_id) is None:
+            return
+        cache_key = f"audible_external_history_v2:{owner_id}"
+        watermarks = (
+            await self.mass.cache.get(key=cache_key, provider=self.instance_id, default={}) or {}
+        )
+        books_by_asin = {}
+        offset = 0
+        while True:
+            books = await self.mass.music.audiobooks.library_items(
+                provider=self.instance_id, limit=500, offset=offset, summary=True
+            )
+            for book in books:
+                for mapping in book.provider_mappings:
+                    if mapping.provider_instance == self.instance_id:
+                        books_by_asin[mapping.item_id] = book
+            if len(books) < 500:
+                break
+            offset += len(books)
+        if not books_by_asin:
+            return
+
+        remote = await self.helper.get_library_last_positions(list(books_by_asin))
+        current_watermarks = {
+            asin: watermarks.get(f"{book.item_id}:{asin}") for asin, book in books_by_asin.items()
+        }
+        pending = eligible_external_plays(remote, current_watermarks, now=utc())
+        for play in pending:
+            selected_book = books_by_asin.get(play.asin)
+            if selected_book is None:
+                continue
+            try:
+                await self.mass.music.import_audiobook_progress(
+                    selected_book,
+                    provider_instance_id=self.instance_id,
+                    played_at=play.updated_at,
+                    seconds_played=play.position_seconds,
+                )
+            except (KeyError, TypeError, ValueError) as exc:
+                self.logger.warning("Unable to sync Audible progress for %s: %s", play.asin, exc)
+                continue
+            watermarks[f"{selected_book.item_id}:{play.asin}"] = play.updated_at.isoformat()
+        await self.mass.cache.set(key=cache_key, provider=self.instance_id, data=watermarks)

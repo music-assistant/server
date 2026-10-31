@@ -47,7 +47,13 @@ from music_assistant_models.streamdetails import StreamDetails
 from music_assistant.constants import DEFAULT_AUDIOBOOK_PODCAST_GENRE
 from music_assistant.helpers.datetime import from_iso_string, utc
 from music_assistant.helpers.podcast_parsers import rank_episodes_by_date
+from music_assistant.helpers.throttle_retry import Throttler
 from music_assistant.mass import MusicAssistant
+from music_assistant.providers.audible.remote_history import (
+    AudibleRemotePlay,
+    asin_chunks,
+    parse_lastpositions,
+)
 
 CACHE_DOMAIN = "audible"
 CACHE_CATEGORY_API = 0
@@ -209,6 +215,23 @@ class AudibleHelper:
         self.provider = provider
         self.logger = logger or logging.getLogger("audible_helper")
         self._acr_cache: dict[tuple[str, MediaType], str] = {}
+        self._history_throttler = Throttler(rate_limit=1, period=2)
+
+    async def get_library_last_positions(self, asins: list[str]) -> list[AudibleRemotePlay]:
+        """Fetch current Whispersync history for library ASINs, in bounded batches."""
+        result: list[AudibleRemotePlay] = []
+        for group in asin_chunks(asins):
+            try:
+                async with self._history_throttler:
+                    payload = await self._call_api(
+                        "annotations/lastpositions", asins=",".join(group)
+                    )
+            except ProviderUnavailableError as exc:
+                # A failed batch is retried on the next poll without losing other batches.
+                self.logger.warning("Audible history batch failed (%d ASINs): %s", len(group), exc)
+                continue
+            result.extend(parse_lastpositions(payload))
+        return result
 
     async def _fetch_library_items(
         self,
