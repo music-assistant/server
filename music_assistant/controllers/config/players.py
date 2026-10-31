@@ -45,6 +45,7 @@ from music_assistant.constants import (
     CONF_ENTRY_HTTP_PROFILE,
     CONF_ENTRY_MAX_VOLUME,
     CONF_ENTRY_MIN_VOLUME,
+    CONF_ENTRY_NATIVE_VOLUME,
     CONF_ENTRY_OUTPUT_CHANNELS,
     CONF_ENTRY_OUTPUT_CODEC,
     CONF_ENTRY_PLAY_MEDIA_OVERRIDES_GROUP,
@@ -930,6 +931,11 @@ class PlayerConfigMixin:
             # group volume and mute are always fanned out to the members and use each
             # member's own control, so a group only gets the (opt-in) power control
             return [power_entry]
+        volume_control_default = _first_enabled_control_value(volume_options)
+        # not hidden by the stored volume control: the frontend does not re-evaluate
+        # `hidden` while the user switches it to an external control in the same edit
+        native_volume_entry = ConfigEntry.from_dict(CONF_ENTRY_NATIVE_VOLUME.to_dict())
+        native_volume_entry.hidden = not has_native_volume_control
         # return final config entries for all options
         return [
             power_entry,
@@ -937,7 +943,7 @@ class PlayerConfigMixin:
             ConfigEntry(
                 key=CONF_VOLUME_CONTROL,
                 type=ConfigEntryType.STRING,
-                default_value=_first_enabled_control_value(volume_options),
+                default_value=volume_control_default,
                 required=True,
                 options=[
                     *volume_options,
@@ -960,6 +966,7 @@ class PlayerConfigMixin:
             # Volume limit entries
             CONF_ENTRY_MIN_VOLUME,
             CONF_ENTRY_MAX_VOLUME,
+            native_volume_entry,
             # auto-play on power on — only meaningful for individual players.
             # For group players, power on/off is purely a "capture members"
             # toggle (Fake control) and auto-starting playback there causes

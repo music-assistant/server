@@ -181,6 +181,7 @@ CONF_VOLUME_STEP: Final[str] = "volume_step"
 CONF_MUTE_CONTROL: Final[str] = "mute_control"
 CONF_MIN_VOLUME: Final[str] = "min_volume"
 CONF_MAX_VOLUME: Final[str] = "max_volume"
+CONF_NATIVE_VOLUME: Final[str] = "native_volume"
 CONF_PREFERRED_OUTPUT_PROTOCOL: Final[str] = "preferred_output_protocol"
 CONF_LINKED_PROTOCOL_IDS: Final[str] = "linked_protocol_ids"  # cached for fast restart
 CONF_PROTOCOL_PARENT_ID: Final[str] = (
@@ -469,6 +470,17 @@ CONF_ENTRY_MAX_VOLUME = ConfigEntry(
     advanced=True,
     depends_on=CONF_VOLUME_CONTROL,
     depends_on_value_not=PLAYER_CONTROL_NONE,
+)
+
+# Fixed native player volume, applied only while UI volume is mapped to an external control
+CONF_ENTRY_NATIVE_VOLUME = ConfigEntry(
+    key=CONF_NATIVE_VOLUME,
+    type=ConfigEntryType.INTEGER,
+    range=(0, 100),
+    default_value=None,
+    required=False,
+    category="player_controls",
+    depends_on=CONF_VOLUME_CONTROL,
 )
 
 CONF_ENTRY_OUTPUT_CHANNELS = ConfigEntry(

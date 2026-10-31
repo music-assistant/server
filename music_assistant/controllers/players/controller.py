@@ -92,6 +92,7 @@ from music_assistant.constants import (
     CONF_MAX_VOLUME,
     CONF_MIN_VOLUME,
     CONF_MUTE_CONTROL,
+    CONF_NATIVE_VOLUME,
     CONF_PLAY_MEDIA_OVERRIDES_GROUP,
     CONF_PLAYER_DSP,
     CONF_PLAYER_QUEUES,
@@ -99,8 +100,10 @@ from music_assistant.constants import (
     CONF_POWER_CONTROL,
     CONF_PROTOCOL_PARENT_ID,
     CONF_REPORTED_MAC,
+    CONF_VALUE_AUTO,
     CONF_VOLUME_CONTROL,
     CONF_VOLUME_STEP,
+    PLAYER_CONTROL_PROTOCOL,
     VERBOSE_LOG_LEVEL,
 )
 from music_assistant.controllers.webserver.helpers.auth_middleware import (
@@ -177,6 +180,10 @@ AUDIO_SOURCE_CLAIM_TIMEOUT = 30
 # stop the music. Long enough to sit out a reloading integration or a device missing a
 # poll, short enough that a real power off is not left streaming.
 EXTERNAL_POWER_OFF_STOP_DELAY = 15
+
+# How long after a player comes back online its native volume pin is applied. Lets the
+# connection settle and folds a quick drop-and-return into a single write.
+NATIVE_VOLUME_PIN_DELAY = 2.0
 
 # Player types that must be detached from their (sync)group when they power off.
 # A stereo pair joins a group and leads a sync session exactly like a single speaker does.
@@ -1718,6 +1725,10 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
                 player_id,
                 player.state.name,
             )
+            # runs after provider setup defaults (e.g. squeezelite DEFAULT_PLAYER_VOLUME)
+            await self._apply_native_volume_pin_logged(player)
+            if self._registration_aborted(player):
+                return
             # signal event that a player was added
             if player.state.type != PlayerType.PROTOCOL:
                 self.mass.signal_event(
@@ -1774,6 +1785,8 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
                 self._save_underlying_player_id(player)
                 if role_changed:
                     await self._finish_player_type_transition(player)
+                # provider setup may have restored a low default before calling us
+                await self._apply_native_volume_pin_logged(player)
                 # Also schedule update when replacing existing player
                 self._schedule_update_all_players()
                 return
@@ -2144,6 +2157,8 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         if changed_values.keys() & {ATTR_AVAILABLE, ATTR_ENABLED, ATTR_POWERED}:
             self._handle_membership_cleanup_on_state_change(player, changed_values)
             self._handle_external_power_off(player, changed_values)
+
+        self._handle_native_volume_pin_on_state_change(player, changed_values)
 
         # enforce volume limits when volume changes externally
         if "volume_level" in changed_values:
@@ -2543,6 +2558,8 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
             else None
         )
 
+        # before set_config, so a rejected pin leaves the live config untouched on rollback
+        await self._maybe_apply_native_volume_pin_on_config_change(player, changed_keys)
         # ensure player state gets updated with any updated config
         player.set_config(config)
         await player.on_config_updated()
@@ -4354,6 +4371,117 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         # individual volume command for that member can not overtake one another
         async with self.get_player_lock(player_id, PlayerLockPurpose.VOLUME):
             await self._handle_cmd_volume_set(player_id, volume_level, record_target=False)
+
+    async def _maybe_apply_native_volume_pin_on_config_change(
+        self, player: Player, changed_keys: set[str]
+    ) -> None:
+        """
+        Re-apply the native volume pin when it or the volume control changed.
+
+        :param player: The player whose config changed.
+        :param changed_keys: Config keys that changed (values/<key> form).
+        """
+        if {f"values/{CONF_NATIVE_VOLUME}", f"values/{CONF_VOLUME_CONTROL}"} & changed_keys:
+            await self._apply_native_volume_pin(player)
+
+    def _handle_native_volume_pin_on_state_change(
+        self, player: Player, changed_values: dict[str, tuple[Any, Any]]
+    ) -> None:
+        """
+        Schedule the native volume pin when a player came back online.
+
+        :param player: The player whose state changed.
+        :param changed_values: The changed state values (old, new) by attribute.
+        """
+        # a player that comes back online (reconnect, or one that registered while
+        # unavailable) does not pass through register again, so pin it from here
+        if (
+            ATTR_AVAILABLE not in changed_values
+            or changed_values[ATTR_AVAILABLE][1] is not True
+            or not player.initialized.is_set()
+        ):
+            return
+        self.mass.call_later(
+            NATIVE_VOLUME_PIN_DELAY,
+            self._apply_scheduled_native_volume_pin,
+            player.player_id,
+            task_id=f"native_volume_pin_{player.player_id}",
+        )
+
+    async def _apply_scheduled_native_volume_pin(self, player_id: str) -> None:
+        """
+        Apply the native volume pin scheduled for a player that came back online.
+
+        :param player_id: The player to pin native volume on.
+        """
+        # look the player up again, the provider may have replaced the instance meanwhile
+        if not self.mass.closing and (player := self.get_player(player_id)):
+            await self._apply_native_volume_pin_logged(player)
+
+    async def _apply_native_volume_pin_logged(self, player: Player) -> None:
+        """
+        Apply the native volume pin, logging an expected failure instead of raising it.
+
+        :param player: The player to pin native volume on.
+        """
+        # this write supersedes one still pending from an online transition
+        self.mass.cancel_timer(f"native_volume_pin_{player.player_id}")
+        try:
+            await self._apply_native_volume_pin(player)
+        except MusicAssistantError:
+            self.logger.exception(
+                "Failed to apply native volume pin on player %s",
+                player.display_name,
+            )
+
+    async def _apply_native_volume_pin(self, player: Player) -> None:
+        """
+        Apply the configured native volume pin when UI volume is mapped externally.
+
+        :param player: The player to pin native volume on.
+        :raises InvalidDataError: If the stored pin is not a level between 0 and 100.
+        :raises PlayerCommandFailed: If the player rejects the volume command.
+        """
+        if not player.state.available:
+            return
+        if not player.supports_feature(PlayerFeature.VOLUME_SET):
+            return
+        # serialize with other volume commands and read the config under the lock,
+        # so a save that changed it while we waited does not send a stale level
+        async with self.get_player_lock(player.player_id, PlayerLockPurpose.VOLUME):
+            stored_volume_control = self.mass.config.get_raw_player_config_value(
+                player.player_id, CONF_VOLUME_CONTROL
+            )
+            if stored_volume_control in (
+                None,
+                PLAYER_CONTROL_NATIVE,
+                PLAYER_CONTROL_PROTOCOL,
+                CONF_VALUE_AUTO,
+            ):
+                return
+            # opt-in: unset leaves the player's own volume alone
+            raw_level = self.mass.config.get_raw_player_config_value(
+                player.player_id,
+                CONF_NATIVE_VOLUME,
+            )
+            if raw_level is None:
+                return
+            try:
+                level = int(cast("int", raw_level))
+            except (TypeError, ValueError) as err:
+                msg = f"Invalid native volume pin for player {player.display_name}: {raw_level!r}"
+                raise InvalidDataError(msg) from err
+            if not 0 <= level <= 100:
+                msg = f"Native volume pin out of range for player {player.display_name}: {level}"
+                raise InvalidDataError(msg)
+            # player.volume_set directly, so the level never takes the mapped volume path;
+            # device errors are normalized like handle_player_command does
+            try:
+                await player.volume_set(level)
+            except MusicAssistantError:
+                raise
+            except Exception as err:
+                raise PlayerCommandFailed(str(err)) from err
 
     async def _handle_cmd_volume_set(
         self, player_id: str, volume_level: int, *, record_target: bool = True
