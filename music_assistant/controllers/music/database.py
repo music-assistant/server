@@ -27,6 +27,7 @@ from music_assistant.constants import (
     DB_TABLE_ARTISTS,
     DB_TABLE_AUDIOBOOK_ARTISTS,
     DB_TABLE_AUDIOBOOKS,
+    DB_TABLE_BOOKMARKS,
     DB_TABLE_EXTERNAL_ID_LOOKUP,
     DB_TABLE_FAVORITES,
     DB_TABLE_GENRE_MEDIA_ITEM_EXCLUSION,
@@ -164,6 +165,17 @@ class MusicDatabaseSetupMixin:
                 f"AND item_id not in (select item_id from {ctrl.db_table})"
             )
             await self.mass.music.database.delete_where_query(DB_TABLE_FAVORITES, query)
+        # Bookmarks of an audiobook copy, or of an episode of a podcast copy, that is no longer
+        # in the library; episodes have no mappings of their own
+        await self.database.delete_where_query(
+            DB_TABLE_BOOKMARKS,
+            f"NOT EXISTS (SELECT 1 FROM {DB_TABLE_PROVIDER_MAPPINGS} AS pm "
+            f"WHERE pm.provider_instance = {DB_TABLE_BOOKMARKS}.provider_instance "
+            f"AND ((pm.media_type = {DB_TABLE_BOOKMARKS}.media_type "
+            f"AND pm.provider_item_id = {DB_TABLE_BOOKMARKS}.provider_item_id) "
+            f"OR (pm.media_type = '{self.podcasts.media_type}' "
+            f"AND pm.provider_item_id = {DB_TABLE_BOOKMARKS}.podcast_item_id)))",
+        )
         update_current_task_progress_text("Cleaning orphaned relations")
         # A relation row can outlive the item on either of its ends: the item deletions above
         # leave one behind, and so do the removal paths that only delete their own side of the
@@ -327,6 +339,17 @@ class MusicDatabaseSetupMixin:
                 [favorite] BOOLEAN,
                 [timestamp] INTEGER NOT NULL DEFAULT 0,
                 UNIQUE(user_id, media_type, item_id));"""
+        )
+        await self.database.execute(
+            f"""CREATE TABLE IF NOT EXISTS {DB_TABLE_BOOKMARKS}(
+                [user_id] TEXT NOT NULL,
+                [media_type] TEXT NOT NULL,
+                [provider_instance] TEXT NOT NULL,
+                [provider_item_id] TEXT NOT NULL,
+                [podcast_item_id] TEXT,
+                [start] REAL NOT NULL,
+                [name] TEXT NOT NULL,
+                UNIQUE(user_id, media_type, provider_instance, provider_item_id, start));"""
         )
         await self.database.execute(
             f"""CREATE TABLE IF NOT EXISTS {DB_TABLE_ALBUMS}(
