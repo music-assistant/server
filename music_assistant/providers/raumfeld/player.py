@@ -7,7 +7,7 @@ import dataclasses
 import functools
 import re
 import time
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, cast
 
 from async_upnp_client.exceptions import UpnpActionError, UpnpError
 from hassfeld import upnp as hassfeld_upnp
@@ -78,11 +78,6 @@ IDLE_POLL_INTERVAL = 15
 # How long (seconds) after a play/resume command to keep polling fast, so MA catches
 # the device actually starting playback (Raumfeld renderers buffer before they start).
 STARTUP_POLL_WINDOW = 20
-# The least of the first track (seconds) a flow stream must start with. A zone given a flow
-# that starts closer to the end of a track drops the stream at the track change and
-# requests it again, over and over, and then stops (seen on a One S with 3.5 s of a Spotify
-# track left; with 6 s it plays on into the next track).
-FLOW_MIN_FIRST_TRACK = 8
 # How long (seconds) after a play command to wait before telling the zone which track of
 # the flow stream plays, so it has taken the stream it was given first.
 FLOW_ANNOUNCE_SETTLE_TIME = 5
@@ -171,11 +166,6 @@ def _changes_playback[**P, R](
     async def wrapper(player: RaumfeldPlayer, /, *args: P.args, **kwargs: P.kwargs) -> R:
         player._playback_changes += 1
         player._playback_generation += 1
-        # a restart of the flow at an earlier position is replaced by this command, unless
-        # this command is that restart
-        restart = player._flow_restart
-        if restart is not None and restart is not asyncio.current_task() and not restart.done():
-            restart.cancel()
         # an announcement still on its way describes the playback this command changes
         task = player.mass.get_task(player._announce_task_id) if player._flow_url else None
         if task is not None and not task.done():
@@ -231,8 +221,6 @@ class RaumfeldPlayer(Player):
     # bumped when a command that changes what plays starts and when it ends, and the
     # number of such commands running, so a poll can tell its readings no longer apply
     _playback_generation = 0
-    # a flow started again at an earlier position, see _start_flow_earlier
-    _flow_restart: asyncio.Task[None] | None = None
     # In flow mode: the queue's stream the zone plays, and the queue item last announced to
     # the zone, so the Raumfeld app follows each track of the one continuous stream.
     _flow_url: str | None = None
@@ -366,8 +354,6 @@ class RaumfeldPlayer(Player):
     async def on_unload(self) -> None:
         """Handle logic when the player is unloaded from the Player controller."""
         await super().on_unload()
-        if self._flow_restart is not None:
-            self._flow_restart.cancel()
         self.mass.cancel_timer(self._announce_timer_id)
         self.mass.cancel_task(self._announce_task_id)
         # the timer is held by mass, not by this player, so it would otherwise fire after
@@ -671,12 +657,12 @@ class RaumfeldPlayer(Player):
             else self.get_supported_sample_rates()
         )
         url = await self.mass.streams.resolve_stream_url(self.player_id, media)
-        if self._start_flow_earlier(media, url):
-            # the flow it replaces is not announced on; the restart starts the new one
-            self._drop_flow()
-            return
-        didl_metadata = create_didl_metadata(media, url)
         self._flow_url = url if self._is_queue_flow(url) else None
+        didl_metadata = (
+            self._flow_didl_metadata(media, url)
+            if self._flow_url
+            else create_didl_metadata(media, url)
+        )
         self._announced_item_id = None
         self._announced_index = None
         self._passed_item_id = None
@@ -1746,6 +1732,19 @@ class RaumfeldPlayer(Player):
         parts = url.removeprefix(f"{base_url}/").split("/") if url.startswith(base_url) else []
         return len(parts) > 2 and parts[0] == "flow" and parts[2] == self.player_id
 
+    @staticmethod
+    def _flow_didl_metadata(media: PlayerMedia, url: str) -> str:
+        """
+        Describe a track of the queue's flow stream to the zone.
+
+        :param media: The track the flow stream plays or starts with.
+        :param url: The flow stream.
+        """
+        # After a seek the media's stream duration is what is left of the track, but a flow
+        # carries on past it. A zone told it gets just those seconds drops the stream at their
+        # end and requests it again or stops (seen on a One S with 1 and 3.5 s left).
+        return create_didl_metadata(dataclasses.replace(media, stream_duration=None), url)
+
     def _maybe_announce_flow_item(self) -> None:
         """Announce the flow stream's current track to the zone, if it has not been yet."""
         if (
@@ -1919,7 +1918,7 @@ class RaumfeldPlayer(Player):
                 zone,
                 "BendAVTransportURI",
                 CurrentURI=url,
-                CurrentURIMetaData=create_didl_metadata(media, url),
+                CurrentURIMetaData=self._flow_didl_metadata(media, url),
             )
         except PlayerCommandFailed as err:
             self.logger.debug("Could not announce %s to %s: %s", media.title, self.room, err)
@@ -2206,87 +2205,6 @@ class RaumfeldPlayer(Player):
             now = time.time()
             self._attr_elapsed_time += now - self._attr_elapsed_time_last_updated
             self._attr_elapsed_time_last_updated = now
-
-    def _start_flow_earlier(self, media: PlayerMedia, url: str) -> bool:
-        """
-        Start a flow that would begin in the last seconds of a track a little earlier.
-
-        :param media: The media MA asked to play.
-        :param url: The stream url MA resolved for it.
-        :return: Whether the flow is started again from an earlier position instead.
-        """
-        # the url tells a flow stream apart, also one that crossfade forces with the
-        # room's own flow setting off: <base url>/flow/<session>/<queue id>/...
-        base_url = self.mass.streams.base_url
-        parts = url.removeprefix(f"{base_url}/").split("/") if url.startswith(base_url) else []
-        if not media.source_id or len(parts) < 3 or parts[0] != "flow":
-            return False
-        if (queue := self.mass.player_queues.get(media.source_id)) is None:
-            return False
-        item = queue.current_item
-        details = item.streamdetails if item else None
-        if item is None or details is None or not details.seek_position:
-            return False
-        duration = details.duration or item.duration
-        # the queue's position is in media time; at another playback speed (an audiobook)
-        # the seconds that reach the zone differ
-        speed = cast("float", item.extra_attributes.get("playback_speed", 1.0))
-        least = FLOW_MIN_FIRST_TRACK * (speed or 1.0)
-        if not duration or duration <= least:
-            return False
-        if duration - details.seek_position >= least:
-            return False
-        if (position := int(duration - least)) < 1:
-            # a seek position of 0 makes the queue restore the item's saved resume position
-            return False
-        self.logger.debug(
-            "%s would start %s %ss before its end, starting at %ss instead",
-            self.room,
-            item.name,
-            int(duration - details.seek_position),
-            position,
-        )
-        # Not awaited: MA holds the player's playback lock until it sees this play command
-        # take effect. Reporting it as playing lets MA release the lock for the restart at once.
-        # A stop or another play command after this one cancels the restart (see
-        # _changes_playback), also while it waits for the playback lock.
-        self._flow_restart = self.mass.create_task(
-            self._restart_flow(
-                media.source_id, item.queue_item_id, position, asyncio.current_task()
-            )
-        )
-        self._attr_playback_state = PlaybackState.PLAYING
-        self.update_state()
-        return True
-
-    async def _restart_flow(
-        self,
-        queue_id: str,
-        queue_item_id: str,
-        position: int,
-        started_by: asyncio.Task[Any] | None,
-    ) -> None:
-        """
-        Start the queue's flow again at an earlier position, unless a skip came first.
-
-        :param queue_id: The queue that plays the flow.
-        :param queue_item_id: The queue item to start.
-        :param position: The position (seconds) to start the item at.
-        :param started_by: The task of the play command that asked for the flow.
-        """
-        async with self.mass.players.get_group_and_player_lock(queue_id, strict=True):
-            # Next and previous only schedule their play_index under the lock, and play_index
-            # cancels a scheduled one; a skip that took the lock before this restart wins.
-            task_id = f"queue_play_index_{queue_id}"
-            # a skip's own play_index, the one that led here, stays listed until it ended
-            task = self.mass.get_task(task_id)
-            pending = task is not None and task is not started_by and not task.done()
-            if task_id in self.mass._tracked_timers or pending:
-                self.logger.debug("%s skipped meanwhile, not starting earlier", self.room)
-                return
-            await self.mass.player_queues.play_index(
-                queue_id, queue_item_id, seek_position=position
-            )
 
     def _mark_play_started(self) -> None:
         """Record a play/resume command and switch to fast polling."""
