@@ -385,7 +385,7 @@ class SoloistBackend(SpotifyPlaybackBackend):
         while True:
             async with self._run_lock:
                 if (run := self._run) is not None and run.stopped:
-                    # a run whose teardown was cut short holds nothing anymore
+                    # a run whose teardown was cut short serves nobody anymore: finish it
                     await run.stop()
                     self._run = None
                 if (run := self._run) is None:

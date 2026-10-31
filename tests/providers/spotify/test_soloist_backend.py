@@ -967,7 +967,12 @@ async def test_a_held_run_whose_teardown_was_cut_short_is_reclaimed(tmp_path: Pa
 async def test_a_stream_cancelled_again_during_its_teardown_releases_the_run(
     tmp_path: Path,
 ) -> None:
-    """A second cancel while the stream tears its run down must not leave the run held."""
+    """
+    A second cancel while the stream tears its run down must not leave the run held.
+
+    The teardown runs as its own task, so the second cancel finds nothing to interrupt
+    and the run is released once that task finishes.
+    """
     backend = _make_backend(tmp_path)
     backend._server = MagicMock()
     backend._binary = tmp_path / "soloist-bin"
@@ -1008,6 +1013,8 @@ async def test_a_stream_cancelled_again_during_its_teardown_releases_the_run(
         consumer.cancel()
         with pytest.raises(asyncio.CancelledError):
             await consumer
+        # released only once its teardown is through, never by the cancel itself
+        assert backend._run is run
         finish_teardown.set()
         await asyncio.gather(*tasks)
     assert backend._run is None
