@@ -26,6 +26,7 @@ from music_assistant.controllers.cache.constants import (
 from music_assistant.helpers.api import parse_value
 from music_assistant.helpers.json import SerializableType
 from music_assistant.helpers.throttle_retry import RequestPriority, set_request_priority
+from music_assistant.helpers.util import scoped_task_id
 
 if TYPE_CHECKING:
     from music_assistant import MusicAssistant
@@ -64,6 +65,7 @@ def use_cache(
 
     Concurrent callers that miss the cache on the same key share one execution and each
     get their own copy of the result, or the one object when it cannot be copied.
+    Isolated task scopes share stored data, but only share executions within that scope.
 
     :param expiration: Time in seconds the cache entry should be valid.
     :param category: Category to group cache objects.
@@ -154,7 +156,7 @@ def use_cache(
 
                 self.mass.create_task(
                     _background_refresh(),
-                    task_id=f"cache_refresh.{provider_id}.{cache_key}",
+                    task_id=scoped_task_id(f"cache_refresh.{provider_id}.{cache_key}"),
                     # the cache key carries the looked-up arguments, so the name keeps to
                     # the provider
                     task_name=f"cache_refresh_{provider_id}",
@@ -190,7 +192,7 @@ def use_cache(
             # task_id folds concurrent callers for this key onto one execution
             flight = self.mass.create_task(
                 _flight(),
-                task_id=f"cache_flight.{provider_id}.{cache_key}",
+                task_id=scoped_task_id(f"cache_flight.{provider_id}.{cache_key}"),
                 task_name=f"cache_flight_{provider_id}",
             )
             if flight is asyncio.current_task():

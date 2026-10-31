@@ -3,7 +3,7 @@
 import asyncio
 import logging
 from collections.abc import AsyncGenerator, Awaitable, Callable
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, cast
 from unittest.mock import AsyncMock, Mock, call, patch
 
 import pytest
@@ -62,6 +62,58 @@ from music_assistant.providers.bandcamp.constants import (
     SUPPORTED_FEATURES,
 )
 from tests.common import use_real_create_task
+
+if TYPE_CHECKING:
+    from music_assistant.mass import MusicAssistant
+
+
+@pytest.mark.parametrize("source", ["api", "following"])
+async def test_legacy_artist_cache_is_refreshed(
+    provider: BandcampProvider, mass_minimal: MusicAssistant, source: str
+) -> None:
+    """Legacy HTTP artist URIs are replaced and the replacement is served from cache."""
+    cache = mass_minimal.cache
+    await cache._setup_database()
+    website = "https://test.bandcamp.com"
+    legacy = provider._converters.artist_from_api(BCArtist(id=123, name="Test Artist", url=website))
+    legacy.uri = website
+    key = "get_artist.123" if source == "api" else "_browse_person_following_42"
+    await cache.set(
+        key,
+        legacy.to_dict() if source == "api" else [legacy.to_dict()],
+        provider=provider.instance_id,
+        checksum="unavailable_tracks_v2" if source == "api" else None,
+    )
+    with (
+        patch.object(provider.mass, "cache", cache),
+        patch.object(provider._client, "get_artist", new_callable=AsyncMock) as get_artist,
+        patch.object(
+            provider, "_get_all_collection_items", new_callable=AsyncMock
+        ) as get_following,
+    ):
+        get_artist.return_value = BCArtist(id=123, name="Test Artist", url=website)
+        get_following.return_value = [FollowingItem(band_id=123, name="Test Artist", url=website)]
+        if source == "api":
+            artist = await provider.get_artist("123")
+        else:
+            artist = (await provider._browse_person_following(42))[0]
+        assert artist.uri == f"{provider.instance_id}://artist/123"
+        assert next(iter(artist.provider_mappings)).url == website
+
+        await asyncio.gather(*provider.mass._tracked_tasks.values())
+        cached = await cache.get(
+            key, provider=provider.instance_id, checksum=PARSED_ITEM_CACHE_CHECKSUM
+        )
+        assert cached is not None
+        assert (cached if source == "api" else cached[0])["uri"] == artist.uri
+        if source == "api":
+            assert (await provider.get_artist("123")).uri == artist.uri
+            get_artist.assert_awaited_once_with(123)
+            get_following.assert_not_awaited()
+        else:
+            assert (await provider._browse_person_following(42))[0].uri == artist.uri
+            get_following.assert_awaited_once_with(CollectionType.FOLLOWING, fan_id=42)
+            get_artist.assert_not_awaited()
 
 
 def _fan_mock(
