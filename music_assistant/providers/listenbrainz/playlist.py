@@ -7,7 +7,7 @@ from copy import copy
 from typing import TYPE_CHECKING, Any, cast
 
 import aiohttp
-from music_assistant_models.enums import ExternalID, MediaType
+from music_assistant_models.enums import ExternalID, MediaType, ProviderFeature
 from music_assistant_models.errors import MediaNotFoundError, MusicAssistantError
 from music_assistant_models.media_items import Playlist, Track
 
@@ -37,6 +37,8 @@ if TYPE_CHECKING:
 
 CACHE_CATEGORY_RESOLVED_TRACKS = 1
 CACHE_EXPIRATION_SECONDS = 60 * 60 * 24 * 30
+# Per-provider search limit (mirrors Last.fm's PROVIDER_SEARCH_LIMIT).
+SEARCH_PROVIDER_LIMIT = 5
 
 
 def _search_result_matches(searched_track: Track, result: Track, artist_name: str) -> bool:
@@ -182,6 +184,7 @@ class ListenBrainzPlaylistManager:
             base_class=Track,
         )
         if isinstance(cached_track, Track):
+            cached_track.add_external_id(ExternalID.MB_RECORDING, recording_mbid)
             self._resolved_tracks[recording_mbid] = cached_track
             return cached_track
         resolved_track = await self._resolve_track(track, recording_mbid)
@@ -212,31 +215,40 @@ class ListenBrainzPlaylistManager:
         if provider_track := await self._resolve_track_via_musicbrainz(track, recording_mbid):
             return provider_track
         artist_name = track.artists[0].name if getattr(track, "artists", None) else ""
-        query = f"{artist_name} {track.name}".strip()
+        query = f"{artist_name} - {track.name}".strip(" -")
         if query:
-            try:
-                results = await self.provider.mass.music.search(query, [MediaType.TRACK])
-            except Exception:
-                results = None
-            tracks = getattr(results, "tracks", None) if results is not None else None
-            if tracks:
+            # Search streaming providers one by one (mirrors Last.fm's
+            # _search_providers) so a hit on an earlier provider spares the
+            # rest — mass.music.search() would fan out to every provider at
+            # once, potentially hammering their APIs.
+            for streaming_provider in self._streaming_track_providers():
+                if not streaming_provider.available:
+                    continue
+                try:
+                    tracks = await self.provider.mass.music.tracks.search(
+                        query,
+                        streaming_provider.instance_id,
+                        limit=SEARCH_PROVIDER_LIMIT,
+                    )
+                except MusicAssistantError:
+                    self.logger.debug(
+                        "Provider %s search failed for %s (%s)",
+                        streaming_provider.name,
+                        track.name,
+                        recording_mbid,
+                    )
+                    continue
+                if not streaming_provider.available:
+                    continue
                 for candidate in tracks:
                     if _search_result_matches(track, candidate, artist_name):
-                        self.logger.debug(
-                            "Resolved %s (%s) via search query='%s' (provider=%s, mappings=%s)",
-                            track.name,
-                            recording_mbid,
-                            query,
-                            candidate.provider,
-                            sorted(candidate.provider_mappings),
-                        )
-                        return cast("Track", candidate)
-                self.logger.debug(
-                    "Search for '%s' returned no matching tracks for %s (%s)",
-                    query,
-                    track.name,
-                    recording_mbid,
-                )
+                        return candidate
+            self.logger.debug(
+                "Search for '%s' returned no matching tracks for %s (%s)",
+                query,
+                track.name,
+                recording_mbid,
+            )
         else:
             self.logger.debug(
                 "No searchable artist/track name for %s (%s)",
@@ -244,6 +256,22 @@ class ListenBrainzPlaylistManager:
                 recording_mbid,
             )
         return None
+
+    def _streaming_track_providers(self) -> list[Any]:
+        """
+        Return streaming music providers that can search tracks, excluding self.
+
+        Mirrors Last.fm's ``_get_streaming_providers``: only providers that
+        advertise ``LIBRARY_TRACKS`` support are included, so each one can
+        answer a track search request.
+        """
+        return [
+            p
+            for p in self.provider.mass.music.providers
+            if p.instance_id != self.provider.instance_id
+            and p.is_streaming_provider
+            and ProviderFeature.LIBRARY_TRACKS in p.supported_features
+        ]
 
     async def _resolve_track_via_musicbrainz(
         self, track: Track, recording_mbid: str
