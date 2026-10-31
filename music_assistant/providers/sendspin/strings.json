@@ -22,6 +22,10 @@
       "label": "Allow legacy clients",
       "description": "Accept legacy Sendspin clients that don't implement the current specification, including clients that connect without encryption, so their traffic can be intercepted on the local network. \nDisable this to accept only spec-compliant clients and to stop holding back newer protocol behavior. \nThis option is temporary and will be removed in a future release."
     },
+    "local_pairing": {
+      "label": "Pair local players automatically",
+      "description": "Pair Sendspin players running on the same Home Assistant host, such as the Local Audio app, without entering a pairing code. Only available when Music Assistant runs as a Home Assistant app."
+    },
     "security_status_disconnected": {
       "label": "The device disconnected and will reappear once it reconnects."
     },
