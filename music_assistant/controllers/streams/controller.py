@@ -96,6 +96,7 @@ from music_assistant.controllers.streams.constants import (
     DEFAULT_PORT,
     DEFAULT_VOLUME_NORMALIZATION_MODE,
     FLOW_STREAM_LEAD_OUT_SECONDS,
+    ICY_WRITE_SIZE,
     OUTCOME_ONLY_NORMALIZATION_MODES,
     BufferSize,
     PacingProfile,
@@ -1468,6 +1469,7 @@ class StreamsController(CoreController):
         )
         enable_icy = request.headers.get("Icy-MetaData", "") == "1" and icy_preference != "disabled"
         icy_meta_interval = 256000 if icy_preference == "full" else 16384
+        icy_bytes_until_meta = icy_meta_interval
 
         # prepare request, add some DLNA/UPNP compatible headers.
         # icy-name (in DEFAULT_STREAM_HEADERS) is always present so players have a
@@ -1544,8 +1546,9 @@ class StreamsController(CoreController):
             # one continuous stream, so the player gains nothing from running far ahead
             extra_input_args=output_pacing_args(PacingProfile.NEAR_REALTIME),
             # without ICY framing, pass on whatever ffmpeg has encoded: an exact 1s read
-            # holds back FLAC on quiet passages until the player gives up waiting
-            chunk_size=icy_meta_interval if enable_icy else None,
+            # holds back FLAC on quiet passages until the player gives up waiting.
+            # with ICY framing the write loop counts bytes towards the metadata interval
+            chunk_size=ICY_WRITE_SIZE if enable_icy else None,
         )
         client_disconnected = False
         # same registry as the single-item route: a forced-flow player (overlay)
@@ -1566,40 +1569,25 @@ class StreamsController(CoreController):
             async with aclosing(audio_bytes):
                 async for chunk in audio_bytes:
                     try:
-                        await resp.write(chunk)
+                        if not enable_icy:
+                            await resp.write(chunk)
+                            continue
+                        pending = chunk
+                        while pending:
+                            head, pending = (
+                                pending[:icy_bytes_until_meta],
+                                pending[icy_bytes_until_meta:],
+                            )
+                            await resp.write(head)
+                            icy_bytes_until_meta -= len(head)
+                            if icy_bytes_until_meta == 0:
+                                await resp.write(
+                                    _icy_metadata_block(queue, full=icy_preference == "full")
+                                )
+                                icy_bytes_until_meta = icy_meta_interval
                     except BrokenPipeError, ConnectionResetError, ConnectionError:
-                        # race condition
-                        client_disconnected = True
-                        break
-
-                    if not enable_icy:
-                        continue
-
-                    # if icy metadata is enabled, send the icy metadata after the chunk
-                    if (
-                        # use current item here and not buffered item, otherwise
-                        # the icy metadata will be too much ahead
-                        (current_item := queue.current_item)
-                        and current_item.streamdetails
-                        and current_item.streamdetails.stream_title
-                    ):
-                        title = current_item.streamdetails.stream_title
-                    elif queue and current_item and current_item.name:
-                        title = current_item.name
-                    else:
-                        title = "Music Assistant"
-                    metadata = f"StreamTitle='{title}';".encode()
-                    if icy_preference == "full" and current_item and current_item.image:
-                        metadata += f"StreamURL='{current_item.image.path}'".encode()
-                    while len(metadata) % 16 != 0:
-                        metadata += b"\x00"
-                    length = len(metadata)
-                    length_b = chr(int(length / 16)).encode()
-                    try:
-                        await resp.write(length_b + metadata)
-                    except BrokenPipeError, ConnectionResetError, ConnectionError:
-                        # same as the chunk write above: a superseded response is
-                        # aborted under us and this is its normal end
+                        # a superseded response is aborted under us and this is
+                        # its normal end
                         client_disconnected = True
                         break
         except AbortFlowStream:
@@ -2740,6 +2728,25 @@ class StreamsController(CoreController):
         queue_owners.discard(owner)
         if not queue_owners:
             del owners[queue_id]
+
+
+def _icy_metadata_block(queue: PlayerQueue, *, full: bool) -> bytes:
+    """Return the length-prefixed ICY metadata block for the queue's current item."""
+    # use current item here and not buffered item, otherwise
+    # the icy metadata will be too much ahead
+    current_item = queue.current_item
+    if current_item and current_item.streamdetails and current_item.streamdetails.stream_title:
+        title = current_item.streamdetails.stream_title
+    elif current_item and current_item.name:
+        title = current_item.name
+    else:
+        title = "Music Assistant"
+    metadata = f"StreamTitle='{title}';".encode()
+    if full and current_item and current_item.image:
+        metadata += f"StreamURL='{current_item.image.path}'".encode()
+    while len(metadata) % 16 != 0:
+        metadata += b"\x00"
+    return chr(len(metadata) // 16).encode() + metadata
 
 
 def _same_ip_family(ip: str, other_ip: str) -> bool:
