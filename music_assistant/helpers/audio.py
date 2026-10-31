@@ -655,6 +655,7 @@ async def get_content_length(
     uri: str,
     output_format: AudioFormat,
     seconds: float,
+    playback_speed: float = 1.0,
 ) -> int:
     """
     Get the estimated encoded size, using cached actual measurement when available.
@@ -671,6 +672,7 @@ async def get_content_length(
     :param uri: The media URI (e.g. "qobuz://track/12345").
     :param output_format: The output audio format.
     :param seconds: Duration in seconds to estimate.
+    :param playback_speed: The playback speed the stream runs at.
     """
     cache_key = f"{uri}/{get_output_format_key(output_format)}"
     cached: dict[str, float] | None = await mass.cache.get(
@@ -686,7 +688,7 @@ async def get_content_length(
             return int(cached_size)
         # different duration: derive bytes-per-second from the cached measurement
         return int((cached_size / cached_duration) * seconds)
-    return _max_content_length(output_format, seconds)
+    return _max_content_length(output_format, seconds, playback_speed)
 
 
 async def store_content_length_in_cache(
@@ -974,10 +976,11 @@ def get_normalization_mode(
     return preference
 
 
-def _max_content_length(fmt: AudioFormat, seconds: float) -> int:
+def _max_content_length(fmt: AudioFormat, seconds: float, playback_speed: float = 1.0) -> int:
     """Return a size the encoded stream will not exceed, for a track nothing was measured of."""
-    # a duration is rounded to whole seconds, so the audio can run up to a second longer
-    seconds += 1
+    # a duration is rounded down to whole seconds, so the audio can run up to a second
+    # longer; a slower playback speed stretches that second like the rest of the stream
+    seconds += 1 / playback_speed
     if fmt.content_type == ContentType.FLAC:
         # lossless compression never grows the audio past its PCM size (plus frame headers);
         # the average ratio calculate_content_length uses is often exceeded at 24 bit

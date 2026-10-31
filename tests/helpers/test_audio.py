@@ -208,6 +208,18 @@ async def test_an_unmeasured_content_length_is_never_shorter_than_the_stream(
     assert await get_content_length(mass, "library://track/2", fmt, 128) >= encoded_size
 
 
+async def test_an_unmeasured_content_length_covers_the_rounded_off_second_at_half_speed() -> None:
+    """At half speed the second a duration was rounded down by lasts two stream seconds."""
+    fmt = AudioFormat(content_type=ContentType.WAV, sample_rate=44100, bit_depth=16)
+    mass = MagicMock()
+    mass.cache.get = AsyncMock(return_value=None)
+
+    # a 10.9 s track stored as 10 s streams 21.8 s of audio at speed 0.5
+    announced = await get_content_length(mass, "library://track/2", fmt, 10 / 0.5, 0.5)
+
+    assert announced >= calculate_content_length(fmt, 21.8)
+
+
 async def test_a_measured_content_length_is_used_as_measured() -> None:
     """A size measured on an earlier full play of the same duration is announced as is."""
     fmt = AudioFormat(content_type=ContentType.FLAC, sample_rate=44100, bit_depth=24)

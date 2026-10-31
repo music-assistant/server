@@ -1037,7 +1037,7 @@ class StreamsController(CoreController):
                 effective_duration = max((queue_item.duration - seek_pos) / playback_speed, 1)
                 # use cached actual bytes-per-second if available (from a previous stream)
                 resp.content_length = await get_content_length(
-                    self.mass, queue_item.uri, output_format, effective_duration
+                    self.mass, queue_item.uri, output_format, effective_duration, playback_speed
                 )
             elif http_profile == "chunked":
                 resp.enable_chunked_encoding()

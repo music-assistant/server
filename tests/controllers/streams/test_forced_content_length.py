@@ -120,6 +120,7 @@ async def test_a_slower_playback_speed_announces_the_longer_stream() -> None:
     """At half speed the stream lasts twice the duration, and its length is sized for that."""
     _resp, content_length = await _serve(_controller(playback_speed=0.5), len(ENCODED))
     assert content_length.call_args.args[3] == DURATION / 0.5
+    assert content_length.call_args.args[4] == 0.5
 
 
 @pytest.mark.asyncio
