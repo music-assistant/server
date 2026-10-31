@@ -251,3 +251,19 @@ async def test_remote_echo_preserves_completion_but_earlier_replay_clears_it(
         assert row is not None
         assert not row["fully_played"]
         assert signal.call_args.kwargs["fully_played"] is False
+
+
+@pytest.mark.parametrize(("position", "expected"), [(3539, False), (3540, True), (3600, True)])
+async def test_import_recognizes_external_completion(
+    music_mass: MusicAssistant, book: Audiobook, position: int, expected: bool
+) -> None:
+    """External completion uses the same final-minute rule as local audiobooks."""
+    owner = User(user_id="owner", username="owner", role=UserRole.USER)
+    with patch.object(music_mass.music, "_get_user_for_provider", AsyncMock(return_value=owner)):
+        assert await music_mass.music.import_audiobook_progress(
+            book, "audible_a", datetime(2026, 10, 1, tzinfo=UTC), position
+        )
+    row = await music_mass.music.database.get_row(DB_TABLE_MEDIA_PROGRESS, {"userid": "owner"})
+    assert row is not None
+    assert bool(row["fully_played"]) is expected
+    assert await music_mass.music.database.get_rows(DB_TABLE_PLAY_HISTORY) == []

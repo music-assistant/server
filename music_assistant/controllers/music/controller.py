@@ -1961,7 +1961,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             "userid": user.user_id,
             "name": book.name,
             "image": serialize_to_json(book.image.to_dict()) if book.image else None,
-            "fully_played": False,
+            "fully_played": bool(book.duration and seconds_played >= book.duration - 60),
             "seconds_played": seconds_played,
             "timestamp": played_at.timestamp(),
             "user_initiated": False,
@@ -1981,7 +1981,8 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             params[f"source_{index}"] = mapping.provider_instance
             params[f"source_item_{index}"] = mapping.item_id
         completion = (
-            "CASE WHEN (SELECT fully_played FROM previous) = 1 AND :seconds_played >= "
+            "CASE WHEN :fully_played = 1 THEN 1 "
+            "WHEN (SELECT fully_played FROM previous) = 1 AND :seconds_played >= "
             "COALESCE((SELECT seconds_played FROM previous), :duration) THEN 1 ELSE 0 END"
         )
         values = ", ".join(

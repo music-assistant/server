@@ -52,6 +52,7 @@ from music_assistant.mass import MusicAssistant
 from music_assistant.providers.audible.remote_history import (
     AudibleRemotePlay,
     asin_chunks,
+    parse_lastposition,
     parse_lastpositions,
 )
 
@@ -537,23 +538,6 @@ class AudibleHelper:
 
         return chapters_data
 
-    @staticmethod
-    def _parse_audible_timestamp(raw_ts: Any) -> datetime | None:
-        """
-        Parse an Audible timestamp value into a timezone-aware datetime.
-
-        :param raw_ts: The raw timestamp value from the Audible annotation payload.
-        """
-        if not raw_ts:
-            return None
-        try:
-            parsed = datetime.fromisoformat(str(raw_ts))
-        except ValueError, TypeError:
-            return None
-        if parsed.tzinfo is None:
-            parsed = parsed.replace(tzinfo=UTC)
-        return parsed
-
     async def _fetch_last_position(self, asin: str) -> tuple[int, datetime | None] | None:
         """
         Fetch the last-heard position for a single ASIN from Audible.
@@ -572,21 +556,7 @@ class AudibleHelper:
         if not isinstance(annotation, dict):
             return None
 
-        last_position = annotation.get("last_position_heard")
-        if not isinstance(last_position, dict):
-            return None
-
-        position_ms = int(last_position.get("position_ms", 0))
-
-        timestamp: datetime | None = None
-        for field in ("last_updated", "reported_time", "last_updated_time", "timestamp"):
-            timestamp = self._parse_audible_timestamp(
-                last_position.get(field) or annotation.get(field)
-            )
-            if timestamp is not None:
-                break
-
-        return position_ms, timestamp
+        return parse_lastposition(annotation)
 
     async def get_last_position(self, asin: str) -> int:
         """

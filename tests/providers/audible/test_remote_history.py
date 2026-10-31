@@ -6,6 +6,7 @@ from music_assistant.providers.audible.remote_history import (
     MAX_ASINS_PER_REQUEST,
     asin_chunks,
     eligible_external_plays,
+    parse_lastposition,
     parse_lastpositions,
     parse_timestamp,
 )
@@ -178,3 +179,24 @@ def test_numeric_millisecond_timestamp_string() -> None:
     """Numeric millisecond timestamp string."""
     expected = datetime(2026, 10, 30, tzinfo=UTC)
     assert parse_timestamp(str(int(expected.timestamp() * 1000))) == expected
+
+
+def test_shared_annotation_parser_preserves_undated_resume_position() -> None:
+    """Resume lookup retains exact milliseconds even without an importable date."""
+    row = {"asin": "A", "last_position_heard": {"position_ms": 1234}}
+    assert parse_lastposition(row) == (1234, None)
+    assert parse_lastpositions({"asin_last_position_heard_annots": [row]}) == []
+
+
+def test_shared_annotation_parser_accepts_numeric_dates_and_rejects_invalid_positions() -> None:
+    """Single and batch paths share timestamp and malformed-position handling."""
+    timestamp = datetime(2026, 10, 1, tzinfo=UTC)
+    row = {
+        "asin": "A",
+        "last_position_heard": {"position_ms": 1234, "timestamp": timestamp.timestamp() * 1000},
+    }
+    assert parse_lastposition(row) == (1234, timestamp)
+    assert (
+        parse_lastpositions({"asin_last_position_heard_annots": [row]})[0].updated_at == timestamp
+    )
+    assert parse_lastposition({"last_position_heard": {"position_ms": "bad"}}) is None
