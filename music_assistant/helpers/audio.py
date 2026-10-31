@@ -671,8 +671,10 @@ async def get_content_length(
     :param mass: The MusicAssistant instance (for cache access).
     :param uri: The media URI (e.g. "qobuz://track/12345").
     :param output_format: The output audio format.
-    :param seconds: Duration in seconds to estimate.
-    :param playback_speed: The playback speed the stream runs at.
+    :param seconds: Duration of the stream in seconds, already adjusted for the seek
+        position and the playback speed.
+    :param playback_speed: The playback speed the stream runs at, which stretches the
+        margin for a duration rounded to whole seconds.
     """
     cache_key = f"{uri}/{get_output_format_key(output_format)}"
     cached: dict[str, float] | None = await mass.cache.get(
