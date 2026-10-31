@@ -4925,13 +4925,17 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
                 # just try to stop (regardless of state) and let it settle, so the
                 # new source does not race the teardown. A player that already
                 # reports idle has nothing to tear down and does not wait at all.
-                async with self.wait_for_player_update(
-                    player_id,
-                    attribute_name="playback_state",
-                    attribute_value=PlaybackState.IDLE,
-                    timeout=5,
-                ):
+                if player.foreign_protocol_player:
+                    # an app that stops by pausing never gets this player to idle
                     await self._handle_cmd_stop(player_id)
+                else:
+                    async with self.wait_for_player_update(
+                        player_id,
+                        attribute_name="playback_state",
+                        attribute_value=PlaybackState.IDLE,
+                        timeout=5,
+                    ):
+                        await self._handle_cmd_stop(player_id)
         # an audio source uri selects the live source itself, which plays on the
         # player while its queue keeps its own items and goes inactive
         if (resolved := await self._resolve_audio_source_uri(source)) is not None:

@@ -14,7 +14,7 @@ from typing import cast
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-from music_assistant_models.enums import PlayerType
+from music_assistant_models.enums import PlaybackState, PlayerType
 from music_assistant_models.player import PlayerSource
 
 from music_assistant.providers.chromecast.constants import (
@@ -112,12 +112,36 @@ async def test_stop_pauses_a_foreign_app_that_can_pause() -> None:
     fake._attr_source_list = [
         PlayerSource(id="tunein", name="TuneIn", passive=True, can_play_pause=True)
     ]
+    fake._attr_playback_state = PlaybackState.PLAYING
     fake.pause = AsyncMock()
 
     await _stop(fake)
 
     fake.pause.assert_awaited_once()
     fake.cc.quit_app.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    ("state", "can_pause"),
+    [(PlaybackState.PAUSED, True), (PlaybackState.PLAYING, False)],
+    ids=["already_paused", "can_not_pause"],
+)
+async def test_stop_ends_a_foreign_app_it_can_not_pause(
+    state: PlaybackState, can_pause: bool
+) -> None:
+    """A second stop, or a stop of an app without a pause, ends the app."""
+    fake = _fake_cast(running_app_id="CC32E753")
+    fake._attr_active_source = "tunein"
+    fake._attr_source_list = [
+        PlayerSource(id="tunein", name="TuneIn", passive=True, can_play_pause=can_pause)
+    ]
+    fake._attr_playback_state = state
+    fake.pause = AsyncMock()
+
+    await _stop(fake)
+
+    fake.pause.assert_not_awaited()
+    fake.cc.quit_app.assert_called_once()
 
 
 async def test_stop_on_a_group_leaves_the_app_alone() -> None:

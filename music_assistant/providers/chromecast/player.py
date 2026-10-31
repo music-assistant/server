@@ -188,11 +188,16 @@ class ChromecastPlayer(Player):
             return
         if self.cc.app_id not in (MASS_APP_ID, APP_MEDIA_RECEIVER):
             # Another app is casting to the device. Quitting it ends the cast session of the
-            # phone that casts, so an app that can pause is paused and stays connected.
+            # phone that casts, so a playing app that can pause is paused and stays connected;
+            # a stop of the paused app does end it.
             app_source = next(
                 (x for x in self._attr_source_list if x.id == self._attr_active_source), None
             )
-            if app_source is not None and app_source.can_play_pause:
+            if (
+                app_source is not None
+                and app_source.can_play_pause
+                and self._attr_playback_state == PlaybackState.PLAYING
+            ):
                 await self.pause()
                 return
             await self._quit_app()
