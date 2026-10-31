@@ -73,6 +73,9 @@ class WiimPlayer(Player):
     # the device reports a source the app released as plain 'paused', indistinguishable
     # from a real pause, so only the grace period can tell us the session is over.
     _attr_external_pause_idle_timeout = EXTERNAL_PAUSE_IDLE_TIMEOUT
+    # the source comes from the device's own input mode, and the source list leaves out
+    # the network input our stream arrives on, so a listed source (e.g. TV) is a takeover.
+    _attr_trusts_reported_source = True
 
     def __init__(
         self,
@@ -159,6 +162,11 @@ class WiimPlayer(Player):
         # the coordinator would then have to refuse.
         return self._native_groups.is_unknown_leader_follower(self.player_id)
 
+    @property
+    def poll_interval(self) -> int:
+        """Return the poll interval in seconds, short while playing to keep the position fresh."""
+        return 5 if self.playback_state == PlaybackState.PLAYING else 30
+
     def is_native_group_compatible(self, other: Player) -> bool:
         """Only reachable coordinator-approved peers of either backend group natively."""
         return other.player_id in self.can_group_with
@@ -206,7 +214,6 @@ class WiimPlayer(Player):
         self._attr_source_list.append(PASSIVE_SOURCES[SOURCE_SPOTIFY])
         self._attr_source_list.append(PASSIVE_SOURCES[SOURCE_UNKNOWN])
         self._attr_needs_poll = True
-        self._attr_poll_interval = 5
 
     async def poll(self) -> None:
         """Poll player for transport state and position updates."""
@@ -214,7 +221,6 @@ class WiimPlayer(Player):
         await self._refresh_device_status()
         # slow, TTL-gated re-read of the native slave list (no busy polling loop)
         await self._native_groups.refresh_leader(self)
-        self._attr_poll_interval = 5 if self._attr_playback_state == PlaybackState.PLAYING else 30
 
     async def on_unload(self) -> None:
         """Handle logic when the player is unloaded from the Player controller."""

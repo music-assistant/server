@@ -11,6 +11,28 @@
       }
     }
   },
+  "media": {
+    "recommendations": {
+      "new_releases": {
+        "name": "New Releases"
+      },
+      "best_sellers": {
+        "name": "Best Sellers"
+      },
+      "most_streamed": {
+        "name": "Most Streamed"
+      },
+      "press_awards": {
+        "name": "Press Awards"
+      },
+      "editor_picks": {
+        "name": "Editor's Picks"
+      },
+      "ideal_discography": {
+        "name": "Ideal Discography"
+      }
+    }
+  },
   "manifest": {
     "description": "Stream high-resolution music from Qobuz’s catalogue — ideal for audiophiles."
   },

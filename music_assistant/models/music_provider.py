@@ -1758,7 +1758,7 @@ class MusicProvider(MediaCatalogMixin, RecommendationsMixin, AudioStreamMixin, P
                         else None
                     )
                     await self._sync_item_genres(
-                        MediaType.TRACK,
+                        prov_track.media_type,
                         prov_track.item_id,
                         db_id,
                         fallback_genres,

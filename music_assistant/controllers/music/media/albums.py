@@ -6,6 +6,7 @@ import asyncio
 import contextlib
 from collections.abc import Iterable
 from dataclasses import dataclass, replace
+from itertools import groupby
 from time import time
 from typing import TYPE_CHECKING, Any, Final, cast
 
@@ -89,6 +90,7 @@ if TYPE_CHECKING:
         MusicBrainzBarcodeRelease,
         MusicBrainzRecording,
         MusicBrainzRelease,
+        MusicBrainzTrack,
     )
 
 
@@ -1101,16 +1103,70 @@ class AlbumsController(MediaControllerBase[Album]):
             for track in medium.tracks
             if track.position and track.recording
         }
+        in_order = self._recordings_in_order(db_tracks, release)
         for db_track in db_tracks:
-            # a digital release stores its single disc as disc 0 or 1
-            recording = recordings.get((db_track.disc_number or 1, db_track.track_number))
-            if recording is None or not _recording_matches_track(recording, db_track):
-                continue
+            if (recording := in_order.get(db_track.item_id)) is None:
+                # a digital release stores its single disc as disc 0 or 1
+                recording = recordings.get((db_track.disc_number or 1, db_track.track_number))
+                if recording is None or not _recording_matches_track(recording, db_track):
+                    continue
             changed = fill_track_from_recording(db_track, recording)
             if not changed and db_track.metadata.last_musicbrainz_lookup is not None:
                 continue
             db_track.metadata.last_musicbrainz_lookup = int(time())
             await self.mass.music.tracks.update_item_in_library(db_track.item_id, db_track)
+
+    def _recordings_in_order(
+        self, db_tracks: Sequence[Track], release: MusicBrainzRelease
+    ) -> dict[str, MusicBrainzRecording]:
+        """Return the release recording per library track of a service lining up with the release."""
+        release_tracks = [
+            track
+            for medium in sorted(release.media, key=lambda medium: medium.position)
+            for track in medium.tracks
+        ]
+        streaming = {
+            x.provider_instance
+            for track in db_tracks
+            for x in track.provider_mappings
+            if (
+                provider := self.mass.get_provider(
+                    x.provider_instance, return_unavailable=True, provider_type=MusicProvider
+                )
+            )
+            and provider.is_streaming_provider
+        }
+        # a local file carries its own recording id and is numbered as the user tagged it, so
+        # a track that is also a local file is left to the title check
+        streaming_tracks = [
+            track
+            for track in db_tracks
+            if all(x.provider_instance in streaming for x in track.provider_mappings)
+        ]
+        domains = {x.provider_domain for track in streaming_tracks for x in track.provider_mappings}
+        in_order: dict[str, MusicBrainzRecording] = {}
+        for domain in sorted(domains):
+            service_tracks = sorted(
+                (
+                    track
+                    for track in streaming_tracks
+                    if any(x.provider_domain == domain for x in track.provider_mappings)
+                ),
+                key=lambda track: (track.disc_number or 1, track.track_number or 0),
+            )
+            # a service lines up when it has every track of the release, numbered from 1 on each
+            # disc, and every length is known and agrees, so their titles need not match
+            if len(service_tracks) != len(release_tracks) or not _numbered_from_one(service_tracks):
+                continue
+            pairs = list(zip(service_tracks, release_tracks, strict=True))
+            if not all(_lengths_agree(release_track, track) for track, release_track in pairs):
+                continue
+            for track, release_track in pairs:
+                recording = release_track.recording
+                # the order alone does not outweigh another recording id the track holds
+                if recording and track.mbid in (None, recording.id):
+                    in_order.setdefault(track.item_id, recording)
+        return in_order
 
     async def _link_tracks_to_provider_album(
         self, db_tracks: Sequence[Track], mapping: ProviderMapping
@@ -1674,6 +1730,24 @@ def _recording_matches_track(recording: MusicBrainzRecording, track: Track) -> b
     if recording.length is None or not track.duration:
         return True
     return abs(recording.length / 1000 - track.duration) <= _TRACK_DURATION_TOLERANCE
+
+
+def _lengths_agree(release_track: MusicBrainzTrack, track: Track) -> bool:
+    """Return whether a release track's length is known and within tolerance of a library track's."""
+    # the length on the release can differ from the recording's, as on a remaster
+    length = release_track.length or (release_track.recording and release_track.recording.length)
+    if not length or not track.duration:
+        return False
+    return abs(length / 1000 - track.duration) <= _TRACK_DURATION_TOLERANCE
+
+
+def _numbered_from_one(tracks: Sequence[Track]) -> bool:
+    """Return whether tracks sorted by disc and number are numbered 1 to n on each disc."""
+    for _, disc_tracks in groupby(tracks, key=lambda x: x.disc_number or 1):
+        numbers = [x.track_number for x in disc_tracks]
+        if numbers != list(range(1, len(numbers) + 1)):
+            return False
+    return True
 
 
 def _matching_provider_track(db_track: Track, provider_tracks: Sequence[Track]) -> Track | None:

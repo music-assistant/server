@@ -39,6 +39,8 @@ class _YandexMusicOwner:
 
     domain = "yandex_music"
     type = ProviderType.MUSIC
+    instance_id = "ym-1"
+    available = True
 
     def __init__(
         self,
@@ -330,3 +332,39 @@ class TestBorrowSilentReauth:
         assert await provider._silent_reauth() is True
 
         assert sorted(owner.reads) == ["token", "x_token"]
+
+
+class TestLinkedMusicInstance:
+    """The linked instance names the Station's own tracks as Yandex Music items."""
+
+    def test_loaded_linked_instance(self) -> None:
+        """A loaded linked instance is the one tracks are named after."""
+        provider = _borrow_provider(_ym_owner("music", "x"))
+        assert provider.linked_music_instance == "ym-1"
+
+    def test_unavailable_linked_instance_is_not_replaced_by_another(self) -> None:
+        """An unavailable linked account is not swapped for another available instance."""
+        linked = _ym_owner("music", "x")
+        linked.available = False
+        other = _ym_owner("music", "x")
+        other.instance_id = "ym-2"
+        provider = _borrow_provider(linked)
+
+        def get_provider(_instance_id: str, return_unavailable: bool = False) -> object:
+            # The core's fallback: an unavailable streaming instance yields another
+            # instance of the same domain unless unavailable ones are requested.
+            return linked if return_unavailable else other
+
+        object.__setattr__(provider.mass, "get_provider", get_provider)
+
+        assert provider.linked_music_instance is None
+
+    def test_linked_instance_not_loaded(self) -> None:
+        """A linked instance that is not loaded names nothing."""
+        provider = _borrow_provider(None)
+        assert provider.linked_music_instance is None
+
+    def test_own_login_has_no_linked_instance(self) -> None:
+        """The provider's own login shares no account with an instance."""
+        provider = _make_provider({CONF_YM_INSTANCE: BORROW_SOURCE_OWN})
+        assert provider.linked_music_instance is None
