@@ -35,6 +35,7 @@ from music_assistant_models.enums import (
     PlaybackState,
     PlayerFeature,
     PlayerType,
+    SleepTimerMode,
 )
 from music_assistant_models.errors import (
     InsufficientPermissions,
@@ -972,6 +973,7 @@ class TestSleepTimer:
 
         assert controller.get_sleep_timer("player_1") == expires_at
         assert player.sleep_timer_expires_at == expires_at
+        assert player.state.sleep_timer_mode == SleepTimerMode.DURATION
         mock_mass.call_later.assert_called_with(
             30,
             controller._handle_sleep_timer_expired,
@@ -994,6 +996,7 @@ class TestSleepTimer:
             object_id="player_1",
             data=None,
         )
+        assert player.state.sleep_timer_mode is None
 
     async def test_sleep_timer_removed_when_player_unregistered(self, mock_mass: MagicMock) -> None:
         """Unregistering a player cancels and clears its sleep timer."""
@@ -1001,6 +1004,7 @@ class TestSleepTimer:
         provider = MockProvider("test_provider", instance_id="test", mass=mock_mass)
         player = MockPlayer(provider, "player_1", "Player 1")
         controller._players = {"player_1": player}
+        player.set_sleep_timer_mode(SleepTimerMode.DURATION)
         player.set_sleep_timer_expires_at(123.0)
 
         await controller.unregister("player_1")
@@ -1014,6 +1018,7 @@ class TestSleepTimer:
         provider = MockProvider("test_provider", instance_id="test", mass=mock_mass)
         player = MockPlayer(provider, "player_1", "Player 1")
         controller._players = {"player_1": player}
+        player.set_sleep_timer_mode(SleepTimerMode.DURATION)
         player.set_sleep_timer_expires_at(123.0)
         controller.cmd_stop = AsyncMock()  # type: ignore[method-assign]
 
@@ -1035,13 +1040,87 @@ class TestSleepTimer:
         player = MockPlayer(provider, "player_1", "Player 1")
         controller._players = {"player_1": player}
 
-        # 0/-30 are non-positive; 10**400 exceeds the float range for the expiry math
-        for invalid in (0, -30, 10**400):
+        # None/0/-30 are no positive duration; 10**400 exceeds the float range for the expiry math
+        for invalid in (None, 0, -30, 10**400):
             with pytest.raises(InvalidDataError):
                 controller.set_sleep_timer("player_1", invalid)
+        with pytest.raises(InvalidDataError):
+            controller.set_sleep_timer("player_1", mode=SleepTimerMode.UNKNOWN)
 
         assert controller.get_sleep_timer("player_1") is None
         mock_mass.call_later.assert_not_called()
+
+    def test_set_and_clear_queue_sleep_timer(self, mock_mass: MagicMock) -> None:
+        """A timer that stops at a point in the queue is the queue's, the player keeps the mode."""
+        controller = PlayerController(mock_mass)
+        provider = MockProvider("test_provider", instance_id="test", mass=mock_mass)
+        player = MockPlayer(provider, "player_1", "Player 1")
+        controller._players = {"player_1": player}
+        mock_mass.players = controller
+        set_target = mock_mass.player_queues.set_sleep_timer_target
+        set_target.side_effect = InvalidDataError("nothing plays")
+
+        with pytest.raises(InvalidDataError):
+            controller.set_sleep_timer("player_1", mode=SleepTimerMode.END_OF_CHAPTER)
+        assert player.sleep_timer_mode is None
+
+        set_target.side_effect = None
+        set_target.return_value = 123.0
+        expires_at = controller.set_sleep_timer("player_1", mode=SleepTimerMode.END_OF_CHAPTER)
+
+        assert expires_at == 123.0
+        set_target.assert_called_with("player_1", SleepTimerMode.END_OF_CHAPTER)
+        assert player.state.sleep_timer_mode == SleepTimerMode.END_OF_CHAPTER
+        assert player.state.sleep_timer_expires_at == 123.0
+        # the queue stops itself, no stop is scheduled here
+        assert not any(
+            c.kwargs.get("task_id") == "player_sleep_timer_player_1"
+            for c in mock_mass.call_later.call_args_list
+        )
+        mock_mass.signal_event.assert_any_call(
+            EventType.PLAYER_SLEEP_TIMER_UPDATED,
+            object_id="player_1",
+            data=123.0,
+        )
+
+        controller.clear_sleep_timer("player_1")
+
+        mock_mass.player_queues.drop_sleep_timer_target.assert_called_with("player_1")
+        assert player.sleep_timer_mode is None
+        assert player.sleep_timer_expires_at is None
+
+    @pytest.mark.parametrize(
+        ("mode", "expires_at", "update", "expected"),
+        [
+            # position reports jitter
+            (SleepTimerMode.END_OF_CHAPTER, 123.0, 123.4, 123.0),
+            (SleepTimerMode.END_OF_CHAPTER, 123.0, 125.0, 125.0),
+            # paused, and playing again
+            (SleepTimerMode.END_OF_CHAPTER, 123.0, None, None),
+            (SleepTimerMode.END_OF_CHAPTER, None, 125.0, 125.0),
+            # a duration timer is not the queue's to update
+            (SleepTimerMode.DURATION, 123.0, 125.0, 123.0),
+        ],
+    )
+    def test_update_sleep_timer_expires_at(
+        self,
+        mock_mass: MagicMock,
+        mode: SleepTimerMode,
+        expires_at: float | None,
+        update: float | None,
+        expected: float | None,
+    ) -> None:
+        """The queue's estimate replaces the expiry once it moved by more than report jitter."""
+        controller = PlayerController(mock_mass)
+        provider = MockProvider("test_provider", instance_id="test", mass=mock_mass)
+        player = MockPlayer(provider, "player_1", "Player 1")
+        controller._players = {"player_1": player}
+        player.set_sleep_timer_mode(mode)
+        player.set_sleep_timer_expires_at(expires_at)
+
+        controller.update_sleep_timer_expires_at("player_1", update)
+
+        assert player.sleep_timer_expires_at == expected
 
 
 class TestUnregisterCleanup:

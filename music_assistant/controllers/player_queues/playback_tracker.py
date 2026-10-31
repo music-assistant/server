@@ -42,6 +42,7 @@ from music_assistant.constants import (
 )
 from music_assistant.controllers.music.favorites import without_disliked_tracks
 from music_assistant.controllers.player_queues.base import _PlayerQueuesBase
+from music_assistant.controllers.player_queues.constants import SLEEP_TIMER_NATURAL_END_MARGIN
 from music_assistant.controllers.player_queues.helpers import (
     CompareState,
     build_queue_item,
@@ -302,6 +303,10 @@ class PlaybackTrackerMixin(_PlayerQueuesBase):
         ):
             self._handle_playback_progress_report(queue, prev_state, new_state)
 
+        # stop at the point a sleep timer waits for, before the end of queue check below reads
+        # a stopped queue as one that ran out of items
+        self._handle_sleep_timer(queue, prev_state, new_state)
+
         # check if we need to clear the queue if we reached the end
         if "state" in changed_keys and queue.state == PlaybackState.IDLE:
             self._handle_end_of_queue(queue, prev_state, new_state)
@@ -495,6 +500,8 @@ class PlaybackTrackerMixin(_PlayerQueuesBase):
             and new_state["state"] == PlaybackState.IDLE
         ):
             return
+        sleep_timer_stopped = queue_data.sleep_timer_stopped
+        queue_data.sleep_timer_stopped = False
         # check if no more items in the queue (next_item should be None at end of queue)
         if queue.next_item is not None:
             return
@@ -515,6 +522,10 @@ class PlaybackTrackerMixin(_PlayerQueuesBase):
             return
 
         async def _settle_or_resume_delayed() -> None:
+            if sleep_timer_stopped:
+                # the sleep timer ended playback here: nothing resumes or refills the queue
+                self._finish_queue(queue, prev_item)
+                return
             for _ in range(5):
                 await asyncio.sleep(1)
                 if self._queue_data.get(queue.queue_id) is not queue_data:
@@ -663,6 +674,59 @@ class PlaybackTrackerMixin(_PlayerQueuesBase):
             return
         self.logger.info("End of queue reached for %s, marking it as ended", queue.display_name)
         self.mark_ended(queue.queue_id)
+
+    def _handle_sleep_timer(
+        self, queue: PlayerQueue, prev_state: CompareState, new_state: CompareState
+    ) -> None:
+        """Stop the queue once it reaches the point its sleep timer waits for."""
+        queue_id = queue.queue_id
+        target = self._queue_data[queue_id].sleep_timer_target
+        if target is None:
+            return
+        if not queue.active:
+            # another source took the player, there is nothing left to stop
+            self._clear_sleep_timer(queue_id)
+            return
+        if new_state["state"] == PlaybackState.IDLE:
+            # the player stopped, or ran out of audio: the queue feeds nothing past the target
+            self._stop_for_sleep_timer(queue_id)
+            return
+        current_item_id = new_state["current_item_id"]
+        if current_item_id is None or (
+            current_item_id != target.queue_item_id
+            and current_item_id == prev_state["current_item_id"]
+        ):
+            # between items, or a report that lags behind a switch: the next one names the item
+            return
+        # a player that holds its next item, or the target as its own repeat, moves on from the
+        # end of the target on its own
+        left_target_end = (
+            prev_state["current_item_id"] == target.queue_item_id
+            and prev_state["last_playing_elapsed_time"]
+            >= target.stop_position - SLEEP_TIMER_NATURAL_END_MARGIN
+        )
+        if current_item_id != target.queue_item_id:
+            if left_target_end:
+                self._stop_for_sleep_timer(queue_id)
+            else:
+                # a skip on the device: stop at the end of what plays now
+                self._repin_sleep_timer(queue_id)
+            return
+        # the position jumped back to the start: the player started the target over. A short
+        # target also passes the end margin during ordinary playback, which only moves forward
+        started_over = (
+            left_target_end
+            and queue.corrected_elapsed_time < SLEEP_TIMER_NATURAL_END_MARGIN
+            and queue.corrected_elapsed_time < prev_state["last_playing_elapsed_time"] - 1
+        )
+        if new_state["state"] == PlaybackState.PLAYING and (
+            queue.corrected_elapsed_time >= target.stop_position or started_over
+        ):
+            self._stop_for_sleep_timer(queue_id)
+            return
+        self.mass.players.update_sleep_timer_expires_at(
+            queue_id, self._sleep_timer_expires_at(queue)
+        )
 
     def _handle_playback_progress_report(
         self, queue: PlayerQueue, prev_state: CompareState, new_state: CompareState
