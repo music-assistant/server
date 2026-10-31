@@ -225,6 +225,124 @@ async def test_track_enrichment_survives_provider_error() -> None:
     assert track.metadata.last_refresh == NOW
 
 
+def _lyrics_provider(lyrics: MediaItemMetadata | Exception | None) -> MagicMock:
+    """Return a mock metadata provider that looks up lyrics, such as LRCLIB."""
+    provider = _metadata_provider("lyrics", ProviderFeature.TRACK_METADATA)
+    provider.supported_features.add(ProviderFeature.LYRICS)
+    if isinstance(lyrics, Exception):
+        provider.get_track_metadata = AsyncMock(side_effect=lyrics)
+    else:
+        # like LRCLIB, a track that already has lyrics is not looked up
+        provider.get_track_metadata = AsyncMock(
+            side_effect=lambda track: (
+                None if track.metadata.lyrics or track.metadata.lrc_lyrics else lyrics
+            )
+        )
+    return provider
+
+
+def _track_with_lyrics(
+    lyrics: str | None, lrc_lyrics: str | None, *mappings: ProviderMapping
+) -> Track:
+    """Return a library track with the given stored lyrics and provider mappings."""
+    return Track(
+        item_id="1",
+        provider="library",
+        name="Test Track",
+        provider_mappings=set(mappings),
+        metadata=MediaItemMetadata(lyrics=lyrics, lrc_lyrics=lrc_lyrics),
+    )
+
+
+def _replaced_lyrics(enrichment: MetadataEnrichmentMixin) -> AsyncMock:
+    """Return the stub that writes lyrics over the stored ones."""
+    return cast("AsyncMock", _mass(enrichment).music.tracks.replace_metadata)
+
+
+@pytest.mark.asyncio
+async def test_forced_track_refresh_looks_up_the_lyrics_again() -> None:
+    """A forced refresh drops the stored lyrics and stores the ones looked up uncached."""
+    enrichment = _enrichment()
+    enrichment.providers = [  # type: ignore[misc]
+        _lyrics_provider(MediaItemMetadata(lrc_lyrics="[00:01.00]fixed"))
+    ]
+    track = _track_with_lyrics("wrong", "[00:01.00]wrong")
+
+    await enrichment._update_track_metadata(track, force_refresh=True)
+
+    _mass(enrichment).cache.handle_refresh.assert_any_call(True)
+    _replaced_lyrics(enrichment).assert_awaited_once_with(
+        "1", {"lyrics": None, "lrc_lyrics": "[00:01.00]fixed"}
+    )
+    assert (track.metadata.lyrics, track.metadata.lrc_lyrics) == (None, "[00:01.00]fixed")
+
+
+@pytest.mark.asyncio
+async def test_track_refresh_that_is_not_forced_keeps_the_stored_lyrics() -> None:
+    """A refresh that is due keeps the stored lyrics and reads the lookup cache."""
+    enrichment = _enrichment()
+    lyrics_provider = _lyrics_provider(MediaItemMetadata(lyrics="other"))
+    enrichment.providers = [lyrics_provider]  # type: ignore[misc]
+    track = _track_with_lyrics("stored", None)
+
+    await enrichment._update_track_metadata(track, force_refresh=False)
+
+    _mass(enrichment).cache.handle_refresh.assert_called_once_with(False)
+    _replaced_lyrics(enrichment).assert_not_awaited()
+    assert (track.metadata.lyrics, track.metadata.lrc_lyrics) == ("stored", None)
+
+
+@pytest.mark.asyncio
+async def test_forced_track_refresh_takes_the_lyrics_of_the_local_file_first() -> None:
+    """The lyrics are read again from the music providers, a local file first."""
+    enrichment = _enrichment()
+    local = ProviderMapping(
+        item_id="local", provider_domain="filesystem_local", provider_instance="local_1"
+    )
+    streaming = ProviderMapping(item_id="tidal", provider_domain="tidal", provider_instance="t_1")
+    prov_items = {
+        "local": _track_with_lyrics("local plain", None),
+        "tidal": _track_with_lyrics("tidal plain", None),
+    }
+    _mass(enrichment).music.tracks.get_provider_item = AsyncMock(
+        side_effect=lambda item_id, _instance: prov_items[item_id]
+    )
+    lyrics_provider = _lyrics_provider(MediaItemMetadata(lyrics="lrclib"))
+    enrichment.providers = [lyrics_provider]  # type: ignore[misc]
+    track = _track_with_lyrics("wrong", None, streaming, local)
+
+    await enrichment._update_track_metadata(track, force_refresh=True)
+
+    _replaced_lyrics(enrichment).assert_awaited_once_with(
+        "1", {"lyrics": "local plain", "lrc_lyrics": None}
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("lookup", "online_metadata"),
+    [
+        (RetriesExhausted("retries exhausted"), True),
+        (MediaItemMetadata(lyrics="lrclib"), False),
+    ],
+    ids=["lookup_failed", "online_metadata_disabled"],
+)
+async def test_forced_track_refresh_without_a_lookup_keeps_the_stored_lyrics(
+    lookup: MediaItemMetadata | Exception, online_metadata: bool
+) -> None:
+    """Lyrics that could not be looked up again are not dropped."""
+    enrichment = _enrichment()
+    if not online_metadata:
+        enrichment.config.get_value = lambda *_args, **_kwargs: False  # type: ignore[method-assign]
+    enrichment.providers = [_lyrics_provider(lookup)]  # type: ignore[misc]
+    track = _track_with_lyrics("stored", "[00:01.00]stored")
+
+    await enrichment._update_track_metadata(track, force_refresh=True)
+
+    _replaced_lyrics(enrichment).assert_not_awaited()
+    assert (track.metadata.lyrics, track.metadata.lrc_lyrics) == ("stored", "[00:01.00]stored")
+
+
 @pytest.mark.asyncio
 async def test_artist_enrichment_survives_provider_error() -> None:
     """A raising artist metadata provider is logged and skipped; later providers still run."""
