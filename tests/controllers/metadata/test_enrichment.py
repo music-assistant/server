@@ -1366,6 +1366,27 @@ async def test_track_identity_fills_recording_id_and_isrcs_and_links() -> None:
 
 
 @pytest.mark.asyncio
+async def test_track_refresh_keeps_the_provider_tracks_isrcs() -> None:
+    """The ISRCs of the provider's full track are added to the library track's own."""
+    enrichment = _enrichment()
+    track = _track({(ExternalID.ISRC, "GBSTK0700001")})
+    track.provider_mappings = {
+        ProviderMapping(item_id="sp-1", provider_domain="spotify", provider_instance="spotify_1")
+    }
+    prov_track = _track({(ExternalID.ISRC, "USRC17607839"), (ExternalID.ISRC, "not-an-isrc")})
+    _mass(enrichment).music.tracks.get_provider_item = AsyncMock(return_value=prov_track)
+
+    await enrichment._update_track_metadata(track, force_refresh=True)
+
+    assert {value for kind, value in track.external_ids if kind == ExternalID.ISRC} == {
+        "GBSTK0700001",
+        "USRC17607839",
+    }
+    _mass(enrichment).music.tracks.get_provider_item.assert_awaited_once_with("sp-1", "spotify_1")
+    _mass(enrichment).music.tracks.update_item_in_library.assert_awaited_once_with("1", track)
+
+
+@pytest.mark.asyncio
 async def test_track_identity_keeps_an_existing_recording_id_and_marks_a_miss() -> None:
     """A recording id the track carries wins; a track MusicBrainz does not know is marked."""
     recording = MusicBrainzRecording(id=RECORDING_ID, title="15 Step")
