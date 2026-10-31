@@ -11,10 +11,11 @@ from __future__ import annotations
 
 from functools import partial
 from typing import cast
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from music_assistant_models.enums import PlayerType
+from music_assistant_models.player import PlayerSource
 
 from music_assistant.providers.chromecast.constants import (
     APP_MEDIA_RECEIVER,
@@ -54,6 +55,7 @@ def _fake_cast(
     fake.cc.app_id = running_app_id
     fake.app_quit_sent = False
     fake._app_quit_task_id = "cast_quit_app_test"
+    fake._app_track_change_task_id = "cast_app_track_change_test"
     fake.cancel_pending_app_quit = partial(
         ChromecastPlayer.cancel_pending_app_quit, cast("ChromecastPlayer", fake)
     )
@@ -101,6 +103,21 @@ async def test_stop_ends_a_foreign_cast_session_right_away(app_id: str | None) -
     fake.cc.quit_app.assert_called_once()
     fake.mass.call_later.assert_not_called()
     assert fake.app_quit_sent is True
+
+
+async def test_stop_pauses_a_foreign_app_that_can_pause() -> None:
+    """Quitting would disconnect the phone that casts, so an app that can pause stays."""
+    fake = _fake_cast(running_app_id="some_other_app")
+    fake._attr_active_source = "tunein"
+    fake._attr_source_list = [
+        PlayerSource(id="tunein", name="TuneIn", passive=True, can_play_pause=True)
+    ]
+    fake.pause = AsyncMock()
+
+    await _stop(fake)
+
+    fake.pause.assert_awaited_once()
+    fake.cc.quit_app.assert_not_called()
 
 
 async def test_stop_on_a_group_leaves_the_app_alone() -> None:

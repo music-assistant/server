@@ -364,6 +364,7 @@ _RENDERER = "http://192.168.1.42:54730/renderer.xml"
 def _room_player(location: str | None = _RENDERER) -> RaumfeldPlayer:
     """Build a RaumfeldPlayer for a room whose own renderer is at the given location."""
     player = _flow_player()
+    player._Player__attr_linked_protocols = []  # type: ignore[attr-defined]
     player.room = "Bar"
     provider = MagicMock()
     provider.room_renderer_location.return_value = location
@@ -2605,3 +2606,20 @@ def test_the_timer_announces_the_first_track_of_a_repeated_queue() -> None:
     player._announce_upcoming("q1", "q3")
 
     assert player._announced_item_id == "q1"
+
+
+async def test_an_app_cast_past_the_host_is_not_read_from_the_room_renderer() -> None:
+    """A room still flagged for Spotify Connect plays nothing itself while an app is cast."""
+    player, _ = _external_player()
+    player._attr_playback_state = PlaybackState.PLAYING
+    with (
+        patch.object(player, "linked_foreign_player", return_value=MagicMock()),
+        patch.object(player, "_update_volume", AsyncMock()),
+        patch.object(player, "_update_poll_interval"),
+        patch.object(player, "update_state"),
+        patch.object(player, "_read_room_state", AsyncMock()) as read_state,
+    ):
+        await player._poll_room_playback(MagicMock())
+
+    read_state.assert_not_awaited()
+    assert player._attr_playback_state == PlaybackState.IDLE

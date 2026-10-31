@@ -763,7 +763,7 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
             msg = f"Player {player.display_name} does not support seeking"
             raise UnsupportedFeaturedException(msg)
         # handle command on player directly
-        await player.seek(position)
+        await (player.foreign_protocol_player or player).seek(position)
 
     @api_command("players/cmd/shuffle", required_scope=Scope.PLAYERS_CONTROL)
     @handle_player_command
@@ -860,7 +860,7 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
                 (x for x in player.state.source_list if x.id == active_source_id), None
             )
             if active_source and active_source.can_next_previous:
-                await player.next_track()
+                await (player.foreign_protocol_player or player).next_track()
                 return
             msg = "This action is (currently) unavailable for this source."
             raise PlayerCommandFailed(msg)
@@ -886,7 +886,7 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
                 (x for x in player.state.source_list if x.id == active_source_id), None
             )
             if active_source and active_source.can_next_previous:
-                await player.previous_track()
+                await (player.foreign_protocol_player or player).previous_track()
                 return
             msg = "This action is (currently) unavailable for this source."
             raise PlayerCommandFailed(msg)
@@ -4994,7 +4994,7 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         """
         player = self.get_player(player_id, raise_unavailable=True)
         assert player is not None
-        protocol_player: Player | None = None
+        protocol_player: Player | None = player.foreign_protocol_player
         if player.active_output_protocol and player.active_output_protocol != "native":
             protocol_player = self.get_player(player.active_output_protocol)
         if player.state.playback_state == PlaybackState.IDLE:
@@ -5063,7 +5063,7 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
                 )
                 raise PlayerCommandFailed(msg)
             # Delegate to active protocol player if one is active
-            if target_player := self._get_control_target(
+            if target_player := player.foreign_protocol_player or self._get_control_target(
                 player, PlayerFeature.PAUSE, require_active=True
             ):
                 await target_player.play()
@@ -5129,7 +5129,7 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
             )
             raise PlayerCommandFailed(msg)
         # Delegate to active protocol player if one is active
-        if target_player := self._get_control_target(
+        if target_player := player.foreign_protocol_player or self._get_control_target(
             player, PlayerFeature.PAUSE, require_active=True
         ):
             await target_player.pause()

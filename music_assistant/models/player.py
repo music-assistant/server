@@ -68,6 +68,7 @@ from music_assistant.constants import (
     CONF_UNDERLYING_PLAYER_ID,
     CONF_VOLUME_CONTROL,
     EXTERNAL_SOURCES,
+    FOREIGN_PROTOCOL_FEATURES,
     PLAYER_CONTROL_PROTOCOL,
     PROTOCOL_FEATURES,
     PROTOCOL_PRIORITY,
@@ -2030,6 +2031,42 @@ class Player(ABC):
         self.__attr_active_output_protocol = protocol_id
         self.update_state()
 
+    @cached_property
+    @final
+    def foreign_protocol_player(self) -> Player | None:
+        """Return the linked protocol player whose app to show and control on this player."""
+        if (
+            (foreign_player := self.linked_foreign_player())
+            and self.__attr_active_output_protocol in (None, "native")
+            and self.playback_state != PlaybackState.PLAYING
+            # a paused player keeps its place, until an app actually plays over it
+            and (
+                self.playback_state != PlaybackState.PAUSED
+                or foreign_player.playback_state == PlaybackState.PLAYING
+            )
+            and not self.__final_synced_to
+            and not self.__final_active_group
+            and self.mass.players.get_audio_source_session(self.player_id) is None
+        ):
+            return foreign_player
+        return None
+
+    @final
+    def linked_foreign_player(self) -> Player | None:
+        """Return the linked protocol player that plays an app Music Assistant did not start."""
+        for linked in self.__attr_linked_protocols:
+            protocol_player = self.mass.players.get_player(linked.output_protocol_id)
+            if (
+                protocol_player is not None
+                and protocol_player.available
+                and protocol_player.playback_state in (PlaybackState.PLAYING, PlaybackState.PAUSED)
+                # Music Assistant's own playback through a protocol reports no source, and
+                # following a group is no source of its own
+                and any(x.id == protocol_player.active_source for x in protocol_player.source_list)
+            ):
+                return protocol_player
+        return None
+
     @final
     def set_linked_output_protocols(self, protocols: list[LinkedOutputProtocol]) -> None:
         """
@@ -2852,6 +2889,7 @@ class Player(ABC):
             self.__final_active_group
             or self.__final_synced_to
             or (self.type == PlayerType.PROTOCOL and self.__attr_protocol_parent_id)
+            or self.foreign_protocol_player
         )
         position, timestamp, jumped = _reconcile_position_anchor(
             prev_media.elapsed_time,
@@ -2895,6 +2933,10 @@ class Player(ABC):
             playback_state = protocol_player.state.playback_state
             elapsed_time = protocol_player.state.elapsed_time
             elapsed_time_last_updated = protocol_player.state.elapsed_time_last_updated
+        elif foreign_player := self.foreign_protocol_player:
+            playback_state = foreign_player.playback_state
+            elapsed_time = foreign_player.elapsed_time
+            elapsed_time_last_updated = foreign_player.elapsed_time_last_updated
         # If we're synced to another player, mirror the leader's state so that
         # synced clients report the same playback info as their leader.
         elif (parent_id := self.__final_synced_to) and (
@@ -3070,6 +3112,8 @@ class Player(ABC):
         # a live external source reports what it plays itself
         if (session := self.mass.players.get_audio_source_session(self.player_id)) is not None:
             return self.__audio_source_media(session)
+        if foreign_player := self.foreign_protocol_player:
+            return foreign_player.current_media
         # if MA queue is active, return those details
         active_source = self.__final_active_source
         active_queue: PlayerQueue | None = None
@@ -3281,6 +3325,14 @@ class Player(ABC):
                     repeat_mode=session.repeat_mode,
                 )
             )
+        # an app on a linked protocol player, with what that player offers for it; the same
+        # service among the player's own sources is another way to play it
+        if foreign_player := self.foreign_protocol_player:
+            app_source = next(
+                x for x in foreign_player.source_list if x.id == foreign_player.active_source
+            )
+            sources = UniqueList(x for x in sources if x.id != app_source.id)
+            sources.append(app_source)
         # standing entries for the audio sources plugins bound to this player or report
         # as inputs of its own device, so they are selectable from the source menu
         # without a session being active first;
@@ -3407,6 +3459,8 @@ class Player(ABC):
                 for feature in protocol_player.supported_features:
                     if feature in ACTIVE_PROTOCOL_FEATURES:
                         base_features.add(feature)
+        if foreign_player := self.foreign_protocol_player:
+            base_features |= foreign_player.supported_features & FOREIGN_PROTOCOL_FEATURES
         # Append (allowed features) from all linked protocols
         for linked in self.__attr_linked_protocols:
             if protocol_player := self.mass.players.get_player(linked.output_protocol_id):
@@ -3556,6 +3610,10 @@ class Player(ABC):
         # put it there, so it outranks whatever the device reports about itself
         if (session := self.mass.players.get_audio_source_session(self.player_id)) is not None:
             return session.active_source
+
+        # an app on a linked protocol player plays past this player, which plays nothing itself
+        if foreign_player := self.foreign_protocol_player:
+            return foreign_player.active_source
 
         # always prefer active MA source but add a guard to detect if player is really playing
         # something different, such as a line-in or TV input. Many players do not accurately
