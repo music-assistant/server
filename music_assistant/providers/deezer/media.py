@@ -854,6 +854,32 @@ class DeezerMediaManager:
             )
             await self.provider.browse_manager.invalidate_playlist_cache(prov_playlist_id)
 
+    async def move_playlist_track(
+        self, prov_playlist_id: str, from_position: int, to_position: int
+    ) -> None:
+        """Move one track of a playlist to another position (both 1-based)."""
+        playlist_tracks = await self.provider.browse_manager.get_playlist_tracks(
+            prov_playlist_id, 0
+        )
+        positions = [track.position for track in playlist_tracks]
+        if from_position not in positions or to_position not in positions:
+            msg = f"Position out of range for a playlist of {len(positions)} track(s)"
+            raise InvalidDataError(msg)
+        track_ids = [track.item_id for track in playlist_tracks]
+        to_index = positions.index(to_position)
+        track_id = track_ids.pop(positions.index(from_position))
+        track_ids.insert(to_index, track_id)
+        # Deezer places the track behind another one, or at the top without one
+        result = await self.provider.gql_client.move_track_in_playlist(
+            playlist_id=prov_playlist_id,
+            track_id=track_id,
+            after_track_id=track_ids[to_index - 1] if to_index else None,
+        )
+        if not result.move_status:
+            msg = f"Deezer did not move track {track_id} in playlist {prov_playlist_id}"
+            raise InvalidDataError(msg)
+        await self.provider.browse_manager.invalidate_playlist_cache(prov_playlist_id)
+
     async def create_playlist(self, name: str, media_types: set[MediaType]) -> Playlist:
         """Create a new playlist on provider with given name."""
         result = await self.provider.gql_client.create_playlist(
