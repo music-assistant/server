@@ -100,10 +100,16 @@ class ArtistsController(MediaControllerBase[Artist]):
         # register (extra) api handlers
         api_base = self.api_base
         self.mass.register_api_command(
-            f"music/{api_base}/artist_albums", self.albums, required_scope=Scope.LIBRARY_READ
+            f"music/{api_base}/artist_albums",
+            self.albums,
+            required_scope=Scope.LIBRARY_READ,
+            allow_impersonation=True,
         )
         self.mass.register_api_command(
-            f"music/{api_base}/artist_tracks", self.tracks, required_scope=Scope.LIBRARY_READ
+            f"music/{api_base}/artist_tracks",
+            self.tracks,
+            required_scope=Scope.LIBRARY_READ,
+            allow_impersonation=True,
         )
         self.mass.register_api_command(
             f"music/{api_base}/artist_tracks_count",
@@ -317,9 +323,6 @@ class ArtistsController(MediaControllerBase[Artist]):
                 provider_instance_id_or_domain,
                 lambda instance_id: self.get_provider_artist_tracks(item_id, instance_id),
                 item_type=Track,
-                # without an artist tracks listing the artist's albums are listed, whose
-                # library tracks follow the calling user's music sources
-                narrowed_to=self._ensure_provider_filter(None),
             )
         if favorite is not None:
             tracks = [track for track in tracks if track.favorite is favorite]
@@ -980,8 +983,8 @@ class ArtistsController(MediaControllerBase[Artist]):
         if artist_type == ArtistType.SINGER:
             self.logger.warning("Audiobooks not supported for artist_type SINGER.")
             return []
-        # always check if we have a library item for this artist
-        library_artist = await self.get_library_item_by_prov_id(
+        # always check if we have a library item for this artist (on the user's sources)
+        library_artist = await self.get_visible_library_item_by_prov_id(
             item_id, provider_instance_id_or_domain
         )
         if library_artist and library_artist.artist_type == ArtistType.SINGER:
@@ -991,6 +994,9 @@ class ArtistsController(MediaControllerBase[Artist]):
             return []
         if not library_artist:
             self._validate_provider_filter(provider_instance_id_or_domain, provider_filter)
+            provider_instance_id_or_domain = self.mass.music.resolve_visible_provider(
+                provider_instance_id_or_domain
+            ).instance_id
             if artist_type == ArtistType.AUTHOR:
                 return _listed(
                     await self.get_provider_author_audiobooks(
@@ -1058,7 +1064,7 @@ class ArtistsController(MediaControllerBase[Artist]):
                     continue
                 unique_ids.add(unique_id)
                 # prefer db item
-                if db_item := await self.mass.music.audiobooks.get_library_item_by_prov_id(
+                if db_item := await self.mass.music.audiobooks.get_visible_library_item_by_prov_id(
                     provider_audiobook.item_id, provider_audiobook.provider
                 ):
                     result.append(db_item)
@@ -1102,15 +1108,15 @@ class ArtistsController(MediaControllerBase[Artist]):
     ) -> list[Audiobook]:
         """Return audiobooks for an author on given provider."""
         assert provider_instance_id_or_domain != "library"
-        if not (prov := self.mass.get_provider(provider_instance_id_or_domain)):
+        if not (prov := self.mass.music.get_visible_provider(provider_instance_id_or_domain)):
             return []
         prov = cast("MusicProvider", prov)
         if ProviderFeature.AUTHOR_AUDIOBOOKS in prov.supported_features:
             return await prov.get_author_audiobooks(item_id)
-        # fallback implementation using the db
+        # fallback implementation using the db, on the (visible) account that answers
         return await self._get_db_author_narrator_audiobooks(
             item_id=item_id,
-            provider_instance_id_or_domain=provider_instance_id_or_domain,
+            provider_instance_id_or_domain=prov.instance_id,
             artist_type=ArtistType.AUTHOR,
         )
 
@@ -1121,15 +1127,15 @@ class ArtistsController(MediaControllerBase[Artist]):
     ) -> list[Audiobook]:
         """Return audiobooks for an author on given provider."""
         assert provider_instance_id_or_domain != "library"
-        if not (prov := self.mass.get_provider(provider_instance_id_or_domain)):
+        if not (prov := self.mass.music.get_visible_provider(provider_instance_id_or_domain)):
             return []
         prov = cast("MusicProvider", prov)
         if ProviderFeature.NARRATOR_AUDIOBOOKS in prov.supported_features:
             return await prov.get_narrator_audiobooks(item_id)
-        # fallback implementation using the db
+        # fallback implementation using the db, on the (visible) account that answers
         return await self._get_db_author_narrator_audiobooks(
             item_id=item_id,
-            provider_instance_id_or_domain=provider_instance_id_or_domain,
+            provider_instance_id_or_domain=prov.instance_id,
             artist_type=ArtistType.NARRATOR,
         )
 
@@ -1143,11 +1149,9 @@ class ArtistsController(MediaControllerBase[Artist]):
 
         Each track is resolved to its in-library equivalent where available.
         """
-        provider = self.mass.get_provider(
-            provider_instance_id_or_domain, provider_type=MusicProvider
-        )
-        if provider is None or not provider.available:
-            return []  # guard against unavailable provider
+        provider = self.mass.music.get_visible_provider(provider_instance_id_or_domain)
+        if not isinstance(provider, MusicProvider) or not provider.available:
+            return []  # guard against an unavailable or hidden provider
         if not provider.supports_feature(ProviderFeature.ARTIST_TOPTRACKS):
             self.logger.warning(
                 "Provider %s does not support fetching artist top tracks.",
@@ -1158,7 +1162,9 @@ class ArtistsController(MediaControllerBase[Artist]):
         # resolve to in-library equivalents (in parallel) where available
         resolved = await asyncio.gather(
             *(
-                self.mass.music.tracks.get_library_item_by_prov_id(track.item_id, track.provider)
+                self.mass.music.tracks.get_visible_library_item_by_prov_id(
+                    track.item_id, track.provider
+                )
                 for track in tracks
             )
         )
@@ -1182,7 +1188,7 @@ class ArtistsController(MediaControllerBase[Artist]):
         :param item_id: The library item ID of the artist.
         :param provider_filter: Optional provider instance ID, or IDs, to limit the result to.
         """
-        ref_item = await self.get_library_item(item_id)
+        ref_item = await self._get_visible_library_item(item_id)
         listings, incomplete = await self._get_library_artist_listings(
             ref_item,
             ProviderFeature.ARTIST_TOPTRACKS,
@@ -1215,11 +1221,9 @@ class ArtistsController(MediaControllerBase[Artist]):
 
         Each album is resolved to its in-library equivalent where available.
         """
-        provider = self.mass.get_provider(
-            provider_instance_id_or_domain, provider_type=MusicProvider
-        )
-        if provider is None or not provider.available:
-            return []  # guard against unavailable provider
+        provider = self.mass.music.get_visible_provider(provider_instance_id_or_domain)
+        if not isinstance(provider, MusicProvider) or not provider.available:
+            return []  # guard against an unavailable or hidden provider
         if not provider.supports_feature(ProviderFeature.ARTIST_TOPALBUMS):
             self.logger.warning(
                 "Provider %s does not support fetching artist top albums.",
@@ -1230,7 +1234,9 @@ class ArtistsController(MediaControllerBase[Artist]):
         # resolve to in-library equivalents (in parallel) where available
         resolved = await asyncio.gather(
             *(
-                self.mass.music.albums.get_library_item_by_prov_id(album.item_id, album.provider)
+                self.mass.music.albums.get_visible_library_item_by_prov_id(
+                    album.item_id, album.provider
+                )
                 for album in albums
             )
         )
@@ -1254,7 +1260,7 @@ class ArtistsController(MediaControllerBase[Artist]):
         :param item_id: The library item ID of the artist.
         :param provider_filter: Optional provider instance ID to limit the result to.
         """
-        ref_item = await self.get_library_item(item_id)
+        ref_item = await self._get_visible_library_item(item_id)
         allowed = self._ensure_provider_filter(provider_filter)
         # fetch each provider's ranked top albums in parallel
         # streaming providers attached to the artist (results resolved to library items)
@@ -1311,11 +1317,9 @@ class ArtistsController(MediaControllerBase[Artist]):
         albums are listed: a failing album leaves the listing incomplete, and is only raised
         when it leaves nothing to play.
         """
-        provider = self.mass.get_provider(
-            provider_instance_id_or_domain, provider_type=MusicProvider
-        )
-        if provider is None or not provider.available:
-            return Listing([])  # guard against unavailable provider
+        provider = self.mass.music.get_visible_provider(provider_instance_id_or_domain)
+        if not isinstance(provider, MusicProvider) or not provider.available:
+            return Listing([])  # guard against an unavailable or hidden provider
         if provider.supports_feature(ProviderFeature.ARTIST_TRACKS):
             return Listing(await provider.get_artist_tracks(item_id))
         # fallback: enumerate (and dedupe) the tracks of all the artist's albums on the provider
@@ -1356,7 +1360,7 @@ class ArtistsController(MediaControllerBase[Artist]):
     ) -> list[Track]:
         """Return all in-library tracks for an artist, optionally limited to a single provider."""
         db_id = int(item_id)  # ensure integer
-        library_item = await self.get_library_item(db_id)
+        library_item = await self._get_visible_library_item(db_id)
         if library_item.artist_type != ArtistType.SINGER:
             self.logger.debug("Tracks only available for artists of type ARTIST")
             return []
@@ -1376,11 +1380,9 @@ class ArtistsController(MediaControllerBase[Artist]):
         provider_instance_id_or_domain: str,
     ) -> list[Album]:
         """Return albums for an artist on given provider."""
-        provider = self.mass.get_provider(
-            provider_instance_id_or_domain, provider_type=MusicProvider
-        )
-        if provider is None or not provider.available:
-            return []  # guard against unavailable provider
+        provider = self.mass.music.get_visible_provider(provider_instance_id_or_domain)
+        if not isinstance(provider, MusicProvider) or not provider.available:
+            return []  # guard against an unavailable or hidden provider
         if not provider.supports_feature(ProviderFeature.ARTIST_ALBUMS):
             self.logger.warning(
                 "Provider %s does not support fetching all artist albums.",
@@ -1396,7 +1398,7 @@ class ArtistsController(MediaControllerBase[Artist]):
     ) -> list[Album]:
         """Return all in-library albums for an artist, optionally limited to a single provider."""
         db_id = int(item_id)  # ensure integer
-        library_item = await self.get_library_item(db_id)
+        library_item = await self._get_visible_library_item(db_id)
         if library_item.artist_type != ArtistType.SINGER:
             self.logger.debug("Albums only available for artists of type ARTIST")
             return []
@@ -1428,6 +1430,7 @@ class ArtistsController(MediaControllerBase[Artist]):
         return await self.mass.music.albums.get_library_items_by_query(
             extra_query_parts=query_parts,
             extra_query_params=query_params,
+            provider_filter=self._ensure_provider_filter(provider_filter),
             limit=0,  # no limit, the full list is returned
             sort_field=SortField.YEAR,
             sort_direction=SortDirection.DESC,
@@ -1445,11 +1448,9 @@ class ArtistsController(MediaControllerBase[Artist]):
 
         Each artist is resolved to its in-library equivalent where available.
         """
-        provider = self.mass.get_provider(
-            provider_instance_id_or_domain, provider_type=MusicProvider
-        )
-        if provider is None or not provider.available:
-            return []  # guard against unavailable provider
+        provider = self.mass.music.get_visible_provider(provider_instance_id_or_domain)
+        if not isinstance(provider, MusicProvider) or not provider.available:
+            return []  # guard against an unavailable or hidden provider
         if not provider.supports_feature(ProviderFeature.SIMILAR_ARTISTS):
             self.logger.warning(
                 "Provider %s does not support fetching similar artists.",
@@ -1460,7 +1461,7 @@ class ArtistsController(MediaControllerBase[Artist]):
         # resolve to in-library equivalents (in parallel) where available
         resolved = await asyncio.gather(
             *(
-                self.get_library_item_by_prov_id(artist.item_id, artist.provider)
+                self.get_visible_library_item_by_prov_id(artist.item_id, artist.provider)
                 for artist in artists
             )
         )
@@ -1487,7 +1488,7 @@ class ArtistsController(MediaControllerBase[Artist]):
         :param provider_filter: Optional provider instance ID to limit the result to.
         :param limit: Maximum number of similar artists to return.
         """
-        ref_item = await self.get_library_item(item_id)
+        ref_item = await self._get_visible_library_item(item_id)
         listings, incomplete = await self._get_library_artist_listings(
             ref_item,
             ProviderFeature.SIMILAR_ARTISTS,
@@ -1514,7 +1515,12 @@ class ArtistsController(MediaControllerBase[Artist]):
         """Get all supported in-library artist types."""
         artist_types: list[ArtistType] = []
         query = f"SELECT DISTINCT artist_type FROM {DB_TABLE_ARTISTS}"
-        rows = await self.mass.music.database.get_rows_from_query(query)
+        query_params: dict[str, Any] = {}
+        if provider_filter := self._ensure_provider_filter(None):
+            query += " WHERE " + self._provider_filter_clause(
+                query_params, provider_filter, in_library_only=True
+            )
+        rows = await self.mass.music.database.get_rows_from_query(query, query_params)
         for row in rows:
             artist_types.append(ArtistType(row["artist_type"]))
         return artist_types
@@ -1552,6 +1558,8 @@ class ArtistsController(MediaControllerBase[Artist]):
         if len(ref_tracks) < 10:
             # fetch reference tracks from provider(s) attached to the artist
             for provider_mapping in db_artist.provider_mappings:
+                if not self.mass.music.get_visible_provider(provider_mapping.provider_instance):
+                    continue
                 with contextlib.suppress(ProviderUnavailableError, MediaNotFoundError):
                     ref_tracks += await self.mass.music.artists.tracks(
                         provider_mapping.item_id, provider_mapping.provider_instance
@@ -1574,6 +1582,8 @@ class ArtistsController(MediaControllerBase[Artist]):
         if len(ref_albums) < 10:
             # fetch reference albums from provider(s) attached to the artist
             for provider_mapping in db_artist.provider_mappings:
+                if not self.mass.music.get_visible_provider(provider_mapping.provider_instance):
+                    continue
                 with contextlib.suppress(ProviderUnavailableError, MediaNotFoundError):
                     ref_albums += await self.mass.music.artists.albums(
                         provider_mapping.item_id, provider_mapping.provider_instance
@@ -1694,6 +1704,13 @@ class ArtistsController(MediaControllerBase[Artist]):
             )
         return Artist.from_dict({**item.to_dict(), "provider_mappings": provider_mappings})
 
+    async def _get_visible_library_item(self, item_id: str | int) -> Artist:
+        """Return the library artist, not found when none of its sources is the caller's."""
+        artist = await self.get_visible_library_item_by_prov_id(str(item_id), "library")
+        if artist is None:
+            raise MediaNotFoundError(f"Artist {item_id} not found in library")
+        return artist
+
     def _validate_provider_filter(
         self, provider_instance_id_or_domain: str, provider_filter: str | None
     ) -> None:
@@ -1724,8 +1741,9 @@ class ArtistsController(MediaControllerBase[Artist]):
         ):
             if allowed is not None and provider_mapping.provider_instance not in allowed:
                 continue
-            music_prov = self.mass.get_provider(
-                provider_mapping.provider_instance, provider_type=MusicProvider
+            music_prov = cast(
+                "MusicProvider | None",
+                self.mass.music.get_visible_provider(provider_mapping.provider_instance),
             )
             if music_prov is None:
                 unanswered = True
@@ -1986,7 +2004,7 @@ class ArtistsController(MediaControllerBase[Artist]):
                 limit=0,
                 extra_query_parts=[query],
                 extra_query_params={"artist_id": db_artist_id},
-                provider_filter=[provider_instance_id_or_domain],
+                provider_filter=self._ensure_provider_filter(provider_instance_id_or_domain),
             )
         return []
 
@@ -2008,7 +2026,7 @@ class ArtistsController(MediaControllerBase[Artist]):
         if provider_instance_id_or_domain != "library":
             msg = "A discography is only available for library artists"
             raise InvalidDataError(msg)
-        artist = await self.get_library_item(item_id)
+        artist = await self._get_visible_library_item(item_id)
         musicbrainz = cast("MusicbrainzProvider | None", self.mass.get_provider("musicbrainz"))
         if musicbrainz is None:
             return None
@@ -2035,7 +2053,7 @@ class ArtistsController(MediaControllerBase[Artist]):
         provider_filter: str | None,
     ) -> tuple[list[str], dict[str, Any]] | None:
         db_id = int(item_id)
-        library_item = await self.get_library_item(db_id)
+        library_item = await self._get_visible_library_item(db_id)
         if library_item.artist_type != ArtistType.SINGER:
             self.logger.debug("Albums only available for artists of type ARTIST")
             return None

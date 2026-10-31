@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, MagicMock, Mock, patch
 
+import pytest
 from music_assistant_models.auth import User, UserRole
 from music_assistant_models.config_entries import ProviderAccess
 from music_assistant_models.enums import (
@@ -23,7 +24,6 @@ from tests.common import set_music_source_access
 from tests.controllers.music.helpers import create_track
 
 if TYPE_CHECKING:
-    import pytest
     from music_assistant_models.media_items import BrowseFolder, MediaItemType
 
 
@@ -167,13 +167,14 @@ async def test_rows_interleave_uneven_provider_lengths_no_tail_dropped(
     assert len(folders) == len(builtin_ids) + 4 + 1
 
 
+@pytest.mark.parametrize("row_provider", ["fake_instance", "fake"])
 async def test_items_routed_to_provider(
-    mass: MusicAssistant, monkeypatch: pytest.MonkeyPatch
+    mass: MusicAssistant, monkeypatch: pytest.MonkeyPatch, row_provider: str
 ) -> None:
-    """Items for a provider row are fetched from that provider."""
+    """Items for a provider row are fetched from that provider, named by instance or domain."""
     provider = _build(_RowsProvider)
     monkeypatch.setattr(mass, "get_provider", lambda *_a, **_k: provider)
-    items = await mass.music.recommendations.get_recommendation_items("fake_instance", "row1")
+    items = await mass.music.recommendations.get_recommendation_items(row_provider, "row1")
     assert [item.item_id for item in items] == ["prov-item"]
 
 
@@ -207,6 +208,21 @@ async def test_items_restricted_provider_returns_empty(
     items = await mass.music.recommendations.get_recommendation_items("restricted_instance", "row1")
     assert items == []
     provider.get_recommendation_items.assert_not_awaited()
+
+
+@patch("music_assistant.controllers.music.controller.get_current_user")
+async def test_items_of_a_restricted_row_are_not_served_by_another_account(
+    mock_get_user: Mock, mass: MusicAssistant, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A row of a hidden account is not answered by the user's own account of that service."""
+    mock_get_user.return_value = _restricted_user(mass)
+    mine = _build(_RowsProvider, instance_id="mine_instance")
+    mine.get_recommendation_items = AsyncMock()  # type: ignore[method-assign]
+    # the server would widen the hidden instance to the user's own account of the service
+    monkeypatch.setattr(mass, "get_provider", lambda *_a, **_k: mine)
+    items = await mass.music.recommendations.get_recommendation_items("restricted_instance", "row1")
+    assert items == []
+    mine.get_recommendation_items.assert_not_awaited()
 
 
 @patch("music_assistant.controllers.music.controller.get_current_user")

@@ -379,7 +379,7 @@ async def test_migrate_playlist_queues_validated_task(
         await tasks.run_background_task.call_args.kwargs["handler"]()
 
     assert result is queued_task
-    get_provider.assert_called_once_with(
+    get_provider.assert_called_with(
         "spotify_1",
         return_unavailable=True,
     )
@@ -483,7 +483,7 @@ async def test_migrate_playlist_accepts_static_plugin_source(
         )
         await tasks.run_background_task.call_args.kwargs["handler"]()
 
-    get_provider.assert_called_once_with(
+    get_provider.assert_called_with(
         "smart_playlist_1",
         return_unavailable=True,
     )
