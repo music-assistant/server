@@ -28,7 +28,10 @@ WAV_24 = AudioFormat(content_type=ContentType.WAV, sample_rate=44100, bit_depth=
 
 
 def _controller(
-    output_format: AudioFormat, http_profile: str, duration: int = DURATION
+    output_format: AudioFormat,
+    http_profile: str,
+    duration: int = DURATION,
+    playback_speed: float = 1.0,
 ) -> MagicMock:
     """
     Build a bare streams controller serving one queue item to a player.
@@ -36,10 +39,12 @@ def _controller(
     :param output_format: The format the player gets.
     :param http_profile: The player's HTTP profile.
     :param duration: The item's duration in seconds.
+    :param playback_speed: The playback speed of the queue item.
     """
     queue_item = QueueItem(
         queue_id=QUEUE_ID, queue_item_id=ITEM_ID, name=ITEM_ID, duration=duration
     )
+    queue_item.extra_attributes["playback_speed"] = playback_speed
     queue_item.streamdetails = StreamDetails(
         provider="local--1",
         item_id=ITEM_ID,
@@ -150,6 +155,19 @@ async def test_a_forced_wav_length_is_its_header_plus_whole_samples_and_matches_
     assert body[36:40] == b"data"
     assert struct.unpack("<L", body[40:44])[0] == data_size
     assert body[44:] == pcm
+
+
+@pytest.mark.asyncio
+async def test_a_forced_wav_at_half_speed_covers_the_rounded_off_second_twice() -> None:
+    """At half speed the second a duration was rounded down by lasts two stream seconds."""
+    wav_16 = AudioFormat(content_type=ContentType.WAV, sample_rate=44100, bit_depth=16, channels=2)
+    length, body, _encoder_format = await _serve(
+        _controller(wav_16, "forced_content_length", playback_speed=0.5), "wav", b"\x02" * 400
+    )
+    # a 128.9 s track stored as 128 s streams 257.8 s of audio at speed 0.5
+    data_size = 44100 * 4 * 258
+    assert length == 44 + data_size
+    assert struct.unpack("<L", body[40:44])[0] == data_size
 
 
 @pytest.mark.asyncio

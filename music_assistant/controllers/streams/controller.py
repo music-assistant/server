@@ -1042,8 +1042,9 @@ class StreamsController(CoreController):
                 # a slower playback speed stretches the stream, a faster one shortens it
                 effective_duration = max((queue_item.duration - seek_pos) / playback_speed, 1)
                 # a duration is rounded down to whole seconds, so the audio can run up to a
-                # second longer; the body then ends short and the connection is closed
-                wave_seconds = ceil(effective_duration) + 1
+                # second longer, which a slower playback speed stretches like the rest of
+                # the stream; the body then ends short and the connection is closed
+                wave_seconds = max(ceil((queue_item.duration - seek_pos + 1) / playback_speed), 1)
                 if (
                     output_format.content_type == ContentType.WAV
                     and (wave_data_size := calculate_content_length(output_format, wave_seconds))
