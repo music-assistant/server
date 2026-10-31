@@ -107,6 +107,7 @@ from music_assistant.controllers.webserver.helpers.auth_middleware import (
     get_current_user,
     has_player_access,
     set_current_user,
+    system_auth_context,
 )
 from music_assistant.helpers.api import api_command
 from music_assistant.helpers.colors import get_palette_for_url
@@ -4050,15 +4051,18 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         # Move the queue to the new leader. transfer_queue frees the new leader from
         # the old leader's group and stops the old leader; the playback position
         # survives because stop() stores it in resume_pos.
-        await self.mass.player_queues.transfer_queue(
-            leader.player_id, new_leader_id, auto_play=False
-        )
-        # regroup the other remaining members under the new leader
-        other_members = [m for m in remaining_members if m != new_leader_id]
-        if other_members:
-            await self.cmd_set_members(new_leader_id, player_ids_to_add=other_members)
-        if was_playing:
-            await self.mass.player_queues.resume(new_leader_id)
+        # The user's permission was checked on the player they acted on; the new leader
+        # is the server's choice, so these steps run as the server.
+        with system_auth_context():
+            await self.mass.player_queues.transfer_queue(
+                leader.player_id, new_leader_id, auto_play=False
+            )
+            # regroup the other remaining members under the new leader
+            other_members = [m for m in remaining_members if m != new_leader_id]
+            if other_members:
+                await self.cmd_set_members(new_leader_id, player_ids_to_add=other_members)
+            if was_playing:
+                await self.mass.player_queues.resume(new_leader_id)
 
     def _select_ad_hoc_leader(self, leader: Player, remaining_members: list[str]) -> str:
         """
