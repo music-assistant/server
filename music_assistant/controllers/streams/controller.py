@@ -204,11 +204,18 @@ async def _wav_passthrough_stream(
     :param output_format: PCM format of ``audio_input``, for the header sent when no
         ``header`` is given.
     :param header: The WAV header to send, instead of one for a stream of unknown length.
+        It goes out with the first chunk of audio, so a stream that produces none sends
+        nothing.
     """
     async with aclosing(audio_input):
-        yield header or create_streaming_wave_header(output_format)
+        if header is None:
+            yield create_streaming_wave_header(output_format)
         async for chunk in audio_input:
-            yield chunk
+            if header is None:
+                yield chunk
+            else:
+                yield header + chunk
+                header = None
 
 
 def _get_publish_addresses(

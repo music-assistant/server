@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock, MagicMock, Mock, patch
 import pytest
 from aiohttp.test_utils import make_mocked_request
 from music_assistant_models.enums import ContentType, CrossfadeMode, MediaType, StreamType
+from music_assistant_models.errors import AudioError
 from music_assistant_models.media_items import AudioFormat
 from music_assistant_models.queue_item import QueueItem
 from music_assistant_models.streamdetails import StreamDetails
@@ -85,7 +86,7 @@ def _controller(
 
 
 async def _serve(
-    ctrl: MagicMock, fmt: str, encoded: bytes
+    ctrl: MagicMock, fmt: str, encoded: bytes, fail_before_audio: bool = False
 ) -> tuple[int | None, bytes, AudioFormat]:
     """
     Serve the item to a player that reads it whole.
@@ -93,6 +94,7 @@ async def _serve(
     :param ctrl: The streams controller.
     :param fmt: The format the stream URL asks for.
     :param encoded: What the encoder produces.
+    :param fail_before_audio: Whether the encoder fails before producing anything.
     :return: The announced content length, the body the player received and the format the
         encoder was asked for.
     """
@@ -122,6 +124,8 @@ async def _serve(
 
     async def _encoded(**kwargs: Any) -> AsyncGenerator[bytes]:
         encoder_formats.append(kwargs["output_format"])
+        if fail_before_audio:
+            raise AudioError("no audio")
         yield encoded[:30]
         yield encoded[30:]
 
@@ -168,6 +172,15 @@ async def test_a_forced_wav_at_half_speed_covers_the_rounded_off_second_twice() 
     data_size = 44100 * 4 * 258
     assert length == 44 + data_size
     assert struct.unpack("<L", body[40:44])[0] == data_size
+
+
+@pytest.mark.asyncio
+async def test_a_forced_wav_whose_source_fails_sends_no_header_and_is_not_served() -> None:
+    """The header goes out with the first audio, so an item without any is not marked served."""
+    ctrl = _controller(WAV_24, "forced_content_length")
+    _length, body, _encoder_format = await _serve(ctrl, "wav", b"", fail_before_audio=True)
+    assert body == b""
+    ctrl.mass.player_queues.track_loaded_in_buffer.assert_not_called()
 
 
 @pytest.mark.asyncio
