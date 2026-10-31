@@ -1,5 +1,6 @@
 """Test Audible Provider."""
 
+import asyncio
 import json
 from datetime import UTC, datetime
 from pathlib import Path
@@ -9,6 +10,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import audible
 import pytest
 from music_assistant_models.enums import MediaType
+from music_assistant_models.errors import InvalidDataError, ProviderUnavailableError
 from music_assistant_models.media_items import PodcastEpisode
 
 from music_assistant.providers.audible import Audibleprovider
@@ -17,6 +19,7 @@ from music_assistant.providers.audible.audible_helper import (
     cached_authenticator_from_file,
     evict_cached_authenticator,
 )
+from music_assistant.providers.audible.remote_history import AudibleRemotePlay
 
 
 @pytest.fixture
@@ -55,6 +58,8 @@ def provider(mass_mock: AsyncMock) -> Audibleprovider:
     """Return an Audibleprovider instance."""
     manifest = MagicMock()
     manifest.domain = "audible"
+    mass_mock.config = MagicMock()
+    mass_mock.config.get.return_value = {"access": {"owner": "owner", "sharing": "private"}}
     config = MagicMock()
 
     def get_value(key: str) -> str | None:
@@ -468,3 +473,186 @@ async def test_legacy_show_episodes_use_the_listing_order(helper: AudibleHelper)
     parsed = [ep async for ep in helper.get_podcast_episodes("parent")]
 
     assert {ep.item_id: ep.position for ep in parsed} == {"ep5": 3, "ep4": 2, "ep3": 1}
+
+
+async def test_remote_history_batch_failure_keeps_successes(helper: AudibleHelper) -> None:
+    """A failed bounded batch is retried next poll without dropping successful batches."""
+    helper._history_throttler = MagicMock()
+    with patch.object(
+        helper,
+        "_call_api",
+        AsyncMock(
+            side_effect=[
+                ProviderUnavailableError("temporary"),
+                {
+                    "asin_last_position_heard_annots": [
+                        {
+                            "asin": "B000000025",
+                            "last_position_heard": {
+                                "position_ms": 5000,
+                                "last_updated": "2026-10-01T00:00:00Z",
+                            },
+                        }
+                    ]
+                },
+            ]
+        ),
+    ) as api:
+        plays = await helper.get_library_last_positions([f"B{i:09d}" for i in range(26)])
+    assert [play.asin for play in plays] == ["B000000025"]
+    assert api.await_count == 2
+    assert len(api.await_args_list[0].kwargs["asins"].split(",")) == 25
+
+
+async def test_remote_history_cancellation_propagates(helper: AudibleHelper) -> None:
+    """Cancelling a history poll must stop the task instead of swallowing cancellation."""
+    helper._history_throttler = MagicMock()
+    with (
+        patch.object(helper, "_call_api", AsyncMock(side_effect=asyncio.CancelledError)),
+        pytest.raises(asyncio.CancelledError),
+    ):
+        await helper.get_library_last_positions(["B000000001"])
+
+
+async def test_external_history_poll_uses_provider_mapping_and_watermarks(
+    provider: Audibleprovider,
+    mass_mock: AsyncMock,
+) -> None:
+    """Poll only this account's ASINs and persist the actual external activity timestamp."""
+    book = MagicMock(item_id="book")
+    book.provider_mappings = [
+        MagicMock(provider_instance=provider.instance_id, item_id="ours"),
+        MagicMock(provider_instance="foreign_account", item_id="theirs"),
+    ]
+    mass_mock.music.audiobooks.library_items = AsyncMock(return_value=[book])
+    provider.helper = MagicMock(
+        get_library_last_positions=AsyncMock(
+            return_value=[AudibleRemotePlay("ours", 90, datetime(2026, 10, 1, tzinfo=UTC))]
+        )
+    )
+    await provider._sync_external_history()
+    provider.helper.get_library_last_positions.assert_awaited_once_with(["ours"])
+    mass_mock.music.import_audiobook_progress.assert_awaited_once_with(
+        book,
+        provider_instance_id=provider.instance_id,
+        played_at=datetime(2026, 10, 1, tzinfo=UTC),
+        seconds_played=90,
+    )
+    assert mass_mock.cache.set.await_args.kwargs["data"] == {
+        "book:ours": "2026-10-01T00:00:00+00:00"
+    }
+
+
+async def test_external_history_failed_write_does_not_advance_watermark(
+    provider: Audibleprovider,
+    mass_mock: AsyncMock,
+) -> None:
+    """Rejected ownership leaves the remote event eligible for a later retry."""
+    book = MagicMock(item_id="book")
+    book.provider_mappings = [MagicMock(provider_instance=provider.instance_id, item_id="ours")]
+    mass_mock.music.audiobooks.library_items = AsyncMock(return_value=[book])
+    mass_mock.music.import_audiobook_progress.side_effect = InvalidDataError("unresolved owner")
+    provider.helper = MagicMock(
+        get_library_last_positions=AsyncMock(
+            return_value=[AudibleRemotePlay("ours", 90, datetime(2026, 10, 1, tzinfo=UTC))]
+        )
+    )
+    await provider._sync_external_history()
+    assert mass_mock.cache.set.await_args.kwargs["data"] == {}
+
+
+async def test_history_task_is_registered_and_awaited_on_unload(
+    provider: Audibleprovider,
+    mass_mock: AsyncMock,
+) -> None:
+    """Provider startup schedules polling and unload waits for cancellation before cleanup."""
+    mass_mock.tasks.register_scheduled_task = MagicMock()
+    with (
+        patch.object(provider, "_login", AsyncMock()),
+        patch.object(
+            provider,
+            "get_setup_value",
+            side_effect=lambda key: "us" if key == "locale" else "unused",
+        ),
+    ):
+        await provider.handle_async_init()
+    registration = mass_mock.tasks.register_scheduled_task.call_args.kwargs
+    assert registration["task_id"] == f"{provider.instance_id}_audible_history"
+    assert registration["initial_delay"] == 180
+    assert registration["handler"] == provider._sync_external_history
+    await provider.unload()
+    mass_mock.tasks.unregister_scheduled_task_and_wait.assert_awaited_once_with(
+        f"{provider.instance_id}_audible_history",
+        clear_persisted_state=False,
+    )
+
+
+async def test_history_watermarks_follow_owner_and_library_identity(
+    provider: Audibleprovider,
+    mass_mock: AsyncMock,
+) -> None:
+    """Changing the owner or re-importing a library book cannot suppress its history."""
+    cache: dict[str, dict[str, str]] = {}
+
+    async def get_cache(key: str, default: Any, **_kwargs: Any) -> dict[str, str]:
+        return dict(cache.get(key, default))
+
+    async def set_cache(key: str, data: dict[str, str], **_kwargs: Any) -> None:
+        cache[key] = dict(data)
+
+    mass_mock.cache.get.side_effect = get_cache
+    mass_mock.cache.set.side_effect = set_cache
+    book = MagicMock(item_id="first")
+    book.provider_mappings = [MagicMock(provider_instance=provider.instance_id, item_id="ours")]
+    mass_mock.music.audiobooks.library_items = AsyncMock(return_value=[book])
+    provider.helper = MagicMock(
+        get_library_last_positions=AsyncMock(
+            return_value=[
+                AudibleRemotePlay("ours", 90, datetime(2026, 10, 1, tzinfo=UTC)),
+            ]
+        )
+    )
+    await provider._sync_external_history()
+    await provider._sync_external_history()
+    assert mass_mock.music.import_audiobook_progress.await_count == 1
+    book.item_id = "second"
+    await provider._sync_external_history()
+    assert mass_mock.music.import_audiobook_progress.await_count == 2
+    mass_mock.config.get.return_value = {"access": {"owner": "new-owner", "sharing": "private"}}
+    await provider._sync_external_history()
+    assert mass_mock.music.import_audiobook_progress.await_count == 3
+    assert set(cache) == {
+        "audible_external_history_v2:owner",
+        "audible_external_history_v2:new-owner",
+    }
+
+
+async def test_history_without_owner_skips_api_requests(
+    provider: Audibleprovider,
+    mass_mock: AsyncMock,
+) -> None:
+    """A household source must resolve an owner before fetching personal history."""
+    mass_mock.config.get.return_value = {"access": None}
+    provider.helper = MagicMock()
+    await provider._sync_external_history()
+    provider.helper.get_library_last_positions.assert_not_called()
+    mass_mock.cache.get.assert_not_awaited()
+
+
+async def test_external_history_programming_error_is_not_swallowed(
+    provider: Audibleprovider,
+    mass_mock: AsyncMock,
+) -> None:
+    """Unexpected write errors propagate instead of being treated as rejected history."""
+    book = MagicMock(item_id="book")
+    book.provider_mappings = [MagicMock(provider_instance=provider.instance_id, item_id="ours")]
+    mass_mock.music.audiobooks.library_items = AsyncMock(return_value=[book])
+    mass_mock.music.import_audiobook_progress.side_effect = TypeError("unexpected write error")
+    provider.helper = MagicMock(
+        get_library_last_positions=AsyncMock(
+            return_value=[AudibleRemotePlay("ours", 90, datetime(2026, 10, 1, tzinfo=UTC))]
+        )
+    )
+    with pytest.raises(TypeError, match="unexpected write error"):
+        await provider._sync_external_history()
+    mass_mock.cache.set.assert_not_awaited()

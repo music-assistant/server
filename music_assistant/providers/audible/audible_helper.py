@@ -47,7 +47,14 @@ from music_assistant_models.streamdetails import StreamDetails
 from music_assistant.constants import DEFAULT_AUDIOBOOK_PODCAST_GENRE
 from music_assistant.helpers.datetime import from_iso_string, utc
 from music_assistant.helpers.podcast_parsers import rank_episodes_by_date
+from music_assistant.helpers.throttle_retry import Throttler
 from music_assistant.mass import MusicAssistant
+from music_assistant.providers.audible.remote_history import (
+    AudibleRemotePlay,
+    asin_chunks,
+    parse_lastposition,
+    parse_lastpositions,
+)
 
 CACHE_DOMAIN = "audible"
 CACHE_CATEGORY_API = 0
@@ -209,6 +216,23 @@ class AudibleHelper:
         self.provider = provider
         self.logger = logger or logging.getLogger("audible_helper")
         self._acr_cache: dict[tuple[str, MediaType], str] = {}
+        self._history_throttler = Throttler(rate_limit=1, period=2)
+
+    async def get_library_last_positions(self, asins: list[str]) -> list[AudibleRemotePlay]:
+        """Fetch current Whispersync history for library ASINs, in bounded batches."""
+        result: list[AudibleRemotePlay] = []
+        for group in asin_chunks(asins):
+            try:
+                async with self._history_throttler:
+                    payload = await self._call_api(
+                        "annotations/lastpositions", asins=",".join(group)
+                    )
+            except ProviderUnavailableError as exc:
+                # A failed batch is retried on the next poll without losing other batches.
+                self.logger.warning("Audible history batch failed (%d ASINs): %s", len(group), exc)
+                continue
+            result.extend(parse_lastpositions(payload))
+        return result
 
     async def _fetch_library_items(
         self,
@@ -514,23 +538,6 @@ class AudibleHelper:
 
         return chapters_data
 
-    @staticmethod
-    def _parse_audible_timestamp(raw_ts: Any) -> datetime | None:
-        """
-        Parse an Audible timestamp value into a timezone-aware datetime.
-
-        :param raw_ts: The raw timestamp value from the Audible annotation payload.
-        """
-        if not raw_ts:
-            return None
-        try:
-            parsed = datetime.fromisoformat(str(raw_ts))
-        except ValueError, TypeError:
-            return None
-        if parsed.tzinfo is None:
-            parsed = parsed.replace(tzinfo=UTC)
-        return parsed
-
     async def _fetch_last_position(self, asin: str) -> tuple[int, datetime | None] | None:
         """
         Fetch the last-heard position for a single ASIN from Audible.
@@ -549,21 +556,7 @@ class AudibleHelper:
         if not isinstance(annotation, dict):
             return None
 
-        last_position = annotation.get("last_position_heard")
-        if not isinstance(last_position, dict):
-            return None
-
-        position_ms = int(last_position.get("position_ms", 0))
-
-        timestamp: datetime | None = None
-        for field in ("last_updated", "reported_time", "last_updated_time", "timestamp"):
-            timestamp = self._parse_audible_timestamp(
-                last_position.get(field) or annotation.get(field)
-            )
-            if timestamp is not None:
-                break
-
-        return position_ms, timestamp
+        return parse_lastposition(annotation)
 
     async def get_last_position(self, asin: str) -> int:
         """
