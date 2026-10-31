@@ -1140,6 +1140,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         providers: list[str] | None = None,
         *,
         always_include_media_types: list[MediaType] | None = None,
+        include_in_progress_audiobooks: bool = False,
     ) -> list[ItemMapping]:
         """
         Return a list of the last played items.
@@ -1158,6 +1159,8 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         :param always_include_media_types: Media types to include regardless of
             user_initiated_only (e.g. podcasts/audiobooks, which have no user-initiated
             container).
+        :param include_in_progress_audiobooks: Include partially played audiobooks
+            while retaining the fully-played filter for all other media types.
         """
         if providers is not None and not providers:
             return []
@@ -1200,7 +1203,14 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             provider_clause = f"p.provider IN {available_providers_str}"
         query = f"SELECT p.* FROM {DB_TABLE_MEDIA_PROGRESS} p WHERE {media_type_clause} AND {provider_clause} "
         if fully_played_only:
-            query += "AND p.fully_played = 1 "
+            if include_in_progress_audiobooks:
+                query += (
+                    "AND (p.fully_played = 1 OR "
+                    "(p.media_type = 'audiobook' AND "
+                    "COALESCE(p.seconds_played, 0) > 0)) "
+                )
+            else:
+                query += "AND p.fully_played = 1 "
         if userid:
             query += "AND p.userid = :userid "
             params["userid"] = userid
@@ -1917,6 +1927,93 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         # every change the refresh made
         await invalidate_listings(self.mass, library_item)
         return library_item
+
+    async def import_audiobook_progress(
+        self,
+        book: Audiobook,
+        provider_instance_id: str,
+        played_at: datetime,
+        seconds_played: int,
+    ) -> bool:
+        """
+        Import dated audiobook progress for the owner of a provider instance.
+
+        :param book: Library audiobook mapped to the reporting provider.
+        :param provider_instance_id: Source of the external progress.
+        :param played_at: Timezone-aware timestamp of the external activity.
+        :param seconds_played: External resume position in seconds.
+        """
+        if played_at.tzinfo is None or not 0 < played_at.timestamp() <= utc_timestamp():
+            raise ValueError("played_at must be timezone-aware and in the past")
+        if book.provider != "library" or not any(
+            mapping.provider_instance == provider_instance_id for mapping in book.provider_mappings
+        ):
+            raise ValueError("Audiobook does not belong to the reporting provider")
+        if seconds_played <= 0:
+            return False
+        user = await self._get_user_for_provider(provider_instance_id)
+        if user is None:
+            raise ValueError("Cannot import external history without a resolved user")
+        params = {
+            "item_id": book.item_id,
+            "provider": book.provider,
+            "media_type": MediaType.AUDIOBOOK.value,
+            "userid": user.user_id,
+            "name": book.name,
+            "image": serialize_to_json(book.image.to_dict()) if book.image else None,
+            "fully_played": bool(book.duration and seconds_played >= book.duration - 60),
+            "seconds_played": seconds_played,
+            "timestamp": played_at.timestamp(),
+            "user_initiated": False,
+        }
+        # The conflict predicate runs inside the write, so a local play arriving while
+        # Audible is being polled cannot be replaced by older external progress.
+        columns = list(params)
+        updates = ", ".join(
+            f"{column} = excluded.{column}"
+            for column in columns
+            if column not in (*PLAYLOG_CONFLICT_KEYS, "user_initiated")
+        )
+        params["duration"] = book.duration
+        identities = ["(provider = :provider AND item_id = :item_id)"]
+        for index, mapping in enumerate(book.provider_mappings):
+            identities.append(f"(provider = :source_{index} AND item_id = :source_item_{index})")
+            params[f"source_{index}"] = mapping.provider_instance
+            params[f"source_item_{index}"] = mapping.item_id
+        completion = (
+            "CASE WHEN :fully_played = 1 THEN 1 "
+            "WHEN (SELECT fully_played FROM previous) = 1 AND :seconds_played >= "
+            "COALESCE((SELECT seconds_played FROM previous), :duration) THEN 1 ELSE 0 END"
+        )
+        values = ", ".join(
+            completion if column == "fully_played" else f":{column}" for column in columns
+        )
+        cursor = await self.database.execute(
+            f"WITH previous AS (SELECT fully_played, seconds_played, timestamp "
+            f"FROM {DB_TABLE_MEDIA_PROGRESS} WHERE userid = :userid "
+            f"AND media_type = :media_type AND ({' OR '.join(identities)}) "
+            "ORDER BY timestamp DESC LIMIT 1) "
+            f"INSERT INTO {DB_TABLE_MEDIA_PROGRESS} ({', '.join(columns)}) "
+            f"SELECT {values} WHERE NOT EXISTS "
+            "(SELECT 1 FROM previous WHERE timestamp >= :timestamp) "
+            f"ON CONFLICT({', '.join(PLAYLOG_CONFLICT_KEYS)}) DO UPDATE SET {updates} "
+            f"WHERE {DB_TABLE_MEDIA_PROGRESS}.timestamp < excluded.timestamp RETURNING fully_played",
+            params,
+        )
+        try:
+            imported = await cursor.fetchone()
+            changed = imported is not None
+        finally:
+            await cursor.close()
+        await self.database.commit()
+        if imported is not None:
+            self._signal_playlog_updated(
+                book,
+                fully_played=bool(imported[0]),
+                seconds_played=seconds_played,
+                userid=user.user_id,
+            )
+        return changed
 
     @api_command("music/mark_played", required_scope=Scope.LIBRARY_WRITE)
     async def mark_item_played(
