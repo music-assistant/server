@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 from music_assistant_models.auth import User, UserRole
 from music_assistant_models.enums import MediaType
+from music_assistant_models.errors import InvalidDataError
 from music_assistant_models.media_items import Audiobook, ProviderMapping
 
 from music_assistant.constants import DB_TABLE_MEDIA_PROGRESS, DB_TABLE_PLAY_HISTORY
@@ -114,12 +115,12 @@ async def test_import_rejects_unknown_owner_and_foreign_provider(
     played_at = datetime(2026, 10, 1, tzinfo=UTC)
     with (
         patch.object(music_mass.music, "_get_user_for_provider", AsyncMock(return_value=None)),
-        pytest.raises(ValueError, match="resolved user"),
+        pytest.raises(InvalidDataError, match="resolved user"),
     ):
         await music_mass.music.import_audiobook_progress(book, "audible_a", played_at, 10)
-    with pytest.raises(ValueError, match="reporting provider"):
+    with pytest.raises(InvalidDataError, match="reporting provider"):
         await music_mass.music.import_audiobook_progress(book, "audible_c", played_at, 10)
-    with pytest.raises(ValueError, match="timezone-aware"):
+    with pytest.raises(InvalidDataError, match="timezone-aware"):
         await music_mass.music.import_audiobook_progress(
             book,
             "audible_a",
@@ -234,7 +235,7 @@ async def test_remote_echo_preserves_completion_but_earlier_replay_clears_it(
     ):
         assert await music_mass.music.import_audiobook_progress(book, "audible_a", played_at, 100)
         row = await music_mass.music.database.get_row(
-            DB_TABLE_MEDIA_PROGRESS, {"userid": "owner", "provider": "library"}
+            DB_TABLE_MEDIA_PROGRESS, {"userid": "owner", "provider": stored_provider}
         )
         assert row is not None
         assert row["fully_played"]
@@ -246,7 +247,7 @@ async def test_remote_echo_preserves_completion_but_earlier_replay_clears_it(
             10,
         )
         row = await music_mass.music.database.get_row(
-            DB_TABLE_MEDIA_PROGRESS, {"userid": "owner", "provider": "library"}
+            DB_TABLE_MEDIA_PROGRESS, {"userid": "owner", "provider": stored_provider}
         )
         assert row is not None
         assert not row["fully_played"]
@@ -267,3 +268,42 @@ async def test_import_recognizes_external_completion(
     assert row is not None
     assert bool(row["fully_played"]) is expected
     assert await music_mass.music.database.get_rows(DB_TABLE_PLAY_HISTORY) == []
+
+
+async def test_import_updates_provider_identity_without_duplicate_or_speed_loss(
+    music_mass: MusicAssistant, book: Audiobook
+) -> None:
+    """A direct-provider resume record keeps its identity, speed and user flag."""
+    played_at = datetime(2026, 10, 1, tzinfo=UTC)
+    await music_mass.music.database.insert(
+        DB_TABLE_MEDIA_PROGRESS,
+        {
+            "item_id": "A",
+            "provider": "audible_a",
+            "media_type": "audiobook",
+            "userid": "owner",
+            "name": book.name,
+            "timestamp": played_at.timestamp() - 1,
+            "seconds_played": 100,
+            "fully_played": False,
+            "playback_speed": 1.7,
+            "user_initiated": True,
+        },
+    )
+    with patch.object(
+        music_mass.music,
+        "_get_user_for_provider",
+        AsyncMock(return_value=User(user_id="owner", username="owner", role=UserRole.USER)),
+    ):
+        assert await music_mass.music.import_audiobook_progress(book, "audible_a", played_at, 200)
+        assert not await music_mass.music.import_audiobook_progress(
+            book, "audible_a", played_at, 200
+        )
+    rows = await music_mass.music.database.get_rows(DB_TABLE_MEDIA_PROGRESS)
+    assert len(rows) == 1
+    assert rows[0]["provider"] == "audible_a"
+    assert rows[0]["item_id"] == "A"
+    assert rows[0]["seconds_played"] == 200
+    assert rows[0]["timestamp"] == played_at.timestamp()
+    assert rows[0]["playback_speed"] == 1.7
+    assert rows[0]["user_initiated"]

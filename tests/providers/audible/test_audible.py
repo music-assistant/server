@@ -10,7 +10,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import audible
 import pytest
 from music_assistant_models.enums import MediaType
-from music_assistant_models.errors import ProviderUnavailableError
+from music_assistant_models.errors import InvalidDataError, ProviderUnavailableError
 from music_assistant_models.media_items import PodcastEpisode
 
 from music_assistant.providers.audible import Audibleprovider
@@ -551,7 +551,7 @@ async def test_external_history_failed_write_does_not_advance_watermark(
     book = MagicMock(item_id="book")
     book.provider_mappings = [MagicMock(provider_instance=provider.instance_id, item_id="ours")]
     mass_mock.music.audiobooks.library_items = AsyncMock(return_value=[book])
-    mass_mock.music.import_audiobook_progress.side_effect = ValueError("unresolved owner")
+    mass_mock.music.import_audiobook_progress.side_effect = InvalidDataError("unresolved owner")
     provider.helper = MagicMock(
         get_library_last_positions=AsyncMock(
             return_value=[AudibleRemotePlay("ours", 90, datetime(2026, 10, 1, tzinfo=UTC))]
@@ -637,3 +637,22 @@ async def test_history_without_owner_skips_api_requests(
     await provider._sync_external_history()
     provider.helper.get_library_last_positions.assert_not_called()
     mass_mock.cache.get.assert_not_awaited()
+
+
+async def test_external_history_programming_error_is_not_swallowed(
+    provider: Audibleprovider,
+    mass_mock: AsyncMock,
+) -> None:
+    """Unexpected write errors propagate instead of being treated as rejected history."""
+    book = MagicMock(item_id="book")
+    book.provider_mappings = [MagicMock(provider_instance=provider.instance_id, item_id="ours")]
+    mass_mock.music.audiobooks.library_items = AsyncMock(return_value=[book])
+    mass_mock.music.import_audiobook_progress.side_effect = TypeError("unexpected write error")
+    provider.helper = MagicMock(
+        get_library_last_positions=AsyncMock(
+            return_value=[AudibleRemotePlay("ours", 90, datetime(2026, 10, 1, tzinfo=UTC))]
+        )
+    )
+    with pytest.raises(TypeError, match="unexpected write error"):
+        await provider._sync_external_history()
+    mass_mock.cache.set.assert_not_awaited()

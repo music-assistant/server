@@ -1944,16 +1944,16 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         :param seconds_played: External resume position in seconds.
         """
         if played_at.tzinfo is None or not 0 < played_at.timestamp() <= utc_timestamp():
-            raise ValueError("played_at must be timezone-aware and in the past")
+            raise InvalidDataError("played_at must be timezone-aware and in the past")
         if book.provider != "library" or not any(
             mapping.provider_instance == provider_instance_id for mapping in book.provider_mappings
         ):
-            raise ValueError("Audiobook does not belong to the reporting provider")
+            raise InvalidDataError("Audiobook does not belong to the reporting provider")
         if seconds_played <= 0:
             return False
         user = await self._get_user_for_provider(provider_instance_id)
         if user is None:
-            raise ValueError("Cannot import external history without a resolved user")
+            raise InvalidDataError("Cannot import external history without a resolved user")
         params = {
             "item_id": book.item_id,
             "provider": book.provider,
@@ -1985,11 +1985,14 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             "WHEN (SELECT fully_played FROM previous) = 1 AND :seconds_played >= "
             "COALESCE((SELECT seconds_played FROM previous), :duration) THEN 1 ELSE 0 END"
         )
-        values = ", ".join(
-            completion if column == "fully_played" else f":{column}" for column in columns
-        )
+        expressions = {
+            "fully_played": completion,
+            "provider": "COALESCE((SELECT provider FROM previous), :provider)",
+            "item_id": "COALESCE((SELECT item_id FROM previous), :item_id)",
+        }
+        values = ", ".join(expressions.get(column, f":{column}") for column in columns)
         cursor = await self.database.execute(
-            f"WITH previous AS (SELECT fully_played, seconds_played, timestamp "
+            f"WITH previous AS (SELECT provider, item_id, fully_played, seconds_played, timestamp "
             f"FROM {DB_TABLE_MEDIA_PROGRESS} WHERE userid = :userid "
             f"AND media_type = :media_type AND ({' OR '.join(identities)}) "
             "ORDER BY timestamp DESC LIMIT 1) "

@@ -13,7 +13,7 @@ from urllib.parse import quote, unquote
 import audible
 from music_assistant_models.background_task import TaskSchedule
 from music_assistant_models.enums import MediaType, ProviderFeature
-from music_assistant_models.errors import LoginFailed, MediaNotFoundError
+from music_assistant_models.errors import InvalidDataError, LoginFailed, MediaNotFoundError
 from music_assistant_models.media_items import BrowseFolder, ItemMapping
 
 from music_assistant.constants import CONF_ENTRY_UNOFFICIAL_PROVIDER
@@ -494,7 +494,7 @@ class Audibleprovider(MusicProvider):
                     played_at=play.updated_at,
                     seconds_played=play.position_seconds,
                 )
-            except (KeyError, TypeError, ValueError) as exc:
+            except InvalidDataError as exc:
                 self.logger.warning("Unable to sync Audible progress for %s: %s", play.asin, exc)
                 continue
             watermarks[f"{selected_book.item_id}:{play.asin}"] = play.updated_at.isoformat()
