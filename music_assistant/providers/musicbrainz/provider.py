@@ -34,7 +34,7 @@ from music_assistant.helpers.uri import apple_storefront_from_url, canonical_pro
 from music_assistant.helpers.util import parse_title_and_version
 from music_assistant.models.metadata_provider import MetadataProvider
 
-from .api_client import MusicBrainzAPIClient
+from .api_client import MusicBrainzAPIClient, url_relation_ids
 from .constants import (
     DISCOGRAPHY_MAX_PAGES,
     DISCOGRAPHY_PRIMARY_TYPES,
@@ -697,17 +697,22 @@ class MusicbrainzProvider(MetadataProvider):
         :return: The MusicBrainz id, or None when the URL is unknown or linked to several
             entities of that kind.
         """
-        entity = URL_RELATION_ENTITY[media_type]
-        result = await self._api_client.get_data("url", resource=resource_url, inc=f"{entity}-rels")
-        if not result:
-            return None
-        ids = {
-            target["id"]
-            for relation in result.get("relations", [])
-            if not relation.get("ended") and (target := relation.get(entity)) and target.get("id")
-        }
+        mbids = await self.get_mbids_by_url(resource_url, media_type)
         # a URL linked to several entities identifies none of them
-        return ids.pop() if len(ids) == 1 else None
+        return mbids[0] if len(mbids) == 1 else None
+
+    async def get_mbids_by_url(self, resource_url: str, media_type: MediaType) -> list[str]:
+        """
+        Get the MusicBrainz ids of all artists, releases or recordings a URL is linked to.
+
+        :param resource_url: Public URL of the item on a streaming service, in the exact
+            form MusicBrainz stores it (see :func:`canonical_provider_url`).
+        :param media_type: Kind of entity to look for: ARTIST, ALBUM or TRACK.
+        :return: The MusicBrainz ids, sorted; empty when MusicBrainz does not know the URL.
+        """
+        entity = URL_RELATION_ENTITY[media_type]
+        result = await self._api_client.get_url_data(resource=resource_url, inc=f"{entity}-rels")
+        return sorted(url_relation_ids(result, entity))
 
     async def get_release_group_by_track_name(
         self, artist_name: str, track_name: str
