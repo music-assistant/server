@@ -13,6 +13,9 @@
   },
   "media": {
     "recommendations": {
+      "favorite_artist_releases": {
+        "name": "New From Your Artists"
+      },
       "new_releases": {
         "name": "New Releases"
       },
