@@ -124,9 +124,10 @@ class SoundcloudMusicProvider(RecommendationPayloadMixin, MusicProvider):
         if not client_id or not auth_token:
             msg = "Invalid login credentials"
             raise LoginFailed(msg)
+        # the cookie value is often pasted without the prefix the Authorization header needs
+        auth_token = f"OAuth {str(auth_token).strip().removeprefix('OAuth ')}"
         self._soundcloud = SoundcloudAsyncAPI(auth_token, client_id, self.mass.http_session)
         await self._soundcloud.login()
-        auth_token = str(auth_token)
         expires_at = _token_claims(auth_token).get("exp")
         if expires_at and expires_at - time.time() < TOKEN_REFRESH_BUFFER:
             auth_token = await self._refresh_access_token()

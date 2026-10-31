@@ -200,6 +200,22 @@ async def test_async_init_keeps_valid_token(provider: SoundcloudMusicProvider) -
     assert call_later.call_args.args[0] == 3600 - TOKEN_REFRESH_BUFFER
 
 
+@pytest.mark.parametrize("entered", ["eyJ.token", " OAuth eyJ.token ", "OAuth eyJ.token"])
+async def test_async_init_adds_missing_oauth_prefix(
+    provider: SoundcloudMusicProvider, entered: str
+) -> None:
+    """A token pasted without the OAuth prefix still gives a valid Authorization header."""
+    _setup_values(provider, client_id="test-client-id", authorization=entered)
+
+    with patch(
+        "music_assistant.providers.soundcloud.SoundcloudAsyncAPI",
+        return_value=_api_with_token("OAuth eyJ.token"),
+    ) as api_cls:
+        await provider.handle_async_init()
+
+    assert api_cls.call_args.args[0] == "OAuth eyJ.token"
+
+
 async def test_legacy_token_is_never_refreshed(provider: SoundcloudMusicProvider) -> None:
     """An opaque token from the old login flow does not expire, so nothing is scheduled."""
     _setup_values(provider, refresh_token="refresh")
