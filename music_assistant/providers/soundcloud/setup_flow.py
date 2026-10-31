@@ -8,7 +8,11 @@ from music_assistant_models.config_entries import ConfigEntry
 from music_assistant_models.enums import ConfigEntryType
 
 from music_assistant.models.setup_flow import SetupFlowError
-from music_assistant.providers.soundcloud import CONF_AUTHORIZATION, CONF_CLIENT_ID
+from music_assistant.providers.soundcloud import (
+    CONF_AUTHORIZATION,
+    CONF_CLIENT_ID,
+    CONF_REFRESH_TOKEN,
+)
 
 if TYPE_CHECKING:
     from music_assistant.models.setup_flow import SetupSession
@@ -16,6 +20,7 @@ if TYPE_CHECKING:
 _ENTRIES = (
     ConfigEntry(key=CONF_CLIENT_ID, type=ConfigEntryType.SECURE_STRING, required=True),
     ConfigEntry(key=CONF_AUTHORIZATION, type=ConfigEntryType.SECURE_STRING, required=True),
+    ConfigEntry(key=CONF_REFRESH_TOKEN, type=ConfigEntryType.SECURE_STRING, required=False),
 )
 
 

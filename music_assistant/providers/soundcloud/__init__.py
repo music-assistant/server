@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import base64
+import binascii
+import json
 import time
 from typing import TYPE_CHECKING, Any, cast
 from urllib.parse import parse_qs, quote, urlparse
@@ -37,6 +40,14 @@ from music_assistant.models.recommendation_payload import RecommendationPayloadM
 
 CONF_CLIENT_ID = "client_id"
 CONF_AUTHORIZATION = "authorization"
+CONF_REFRESH_TOKEN = "refresh_token"  # noqa: S105 - config key
+
+# Since the new Soundcloud login flow the web player's access token is a short-lived JWT, which
+# the web player renews with the oauth_refresh_token cookie against this endpoint.
+TOKEN_URL = "https://secure.soundcloud.com/oauth/token"  # noqa: S105 - endpoint url
+# renew the access token this many seconds before it expires
+TOKEN_REFRESH_BUFFER = 300
+TOKEN_REFRESH_RETRY_DELAY = 60
 
 SUPPORTED_FEATURES = {
     ProviderFeature.LIBRARY_ARTISTS,
@@ -115,9 +126,23 @@ class SoundcloudMusicProvider(RecommendationPayloadMixin, MusicProvider):
             raise LoginFailed(msg)
         self._soundcloud = SoundcloudAsyncAPI(auth_token, client_id, self.mass.http_session)
         await self._soundcloud.login()
+        auth_token = str(auth_token)
+        expires_at = _token_claims(auth_token).get("exp")
+        if expires_at and expires_at - time.time() < TOKEN_REFRESH_BUFFER:
+            auth_token = await self._refresh_access_token()
         self._me = await self._soundcloud.get_account_details()
         # the API returns the id as a number, while it is only ever used to build request urls
         self._user_id = str(self._me["id"])
+        self._schedule_token_refresh(auth_token)
+
+    async def unload(self, is_removed: bool = False) -> None:
+        """
+        Handle unload/close of the provider.
+
+        :param is_removed: Set to True when the provider is removed from the configuration.
+        """
+        self.mass.cancel_timer(self._token_refresh_task_id)
+        await super().unload(is_removed)
 
     @use_cache(3600 * 48)  # Cache for 48 hours
     async def search(
@@ -740,11 +765,105 @@ class SoundcloudMusicProvider(RecommendationPayloadMixin, MusicProvider):
         item_id = item_obj.get("id")
         self.report_skipped_sync_item(media_type, str(item_id) if item_id else None, err)
 
+    @property
+    def _token_refresh_task_id(self) -> str:
+        """Return the timer id of the scheduled access token refresh."""
+        return f"soundcloud_token_refresh_{self.instance_id}"
+
+    def _schedule_token_refresh(self, auth_token: str) -> None:
+        """
+        Schedule renewing the access token shortly before it expires.
+
+        :param auth_token: The authorization value currently in use.
+        """
+        expires_at = _token_claims(auth_token).get("exp")
+        if not expires_at:
+            # a token from the old login flow does not expire
+            return
+        if not self.get_setup_value(CONF_REFRESH_TOKEN):
+            self.logger.warning(
+                "The Soundcloud access token expires at %s and no refresh token is configured, "
+                "add the oauth_refresh_token cookie to the provider settings to stay signed in",
+                time.strftime("%Y-%m-%d %H:%M", time.localtime(expires_at)),
+            )
+            return
+        delay = max(expires_at - time.time() - TOKEN_REFRESH_BUFFER, 0)
+        self.mass.call_later(
+            delay, self._scheduled_token_refresh, task_id=self._token_refresh_task_id
+        )
+
+    async def _scheduled_token_refresh(self) -> None:
+        """Renew the access token from the timer, and plan the next renewal."""
+        try:
+            auth_token = await self._refresh_access_token()
+        except LoginFailed as err:
+            self.unload_with_error(err)
+            return
+        except (ClientError, TimeoutError) as err:
+            self.logger.warning("Refreshing the Soundcloud access token failed, retrying: %s", err)
+            self.mass.call_later(
+                TOKEN_REFRESH_RETRY_DELAY,
+                self._scheduled_token_refresh,
+                task_id=self._token_refresh_task_id,
+            )
+            return
+        self._schedule_token_refresh(auth_token)
+
+    async def _refresh_access_token(self) -> str:
+        """Exchange the refresh token for a new access token, and return its authorization."""
+        refresh_token = self.get_setup_value(CONF_REFRESH_TOKEN)
+        if not refresh_token:
+            msg = (
+                "The Soundcloud access token expired, sign in again "
+                "or add the oauth_refresh_token cookie to stay signed in"
+            )
+            raise LoginFailed(msg)
+        # the web player refreshes with the client the token was issued to
+        client_id = _token_claims(self._soundcloud.o_auth).get("client_id")
+        async with self.mass.http_session.post(
+            TOKEN_URL,
+            data={
+                "client_id": client_id or self._soundcloud.client_id,
+                "grant_type": "refresh_token",
+                "refresh_token": refresh_token,
+            },
+        ) as response:
+            if response.status != 200:
+                msg = f"Soundcloud did not accept the refresh token (status {response.status})"
+                raise LoginFailed(msg)
+            token_data = await response.json()
+        # the refresh token is single use, so store the rotated one before anything else
+        if new_refresh_token := token_data.get("refresh_token"):
+            self._update_setup_data(CONF_REFRESH_TOKEN, new_refresh_token)
+        auth_token = f"OAuth {token_data['access_token']}"
+        self._soundcloud.o_auth = auth_token
+        self._soundcloud.headers["Authorization"] = auth_token
+        self._update_setup_data(CONF_AUTHORIZATION, auth_token)
+        self.logger.debug("Refreshed the Soundcloud access token")
+        return auth_token
+
 
 def _item_id(item_obj: Any) -> Any:
     """Return the id of a raw api object, or None if it does not have a readable one."""
     # called from the handlers that log an unusable object, so it must never raise itself
     return item_obj.get("id") if isinstance(item_obj, dict) else None
+
+
+def _token_claims(auth_token: str) -> dict[str, Any]:
+    """
+    Return the claims of a JWT access token, or an empty dict for an opaque token.
+
+    :param auth_token: The authorization value, with or without the "OAuth " prefix.
+    """
+    parts = auth_token.removeprefix("OAuth ").split(".")
+    if len(parts) != 3:
+        return {}
+    try:
+        payload = base64.urlsafe_b64decode(parts[1] + "=" * (-len(parts[1]) % 4))
+        claims = json.loads(payload)
+    except binascii.Error, ValueError:
+        return {}
+    return claims if isinstance(claims, dict) else {}
 
 
 def _is_drm_protected(track_obj: dict[str, Any]) -> bool:
