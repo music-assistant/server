@@ -210,6 +210,10 @@ class PlaybackTrackerMixin(_PlayerQueuesBase):
             else:
                 # same track, use the max of current and previous to handle timing issues
                 last_playing_elapsed_time = max(current_elapsed, prev_playing_elapsed)
+        elif current_item_id != prev_item_id:
+            # the item changed while not playing (e.g. a position correction into another
+            # track): the previous item's position is no resume position for this one
+            last_playing_elapsed_time = int(queue.elapsed_time)
         else:
             last_playing_elapsed_time = prev_playing_elapsed
         new_state = CompareState(
