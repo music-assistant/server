@@ -3162,17 +3162,25 @@ class TestDebouncedReform:
         """A leader that dropped off the network can't be stopped, yet the group re-forms."""
         mass = _make_mock_mass()
         sgp = self._setup_group(mass, members=["leader", "m2", "m3"])
+        mass.players.cmd_resume = AsyncMock()
         leader = mass.players.get_player("leader")
         leader.available = False
         leader.state.available = False
         leader.state.group_members = ["leader", "m2", "m3"]
-        mass.players._handle_cmd_stop.side_effect = PlayerUnavailableError("leader")
-        mass.players._handle_set_members.side_effect = PlayerUnavailableError("leader")
+        mass.players.get_player("m2").state.can_group_with = {"m3"}
+
+        def _fail_for_leader(player_id: str) -> None:
+            if player_id == "leader":
+                raise PlayerUnavailableError(player_id)
+
+        mass.players._handle_cmd_stop.side_effect = _fail_for_leader
+        mass.players._handle_set_members.side_effect = lambda parent, **_k: _fail_for_leader(
+            parent.player_id
+        )
 
         with (
             patch("music_assistant.providers.sync_group.player.REFORM_DEBOUNCE_SECONDS", 0.05),
             patch.object(sgp, "update_state"),
-            patch.object(sgp, "play", new=AsyncMock()) as play,
         ):
             await sgp.set_members(player_ids_to_remove=["leader"])
 
@@ -3184,8 +3192,12 @@ class TestDebouncedReform:
 
             await task
 
-        play.assert_awaited_once()
-        assert sgp._select_sync_leader() is mass.players.get_player("m2")
+        assert sgp.sync_leader is mass.players.get_player("m2")
+        mass.players._handle_set_members.assert_any_await(
+            sgp.sync_leader, player_ids_to_add=["m3"], new_content=False
+        )
+        mass.players.cmd_resume.assert_awaited_once()
+        assert sgp._reform_task is None
 
     @pytest.mark.asyncio
     async def test_dissolve_completes_when_leader_cannot_be_reached(self) -> None:
