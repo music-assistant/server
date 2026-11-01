@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import binascii
 import json
@@ -74,6 +75,38 @@ DRM_PROTOCOL_MARKER = "encrypted"
 PREVIEW_CDN_HOST = "cf-preview-media.sndcdn.com"
 
 
+class _SoundcloudAPI(SoundcloudAsyncAPI):  # type: ignore[misc]
+    """Soundcloud api client that awaits a hook before every request."""
+
+    def __init__(
+        self,
+        auth_token: str,
+        client_id: str,
+        http_session: ClientSession,
+        before_request: Callable[[], Awaitable[None]],
+    ) -> None:
+        """
+        Initialize the api client.
+
+        :param auth_token: The authorization header value.
+        :param client_id: The Soundcloud client id.
+        :param http_session: The aiohttp session to send the requests with.
+        :param before_request: Coroutine function awaited before each request.
+        """
+        super().__init__(auth_token, client_id, http_session)
+        self._before_request = before_request
+
+    async def get(
+        self,
+        url: str,
+        headers: dict[str, Any] | None = None,
+        params: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Run the hook, then send the request."""
+        await self._before_request()
+        return cast("dict[str, Any]", await super().get(url, headers=headers, params=params))
+
+
 class DrmProtectedTrackError(MediaNotFoundError):
     """Error raised when a Soundcloud track can only be played in Soundcloud's own apps."""
 
@@ -86,8 +119,9 @@ class DrmProtectedTrackError(MediaNotFoundError):
 
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncGenerator
+    from collections.abc import AsyncGenerator, Awaitable, Callable
 
+    from aiohttp import ClientSession
     from music_assistant_models.config_entries import ConfigEntry, ProviderConfig
     from music_assistant_models.media_items import BrowseFolder, ItemMapping, MediaItemType
     from music_assistant_models.provider import ProviderManifest
@@ -112,6 +146,8 @@ class SoundcloudMusicProvider(RecommendationPayloadMixin, MusicProvider):
     _user_id: str = ""
     _soundcloud: SoundcloudAsyncAPI = None
     _me: dict[str, Any]
+    _token_expires_at: int | None = None
+    _token_lock: asyncio.Lock
 
     async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
         """Return Config entries to configure this provider."""
@@ -126,15 +162,16 @@ class SoundcloudMusicProvider(RecommendationPayloadMixin, MusicProvider):
             raise LoginFailed(msg)
         # the cookie value is often pasted without the prefix the Authorization header needs
         auth_token = f"OAuth {str(auth_token).strip().removeprefix('OAuth ')}"
-        self._soundcloud = SoundcloudAsyncAPI(auth_token, client_id, self.mass.http_session)
+        self._token_expires_at = _token_claims(auth_token).get("exp")
+        self._token_lock = asyncio.Lock()
+        self._soundcloud = _SoundcloudAPI(
+            auth_token, str(client_id), self.mass.http_session, self._ensure_valid_token
+        )
         await self._soundcloud.login()
-        expires_at = _token_claims(auth_token).get("exp")
-        if expires_at and expires_at - time.time() < TOKEN_REFRESH_BUFFER:
-            auth_token = await self._refresh_access_token()
         self._me = await self._soundcloud.get_account_details()
         # the API returns the id as a number, while it is only ever used to build request urls
         self._user_id = str(self._me["id"])
-        self._schedule_token_refresh(auth_token)
+        self._schedule_token_refresh()
 
     async def unload(self, is_removed: bool = False) -> None:
         """
@@ -771,13 +808,9 @@ class SoundcloudMusicProvider(RecommendationPayloadMixin, MusicProvider):
         """Return the timer id of the scheduled access token refresh."""
         return f"soundcloud_token_refresh_{self.instance_id}"
 
-    def _schedule_token_refresh(self, auth_token: str) -> None:
-        """
-        Schedule renewing the access token shortly before it expires.
-
-        :param auth_token: The authorization value currently in use.
-        """
-        expires_at = _token_claims(auth_token).get("exp")
+    def _schedule_token_refresh(self) -> None:
+        """Schedule renewing the access token shortly before it expires."""
+        expires_at = self._token_expires_at
         if not expires_at:
             # a token from the old login flow does not expire
             return
@@ -794,9 +827,10 @@ class SoundcloudMusicProvider(RecommendationPayloadMixin, MusicProvider):
         )
 
     async def _scheduled_token_refresh(self) -> None:
-        """Renew the access token from the timer, and plan the next renewal."""
+        """Renew the access token from the timer."""
         try:
-            auth_token = await self._refresh_access_token()
+            async with self._token_lock:
+                await self._refresh_access_token()
         except LoginFailed as err:
             self.unload_with_error(err)
             return
@@ -807,11 +841,24 @@ class SoundcloudMusicProvider(RecommendationPayloadMixin, MusicProvider):
                 self._scheduled_token_refresh,
                 task_id=self._token_refresh_task_id,
             )
-            return
-        self._schedule_token_refresh(auth_token)
 
-    async def _refresh_access_token(self) -> str:
-        """Exchange the refresh token for a new access token, and return its authorization."""
+    async def _ensure_valid_token(self) -> None:
+        """Renew the access token first when it is about to expire."""
+        # the timer alone is not enough: it does not run while the host is asleep
+        if not self._token_expiring():
+            return
+        async with self._token_lock:
+            # a concurrent request may have renewed it while this one waited for the lock
+            if self._token_expiring():
+                await self._refresh_access_token()
+
+    def _token_expiring(self) -> bool:
+        """Return True when the access token expires within the refresh buffer."""
+        expires_at = self._token_expires_at
+        return expires_at is not None and expires_at - time.time() < TOKEN_REFRESH_BUFFER
+
+    async def _refresh_access_token(self) -> None:
+        """Exchange the refresh token for a new access token, and plan its renewal."""
         refresh_token = self.get_setup_value(CONF_REFRESH_TOKEN)
         if not refresh_token:
             msg = (
@@ -840,8 +887,9 @@ class SoundcloudMusicProvider(RecommendationPayloadMixin, MusicProvider):
         self._soundcloud.o_auth = auth_token
         self._soundcloud.headers["Authorization"] = auth_token
         self._update_setup_data(CONF_AUTHORIZATION, auth_token)
+        self._token_expires_at = _token_claims(auth_token).get("exp")
         self.logger.debug("Refreshed the Soundcloud access token")
-        return auth_token
+        self._schedule_token_refresh()
 
 
 def _item_id(item_obj: Any) -> Any:
