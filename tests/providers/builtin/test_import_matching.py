@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any, Self, cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import pytest
 from music_assistant_models.enums import ExternalID, ImageType, MediaType, PlaylistMatchPolicy
 from music_assistant_models.errors import (
     InvalidDataError,
@@ -29,7 +30,7 @@ from music_assistant.controllers.music.media.tracks import (
     TrackProviderEnrichment,
     TrackProviderMatch,
 )
-from music_assistant.helpers.compare import TrackMatchConfidence
+from music_assistant.helpers.compare import TrackMatchConfidence, compare_track_evidence
 from music_assistant.helpers.playlists import (
     ArtistInfo,
     PlaylistItem,
@@ -569,6 +570,93 @@ async def test_confirmed_dead_stream_url_falls_through_to_matching() -> None:
     prov_any.mass.music.tracks.enrich_provider_mappings.assert_awaited_once()
     report_markdown = set_report.call_args.args[0]
     assert "| Retained | 1 |" not in report_markdown
+
+
+@pytest.mark.parametrize(
+    ("candidate_artist", "metadata", "candidate_external_ids"),
+    [
+        (
+            "Different Artist",
+            {"media_type": "track", "name": "Song"},
+            {(ExternalID.ISRC, "USRC17607839")},
+        ),
+        (
+            "Requested Artist",
+            {"media_type": "track", "name": "Song", "mbid": "requested-recording"},
+            {(ExternalID.MB_RECORDING, "conflicting-recording")},
+        ),
+    ],
+)
+async def test_share_import_rejects_unconfirmed_track_match(
+    candidate_artist: str,
+    metadata: dict[str, str],
+    candidate_external_ids: set[tuple[ExternalID, str]],
+) -> None:
+    """Share import rejects mismatched artists and conflicting recording IDs."""
+    provider = _make_provider(loaded_provider_domains={"builtin"})
+    item = PlaylistItem(
+        path="share://track/payload",
+        title="Requested Artist - Song",
+        length="218",
+        metadata=metadata,
+        artists=[ArtistInfo("Requested Artist", "", "", "")],
+    )
+    provider_any = _prepare(provider, generate_m3u("Shared", [item]))
+    candidate = Track(
+        item_id="wrong-track",
+        provider="catalog--1",
+        name="Song",
+        duration=218,
+        external_ids=candidate_external_ids,
+        provider_mappings=set(),
+        artists=UniqueList(
+            [
+                ItemMapping(
+                    item_id="other-artist",
+                    provider="catalog--1",
+                    name=candidate_artist,
+                    media_type=MediaType.ARTIST,
+                )
+            ]
+        ),
+    )
+
+    async def enrich(track: Track, **kwargs: Any) -> TrackProviderEnrichment:
+        confidence = compare_track_evidence(track, candidate)
+        matches = (
+            (
+                TrackProviderMatch(
+                    track=candidate,
+                    mapping=ProviderMapping(
+                        item_id=candidate.item_id,
+                        provider_domain="catalog",
+                        provider_instance="catalog--1",
+                    ),
+                    confidence=confidence,
+                ),
+            )
+            if confidence >= kwargs["minimum_confidence"]
+            else ()
+        )
+        return TrackProviderEnrichment(
+            track=track,
+            matches=matches,
+            ambiguous_providers=(),
+            failed_providers=(),
+            used_library_item=False,
+        )
+
+    provider_any.mass.music.tracks.enrich_provider_mappings = AsyncMock(side_effect=enrich)
+
+    await provider.match_imported_playlist_tracks(
+        "playlist_1",
+        1,
+        PlaylistMatchPolicy.SAME_RECORDING,
+        _allowed(provider, "builtin", "catalog--1"),
+    )
+
+    provider_any.mass.music.tracks.enrich_provider_mappings.assert_awaited_once()
+    assert not provider_any._write_m3u_file.await_args_list
 
 
 async def test_head_404_alone_does_not_confirm_a_stream_is_gone() -> None:

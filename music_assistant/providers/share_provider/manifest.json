@@ -1,0 +1,8 @@
+{
+  "type": "plugin",
+  "domain": "share_provider",
+  "name": "Share Links",
+  "description": "Generate and resolve provider-agnostic share links for tracks, albums, artists and playlists.",
+  "codeowners": ["@music-assistant"],
+  "requirements": []
+}
