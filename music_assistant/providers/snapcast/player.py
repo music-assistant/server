@@ -109,7 +109,9 @@ class SnapCastPlayer(Player):
             return None
 
         if leader_player := self.mass.players.get_player(grp_name):
-            return grp_name if leader_player.available else None
+            # snapcast sync rides on the leader's own stream, not on an output
+            # protocol linked to it
+            return grp_name if leader_player.own_available else None
 
         return None
 

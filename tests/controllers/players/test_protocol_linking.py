@@ -1811,6 +1811,186 @@ class TestSelectBestOutputProtocol:
         assert airplay_output.available is False
 
 
+class TestParentAvailabilityWithLinkedOutputs:
+    """
+    Tests for a native parent player that owns linked output protocols.
+
+    The outputs are alternative paths to the same physical device, so the device as a
+    whole stays usable while one of them plays, even when the parent's own transport
+    (e.g. a snapclient app that was closed) has dropped.
+    """
+
+    @staticmethod
+    def _setup(
+        mock_mass: MagicMock, *, native_available: bool
+    ) -> tuple[PlayerController, MockPlayer, MockPlayer]:
+        """Wire a native parent with PLAY_MEDIA plus a linked AirPlay output."""
+        controller = PlayerController(mock_mass)
+        mock_mass.players = controller
+
+        native_player = MockPlayer(
+            MockProvider("snapcast", mass=mock_mass),
+            "snap_natives",
+            "Living Room",
+            identifiers={IdentifierType.MAC_ADDRESS: "AA:BB:CC:DD:EE:FF"},
+        )
+        native_player._attr_supported_features.add(PlayerFeature.PLAY_MEDIA)
+        native_player._attr_available = native_available
+
+        airplay_player = MockPlayer(
+            MockProvider("airplay", mass=mock_mass),
+            "airplay_AABBCCDDEEFF",
+            "Living Room AirPlay",
+            player_type=PlayerType.PROTOCOL,
+            identifiers={IdentifierType.MAC_ADDRESS: "AA:BB:CC:DD:EE:FF"},
+        )
+
+        controller._players = {
+            "snap_natives": native_player,
+            "airplay_AABBCCDDEEFF": airplay_player,
+        }
+        native_player.set_linked_output_protocols(
+            [
+                LinkedOutputProtocol(
+                    output_protocol_id="airplay_AABBCCDDEEFF",
+                    protocol_domain="airplay",
+                    priority=10,
+                )
+            ]
+        )
+        return controller, native_player, airplay_player
+
+    def test_parent_stays_available_while_output_plays(self, mock_mass: MagicMock) -> None:
+        """Own transport down + an output that can play keeps the device available."""
+        _, native_player, _ = self._setup(mock_mass, native_available=False)
+
+        assert native_player.own_available is False
+        assert native_player.available is True
+        # the native output entry must not claim the own transport is up
+        native_player.update_state(signal_event=False)
+        protocols = {p.output_protocol_id: p for p in native_player.output_protocols}
+        assert protocols["native"].available is False
+        assert protocols["airplay_AABBCCDDEEFF"].available is True
+
+    def test_parent_unavailable_when_own_and_outputs_down(self, mock_mass: MagicMock) -> None:
+        """Nothing left to play on: the parent is unavailable as before."""
+        _, native_player, airplay_player = self._setup(mock_mass, native_available=False)
+        airplay_player._attr_available = False
+
+        assert native_player.available is False
+        assert native_player.own_available is False
+
+    def test_parent_available_from_own_transport_alone(self, mock_mass: MagicMock) -> None:
+        """With its own transport up the parent is available regardless of outputs."""
+        _, native_player, airplay_player = self._setup(mock_mass, native_available=True)
+        airplay_player._attr_available = False
+
+        assert native_player.available is True
+        assert native_player.own_available is True
+
+    def test_state_publishes_aggregated_availability(self, mock_mass: MagicMock) -> None:
+        """The published state (what the API/UI shows) keeps the device available."""
+        _, native_player, _ = self._setup(mock_mass, native_available=False)
+
+        native_player.update_state(force_update=True, signal_event=False)
+        assert native_player.state.available is True
+
+    def test_output_flips_refresh_parent_state(self, mock_mass: MagicMock) -> None:
+        """An output going down last (no own transport) must recompute the state."""
+        _, native_player, airplay_player = self._setup(mock_mass, native_available=False)
+        # real controller fan-out: a protocol player's state update reaches its parent
+        mock_mass.players.signal_player_state_update = lambda player, changed_values, **_: (
+            mock_mass.players._forward_state_update(player, changed_values)
+        )
+        airplay_player.set_protocol_parent_id(native_player.player_id)
+        native_player.update_state(force_update=True, signal_event=False)
+        assert native_player.state.available is True
+
+        # the output stops and publishes; the fan-out marks the parent dirty (the
+        # debounced refresh itself is mocked out), so publishing must see the flip
+        airplay_player._attr_available = False
+        airplay_player.update_state()
+        native_player.update_state(signal_event=False)
+        assert native_player.state.available is False
+
+    def test_output_with_needs_setup_does_not_hold_parent_up(self, mock_mass: MagicMock) -> None:
+        """An unreachable-but-registered output still awaiting setup cannot help."""
+        _, native_player, airplay_player = self._setup(mock_mass, native_available=False)
+        airplay_player._attr_needs_setup = True
+
+        assert native_player.available is False
+
+    def test_native_preferred_falls_back_to_output(self, mock_mass: MagicMock) -> None:
+        """A 'native' preference cannot select a dead native path."""
+
+        def _get_raw_config(
+            _player_id: str, key: str, _default: str | int | None = None
+        ) -> str | int | None:
+            if key == "min_volume":
+                return 0
+            if key == "max_volume":
+                return 100
+            return "native"
+
+        controller, native_player, airplay_player = self._setup(mock_mass, native_available=False)
+        mock_mass.config.get_raw_player_config_value = MagicMock(side_effect=_get_raw_config)
+
+        selected_player, output_protocol = controller._select_best_output_protocol(native_player)
+        assert selected_player == airplay_player
+        assert output_protocol is not None
+        assert output_protocol.output_protocol_id == "airplay_AABBCCDDEEFF"
+
+    def test_auto_selection_falls_back_to_output(self, mock_mass: MagicMock) -> None:
+        """Automatic selection must not hand playback to the dead native path."""
+        controller, native_player, airplay_player = self._setup(mock_mass, native_available=False)
+
+        selected_player, output_protocol = controller._select_best_output_protocol(native_player)
+        assert selected_player == airplay_player
+        assert output_protocol is not None
+        assert output_protocol.output_protocol_id == "airplay_AABBCCDDEEFF"
+
+    def test_native_preferred_selects_native_while_own_transport_up(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """The fallback only kicks in when the native path is actually down."""
+
+        def _get_raw_config(
+            _player_id: str, key: str, _default: str | int | None = None
+        ) -> str | int | None:
+            if key == "min_volume":
+                return 0
+            if key == "max_volume":
+                return 100
+            return "native"
+
+        controller, native_player, _ = self._setup(mock_mass, native_available=True)
+        mock_mass.config.get_raw_player_config_value = MagicMock(side_effect=_get_raw_config)
+
+        selected_player, output_protocol = controller._select_best_output_protocol(native_player)
+        assert selected_player == native_player
+        assert output_protocol is None
+
+    def test_control_target_follows_output_when_native_down(self, mock_mass: MagicMock) -> None:
+        """Audio-path commands must not be routed to the player's dead own transport."""
+        controller, native_player, airplay_player = self._setup(mock_mass, native_available=False)
+        airplay_player._attr_supported_features.add(PlayerFeature.PLAY_MEDIA)
+
+        target = controller._get_control_target(
+            native_player, PlayerFeature.PLAY_MEDIA, require_active=False
+        )
+        assert target == airplay_player
+
+    def test_control_target_keeps_native_while_own_transport_up(self, mock_mass: MagicMock) -> None:
+        """A live native path still resolves as the control target."""
+        controller, native_player, airplay_player = self._setup(mock_mass, native_available=True)
+        airplay_player._attr_supported_features.add(PlayerFeature.PLAY_MEDIA)
+
+        target = controller._get_control_target(
+            native_player, PlayerFeature.PLAY_MEDIA, require_active=False
+        )
+        assert target == native_player
+
+
 class TestGetControlTarget:
     """Tests for resolving the target of an audio-path command."""
 
