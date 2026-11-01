@@ -52,6 +52,7 @@ from music_assistant.controllers.player_queues.helpers import (
 )
 from music_assistant.controllers.webserver.helpers.auth_middleware import (
     set_current_user,
+    set_impersonated_user,
 )
 from music_assistant.helpers.audio import resolve_output_player_ids
 from music_assistant.helpers.compare import compare_item_ids
@@ -550,6 +551,8 @@ class PlaybackTrackerMixin(_PlayerQueuesBase):
                         else None
                     )
                     set_current_user(playback_user)
+                    # the refill runs as the owner, not as a user the scheduling call impersonated
+                    set_impersonated_user(None)
                     dynamic_tracks = await self._media_resolver.get_dynamic_source_tracks(
                         dynamic_source
                     )
