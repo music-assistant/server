@@ -6,7 +6,7 @@
   "description": "Support for Samsung's Wireless Audio Multiroom (WAM) speakers.",
   "codeowners": ["@oliver-stevens"],
   "requirements": [
-    "pywam==0.2.0"
+    "pywam==0.2.3"
   ],
   "documentation": "https://music-assistant.io/player-support/samsung-wam/",
   "multi_instance": false,
