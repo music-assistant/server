@@ -7,7 +7,7 @@ import base64
 import hashlib
 import re
 import secrets
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Sequence
 from contextlib import suppress
 from datetime import UTC, datetime
 from time import time
@@ -113,6 +113,7 @@ SUPPORTED_FEATURES = {
     ProviderFeature.LIBRARY_PLAYLISTS,
     ProviderFeature.ARTIST_ALBUMS,
     ProviderFeature.RECOMMENDATIONS,
+    ProviderFeature.BROWSE,
 }
 
 CONF_QUALITY = "quality"
@@ -312,6 +313,35 @@ class LivePhishProvider(MusicProvider):
             result.append(track)
         await self._cache_tracks(result)
         return result
+
+    async def browse(self, path: str) -> Sequence[MediaItemType | ItemMapping | BrowseFolder]:
+        """
+        Browse artists, years, songs, albums, and tours.
+
+        Opening a song lists the shows that played that title.
+
+        :param path: The path to browse, (e.g. provider_id://years/1997).
+        """
+        subpath = path.split("://", 1)[1] if "://" in path else path
+        parts = [part for part in subpath.split("/") if part]
+        if not parts:
+            root = path if path.endswith("://") else f"{path.rstrip('/')}/"
+            return self._browse_root(root)
+        section, *rest = parts
+        if len(rest) > 1:
+            return []
+        child = rest[0] if rest else None
+        if section == "artist" and child is None:
+            return [item async for item in self.get_library_artists()]
+        if section == "years":
+            return await self._browse_years(child)
+        if section == "songs":
+            return await self._browse_songs(child)
+        if section == "albums" and child is None:
+            return await self._browse_albums()
+        if section == "tour":
+            return await self._browse_tours(child)
+        return []
 
     async def get_recommendations(self) -> list[RecommendationFolder]:
         """Get this provider's available recommendation rows, without items."""
@@ -923,18 +953,19 @@ class LivePhishProvider(MusicProvider):
 
     @use_cache(3600 * 24)
     @throttle_with_retries
-    async def _get_legacy_catalog(self, method: str) -> Any:
+    async def _get_legacy_catalog(self, method: str, **params: Any) -> Any:
         """
         Return the payload of one public legacy catalog method.
 
         :param method: The ``method`` query value, such as ``catalog.artists``.
+        :param params: Extra query parameters for that method.
         """
         try:
             async with (
                 self.search_throttler.acquire(),
                 self.mass.http_session.get(
                     LEGACY_API_URL,
-                    params={"method": method},
+                    params={"method": method, **params},
                     timeout=ClientTimeout(total=30),
                 ) as response,
             ):
@@ -1277,6 +1308,158 @@ class LivePhishProvider(MusicProvider):
             albums = [self._parse_album(item) for item in recent_data["items"]]
         folder.items = UniqueList(albums)
         return folder
+
+    def _browse_root(self, path: str) -> list[BrowseFolder]:
+        """Return the five browse sections from the Live Phish app."""
+        sections = (
+            ("artist", "Artist", "artist"),
+            ("years", "Years", "years"),
+            ("songs", "Songs", "songs"),
+            ("albums", "Albums", "albums"),
+            ("tour", "Tour", "tour"),
+        )
+        return [
+            BrowseFolder(
+                item_id=item_id,
+                provider=self.instance_id,
+                path=f"{path}{item_id}",
+                name=name,
+                translation_key=translation_key,
+                is_playable=False,
+            )
+            for item_id, name, translation_key in sections
+        ]
+
+    async def _browse_years(self, year: str | None) -> list[BrowseFolder | Album]:
+        """Return performance years, or the shows from one year."""
+        if year is None:
+            payload = await self._get_legacy_catalog("catalog.showYearCatalog")
+            if not isinstance(payload, list):
+                raise InvalidDataError("Invalid Live Phish catalog response")
+            # The catalog lists the oldest year first. Newest first matches a show archive.
+            years = sorted({str(item) for item in payload if str(item).isdigit()}, reverse=True)
+            return [
+                BrowseFolder(
+                    item_id=item,
+                    provider=self.instance_id,
+                    path=f"{self.instance_id}://years/{item}",
+                    name=item,
+                    is_playable=False,
+                )
+                for item in years
+            ]
+        if not year.isdigit():
+            return []
+        containers = await self._get_legacy_containers(
+            showYears=year,
+            sortBy="performanceDate",
+            sortType="desc",
+            startOffset=1,
+        )
+        return self._albums_from_containers(containers)
+
+    async def _browse_songs(self, song_id: str | None) -> list[BrowseFolder | Album]:
+        """Return song titles, or the shows that played one title."""
+        payload = await self._get_legacy_catalog("catalog.songCatalog")
+        if not isinstance(payload, list):
+            raise InvalidDataError("Invalid Live Phish catalog response")
+        songs = [
+            item
+            for item in payload
+            if isinstance(item, dict) and item.get("ID") and item.get("title")
+        ]
+        if song_id is None:
+            return [
+                BrowseFolder(
+                    item_id=str(item["ID"]),
+                    provider=self.instance_id,
+                    path=f"{self.instance_id}://songs/{item['ID']}",
+                    name=str(item["title"]),
+                    is_playable=False,
+                )
+                for item in songs
+            ]
+        match = next((item for item in songs if str(item["ID"]) == song_id), None)
+        if match is None:
+            return []
+        containers = await self._get_legacy_containers(
+            songsPlayed=match["title"],
+            startOffset=1,
+            availType=1,
+        )
+        return self._albums_from_containers(containers)
+
+    async def _browse_albums(self) -> list[Album]:
+        """Return studio albums, the rows the Albums page loads by title."""
+        containers = await self._get_legacy_containers(
+            sortBy="albumTitle",
+            sortType="asc",
+            startOffset=1,
+        )
+        return self._albums_from_containers(containers)
+
+    async def _browse_tours(self, category_id: str | None) -> list[BrowseFolder | Album]:
+        """Return tour categories, or the shows in one category."""
+        if category_id is None:
+            payload = await self._get_legacy_catalog("catalog.containerCategories")
+            categories = payload.get("containerCategories") if isinstance(payload, dict) else None
+            if not isinstance(categories, list):
+                raise InvalidDataError("Invalid Live Phish catalog response")
+            folders: list[BrowseFolder | Album] = []
+            for item in categories:
+                if not isinstance(item, dict) or not item.get("containerCategoryID"):
+                    continue
+                name = item.get("containerCategoryName") or ""
+                if not name:
+                    continue
+                image = None
+                cover = item.get("img")
+                if isinstance(cover, dict) and (url := _cover_url(cover.get("url"))):
+                    image = MediaItemImage(
+                        type=ImageType.THUMB,
+                        path=url,
+                        provider=self.instance_id,
+                        remotely_accessible=True,
+                    )
+                category = str(item["containerCategoryID"])
+                folders.append(
+                    BrowseFolder(
+                        item_id=category,
+                        provider=self.instance_id,
+                        path=f"{self.instance_id}://tour/{category}",
+                        name=str(name),
+                        image=image,
+                        is_playable=False,
+                    )
+                )
+            return folders
+        if not category_id.isdigit():
+            return []
+        containers = await self._get_legacy_containers(
+            containerCategoryID=category_id,
+            startOffset=1,
+            availtype=1,
+        )
+        return self._albums_from_containers(containers)
+
+    async def _get_legacy_containers(self, **params: Any) -> list[dict[str, Any]]:
+        """Return show or album rows from catalog.containersAll."""
+        payload = await self._get_legacy_catalog("catalog.containersAll", **params)
+        containers = payload.get("containers") if isinstance(payload, dict) else None
+        if not isinstance(containers, list):
+            raise InvalidDataError("Invalid Live Phish catalog response")
+        return [item for item in containers if isinstance(item, dict)]
+
+    def _albums_from_containers(self, containers: list[dict[str, Any]]) -> list[Album]:
+        """Parse container rows that have an id, a title, and an artist."""
+        albums: list[Album] = []
+        for item in containers:
+            has_artist = bool(item.get("artist")) or (
+                item.get("artistID") and item.get("artistName")
+            )
+            if item.get("containerID") and item.get("containerInfo") and has_artist:
+                albums.append(self._parse_album(item))
+        return albums
 
 
 def _select_subscription(payload: Any) -> dict[str, Any]:

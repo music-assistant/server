@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock, Mock
 
 import pytest
 from music_assistant_models.enums import MediaType
-from music_assistant_models.media_items import ItemMapping
+from music_assistant_models.media_items import Album, Artist, BrowseFolder, ItemMapping
 
 from music_assistant.providers.livephish import LivePhishProvider
 from music_assistant.providers.livephish.constants import (
@@ -164,3 +164,105 @@ async def test_album_tracks_name_the_library_artist(provider: LivePhishProvider)
 
     assert tracks[0].artists[0].item_id == "8"
     assert tracks[0].artists[0].provider == "library"
+
+
+def _show(container_id: str, title: str) -> dict[str, object]:
+    """Return one catalog container row."""
+    return {
+        "containerID": container_id,
+        "containerInfo": title,
+        "artistID": 1,
+        "artistName": "Phish",
+    }
+
+
+@pytest.mark.asyncio
+async def test_browse_root_matches_the_app_sections(provider: LivePhishProvider) -> None:
+    """Browse starts with Artist, Years, Songs, Albums, and Tour."""
+    items = await provider.browse("livephish--test123://")
+
+    assert [item.item_id for item in items] == ["artist", "years", "songs", "albums", "tour"]
+    assert [item.name for item in items] == ["Artist", "Years", "Songs", "Albums", "Tour"]
+    assert all(isinstance(item, BrowseFolder) and not item.is_playable for item in items)
+    assert items[1].path == "livephish--test123://years"
+
+
+@pytest.mark.asyncio
+async def test_browse_loads_each_app_catalog(provider: LivePhishProvider) -> None:
+    """Each section calls the catalog method the Live Phish app uses."""
+    calls: list[tuple[str, dict[str, object]]] = []
+
+    async def catalog(method: str, **params: object) -> object:
+        calls.append((method, params))
+        if method == "catalog.artists":
+            return {"artists": [{"artistID": 1, "artistName": "Phish"}]}
+        if method == "catalog.showYearCatalog":
+            return ["1989", "2024", "1997"]
+        if method == "catalog.songCatalog":
+            return [{"ID": 10, "title": "Tweezer"}, {"title": "Skip"}]
+        if method == "catalog.containerCategories":
+            return {
+                "containerCategories": [
+                    {
+                        "containerCategoryID": 121,
+                        "containerCategoryName": "Fall 2026",
+                        "img": {"url": "/images/tour.jpg"},
+                    }
+                ]
+            }
+        if method == "catalog.containersAll":
+            return {"containers": [_show("430", "12/30/97 Madison Square Garden")]}
+        return {}
+
+    provider._get_legacy_catalog = catalog  # type: ignore[method-assign]
+
+    artists = await provider.browse("livephish--test123://artist")
+    years = await provider.browse("livephish--test123://years")
+    year_shows = await provider.browse("livephish--test123://years/1997")
+    songs = await provider.browse("livephish--test123://songs")
+    song_shows = await provider.browse("livephish--test123://songs/10")
+    albums = await provider.browse("livephish--test123://albums")
+    tours = await provider.browse("livephish--test123://tour")
+    tour_shows = await provider.browse("livephish--test123://tour/121")
+
+    assert [item.item_id for item in artists] == ["1"]
+    assert isinstance(artists[0], Artist)
+    assert [item.name for item in years] == ["2024", "1997", "1989"]
+    assert isinstance(year_shows[0], Album)
+    assert year_shows[0].item_id == "430"
+    assert [item.item_id for item in songs] == ["10"]
+    assert song_shows[0].item_id == "430"
+    assert albums[0].item_id == "430"
+    assert tours[0].name == "Fall 2026"
+    assert isinstance(tours[0], BrowseFolder)
+    assert tours[0].image is not None
+    assert tours[0].image.path == f"{IMAGE_CDN}/images/tour.jpg"
+    assert tour_shows[0].item_id == "430"
+    assert calls == [
+        ("catalog.artists", {}),
+        ("catalog.showYearCatalog", {}),
+        (
+            "catalog.containersAll",
+            {
+                "showYears": "1997",
+                "sortBy": "performanceDate",
+                "sortType": "desc",
+                "startOffset": 1,
+            },
+        ),
+        ("catalog.songCatalog", {}),
+        ("catalog.songCatalog", {}),
+        (
+            "catalog.containersAll",
+            {"songsPlayed": "Tweezer", "startOffset": 1, "availType": 1},
+        ),
+        (
+            "catalog.containersAll",
+            {"sortBy": "albumTitle", "sortType": "asc", "startOffset": 1},
+        ),
+        ("catalog.containerCategories", {}),
+        (
+            "catalog.containersAll",
+            {"containerCategoryID": "121", "startOffset": 1, "availtype": 1},
+        ),
+    ]

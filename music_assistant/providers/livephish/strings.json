@@ -14,6 +14,13 @@
     }
   },
   "media": {
+    "folder": {
+      "artist": { "name": "Artist" },
+      "years": { "name": "Years" },
+      "songs": { "name": "Songs" },
+      "albums": { "name": "Albums" },
+      "tour": { "name": "Tour" }
+    },
     "recommendations": {
       "livephish_popular_shows": { "name": "Most Popular" },
       "livephish_recent_shows": { "name": "Recent Shows" }
