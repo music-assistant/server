@@ -1365,14 +1365,15 @@ class SyncGroupPlayer(Player):
         # NOTE: not the public cmd_ungroup - it re-enters this syncgroup's set_members.
         self.logger.warning(
             "Player %s still reports synced_to=%s after %ss; "
-            "removing it from its stale parent and re-waiting",
+            "releasing it from its stale parent and re-waiting",
             member.display_name,
             member.synced_to,
             timeout,
         )
         parent_lock = (
             self.mass.players.get_player_lock(stale_parent.player_id, PlayerLockPurpose.PLAYBACK)
-            if (stale_parent := self.mass.players.get_player(member.synced_to))
+            if (stale_parent_id := member.state.synced_to)
+            and (stale_parent := self.mass.players.get_player(stale_parent_id))
             else nullcontext()
         )
         try:

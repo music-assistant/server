@@ -3713,7 +3713,16 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
             member.name,
             target.name,
         )
-        await target.ungroup()
+        try:
+            await target.ungroup()
+        except asyncio.CancelledError:
+            raise
+        except Exception as err:
+            msg = (
+                f"{member.name} is synced to the unavailable player {member.state.synced_to} "
+                "and could not leave the group on its own"
+            )
+            raise PlayerUnavailableError(msg) from err
 
     async def _dissolve_own_group(self, player: Player, target_name: str) -> bool:
         """

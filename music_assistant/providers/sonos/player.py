@@ -822,9 +822,7 @@ class SonosPlayer(Player):
                 # leaving a group is handled by its coordinator, so it can't succeed while
                 # that coordinator is offline; creating a group is handled by this speaker
                 # itself and moves it into a group of its own
-                await self.client.api.groups.create_group(
-                    self.client.household_id, [self.player_id]
-                )
+                await self.client.create_group([self.player_id])
                 return
         await sonos_player.leave_group()
 

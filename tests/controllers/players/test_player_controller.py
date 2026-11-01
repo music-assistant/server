@@ -2136,6 +2136,37 @@ class TestCmdUngroupNewBranches:
         protocol_player.ungroup.assert_awaited_once()
         member.ungroup.assert_not_awaited()
 
+    @pytest.mark.asyncio
+    async def test_ungroup_many_continues_when_a_member_cannot_leave_its_offline_leader(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """A member that fails to leave its offline leader doesn't stop the others."""
+        controller = PlayerController(mock_mass)
+        provider = MockProvider("test_provider", instance_id="test_prov", mass=mock_mass)
+        leader = MockPlayer(provider, "leader", "Leader")
+        leader._attr_group_members = ["leader", "first", "second"]
+        first = MockPlayer(provider, "first", "First")
+        second = MockPlayer(provider, "second", "Second")
+        controller._players = {"leader": leader, "first": first, "second": second}
+        mock_mass.players = controller
+        for player in (leader, first, second):
+            player.set_initialized()
+            player.update_state(signal_event=False)
+        leader._attr_available = False
+        leader.update_state(signal_event=False)
+        assert first.state.synced_to == second.state.synced_to == "leader"
+
+        with (
+            patch.object(
+                first, "ungroup", new=AsyncMock(side_effect=PlayerCommandFailed("no route"))
+            ) as first_ungroup,
+            patch.object(second, "ungroup", new=AsyncMock()) as second_ungroup,
+        ):
+            await controller.cmd_ungroup_many(["first", "second"])
+
+        first_ungroup.assert_awaited_once()
+        second_ungroup.assert_awaited_once()
+
 
 class TestPowerOffEndsTheQueue:
     """
