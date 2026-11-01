@@ -655,6 +655,7 @@ async def get_content_length(
     uri: str,
     output_format: AudioFormat,
     seconds: float,
+    playback_speed: float = 1.0,
 ) -> int:
     """
     Get the estimated encoded size, using cached actual measurement when available.
@@ -664,12 +665,16 @@ async def get_content_length(
     - Exact when the requested duration matches the cached duration.
     - Very accurate when the duration differs (derived bytes-per-second).
 
-    Falls back to the static estimate from calculate_content_length() if no cache entry exists.
+    Without a cache entry it returns a size the stream will not exceed, so a player that
+    stops at the announced length does not cut the track short.
 
     :param mass: The MusicAssistant instance (for cache access).
     :param uri: The media URI (e.g. "qobuz://track/12345").
     :param output_format: The output audio format.
-    :param seconds: Duration in seconds to estimate.
+    :param seconds: Duration of the stream in seconds, already adjusted for the seek
+        position and the playback speed.
+    :param playback_speed: The playback speed the stream runs at, which stretches the
+        margin for a duration rounded to whole seconds.
     """
     cache_key = f"{uri}/{get_output_format_key(output_format)}"
     cached: dict[str, float] | None = await mass.cache.get(
@@ -685,7 +690,7 @@ async def get_content_length(
             return int(cached_size)
         # different duration: derive bytes-per-second from the cached measurement
         return int((cached_size / cached_duration) * seconds)
-    return calculate_content_length(output_format, seconds)
+    return _max_content_length(output_format, seconds, playback_speed)
 
 
 async def store_content_length_in_cache(
@@ -971,3 +976,22 @@ def get_normalization_mode(
 
     # simply return the preference
     return preference
+
+
+def _max_content_length(fmt: AudioFormat, seconds: float, playback_speed: float = 1.0) -> int:
+    """Return a size the encoded stream will not exceed, for a track nothing was measured of."""
+    # a duration is rounded down to whole seconds, so the audio can run up to a second
+    # longer; a slower playback speed stretches that second like the rest of the stream
+    seconds += 1 / playback_speed
+    if fmt.content_type == ContentType.FLAC:
+        # lossless compression never grows the audio past its PCM size (plus frame headers);
+        # the average ratio calculate_content_length uses is often exceeded at 24 bit
+        size = int(fmt.sample_rate * (fmt.bit_depth / 8) * fmt.channels * seconds * 1.01)
+    elif fmt.content_type in (ContentType.MP3, ContentType.WAV) or fmt.content_type.is_pcm():
+        # constant bit rate or uncompressed: the estimate is the size
+        size = calculate_content_length(fmt, seconds)
+    else:
+        # AAC encodes to an average bit rate, which a track can run above
+        size = int(calculate_content_length(fmt, seconds) * 1.05)
+    # room for the container header (FLAC metadata, ID3, WAV chunks)
+    return size + 16 * 1024

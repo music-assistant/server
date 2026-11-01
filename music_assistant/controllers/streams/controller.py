@@ -111,6 +111,7 @@ from music_assistant.helpers.api import api_command
 from music_assistant.helpers.audio import (
     calculate_content_length,
     create_streaming_wave_header,
+    create_wave_header,
     get_content_length,
     get_mime_type,
     pcm_container_bit_depth,
@@ -188,7 +189,9 @@ def _audio_source_headers(session: AudioSourceSession, output_format_str: str) -
 
 
 async def _wav_passthrough_stream(
-    audio_input: AsyncGenerator[bytes], output_format: AudioFormat
+    audio_input: AsyncGenerator[bytes],
+    output_format: AudioFormat,
+    header: bytes | None = None,
 ) -> AsyncGenerator[bytes]:
     """
     Yield a WAV header followed by raw PCM bytes from ``audio_input``.
@@ -198,12 +201,21 @@ async def _wav_passthrough_stream(
     reconnect would otherwise block on a claim nobody is holding on purpose.
 
     :param audio_input: The PCM stream to pass through.
-    :param output_format: Format the WAV header should describe.
+    :param output_format: PCM format of ``audio_input``, for the header sent when no
+        ``header`` is given.
+    :param header: The WAV header to send, instead of one for a stream of unknown length.
+        It goes out with the first chunk of audio, so a stream that produces none sends
+        nothing.
     """
     async with aclosing(audio_input):
-        yield create_streaming_wave_header(output_format)
+        if header is None:
+            yield create_streaming_wave_header(output_format)
         async for chunk in audio_input:
-            yield chunk
+            if header is None:
+                yield chunk
+            else:
+                yield header + chunk
+                header = None
 
 
 def _get_publish_addresses(
@@ -1025,6 +1037,8 @@ class StreamsController(CoreController):
             resp = web.StreamResponse(status=200, reason="OK", headers=headers)
             resp.content_type = get_mime_type(output_format.output_format_str)
             http_profile = player.get_config_value(CONF_HTTP_PROFILE, "default")
+            playback_speed = cast("float", queue_item.extra_attributes.get("playback_speed", 1.0))
+            wave_header: bytes | None = None
             if http_profile == "forced_content_length" and not queue_item.duration:
                 # just set an insane high content length to make sure the player keeps playing
                 resp.content_length = calculate_content_length(output_format, 12 * 3600)
@@ -1032,11 +1046,32 @@ class StreamsController(CoreController):
                 # estimate content length based on effective duration
                 # account for seek position (e.g., crossfade from previous track)
                 seek_pos = queue_item.streamdetails.seek_position if queue_item.streamdetails else 0
-                effective_duration = max(queue_item.duration - seek_pos, 1)
-                # use cached actual bytes-per-second if available (from a previous stream)
-                resp.content_length = await get_content_length(
-                    self.mass, queue_item.uri, output_format, effective_duration
-                )
+                # a slower playback speed stretches the stream, a faster one shortens it
+                effective_duration = max((queue_item.duration - seek_pos) / playback_speed, 1)
+                # a duration is rounded down to whole seconds, so the audio can run up to a
+                # second longer, which a slower playback speed stretches like the rest of
+                # the stream; the body then ends short and the connection is closed
+                wave_seconds = max(ceil((queue_item.duration - seek_pos + 1) / playback_speed), 1)
+                if (
+                    output_format.content_type == ContentType.WAV
+                    and (wave_data_size := calculate_content_length(output_format, wave_seconds))
+                    < 0xFFFFFF00
+                ):
+                    # players reject a WAV whose length is not its header plus whole samples,
+                    # or whose header claims another size, so both are set to the duration
+                    # (a header can describe up to 4 GB; a longer item keeps the estimate)
+                    wave_header = create_wave_header(
+                        output_format.sample_rate,
+                        output_format.channels,
+                        output_format.bit_depth,
+                        wave_seconds,
+                    )
+                    resp.content_length = len(wave_header) + wave_data_size
+                else:
+                    # use cached actual bytes-per-second if available (from a previous stream)
+                    resp.content_length = await get_content_length(
+                        self.mass, queue_item.uri, output_format, effective_duration, playback_speed
+                    )
             elif http_profile == "chunked":
                 resp.enable_chunked_encoding()
 
@@ -1083,9 +1118,7 @@ class StreamsController(CoreController):
                     queue_item=queue_item,
                     pcm_format=pcm_format,
                     seek_position=int(queue_item.streamdetails.seek_position),
-                    playback_speed=cast(
-                        "float", queue_item.extra_attributes.get("playback_speed", 1.0)
-                    ),
+                    playback_speed=playback_speed,
                     session_id=session_id,
                     consumer_connected=_player_connected,
                 )
@@ -1132,10 +1165,20 @@ class StreamsController(CoreController):
                 audio_bytes = get_ffmpeg_stream(
                     audio_input=audio_input,
                     input_format=pcm_format,
-                    output_format=output_format,
+                    # the WAV of an announced length gets its own header in front of raw PCM
+                    output_format=output_format
+                    if wave_header is None
+                    else AudioFormat(
+                        content_type=ContentType.from_bit_depth(output_format.bit_depth),
+                        sample_rate=output_format.sample_rate,
+                        bit_depth=output_format.bit_depth,
+                        channels=output_format.channels,
+                    ),
                     filter_params=filter_params,
                     extra_input_args=output_pacing_args(pacing),
                 )
+                if wave_header is not None:
+                    audio_bytes = _wav_passthrough_stream(audio_bytes, output_format, wave_header)
             first_chunk_received = False
             bytes_sent = 0
             stream_failure: AudioError | None = None
@@ -1235,6 +1278,10 @@ class StreamsController(CoreController):
                         queue_item.streamdetails.seconds_streamed,
                     )
                 )
+            if resp.content_length is not None and bytes_sent < resp.content_length:
+                # an announced length is a bound the body may not reach, and the player
+                # only learns the end from the connection closing (see the error branch)
+                resp.force_close()
             return resp
         finally:
             # read while this request is still registered: only what the player asked for
