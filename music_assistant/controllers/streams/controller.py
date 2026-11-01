@@ -1025,6 +1025,7 @@ class StreamsController(CoreController):
             resp = web.StreamResponse(status=200, reason="OK", headers=headers)
             resp.content_type = get_mime_type(output_format.output_format_str)
             http_profile = player.get_config_value(CONF_HTTP_PROFILE, "default")
+            playback_speed = cast("float", queue_item.extra_attributes.get("playback_speed", 1.0))
             if http_profile == "forced_content_length" and not queue_item.duration:
                 # just set an insane high content length to make sure the player keeps playing
                 resp.content_length = calculate_content_length(output_format, 12 * 3600)
@@ -1032,10 +1033,11 @@ class StreamsController(CoreController):
                 # estimate content length based on effective duration
                 # account for seek position (e.g., crossfade from previous track)
                 seek_pos = queue_item.streamdetails.seek_position if queue_item.streamdetails else 0
-                effective_duration = max(queue_item.duration - seek_pos, 1)
+                # a slower playback speed stretches the stream, a faster one shortens it
+                effective_duration = max((queue_item.duration - seek_pos) / playback_speed, 1)
                 # use cached actual bytes-per-second if available (from a previous stream)
                 resp.content_length = await get_content_length(
-                    self.mass, queue_item.uri, output_format, effective_duration
+                    self.mass, queue_item.uri, output_format, effective_duration, playback_speed
                 )
             elif http_profile == "chunked":
                 resp.enable_chunked_encoding()
@@ -1083,9 +1085,7 @@ class StreamsController(CoreController):
                     queue_item=queue_item,
                     pcm_format=pcm_format,
                     seek_position=int(queue_item.streamdetails.seek_position),
-                    playback_speed=cast(
-                        "float", queue_item.extra_attributes.get("playback_speed", 1.0)
-                    ),
+                    playback_speed=playback_speed,
                     session_id=session_id,
                     consumer_connected=_player_connected,
                 )
@@ -1235,6 +1235,10 @@ class StreamsController(CoreController):
                         queue_item.streamdetails.seconds_streamed,
                     )
                 )
+            if resp.content_length is not None and bytes_sent < resp.content_length:
+                # an announced length is a bound the body may not reach, and the player
+                # only learns the end from the connection closing (see the error branch)
+                resp.force_close()
             return resp
         finally:
             # read while this request is still registered: only what the player asked for
