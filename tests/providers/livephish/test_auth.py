@@ -205,5 +205,9 @@ async def test_init_drops_cached_account_and_logs_in(provider: LivePhishProvider
 
     await provider.handle_async_init()
 
-    cache.delete.assert_awaited_once_with("_get_account", provider=provider.instance_id)
+    assert sorted(c.args[0] for c in cache.delete.await_args_list) == [
+        "_get_subscription_info",
+        "_get_user_id",
+    ]
+    assert all(c.kwargs["provider"] == provider.instance_id for c in cache.delete.await_args_list)
     provider.login.assert_awaited_once()
