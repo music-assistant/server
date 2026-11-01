@@ -14,6 +14,7 @@ from music_assistant_models.enums import PlaybackState
 from music_assistant.constants import VERBOSE_LOG_LEVEL
 from music_assistant.providers.airplay.constants import (
     AIRPLAY_COLD_GROUP_START_LEAD_MS,
+    CONF_SHAIRPORT_MQTT_TOPIC,
     PTP_DAEMON_WARN_BURST,
     PTP_DAEMON_WARN_WINDOW,
     AirPlayRemoteCommand,
@@ -27,10 +28,12 @@ from music_assistant.providers.airplay.sendspin_bridge import (
     SendspinAirPlayBridge,
     SendspinBridgeManager,
 )
+from music_assistant.providers.airplay.shairport_mqtt import ShairportMqttClient
 from music_assistant.providers.airplay.shairport_player import ShairportSyncPlayer
 from music_assistant.providers.airplay.stream import AirPlayStream
 from music_assistant.providers.airplay.stream_session import AirPlayStreamSession
 from music_assistant.providers.airplay_receiver import airplay_receiver_ports
+from tests.providers.airplay.test_shairport_mqtt import _discovery
 
 INSTANCE_ID = "airplay"
 START_UNIX_MS = 1_750_000_000_000
@@ -1109,6 +1112,36 @@ async def test_setup_player_flags_shairport_on_this_host(
     player = await _setup_discovered_player(_setup_player_provider(), address, model)
 
     assert player._is_local_shairport is expected
+
+
+async def test_shairport_player_gets_its_topic_once_registered() -> None:
+    """A receiver whose autodiscovery arrived before it registered still gets its MQTT topic."""
+    prov = _setup_player_provider()
+    mass = cast("MagicMock", prov.mass)
+    # like the players controller: a player only shows up once its registration has finished
+    registered: list[AirPlayPlayer] = []
+    mass.players.iter_players.side_effect = lambda **_kwargs: list(registered)
+    mass.players.register = AsyncMock(side_effect=registered.append)
+    player_config = mass.config.get_base_player_config.return_value
+    default_value = player_config.get_value.return_value
+    player_config.get_value.side_effect = lambda key, *_args: (
+        "" if key == CONF_SHAIRPORT_MQTT_TOPIC else default_value
+    )
+    mqtt = ShairportMqttClient(
+        prov,
+        host="broker",
+        port=1883,
+        username=None,
+        password=None,
+        discovery_prefix="homeassistant",
+    )
+    prov._shairport_mqtt = mqtt
+    # the retained autodiscovery message arrives as soon as the broker connection is up
+    mqtt._handle_discovery(*_discovery("db1ff0aae80e", "shairport/garage", "Garage"))
+
+    player = await _setup_discovered_player(prov, "192.168.1.55", "ShairportSync")
+
+    assert mqtt.topic_for(player.player_id) == "shairport/garage"
 
 
 def _password_marker_provider(

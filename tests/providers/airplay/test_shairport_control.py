@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import time
 from collections.abc import Awaitable, Callable
 from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -11,6 +12,7 @@ import pytest
 from music_assistant_models.enums import PlaybackState, PlayerFeature
 from music_assistant_models.errors import PlayerCommandFailed
 
+from music_assistant.providers.airplay.helpers import convert_airplay_volume
 from music_assistant.providers.airplay.shairport_player import (
     AIRPLAY_VOLUME_MIN,
     VOLUME_STEP_DB,
@@ -170,6 +172,83 @@ async def test_unanswered_command_makes_the_session_read_only() -> None:
     player.on_shairport_metadata({"play_begin": True})
 
     assert player.source_list[0].can_play_pause is True
+
+
+@pytest.mark.parametrize("topic", [None, "shairport/kitchen"], ids=["read_only", "ignored"])
+async def test_stop_does_not_fail_on_a_session_that_cannot_be_stopped(topic: str | None) -> None:
+    """A power off stops the player first, so a session we cannot stop must not fail it."""
+    player, mqtt = _controlled_session(topic=topic)
+
+    with patch("music_assistant.providers.airplay.shairport_player.COMMAND_CONFIRM_TIMEOUT", 0.01):
+        await player.stop()
+
+    assert _published(mqtt) == ([] if topic is None else ["stop"])
+    assert player.active_source == "airplay"
+    assert player.source_list[0].can_play_pause is False
+
+
+@pytest.mark.parametrize("seconds_ago", [0, 40], ids=["reported", "playing_since"])
+async def test_previous_that_restarts_the_track_is_confirmed(seconds_ago: int) -> None:
+    """Previous past the first seconds restarts the track, which confirms it as well."""
+    player, mqtt = _controlled_session()
+    player.on_shairport_metadata({"title": "Song", "track_id": 1})
+    player.on_shairport_metadata({"elapsed_time": 40 - seconds_ago, "duration": 240})
+    player._attr_elapsed_time_last_updated = time.time() - seconds_ago
+    _answer_with(player, mqtt, {"flush": True, "elapsed_time": 0, "duration": 240})
+
+    with patch("music_assistant.providers.airplay.shairport_player.COMMAND_CONFIRM_TIMEOUT", 0.5):
+        await player.previous_track()
+
+    assert player.source_list[0].can_next_previous is True
+
+
+async def test_volume_change_while_steps_echo_starts_from_the_target() -> None:
+    """A volume change while earlier steps still echo back neither repeats them nor bounces."""
+    player, mqtt = _controlled_session()
+    player.on_shairport_metadata({"volume": 100, "airplay_volume": 0.0})
+    receiver_db = [0.0]
+    shown_levels: list[int | None] = []
+    loop = asyncio.get_running_loop()
+
+    async def publish_remote(_player_id: str, command: str) -> None:
+        # the receiver applies the queued steps one after another and reports each of them
+        def report_step() -> None:
+            receiver_db[0] += VOLUME_STEP_DB if command == "volumeup" else -VOLUME_STEP_DB
+            player.on_shairport_metadata(
+                {"volume": convert_airplay_volume(receiver_db[0]), "airplay_volume": receiver_db[0]}
+            )
+            shown_levels.append(player.volume_level)
+
+        loop.call_later(0.01 * len(_published(mqtt)), report_step)
+
+    mqtt.publish_remote.side_effect = publish_remote
+
+    await player.volume_set(50)
+    await player.volume_set(50)
+    await asyncio.sleep(0.01 * len(_published(mqtt)) + 0.05)
+
+    assert _published(mqtt) == ["volumedown"] * 8
+    assert receiver_db[0] == -15.0
+    assert shown_levels == [convert_airplay_volume(-15.0)] * 8
+
+
+async def test_volume_report_is_shown_once_missing_step_reports_time_out() -> None:
+    """When fewer steps come back than were sent, the receiver's next report is shown."""
+    player, mqtt = _controlled_session()
+    player.on_shairport_metadata({"volume": 70, "airplay_volume": -9.0})
+
+    async def publish_remote(_player_id: str, _command: str) -> None:
+        if len(_published(mqtt)) == 1:
+            player.on_shairport_metadata({"volume": 66, "airplay_volume": -10.875})
+
+    mqtt.publish_remote.side_effect = publish_remote
+    with patch("music_assistant.providers.airplay.shairport_player.COMMAND_CONFIRM_TIMEOUT", 0.05):
+        await player.volume_set(50)
+        await asyncio.sleep(0.1)
+
+    player.on_shairport_metadata({"volume": 60, "airplay_volume": -12.0})
+
+    assert player.volume_level == 60
 
 
 async def test_pause_of_a_classic_sender_is_confirmed_by_its_flush() -> None:

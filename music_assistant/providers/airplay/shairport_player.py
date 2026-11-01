@@ -42,6 +42,9 @@ FLUSH_PAUSE_DELAY: Final[float] = 1.0
 # shairport-sync moves the AirPlay volume (-30..0 dB) by this much per remote volume step.
 VOLUME_STEP_DB: Final[float] = 1.875
 AIRPLAY_VOLUME_MIN: Final[float] = -30.0
+# Previous restarts the playing track when pressed past its first seconds, as Apple's
+# players do; a position reported back inside this window then confirms the command.
+TRACK_RESTART_WINDOW: Final[float] = 3.0
 # The first shairport-sync release that passes remote commands on to AirPlay 2 senders;
 # older releases send every command over DACP, which only Classic senders follow.
 AIRPLAY2_REMOTE_MIN_VERSION: Final[tuple[int, int]] = (5, 6)
@@ -51,6 +54,7 @@ _CONFIRMED_BY_PLAY: Final = frozenset({"resumed", "play_begin"})
 _CONFIRMED_BY_PAUSE: Final = frozenset({"paused"})
 _CONFIRMED_BY_STOP: Final = frozenset({"paused", "play_end", "session_end"})
 _CONFIRMED_BY_TRACK_CHANGE: Final = frozenset({"track_changed"})
+_CONFIRMED_BY_PREVIOUS: Final = frozenset({"track_changed", "track_restarted"})
 _CONFIRMED_BY_VOLUME: Final = frozenset({"volume"})
 # What a sender reports about its track and volume, kept until its session is presented.
 _HELD_KEYS: Final = frozenset(
@@ -91,6 +95,9 @@ class ExternalSession:
     airplay_volume: float | None = None
     artwork: bytes | None = None
     artwork_id: str | None = None
+    # remote volume steps sent but not reported back yet, and until when to wait for them
+    volume_steps_pending: int = 0
+    volume_steps_deadline: float = 0.0
 
 
 class ShairportSyncPlayer(GenericAirPlayPlayer):
@@ -176,9 +183,14 @@ class ShairportSyncPlayer(GenericAirPlayPlayer):
         """Stop Music Assistant playback, or the session of another sender."""
         if session := self._external_session:
             already_stopped = self._attr_playback_state == PlaybackState.PAUSED
-            await self._send_session_command(
-                session, ["stop"], None if already_stopped else _CONFIRMED_BY_STOP
-            )
+            try:
+                await self._send_session_command(
+                    session, ["stop"], None if already_stopped else _CONFIRMED_BY_STOP
+                )
+            except PlayerCommandFailed as err:
+                # a power off or a takeover stops the player first, and must not fail
+                # because the other device keeps playing
+                self.logger.debug("Could not stop the session on %s: %s", self.display_name, err)
             return
         await super().stop()
 
@@ -212,7 +224,7 @@ class ShairportSyncPlayer(GenericAirPlayPlayer):
     async def previous_track(self) -> None:
         """Return to the previous track of another sender's session."""
         if session := self._external_session:
-            await self._send_session_command(session, ["previtem"], _CONFIRMED_BY_TRACK_CHANGE)
+            await self._send_session_command(session, ["previtem"], _CONFIRMED_BY_PREVIOUS)
             return
         await super().previous_track()
 
@@ -232,9 +244,13 @@ class ShairportSyncPlayer(GenericAirPlayPlayer):
         current = max(session.airplay_volume, AIRPLAY_VOLUME_MIN)
         if not (steps := volume_steps(current, volume_level)):
             return
-        # the receiver reports every step back, which corrects this as it goes
+        # shown right away, and kept (and stepped from) until every step is reported back
         session.airplay_volume = current + steps * VOLUME_STEP_DB
         session.volume = convert_airplay_volume(session.airplay_volume)
+        now = time.monotonic()
+        pending = session.volume_steps_pending if now < session.volume_steps_deadline else 0
+        session.volume_steps_pending = pending + abs(steps)
+        session.volume_steps_deadline = now + COMMAND_CONFIRM_TIMEOUT
         self._publish()
         command = "volumeup" if steps > 0 else "volumedown"
         await self._send_session_command(session, [command] * abs(steps), _CONFIRMED_BY_VOLUME)
@@ -275,6 +291,16 @@ class ShairportSyncPlayer(GenericAirPlayPlayer):
             # the flag was set while we streamed, so a sender that took the receiver over
             # from us is only noticed once the grace period has passed
             self._schedule_flag_recheck()
+
+    def on_registered(self) -> None:
+        """Pick up the MQTT topic and a session already running, now the player is initialized."""
+        # the refresh during registration ran before the player was initialized and could
+        # not see it; without this the last receiver to register never gets a topic
+        if mqtt := self._mqtt:
+            mqtt.refresh()
+        # a sender may already hold the receiver; only an initialized player (linked to its
+        # parent by now) can present that
+        self.evaluate_session_flag()
 
     def evaluate_session_flag(self) -> None:
         """Begin or end the external session when the receiver's session flag changes."""
@@ -340,11 +366,12 @@ class ShairportSyncPlayer(GenericAirPlayPlayer):
             self.mass.cancel_timer(self._flush_timer_id)
         if "elapsed_time" in update:
             self.mass.cancel_timer(self._flush_timer_id)
+            if self._returned_to_track_start(update["elapsed_time"]):
+                events.add("track_restarted")
             self._attr_elapsed_time = update["elapsed_time"]
             self._attr_elapsed_time_last_updated = time.time()
         if "volume" in update and not self.ignore_volume_reports:
-            session.volume = update["volume"]
-            session.airplay_volume = update.get("airplay_volume")
+            self._apply_volume_report(session, update)
         self._publish()
         self._resolve_confirmations(events)
 
@@ -645,6 +672,26 @@ class ShairportSyncPlayer(GenericAirPlayPlayer):
         )
         session.new_track = False
         return track_changed
+
+    def _returned_to_track_start(self, elapsed_time: float) -> bool:
+        """Return whether a reported position moved back to the start of the playing track."""
+        if elapsed_time >= TRACK_RESTART_WINDOW:
+            return False
+        position = self.corrected_elapsed_time
+        return position is not None and position >= TRACK_RESTART_WINDOW
+
+    def _apply_volume_report(self, session: ExternalSession, update: dict[str, Any]) -> None:
+        """Show the volume the receiver reports, once the steps we sent have all come back."""
+        now = time.monotonic()
+        if session.volume_steps_pending and now < session.volume_steps_deadline:
+            session.volume_steps_pending -= 1
+            session.volume_steps_deadline = now + COMMAND_CONFIRM_TIMEOUT
+            if session.volume_steps_pending:
+                # a step on the way: the level shown, and stepped from next, stays the target
+                return
+        session.volume_steps_pending = 0
+        session.volume = update["volume"]
+        session.airplay_volume = update.get("airplay_volume")
 
     def _pause_after_flush(self) -> None:
         """Show a flushed session as paused once no track change followed the flush."""

@@ -643,9 +643,7 @@ class AirPlayProvider(PlayerProvider):
             )
         await self.mass.players.register(player)
         if isinstance(player, ShairportSyncPlayer):
-            # a sender may already hold the receiver; only an initialized player (linked
-            # to its parent by now) can present that
-            player.evaluate_session_flag()
+            player.on_registered()
 
         # A receiver only publishes its audio formats (and so whether it can do
         # 24-bit) in its /info response, never in its mDNS records, so ask it

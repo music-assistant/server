@@ -455,16 +455,15 @@ async def test_artwork_is_served_while_current() -> None:
 @pytest.mark.parametrize(
     "command",
     [
-        lambda player: player.stop(),
         lambda player: player.volume_set(50),
         lambda player: player.volume_mute(True),
     ],
-    ids=["stop", "volume_set", "volume_mute"],
+    ids=["volume_set", "volume_mute"],
 )
 async def test_commands_fail_on_a_read_only_session(
     command: Callable[[ShairportSyncPlayer], Awaitable[None]],
 ) -> None:
-    """Stop, volume and mute cannot be carried out on a session without control."""
+    """Volume and mute cannot be carried out on a session without control."""
     player = _make_player()
     _start_metadata_session(player)
 
