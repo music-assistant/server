@@ -1153,3 +1153,30 @@ async def test_set_members_gives_up_when_the_sonos_group_never_reports_the_membe
         await player.set_members(player_ids_to_add=["sonos_player_2"])
 
     assert client.player.group_members == [player.player_id]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("coordinator_state", ["connected", "disconnected", "unknown"])
+async def test_ungroup_leaves_a_group_whose_coordinator_is_offline_by_creating_its_own(
+    coordinator_state: str,
+) -> None:
+    """A member can only leave through a reachable coordinator, else it forms its own group."""
+    mass = MagicMock()
+    player, client = _bind_player(mass)
+    client.household_id = "Sonos_household"
+    client.player.is_coordinator = False
+    client.player.group.coordinator_id = "coordinator"
+    client.player.leave_group = AsyncMock()
+    client.api.groups.create_group = AsyncMock()
+    coordinator, _ = _bind_player(mass)
+    coordinator._attr_available = coordinator.connected = coordinator_state == "connected"
+    mass.players.get_player.return_value = None if coordinator_state == "unknown" else coordinator
+
+    await player.ungroup()
+
+    if coordinator_state == "connected":
+        client.player.leave_group.assert_awaited_once()
+        client.api.groups.create_group.assert_not_awaited()
+    else:
+        client.api.groups.create_group.assert_awaited_once_with("Sonos_household", ["sonos_player"])
+        client.player.leave_group.assert_not_awaited()

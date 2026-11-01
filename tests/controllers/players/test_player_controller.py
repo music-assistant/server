@@ -2081,6 +2081,39 @@ class TestCmdUngroupNewBranches:
 
         controller._handle_cmd_stop.assert_awaited_once_with("g1")
 
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("leader_available", [True, False])
+    async def test_ungroup_sync_member_routes_by_leader_availability(
+        self, mock_mass: MagicMock, leader_available: bool
+    ) -> None:
+        """A member leaves through its sync leader, or on its own when that leader is offline."""
+        controller = PlayerController(mock_mass)
+        provider = MockProvider("test_provider", instance_id="test_prov", mass=mock_mass)
+        leader = MockPlayer(provider, "leader", "Leader")
+        leader._attr_group_members = ["leader", "follower"]
+        follower = MockPlayer(provider, "follower", "Follower")
+        controller._players = {"leader": leader, "follower": follower}
+        mock_mass.players = controller
+        for player in (leader, follower):
+            player.set_initialized()
+            player.update_state(signal_event=False)
+        leader._attr_available = leader_available
+        leader.update_state(signal_event=False)
+        assert follower.state.synced_to == "leader"
+        controller.cmd_set_members = AsyncMock()  # type: ignore[method-assign]
+
+        with patch.object(follower, "ungroup", new=AsyncMock()) as ungroup:
+            await controller.cmd_ungroup("follower")
+
+        if leader_available:
+            controller.cmd_set_members.assert_awaited_once_with(
+                "leader", player_ids_to_remove=["follower"]
+            )
+            ungroup.assert_not_awaited()
+        else:
+            controller.cmd_set_members.assert_not_awaited()
+            ungroup.assert_awaited_once()
+
 
 class TestPowerOffEndsTheQueue:
     """

@@ -6,7 +6,7 @@ import asyncio
 import logging
 import time
 from collections.abc import AsyncIterator
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, nullcontext
 from typing import TYPE_CHECKING, Any, cast
 
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption
@@ -1358,40 +1358,40 @@ class SyncGroupPlayer(Player):
         member = self.mass.players.get_player(member_id)
         if member is None or member.synced_to is None:
             return True
-        # The provider didn't propagate within the timeout. Kick the member
-        # from its stale parent, then wait again with a tighter budget.
+        # The provider didn't propagate within the timeout. Kick the member from
+        # its stale parent (or from its own side when that parent is gone or offline),
+        # then wait again with a tighter budget.
         # This rescues the common "Sonos UPnP event lag" case.
         # NOTE: not the public cmd_ungroup - it re-enters this syncgroup's set_members.
-        # if the stale parent is gone, no kick is possible - fall through to the final check
-        if stale_parent := self.mass.players.get_player(member.synced_to):
-            self.logger.warning(
-                "Player %s still reports synced_to=%s after %ss; "
-                "removing it from its stale parent and re-waiting",
-                member.display_name,
-                member.synced_to,
-                timeout,
+        self.logger.warning(
+            "Player %s still reports synced_to=%s after %ss; "
+            "removing it from its stale parent and re-waiting",
+            member.display_name,
+            member.synced_to,
+            timeout,
+        )
+        parent_lock = (
+            self.mass.players.get_player_lock(stale_parent.player_id, PlayerLockPurpose.PLAYBACK)
+            if (stale_parent := self.mass.players.get_player(member.synced_to))
+            else nullcontext()
+        )
+        try:
+            async with (
+                self.mass.players.wait_for_player_update(
+                    member_id,
+                    attribute_name="synced_to",
+                    attribute_value=None,
+                    timeout=2.0,
+                ),
+                parent_lock,
+            ):
+                await self.mass.players._detach_member(member)
+        except asyncio.CancelledError:
+            raise
+        except Exception as err:
+            self.logger.debug(
+                "stale-parent removal recovery for %s raised: %s", member.display_name, err
             )
-            try:
-                async with (
-                    self.mass.players.wait_for_player_update(
-                        member_id,
-                        attribute_name="synced_to",
-                        attribute_value=None,
-                        timeout=2.0,
-                    ),
-                    self.mass.players.get_player_lock(
-                        stale_parent.player_id, PlayerLockPurpose.PLAYBACK
-                    ),
-                ):
-                    await self.mass.players._handle_set_members(
-                        stale_parent, player_ids_to_remove=[member_id]
-                    )
-            except asyncio.CancelledError:
-                raise
-            except Exception as err:
-                self.logger.debug(
-                    "stale-parent removal recovery for %s raised: %s", member.display_name, err
-                )
         member = self.mass.players.get_player(member_id)
         if member is None or member.synced_to is None:
             return True
