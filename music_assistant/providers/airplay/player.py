@@ -5,26 +5,35 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import ipaddress
+import math
 import time
 from typing import TYPE_CHECKING, cast
 
-from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption, ConfigValueType
+from music_assistant_models.config_entries import (
+    ConfigEntry,
+    ConfigValueOption,
+    ConfigValueType,
+)
 from music_assistant_models.enums import (
     ConfigEntryType,
     ContentType,
     CrossfadeMode,
     IdentifierType,
+    ImageType,
     MediaType,
     PlaybackState,
     PlayerFeature,
     PlayerType,
 )
-from music_assistant_models.errors import PlayerCommandFailed
-from music_assistant_models.media_items import AudioFormat
+from music_assistant_models.errors import MediaNotFoundError, PlayerCommandFailed
+from music_assistant_models.media_items import AudioFormat, MediaItemImage
 
 from music_assistant.constants import CONF_PASSWORD
 from music_assistant.controllers.streams.audio import overlay_active
-from music_assistant.helpers.util import get_primary_ip_address_from_zeroconf, is_valid_mac_address
+from music_assistant.helpers.util import (
+    get_primary_ip_address_from_zeroconf,
+    is_valid_mac_address,
+)
 from music_assistant.models.player import (
     AnnouncementFeature,
     DeviceInfo,
@@ -56,6 +65,8 @@ from .constants import (
     CONF_RAOP_CREDENTIALS,
     CONF_STORED_VOLUME,
     CONF_STREAMING_MODE,
+    EXTERNAL_ARTWORK_PATH_PREFIX,
+    EXTERNAL_STATE_GRACE_S,
     FALLBACK_VOLUME,
     LEGACY_PAIRING_BIT,
     PAIRING_PIN_FORMAT,
@@ -135,6 +146,11 @@ class AirPlayPlayer(Player):
         self._lock = asyncio.Lock()
         self._transitioning = False  # Set during stream replacement to ignore stale DACP messages
         self._rejoin_task: asyncio.Task[None] | None = None
+        # When Music Assistant's own stream was last seen on the receiver.
+        self._stream_last_active = -math.inf
+        # Ids of external sources this player has reported, so a stream of our own can
+        # reclaim the device state from them (see set_state_from_stream).
+        self._external_source_ids: set[str] = set()
         # Set (static) player attributes
         self._attr_name = display_name
         self._attr_available = True
@@ -361,6 +377,40 @@ class AirPlayPlayer(Player):
             # off the receiver, and a clip mixed into it dies with it.
             return False
         return self.stream.running and self.stream.connected
+
+    @property
+    def ma_stream_active(self) -> bool:
+        """Return whether Music Assistant is streaming to this device, or starting or ending it."""
+        stream = self.stream
+        active = (
+            self.stream_spawn_lock.locked()
+            or cast("AirPlayProvider", self.provider).bridge_manager.is_streaming(self.player_id)
+            # a stream that is being torn down (a superseded one included) still holds the
+            # receiver until its teardown finishes; one whose process died on its own does not
+            or (
+                stream is not None
+                and (stream.running or (stream.stopping and not stream.cleanup_complete))
+            )
+        )
+        if active:
+            self._stream_last_active = time.monotonic()
+        return active
+
+    @property
+    def external_state_blocked(self) -> bool:
+        """
+        Return whether what the device reports about playback must be ignored.
+
+        While Music Assistant streams to this device, and for a grace period after its
+        stream ended, that stream is the sole authority on the player's state.
+        """
+        if self.ma_stream_active:
+            return True
+        return time.monotonic() - self._stream_last_active < EXTERNAL_STATE_GRACE_S
+
+    def record_stream_end(self) -> None:
+        """Record that a stream of Music Assistant to this device just ended."""
+        self._stream_last_active = time.monotonic()
 
     @property
     def announcement_features(self) -> set[AnnouncementFeature]:
@@ -1045,6 +1095,15 @@ class AirPlayPlayer(Player):
         progress = int(metadata.corrected_elapsed_time or 0)
         self.mass.create_task(self.stream.send_metadata(progress, metadata))
 
+    async def async_get_external_artwork(self, artwork_id: str) -> bytes:
+        """
+        Return artwork bytes for the item an external source plays on this player.
+
+        :param artwork_id: Identifier of the artwork requested by the image proxy.
+        :raises MediaNotFoundError: If the artwork is stale or unavailable.
+        """
+        raise MediaNotFoundError("External AirPlay artwork is unavailable")
+
     async def _adopt_device_volume(self, volume: int) -> None:
         """
         Take over a level the device set itself.
@@ -1068,6 +1127,16 @@ class AirPlayPlayer(Player):
         if control_player := self.mass.players.get_player(control):
             return control_player.underlying_player_id == self.player_id
         return False
+
+    def _get_external_artwork_url(self, artwork_id: str) -> str:
+        """Return the image-proxy URL for artwork of an external source."""
+        image = MediaItemImage(
+            type=ImageType.THUMB,
+            path=f"{EXTERNAL_ARTWORK_PATH_PREFIX}/{self.player_id}/{artwork_id}",
+            provider=self.provider_id,
+            remotely_accessible=False,
+        )
+        return self.mass.metadata.get_image_url(image)
 
     def _get_flags(self) -> int:
         # Flags are either present via "sf" or "flags". Taken from pyatv.protocols.airplay.utils.

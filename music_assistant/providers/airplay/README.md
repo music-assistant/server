@@ -12,6 +12,7 @@ The AirPlay provider enables Music Assistant to stream audio to AirPlay-enabled 
 - **Now-Playing Metadata**: Sends title/artist/album/artwork/progress — as DMAP over the stream for speakers, and additionally as MediaRemote over the native AirPlay 2 flow so an Apple TV renders the now-playing screen
 - **Hi-Res Audio**: 24-bit playback (44.1/48 kHz) over the AirPlay 2 flow, enabled automatically for receivers that advertise 24-bit ALAC
 - **DACP Remote Control**: Receives remote control commands (play/pause/volume/next/previous) from devices while streaming
+- **External AirPlay Sessions (shairport-sync)**: Shows playback that another device, such as an iPhone, sends to a shairport-sync receiver. With an MQTT broker it also shows the track and controls that playback (see [External AirPlay Sessions](#external-airplay-sessions-shairport-sync))
 - **Late Join Support**: Allows adding players to an existing playback session without interrupting other players
 - **Flow Mode Streaming**: Provides gapless playback and crossfade support by streaming the queue as one continuous audio stream
 
@@ -64,6 +65,8 @@ The AirPlay provider enables Music Assistant to stream audio to AirPlay-enabled 
 airplay/
 ├── provider.py           # Main provider class, MDNS discovery, DACP server, PTP daemon
 ├── player.py             # AirPlayPlayer implementation
+├── shairport_player.py   # ShairportSyncPlayer: playback other senders run on shairport-sync receivers
+├── shairport_mqtt.py     # MQTT link to shairport-sync receivers (metadata in, remote commands out)
 ├── stream_session.py     # Manages streaming sessions for synchronized playback
 ├── pairing.py           # Pairing: HAP via cliairplay --pair-setup, RAOP native
 ├── helpers.py           # Utility functions (binary lookup, TXT serialization, etc.)
@@ -546,17 +549,18 @@ The provider uses a shared AirPlay streaming base with separate player models.
 - **Example**: A Sonos speaker supporting both AirPlay and Chromecast will appear as a single "Sonos" player with selectable output protocols
 
 **Detection**: [provider.py](provider.py) selects `AirPlayControlPlayer` for
-Apple TV and HomePod devices (`is_apple_device`); all other endpoints use
-`GenericAirPlayPlayer`. The model is decided from the device's own identity
-only and never changes for a registered player: the model determines the
-player id exposed to API consumers (protocol endpoint behind a parent player
-vs standalone player), which must stay stable for Home Assistant and other API
-clients. Unlike the separate Companion/MRP mDNS records, the identity is
-always available in the very record that creates the player, so the decision
-cannot vary with discovery timing. Which control features are offered on a
-control-capable player is then decided from the advertised capabilities
-(pairable Companion, native MRP service, or AirPlay MRP tunnel), degrading
-gracefully when a device does not advertise them.
+Apple TV and HomePod devices (`is_apple_device`), `ShairportSyncPlayer` for
+shairport-sync receivers (`is_shairport_sync`), and `GenericAirPlayPlayer` for
+all other endpoints. The model is decided from
+the device's own identity only and never changes for a registered player: the
+model determines the player id exposed to API consumers (protocol endpoint
+behind a parent player vs standalone player), which must stay stable for Home
+Assistant and other API clients. Unlike the separate Companion/MRP mDNS
+records, the identity is always available in the very record that creates the
+player, so the decision cannot vary with discovery timing. Which control
+features are offered on a control-capable player is then decided from the
+advertised capabilities (pairable Companion, native MRP service, or AirPlay MRP
+tunnel), degrading gracefully when a device does not advertise them.
 
 ### Independent device control
 
@@ -588,6 +592,104 @@ keeps their exposed player id stable and their Universal Player merging intact.
 - Protocol selection and device identifier matching
 - Native player linking vs. Universal Player creation
 
+## External AirPlay Sessions (shairport-sync)
+
+Someone can stream from an iPhone or a Mac straight to a shairport-sync
+receiver. `ShairportSyncPlayer` ([shairport_player.py](shairport_player.py))
+shows that playback as the passive external source `airplay` on the receiver's
+player, and so on the Universal Player (or LinkPlay/WiiM shell) it belongs to.
+When Music Assistant's own queue had ended on that receiver without a stop, the
+parent still points its output protocol at the AirPlay player, so the session
+start clears it first.
+
+### Detection
+
+No setup is needed. shairport-sync raises a status bit in its mDNS records
+while a sender is connected:
+
+| shairport-sync build | Session bit |
+|---|---|
+| 5.6 and later (AirPlay 2 and Classic) | bit 17 (`0x20000`) |
+| 4.x and 5.0-5.5, AirPlay 2 | bit 11 (`0x800`) |
+| Classic only, before 5.6 | none (needs MQTT metadata) |
+
+On other devices bit 11 means "supports relay", so it only counts for
+shairport-sync. The flag can't tell paused from playing, so without MQTT a
+session shows as playing until the sender disconnects. Flags and metadata are
+ignored while Music Assistant streams to the receiver and for 15 seconds after
+its stream ended (`external_state_blocked` on `AirPlayPlayer`); a flag still
+set when that grace period is over starts the session then.
+
+### Metadata and control over MQTT
+
+With a broker, Music Assistant also shows the title, artist, album, artwork,
+progress, the sender's name, the playing or paused state and the volume, and it
+can control the session. Set the broker in the AirPlay provider settings, and
+give each receiver a shairport-sync configuration like this:
+
+```
+mqtt = {
+  enabled = "yes";
+  hostname = "<broker>";
+  topic = "<a topic unique to this receiver>";
+  publish_raw = "yes";
+  publish_parsed = "yes";
+  enable_autodiscovery = "yes";
+  enable_remote = "yes";
+};
+metadata = {
+  include_cover_art = "yes";
+};
+```
+
+`ShairportMqttClient` ([shairport_mqtt.py](shairport_mqtt.py)) keeps one broker
+connection for the provider and finds each receiver's topic in this order:
+
+1. the player's `shairport_mqtt_topic` setting
+2. the autodiscovery message whose device id matches the player id (AirPlay 2
+   builds)
+3. the autodiscovery message whose device name matches the player name
+   (Classic builds)
+
+shairport-sync 3.3.8 publishes no autodiscovery messages, so its topic has to
+be set by hand. A topic that two players end up with is used for neither, and a
+warning names both.
+
+The client reads the raw items (`<topic>/core/<code>` and
+`<topic>/ssnc/<code>`), including the `ssnc/copl` plist that 5.6+ AirPlay 2
+builds publish for iPhones, and decodes them with the decoder it shares with
+the AirPlay Receiver plugin (`music_assistant/helpers/shairport_metadata.py`).
+Metadata from Music Assistant's own stream is recognized by its DACP id and
+ignored.
+
+Commands go to `<topic>/remote`. What shairport-sync passes on to the sender
+depends on its version and on the stream type (`styp`) of the session:
+
+| shairport-sync version | Session | Play/pause, stop, next/previous | Volume steps |
+|---|---|---|---|
+| 5.6+ | `Buffered` or `Realtime` (AirPlay 2) | yes | yes |
+| 5.6+ | `Classic` | yes | no |
+| before 5.6 | `Classic` | yes | yes |
+| before 5.6 | AirPlay 2 | no | no |
+
+The version comes from the autodiscovery messages. When it or the stream type
+is unknown, control is offered. MQTT gives no reply, so a command waits up to 3
+seconds for the change it should cause. When nothing arrives, the command fails
+and the session stays read-only until it ends. Read-only sessions show Stop
+instead of pause in the frontend, and stop, volume and mute commands on them
+fail.
+
+### Limits
+
+- No seek and no mute.
+- Volume moves in steps of 1.875 dB, about 6 points on Music Assistant's
+  scale.
+- No control of iPhone sessions on AirPlay 2 Shairport builds older than 5.6.
+- A paused session ends after 60 seconds (`EXTERNAL_PAUSE_IDLE_TIMEOUT`).
+- Commands that fail on a read-only session also fail where Music Assistant
+  sends them itself, such as powering off the Universal Player or a group
+  volume change.
+
 ## Configuration Options
 
 ### Protocol Selection
@@ -608,12 +710,19 @@ keeps their exposed player id stable and their Universal Player merging intact.
   transient MRP requires none)
 - **`native_mrp_credentials`**: Stored native MRP credentials (hidden)
 
+### shairport-sync MQTT
+- **`shairport_mqtt_host`**: Provider setting. The MQTT broker shairport-sync receivers publish to (default: empty, which only detects sessions)
+- **`shairport_mqtt_port`**, **`shairport_mqtt_username`**, **`shairport_mqtt_password`**: Provider settings for the broker connection (default port: 1883)
+- **`shairport_mqtt_discovery_prefix`**: Advanced provider setting. Must match shairport-sync's `mqtt.autodiscovery_prefix` (default: `homeassistant`)
+- **`shairport_mqtt_topic`**: Player setting on shairport-sync receivers. Must match the receiver's `mqtt.topic`; empty takes it from autodiscovery
+
 ## Known Issues
 
 ### Limitations
 
-1. **DACP remote control**: Only active while streaming; controlled devices use
-   Companion/MRP for idle and external playback control
+1. **DACP remote control**: Only active while Music Assistant streams. Apple TVs
+   and HomePods use Companion/MRP for idle and external playback control, and
+   shairport-sync receivers use MQTT to control what other senders play on them
 2. **Pause while synced**: Parks the whole session instead of pausing members
    individually, so they can resume sample-aligned; a member that has lost its
    connection falls back to stop. The park belongs to the session rather than to

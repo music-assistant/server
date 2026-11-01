@@ -21,9 +21,10 @@ if TYPE_CHECKING:
     from music_assistant_models.enums import RepeatMode
     from music_assistant_models.player import PlayerMedia, PlayerSource
 
-# Protocol domains where an external source (e.g. Spotify Connect) can play
-# independently of Music Assistant, so we surface that protocol player's state.
-EXTERNAL_SOURCE_PROTOCOLS = {"chromecast", "dlna"}
+# Protocol domains where an external source (e.g. Spotify Connect, or another device
+# streaming over AirPlay) can play independently of Music Assistant, so we surface that
+# protocol player's state.
+EXTERNAL_SOURCE_PROTOCOLS = {"chromecast", "dlna", "airplay"}
 
 # Features forwarded from a protocol player that is playing an external source.
 # Volume and mute are excluded: the base Player resolves those to the protocol player.
@@ -188,9 +189,9 @@ class ProtocolBackedPlayer(Player):
 
     def _get_protocol_player_with_external_source(self) -> Player | None:
         """
-        Return a chromecast or dlna protocol player that has an external source active.
+        Return a protocol player that has an external source active.
 
-        Prefers chromecast over dlna because dlna metadata tends to be less reliable.
+        Prefers chromecast over the others because their metadata tends to be less reliable.
         """
         if self.active_output_protocol:
             # if an output protocol is active, don't consider external sources

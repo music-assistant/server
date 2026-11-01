@@ -9,7 +9,7 @@
     "[airplay-cli](https://github.com/music-assistant/airplay-cli)",
     "[pyatv (Companion and MRP control)](https://github.com/postlund/pyatv)"
   ],
-  "requirements": ["pyatv==0.18.0"],
+  "requirements": ["aiomqtt==2.5.1", "pyatv==0.18.0"],
   "documentation": "https://music-assistant.io/player-support/airplay/",
   "multi_instance": false,
   "builtin": false,

@@ -49,6 +49,11 @@ from .constants import (
     CONF_COMPAT_PINS_REVIEWED,
     CONF_PASSWORD_INVALID,
     CONF_PASSWORD_MARKERS_REVIEWED,
+    CONF_SHAIRPORT_MQTT_DISCOVERY_PREFIX,
+    CONF_SHAIRPORT_MQTT_HOST,
+    CONF_SHAIRPORT_MQTT_PASSWORD,
+    CONF_SHAIRPORT_MQTT_PORT,
+    CONF_SHAIRPORT_MQTT_USERNAME,
     CONF_STORED_VOLUME,
     CONF_STREAMING_MODE,
     CONF_VERBOSE_PTP_LOGGING,
@@ -72,10 +77,13 @@ from .helpers import (
     get_cli_binary,
     get_model_info,
     is_apple_device,
+    is_shairport_sync,
     probe_audio_formats,
 )
 from .player import AirPlayPlayer, GenericAirPlayPlayer
 from .sendspin_bridge import SendspinBridgeManager
+from .shairport_mqtt import ShairportMqttClient
+from .shairport_player import ShairportSyncPlayer
 
 if TYPE_CHECKING:
     from music_assistant_models.config_entries import ProviderConfig
@@ -120,11 +128,18 @@ class AirPlayProvider(PlayerProvider):
     _ptp_daemon_warn_window_start: float | None = None
     _ptp_daemon_warns_in_window: int = 0
     _ptp_daemon_warns_suppressed: int = 0
+    # Only set while a broker is configured for shairport-sync receivers.
+    _shairport_mqtt: ShairportMqttClient | None = None
 
     @property
     def bridge_manager(self) -> SendspinBridgeManager:
         """Return the Sendspin bridge manager."""
         return self._bridge_manager
+
+    @property
+    def shairport_mqtt(self) -> ShairportMqttClient | None:
+        """Return the MQTT link to shairport-sync receivers, when a broker is configured."""
+        return self._shairport_mqtt
 
     @property
     def ptp_daemon_running(self) -> bool:
@@ -228,6 +243,38 @@ class AirPlayProvider(PlayerProvider):
                 required=False,
                 advanced=True,
             ),
+            ConfigEntry(
+                key=CONF_SHAIRPORT_MQTT_HOST,
+                type=ConfigEntryType.STRING,
+                default_value="",
+                required=False,
+            ),
+            ConfigEntry(
+                key=CONF_SHAIRPORT_MQTT_PORT,
+                type=ConfigEntryType.INTEGER,
+                default_value=1883,
+                range=(1, 65535),
+                required=False,
+            ),
+            ConfigEntry(
+                key=CONF_SHAIRPORT_MQTT_USERNAME,
+                type=ConfigEntryType.STRING,
+                default_value="",
+                required=False,
+            ),
+            ConfigEntry(
+                key=CONF_SHAIRPORT_MQTT_PASSWORD,
+                type=ConfigEntryType.SECURE_STRING,
+                default_value=None,
+                required=False,
+            ),
+            ConfigEntry(
+                key=CONF_SHAIRPORT_MQTT_DISCOVERY_PREFIX,
+                type=ConfigEntryType.STRING,
+                default_value="homeassistant",
+                required=False,
+                advanced=True,
+            ),
         )
 
     async def handle_async_init(self) -> None:
@@ -279,6 +326,20 @@ class AirPlayProvider(PlayerProvider):
         # AirPlay 2 streams attach to it (--ptp-shared) so multi-room sync groups
         # lock to a single grandmaster while UDP 319/320 is bound only once.
         await self._start_ptp_daemon()
+
+        # shairport-sync receivers can publish what other senders play on them to a broker
+        if host := str(self.config.get_value(CONF_SHAIRPORT_MQTT_HOST) or "").strip():
+            self._shairport_mqtt = ShairportMqttClient(
+                self,
+                host=host,
+                port=int(cast("int", self.config.get_value(CONF_SHAIRPORT_MQTT_PORT, 1883))),
+                username=str(self.config.get_value(CONF_SHAIRPORT_MQTT_USERNAME) or "") or None,
+                password=str(self.config.get_value(CONF_SHAIRPORT_MQTT_PASSWORD) or "") or None,
+                discovery_prefix=str(
+                    self.config.get_value(CONF_SHAIRPORT_MQTT_DISCOVERY_PREFIX) or "homeassistant"
+                ),
+            )
+            self._shairport_mqtt.start()
 
     async def update_config(self, config: ProviderConfig, changed_keys: set[str]) -> None:
         """Handle logic when the config is updated."""
@@ -347,6 +408,10 @@ class AirPlayProvider(PlayerProvider):
         bridge_manager = getattr(self, "_bridge_manager", None)
         if bridge_manager:
             await bridge_manager.close()
+        # Disconnect from the shairport-sync MQTT broker
+        if shairport_mqtt := self._shairport_mqtt:
+            self._shairport_mqtt = None
+            await shairport_mqtt.close()
         # terminate the shared PTP clock daemon
         self._ptp_daemon_stop_requested = True
         if self._ptp_daemon_ready is not None:
@@ -399,9 +464,18 @@ class AirPlayProvider(PlayerProvider):
         """Return AirplayPlayer by id."""
         return cast("AirPlayPlayer | None", self.mass.players.get_player(player_id))
 
+    def get_shairport_players(self) -> list[ShairportSyncPlayer]:
+        """Return all shairport-sync players belonging to this instance."""
+        return [player for player in self.players if isinstance(player, ShairportSyncPlayer)]
+
+    def get_shairport_player(self, player_id: str) -> ShairportSyncPlayer | None:
+        """Return the shairport-sync player with the given id, if it is one of ours."""
+        player = self.mass.players.get_player(player_id)
+        return player if isinstance(player, ShairportSyncPlayer) else None
+
     async def resolve_image(self, path: str) -> bytes:
         """
-        Resolve artwork for the current external media on an Apple device.
+        Resolve artwork for the external media on an Apple device or shairport-sync receiver.
 
         :param path: AirPlay artwork path produced for the image proxy.
         :return: Raw artwork bytes.
@@ -415,7 +489,7 @@ class AirPlayProvider(PlayerProvider):
         if (
             prefix != EXTERNAL_ARTWORK_PATH_PREFIX
             or not artwork_id
-            or not isinstance(player, AirPlayControlPlayer)
+            or not isinstance(player, AirPlayPlayer)
         ):
             raise MediaNotFoundError("AirPlay artwork is unavailable")
         return await player.async_get_external_artwork(artwork_id)
@@ -554,7 +628,8 @@ class AirPlayProvider(PlayerProvider):
                 initial_volume=volume,
             )
         else:
-            player = GenericAirPlayPlayer(
+            # shairport-sync receivers also present playback other senders run on them
+            player = (ShairportSyncPlayer if is_shairport_sync(model) else GenericAirPlayPlayer)(
                 provider=self,
                 player_id=player_id,
                 raop_discovery_info=raop_discovery_info,
@@ -567,6 +642,10 @@ class AirPlayProvider(PlayerProvider):
                 is_local_shairport=is_local_shairport,
             )
         await self.mass.players.register(player)
+        if isinstance(player, ShairportSyncPlayer):
+            # a sender may already hold the receiver; only an initialized player (linked
+            # to its parent by now) can present that
+            player.evaluate_session_flag()
 
         # A receiver only publishes its audio formats (and so whether it can do
         # 24-bit) in its /info response, never in its mDNS records, so ask it

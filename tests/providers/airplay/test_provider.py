@@ -21,12 +21,13 @@ from music_assistant.providers.airplay.constants import (
     StreamingProtocol,
 )
 from music_assistant.providers.airplay.helpers import CLI_CLOCK_OFFSET_NS
-from music_assistant.providers.airplay.player import AirPlayPlayer
+from music_assistant.providers.airplay.player import AirPlayPlayer, GenericAirPlayPlayer
 from music_assistant.providers.airplay.provider import ENV_PYATV_DEBUG, AirPlayProvider
 from music_assistant.providers.airplay.sendspin_bridge import (
     SendspinAirPlayBridge,
     SendspinBridgeManager,
 )
+from music_assistant.providers.airplay.shairport_player import ShairportSyncPlayer
 from music_assistant.providers.airplay.stream import AirPlayStream
 from music_assistant.providers.airplay.stream_session import AirPlayStreamSession
 from music_assistant.providers.airplay_receiver import airplay_receiver_ports
@@ -1051,6 +1052,48 @@ async def test_setup_player_skips_own_receiver_before_service_lookup() -> None:
     prov.mass.players.register.assert_not_called()
 
 
+def _setup_player_provider() -> AirPlayProvider:
+    """Build a bare provider that runs discovery setup through player registration."""
+    prov = _make_provider()
+    mass = cast("MagicMock", prov.mass)
+    mass.config.get_raw_player_config_value.side_effect = lambda _player_id, _key, default=None: (
+        default
+    )
+    mass.discovery.async_find_mdns_service = AsyncMock(return_value=None)
+    mass.players.get_player.return_value = None
+    mass.players.register = AsyncMock()
+    prov._is_own_airplay_receiver = AsyncMock(return_value=False)  # type: ignore[method-assign]
+    prov._bridge_manager = MagicMock(evaluate_bridge=AsyncMock())
+    return prov
+
+
+async def _setup_discovered_player(
+    prov: AirPlayProvider, address: str, model: str
+) -> AirPlayPlayer:
+    """Run discovery setup for an _airplay service and return the player it registered."""
+    info = _discovery_info([address], properties={"am": model})
+    info.type = "_airplay._tcp.local."
+    info.ip_addresses_by_version.return_value = [ip_address(address)]
+    with _patch_host_ips():
+        await prov._setup_player("apdb1ff0aae80e", "Shairport", info)
+    return cast("AirPlayPlayer", cast("MagicMock", prov.mass.players.register).call_args.args[0])
+
+
+@pytest.mark.parametrize(
+    ("model", "player_type"),
+    [
+        ("ShairportSync", ShairportSyncPlayer),
+        ("Shairport Sync", ShairportSyncPlayer),
+        ("UPL-AMP", GenericAirPlayPlayer),
+    ],
+)
+async def test_setup_player_picks_shairport_sync_player(model: str, player_type: type) -> None:
+    """shairport-sync receivers get their own player class, other receivers the generic one."""
+    player = await _setup_discovered_player(_setup_player_provider(), "192.168.1.55", model)
+
+    assert type(player) is player_type
+
+
 @pytest.mark.parametrize(
     ("address", "model", "expected"),
     [
@@ -1063,28 +1106,9 @@ async def test_setup_player_flags_shairport_on_this_host(
     address: str, model: str, expected: bool
 ) -> None:
     """Only a shairport-sync receiver advertised from this host is flagged as local."""
-    prov = AirPlayProvider.__new__(AirPlayProvider)
-    prov.mass = MagicMock()
-    prov.logger = logging.getLogger("test.airplay.provider")
-    prov.mass.config.get_raw_player_config_value.side_effect = (
-        lambda _player_id, _key, default=None: default
-    )
-    prov.mass.discovery.async_find_mdns_service = AsyncMock(return_value=None)
-    prov.mass.players.get_player.return_value = None
-    prov.mass.players.register = AsyncMock()
-    prov._is_own_airplay_receiver = AsyncMock(return_value=False)  # type: ignore[method-assign]
-    prov._bridge_manager = MagicMock(evaluate_bridge=AsyncMock())
-    info = _discovery_info([address], properties={"am": model})
-    info.type = "_airplay._tcp.local."
-    info.ip_addresses_by_version.return_value = [ip_address(address)]
+    player = await _setup_discovered_player(_setup_player_provider(), address, model)
 
-    with (
-        _patch_host_ips(),
-        patch("music_assistant.providers.airplay.provider.GenericAirPlayPlayer") as player_cls,
-    ):
-        await prov._setup_player("apdb1ff0aae80e", "Shairport", info)
-
-    assert player_cls.call_args.kwargs["is_local_shairport"] is expected
+    assert player._is_local_shairport is expected
 
 
 def _password_marker_provider(
