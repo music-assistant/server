@@ -228,6 +228,69 @@ def test_new_track_replaces_the_previous_media() -> None:
     assert media.album is None
 
 
+def test_metadata_before_play_begins_is_shown_once_it_does() -> None:
+    """A Classic sender's progress, track and volume from before play begins are not lost."""
+    player = _make_player()
+    player.on_shairport_metadata({"dacp_id": FOREIGN_DACP_ID})
+    player.on_shairport_metadata({"elapsed_time": 0, "duration": 240})
+    player.on_shairport_metadata({"metadata_start": True})
+    player.on_shairport_metadata({"title": "Song", "artist": "Artist", "album": "Album"})
+    player.on_shairport_metadata({"volume": 30, "airplay_volume": -21.0})
+    assert player.active_source is None
+
+    player.on_shairport_metadata({"play_begin": True})
+
+    media = player.current_media
+    assert media is not None
+    assert (media.title, media.artist, media.album, media.duration) == (
+        "Song",
+        "Artist",
+        "Album",
+        240,
+    )
+    assert player.elapsed_time == pytest.approx(0, abs=1)
+    assert player.volume_level == 30
+
+
+def test_sender_that_took_over_from_our_stream_is_shown_with_its_track() -> None:
+    """What a sender reports while our displaced stream still runs is shown once its session begins."""
+    player = _make_player()
+    player.evaluate_session_flag()
+    player.stream = MagicMock(running=True)
+    _set_flags(player, RECEIVER_SESSION_ACTIVE_BIT)
+    player.on_shairport_metadata({"dacp_id": FOREIGN_DACP_ID})
+    player.on_shairport_metadata({"metadata_start": True})
+    player.on_shairport_metadata({"title": "Song", "artist": "Artist"})
+    player.on_shairport_metadata({"volume": 70, "airplay_volume": -9.0})
+    player.on_shairport_metadata({"play_begin": True})
+    assert player.active_source is None
+
+    player.stream = None
+    player.record_stream_end()
+    _, recheck = _armed_timer(player, f"airplay_external_recheck_{PLAYER_ID}")
+    with _after_grace_period():
+        recheck()
+
+    assert player.active_source == "airplay"
+    media = player.current_media  # type: ignore[unreachable]
+    assert media is not None
+    assert (media.title, media.artist) == ("Song", "Artist")
+    assert player.volume_level == 70
+
+
+def test_held_metadata_is_dropped_when_another_sender_connects() -> None:
+    """A track reported before another sender connected is not shown as that sender's."""
+    player = _make_player()
+    player.on_shairport_metadata({"dacp_id": FOREIGN_DACP_ID})
+    player.on_shairport_metadata({"title": "Earlier sender's song"})
+
+    player.on_shairport_metadata({"dacp_id": FOREIGN_DACP_ID + 1})
+    player.on_shairport_metadata({"play_begin": True})
+
+    assert player.active_source == "airplay"
+    assert player.current_media is None
+
+
 def test_paused_and_resumed_follow_the_sender() -> None:
     """Pause and resume events move the session between paused and playing."""
     player = _make_player()

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Awaitable, Callable
 from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -18,6 +19,7 @@ from music_assistant.providers.airplay.shairport_player import (
 )
 from tests.providers.airplay.test_shairport_player import (
     PLAYER_ID,
+    _armed_timer,
     _make_player,
     _start_metadata_session,
 )
@@ -168,6 +170,43 @@ async def test_unanswered_command_makes_the_session_read_only() -> None:
     player.on_shairport_metadata({"play_begin": True})
 
     assert player.source_list[0].can_play_pause is True
+
+
+async def test_pause_of_a_classic_sender_is_confirmed_by_its_flush() -> None:
+    """A Classic sender pauses with a flush alone, which confirms the pause once nothing follows."""
+    player, mqtt = _controlled_session(stream_type="Classic")
+
+    async def publish_remote(_player_id: str, _command: str) -> None:
+        player.on_shairport_metadata({"flush": True})
+        _, pause_after_flush = _armed_timer(player, f"airplay_external_flush_{PLAYER_ID}")
+        asyncio.get_running_loop().call_soon(pause_after_flush)
+
+    mqtt.publish_remote.side_effect = publish_remote
+    with patch("music_assistant.providers.airplay.shairport_player.COMMAND_CONFIRM_TIMEOUT", 0.5):
+        await player.pause()
+
+    assert player.playback_state == PlaybackState.PAUSED
+    assert player.source_list[0].can_play_pause is True
+
+
+async def test_skip_without_track_ids_is_confirmed_by_the_next_title() -> None:
+    """A sender that sends no track ids confirms a skip with the metadata block of the next track."""
+    player, mqtt = _controlled_session(stream_type="Classic")
+    player.on_shairport_metadata({"metadata_start": True})
+    player.on_shairport_metadata({"title": "First"})
+
+    async def publish_remote(_player_id: str, _command: str) -> None:
+        player.on_shairport_metadata({"metadata_start": True})
+        player.on_shairport_metadata({"title": "Second"})
+
+    mqtt.publish_remote.side_effect = publish_remote
+    with patch("music_assistant.providers.airplay.shairport_player.COMMAND_CONFIRM_TIMEOUT", 0.5):
+        await player.next_track()
+
+    media = player.current_media
+    assert media is not None
+    assert media.title == "Second"
+    assert player.source_list[0].can_next_previous is True
 
 
 async def test_volume_steps_towards_the_requested_level() -> None:

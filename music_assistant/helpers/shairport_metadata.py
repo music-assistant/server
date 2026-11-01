@@ -63,6 +63,10 @@ class ShairportMetadataDecoder:
         self._on_update = on_update
         self.logger = logger
         self._block: dict[str, Any] | None = None
+        # RTP timestamp the open block's metadata applies to (the mdst payload)
+        self._block_rtptime: int | None = None
+        # RTP start and duration of the track the last prgr described
+        self._progress: tuple[int, int] | None = None
         self._now_playing: dict[str, Any] = {}
 
     def process_item(self, item_type: str, code: str, data: bytes) -> None:
@@ -97,9 +101,22 @@ class ShairportMetadataDecoder:
         """
         if code == "mdst":
             self._block = {}
+            try:
+                self._block_rtptime = int(data)
+            except ValueError:
+                self._block_rtptime = None
             self._on_update({"metadata_start": True})
         elif code == "mden":
             block, self._block = self._block, None
+            if (
+                block
+                and "duration" not in block
+                and self._progress is not None
+                and self._progress[0] == self._block_rtptime
+            ):
+                # a Classic sender may send the track's progress before its metadata block;
+                # the block starts the track afresh, so it must carry that duration itself
+                block["duration"] = self._progress[1]
             if block:
                 self._on_update(block)
         elif code == "copl":
@@ -178,9 +195,11 @@ class ShairportMetadataDecoder:
         :param text: "start/current/end" RTP timestamps of the current track.
         """
         start, current, end = (int(part) for part in text.split("/"))
+        duration = _rtp_frames_between(start, end) // PROGRESS_RTP_RATE
+        self._progress = (start, duration)
         return {
             "elapsed_time": _rtp_frames_between(start, current) // PROGRESS_RTP_RATE,
-            "duration": _rtp_frames_between(start, end) // PROGRESS_RTP_RATE,
+            "duration": duration,
         }
 
     def _process_command_plist(self, data: bytes) -> None:

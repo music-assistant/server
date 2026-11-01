@@ -52,6 +52,22 @@ _CONFIRMED_BY_PAUSE: Final = frozenset({"paused"})
 _CONFIRMED_BY_STOP: Final = frozenset({"paused", "play_end", "session_end"})
 _CONFIRMED_BY_TRACK_CHANGE: Final = frozenset({"track_changed"})
 _CONFIRMED_BY_VOLUME: Final = frozenset({"volume"})
+# What a sender reports about its track and volume, kept until its session is presented.
+_HELD_KEYS: Final = frozenset(
+    {
+        "title",
+        "artist",
+        "album",
+        "duration",
+        "track_id",
+        "artwork",
+        "elapsed_time",
+        "volume",
+        "airplay_volume",
+    }
+)
+# The fields a metadata block describes afresh; progress and artwork may come before it.
+_BLOCK_KEYS: Final = ("title", "artist", "album", "track_id")
 
 
 @dataclass
@@ -106,6 +122,8 @@ class ShairportSyncPlayer(GenericAirPlayPlayer):
         self._session: ExternalSession | None = None
         self._last_session_flag: bool | None = None
         self._sender = SenderIdentity()
+        # what the sender reported before its session was presented, shown once it is
+        self._held_metadata: dict[str, Any] = {}
         self._pending_confirmations: list[tuple[frozenset[str], asyncio.Future[None]]] = []
         super().__init__(
             provider=provider,
@@ -270,6 +288,7 @@ class ShairportSyncPlayer(GenericAirPlayPlayer):
         if not flag:
             if previous:
                 self._sender = SenderIdentity()
+                self._held_metadata.clear()
                 if self._session is not None:
                     self._end_external_session()
             return
@@ -288,6 +307,9 @@ class ShairportSyncPlayer(GenericAirPlayPlayer):
         self._drop_ended_session()
         self._update_sender(update)
         if not self._accepts_session_metadata():
+            if self._sender_is_foreign():
+                # a sender that took the receiver over from our stream, which still runs
+                self._hold_metadata(update)
             return
         session = self._session
         if update.get("play_begin") or update.get("resumed"):
@@ -295,6 +317,8 @@ class ShairportSyncPlayer(GenericAirPlayPlayer):
             self.mass.cancel_timer(self._flush_timer_id)
             self._attr_playback_state = PlaybackState.PLAYING
         if session is None:
+            # a Classic sender sends its metadata before play begins or the flag comes up
+            self._hold_metadata(update)
             return
         if update.get("paused"):
             self._attr_playback_state = PlaybackState.PAUSED
@@ -312,6 +336,8 @@ class ShairportSyncPlayer(GenericAirPlayPlayer):
         events = set(update)
         if self._apply_media(session, update):
             events.add("track_changed")
+            # a flush that a new track follows was a skip, not a pause
+            self.mass.cancel_timer(self._flush_timer_id)
         if "elapsed_time" in update:
             self.mass.cancel_timer(self._flush_timer_id)
             self._attr_elapsed_time = update["elapsed_time"]
@@ -419,7 +445,41 @@ class ShairportSyncPlayer(GenericAirPlayPlayer):
         self._attr_elapsed_time = None
         self._attr_elapsed_time_last_updated = None
         self._release_parent_output_protocol()
+        if held := self._held_metadata:
+            self._held_metadata = {}
+            self._show_held_metadata(session, held)
         return session
+
+    def _hold_metadata(self, update: dict[str, Any]) -> None:
+        """Keep what the sender reports before its session is presented, to show it then."""
+        held = self._held_metadata
+        if update.get("play_end") or update.get("active_end"):
+            held.clear()
+            return
+        if update.get("metadata_start"):
+            for key in _BLOCK_KEYS:
+                held.pop(key, None)
+        held.update({key: value for key, value in update.items() if key in _HELD_KEYS})
+        if "elapsed_time" in update:
+            held["elapsed_at"] = time.time()
+        if update.get("paused"):
+            held["paused"] = True
+        elif update.get("resumed") or update.get("play_begin"):
+            held["paused"] = False
+
+    def _show_held_metadata(self, session: ExternalSession, held: dict[str, Any]) -> None:
+        """Present what the sender reported before its session began."""
+        self._apply_media(session, held)
+        if (elapsed_time := held.get("elapsed_time")) is not None:
+            if not held.get("paused"):
+                elapsed_time += time.time() - held["elapsed_at"]
+            self._attr_elapsed_time = elapsed_time
+            self._attr_elapsed_time_last_updated = time.time()
+        if "volume" in held and not self.ignore_volume_reports:
+            session.volume = held["volume"]
+            session.airplay_volume = held.get("airplay_volume")
+        if held.get("paused"):
+            self._attr_playback_state = PlaybackState.PAUSED
 
     def _end_external_session(self) -> None:
         """Stop presenting another sender's session."""
@@ -504,6 +564,9 @@ class ShairportSyncPlayer(GenericAirPlayPlayer):
     def _update_sender(self, update: dict[str, Any]) -> None:
         """Keep track of the connected sender, whoever it is."""
         sender = self._sender
+        if "dacp_id" in update or "active_remote" in update:
+            # a sender connects, so what was held came from an earlier connection
+            self._held_metadata.clear()
         if (dacp_id := update.get("dacp_id")) is not None and dacp_id != sender.dacp_id:
             # a new sender connected, and the stream type was the previous one's
             sender.dacp_id = dacp_id
@@ -513,13 +576,20 @@ class ShairportSyncPlayer(GenericAirPlayPlayer):
         if stream_type := update.get("stream_type"):
             sender.stream_type = stream_type
 
+    def _sender_is_foreign(self) -> bool:
+        """Return whether the connected sender is known and is not our own stream."""
+        dacp_id = self._sender.dacp_id
+        return dacp_id is not None and dacp_id != int(
+            cast("AirPlayProvider", self.provider).dacp_id, 16
+        )
+
     def _accepts_session_metadata(self) -> bool:
         """Return whether metadata describes another sender rather than our own stream."""
         if self.ma_stream_active:
             return False
-        if (dacp_id := self._sender.dacp_id) is not None:
+        if self._sender.dacp_id is not None:
             # a known foreign sender is followed even inside the grace period
-            return dacp_id != int(cast("AirPlayProvider", self.provider).dacp_id, 16)
+            return self._sender_is_foreign()
         return not self.external_state_blocked
 
     def _apply_media(self, session: ExternalSession, update: dict[str, Any]) -> bool:
@@ -543,9 +613,11 @@ class ShairportSyncPlayer(GenericAirPlayPlayer):
         fields = {k: v for k in ("title", "artist", "album", "duration") if (v := update.get(k))}
         if not fields and track_id is None and artwork is None:
             return track_changed
-        previous = None if session.new_track else self._attr_current_media
-        if previous and previous.title and fields.get("title", previous.title) != previous.title:
+        shown = self._attr_current_media
+        # a Classic sender opens every metadata block afresh, so compare with what is shown
+        if shown and shown.title and (title := fields.get("title")) and title != shown.title:
             track_changed = True
+        previous = None if session.new_track else shown
         if track_changed:
             self._attr_elapsed_time = 0
             self._attr_elapsed_time_last_updated = time.time()
@@ -580,6 +652,8 @@ class ShairportSyncPlayer(GenericAirPlayPlayer):
             return
         self._attr_playback_state = PlaybackState.PAUSED
         self._publish()
+        # a Classic sender pauses with a flush alone, it never reports paus
+        self._resolve_confirmations({"paused"})
 
     async def _send_session_command(
         self,

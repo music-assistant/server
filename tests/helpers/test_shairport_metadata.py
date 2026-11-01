@@ -166,6 +166,25 @@ def test_core_items_outside_block_emitted_right_away() -> None:
     assert updates == [{"metadata_start": True}, {"title": "Title"}, {"artist": "Artist"}]
 
 
+@pytest.mark.parametrize(
+    ("block_rtptime", "expected"),
+    [
+        (b"66150", {"title": "Title", "duration": 240}),
+        (b"99999", {"title": "Title"}),
+    ],
+)
+def test_progress_before_block_gives_that_track_its_duration(
+    block_rtptime: bytes, expected: dict[str, Any]
+) -> None:
+    """A prgr just before the block of the same track (same RTP start) lends it the duration."""
+    decoder, updates = _decoder()
+    decoder.process_item("ssnc", "prgr", b"66150/66150/10650150")
+    decoder.process_item("ssnc", "mdst", block_rtptime)
+    decoder.process_item("core", "minm", b"Title")
+    decoder.process_item("ssnc", "mden", block_rtptime)
+    assert updates[-1] == expected
+
+
 @pytest.mark.parametrize("item_type", ["core", "ssnc"])
 def test_artwork_emitted_inside_block(item_type: str) -> None:
     """Cover art goes out right away, even inside an open block."""

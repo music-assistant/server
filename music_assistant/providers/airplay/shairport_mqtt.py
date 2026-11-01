@@ -17,6 +17,8 @@ from music_assistant.helpers.json import JSON_DECODE_EXCEPTIONS, json_loads
 from music_assistant.helpers.shairport_metadata import ShairportMetadataDecoder
 
 if TYPE_CHECKING:
+    import logging
+
     from .provider import AirPlayProvider
     from .shairport_player import ShairportSyncPlayer
 
@@ -62,7 +64,6 @@ class ShairportMqttClient:
         :param discovery_prefix: Home Assistant autodiscovery prefix shairport-sync publishes under.
         """
         self.provider = provider
-        self.logger = provider.logger
         self.host = host
         self.port = port
         self.username = username or None
@@ -78,6 +79,11 @@ class ShairportMqttClient:
         self._receiver_by_player: dict[str, _DiscoveredReceiver] = {}
         self._conflicts: dict[str, tuple[str, ...]] = {}
         self._decoders: dict[str, ShairportMetadataDecoder] = {}
+
+    @property
+    def logger(self) -> logging.Logger:
+        """Return the provider's logger, which is renamed once the provider has set up."""
+        return self.provider.logger
 
     def start(self) -> None:
         """Start connecting to the broker in the background."""
