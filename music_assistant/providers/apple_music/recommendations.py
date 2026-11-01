@@ -18,7 +18,7 @@ from music_assistant_models.media_items import (
 from music_assistant.controllers.cache import use_cache
 
 from .constants import PARSED_ITEM_CACHE_CHECKSUM
-from .parsers import parse_artist, parse_station, parse_track
+from .parsers import parse_album, parse_artist, parse_playlist, parse_station, parse_track
 
 if TYPE_CHECKING:
     from .provider import AppleMusicProvider
@@ -106,13 +106,16 @@ class AppleMusicRecommendationManager:
             return parse_station(self.provider, {"id": station_id})
 
     async def get_personal_recommendations(self) -> list[RecommendationFolder]:
-        """Fetch personal recommendations grouped into folders by section title."""
+        """Expose Apple's supported recommendation media types in provider order.
+
+        Stations retain their separate batched name-resolution path. Missing
+        metadata never results in guessed titles or unbounded item lookups.
+        """
         response = await self.api.get_data(
             "me/recommendations?include[personal-recommendation]=contents"
         )
-        seen: set[str] = set()
         entries: list[tuple[str, dict[str, Any]]] = []
-        # Reset maps so stale entries from previous fetches are not kept.
+        seen: set[tuple[str, str, str]] = set()
         self._station_id_to_name.clear()
         self._station_name_to_id.clear()
         for recommendation in response.get("data", []):
@@ -124,37 +127,69 @@ class AppleMusicRecommendationManager:
                 continue
             contents = recommendation.get("relationships", {}).get("contents", {})
             for item in contents.get("data", []):
-                if item.get("type") != "stations":
+                item_type = item.get("type")
+                item_id = item.get("id")
+                if not item_id or item_type not in {
+                    "artists", "albums", "songs", "playlists", "stations"
+                }:
                     continue
-                station_id = item.get("id")
-                if not station_id or station_id in seen:
+                key = (title, item_type, str(item_id))
+                if key in seen:
                     continue
-                if item.get("attributes", {}).get("isLive", False):
-                    # Live broadcast stations require Widevine DRM; skip them.
+                attrs = item.get("attributes") or {}
+                if item_type == "stations" and attrs.get("isLive", False):
+                    # Live broadcasts require Widevine DRM, as before.
                     continue
-                seen.add(station_id)
+                if item_type != "stations" and (
+                    not isinstance(attrs, dict) or not attrs.get("name")
+                ):
+                    continue
+                seen.add(key)
                 entries.append((title, item))
-        unnamed = [item["id"] for _, item in entries if not item.get("attributes", {}).get("name")]
+
+        unnamed = list(dict.fromkeys(
+            item["id"] for _, item in entries
+            if item["type"] == "stations" and not item.get("attributes", {}).get("name")
+        ))
         fetched = await self._get_stations(unnamed)
         folders: dict[str, RecommendationFolder] = {}
         for title, item in entries:
-            station_id = item["id"]
-            if item.get("attributes", {}).get("name"):
-                radio = parse_station(self.provider, item)
-            elif (fetched_radio := fetched.get(station_id)) is not None:
-                radio = fetched_radio
+            item_type, item_id = item["type"], item["id"]
+            if item_type == "stations":
+                if item.get("attributes", {}).get("name"):
+                    media = parse_station(self.provider, item)
+                else:
+                    media = fetched.get(item_id)
+                if media is None or not media.name or media.name == item_id:
+                    continue
+                self._station_id_to_name[item_id] = media.name
+                self._station_name_to_id[media.name] = item_id
             else:
-                continue
-            if radio.name and radio.name != station_id:
-                self._station_id_to_name[station_id] = radio.name
-                self._station_name_to_id[radio.name] = station_id
+                try:
+                    if item_type == "artists":
+                        media = parse_artist(self.provider, item)
+                    elif item_type == "albums":
+                        media = parse_album(self.provider, item)
+                    elif item_type == "songs":
+                        media = parse_track(self.provider, item)
+                    else:
+                        media = parse_playlist(self.provider, item)
+                except (KeyError, TypeError, ValueError) as err:
+                    self.logger.debug(
+                        "Skipping incomplete Apple recommendation %s: %s",
+                        item_type, type(err).__name__,
+                    )
+                    continue
+                if media is None or not media.name:
+                    continue
+
             if title not in folders:
                 folders[title] = RecommendationFolder(
                     item_id=_slugify_title(title),
                     provider=self.provider.instance_id,
                     name=title,
                 )
-            folders[title].items.append(radio)
+            folders[title].items.append(media)
         return list(folders.values())
 
     async def resolve_station_id(self, stale_id: str) -> str | None:
@@ -183,6 +218,7 @@ class AppleMusicRecommendationManager:
                 item
                 for folder in await self.provider._recommendation_payload()
                 for item in folder.items
+                if isinstance(item, Radio)
             ],
         )
 
@@ -230,6 +266,7 @@ class AppleMusicRecommendationManager:
             return
         for folder in folders:
             for item in folder.items:
-                if item.name and item.name != item.item_id:
+                # Only Radio items participate in station ID recovery.
+                if isinstance(item, Radio) and item.name and item.name != item.item_id:
                     self._station_id_to_name[item.item_id] = item.name
                     self._station_name_to_id[item.name] = item.item_id
