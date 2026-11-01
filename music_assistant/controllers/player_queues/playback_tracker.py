@@ -715,10 +715,24 @@ class PlaybackTrackerMixin(_PlayerQueuesBase):
             self._clear_sleep_timer(queue_id)
             return
         if new_state["state"] == PlaybackState.IDLE:
-            if prev_state["state"] == PlaybackState.PLAYING:
-                # the player stopped, or ran out of audio: the queue feeds nothing past the target
+            if prev_state["state"] != PlaybackState.PLAYING:
+                # an idle paused player (a pause timeout) still stops at the target once resumed
+                return
+            if (
+                prev_state["current_item_id"] == target.queue_item_id
+                and prev_state["last_playing_elapsed_time"]
+                >= target.stop_position - SLEEP_TIMER_NATURAL_END_MARGIN
+            ) or (
+                # audio that ends before its stated duration runs the flow stream out early
+                queue.flow_mode
+                and queue_data.session_id is not None
+                and queue_data.flow_queue_exhausted == queue_data.session_id
+            ):
+                # the player ran out of audio at the target: the queue feeds nothing past it
                 self._stop_for_sleep_timer(queue_id)
-            # an idle paused player (a pause timeout) still stops at the target once resumed
+            else:
+                # the player stopped on its own before the target: a plain stop keeps its place
+                self._clear_sleep_timer(queue_id)
             return
         current_item_id = new_state["current_item_id"]
         if current_item_id is None or (

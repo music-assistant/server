@@ -321,24 +321,41 @@ def test_a_report_lagging_behind_a_switch_leaves_the_target_alone() -> None:
 
 
 @pytest.mark.parametrize(
-    ("active", "prev_playback_state", "stops", "keeps_target"),
+    ("active", "prev_playback_state", "prev_elapsed", "flow_exhausted", "stops", "keeps_target"),
     [
-        (True, PlaybackState.PLAYING, True, False),
-        (False, PlaybackState.PLAYING, False, False),
+        # the player ran out of audio at the target
+        (True, PlaybackState.PLAYING, 98, False, True, False),
+        # ... or before it, on audio shorter than its stated duration
+        (True, PlaybackState.PLAYING, 50, True, True, False),
+        # a stop on the speaker itself, or an error, before the target is a plain stop
+        (True, PlaybackState.PLAYING, 50, False, False, False),
+        (False, PlaybackState.PLAYING, 98, False, False, False),
         # a paused player that went idle after its pause timeout
-        (True, PlaybackState.PAUSED, False, True),
+        (True, PlaybackState.PAUSED, 50, False, False, True),
     ],
 )
 def test_idle_queue_ends_the_sleep_timer(
-    active: bool, prev_playback_state: PlaybackState, stops: bool, keeps_target: bool
+    active: bool,
+    prev_playback_state: PlaybackState,
+    prev_elapsed: int,
+    flow_exhausted: bool,
+    stops: bool,
+    keeps_target: bool,
 ) -> None:
-    """A queue that stopped ran out of audio at the target; one taken by another source is let go."""
+    """A queue that ran out of audio at the target stops; any other idle lets the timer go."""
     ctrl, queue, mass = _controller()
+    queue_data = ctrl._queue_data["q1"]
     ctrl.set_sleep_timer_target("q1", SleepTimerMode.END_OF_CHAPTER)
     queue.active = active
     queue.state = PlaybackState.IDLE
+    queue.flow_mode = flow_exhausted
+    queue_data.session_id = "session_1"
+    queue_data.flow_queue_exhausted = "session_1" if flow_exhausted else None
     prev_state, new_state = _states(
-        PlaybackState.IDLE, "item_1", prev_elapsed=50, prev_playback_state=prev_playback_state
+        PlaybackState.IDLE,
+        "item_1",
+        prev_elapsed=prev_elapsed,
+        prev_playback_state=prev_playback_state,
     )
     prev_state["current_item"] = queue.current_item
 
@@ -347,8 +364,10 @@ def test_idle_queue_ends_the_sleep_timer(
 
     # the stop is not read as the end of the queue, which would settle or resume it
     assert _scheduled(mass) == (["_handle_stop"] if stops else [])
-    assert (ctrl._queue_data["q1"].sleep_timer_target is not None) is keeps_target
+    assert (queue_data.sleep_timer_target is not None) is keeps_target
     assert mass.players.reset_sleep_timer.called is not keeps_target
+    # only the timer's own stop moves on, a plain stop stays on the item
+    assert queue.current_index == 0
 
 
 @pytest.mark.parametrize("stop", ["mark_ended", "_handle_stop"])
@@ -516,6 +535,24 @@ def test_playing_again_forgets_an_earlier_sleep_timer_stop() -> None:
     )
 
     assert queue_data.sleep_timer_stopped_target is None
+
+
+async def test_a_stop_on_the_speaker_before_the_target_keeps_the_place() -> None:
+    """A speaker that stops on its own mid-item drops the timer, a resume picks up there."""
+    ctrl, _, mass = _controller()
+    ctrl._check_player_permission = Mock()  # type: ignore[method-assign]
+    ctrl.play_index = AsyncMock()  # type: ignore[method-assign]
+    mass.streams.is_smart_fades_active.return_value = False
+    ctrl._update_queue_from_player(_player(PlaybackState.PLAYING, "item_1", 40))
+    ctrl.set_sleep_timer_target("q1", SleepTimerMode.END_OF_ITEM)
+
+    ctrl._update_queue_from_player(_player(PlaybackState.PLAYING, "item_1", 300))
+    ctrl._update_queue_from_player(_player(PlaybackState.IDLE, "item_1", 300))
+    await ctrl.resume("q1")
+
+    assert "_handle_stop" not in _scheduled(mass)
+    assert ctrl._queue_data["q1"].sleep_timer_target is None
+    assert ctrl.play_index.call_args.args[1:3] == ("item_1", 300)
 
 
 @pytest.mark.parametrize(
