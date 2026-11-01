@@ -155,6 +155,14 @@ CONF_AUTO_PLAY: Final[str] = "auto_play"
 CONF_PLAY_MEDIA_OVERRIDES_GROUP: Final[str] = "play_media_overrides_group"
 CONF_GROUP_MEMBERS: Final[str] = "group_members"
 CONF_DYNAMIC_GROUP_MEMBERS: Final[str] = "dynamic_members"
+# set on a sync group formed (and owned) by the AirPlay provider from the Apple
+# group (Apple TV home theater group or stereo pair) its members advertise
+CONF_AIRPLAY_GROUP_ID: Final[str] = "airplay_group_id"
+CONF_AIRPLAY_GROUP_TYPE: Final[str] = "airplay_group_type"
+AIRPLAY_GROUP_HOME_THEATER: Final[str] = "home_theater"
+AIRPLAY_GROUP_STEREO_PAIR: Final[str] = "stereo_pair"
+# the member that leads the Apple group (igl=1): the Apple TV of a home theater group
+CONF_AIRPLAY_GROUP_LEADER: Final[str] = "airplay_group_leader"
 CONF_HIDE_IN_UI: Final[str] = "hide_in_ui"
 CONF_EXPOSE_PLAYER_TO_HA: Final[str] = "expose_player_to_ha"
 CONF_SYNC_ADJUST: Final[str] = "sync_adjust"
@@ -964,6 +972,8 @@ ATTR_FAKE_VOLUME: Final[str] = "fake_volume_level"
 ATTR_FAKE_MUTE: Final[str] = "fake_volume_muted"
 ATTR_ANNOUNCEMENT_IN_PROGRESS: Final[str] = "announcement_in_progress"
 ATTR_PREVIOUS_VOLUME: Final[str] = "previous_volume"
+# when a group with linked member volumes last set its members to one level
+ATTR_LINKED_VOLUME_SET_AT: Final[str] = "linked_volume_set_at"
 ATTR_LAST_POLL: Final[str] = "last_poll"
 ATTR_GROUP_MEMBERS: Final[str] = "group_members"
 ATTR_GROUP_VOLUME_SNAPSHOT: Final[str] = "group_volume_snapshot"

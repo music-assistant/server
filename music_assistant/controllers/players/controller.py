@@ -47,6 +47,7 @@ from music_assistant_models.enums import (
     SourceControl,
 )
 from music_assistant_models.errors import (
+    ActionUnavailable,
     AlreadyRegisteredError,
     InsufficientPermissions,
     InvalidCommand,
@@ -73,6 +74,7 @@ from music_assistant.constants import (
     ATTR_GROUP_MEMBERS,
     ATTR_GROUP_VOLUME_SNAPSHOT,
     ATTR_LAST_POLL,
+    ATTR_LINKED_VOLUME_SET_AT,
     ATTR_MUTE_CONTROL,
     ATTR_MUTE_LOCK,
     ATTR_POWER_CONTROL,
@@ -491,6 +493,24 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
             msg = f"Player {player_id} is not available"
             raise PlayerUnavailableError(msg)
         return None
+
+    def raise_if_managed_externally(self, player_id: str) -> None:
+        """
+        Refuse a change to a player that is managed outside of Music Assistant.
+
+        Such a player (e.g. a group formed from an Apple Home grouping) can not be
+        renamed, configured, regrouped or removed here.
+
+        :param player_id: ID of the player a change is asked for.
+
+        :raises ActionUnavailable: If the player is managed externally.
+        """
+        if (player := self._players.get(player_id)) is not None and player.managed_externally:
+            msg = (
+                f"{player.display_name} is managed outside of Music Assistant "
+                "and can not be changed here"
+            )
+            raise ActionUnavailable(msg)
 
     @api_command("players/get", required_scope=Scope.PLAYERS_READ)
     def get_player_state(
@@ -1535,6 +1555,7 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
     @api_command("players/remove_group_player", required_scope=Scope.CONFIG_PLAYERS_WRITE)
     async def remove_group_player(self, player_id: str) -> None:
         """Remove a group player."""
+        self.raise_if_managed_externally(player_id)
         if not (player := self.get_player(player_id)):
             # we simply permanently delete the player by wiping its config
             self.mass.config.remove(f"players/{player_id}")
@@ -1874,6 +1895,7 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
 
         Can only be called when a PlayerProvider supports ProviderFeature.REMOVE_PLAYER.
         """
+        self.raise_if_managed_externally(player_id)
         player = self.get_player(player_id)
         if player is None:
             # we simply permanently delete the player config since it is not registered
@@ -2313,8 +2335,18 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         ):
             if child_player.state.volume_control == PLAYER_CONTROL_NONE:
                 continue
+            if not group_player.takes_part_in_group_volume(child_player):
+                continue
             children.append(child_player)
         if not children:
+            return
+
+        if group_player.group_volume_linked:
+            # one shared level (e.g. a stereo pair): no balance to preserve
+            group_player.extra_data[ATTR_LINKED_VOLUME_SET_AT] = time.monotonic()
+            await asyncio.gather(
+                *[self._set_member_volume(c.player_id, volume_level) for c in children]
+            )
             return
 
         # cache a snapshot of child volumes on the group player as reference for interpolation.
@@ -3095,6 +3127,8 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
             group_player, only_powered=True, exclude_self=group_player.type != PlayerType.PLAYER
         ):
             if child_player.state.volume_control == PLAYER_CONTROL_NONE:
+                continue
+            if not group_player.takes_part_in_group_volume(child_player):
                 continue
             if (child_volume := self._volume_nudge_base(child_player)) is None:
                 continue
