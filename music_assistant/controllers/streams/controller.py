@@ -1138,6 +1138,7 @@ class StreamsController(CoreController):
                 )
             first_chunk_received = False
             bytes_sent = 0
+            stream_completed = False
             stream_failure: AudioError | None = None
             # Mark this player as actively streaming so audio analysis yields CPU to playback
             # for the duration of the transfer (see audio_analysis.playback_active).
@@ -1196,6 +1197,8 @@ class StreamsController(CoreController):
                                     resp.content_length,
                                 )
                             break
+                    else:
+                        stream_completed = True
             except AudioError as err:
                 # the response is already being written: raising answers one that is
                 # long gone, which aiohttp logs as two unhandled tracebacks. Whose
@@ -1219,13 +1222,17 @@ class StreamsController(CoreController):
                 # so the player waits out a stream that already ended (as the flow route)
                 resp.force_close()
             elif (
-                bytes_sent > 0
+                stream_completed
+                and bytes_sent > 0
                 and queue_item.streamdetails
                 and queue_item.streamdetails.seconds_streamed
                 and queue_item.duration
             ):
                 # cache the actual encoded bytes-per-second for this URI + output format
-                # so future content_length estimates are near-exact
+                # so future content_length estimates are near-exact. Only a stream that ran
+                # to its end measures that: one the player left early counts the bytes it
+                # got against the audio already read ahead of them, which announces the
+                # next play too short and cuts it off.
                 self.mass.create_task(
                     store_content_length_in_cache(
                         self.mass,
