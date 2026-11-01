@@ -12,10 +12,11 @@ from aiosonos.api.models import MusicService, PlayBackState
 from aiosonos.const import EventType as SonosEventType
 from aiosonos.const import GroupCoordinatorChangedEvent, SessionErrorEvent
 from aiosonos.exceptions import FailedCommand
-from music_assistant_models.enums import MediaType, PlaybackState
+from music_assistant_models.enums import PlaybackState
 
 from music_assistant.providers.sonos import player as player_module
 from music_assistant.providers.sonos.player import SonosPlayer
+from tests.common import bare_player_controller
 
 if TYPE_CHECKING:
     from aiosonos.api.models import GroupCoordinatorChanged, SessionError
@@ -84,9 +85,6 @@ class _Household:
         self.queue.state = PlaybackState.IDLE
         # the new coordinator's queue once the queue was transferred to it
         self.target_queue = MagicMock()
-        self.target_queue.current_item.queue_item_id = "track0"
-        self.target_queue.current_item.media_type = MediaType.TRACK
-        self.target_queue.resume_pos = 25.4
 
         def _create_task(coro: Coroutine[Any, Any, None], **kwargs: Any) -> MagicMock:
             self.scheduled.append(coro)
@@ -105,7 +103,6 @@ class _Household:
             BATHROOM: self.target_queue,
         }.get
         self.mass.player_queues.transfer_queue = AsyncMock()
-        self.mass.player_queues.play_index = AsyncMock()
         self.office = self._player(OFFICE, _subscribe)
         self.office.cloud_queue_id = OFFICE
         self.bathroom = self._player(BATHROOM, _subscribe)
@@ -148,15 +145,12 @@ class _Household:
         """The core queue transfer the hand-over calls."""
         return cast("AsyncMock", self.mass.player_queues.transfer_queue)
 
-    @property
-    def play_index(self) -> AsyncMock:
-        """The core call that starts the transferred queue."""
-        return cast("AsyncMock", self.mass.player_queues.play_index)
-
-    def serve(self, object_id: str) -> None:
-        """Let Bathroom's group report the container it plays."""
+    def serve(self, object_id: str, item_id: str | None = "track0@1") -> None:
+        """Let Bathroom's group report the container it plays, and the item of it."""
         group = cast("MagicMock", self.bathroom.client).player.group
         group.playback_metadata = {"container": {"id": {"objectId": object_id}}}
+        if item_id is not None:
+            group.playback_metadata["currentItem"] = {"id": item_id}
 
     def report_coordinator(self, coordinates: bool) -> None:
         """Let Bathroom's own connection report whether it coordinates its group."""
@@ -182,10 +176,8 @@ async def test_a_moved_group_hands_our_queue_to_the_new_coordinator() -> None:
     home.office._on_group_coordinator_changed(_moved())
     await home.scheduled.pop()
 
-    home.transfer.assert_awaited_once_with(OFFICE, BATHROOM, auto_play=False)
-    # started at the transferred position: core's resume would read the clock of the new
-    # coordinator's queue, which reads as playing while its speaker plays the moved copy
-    home.play_index.assert_awaited_once_with(BATHROOM, "track0", 25)
+    # core starts the moved item where this queue was
+    home.transfer.assert_awaited_once_with(OFFICE, BATHROOM, auto_play=True)
     cast("AsyncMock", home.bathroom.stop).assert_not_awaited()
     assert home.office.cloud_queue_id is None
 
@@ -201,32 +193,6 @@ async def test_a_paused_group_hands_over_its_queue_without_playing() -> None:
     await home.scheduled.pop()
 
     home.transfer.assert_awaited_once_with(OFFICE, BATHROOM, auto_play=False)
-    home.play_index.assert_not_awaited()
-
-
-@pytest.mark.asyncio
-async def test_a_moved_radio_stream_starts_from_the_live_edge() -> None:
-    """A radio stream cannot be started part way in, as core's resume knows too."""
-    home = _Household()
-    home.target_queue.current_item.media_type = MediaType.RADIO
-
-    home.office._on_group_coordinator_changed(_moved())
-    await home.scheduled.pop()
-
-    home.play_index.assert_awaited_once_with(BATHROOM, "track0", 0)
-
-
-@pytest.mark.asyncio
-async def test_a_transferred_queue_without_a_current_item_is_not_started() -> None:
-    """A queue that moved without a current item has nothing to start."""
-    home = _Household()
-    home.target_queue.current_item = None
-
-    home.office._on_group_coordinator_changed(_moved())
-    await home.scheduled.pop()
-
-    home.transfer.assert_awaited_once()
-    home.play_index.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -451,7 +417,7 @@ async def test_a_flow_mode_queue_is_handed_over_too() -> None:
     home.office._on_group_coordinator_changed(_moved())
     await home.scheduled.pop()
 
-    home.transfer.assert_awaited_once_with(OFFICE, BATHROOM, auto_play=False)
+    home.transfer.assert_awaited_once_with(OFFICE, BATHROOM, auto_play=True)
     assert home.office._flow_queue_id is None
 
 
@@ -466,7 +432,6 @@ async def test_a_queue_this_player_no_longer_plays_is_not_handed_over() -> None:
     await home.scheduled.pop()
 
     home.transfer.assert_not_awaited()
-    home.play_index.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -550,7 +515,7 @@ async def test_a_move_right_after_an_eviction_still_hands_over_our_queue() -> No
     home.office._on_group_coordinator_changed(_moved())
     await home.scheduled.pop()
 
-    home.transfer.assert_awaited_once_with(OFFICE, BATHROOM, auto_play=False)
+    home.transfer.assert_awaited_once_with(OFFICE, BATHROOM, auto_play=True)
     assert home.office._evicted_cloud_queue is None
 
 
@@ -566,3 +531,85 @@ def test_a_move_long_after_an_eviction_is_left_alone() -> None:
     home.office._on_group_coordinator_changed(_moved())
 
     assert home.scheduled == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("held", "change"),
+    [
+        (OFFICE, "play"),
+        (BATHROOM, "play"),
+        (OFFICE, "replace"),
+    ],
+    ids=["play_on_this_player", "play_on_the_new_coordinator", "queue_replaced_in_core"],
+)
+async def test_a_change_made_while_the_move_was_waited_for_is_not_undone(
+    held: str, change: str
+) -> None:
+    """
+    A command holding a player's lock when the hand-over is ready runs first, and wins.
+
+    The hand-over looks at what the players play only once it holds both locks: a queue given
+    to either player meanwhile stays, and a queue cleared, replaced or moved away in Music
+    Assistant, which the speakers know nothing of, is not moved after it; this player then
+    no longer claims it.
+
+    :param held: The player whose queue the command runs on.
+    :param change: What it does: a play on that player, or a clear, replacement or transfer
+        of this player's queue, after which the item the speakers play is gone from it.
+    """
+    home = _Household()
+    home.mass.players.get_playback_locks = bare_player_controller().get_playback_locks
+    held_lock = asyncio.Event()
+    release = asyncio.Event()
+
+    async def _command() -> None:
+        async with home.mass.players.get_playback_locks(held):
+            held_lock.set()
+            await release.wait()
+            if change == "play":
+                player = home.office if held == OFFICE else home.bathroom
+                player.cloud_queue_item_generation += 1
+            else:
+                home.mass.player_queues.index_by_id.return_value = None
+
+    command = asyncio.create_task(_command())
+    await held_lock.wait()
+    home.office._on_group_coordinator_changed(_moved())
+    hand_over = asyncio.create_task(home.scheduled.pop())
+    for _ in range(5):
+        await asyncio.sleep(0)
+    assert not hand_over.done()
+    release.set()
+    await asyncio.gather(command, hand_over)
+
+    home.transfer.assert_not_awaited()
+    assert home.office.cloud_queue_id == (OFFICE if change == "play" else None)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("container", "item_id"),
+    [(f"mass:{OFFICE}", "track0@1"), (f"mass:{OFFICE}:track0", None)],
+    ids=["cloud_queue_item", "stream_item"],
+)
+async def test_the_item_the_speakers_play_is_looked_up_in_this_players_queue(
+    container: str, item_id: str | None
+) -> None:
+    """
+    The hand-over asks core for the very item the new coordinator reports playing.
+
+    A cloud queue reports it as the current item under its wire id; a stream names it in its
+    container.
+
+    :param container: The container the new coordinator reports.
+    :param item_id: The wire id of the current item it reports, if a cloud queue.
+    """
+    home = _Household()
+    home.serve(container, item_id)
+
+    home.office._on_group_coordinator_changed(_moved())
+    await home.scheduled.pop()
+
+    home.mass.player_queues.index_by_id.assert_called_once_with(OFFICE, "track0")
+    home.transfer.assert_awaited_once()

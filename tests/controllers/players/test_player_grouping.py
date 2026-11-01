@@ -1071,6 +1071,55 @@ def _ad_hoc_leader(
 class TestAdHocLeadershipTransfer:
     """Unjoining an ad-hoc sync leader transfers leadership instead of dissolving."""
 
+    async def test_ad_hoc_leadership_transfer_holds_both_leaders_until_the_resume(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """
+        The old and the new leader stay locked from the transfer to the resume on the new one.
+
+        The transfer alone releases the new leader when it returns; a transfer between the two
+        that took it then would wait for the old leader while the regroup waits for the new.
+        """
+        controller = PlayerController(mock_mass)
+        provider = MockProvider("test", instance_id="test", mass=mock_mass)
+        leader = MockPlayer(provider, "leader", "Leader")
+        leader._attr_supported_features.add(PlayerFeature.SET_MEMBERS)
+        leader._attr_group_members = ["leader", "member_a", "member_b"]
+        controller._players = {
+            "leader": leader,
+            "member_a": MockPlayer(provider, "member_a", "Member A"),
+            "member_b": MockPlayer(provider, "member_b", "Member B"),
+        }
+        mock_mass.players = controller
+        for player in controller._players.values():
+            player.update_state(signal_event=False)
+        controller.get_active_queue = MagicMock(return_value=_queue_stub("leader"))  # type: ignore[method-assign]
+        held: list[tuple[str, bool]] = []
+
+        def _record(step: str) -> None:
+            locks = controller._player_command_locks
+            held.append(
+                (step, locks["playback_leader"].locked() and locks["playback_member_a"].locked())
+            )
+
+        async def _transfer(*_args: Any, **_kwargs: Any) -> None:
+            _record("transfer")
+
+        async def _set_members(*_args: Any, **_kwargs: Any) -> None:
+            _record("set_members")
+
+        async def _resume(*_args: Any, **_kwargs: Any) -> None:
+            _record("resume")
+
+        mock_mass.player_queues.transfer_queue = AsyncMock(side_effect=_transfer)
+        mock_mass.player_queues.resume = AsyncMock(side_effect=_resume)
+        controller.cmd_set_members = AsyncMock(side_effect=_set_members)  # type: ignore[method-assign]
+
+        await controller._transfer_ad_hoc_leadership(leader, ["member_a", "member_b"])
+
+        assert held == [("transfer", True), ("set_members", True), ("resume", True)]
+        assert not controller._player_command_locks["playback_member_a"].locked()
+
     def test_select_ad_hoc_leader_prefers_active_protocol(
         self, controller: PlayerController, mock_mass: MagicMock
     ) -> None:
