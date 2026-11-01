@@ -23,7 +23,7 @@ alexapy==1.30.0
 async-upnp-client==0.49.0
 audible==0.13.0
 auntie-sounds==2.0.9
-av==18.1.0
+av==19.0.2
 awesomeversion>=24.6.0
 bandcamp-async-api==0.3.0
 beat-this==1.1.0
