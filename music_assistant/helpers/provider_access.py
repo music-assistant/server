@@ -281,7 +281,12 @@ def visible_items[T](mass: MusicAssistant, items: Iterable[T], user: User | None
         item
         for item in items
         if not isinstance(item, MediaItem)
-        or any(_is_visible(mapping.provider_instance) for mapping in item.provider_mappings)
+        # a library item is only visible through the exact accounts holding it
+        or (
+            has_visible_source(mass, item.provider_mappings, user)
+            if item.provider == "library"
+            else any(_is_visible(mapping.provider_instance) for mapping in item.provider_mappings)
+        )
     ]
 
 

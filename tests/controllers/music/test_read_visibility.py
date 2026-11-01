@@ -44,6 +44,7 @@ from music_assistant_models.media_items import (
 from music_assistant.constants import CONF_PROVIDERS, DB_TABLE_ALBUM_TRACKS
 from music_assistant.controllers.music import MusicController
 from music_assistant.helpers.collections import get_collection_item_id
+from music_assistant.helpers.provider_access import visible_items
 from music_assistant.mass import MusicAssistant
 from music_assistant.models.music_provider import MusicProvider
 from tests.common import set_music_source_access
@@ -559,6 +560,10 @@ async def test_library_album_tracks_of_a_hidden_album_are_not_found(
             lambda music, db_id: music.artists.similar_artists(db_id, "library"),
             id="similar_artists",
         ),
+        pytest.param(
+            lambda music, db_id: music.artists.audiobooks(db_id, "library", ArtistType.AUTHOR),
+            id="audiobooks",
+        ),
     ],
 )
 async def test_library_listings_of_a_hidden_artist_are_not_found(
@@ -820,3 +825,18 @@ async def test_a_library_playlist_on_hidden_sources_is_a_plain_miss(music: Music
     assert "Secret Mixtape" not in str(err.value)
     with _as_user(MEMBER), pytest.raises(MediaNotFoundError):
         await music.playlists.export_playlist(playlist.item_id)
+
+
+async def test_visible_items_keep_a_library_item_only_on_its_own_accounts(
+    music: MusicController,
+) -> None:
+    """The user's own account stands in for a hidden one for a provider item, not a library one."""
+    library_track = await music.tracks.add_item_to_library(create_track(THEIRS, "t1"))
+    provider_track = create_track(THEIRS, "t2")
+    _add_my_spotify(music)
+
+    assert visible_items(music.mass, [library_track, provider_track], OWNER) == [
+        library_track,
+        provider_track,
+    ]
+    assert visible_items(music.mass, [library_track, provider_track], MEMBER) == [provider_track]

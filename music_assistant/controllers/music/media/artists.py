@@ -993,6 +993,8 @@ class ArtistsController(MediaControllerBase[Artist]):
             )
             return []
         if not library_artist:
+            if provider_instance_id_or_domain == "library":
+                raise MediaNotFoundError(f"Artist {item_id} not found in library")
             self._validate_provider_filter(provider_instance_id_or_domain, provider_filter)
             provider_instance_id_or_domain = self.mass.music.resolve_visible_provider(
                 provider_instance_id_or_domain
