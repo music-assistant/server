@@ -2310,6 +2310,8 @@
   "provider.sendspin.config_entries.dynamic_pin_channel_speaker.label": "Enter the code the device speaks aloud",
   "provider.sendspin.config_entries.flow_mode_sample_rate.description": "Select the sample rate of the audio sent to this player. By default, it follows the sample rate of the first track that is played. Only applies when the preferred audio format is set to automatic.",
   "provider.sendspin.config_entries.flow_mode_sample_rate.label": "Sample rate selection",
+  "provider.sendspin.config_entries.local_pairing.description": "Pair Sendspin players running on the same Home Assistant host, such as the Local Audio app, without entering a pairing code. Only available when Music Assistant runs as a Home Assistant app.",
+  "provider.sendspin.config_entries.local_pairing.label": "Pair local players automatically",
   "provider.sendspin.config_entries.management_dynamic_pin_disable.description": "Stop the device from accepting new pairings using a dynamic pairing code it provides while pairing.",
   "provider.sendspin.config_entries.management_dynamic_pin_disable.label": "Disable dynamic pairing code",
   "provider.sendspin.config_entries.management_dynamic_pin_enable.description": "Let the device accept new pairings using a dynamic pairing code it provides while pairing.",
