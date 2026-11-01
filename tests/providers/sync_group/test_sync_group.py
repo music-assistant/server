@@ -651,6 +651,36 @@ class TestActiveProtocolDomain:
         # the members must recalculate against the ended session, not the old leader
         assert leader_at_trigger == [None, None]
 
+    @pytest.mark.asyncio
+    async def test_dissolve_completes_when_leader_cannot_be_reached(self) -> None:
+        """Failing ungroup and stop commands on the leader never abort the dissolve."""
+        mass = _make_mock_mass()
+        sgp = _make_sync_group(mass)
+        leader = _make_mock_player("leader", provider_domain="wiim")
+        m2 = _make_mock_player("m2", provider_domain="wiim")
+        # the members ended up on a provider-promoted leader, which we stop as well
+        promoted = _make_mock_player("promoted", provider_domain="wiim")
+        promoted.state.group_members = ["promoted", "m2"]
+        mass.players.get_player = _player_lookup({"leader": leader, "m2": m2, "promoted": promoted})
+        sgp.sync_leader = leader
+        sgp._attr_group_members = ["leader", "m2"]
+        mass.players._handle_set_members.side_effect = RuntimeError("Not connected")
+        mass.players._handle_cmd_stop.side_effect = RuntimeError("Not connected")
+
+        with (
+            patch.object(sgp, "update_state") as update_state,
+            patch.object(sgp, "_protocol_group_leader", return_value=promoted),
+        ):
+            await sgp._dissolve_syncgroup()
+
+        mass.players._handle_set_members.assert_awaited_once()
+        mass.players._handle_cmd_stop.assert_awaited_once_with("promoted")
+        assert getattr(sgp, "sync_leader") is None  # noqa: B009
+        update_state.assert_called()
+        mass.players.schedule_active_output_protocol_clear.assert_any_call(promoted)
+        mass.players.schedule_active_output_protocol_clear.assert_any_call(leader)
+        mass.players.trigger_player_update.assert_any_call("m2")
+
 
 class TestDynamicLeaderSwitch:
     """Test dynamic leader switching behaviour."""
@@ -3198,32 +3228,6 @@ class TestDebouncedReform:
         )
         mass.players.cmd_resume.assert_awaited_once()
         assert sgp._reform_task is None
-
-    @pytest.mark.asyncio
-    async def test_dissolve_completes_when_leader_cannot_be_reached(self) -> None:
-        """Failing ungroup and stop commands on the leader never abort the dissolve."""
-        mass = _make_mock_mass()
-        sgp = self._setup_group(mass, members=["leader", "m2"])
-        leader = mass.players.get_player("leader")
-        # the members ended up on a provider-promoted leader, which we stop as well
-        promoted = _make_mock_player("promoted", provider_domain="wiim")
-        promoted.state.group_members = ["promoted", "m2"]
-        mass.players._handle_set_members.side_effect = RuntimeError("Not connected")
-        mass.players._handle_cmd_stop.side_effect = RuntimeError("Not connected")
-
-        with (
-            patch.object(sgp, "update_state") as update_state,
-            patch.object(sgp, "_protocol_group_leader", return_value=promoted),
-        ):
-            await sgp._dissolve_syncgroup()
-
-        mass.players._handle_set_members.assert_awaited_once()
-        mass.players._handle_cmd_stop.assert_awaited_once_with("promoted")
-        assert sgp.sync_leader is None
-        update_state.assert_called()
-        mass.players.schedule_active_output_protocol_clear.assert_any_call(promoted)
-        mass.players.schedule_active_output_protocol_clear.assert_any_call(leader)
-        mass.players.trigger_player_update.assert_any_call("m2")
 
     @pytest.mark.asyncio
     async def test_cascaded_unjoins_coalesce_into_single_reform(self) -> None:

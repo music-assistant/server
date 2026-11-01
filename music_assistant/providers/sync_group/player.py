@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import time
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -974,12 +975,12 @@ class SyncGroupPlayer(Player):
                 x for x in group_leader.state.group_members if x != group_leader.player_id
             ]
             if sync_children:
-                # wait for the leader's state to reflect the ungroup
-                # use _handle_set_members directly to avoid the redirect loop
-                # (cmd_set_members redirects sync-leader targets back to this syncgroup)
-                # a leader that dropped off the network can't ungroup its members; they are
-                # released by the provider or by the re-form, so the dissolve carries on
+                # a leader that dropped off the network can't ungroup its members; the provider
+                # (or a later form) releases them, so the dissolve carries on
                 try:
+                    # wait for the leader's state to reflect the ungroup
+                    # use _handle_set_members directly to avoid the redirect loop
+                    # (cmd_set_members redirects sync-leader targets back to this syncgroup)
                     async with (
                         self.mass.players.wait_for_player_update(group_leader.player_id, timeout=5),
                         self.mass.players.get_player_lock(
@@ -990,7 +991,8 @@ class SyncGroupPlayer(Player):
                             group_leader, player_ids_to_remove=sync_children
                         )
                 except Exception as err:
-                    self.logger.debug(
+                    self.logger.log(
+                        logging.WARNING if group_leader.state.available else logging.DEBUG,
                         "Could not ungroup the members of %s while dissolving group %s: %s",
                         group_leader.display_name,
                         self.display_name,
@@ -1309,9 +1311,9 @@ class SyncGroupPlayer(Player):
             self._reform_protocol_domain = preferred_protocol_domain
             self._schedule_reform_timer()
 
-    async def _stop_departing_leader(self, leader: Player, wait_for_update: bool = True) -> None:
+    async def _stop_departing_leader(self, leader: Player, *, wait_for_update: bool = True) -> None:
         """
-        Stop a (sync) leader that leaves the group, without raising when it can't be stopped.
+        Stop a leader that leaves the group, without raising when it can't be stopped.
 
         :param leader: The leader to stop.
         :param wait_for_update: Wait (up to 5 seconds) for the leader's state to reflect the stop.
@@ -1325,7 +1327,8 @@ class SyncGroupPlayer(Player):
             else:
                 await self.mass.players._handle_cmd_stop(leader.player_id)
         except Exception as err:
-            self.logger.debug(
+            self.logger.log(
+                logging.WARNING if leader.state.available else logging.DEBUG,
                 "Could not stop departing leader %s of group %s: %s",
                 leader.display_name,
                 self.display_name,
