@@ -25,8 +25,10 @@ from music_assistant.helpers.compare import set_keep_remasters_apart
 from music_assistant.providers.musicbrainz.models import (
     MusicBrainzMedia,
     MusicBrainzRecording,
+    MusicBrainzRelation,
     MusicBrainzRelease,
     MusicBrainzTrack,
+    MusicBrainzUrl,
 )
 
 if TYPE_CHECKING:
@@ -471,6 +473,7 @@ def _album_harness(
     """
     ctrl = AlbumsController.__new__(AlbumsController)
     ctrl.logger = logging.getLogger("test.musicbrainz.linking")
+    ctrl._logged_hints = set()
     ctrl.mass = Mock()
     ctrl.mass.music.database.deferred_commit = MagicMock()
     ctrl.mass.music.tracks.update_item_in_library = AsyncMock()
@@ -706,6 +709,142 @@ async def test_release_tracks_of_local_files_are_not_matched_in_order() -> None:
         )
 
     assert harness.updated_tracks() == []
+
+
+SPOTIFY_LINKED_ALBUM = ProviderMapping(
+    item_id="7eyQXxuf2nGj9d2367Gi5f", provider_domain="spotify", provider_instance="spotify_1"
+)
+TIDAL_LINKED_ALBUM = ProviderMapping(
+    item_id="79280548", provider_domain="tidal", provider_instance="tidal_1"
+)
+
+
+def _linking_release(*links: str) -> MusicBrainzRelease:
+    """Return the two disc release with the given streaming album links."""
+    release = _two_disc_release()
+    release.relations = [
+        MusicBrainzRelation(type="free streaming", url=MusicBrainzUrl(resource=link))
+        for link in links
+    ]
+    return release
+
+
+def _length_hints(caplog: pytest.LogCaptureFixture) -> list[tuple[int, str]]:
+    """Return the level and text of the logged hints about differing track lengths."""
+    return [(x.levelno, x.getMessage()) for x in caplog.records if "lengths" in x.getMessage()]
+
+
+@pytest.mark.parametrize(
+    ("durations", "hint_tracks"),
+    [
+        pytest.param((440, 593, 340), "3", id="one length off"),
+        pytest.param((440, 593, 0), None, id="one length unknown"),
+        pytest.param((300, 593, 340), "1, 3", id="two lengths off"),
+    ],
+)
+async def test_release_tracks_of_a_linked_service_album_match_in_order_whatever_the_lengths(
+    caplog: pytest.LogCaptureFixture, durations: tuple[int, ...], hint_tracks: str | None
+) -> None:
+    """The release linking the album on a service matches its tracks in order, lengths or not."""
+    caplog.set_level(logging.DEBUG, logger="test.musicbrainz.linking")
+    album = _library_album("1", SPOTIFY_LINKED_ALBUM)
+    release = _linking_release(SPOTIFY_ALBUM_URL)
+    with _album_harness() as harness:
+        for _ in range(2):
+            await harness.ctrl.link_album_tracks(
+                album, _service_tracks(*durations), release, link_providers=False
+            )
+
+    assert [(track.item_id, track.mbid) for track in harness.updated_tracks()[:3]] == [
+        ("t1", RECORDING_ID),
+        ("t2", OTHER_RECORDING_ID),
+        ("t3", THIRD_RECORDING_ID),
+    ]
+    expected = (
+        []
+        if hint_tracks is None
+        else [
+            (
+                logging.DEBUG,
+                'MusicBrainz links album "In Rainbows" on spotify to release '
+                f"https://musicbrainz.org/release/{release.id}, but the lengths of tracks "
+                f"{hint_tracks} (counted across discs) differ; if spotify plays another "
+                "version, remove the link from the release",
+            )
+        ]
+    )
+    assert _length_hints(caplog) == expected
+
+
+async def test_release_tracks_of_a_linked_service_album_need_the_release_track_count() -> None:
+    """A linked service holding fewer tracks than the release keeps the title check."""
+    album = _library_album("1", SPOTIFY_LINKED_ALBUM)
+    with _album_harness() as harness:
+        await harness.ctrl.link_album_tracks(
+            album,
+            _service_tracks(440, 593, numbers=(1, 2)),
+            _linking_release(SPOTIFY_ALBUM_URL),
+            link_providers=False,
+        )
+
+    assert harness.updated_tracks() == []
+
+
+async def test_release_tracks_count_only_the_link_of_the_same_service(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The release linking the album on one service says nothing about its tracks on another."""
+    caplog.set_level(logging.DEBUG, logger="test.musicbrainz.linking")
+    album = _library_album("1", SPOTIFY_LINKED_ALBUM, TIDAL_LINKED_ALBUM)
+    with _album_harness() as harness:
+        await harness.ctrl.link_album_tracks(
+            album,
+            _service_tracks(440, 593, 340),
+            _linking_release(TIDAL_ALBUM_URL),
+            link_providers=False,
+        )
+
+    assert harness.updated_tracks() == []
+    ((_, hint),) = _length_hints(caplog)
+    assert hint.startswith('Album "In Rainbows" on spotify has the track count')
+
+
+async def test_release_tracks_without_a_link_need_every_length_to_agree(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """One length off leaves an unlinked service's tracks to the title check, logged once."""
+    caplog.set_level(logging.DEBUG, logger="test.musicbrainz.linking")
+    release = _two_disc_release()
+    with _album_harness() as harness:
+        for _ in range(2):
+            await harness.ctrl.link_album_tracks(
+                _library_album(), _service_tracks(440, 593, 340), release
+            )
+
+    assert harness.updated_tracks() == []
+    assert _length_hints(caplog) == [
+        (
+            logging.DEBUG,
+            'Album "In Rainbows" on spotify has the track count of MusicBrainz release '
+            f"https://musicbrainz.org/release/{release.id}, but the lengths of tracks 3 (counted "
+            "across discs) differ; it may be another edition on spotify or a wrong length on "
+            "MusicBrainz, compare with another service",
+        )
+    ]
+
+
+async def test_release_tracks_without_a_link_log_no_hint_for_an_unknown_length(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A length unknown on either side is no difference, so nothing is logged."""
+    caplog.set_level(logging.DEBUG, logger="test.musicbrainz.linking")
+    with _album_harness() as harness:
+        await harness.ctrl.link_album_tracks(
+            _library_album(), _service_tracks(440, 593, 0), _two_disc_release()
+        )
+
+    assert harness.updated_tracks() == []
+    assert _length_hints(caplog) == []
 
 
 async def test_provider_tracks_are_matched_by_isrc_before_position() -> None:

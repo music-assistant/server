@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import logging
 from collections.abc import Iterable
 from dataclasses import dataclass, replace
 from itertools import groupby
@@ -23,6 +24,8 @@ from music_assistant_models.enums import (
 )
 from music_assistant_models.errors import (
     InvalidDataError,
+    InvalidProviderID,
+    InvalidProviderURI,
     MediaNotFoundError,
     MusicAssistantError,
     ProviderUnavailableError,
@@ -66,12 +69,14 @@ from music_assistant.helpers.external_ids import (
     normalize_external_id,
 )
 from music_assistant.helpers.json import serialize_to_json
-from music_assistant.helpers.uri import share_url_provider
+from music_assistant.helpers.logging import log_once
+from music_assistant.helpers.uri import parse_uri, share_url_provider
 from music_assistant.models.music_provider import (
     PROVIDER_FETCH_ERRORS,
     MusicProvider,
     provider_fetch_log_level,
 )
+from music_assistant.providers.musicbrainz.constants import MUSICBRAINZ_WEB_URL
 from music_assistant.providers.musicbrainz.provider import (
     is_digital_release,
     relation_urls,
@@ -82,7 +87,7 @@ from .album_tracks import AlbumListing, album_listing, album_track_backfills, ma
 from .base import EXTERNAL_ID_LOOKUP_ERRORS, MAX_EXTERNAL_ID_MATCH_LOOKUPS, MediaControllerBase
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping, Sequence
+    from collections.abc import Hashable, Mapping, Sequence
 
     from music_assistant import MusicAssistant
     from music_assistant.providers.musicbrainz import MusicbrainzProvider
@@ -129,6 +134,8 @@ class AlbumsController(MediaControllerBase[Album]):
     def __init__(self, mass: MusicAssistant) -> None:
         """Initialize class."""
         super().__init__(mass)
+        # the hints already logged, so each is logged once
+        self._logged_hints: set[Hashable] = set()
         # register (extra) api handlers
         api_base = self.api_base
         self.mass.register_api_command(
@@ -700,9 +707,12 @@ class AlbumsController(MediaControllerBase[Album]):
         Carry an album's MusicBrainz identity and provider links over to its library tracks.
 
         The library tracks at a matching position on the release get its recording id and
-        ISRCs. For each provider the album is mapped to but one or more of its library
-        tracks are not, the provider's tracklist is matched to the library tracks by ISRC
-        or position and the matching provider tracks are linked.
+        ISRCs. A streaming service's tracks take the release's recordings in order across
+        discs, whatever their titles, when the library holds as many of its tracks as the
+        release has, numbered from 1 on each disc, and the release links the service's album
+        or every length is known and agrees. For each provider the album is mapped to but
+        one or more of its library tracks are not, the provider's tracklist is matched to the
+        library tracks by ISRC or position and the matching provider tracks are linked.
 
         :param album: The library album.
         :param db_tracks: The album's library tracks.
@@ -729,7 +739,7 @@ class AlbumsController(MediaControllerBase[Album]):
         ]
         async with self.mass.music.database.deferred_commit():
             if release is not None:
-                await self._link_tracks_to_release(db_tracks, release)
+                await self._link_tracks_to_release(album, db_tracks, release)
             if not link_providers:
                 return
             for domain, mapping in album_mappings.items():
@@ -1094,7 +1104,7 @@ class AlbumsController(MediaControllerBase[Album]):
         return True
 
     async def _link_tracks_to_release(
-        self, db_tracks: Sequence[Track], release: MusicBrainzRelease
+        self, album: Album, db_tracks: Sequence[Track], release: MusicBrainzRelease
     ) -> None:
         """Fill the recording ids and ISRCs of a release in on the library tracks at its positions."""
         recordings = {
@@ -1103,7 +1113,7 @@ class AlbumsController(MediaControllerBase[Album]):
             for track in medium.tracks
             if track.position and track.recording
         }
-        in_order = self._recordings_in_order(db_tracks, release)
+        in_order = await self._recordings_in_order(album, db_tracks, release)
         for db_track in db_tracks:
             if (recording := in_order.get(db_track.item_id)) is None:
                 # a digital release stores its single disc as disc 0 or 1
@@ -1116,8 +1126,8 @@ class AlbumsController(MediaControllerBase[Album]):
             db_track.metadata.last_musicbrainz_lookup = int(time())
             await self.mass.music.tracks.update_item_in_library(db_track.item_id, db_track)
 
-    def _recordings_in_order(
-        self, db_tracks: Sequence[Track], release: MusicBrainzRelease
+    async def _recordings_in_order(
+        self, album: Album, db_tracks: Sequence[Track], release: MusicBrainzRelease
     ) -> dict[str, MusicBrainzRecording]:
         """Return the release recording per library track of a service lining up with the release."""
         release_tracks = [
@@ -1144,6 +1154,7 @@ class AlbumsController(MediaControllerBase[Album]):
             if all(x.provider_instance in streaming for x in track.provider_mappings)
         ]
         domains = {x.provider_domain for track in streaming_tracks for x in track.provider_mappings}
+        linked_albums = await _linked_albums(release)
         in_order: dict[str, MusicBrainzRecording] = {}
         for domain in sorted(domains):
             service_tracks = sorted(
@@ -1155,11 +1166,45 @@ class AlbumsController(MediaControllerBase[Album]):
                 key=lambda track: (track.disc_number or 1, track.track_number or 0),
             )
             # a service lines up when it has every track of the release, numbered from 1 on each
-            # disc, and every length is known and agrees, so their titles need not match
+            # disc, and the release links its album or every length is known and agrees, so
+            # their titles need not match
             if len(service_tracks) != len(release_tracks) or not _numbered_from_one(service_tracks):
                 continue
             pairs = list(zip(service_tracks, release_tracks, strict=True))
-            if not all(_lengths_agree(release_track, track) for track, release_track in pairs):
+            linked = any(
+                (x.provider_domain, x.item_id) in linked_albums
+                for x in album.provider_mappings
+                if x.provider_domain == domain
+            )
+            agreeing = [_lengths_agree(release_track, track) for track, release_track in pairs]
+            if differing := [
+                number for number, agrees in enumerate(agreeing, 1) if agrees is False
+            ]:
+                log_once(
+                    self.logger,
+                    self._logged_hints,
+                    ("release_lengths", release.id, domain),
+                    logging.DEBUG,
+                    (
+                        'MusicBrainz links album "%s" on %s to release %s/release/%s, but the '
+                        "lengths of tracks %s (counted across discs) differ; if %s plays another "
+                        "version, remove the link from the release"
+                    )
+                    if linked
+                    else (
+                        'Album "%s" on %s has the track count of MusicBrainz release '
+                        "%s/release/%s, but the lengths of tracks %s (counted across discs) "
+                        "differ; it may be another edition on %s or a wrong length on "
+                        "MusicBrainz, compare with another service"
+                    ),
+                    album.name,
+                    domain,
+                    MUSICBRAINZ_WEB_URL,
+                    release.id,
+                    ", ".join(map(str, differing)),
+                    domain,
+                )
+            if not linked and not all(agreeing):
                 continue
             for track, release_track in pairs:
                 recording = release_track.recording
@@ -1732,12 +1777,25 @@ def _recording_matches_track(recording: MusicBrainzRecording, track: Track) -> b
     return abs(recording.length / 1000 - track.duration) <= _TRACK_DURATION_TOLERANCE
 
 
-def _lengths_agree(release_track: MusicBrainzTrack, track: Track) -> bool:
-    """Return whether a release track's length is known and within tolerance of a library track's."""
+async def _linked_albums(release: MusicBrainzRelease) -> set[tuple[str, str]]:
+    """Return the (provider domain, album id) pairs of the streaming albums a release links to."""
+    linked: set[tuple[str, str]] = set()
+    for url in relation_urls(release.relations):
+        if not url.startswith(("http://", "https://")):
+            continue
+        with contextlib.suppress(InvalidProviderURI, InvalidProviderID):
+            media_type, domain, item_id = await parse_uri(url, validate_id=True)
+            if media_type == MediaType.ALBUM:
+                linked.add((domain, item_id))
+    return linked
+
+
+def _lengths_agree(release_track: MusicBrainzTrack, track: Track) -> bool | None:
+    """Return whether a release track's length is a library track's, None when one is unknown."""
     # the length on the release can differ from the recording's, as on a remaster
     length = release_track.length or (release_track.recording and release_track.recording.length)
     if not length or not track.duration:
-        return False
+        return None
     return abs(length / 1000 - track.duration) <= _TRACK_DURATION_TOLERANCE
 
 
