@@ -76,7 +76,9 @@ from music_assistant.constants import (
 )
 from music_assistant.controllers.music.constants import (
     BROWSE_CACHE_EXPIRATION,
+    CACHE_CATEGORY_LISTINGS,
     CACHE_CATEGORY_SEARCH_RESULTS,
+    CONF_CACHE_ACCOUNT_ID,
     CONF_DELETED_PROVIDERS,
     CONF_KEEP_REMASTERS_APART,
     CONF_RESET_DB,
@@ -174,11 +176,13 @@ from music_assistant.helpers.util import parse_optional_bool, parse_title_and_ve
 from music_assistant.models.core_controller import CoreController
 from music_assistant.models.media_capabilities import MediaCatalogMixin
 from music_assistant.models.music_provider import (
+    CACHE_CATEGORY_PREV_LIBRARY_IDS,
     LIBRARY_FEATURE_BY_MEDIA_TYPE,
     MusicProvider,
     NothingToSync,
 )
 from music_assistant.models.plugin import PluginProvider
+from music_assistant.models.recommendation_payload import RECOMMENDATION_PAYLOAD_CACHE_KEY
 
 if TYPE_CHECKING:
     from music_assistant_models.api import SortOptionInfo
@@ -529,6 +533,49 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         Sync tasks are unscheduled by MusicAssistant.unload_provider itself, which also
         decides whether their persisted state is kept (reload) or cleared (removal).
         """
+
+    async def check_provider_account(self, provider: MusicProvider) -> None:
+        """
+        Clear what a provider instance cached when it signed in to another account.
+
+        Called while the instance loads, before it goes live. Nothing is cleared when the
+        provider does not report an account, or reports the one it filled the cache with.
+
+        :param provider: The provider instance that was just initialized.
+        """
+        if (account_id := provider.account_id) is None:
+            return
+        instance_id = provider.instance_id
+        stored = self.mass.config.get_provider_setup_value(instance_id, CONF_CACHE_ACCOUNT_ID)
+        if stored == account_id:
+            return
+        if stored is not None:
+            self.logger.info("%s signed in to another account, clearing its cache", provider.name)
+            await self.clear_provider_cache(instance_id)
+        provider._update_setup_data(CONF_CACHE_ACCOUNT_ID, account_id)
+
+    async def clear_provider_cache(self, provider_instance: str) -> None:
+        """
+        Clear what a provider instance cached for the account it was signed in to.
+
+        Persistent entries stay, except the recommendations, which belong to the account,
+        and so do the library snapshots the next sync uses to remove the old items.
+
+        :param provider_instance: The provider instance id.
+        """
+        snapshot_keys = [media_type.value for media_type in LIBRARY_FEATURE_BY_MEDIA_TYPE]
+        await self.mass.cache.clear(
+            provider_filter=provider_instance,
+            keep_category_keys=(CACHE_CATEGORY_PREV_LIBRARY_IDS, snapshot_keys),
+        )
+        await self.mass.cache.delete(RECOMMENDATION_PAYLOAD_CACHE_KEY, provider=provider_instance)
+        # the combined search results and the library's listings hold the provider's items too
+        await self.mass.cache.delete(
+            None, category=CACHE_CATEGORY_SEARCH_RESULTS, provider=self.domain
+        )
+        await self.mass.cache.clear(
+            category_filter=CACHE_CATEGORY_LISTINGS, provider_filter="library://"
+        )
 
     @property
     def providers(self) -> list[MusicProvider]:

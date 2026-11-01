@@ -102,6 +102,11 @@ class SoundcloudMusicProvider(RecommendationPayloadMixin, MusicProvider):
     _soundcloud: SoundcloudAsyncAPI = None
     _me: dict[str, Any]
 
+    @property
+    def account_id(self) -> str | None:
+        """Return the SoundCloud user id of the logged-in account."""
+        return self._user_id or None
+
     async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
         """Return Config entries to configure this provider."""
         return (CONF_ENTRY_UNOFFICIAL_PROVIDER,)
