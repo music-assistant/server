@@ -1224,8 +1224,7 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
                         # the same actionable error.
                         if isinstance(err, MediaNotFoundError):
                             queue_item.available = False
-                # moving past an item that fails to load is a skip, also past a sleep timer target
-                next_index = self._get_next_index(queue_id, index, is_skip=True, allow_repeat=False)
+                next_index = self._get_next_index(queue_id, index, allow_repeat=False)
                 if next_index is None and queue.is_dynamic and not refilled:
                     refilled = True
                     await self._fill_dynamic_tracks(queue_id)
@@ -2142,8 +2141,11 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
 
         :param queue_id: queue_id of the playerqueue to stop.
         """
-        # a stop ends what a sleep timer waited for
-        self._clear_sleep_timer(queue_id)
+        # a stop ends what a sleep timer waited for, except the one of an announcement, which
+        # resumes the queue afterwards
+        queue_player = self.mass.players.get_player(queue_id)
+        if not (queue_player and queue_player.extra_data.get(ATTR_ANNOUNCEMENT_IN_PROGRESS)):
+            self._clear_sleep_timer(queue_id)
         self._cancel_pending_playback(queue_id)
         if not (queue_data := self._queue_data.get(queue_id)):
             raise PlayerUnavailableError(f"Queue {queue_id} is not available")

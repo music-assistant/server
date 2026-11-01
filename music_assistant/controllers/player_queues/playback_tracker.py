@@ -37,6 +37,7 @@ from music_assistant_models.media_items import (
 from music_assistant_models.playback_progress_report import MediaItemPlaybackProgressReport
 
 from music_assistant.constants import (
+    ATTR_ANNOUNCEMENT_IN_PROGRESS,
     PLAYBACK_REPORT_INTERVAL_SECONDS,
     VERBOSE_LOG_LEVEL,
 )
@@ -704,6 +705,10 @@ class PlaybackTrackerMixin(_PlayerQueuesBase):
             queue_data.sleep_timer_stopped_target = None
         target = queue_data.sleep_timer_target
         if target is None:
+            return
+        queue_player = self.mass.players.get_player(queue_id)
+        if queue_player and queue_player.extra_data.get(ATTR_ANNOUNCEMENT_IN_PROGRESS):
+            # an announcement takes the player and resumes the queue, which re-pins the target
             return
         if not queue.active:
             # another source took the player, there is nothing left to stop

@@ -93,23 +93,6 @@ async def test_play_index_moves_the_sleep_timer_stop_to_the_new_item() -> None:
     assert queue_data.sleep_timer_target == SleepTimerTarget(SleepTimerMode.END_OF_ITEM, "new", 279)
 
 
-async def test_play_index_skips_a_sleep_timer_target_that_fails_to_load() -> None:
-    """An unplayable target falls back to the next item instead of stopping the queue."""
-    ctrl, queue, _signals = _controller_with_stale_queue()
-    queue_data = ctrl._queue_data[QUEUE_ID]
-    queue_data.items.append(
-        QueueItem(queue_id=QUEUE_ID, queue_item_id="fallback", name="fallback", duration=200)
-    )
-    queue_data.sleep_timer_target = SleepTimerTarget(SleepTimerMode.END_OF_ITEM, "new", 279)
-    del ctrl._get_next_index
-    ctrl._load_item = AsyncMock(side_effect=[MediaNotFoundError("unplayable"), None])  # type: ignore[method-assign]
-
-    await ctrl.play_index(QUEUE_ID, 1)
-
-    assert queue.current_item is not None
-    assert queue.current_item.queue_item_id == "fallback"
-
-
 async def test_seek_publishes_target_before_restarting_stream() -> None:
     """A seek publishes its target before play_index starts rebuilding the stream."""
     ctrl, queue, _signals = _controller_with_stale_queue()

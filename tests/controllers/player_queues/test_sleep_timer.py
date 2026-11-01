@@ -16,6 +16,7 @@ from music_assistant_models.media_items import Audiobook, MediaItemChapter
 from music_assistant_models.player_queue import PlayerQueue, PlayLogEntry
 from music_assistant_models.queue_item import QueueItem
 
+from music_assistant.constants import ATTR_ANNOUNCEMENT_IN_PROGRESS
 from music_assistant.controllers.player_queues import PlayerQueuesController
 from music_assistant.controllers.player_queues.helpers import (
     CompareState,
@@ -53,6 +54,7 @@ def _controller(
     """Build a bare controller whose queue "q1" plays the first of two books at 40 seconds."""
     ctrl = PlayerQueuesController.__new__(PlayerQueuesController)
     mass = MagicMock()
+    mass.players.get_player.return_value.extra_data = {}
     ctrl.mass = mass
     ctrl.logger = MagicMock()
     ctrl.signal_update = Mock()  # type: ignore[method-assign]
@@ -267,7 +269,9 @@ def test_paused_queue_has_no_sleep_timer_estimate() -> None:
         # a player holding its next item advanced on its own at the end
         ("item_2", 598, None, True, None),
         # ... or at the real end of audio shorter than the stated duration
-        ("item_2", 300, "item_2", True, None),
+        ("item_2", 570, "item_2", True, None),
+        # a skip on the device to the item it holds can't be told apart from that: it stops
+        ("item_2", 50, "item_2", True, None),
         # a skip on the device
         ("item_2", 300, None, False, "item_2"),
         # a player holding the item as its own repeat started it over at the end
@@ -363,6 +367,26 @@ async def test_a_stop_and_the_end_of_the_queue_clear_the_sleep_timer(stop: str) 
     _scheduled(mass)
     assert ctrl._queue_data["q1"].sleep_timer_target is None
     mass.players.reset_sleep_timer.assert_called_once_with(mass.players.get_player.return_value)
+
+
+async def test_an_announcement_keeps_the_sleep_timer() -> None:
+    """An announcement stops the queue and resumes it, the timer still waits for its target."""
+    ctrl, queue, mass = _controller()
+    ctrl.set_sleep_timer_target("q1", SleepTimerMode.END_OF_CHAPTER)
+    mass.players.get_group_and_player_lock = Mock(return_value=nullcontext())
+    mass.players._handle_cmd_stop = AsyncMock()
+    mass.players.get_player.return_value.extra_data = {ATTR_ANNOUNCEMENT_IN_PROGRESS: True}
+
+    await ctrl._handle_stop("q1")
+    # the announcement takes the player away from the queue
+    queue.active = False
+    queue.state = PlaybackState.IDLE
+    ctrl._handle_sleep_timer(queue, *_states(PlaybackState.IDLE, "item_1", prev_elapsed=50))
+
+    _scheduled(mass)
+    assert ctrl._queue_data["q1"].sleep_timer_target == SleepTimerTarget(
+        SleepTimerMode.END_OF_CHAPTER, "item_1", 100
+    )
 
 
 @pytest.mark.parametrize(
