@@ -46,8 +46,8 @@ def _mass(providers: list[MagicMock] | None = None) -> MagicMock:
     mass.get_provider.side_effect = lambda instance_id, **_kwargs: next(
         (prov for prov in loaded if prov.instance_id == instance_id), None
     )
-    mass.get_provider_instances.side_effect = lambda domain, **_kwargs: [
-        prov for prov in loaded if prov.domain == domain
+    mass.get_provider_instances.side_effect = lambda domain, return_unavailable=False, **_: [
+        prov for prov in loaded if prov.domain == domain and (return_unavailable or prov.available)
     ]
     set_music_source_access(mass, {})
     return mass
@@ -409,10 +409,11 @@ def test_visible_provider_checks_the_account_that_serves() -> None:
     assert visible_provider(mass, "spotify--theirs", None) is theirs
 
     # an unavailable account resolves to another account of the service: that one is checked
+    mine.available = False
     mass.get_provider.side_effect = None
     mass.get_provider.return_value = theirs
     assert visible_provider(mass, "spotify--mine", _user(MEMBER)) is theirs
-    assert visible_provider(mass, "spotify--mine", _user(OWNER)) is mine
+    assert visible_provider(mass, "spotify--mine", _user(OWNER)) is None
     assert visible_provider(mass, "spotify--mine", _user(GUEST)) is None
 
 
