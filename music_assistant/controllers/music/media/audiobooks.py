@@ -29,6 +29,7 @@ from music_assistant_models.media_items import (
 from music_assistant.constants import (
     DB_TABLE_ARTISTS,
     DB_TABLE_AUDIOBOOK_ARTISTS,
+    DB_TABLE_AUDIOBOOK_COLLECTIONS,
     DB_TABLE_AUDIOBOOKS,
     DB_TABLE_MEDIA_PROGRESS,
     DB_TABLE_PROVIDER_MAPPINGS,
@@ -48,9 +49,10 @@ from music_assistant.models.music_provider import MusicProvider
 from .base import AudiobookSyncDetails, MediaControllerBase
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping
+    from collections.abc import Iterable, Mapping
 
     from music_assistant_models.auth import User
+    from music_assistant_models.media_items import MediaItemCollection
 
     from music_assistant import MusicAssistant
 
@@ -418,6 +420,9 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
         await super().remove_item_from_library(item_id)
         # delete entry(s) from album artists table
         await self.mass.music.database.delete(DB_TABLE_AUDIOBOOK_ARTISTS, {"audiobook_id": db_id})
+        await self.mass.music.database.delete(
+            DB_TABLE_AUDIOBOOK_COLLECTIONS, {"audiobook_id": db_id}
+        )
 
     async def _assemble_versions(
         self, item_id: str, provider_instance_id_or_domain: str
@@ -469,8 +474,23 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
         self.logger.debug("added %s to database (id: %s)", item.name, db_id)
         await self._set_playlog(db_id, item)
         await self._set_artist_mappings(item, db_id)
+        await self._set_collections(db_id, item.metadata.collections)
 
         return db_id
+
+    async def _set_collections(
+        self, db_id: int, collections: Iterable[MediaItemCollection] | None
+    ) -> None:
+        await self.mass.music.database.delete(
+            DB_TABLE_AUDIOBOOK_COLLECTIONS, {"audiobook_id": db_id}
+        )
+        await self.mass.music.database.upsert_many(
+            DB_TABLE_AUDIOBOOK_COLLECTIONS,
+            [
+                {"audiobook_id": db_id, "title": x.title, "sequence": x.sequence}
+                for x in collections or []
+            ],
+        )
 
     async def _set_artist_mappings(
         self, item: Audiobook, db_id: int, overwrite: bool = False
@@ -633,6 +653,7 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
         if set_playlog:
             await self._set_playlog(db_id, update)
         await self._set_artist_mappings(update, db_id, overwrite=overwrite)
+        await self._set_collections(db_id, metadata.collections)
 
     async def _update_library_item_for_merge(self, item_id: int, update: Audiobook) -> None:
         """Merge audiobook model state without applying a source resume position."""

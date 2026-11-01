@@ -27,6 +27,7 @@ from music_assistant.constants import (
     DB_TABLE_ARTISTS,
     DB_TABLE_AUDIO_ANALYSIS,
     DB_TABLE_AUDIO_ANALYSIS_FAILURES,
+    DB_TABLE_AUDIOBOOK_COLLECTIONS,
     DB_TABLE_AUDIOBOOKS,
     DB_TABLE_EXTERNAL_ID_LOOKUP,
     DB_TABLE_FAVORITES,
@@ -1425,6 +1426,23 @@ async def migrate_database(  # noqa: C901, PLR0912, PLR0915
                     f"CREATE INDEX IF NOT EXISTS {DB_TABLE_PLAY_HISTORY}_user_timestamp_cov_idx "
                     f"ON {DB_TABLE_PLAY_HISTORY}(userid,timestamp,media_type,provider,item_id)"
                 )
+
+    if prev_version <= 71:
+        # fill the audiobook collections table from the collections in the metadata
+        try:
+            await database.execute(
+                f"INSERT OR IGNORE INTO {DB_TABLE_AUDIOBOOK_COLLECTIONS} "
+                "(audiobook_id, title, sequence) "
+                "SELECT audiobooks.item_id, json_extract(coll.value, '$.title'), "
+                "json_extract(coll.value, '$.sequence') "
+                f"FROM {DB_TABLE_AUDIOBOOKS} AS audiobooks, "
+                "json_each(audiobooks.metadata, '$.collections') AS coll "
+                "WHERE json_valid(audiobooks.metadata) AND coll.type = 'object' "
+                "AND json_extract(coll.value, '$.title') IS NOT NULL"
+            )
+        except Exception as err:
+            # a book's rows are rewritten whenever it is updated
+            logger.warning("Could not fill the audiobook collections table: %s", err)
 
     # (re)build the FTS search tables so they are in sync with the content tables;
     # this both populates them on first migration to the FTS-enabled schema and

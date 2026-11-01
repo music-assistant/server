@@ -1,4 +1,15 @@
 {
+  "config_entries": {
+    "next_in_collection": {
+      "label": "Next book in a collection",
+      "description": "After you finish a book of a collection, show its next book. Either in the In progress row, or in a Continue collection row of its own.",
+      "options": {
+        "off": "Off",
+        "in_progress_row": "In the In progress row",
+        "own_row": "In a Continue collection row"
+      }
+    }
+  },
   "background_task": {
     "refresh_latest_episodes": "Refresh latest podcast episodes"
   },

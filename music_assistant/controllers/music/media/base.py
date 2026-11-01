@@ -58,6 +58,7 @@ from music_assistant.constants import (
     DB_TABLE_ALBUM_ARTISTS,
     DB_TABLE_ALBUM_TRACKS,
     DB_TABLE_AUDIOBOOK_ARTISTS,
+    DB_TABLE_AUDIOBOOK_COLLECTIONS,
     DB_TABLE_EXTERNAL_ID_LOOKUP,
     DB_TABLE_FAVORITES,
     DB_TABLE_GENRE_MEDIA_ITEM_EXCLUSION,
@@ -150,6 +151,7 @@ RELATION_TABLE_COLUMNS = {
     DB_TABLE_ALBUM_ARTISTS: ("album_id", "artist_id"),
     DB_TABLE_ALBUM_TRACKS: ("track_id", "album_id", "disc_number", "track_number"),
     DB_TABLE_AUDIOBOOK_ARTISTS: ("audiobook_id", "artist_id"),
+    DB_TABLE_AUDIOBOOK_COLLECTIONS: ("audiobook_id", "title", "sequence"),
     DB_TABLE_TRACK_ARTISTS: ("track_id", "artist_id"),
 }
 
@@ -3776,7 +3778,10 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
                 (DB_TABLE_TRACK_ARTISTS, "artist_id"),
             )
         if self.media_type == MediaType.AUDIOBOOK:
-            return ((DB_TABLE_AUDIOBOOK_ARTISTS, "audiobook_id"),)
+            return (
+                (DB_TABLE_AUDIOBOOK_ARTISTS, "audiobook_id"),
+                (DB_TABLE_AUDIOBOOK_COLLECTIONS, "audiobook_id"),
+            )
         if self.media_type == MediaType.TRACK:
             return (
                 (DB_TABLE_ALBUM_TRACKS, "track_id"),

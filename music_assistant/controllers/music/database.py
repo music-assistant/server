@@ -26,6 +26,7 @@ from music_assistant.constants import (
     DB_TABLE_ALBUMS,
     DB_TABLE_ARTISTS,
     DB_TABLE_AUDIOBOOK_ARTISTS,
+    DB_TABLE_AUDIOBOOK_COLLECTIONS,
     DB_TABLE_AUDIOBOOKS,
     DB_TABLE_EXTERNAL_ID_LOOKUP,
     DB_TABLE_FAVORITES,
@@ -175,6 +176,7 @@ class MusicDatabaseSetupMixin:
             (DB_TABLE_ALBUM_TRACKS, "track_id", DB_TABLE_TRACKS),
             (DB_TABLE_AUDIOBOOK_ARTISTS, "artist_id", DB_TABLE_ARTISTS),
             (DB_TABLE_AUDIOBOOK_ARTISTS, "audiobook_id", DB_TABLE_AUDIOBOOKS),
+            (DB_TABLE_AUDIOBOOK_COLLECTIONS, "audiobook_id", DB_TABLE_AUDIOBOOKS),
             (DB_TABLE_TRACK_ARTISTS, "artist_id", DB_TABLE_ARTISTS),
             (DB_TABLE_TRACK_ARTISTS, "track_id", DB_TABLE_TRACKS),
         ):
@@ -566,6 +568,17 @@ class MusicDatabaseSetupMixin:
             UNIQUE(audiobook_id, artist_id)
             );"""
         )
+        # derived from audiobooks.metadata.collections, so a collection's books can be indexed
+        # NUMERIC stores numeric sequences as numbers, which sort before text ones
+        await self.database.execute(
+            f"""CREATE TABLE IF NOT EXISTS {DB_TABLE_AUDIOBOOK_COLLECTIONS}(
+            [audiobook_id] INTEGER NOT NULL,
+            [title] TEXT NOT NULL,
+            [sequence] NUMERIC,
+            FOREIGN KEY([audiobook_id]) REFERENCES [audiobooks]([item_id]),
+            UNIQUE(audiobook_id, title)
+            );"""
+        )
 
         # full-text search tables (trigram tokenizer for substring matching on search_name)
         for db_table in MEDIA_ITEM_DB_TABLES:
@@ -629,6 +642,11 @@ class MusicDatabaseSetupMixin:
             await self.database.execute(
                 f"CREATE INDEX IF NOT EXISTS {db_table}_last_played_idx on {db_table}(last_played);"
             )
+
+        await self.database.execute(
+            f"CREATE INDEX IF NOT EXISTS {DB_TABLE_AUDIOBOOK_COLLECTIONS}_title_sequence_idx "
+            f"on {DB_TABLE_AUDIOBOOK_COLLECTIONS}(title,sequence);"
+        )
 
         # indexes on provider_mappings table
         await self.database.execute(

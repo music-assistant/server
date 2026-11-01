@@ -13,6 +13,7 @@ from music_assistant_models.helpers import create_safe_string
 
 from music_assistant.constants import (
     DB_TABLE_AUDIO_ANALYSIS,
+    DB_TABLE_AUDIOBOOK_COLLECTIONS,
     DB_TABLE_EXTERNAL_ID_LOOKUP,
     DB_TABLE_FAVORITES,
     DB_TABLE_GENRE_MEDIA_ITEM_MAPPING,
@@ -1566,3 +1567,38 @@ async def test_migration_moves_apple_music_station_playlists_to_radios(
             ("radio", str(radio_id), "library", radio_image),
             ("radio", "ra.111", "apple_music--abc", radio_image),
         ]
+
+
+async def test_migration_fills_audiobook_collections(database: DatabaseConnection) -> None:
+    """A pre-72 database gets its collections table filled; broken metadata is skipped."""
+    await database.execute("ALTER TABLE audiobooks ADD COLUMN [metadata] json")
+    await database.execute(
+        f"CREATE TABLE {DB_TABLE_AUDIOBOOK_COLLECTIONS}([audiobook_id] INTEGER NOT NULL, "
+        "[title] TEXT NOT NULL, [sequence] NUMERIC, UNIQUE(audiobook_id, title))"
+    )
+    for item_id, metadata in (
+        (1, {"collections": [{"title": "Saga", "sequence": 1}, {"title": "Universe"}]}),
+        (2, {"collections": [{"title": "Saga", "sequence": "2"}, "not a collection"]}),
+        (3, "not json"),
+        (4, {}),
+    ):
+        await database.insert(
+            "audiobooks",
+            {"item_id": item_id, "metadata": json.dumps(metadata) if item_id != 3 else metadata},
+        )
+    await database.commit()
+
+    mass = MagicMock()
+    mass.cache.clear = AsyncMock()
+    # a second pass must be a harmless no-op
+    for _ in range(2):
+        await migrate_database(
+            mass, database, MagicMock(), prev_version=71, create_tables=AsyncMock()
+        )
+
+    rows = await database.get_rows(DB_TABLE_AUDIOBOOK_COLLECTIONS, limit=0)
+    assert {(r["audiobook_id"], r["title"], r["sequence"]) for r in rows} == {
+        (1, "Saga", 1),
+        (1, "Universe", None),
+        (2, "Saga", 2),
+    }
