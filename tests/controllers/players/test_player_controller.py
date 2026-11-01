@@ -2114,6 +2114,28 @@ class TestCmdUngroupNewBranches:
             controller.cmd_set_members.assert_not_awaited()
             ungroup.assert_awaited_once()
 
+    @pytest.mark.asyncio
+    async def test_detach_from_offline_leader_leaves_through_the_synced_protocol_player(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """A member synced over a linked protocol leaves through that protocol player."""
+        controller = PlayerController(mock_mass)
+        protocol_player = MagicMock()
+        protocol_player.synced_to = "leader_airplay"
+        protocol_player.ungroup = AsyncMock()
+        controller._players = {"member_airplay": protocol_player}
+        link = MagicMock(output_protocol_id="member_airplay")
+        member = MagicMock()
+        member.synced_to = None  # not grouped natively
+        member.state.synced_to = "leader"  # not registered (anymore)
+        member.linked_output_protocols = [link]
+        member.ungroup = AsyncMock()
+
+        await controller._detach_member(member)
+
+        protocol_player.ungroup.assert_awaited_once()
+        member.ungroup.assert_not_awaited()
+
 
 class TestPowerOffEndsTheQueue:
     """

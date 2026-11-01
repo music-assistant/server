@@ -3697,14 +3697,23 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
             self.logger.debug("Removing %s from its sync leader %s", member.name, parent.name)
             await self._handle_set_members(parent, player_ids_to_remove=[member.player_id])
             return
-        # a sync leader that is gone (or offline) can't release its members,
-        # so the member has to leave the group from its own side
+        # a sync leader that is gone (or offline) can't release its members, so the
+        # member has to leave the group from its own side: natively, or through the
+        # linked protocol player that holds the membership (e.g. an AirPlay group)
+        target = member
+        if not member.synced_to:
+            for linked in member.linked_output_protocols:
+                protocol_player = self.get_player(linked.output_protocol_id)
+                if protocol_player and protocol_player.synced_to:
+                    target = protocol_player
+                    break
         self.logger.debug(
-            "Sync leader %s of %s is unavailable, letting it leave the group on its own",
+            "Sync leader %s of %s is unavailable, letting %s leave the group on its own",
             member.state.synced_to,
             member.name,
+            target.name,
         )
-        await member.ungroup()
+        await target.ungroup()
 
     async def _dissolve_own_group(self, player: Player, target_name: str) -> bool:
         """
