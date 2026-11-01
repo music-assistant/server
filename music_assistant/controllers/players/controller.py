@@ -3241,12 +3241,16 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         """Ensure a player is detached from any groups or syncgroups."""
         if not (player := self.get_player(player_id)):
             return
-        with suppress(UnsupportedFeaturedException, PlayerCommandFailed, PlayerUnavailableError):
+        try:
             if parent_id := (player.state.active_group or player.state.synced_to):
                 # the player is part of a (permanent) groupplayer and the user tries to ungroup
                 if parent_player := self.get_player(parent_id):
                     await self._handle_set_members(parent_player, player_ids_to_remove=[player_id])
                 return
+        except (UnsupportedFeaturedException, PlayerCommandFailed, PlayerUnavailableError) as err:
+            self.logger.debug(
+                "Could not detach player %s from its group: %s", player.display_name, err
+            )
 
     def _get_player_with_redirect(self, player_id: str) -> Player:
         """Get player with check if playback related command should be redirected."""
