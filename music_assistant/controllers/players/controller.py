@@ -1476,7 +1476,11 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
 
         if player.state.synced_to:
             # player is a sync member
-            await self.cmd_set_members(player.state.synced_to, player_ids_to_remove=[player_id])
+            parent = self.get_player(player.state.synced_to)
+            if parent and parent.state.available:
+                await self.cmd_set_members(parent.player_id, player_ids_to_remove=[player_id])
+            else:
+                await self._detach_member(player)
             return
 
         if player.state.group_members:
@@ -3241,12 +3245,16 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         """Ensure a player is detached from any groups or syncgroups."""
         if not (player := self.get_player(player_id)):
             return
-        with suppress(UnsupportedFeaturedException, PlayerCommandFailed, PlayerUnavailableError):
+        try:
             if parent_id := (player.state.active_group or player.state.synced_to):
                 # the player is part of a (permanent) groupplayer and the user tries to ungroup
                 if parent_player := self.get_player(parent_id):
                     await self._handle_set_members(parent_player, player_ids_to_remove=[player_id])
                 return
+        except (UnsupportedFeaturedException, PlayerCommandFailed, PlayerUnavailableError) as err:
+            self.logger.debug(
+                "Could not detach player %s from its group: %s", player.display_name, err
+            )
 
     def _get_player_with_redirect(self, player_id: str) -> Player:
         """Get player with check if playback related command should be redirected."""
@@ -3657,10 +3665,16 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         # Use internal _handle_set_members to avoid deadlocking on the play lock
         # (we're already inside a cmd_set_members chain that holds a play lock).
         synced_to = player.state.synced_to or player.state.active_group
-        if synced_to and (parent := self.get_player(synced_to)):
+        parent = self.get_player(synced_to) if synced_to else None
+        if parent or player.state.synced_to:
             try:
                 async with self.wait_for_player_update(player.player_id, timeout=5):
-                    await self._handle_set_members(parent, player_ids_to_remove=[player.player_id])
+                    if player.state.synced_to:
+                        await self._detach_member(player)
+                    elif parent:
+                        await self._handle_set_members(
+                            parent, player_ids_to_remove=[player.player_id]
+                        )
             except asyncio.CancelledError:
                 raise
             except Exception:
@@ -3669,6 +3683,46 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
                     player.name,
                     synced_to,
                 )
+
+    async def _detach_member(self, member: Player) -> None:
+        """
+        Remove a sync member from the player it is synced to.
+
+        Skips permission checks and locking (internal use only).
+
+        :param member: The sync member to detach.
+        """
+        parent = self.get_player(member.state.synced_to) if member.state.synced_to else None
+        if parent and parent.state.available:
+            self.logger.debug("Removing %s from its sync leader %s", member.name, parent.name)
+            await self._handle_set_members(parent, player_ids_to_remove=[member.player_id])
+            return
+        # a sync leader that is gone (or offline) can't release its members, so the
+        # member has to leave the group from its own side: natively, or through the
+        # linked protocol player that holds the membership (e.g. an AirPlay group)
+        target = member
+        if not member.synced_to:
+            for linked in member.linked_output_protocols:
+                protocol_player = self.get_player(linked.output_protocol_id)
+                if protocol_player and protocol_player.synced_to:
+                    target = protocol_player
+                    break
+        self.logger.debug(
+            "Sync leader %s of %s is unavailable, letting %s leave the group on its own",
+            member.state.synced_to,
+            member.name,
+            target.name,
+        )
+        try:
+            await target.ungroup()
+        except asyncio.CancelledError:
+            raise
+        except Exception as err:
+            msg = (
+                f"{member.name} is synced to the unavailable player {member.state.synced_to} "
+                "and could not leave the group on its own"
+            )
+            raise PlayerUnavailableError(msg) from err
 
     async def _dissolve_own_group(self, player: Player, target_name: str) -> bool:
         """

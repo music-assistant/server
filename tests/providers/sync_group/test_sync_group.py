@@ -8,13 +8,14 @@ import logging
 import time
 from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
+from functools import partial
 from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from music_assistant_models.constants import PLAYER_CONTROL_NONE
 from music_assistant_models.enums import PlaybackState, PlayerFeature, PlayerType, RepeatMode
-from music_assistant_models.errors import PlayerCommandFailed
+from music_assistant_models.errors import PlayerCommandFailed, PlayerUnavailableError
 from music_assistant_models.player import OutputProtocol, PlayerMedia, PlayerSource
 
 from music_assistant.constants import (
@@ -61,6 +62,8 @@ def _make_mock_mass() -> MagicMock:
     wait_ctx.__aexit__.return_value = False
     mass.players.wait_for_player_update = MagicMock(return_value=wait_ctx)
     mass.players.trigger_player_update = MagicMock()
+    # the real routing: through the sync leader, or from the member's own side
+    mass.players._detach_member = partial(PlayerController._detach_member, mass.players)
     mass.call_later = MagicMock()
     mass.cancel_timer = MagicMock()
     mass.config = MagicMock()
@@ -650,6 +653,36 @@ class TestActiveProtocolDomain:
         assert sorted(triggered) == ["leader", "member"]
         # the members must recalculate against the ended session, not the old leader
         assert leader_at_trigger == [None, None]
+
+    @pytest.mark.asyncio
+    async def test_dissolve_completes_when_leader_cannot_be_reached(self) -> None:
+        """Failing ungroup and stop commands on the leader never abort the dissolve."""
+        mass = _make_mock_mass()
+        sgp = _make_sync_group(mass)
+        leader = _make_mock_player("leader", provider_domain="wiim")
+        m2 = _make_mock_player("m2", provider_domain="wiim")
+        # the members ended up on a provider-promoted leader, which we stop as well
+        promoted = _make_mock_player("promoted", provider_domain="wiim")
+        promoted.state.group_members = ["promoted", "m2"]
+        mass.players.get_player = _player_lookup({"leader": leader, "m2": m2, "promoted": promoted})
+        sgp.sync_leader = leader
+        sgp._attr_group_members = ["leader", "m2"]
+        mass.players._handle_set_members.side_effect = RuntimeError("Not connected")
+        mass.players._handle_cmd_stop.side_effect = RuntimeError("Not connected")
+
+        with (
+            patch.object(sgp, "update_state") as update_state,
+            patch.object(sgp, "_protocol_group_leader", return_value=promoted),
+        ):
+            await sgp._dissolve_syncgroup()
+
+        mass.players._handle_set_members.assert_awaited_once()
+        mass.players._handle_cmd_stop.assert_awaited_once_with("promoted")
+        assert getattr(sgp, "sync_leader") is None  # noqa: B009
+        update_state.assert_called()
+        mass.players.schedule_active_output_protocol_clear.assert_any_call(promoted)
+        mass.players.schedule_active_output_protocol_clear.assert_any_call(leader)
+        mass.players.trigger_player_update.assert_any_call("m2")
 
 
 class TestDynamicLeaderSwitch:
@@ -2624,7 +2657,7 @@ class TestWaitMemberUnsynced:
         mass = _make_mock_mass()
         sgp = _make_sync_group(mass)
         member = _make_mock_player("m1")
-        member.synced_to = "old_leader"  # still stale after first wait
+        member.synced_to = member.state.synced_to = "old_leader"  # still stale after first wait
         old_leader = _make_mock_player("old_leader")
         mass.players.get_player = _player_lookup({"m1": member, "old_leader": old_leader})
 
@@ -2632,7 +2665,7 @@ class TestWaitMemberUnsynced:
         # We make it succeed by side-effect-clearing synced_to.
         async def _kick(_parent: Any, player_ids_to_remove: list[str]) -> None:
             assert player_ids_to_remove == ["m1"]
-            member.synced_to = None
+            member.synced_to = member.state.synced_to = None
 
         mass.players._handle_set_members = AsyncMock(side_effect=_kick)
         mass.players.cmd_ungroup = AsyncMock()
@@ -2651,7 +2684,7 @@ class TestWaitMemberUnsynced:
         mass = _make_mock_mass()
         sgp = _make_sync_group(mass)
         member = _make_mock_player("m1")
-        member.synced_to = "old_leader"  # stays stuck even after recovery
+        member.synced_to = member.state.synced_to = "old_leader"  # stays stuck after recovery
         old_leader = _make_mock_player("old_leader")
         mass.players.get_player = _player_lookup({"m1": member, "old_leader": old_leader})
         mass.players._handle_set_members = AsyncMock()  # no-op: state stays stale
@@ -2664,17 +2697,46 @@ class TestWaitMemberUnsynced:
         )
 
     @pytest.mark.asyncio
-    async def test_returns_false_when_stale_parent_gone(self) -> None:
-        """If the stale parent no longer exists, skip the kick and report stuck."""
+    @pytest.mark.parametrize("parent_registered", [True, False])
+    async def test_member_leaves_on_its_own_when_stale_parent_is_offline(
+        self, parent_registered: bool
+    ) -> None:
+        """A stale parent that is gone or offline can't release the member, so it leaves itself."""
         mass = _make_mock_mass()
         sgp = _make_sync_group(mass)
         member = _make_mock_player("m1")
-        member.synced_to = "old_leader"  # parent is no longer registered
-        mass.players.get_player = _player_lookup({"m1": member})
+        member.synced_to = member.state.synced_to = "old_leader"
+        players = {"m1": member}
+        if parent_registered:
+            players["old_leader"] = _make_mock_player("old_leader", available=False)
+        mass.players.get_player = _player_lookup(players)
+
+        async def _leave() -> None:
+            member.synced_to = member.state.synced_to = None
+
+        member.ungroup = AsyncMock(side_effect=_leave)
+
+        ok = await sgp._wait_member_unsynced("m1")
+
+        assert ok is True
+        member.ungroup.assert_awaited_once()
+        mass.players._handle_set_members.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_returns_false_when_member_stays_synced_after_leaving(self) -> None:
+        """A member that keeps reporting the offline parent after leaving is reported stuck."""
+        mass = _make_mock_mass()
+        sgp = _make_sync_group(mass)
+        member = _make_mock_player("m1")
+        member.synced_to = member.state.synced_to = "old_leader"
+        member.ungroup = AsyncMock()  # no-op: state stays stale
+        old_leader = _make_mock_player("old_leader", available=False)
+        mass.players.get_player = _player_lookup({"m1": member, "old_leader": old_leader})
 
         ok = await sgp._wait_member_unsynced("m1")
 
         assert ok is False
+        member.ungroup.assert_awaited_once()
         mass.players._handle_set_members.assert_not_awaited()
 
 
@@ -3156,6 +3218,124 @@ class TestDebouncedReform:
 
         play.assert_awaited_once()
         assert sgp._reform_task is None
+
+    @pytest.mark.asyncio
+    async def test_unavailable_leader_removal_still_reforms(self) -> None:
+        """A leader that dropped off the network can't be stopped, yet the group re-forms."""
+        mass = _make_mock_mass()
+        sgp = self._setup_group(mass, members=["leader", "m2", "m3"])
+        mass.players.cmd_resume = AsyncMock()
+        leader = mass.players.get_player("leader")
+        leader.available = False
+        leader.state.available = False
+        leader.state.group_members = ["leader", "m2", "m3"]
+        mass.players.get_player("m2").state.can_group_with = {"m3"}
+
+        def _fail_for_leader(player_id: str) -> None:
+            if player_id == "leader":
+                raise PlayerUnavailableError(player_id)
+
+        mass.players._handle_cmd_stop.side_effect = _fail_for_leader
+        mass.players._handle_set_members.side_effect = lambda parent, **_k: _fail_for_leader(
+            parent.player_id
+        )
+
+        with (
+            patch("music_assistant.providers.sync_group.player.REFORM_DEBOUNCE_SECONDS", 0.05),
+            patch.object(sgp, "update_state"),
+        ):
+            await sgp.set_members(player_ids_to_remove=["leader"])
+
+            mass.players._handle_cmd_stop.assert_any_await("leader")
+            assert sgp.sync_leader is None
+            assert sgp._attr_group_members == ["m2", "m3"]
+            task = sgp._reform_task
+            assert task is not None
+
+            await task
+
+        assert sgp.sync_leader is mass.players.get_player("m2")
+        mass.players._handle_set_members.assert_any_await(
+            sgp.sync_leader, player_ids_to_add=["m3"], new_content=False
+        )
+        mass.players.cmd_resume.assert_awaited_once()
+        assert sgp._reform_task is None
+
+    def _setup_offline_leader_with_stale_members(
+        self, mass: MagicMock
+    ) -> tuple[SyncGroupPlayer, list[MagicMock]]:
+        """Group whose leader went offline while its members keep reporting it as their leader."""
+        sgp = self._setup_group(mass, members=["leader", "m2", "m3"])
+        mass.players.cmd_resume = AsyncMock()
+        leader = mass.players.get_player("leader")
+        leader.available = leader.state.available = False
+        leader.state.group_members = ["leader", "m2", "m3"]
+        members = [mass.players.get_player("m2"), mass.players.get_player("m3")]
+        members[0].state.can_group_with = {"m3"}
+        for member in members:
+            member.synced_to = member.state.synced_to = "leader"
+
+        def _fail_for_leader(player_id: str) -> None:
+            if player_id == "leader":
+                raise PlayerUnavailableError(player_id)
+
+        mass.players._handle_cmd_stop.side_effect = _fail_for_leader
+        mass.players._handle_set_members.side_effect = lambda parent, **_k: _fail_for_leader(
+            parent.player_id
+        )
+        return sgp, members
+
+    @pytest.mark.asyncio
+    async def test_reform_releases_members_stuck_on_the_offline_leader(self) -> None:
+        """Members still synced to the offline leader leave on their own, then the group re-forms."""
+        mass = _make_mock_mass()
+        sgp, members = self._setup_offline_leader_with_stale_members(mass)
+
+        for member in members:
+
+            async def _leave(member: MagicMock = member) -> None:
+                member.synced_to = member.state.synced_to = None
+
+            member.ungroup = AsyncMock(side_effect=_leave)
+
+        with (
+            patch("music_assistant.providers.sync_group.player.REFORM_DEBOUNCE_SECONDS", 0.05),
+            patch.object(sgp, "update_state"),
+        ):
+            await sgp.set_members(player_ids_to_remove=["leader"])
+            task = sgp._reform_task
+            assert task is not None
+            await task
+
+        for member in members:
+            member.ungroup.assert_awaited_once()
+        assert sgp.sync_leader is members[0]
+        mass.players.cmd_resume.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_reform_aborts_when_members_stay_stuck_on_the_offline_leader(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """A member that keeps reporting the offline leader after leaving aborts the re-form."""
+        mass = _make_mock_mass()
+        sgp, members = self._setup_offline_leader_with_stale_members(mass)
+        sgp.logger = logging.getLogger("test.sync_group")
+        for member in members:
+            member.ungroup = AsyncMock()  # no-op: state stays stale
+
+        with (
+            patch("music_assistant.providers.sync_group.player.REFORM_DEBOUNCE_SECONDS", 0.05),
+            patch.object(sgp, "update_state"),
+            caplog.at_level(logging.ERROR),
+        ):
+            await sgp.set_members(player_ids_to_remove=["leader"])
+            task = sgp._reform_task
+            assert task is not None
+            await task
+
+        assert "still report synced_to after recovery attempts" in caplog.text
+        assert sgp.sync_leader is None
+        mass.players.cmd_resume.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_cascaded_unjoins_coalesce_into_single_reform(self) -> None:
