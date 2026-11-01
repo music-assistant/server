@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import logging
 from collections.abc import AsyncGenerator
 from typing import TYPE_CHECKING, Any
 
@@ -63,7 +62,6 @@ if TYPE_CHECKING:
 
     from music_assistant.models import ProviderInstanceType
 
-LOGGER = logging.getLogger(__name__)
 
 FULLY_PLAYED_THRESHOLD = 0.9
 SPECIAL_FOLDERS = ("up_next", "new_releases", "in_progress", "starred", "history")
@@ -422,7 +420,7 @@ class PocketCastsProvider(MusicProvider):
             in_progress = await self._client.get_in_progress_episodes()
         except (ProviderUnavailableError, ResourceTemporarilyUnavailable, RetriesExhausted) as err:
             # resume is best-effort; a transient failure should not break playback
-            LOGGER.warning("Could not fetch resume position for %s: %s", episode_uuid, err)
+            self.logger.warning("Could not fetch resume position for %s: %s", episode_uuid, err)
             return (False, 0, None)
 
         for ep in in_progress:
@@ -430,7 +428,7 @@ class PocketCastsProvider(MusicProvider):
                 played_up_to = int(ep.get("playedUpTo") or 0)  # seconds from API
                 duration = int(ep.get("duration") or 0)
                 fully_played = duration > 0 and (played_up_to / duration) > FULLY_PLAYED_THRESHOLD
-                LOGGER.debug(
+                self.logger.debug(
                     "Resume position for %s: %d ms (fully_played=%s)",
                     episode_uuid,
                     played_up_to * 1000,
@@ -438,7 +436,7 @@ class PocketCastsProvider(MusicProvider):
                 )
                 return (fully_played, played_up_to * 1000, None)
 
-        LOGGER.debug("No in-progress entry for %s; resuming from start", episode_uuid)
+        self.logger.debug("No in-progress entry for %s; resuming from start", episode_uuid)
         return (False, 0, None)
 
     async def on_played(
