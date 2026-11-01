@@ -164,3 +164,8 @@ PROBED_DURATION_MEDIA_TYPES = (
 # A forward skip never lands closer than this to the end of the item. The item then finishes on
 # its own and the queue advances normally.
 SKIP_END_MARGIN = 1
+
+# A player that holds its next item advances on its own when the current one ends. Durations
+# are rounded and position reports lag, so an item that changed within this many seconds of the
+# point a sleep timer stops at ended there. One that changed earlier was skipped on the device.
+SLEEP_TIMER_NATURAL_END_MARGIN = 5

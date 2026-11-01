@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, NamedTuple
 
 from music_assistant_models.media_items import (
     ItemMapping,
@@ -29,6 +29,8 @@ from music_assistant.controllers.player_queues.constants import CACHE_FORMAT_VER
 from music_assistant.controllers.player_queues.helpers import has_dynamic_source
 
 if TYPE_CHECKING:
+    from music_assistant_models.enums import SleepTimerMode
+
     from music_assistant.controllers.player_queues.helpers import CompareState
 
 LOGGER = logging.getLogger(f"{MASS_LOGGER_NAME}.player_queues")
@@ -37,6 +39,14 @@ LOGGER = logging.getLogger(f"{MASS_LOGGER_NAME}.player_queues")
 # only these does not warrant a fresh cache write, so they are ignored when deciding whether the
 # persisted state actually changed (see `cache_significant`).
 _VOLATILE_CACHE_FIELDS = ("elapsed_time", "elapsed_time_last_updated", "playback_speed")
+
+
+class SleepTimerTarget(NamedTuple):
+    """The point in a queue item at which a sleep timer stops the queue."""
+
+    mode: SleepTimerMode
+    queue_item_id: str
+    stop_position: float
 
 
 @dataclass(slots=True)
@@ -99,6 +109,12 @@ class PlayerQueueData:
     # queue on, one of these: a player can name an item it never received (one from its own
     # cached copy of the queue that the stream server then refused), and nothing of it has played
     served_item_ids: set[str] = field(default_factory=set)
+    # the point an END_OF_ITEM/END_OF_CHAPTER sleep timer stops the queue at; while set, the
+    # queue does not advance past that item on its own
+    sleep_timer_target: SleepTimerTarget | None = None
+    # the target a sleep timer stopped the queue at, until the end of queue check reads that
+    # stop: the queue then ends without resuming or refilling
+    sleep_timer_stopped_target: SleepTimerTarget | None = None
     # set when the queue items changed since the last cache write; the debounced saver writes the
     # (heavier) items payload only when this is set
     items_cache_dirty: bool = False

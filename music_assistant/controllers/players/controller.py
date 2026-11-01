@@ -44,6 +44,7 @@ from music_assistant_models.enums import (
     ProviderFeature,
     ProviderType,
     RepeatMode,
+    SleepTimerMode,
     SourceControl,
 )
 from music_assistant_models.errors import (
@@ -601,14 +602,33 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         return player.sleep_timer_expires_at
 
     @api_command("players/sleep_timer/set", required_scope=Scope.PLAYERS_CONTROL)
-    def set_sleep_timer(self, player_id: str, seconds: int) -> float:
+    def set_sleep_timer(
+        self,
+        player_id: str,
+        seconds: int | None = None,
+        mode: SleepTimerMode = SleepTimerMode.DURATION,
+    ) -> float | None:
         """
         Set a sleep timer for the player.
 
+        Returns the (estimated) expiry timestamp, or None while a queue item or chapter timer
+        waits for paused playback.
+
         :param player_id: Player ID to set the timer for.
-        :param seconds: Delay in seconds before playback is stopped.
+        :param seconds: Delay in seconds before playback is stopped, for the DURATION mode.
+        :param mode: The point at which playback is stopped.
         """
-        if seconds <= 0:
+        if mode in (SleepTimerMode.END_OF_ITEM, SleepTimerMode.END_OF_CHAPTER):
+            player = self._get_player_with_redirect(player_id)
+            # the queue stops itself at that point, shows it on the player and raises when
+            # nothing with an end plays
+            expires_at = self.mass.player_queues.set_sleep_timer_target(player.player_id, mode)
+            self.mass.cancel_timer(self._sleep_timer_task_id(player.player_id))
+            return expires_at
+        if mode != SleepTimerMode.DURATION:
+            msg = f"Unsupported sleep timer mode: {mode}"
+            raise InvalidDataError(msg)
+        if seconds is None or seconds <= 0:
             msg = "Sleep timer duration must be greater than zero seconds"
             raise InvalidDataError(msg)
         player = self._get_player_with_redirect(player_id)
@@ -618,6 +638,8 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         except OverflowError:
             msg = "Sleep timer duration is too large to schedule"
             raise InvalidDataError(msg) from None
+        self.mass.player_queues.drop_sleep_timer_target(player.player_id)
+        player.set_sleep_timer_mode(SleepTimerMode.DURATION)
         player.set_sleep_timer_expires_at(expires_at)
         player.update_state()
         self._signal_sleep_timer_updated(player, expires_at)
@@ -638,6 +660,48 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         """
         player = self._get_player_with_redirect(player_id)
         self._clear_sleep_timer(player)
+
+    def update_sleep_timer(
+        self, player_id: str, mode: SleepTimerMode, expires_at: float | None
+    ) -> None:
+        """
+        Update a sleep timer that stops at a point in the player's queue.
+
+        :param player_id: Player ID (and queue ID) whose sleep timer to update.
+        :param mode: The point at which the queue stops.
+        :param expires_at: The estimated unix (utc) timestamp of the stop, None while paused.
+        """
+        player = self.get_player(player_id)
+        if player is None:
+            return
+        prev_expires_at = player.sleep_timer_expires_at
+        if player.sleep_timer_mode == mode and (
+            (prev_expires_at is None and expires_at is None)
+            or (
+                prev_expires_at is not None
+                and expires_at is not None
+                # position reports jitter, only announce a real change
+                and abs(expires_at - prev_expires_at) < 1
+            )
+        ):
+            return
+        player.set_sleep_timer_mode(mode)
+        player.set_sleep_timer_expires_at(expires_at)
+        player.update_state()
+        self._signal_sleep_timer_updated(player, expires_at)
+
+    def reset_sleep_timer(self, player: Player) -> None:
+        """
+        Reset the sleep timer state of the player, without touching its queue.
+
+        :param player: Player whose sleep timer ended.
+        """
+        if player.sleep_timer_mode is None:
+            return
+        player.set_sleep_timer_expires_at(None)
+        player.set_sleep_timer_mode(None)
+        player.update_state()
+        self._signal_sleep_timer_updated(player, None)
 
     # Player commands
 
@@ -4174,10 +4238,8 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         :param player: Player to clear the timer for.
         """
         self.mass.cancel_timer(self._sleep_timer_task_id(player.player_id))
-        if player.sleep_timer_expires_at is not None:
-            player.set_sleep_timer_expires_at(None)
-            player.update_state()
-            self._signal_sleep_timer_updated(player, None)
+        self.mass.player_queues.drop_sleep_timer_target(player.player_id)
+        self.reset_sleep_timer(player)
 
     async def _handle_sleep_timer_expired(self, player_id: str) -> None:
         """
@@ -4188,9 +4250,7 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         player = self.get_player(player_id)
         if player is None or player.sleep_timer_expires_at is None:
             return
-        player.set_sleep_timer_expires_at(None)
-        player.update_state()
-        self._signal_sleep_timer_updated(player, None)
+        self._clear_sleep_timer(player)
         await self.cmd_stop(player_id)
 
     def _signal_sleep_timer_updated(self, player: Player, expires_at: float | None) -> None:
@@ -4198,7 +4258,8 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         Signal a sleep timer change for the player on the event bus.
 
         :param player: Player whose sleep timer changed.
-        :param expires_at: New expiry timestamp, or None when the timer was cleared.
+        :param expires_at: New expiry timestamp, or None when the timer was cleared or waits
+            for paused playback (see the player's sleep_timer_mode).
         """
         if player.state.type == PlayerType.PROTOCOL:
             return

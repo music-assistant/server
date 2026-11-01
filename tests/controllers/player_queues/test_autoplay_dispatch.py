@@ -533,7 +533,11 @@ def _tracker() -> Any:
     """Build a playback tracker stand-in for a single non-flow queue."""
     tracker = MagicMock()
     # the item the player stopped on ("i1" in the stop states) had its audio served
-    tracker._queue_data = {"q1": SimpleNamespace(flow_mode_stream_log=[], served_item_ids={"i1"})}
+    tracker._queue_data = {
+        "q1": SimpleNamespace(
+            flow_mode_stream_log=[], served_item_ids={"i1"}, sleep_timer_stopped_target=None
+        )
+    }
     return tracker
 
 

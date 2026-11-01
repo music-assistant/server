@@ -35,6 +35,7 @@ from music_assistant_models.enums import (
     PlayerFeature,
     PlayerType,
     ProviderFeature,
+    SleepTimerMode,
 )
 from music_assistant_models.errors import ActionUnavailable, UnsupportedFeaturedException
 from music_assistant_models.player import (
@@ -357,6 +358,7 @@ def _state_fingerprint(state: PlayerState) -> dict[str, Any]:
         "setup_reason": state.setup_reason,
         "has_setup_flow": state.has_setup_flow,
         "sleep_timer_expires_at": state.sleep_timer_expires_at,
+        "sleep_timer_mode": state.sleep_timer_mode,
         "supported_features": frozenset(state.supported_features),
         "sound_mode_list": tuple((m.id, m.name, m.passive) for m in state.sound_mode_list),
         "options": tuple((o.key, o.value, o.read_only) for o in state.options),
@@ -2391,6 +2393,23 @@ class Player(ABC):
         """Return the unix (utc) timestamp at which the active sleep timer stops playback."""
         return self.__sleep_timer_expires_at
 
+    __sleep_timer_mode: SleepTimerMode | None = None
+
+    @final
+    def set_sleep_timer_mode(self, value: SleepTimerMode | None) -> None:
+        """
+        Set the point at which the active sleep timer stops playback.
+
+        :param value: The sleep timer mode, or None to clear the sleep timer.
+        """
+        self.__sleep_timer_mode = value
+
+    @property
+    @final
+    def sleep_timer_mode(self) -> SleepTimerMode | None:
+        """Return the point at which the active sleep timer stops playback."""
+        return self.__sleep_timer_mode
+
     __stop_called: bool = False
 
     @final
@@ -2686,6 +2705,7 @@ class Player(ABC):
             "active_output_protocol": self.__attr_active_output_protocol,
             "active_mass_source": self.__active_mass_source,
             "sleep_timer_expires_at": self.__sleep_timer_expires_at,
+            "sleep_timer_mode": self.__sleep_timer_mode,
         }
 
     @final
@@ -2780,6 +2800,7 @@ class Player(ABC):
             setup_reason=self.setup_reason,
             has_setup_flow=self.has_setup_flow,
             sleep_timer_expires_at=self.sleep_timer_expires_at,
+            sleep_timer_mode=self.sleep_timer_mode,
         )
         media_position_jumped = self.__reconcile_current_media_anchor(
             prev_state, prev_playing, new_playing
