@@ -95,6 +95,7 @@ from music_assistant.controllers.streams.constants import (
     CONF_UPGRADE_BELOW_QUALITY,
     DEFAULT_PORT,
     DEFAULT_VOLUME_NORMALIZATION_MODE,
+    FLOW_STREAM_LEAD_OUT_MAX_SECONDS,
     FLOW_STREAM_LEAD_OUT_SECONDS,
     OUTCOME_ONLY_NORMALIZATION_MODES,
     BufferSize,
@@ -1613,7 +1614,7 @@ class StreamsController(CoreController):
                     del self._open_item_streams[queue_id]
 
         if not client_disconnected and http_profile == "forced_content_length":
-            await self._finish_flow_stream(resp, queue_id, session_id)
+            await self._finish_flow_stream(resp, queue_id, session_id, player)
 
         return resp
 
@@ -2477,7 +2478,7 @@ class StreamsController(CoreController):
         return self.mass.player_queues.get_item(queue.queue_id, queue_item_id)
 
     async def _finish_flow_stream(
-        self, resp: web.StreamResponse, queue_id: str, session_id: str
+        self, resp: web.StreamResponse, queue_id: str, session_id: str, player: Player
     ) -> None:
         """
         Close a fully served flow stream, giving the player time to drain when it ends the queue.
@@ -2485,23 +2486,54 @@ class StreamsController(CoreController):
         :param resp: The flow stream response, already fully written.
         :param queue_id: Id of the queue the flow stream belongs to.
         :param session_id: Stream session this response was opened for.
+        :param player: The player that fetched the flow stream.
         """
         if self.mass.player_queues.flow_queue_exhausted(queue_id, session_id):
-            # the player is still holding a few seconds of audio it has not rendered yet
-            # and drops that as soon as the stream ends, so let it play out first.
+            # the player is still holding the audio it has not rendered yet and drops that
+            # as soon as the stream ends, so let it play out first.
             # a flow that ends to be restarted right away gets no such grace: there the
             # player should go idle as soon as possible so the next stream can start.
+            lead_out = self._get_flow_stream_lead_out(queue_id, player)
             self.logger.debug(
                 "Flow stream for queue %s reached the end of the queue - holding the "
-                "connection open for %ss so the player can play out its buffer",
+                "connection open for %.1fs so the player can play out its buffer",
                 queue_id,
-                FLOW_STREAM_LEAD_OUT_SECONDS,
+                lead_out,
             )
-            await asyncio.sleep(FLOW_STREAM_LEAD_OUT_SECONDS)
+            loop = asyncio.get_running_loop()
+            deadline = loop.time() + lead_out
+            while (remaining := deadline - loop.time()) > 0:
+                # let go early when playback moved on or the server shuts down
+                if self.mass.closing or not self.mass.player_queues.flow_queue_exhausted(
+                    queue_id, session_id
+                ):
+                    break
+                await asyncio.sleep(min(remaining, 1))
         # aiohttp derives keep-alive from the request, so the 'Connection: close' we
         # advertise is relayed to the player but never applied to the response itself.
         # Without this the player is left waiting on a stream that already ended.
         resp.force_close()
+
+    def _get_flow_stream_lead_out(self, queue_id: str, player: Player) -> float:
+        """
+        Return how long to hold a flow stream open after its last byte.
+
+        The stream is paced slightly above playback speed, so the player ends up as far
+        behind it as the audio it has buffered; over a long queue that is well beyond a
+        few seconds. Its reported position tells how much of the stream it has left.
+
+        :param queue_id: Id of the queue the flow stream belongs to.
+        :param player: The player that fetched the flow stream.
+        """
+        queue_data = self.mass.player_queues.queue_data_or_none(queue_id)
+        elapsed = player.corrected_elapsed_time
+        if queue_data is None or elapsed is None:
+            return FLOW_STREAM_LEAD_OUT_SECONDS
+        seconds_streamed = sum(
+            entry.seconds_streamed or 0 for entry in queue_data.flow_mode_stream_log
+        )
+        behind = max(0.0, seconds_streamed - elapsed)
+        return min(behind + FLOW_STREAM_LEAD_OUT_SECONDS, FLOW_STREAM_LEAD_OUT_MAX_SECONDS)
 
     def _raise_if_stale_item_request(
         self,
