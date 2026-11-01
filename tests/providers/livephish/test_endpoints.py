@@ -106,7 +106,11 @@ async def test_library_uses_catalog_artists_and_releases(provider: LivePhishProv
     provider._get_legacy_catalog = AsyncMock(  # type: ignore[method-assign]
         return_value={
             "artists": [
-                {"artistID": 1, "artistName": "Phish", "artistImage": "/images/phish.jpg"},
+                {
+                    "artistID": 1,
+                    "artistName": "Phish",
+                    "artistImage": "/assets/ld/images/ld_head_149.gif",
+                },
                 {"artistName": "Skip"},
             ]
         }
@@ -120,7 +124,11 @@ async def test_library_uses_catalog_artists_and_releases(provider: LivePhishProv
 
     assert [artist.item_id for artist in artists] == ["1"]
     assert artists[0].image is not None
-    assert artists[0].image.path == f"{IMAGE_CDN}/images/phish.jpg"
+    assert artists[0].image.path == "icon.png"
+    assert artists[0].image.remotely_accessible is False
+    icon = await provider.resolve_image(artists[0].image.path)
+    assert isinstance(icon, str)
+    assert icon.endswith("providers/livephish/icon.png")
     assert [album.item_id for album in albums] == ["435"]
     assert provider._get_all_items.await_args is not None
     assert provider._get_all_items.await_args.args[:2] == ("catalog", "releases")

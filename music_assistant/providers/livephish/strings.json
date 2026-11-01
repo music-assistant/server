@@ -25,5 +25,8 @@
       "livephish_popular_shows": { "name": "Most Popular" },
       "livephish_recent_shows": { "name": "Recent Shows" }
     }
+  },
+  "manifest": {
+    "description": "Stream official Phish concert recordings from a Live Phish subscription."
   }
 }

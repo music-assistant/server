@@ -10,6 +10,7 @@ import secrets
 from collections.abc import AsyncGenerator, Sequence
 from contextlib import suppress
 from datetime import UTC, datetime
+from pathlib import Path
 from time import time
 from typing import TYPE_CHECKING, Any
 from urllib.parse import parse_qs, urljoin, urlparse
@@ -105,6 +106,8 @@ _VERIFICATION_TOKEN = re.compile(
 )
 _MAX_LOGIN_REDIRECTS = 8
 _SECURE_IMAGE_HOST = "https://secure.livedownloads.com"
+# Catalog artistImage is the same placeholder gif for every artist. Use app icon as fallback.
+_ARTIST_ICON = "icon.png"
 
 SUPPORTED_FEATURES = {
     ProviderFeature.SEARCH,
@@ -417,6 +420,12 @@ class LivePhishProvider(MusicProvider):
                 self._token_expiry = 0
         return access_token
 
+    async def resolve_image(self, path: str) -> str | bytes | None:
+        """Return the provider icon used as the thumbnail for every artist."""
+        if path != _ARTIST_ICON:
+            return path
+        return str(Path(__file__).parent / _ARTIST_ICON)
+
     async def _authorization_code(self, username: str, password: str) -> tuple[str, str]:
         """Sign in on the identity server and return the authorization code and PKCE verifier."""
         verifier = secrets.token_urlsafe(64)
@@ -547,20 +556,14 @@ class LivePhishProvider(MusicProvider):
                 )
             },
         )
-        image = None
-        if isinstance(artist_obj.get("avatarImage"), dict):
-            image = artist_obj["avatarImage"].get("url")
-        elif artist_obj.get("artistImage"):
-            image = _cover_url(str(artist_obj["artistImage"]))
-        if image:
-            artist.metadata.add_image(
-                MediaItemImage(
-                    type=ImageType.THUMB,
-                    path=image,
-                    provider=self.instance_id,
-                    remotely_accessible=True,
-                )
+        artist.metadata.add_image(
+            MediaItemImage(
+                type=ImageType.THUMB,
+                path=_ARTIST_ICON,
+                provider=self.instance_id,
+                remotely_accessible=False,
             )
+        )
         return artist
 
     def _parse_album(self, album_obj: dict[str, Any]) -> Album:

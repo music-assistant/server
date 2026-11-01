@@ -7,6 +7,5 @@
   "codeowners": ["@brian10048"],
   "requirements": [],
   "documentation": "https://music-assistant.io/music-providers/livephish/",
-  "multi_instance": true,
-  "icon": "music"
+  "multi_instance": true
 }

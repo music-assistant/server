@@ -1862,6 +1862,7 @@
   "provider.livephish.config_entries.quality.option_descriptions.lossy": "Compressed stream, uses less bandwidth.",
   "provider.livephish.config_entries.quality.options.lossless": "Lossless",
   "provider.livephish.config_entries.quality.options.lossy": "Lossy",
+  "provider.livephish.manifest.description": "Stream official Phish concert recordings from a Live Phish subscription.",
   "provider.livephish.media.folder.albums.name": "Albums",
   "provider.livephish.media.folder.artist.name": "Artist",
   "provider.livephish.media.folder.songs.name": "Songs",
