@@ -180,18 +180,31 @@ async def get_podcast(
 
 
 async def get_podcast_episode(
-    prov_episode_id: str, headers: dict[str, str], language: str = "en"
+    prov_episode_id: str, headers: dict[str, str], language: str = "en", user: str | None = None
 ) -> dict[str, Any]:
     """Async wrapper around the podcast episode function."""
 
     def _get_podcast_episode() -> dict[str, Any]:
-        ytm = ytmusicapi.YTMusic(auth=headers, language=language)
+        ytm = ytmusicapi.YTMusic(auth=headers, language=language, user=user)
         episode = ytm.get_episode(videoId=prov_episode_id)
         if "videoId" not in episode:
             episode["videoId"] = prov_episode_id
         return episode
 
     return await _run_ytmusic(_get_podcast_episode)
+
+
+async def get_playback_tracking(
+    video_id: str, headers: dict[str, str], language: str = "en", user: str | None = None
+) -> dict[str, Any] | None:
+    """Async wrapper around the ytmusicapi get_song function, returning its playback tracking."""
+
+    def _get_playback_tracking() -> dict[str, Any] | None:
+        ytm = ytmusicapi.YTMusic(auth=headers, language=language, user=user)
+        tracking: dict[str, Any] | None = ytm.get_song(videoId=video_id).get("playbackTracking")
+        return tracking
+
+    return await _run_ytmusic(_get_playback_tracking)
 
 
 async def get_library_artists(
