@@ -2252,6 +2252,7 @@
   "provider.qobuz.manifest.description": "Stream high-resolution music from Qobuz’s catalogue — ideal for audiophiles.",
   "provider.qobuz.media.recommendations.best_sellers.name": "Best Sellers",
   "provider.qobuz.media.recommendations.editor_picks.name": "Editor's Picks",
+  "provider.qobuz.media.recommendations.favorite_artist_releases.name": "New From Your Artists",
   "provider.qobuz.media.recommendations.ideal_discography.name": "Ideal Discography",
   "provider.qobuz.media.recommendations.most_streamed.name": "Most Streamed",
   "provider.qobuz.media.recommendations.new_releases.name": "New Releases",
