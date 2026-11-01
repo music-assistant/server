@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import asyncio
 from bisect import bisect_right
-from collections.abc import AsyncGenerator, Sequence
-from contextlib import nullcontext
+from collections.abc import AsyncGenerator, Iterator, Sequence
+from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass
 from functools import partial
 from itertools import batched
@@ -24,6 +24,7 @@ from music_assistant_models.enums import (
     ProviderType,
     SortDirection,
     SortField,
+    TaskStatus,
 )
 from music_assistant_models.errors import (
     InsufficientPermissions,
@@ -31,6 +32,7 @@ from music_assistant_models.errors import (
     InvalidProviderURI,
     MediaNotFoundError,
     ProviderUnavailableError,
+    ResourceBusyError,
     ResourceTemporarilyUnavailable,
 )
 from music_assistant_models.helpers import create_safe_string
@@ -90,6 +92,7 @@ _PROVIDER_PLAYLIST_ADD_BATCH_SIZE: Final[int] = 100
 _MIGRATION_REPORT_DETAIL_LIMIT: Final[int] = 200
 _MIGRATION_RESOLVE_BATCH_SIZE: Final[int] = 5
 _MIGRATION_VERIFY_RETRY_DELAYS: Final[tuple[int, ...]] = (1, 2, 4)
+_PLAYLIST_REMOVE_TASK_DOMAIN: Final[str] = "playlist_remove_tracks"
 # on top of the fetch failures, a provider may offer no playlist details at all
 _PLAYLIST_DETAILS_ERRORS: Final[tuple[type[Exception], ...]] = (
     *PROVIDER_FETCH_ERRORS,
@@ -173,6 +176,11 @@ class PlaylistController(MediaControllerBase[Playlist]):
             required_scope=Scope.LIBRARY_WRITE,
         )
         self.mass.register_api_command(
+            "music/playlists/move_playlist_tracks",
+            self.move_playlist_tracks,
+            required_scope=Scope.LIBRARY_WRITE,
+        )
+        self.mass.register_api_command(
             "music/playlists/export_playlist",
             self.export_playlist,
             required_scope=Scope.LIBRARY_READ,
@@ -192,6 +200,8 @@ class PlaylistController(MediaControllerBase[Playlist]):
             self.set_access,
             required_scope=Scope.LIBRARY_WRITE,
         )
+        # library ids of the playlists a move is under way for
+        self._moving_playlists: set[str] = set()
 
     @property
     def summary_query(self) -> tuple[str, dict[str, Any]]:
@@ -476,8 +486,12 @@ class PlaylistController(MediaControllerBase[Playlist]):
         :param db_playlist_id: Library playlist id.
         :param positions_to_remove: Provider playlist positions to remove.
         :return: Managed background task for the requested playlist update.
+        :raises ResourceBusyError: A move or removal of the playlist is still in progress.
         """
-        playlist_name = (await self._get_editable_library_item(db_playlist_id)).name
+        playlist = await self._get_editable_library_item(db_playlist_id)
+        playlist_name = playlist.name
+        # positions only hold while nothing else changes the order, so nothing waits its turn
+        self._ensure_order_idle(playlist)
         user = get_current_user()
         user_id = user.user_id if user else None
         return self.mass.tasks.run_background_task(
@@ -490,8 +504,8 @@ class PlaylistController(MediaControllerBase[Playlist]):
             translation_args=[playlist_name],
             user_id=user.user_id if user else None,
             metadata={
-                "task_domain": "playlist_remove_tracks",
-                "playlist_id": str(db_playlist_id),
+                "task_domain": _PLAYLIST_REMOVE_TASK_DOMAIN,
+                "playlist_id": playlist.item_id,
                 "playlist_name": playlist_name,
                 "item_count": len(positions_to_remove),
             },
@@ -509,27 +523,66 @@ class PlaylistController(MediaControllerBase[Playlist]):
         :param db_playlist_id: Library playlist id.
         :param from_position: The current position of the item, 1-based.
         :param to_position: The position the item ends up at after the move, 1-based.
+        :raises ResourceBusyError: A move or removal of the playlist is still in progress.
         """
-        playlist = await self._get_editable_library_item(db_playlist_id)
-        if not playlist.is_editable:
-            msg = f"Playlist {playlist.name} is not editable"
-            raise InvalidDataError(msg)
-        # use _select_provider_id to respect user's provider filter
-        playlist_prov_instance, playlist_prov_item_id = self._select_provider_id(playlist)
-        provider = self.mass.get_provider(playlist_prov_instance)
-        if not provider or not isinstance(provider, MusicProvider):
-            raise ProviderUnavailableError(f"Provider {playlist_prov_instance} is not available")
-        if ProviderFeature.PLAYLIST_TRACKS_MOVE not in provider.supported_features:
-            msg = f"Provider {provider.name} does not support reordering playlists"
-            raise InvalidDataError(msg)
+        playlist, provider, playlist_prov_item_id = await self._get_reorderable_playlist(
+            db_playlist_id
+        )
         if from_position < 1 or to_position < 1:
             msg = "Playlist positions start at 1"
             raise InvalidDataError(msg)
         if from_position == to_position:
             return
-        await provider.move_playlist_track(playlist_prov_item_id, from_position, to_position)
-        await self._refresh_provider_playlist_tracks(playlist_prov_item_id, provider.instance_id)
-        await self._request_metadata_refresh(playlist)
+        with self._moving_order(playlist):
+            await provider.move_playlist_track(playlist_prov_item_id, from_position, to_position)
+            await self._refresh_provider_playlist_tracks(
+                playlist_prov_item_id, provider.instance_id
+            )
+            await self._request_metadata_refresh(playlist)
+
+    async def move_playlist_tracks(
+        self, db_playlist_id: str | int, positions: list[int], to_position: int | None = None
+    ) -> None:
+        """
+        Move items of a playlist as one block to another position.
+
+        The moved items keep their order. Returns once the provider holds the new order, so
+        the caller can reload the playlist. When the move fails part way, the playlist is
+        still read back and announced, so a reload shows the order the provider holds.
+
+        :param db_playlist_id: Library playlist id.
+        :param positions: The current positions of the items, 1-based.
+        :param to_position: The position the block's first item ends up at, 1-based. Omit it
+            to move the items to the end of the playlist.
+        :raises ResourceBusyError: A move or removal of the playlist is still in progress.
+        """
+        playlist, provider, playlist_prov_item_id = await self._get_reorderable_playlist(
+            db_playlist_id
+        )
+        if not positions:
+            msg = "No playlist positions to move"
+            raise InvalidDataError(msg)
+        if len(set(positions)) != len(positions):
+            msg = "Each playlist position can only be moved once"
+            raise InvalidDataError(msg)
+        if min(positions) < 1 or (to_position is not None and to_position < 1):
+            msg = "Playlist positions start at 1"
+            raise InvalidDataError(msg)
+        selected = sorted(positions)
+        if to_position is not None and selected == list(
+            range(to_position, to_position + len(selected))
+        ):
+            return
+        with self._moving_order(playlist):
+            try:
+                await provider.move_playlist_tracks(playlist_prov_item_id, selected, to_position)
+            finally:
+                # a provider that replays the block as single moves can fail part way and
+                # leave the playlist partly moved, so read it back and announce it even then
+                await self._refresh_provider_playlist_tracks(
+                    playlist_prov_item_id, provider.instance_id
+                )
+                await self._request_metadata_refresh(playlist)
 
     async def match_providers(self, db_item: Playlist) -> None:
         """
@@ -2089,6 +2142,66 @@ class PlaylistController(MediaControllerBase[Playlist]):
             raise InvalidDataError(msg)
         await provider.remove_playlist_tracks(playlist_prov_item_id, positions_to_remove)
         await self._request_metadata_refresh(playlist)
+
+    async def _get_reorderable_playlist(
+        self, db_playlist_id: str | int
+    ) -> tuple[Playlist, MusicProvider, str]:
+        """
+        Return a library playlist the current user may reorder, its provider and provider id.
+
+        :param db_playlist_id: Library playlist id.
+        :raises InvalidDataError: The playlist or its provider cannot be reordered.
+        """
+        playlist = await self._get_editable_library_item(db_playlist_id)
+        if not playlist.is_editable:
+            msg = f"Playlist {playlist.name} is not editable"
+            raise InvalidDataError(msg)
+        # use _select_provider_id to respect user's provider filter
+        playlist_prov_instance, playlist_prov_item_id = self._select_provider_id(playlist)
+        provider = self.mass.get_provider(playlist_prov_instance)
+        if not provider or not isinstance(provider, MusicProvider):
+            raise ProviderUnavailableError(f"Provider {playlist_prov_instance} is not available")
+        if ProviderFeature.PLAYLIST_TRACKS_MOVE not in provider.supported_features:
+            msg = f"Provider {provider.name} does not support reordering playlists"
+            raise InvalidDataError(msg)
+        return playlist, provider, playlist_prov_item_id
+
+    def _ensure_order_idle(self, playlist: Playlist) -> None:
+        """
+        Refuse a change of the playlist's order while another one is still in progress.
+
+        :param playlist: Library playlist about to be moved or removed from.
+        :raises ResourceBusyError: A move or removal of the playlist is still in progress.
+        """
+        if playlist.item_id in self._moving_playlists:
+            msg = f"Playlist {playlist.name} is still being reordered, try again once it is done"
+            raise ResourceBusyError(msg)
+        for task in self.mass.tasks.list_tasks_for_user(None):
+            if (
+                task.metadata.get("task_domain") == _PLAYLIST_REMOVE_TASK_DOMAIN
+                and task.metadata.get("playlist_id") == playlist.item_id
+                and task.status in (TaskStatus.PENDING, TaskStatus.RUNNING)
+            ):
+                msg = (
+                    f"Items are still being removed from playlist {playlist.name}, "
+                    "try again once it is done"
+                )
+                raise ResourceBusyError(msg)
+
+    @contextmanager
+    def _moving_order(self, playlist: Playlist) -> Iterator[None]:
+        """
+        Hold the playlist for a move, refusing other moves and removals until it is done.
+
+        :param playlist: Library playlist about to be moved.
+        :raises ResourceBusyError: A move or removal of the playlist is still in progress.
+        """
+        self._ensure_order_idle(playlist)
+        self._moving_playlists.add(playlist.item_id)
+        try:
+            yield
+        finally:
+            self._moving_playlists.discard(playlist.item_id)
 
     async def _refresh_provider_playlist_tracks(
         self, prov_playlist_id: str, provider_instance_id: str
