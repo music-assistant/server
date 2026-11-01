@@ -18,6 +18,7 @@ from music_assistant_models.errors import (
     MusicAssistantError,
 )
 
+from music_assistant.mass import MusicAssistant
 from music_assistant.providers.ai_radio.constants import (
     ATTR_GAP_NEXT_ID,
     ATTR_HOST_ID,
@@ -387,6 +388,20 @@ def _make_replan_dj(
     # set_queue_dj marks a state plannable once its clip cleanup ran, and these harnesses
     # start from a queue whose switch already settled
     dummy._arm_dj_state("queue-1", "rick").ready = True
+    return dummy
+
+
+def _make_show_dj(tmp_path: Path, track_count: int = 3) -> ReplanQueueDJ:
+    """Build a fresh show queue before its player has buffered an item."""
+    dummy = _make_replan_dj(
+        tmp_path,
+        [_track(index) for index in range(track_count)],
+        current_index=None,
+        index_in_buffer=None,
+    )
+    dummy.player_queues._queue.sources = [SimpleNamespace(uri=f"{dummy.instance_id}://radio/show")]
+    dummy._stations["show"] = {"id": "show", "name": "Show", "host_id": "rick"}
+    dummy._dj_queues.clear()
     return dummy
 
 
@@ -1015,6 +1030,516 @@ async def test_replan_respects_buffer_guard(tmp_path: Path) -> None:
     queue_items, insert_at_index = queues.loads[0]
     assert insert_at_index == 3
     assert queue_items[0].extra_attributes[ATTR_GAP_NEXT_ID] == tracks[3].queue_item_id
+
+
+@pytest.mark.parametrize("with_intro", [False, True])
+@pytest.mark.parametrize("track_count", [1, 3])
+async def test_show_start_includes_opening_sections_before_buffering(
+    tmp_path: Path, with_intro: bool, track_count: int
+) -> None:
+    """A newly loaded show includes its intro and every transition before playback starts."""
+    tracks = [_track(index) for index in range(track_count)]
+    dummy = _make_replan_dj(tmp_path, list(tracks), index_in_buffer=1)
+    queue = dummy.player_queues._queue
+    queue.sources = [SimpleNamespace(uri=f"{dummy.instance_id}://radio/show")]
+    dummy._stations["show"] = {"id": "show", "name": "Show", "host_id": "rick"}
+    dummy._dj_queues.clear()
+    if with_intro:
+        intro = {**_transition_section(), "id": "Intro", "name": "Intro"}
+        dummy._sections["Intro"] = intro
+        dummy._sections["Outro"] = {**intro, "id": "Outro", "name": "Outro"}
+        dummy._hosts["rick"]["section_ids"].append("Intro")
+        dummy._hosts["rick"]["section_ids"].append("Outro")
+        dummy._hosts["rick"]["section_order"].insert(
+            0, {"when": "start_of_playlist", "flow": [{"MUST": "Intro"}]}
+        )
+        dummy._hosts["rick"]["section_order"].append(
+            {"when": "end_of_playlist", "flow": [{"MUST": "Outro"}]}
+        )
+
+    start_index = await dummy.on_queue_start("queue-1", 0)
+
+    items = dummy.player_queues.items("queue-1")
+    expected = [name for track in tracks for name in [track.name, "Song Transition"]][:-1]
+    if with_intro:
+        expected.insert(0, "Intro")
+        expected.append("Outro")
+    assert [item.name for item in items] == expected
+    assert start_index == 0
+    state = dummy._dj_queues["queue-1"]
+    assert state.station_id == "show"
+    assert state.ready is True
+    assert state.decided_gap_ids == {track.queue_item_id for track in tracks[1:]}
+
+    await dummy._replan_queue("queue-1")
+
+    assert [item.name for item in dummy.player_queues.items("queue-1")] == expected
+
+
+async def test_show_start_keeps_already_playing_items(tmp_path: Path) -> None:
+    """Starting a show behind another item only prepares the new part of the queue."""
+    tracks = [_track(index) for index in range(3)]
+    dummy = _make_replan_dj(tmp_path, list(tracks))
+    dummy.player_queues._queue.sources = [SimpleNamespace(uri=f"{dummy.instance_id}://radio/show")]
+    dummy._stations["show"] = {"id": "show", "name": "Show", "host_id": "rick"}
+    dummy._dj_queues.clear()
+
+    start_index = await dummy.on_queue_start("queue-1", 1)
+
+    assert start_index == 1
+    assert [item.name for item in dummy.player_queues.items("queue-1")] == [
+        tracks[0].name,
+        tracks[1].name,
+        "Song Transition",
+        tracks[2].name,
+    ]
+
+
+async def test_show_start_respects_a_manually_selected_host(tmp_path: Path) -> None:
+    """A show start does not replace a host the user explicitly selected for the queue."""
+    tracks = [_track(index) for index in range(3)]
+    dummy = _make_replan_dj(tmp_path, list(tracks))
+    dummy.player_queues._queue.sources = [SimpleNamespace(uri=f"{dummy.instance_id}://radio/show")]
+    dummy._stations["show"] = {"id": "show", "name": "Show", "host_id": "rick"}
+    manual_state = dummy._dj_queues["queue-1"]
+
+    assert await dummy.on_queue_start("queue-1", 0) == 0
+    assert dummy._dj_queues["queue-1"] is manual_state
+    assert dummy.player_queues.items("queue-1") == tracks
+
+
+async def test_show_start_clears_old_clips_when_no_new_sections_are_selected(
+    tmp_path: Path,
+) -> None:
+    """A silent startup does not retain speech from the previous DJ session."""
+    dummy = _make_show_dj(tmp_path)
+    tracks = list(dummy.player_queues.items("queue-1"))
+    stale = _dj_clip(tracks[1].queue_item_id, "previous-session")
+    dummy.player_queues.update_items("queue-1", [tracks[0], stale, *tracks[1:]])
+    dummy._hosts["rick"]["section_order"][0]["flow"] = []
+
+    assert await dummy.on_queue_start("queue-1", 0) == 0
+    assert dummy.player_queues.items("queue-1") == tracks
+    assert dummy._dj_queues["queue-1"].ready is True
+
+
+async def test_show_start_retains_the_requested_item_after_a_queue_edit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An edit during preparation preserves the requested batch and its history offsets."""
+    dummy = _make_show_dj(tmp_path)
+    tracks = list(dummy.player_queues.items("queue-1"))
+    prefix = _track(99)
+    dummy._sections["Intro"] = {**_transition_section(), "id": "Intro", "name": "Intro"}
+    dummy._hosts["rick"]["section_ids"].append("Intro")
+    dummy._hosts["rick"]["section_order"].insert(
+        0, {"when": "start_of_playlist", "flow": [{"MUST": "Intro"}]}
+    )
+
+    async def weather(_program: dict[str, Any]) -> dict[str, str]:
+        dummy.player_queues.update_items("queue-1", [prefix, *tracks])
+        return {}
+
+    monkeypatch.setattr(dummy, "_prepare_runtime_tokens", weather)
+
+    assert await dummy.on_queue_start("queue-1", 1) == 2
+    assert [item.name for item in dummy.player_queues.items("queue-1")] == [
+        prefix.name,
+        tracks[0].name,
+        "Intro",
+        tracks[1].name,
+        "Song Transition",
+        tracks[2].name,
+    ]
+    state = dummy._dj_queues["queue-1"]
+    assert state.songs_before_window == 2
+    assert state.history["Intro"] == [(2, 400 / 60)]
+
+
+@pytest.mark.parametrize("edit", ["source", "starting_item"])
+async def test_show_start_aborts_when_its_batch_is_replaced(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, edit: str
+) -> None:
+    """Preparation cannot decorate a batch that no longer belongs to its show."""
+    dummy = _make_show_dj(tmp_path)
+    tracks = list(dummy.player_queues.items("queue-1"))
+
+    async def weather(_program: dict[str, Any]) -> dict[str, str]:
+        if edit == "source":
+            dummy.player_queues._queue.sources = []
+        else:
+            dummy.player_queues.update_items("queue-1", tracks[1:])
+        return {}
+
+    monkeypatch.setattr(dummy, "_prepare_runtime_tokens", weather)
+
+    with pytest.raises(InvalidDataError, match="show queue changed"):
+        await dummy.on_queue_start("queue-1", 0)
+
+    assert not any(
+        item.extra_attributes.get(ATTR_QUEUE_DJ) for item in dummy.player_queues.items("queue-1")
+    )
+    assert "queue-1" not in dummy._dj_queues
+    assert not dummy._dj_file.exists()
+
+
+async def test_show_start_handles_eager_queue_events_during_loading(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An automatic arm started by loading the queue does not suppress its opening."""
+    dummy = _make_show_dj(tmp_path)
+    tracks = list(dummy.player_queues.items("queue-1"))
+    dummy._sections["Intro"] = {**_transition_section(), "id": "Intro", "name": "Intro"}
+    dummy._hosts["rick"]["section_ids"].append("Intro")
+    dummy._hosts["rick"]["section_order"].insert(
+        0, {"when": "start_of_playlist", "flow": [{"MUST": "Intro"}]}
+    )
+    entered = asyncio.Event()
+    release = asyncio.Event()
+    tasks: list[asyncio.Task[Any]] = []
+
+    async def persist() -> None:
+        entered.set()
+        await release.wait()
+
+    def eager_task(target: Coroutine[Any, Any, Any]) -> asyncio.Task[Any]:
+        task = asyncio.Task(target, loop=asyncio.get_running_loop(), eager_start=True)
+        tasks.append(task)
+        return task
+
+    dispatcher = cast(
+        "MusicAssistant",
+        SimpleNamespace(
+            closing=False,
+            verify_event_loop_thread=lambda _: None,
+            create_task=eager_task,
+            _subscribers=[(dummy._on_dj_queue_event, None, None, True)],
+        ),
+    )
+    monkeypatch.setattr(dummy, "_write_queue_dj", persist)
+    monkeypatch.setattr(dummy, "_schedule_replan", lambda _: None)
+    dummy.player_queues.on_items_updated = lambda: MusicAssistant.signal_event(
+        dispatcher, EventType.QUEUE_ITEMS_UPDATED, object_id="queue-1"
+    )
+    dummy.player_queues.update_items("queue-1", tracks)
+    assert entered.is_set()
+    startup = asyncio.Task(
+        dummy.on_queue_start("queue-1", 0), loop=asyncio.get_running_loop(), eager_start=True
+    )
+    release.set()
+    try:
+        assert await startup == 0
+        await asyncio.gather(*tasks)
+    finally:
+        release.set()
+        await asyncio.gather(startup, *tasks, return_exceptions=True)
+
+    assert [item.name for item in dummy.player_queues.items("queue-1")] == [
+        "Intro",
+        tracks[0].name,
+        "Song Transition",
+        tracks[1].name,
+        "Song Transition",
+        tracks[2].name,
+    ]
+    assert dummy._dj_queues["queue-1"].station_id == "show"
+    assert dummy._dj_queues["queue-1"].ready is True
+
+
+@pytest.mark.parametrize("host_id", [None, "other"])
+async def test_show_start_respects_selection_changed_during_weather_lookup(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, host_id: str | None
+) -> None:
+    """A pending startup cannot overwrite a newer host selection or a manual disable."""
+    dummy = _make_show_dj(tmp_path)
+    tracks = list(dummy.player_queues.items("queue-1"))
+    dummy._hosts["other"] = {**dummy._hosts["rick"], "id": "other", "name": "Other"}
+    entered = asyncio.Event()
+    release = asyncio.Event()
+
+    async def weather(_program: dict[str, Any]) -> dict[str, str]:
+        entered.set()
+        await release.wait()
+        return {}
+
+    monkeypatch.setattr(dummy, "_prepare_runtime_tokens", weather)
+    monkeypatch.setattr(dummy, "_schedule_replan", lambda _: None)
+    startup = asyncio.create_task(dummy.on_queue_start("queue-1", 0))
+    try:
+        await entered.wait()
+        await dummy.set_queue_dj("queue-1", host_id)
+    finally:
+        release.set()
+        await startup
+
+    await dummy._ensure_show_dj("queue-1")
+    selected = dummy._dj_queues.get("queue-1")
+    assert (selected.host_id if selected is not None else None) == host_id
+    assert dummy.player_queues.items("queue-1") == tracks
+
+
+async def test_cancelled_show_start_does_not_leave_an_unready_assignment(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A cancelled preparation releases its assignment so a later show can start."""
+    dummy = _make_show_dj(tmp_path)
+    tracks = list(dummy.player_queues.items("queue-1"))
+    entered = asyncio.Event()
+
+    async def weather(_program: dict[str, Any]) -> dict[str, str]:
+        entered.set()
+        await asyncio.Event().wait()
+        return {}
+
+    monkeypatch.setattr(dummy, "_prepare_runtime_tokens", weather)
+    startup = asyncio.create_task(dummy.on_queue_start("queue-1", 0))
+    await entered.wait()
+    startup.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await startup
+
+    assert "queue-1" not in dummy._dj_queues
+    assert "queue-1" not in dummy._armed_show_queues
+    assert dummy.player_queues.items("queue-1") == tracks
+
+
+@pytest.mark.parametrize("detach_first", [True, False])
+@pytest.mark.parametrize("cleanup", ["detach", "missing_host"])
+async def test_replacing_show_keeps_opening_when_old_detach_waits_for_persistence(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, detach_first: bool, cleanup: str
+) -> None:
+    """A queued detach for an old show cannot remove the replacement show's assignment."""
+    dummy = _make_show_dj(tmp_path)
+    tracks = list(dummy.player_queues.items("queue-1"))
+    dummy._sections["Intro"] = {**_transition_section(), "id": "Intro", "name": "Intro"}
+    dummy._hosts["rick"]["section_ids"].append("Intro")
+    dummy._hosts["rick"]["section_order"].insert(
+        0, {"when": "start_of_playlist", "flow": [{"MUST": "Intro"}]}
+    )
+    old = dummy._arm_dj_state("queue-1", "missing" if cleanup == "missing_host" else "rick")
+    old.station_id = "old-show"
+    old.ready = True
+    dummy._armed_show_queues["queue-1"] = "old-show"
+    monkeypatch.setattr(dummy, "_schedule_replan", lambda _: None)
+
+    async with dummy._dj_lock:
+        cleanup_task = (
+            dummy._maybe_detach_show_dj("queue-1")
+            if cleanup == "detach"
+            else dummy._replan_queue("queue-1")
+        )
+        operations = [cleanup_task, dummy.on_queue_start("queue-1", 0)]
+        if not detach_first:
+            operations.reverse()
+        tasks = [
+            asyncio.Task(operation, loop=asyncio.get_running_loop(), eager_start=True)
+            for operation in operations
+        ]
+    await asyncio.gather(*tasks)
+
+    assert [item.name for item in dummy.player_queues.items("queue-1")] == [
+        "Intro",
+        tracks[0].name,
+        "Song Transition",
+        tracks[1].name,
+        "Song Transition",
+        tracks[2].name,
+    ]
+    assert dummy._dj_queues["queue-1"].station_id == "show"
+    assert dummy._dj_queues["queue-1"].ready is True
+    assert dummy._armed_show_queues["queue-1"] == "show"
+
+
+async def test_pending_detach_rechecks_the_queues_source_after_waiting(tmp_path: Path) -> None:
+    """Returning to the original show while detachment waits keeps its live assignment."""
+    dummy = _make_show_dj(tmp_path)
+    state = dummy._arm_dj_state("queue-1", "rick")
+    state.station_id = "old-show"
+    state.ready = True
+    dummy._armed_show_queues["queue-1"] = "old-show"
+
+    async with dummy._dj_lock:
+        detach = asyncio.Task(
+            dummy._maybe_detach_show_dj("queue-1"),
+            loop=asyncio.get_running_loop(),
+            eager_start=True,
+        )
+        dummy.player_queues._queue.sources = [
+            SimpleNamespace(uri=f"{dummy.instance_id}://radio/old-show")
+        ]
+    await detach
+
+    assert dummy._dj_queues["queue-1"] is state
+    assert dummy._armed_show_queues["queue-1"] == "old-show"
+    assert dummy.mass.boundary_mix_calls == []
+
+
+async def test_show_start_does_not_publish_after_unloading_during_weather(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An unloaded instance cannot inject speech, persist its state or restore mixing."""
+    dummy = _make_show_dj(tmp_path)
+    tracks = list(dummy.player_queues.items("queue-1"))
+    dummy._sections["Song_Transition"]["allow_post"] = True
+    entered = asyncio.Event()
+    release = asyncio.Event()
+
+    async def weather(_program: dict[str, Any]) -> dict[str, str]:
+        entered.set()
+        await release.wait()
+        return {}
+
+    monkeypatch.setattr(dummy, "_prepare_runtime_tokens", weather)
+    startup = asyncio.create_task(dummy.on_queue_start("queue-1", 0))
+    try:
+        await entered.wait()
+        dummy._unloading = True
+        dummy.mass.streams.set_boundary_mix_required("queue-1", dummy.instance_id, False)
+    finally:
+        release.set()
+        await startup
+
+    assert dummy.player_queues.items("queue-1") == tracks
+    assert "queue-1" not in dummy._dj_queues
+    assert "queue-1" not in dummy._armed_show_queues
+    assert not dummy._dj_file.exists()
+    assert dummy.mass.boundary_mix_calls == [("queue-1", False)]
+
+
+async def test_show_start_does_not_persist_after_unloading_while_waiting_for_lock(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Unloading after preparation prevents a delayed save or renewed mixing requirement."""
+    dummy = _make_show_dj(tmp_path)
+    dummy._sections["Song_Transition"]["allow_post"] = True
+    entered = asyncio.Event()
+    release = asyncio.Event()
+    returned = asyncio.Event()
+
+    async def weather(_program: dict[str, Any]) -> dict[str, str]:
+        entered.set()
+        await release.wait()
+        returned.set()
+        return {}
+
+    monkeypatch.setattr(dummy, "_prepare_runtime_tokens", weather)
+    startup = asyncio.create_task(dummy.on_queue_start("queue-1", 0))
+    try:
+        await entered.wait()
+        async with dummy._dj_lock:
+            release.set()
+            await returned.wait()
+            assert dummy.player_queues.update_calls == 1
+            dummy._unloading = True
+            dummy.mass.streams.set_boundary_mix_required("queue-1", dummy.instance_id, False)
+    finally:
+        release.set()
+        await startup
+
+    assert not dummy._dj_file.exists()
+    assert dummy.mass.boundary_mix_calls == [("queue-1", True), ("queue-1", False)]
+
+
+async def test_pending_automatic_arm_stops_when_the_provider_unloads(tmp_path: Path) -> None:
+    """An automatic arm waiting for persistence cannot restore an unloaded provider."""
+    dummy = _make_show_dj(tmp_path)
+    dummy._sections["Song_Transition"]["allow_post"] = True
+
+    async with dummy._dj_lock:
+        arm = asyncio.Task(
+            dummy._ensure_show_dj("queue-1"), loop=asyncio.get_running_loop(), eager_start=True
+        )
+        dummy._unloading = True
+    await arm
+
+    assert dummy._dj_queues == {}
+    assert dummy._armed_show_queues == {}
+    assert dummy.mass.boundary_mix_calls == []
+    assert not dummy._dj_file.exists()
+
+
+@pytest.mark.parametrize("unload_at", ["saving", "binding_lock"])
+async def test_automatic_arm_does_not_resume_after_unloading_during_persistence(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, unload_at: str
+) -> None:
+    """An in-flight automatic arm cannot restore mixing or save again after unloading."""
+    dummy = _make_show_dj(tmp_path)
+    dummy._sections["Song_Transition"]["allow_post"] = True
+    entered = asyncio.Event()
+    release = asyncio.Event()
+    saves = 0
+
+    async def persist() -> None:
+        nonlocal saves
+        saves += 1
+        if saves == 1:
+            entered.set()
+            await release.wait()
+
+    monkeypatch.setattr(dummy, "_write_queue_dj", persist)
+    monkeypatch.setattr(dummy, "_schedule_replan", lambda _: None)
+    arm = asyncio.create_task(dummy._ensure_show_dj("queue-1"))
+    await entered.wait()
+    if unload_at == "binding_lock":
+        # Queue ahead of the final binding save while the first save still owns the lock.
+        waiter = asyncio.Task(
+            dummy._dj_lock.acquire(), loop=asyncio.get_running_loop(), eager_start=True
+        )
+        release.set()
+        await waiter
+    try:
+        dummy._unloading = True
+        dummy.mass.streams.set_boundary_mix_required("queue-1", dummy.instance_id, False)
+        mixing_calls_before_resume = len(dummy.mass.boundary_mix_calls)
+    finally:
+        if unload_at == "binding_lock":
+            dummy._dj_lock.release()
+        release.set()
+        await arm
+
+    assert saves == 1
+    assert dummy.mass.boundary_mix_calls[mixing_calls_before_resume:] == []
+
+
+@pytest.mark.parametrize("guard", ["min_gap_songs", "max_per_60min"])
+async def test_nonzero_show_start_keeps_section_limits_when_tracks_are_appended(
+    tmp_path: Path, guard: str
+) -> None:
+    """Startup and replanning measure section limits from the same queue positions."""
+    prefix, batch = (2, 3) if guard == "min_gap_songs" else (20, 2)
+    dummy = _make_show_dj(tmp_path, prefix + batch)
+    host = _optional_host(3)
+    if guard == "max_per_60min":
+        host["section_order"][0]["flow"][0]["OPTIONAL"]["guards"] = {"max_per_60min": 1}
+    dummy._hosts["rick"] = host
+    tracks = list(dummy.player_queues.items("queue-1"))
+    assert await dummy.on_queue_start("queue-1", prefix) == prefix
+    items = list(dummy.player_queues.items("queue-1"))
+    queue = dummy.player_queues._queue
+    queue.current_index = items.index(tracks[prefix])
+    queue.index_in_buffer = queue.current_index
+    appended = [_track(prefix + batch + index) for index in range(2)]
+    dummy.player_queues.update_items("queue-1", items + appended)
+
+    await dummy._replan_queue("queue-1")
+
+    track_positions = {track.queue_item_id: index for index, track in enumerate(tracks + appended)}
+    speech_positions = [
+        track_positions[item.extra_attributes[ATTR_GAP_NEXT_ID]]
+        for item in dummy.player_queues.items("queue-1")
+        if item.extra_attributes.get(ATTR_QUEUE_DJ)
+    ]
+    assert speech_positions == ([3, 6] if guard == "min_gap_songs" else [21])
+
+
+async def test_ordinary_playlist_start_leaves_queue_unchanged(tmp_path: Path) -> None:
+    """An ordinary playlist is neither decorated nor delayed by unrelated DJ persistence."""
+    tracks = [_track(index) for index in range(3)]
+    dummy = _make_replan_dj(tmp_path, list(tracks))
+
+    async with dummy._dj_lock:
+        assert await asyncio.wait_for(dummy.on_queue_start("queue-1", 0), timeout=1) == 0
+    assert dummy.player_queues.items("queue-1") == tracks
 
 
 async def test_disable_removes_all_pending_clips(tmp_path: Path) -> None:
