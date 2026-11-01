@@ -535,7 +535,7 @@ def _tracker() -> Any:
     # the item the player stopped on ("i1" in the stop states) had its audio served
     tracker._queue_data = {
         "q1": SimpleNamespace(
-            flow_mode_stream_log=[], served_item_ids={"i1"}, sleep_timer_stopped=False
+            flow_mode_stream_log=[], served_item_ids={"i1"}, sleep_timer_stopped_target=None
         )
     }
     return tracker

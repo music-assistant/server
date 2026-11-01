@@ -311,7 +311,7 @@ def _tracker(*items: Any) -> Any:
             items=list(items),
             flow_mode_stream_log=[],
             served_item_ids={"i1"},
-            sleep_timer_stopped=False,
+            sleep_timer_stopped_target=None,
         )
     }
     return tracker

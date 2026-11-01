@@ -5,11 +5,12 @@ from __future__ import annotations
 import inspect
 import time
 from contextlib import nullcontext
+from types import SimpleNamespace
 from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock, Mock
 
 import pytest
-from music_assistant_models.enums import PlaybackState, RepeatMode, SleepTimerMode
+from music_assistant_models.enums import PlaybackState, PlayerType, RepeatMode, SleepTimerMode
 from music_assistant_models.errors import InvalidDataError
 from music_assistant_models.media_items import Audiobook, MediaItemChapter
 from music_assistant_models.player_queue import PlayerQueue, PlayLogEntry
@@ -76,10 +77,11 @@ def _states(
     current_item_id: str | None,
     prev_item_id: str = "item_1",
     prev_elapsed: int = 0,
+    prev_playback_state: PlaybackState = PlaybackState.PLAYING,
 ) -> tuple[CompareState, CompareState]:
     """Build the state pair of a queue update: what it played before and what it reports now."""
     prev_state: dict[str, Any] = {
-        "state": PlaybackState.PLAYING,
+        "state": prev_playback_state,
         "current_item_id": prev_item_id,
         "current_item": None,
         "last_playing_elapsed_time": prev_elapsed,
@@ -91,6 +93,24 @@ def _states(
         "last_playing_elapsed_time": 0,
     }
     return cast("CompareState", prev_state), cast("CompareState", new_state)
+
+
+def _player(state: PlaybackState, queue_item_id: str, elapsed: float) -> Any:
+    """Return a non-flow player reporting the queue item and position it plays."""
+    return SimpleNamespace(
+        player_id="q1",
+        type=PlayerType.PLAYER,
+        active_output_protocol=None,
+        current_media=SimpleNamespace(source_id="q1", queue_item_id=queue_item_id, uri=None),
+        state=SimpleNamespace(
+            name="Q1",
+            available=True,
+            playback_state=state,
+            active_source="q1",
+            corrected_elapsed_time=elapsed,
+            group_members=[],
+        ),
+    )
 
 
 def _scheduled(mass: MagicMock) -> list[str]:
@@ -141,7 +161,7 @@ def test_sleep_timer_stop_position(
 
 def test_set_sleep_timer_target_pins_the_end_of_the_chapter() -> None:
     """The target is the end of the chapter playing now, the estimate counts down to it."""
-    ctrl, queue, _ = _controller()
+    ctrl, queue, mass = _controller()
 
     expires_at = ctrl.set_sleep_timer_target("q1", SleepTimerMode.END_OF_CHAPTER)
 
@@ -149,6 +169,9 @@ def test_set_sleep_timer_target_pins_the_end_of_the_chapter() -> None:
         SleepTimerMode.END_OF_CHAPTER, "item_1", 100
     )
     assert expires_at == pytest.approx(time.time() + 60, abs=0.1)
+    mass.players.update_sleep_timer.assert_called_once_with(
+        "q1", SleepTimerMode.END_OF_CHAPTER, expires_at
+    )
     queue.state = PlaybackState.PAUSED
     assert ctrl._sleep_timer_expires_at(queue) is None
 
@@ -208,8 +231,8 @@ def test_queue_stops_once_it_reaches_the_sleep_timer_position() -> None:
     ctrl._handle_sleep_timer(queue, *_states(PlaybackState.PLAYING, "item_1"))
 
     assert "_handle_stop" not in _scheduled(mass)
-    mass.players.update_sleep_timer_expires_at.assert_called_with(
-        "q1", pytest.approx(time.time() + 1, abs=0.1)
+    mass.players.update_sleep_timer.assert_called_with(
+        "q1", SleepTimerMode.END_OF_CHAPTER, pytest.approx(time.time() + 1, abs=0.1)
     )
 
     queue.elapsed_time = 100
@@ -218,7 +241,9 @@ def test_queue_stops_once_it_reaches_the_sleep_timer_position() -> None:
 
     assert "_handle_stop" in _scheduled(mass)
     assert ctrl._queue_data["q1"].sleep_timer_target is None
-    mass.players._clear_sleep_timer.assert_called_once_with(mass.players.get_player.return_value)
+    mass.players.reset_sleep_timer.assert_called_once_with(mass.players.get_player.return_value)
+    # a flow stream that ran out does not resume the queue with its next item back
+    mass.cancel_task.assert_called_once_with("queue_buffer_completed_q1")
     # the next item is back, so the stop does not read as the end of the queue
     assert queue.next_item is not None
     assert queue.next_item.queue_item_id == "item_2"
@@ -232,28 +257,35 @@ def test_paused_queue_has_no_sleep_timer_estimate() -> None:
 
     ctrl._handle_sleep_timer(queue, *_states(PlaybackState.PAUSED, "item_1"))
 
-    mass.players.update_sleep_timer_expires_at.assert_called_with("q1", None)
+    mass.players.update_sleep_timer.assert_called_with("q1", SleepTimerMode.END_OF_CHAPTER, None)
     assert ctrl._queue_data["q1"].sleep_timer_target is not None
 
 
 @pytest.mark.parametrize(
-    ("reported_item", "prev_elapsed", "stops", "target_item"),
+    ("reported_item", "prev_elapsed", "enqueued_item", "stops", "target_item"),
     [
         # a player holding its next item advanced on its own at the end
-        ("item_2", 598, True, None),
+        ("item_2", 598, None, True, None),
+        # ... or at the real end of audio shorter than the stated duration
+        ("item_2", 300, "item_2", True, None),
         # a skip on the device
-        ("item_2", 300, False, "item_2"),
+        ("item_2", 300, None, False, "item_2"),
         # a player holding the item as its own repeat started it over at the end
-        ("item_1", 598, True, None),
-        ("item_1", 300, False, "item_1"),
+        ("item_1", 598, None, True, None),
+        ("item_1", 300, None, False, "item_1"),
     ],
 )
 def test_leaving_the_target_item_at_its_end_stops_the_queue(
-    reported_item: str, prev_elapsed: int, stops: bool, target_item: str | None
+    reported_item: str,
+    prev_elapsed: int,
+    enqueued_item: str | None,
+    stops: bool,
+    target_item: str | None,
 ) -> None:
     """The target item ended when the player left it, or started it over, near the stop."""
     ctrl, queue, mass = _controller()
     ctrl.set_sleep_timer_target("q1", SleepTimerMode.END_OF_ITEM)
+    ctrl._queue_data["q1"].next_item_id_enqueued = enqueued_item
     queue.current_index = 0 if reported_item == "item_1" else 1
     queue.current_item = ctrl._queue_data["q1"].items[queue.current_index]
     queue.elapsed_time = 1
@@ -284,22 +316,35 @@ def test_a_report_lagging_behind_a_switch_leaves_the_target_alone() -> None:
     )
 
 
-@pytest.mark.parametrize(("active", "stops"), [(True, True), (False, False)])
-def test_idle_queue_ends_the_sleep_timer(active: bool, stops: bool) -> None:
+@pytest.mark.parametrize(
+    ("active", "prev_playback_state", "stops", "keeps_target"),
+    [
+        (True, PlaybackState.PLAYING, True, False),
+        (False, PlaybackState.PLAYING, False, False),
+        # a paused player that went idle after its pause timeout
+        (True, PlaybackState.PAUSED, False, True),
+    ],
+)
+def test_idle_queue_ends_the_sleep_timer(
+    active: bool, prev_playback_state: PlaybackState, stops: bool, keeps_target: bool
+) -> None:
     """A queue that stopped ran out of audio at the target; one taken by another source is let go."""
     ctrl, queue, mass = _controller()
-    ctrl.set_sleep_timer_target("q1", SleepTimerMode.END_OF_ITEM)
+    ctrl.set_sleep_timer_target("q1", SleepTimerMode.END_OF_CHAPTER)
     queue.active = active
     queue.state = PlaybackState.IDLE
-    prev_state, new_state = _states(PlaybackState.IDLE, "item_1")
+    prev_state, new_state = _states(
+        PlaybackState.IDLE, "item_1", prev_elapsed=50, prev_playback_state=prev_playback_state
+    )
+    prev_state["current_item"] = queue.current_item
 
     ctrl._handle_sleep_timer(queue, prev_state, new_state)
     ctrl._handle_end_of_queue(queue, prev_state, new_state)
 
     # the stop is not read as the end of the queue, which would settle or resume it
     assert _scheduled(mass) == (["_handle_stop"] if stops else [])
-    assert ctrl._queue_data["q1"].sleep_timer_target is None
-    mass.players._clear_sleep_timer.assert_called_once_with(mass.players.get_player.return_value)
+    assert (ctrl._queue_data["q1"].sleep_timer_target is not None) is keeps_target
+    assert mass.players.reset_sleep_timer.called is not keeps_target
 
 
 @pytest.mark.parametrize("stop", ["mark_ended", "_handle_stop"])
@@ -317,7 +362,7 @@ async def test_a_stop_and_the_end_of_the_queue_clear_the_sleep_timer(stop: str) 
 
     _scheduled(mass)
     assert ctrl._queue_data["q1"].sleep_timer_target is None
-    mass.players._clear_sleep_timer.assert_called_once_with(mass.players.get_player.return_value)
+    mass.players.reset_sleep_timer.assert_called_once_with(mass.players.get_player.return_value)
 
 
 @pytest.mark.parametrize(
@@ -383,7 +428,7 @@ async def test_sleep_timer_stop_on_the_last_item_ends_the_queue(
     find_dynamic_source.assert_not_called()
     ctrl.play_index.assert_not_called()
     ctrl.mark_ended.assert_called_once_with("q1")
-    assert queue_data.sleep_timer_stopped is False
+    assert queue_data.sleep_timer_stopped_target is None
 
 
 @pytest.mark.parametrize("flow_mode", [False, True])
@@ -411,4 +456,77 @@ def test_chapter_stop_in_the_last_item_keeps_the_queue_resumable(flow_mode: bool
     # the item did not play to its end, so the queue is not settled or ended
     assert _scheduled(mass) == []
     assert queue.ended is False
-    assert queue_data.sleep_timer_stopped is False
+    assert queue_data.sleep_timer_stopped_target is None
+
+
+def test_chapter_timer_on_an_item_without_chapters_shows_the_item_end() -> None:
+    """The player shows the item end, the target keeps the chapter mode for the next item."""
+    ctrl, queue, mass = _controller()
+    ctrl.set_sleep_timer_target("q1", SleepTimerMode.END_OF_CHAPTER)
+    queue.current_index = 1
+    queue.current_item = ctrl._queue_data["q1"].items[1]
+
+    # a skip on the device to the second book, which has no chapters
+    ctrl._handle_sleep_timer(queue, *_states(PlaybackState.PLAYING, "item_2", prev_elapsed=50))
+
+    assert ctrl._queue_data["q1"].sleep_timer_target == SleepTimerTarget(
+        SleepTimerMode.END_OF_CHAPTER, "item_2", 600
+    )
+    assert mass.players.update_sleep_timer.call_args.args[:2] == (
+        "q1",
+        SleepTimerMode.END_OF_ITEM,
+    )
+
+
+def test_playing_again_forgets_an_earlier_sleep_timer_stop() -> None:
+    """A player that paused instead of going idle on the stop plays on with a normal queue end."""
+    ctrl, queue, _ = _controller()
+    queue_data = ctrl._queue_data["q1"]
+    queue_data.sleep_timer_stopped_target = SleepTimerTarget(
+        SleepTimerMode.END_OF_ITEM, "item_1", 600
+    )
+
+    ctrl._handle_sleep_timer(
+        queue,
+        *_states(PlaybackState.PLAYING, "item_1", prev_playback_state=PlaybackState.PAUSED),
+    )
+
+    assert queue_data.sleep_timer_stopped_target is None
+
+
+@pytest.mark.parametrize(
+    ("mode", "stop_report", "resumes_at"),
+    [
+        # the end of the item: playing on starts the next one
+        (SleepTimerMode.END_OF_ITEM, ("item_1", 600), ("item_2", 0)),
+        # a player holding its next item reaches the real end of shorter audio and moves on
+        (SleepTimerMode.END_OF_ITEM, ("item_2", 2), ("item_2", 2)),
+        # the end of a chapter inside the item: playing on starts the next chapter
+        (SleepTimerMode.END_OF_CHAPTER, ("item_1", 100), ("item_1", 100)),
+    ],
+)
+async def test_resume_after_a_sleep_timer_stop(
+    mode: SleepTimerMode, stop_report: tuple[str, float], resumes_at: tuple[str, int]
+) -> None:
+    """Player reports drive the stop, a resume picks up after what the timer let finish."""
+    ctrl, queue, mass = _controller()
+    ctrl._check_player_permission = Mock()  # type: ignore[method-assign]
+    ctrl.play_index = AsyncMock()  # type: ignore[method-assign]
+    mass.streams.is_smart_fades_active.return_value = False
+    queue_data = ctrl._queue_data["q1"]
+    queue_data.next_item_id_enqueued = "item_2"
+    ctrl._update_queue_from_player(_player(PlaybackState.PLAYING, "item_1", 40))
+    ctrl.set_sleep_timer_target("q1", mode)
+
+    stopped_item, stopped_at = stop_report
+    ctrl._update_queue_from_player(_player(PlaybackState.PLAYING, "item_1", 95))
+    ctrl._update_queue_from_player(_player(PlaybackState.PLAYING, stopped_item, stopped_at))
+    assert "_handle_stop" in _scheduled(mass)
+    assert queue_data.sleep_timer_target is None
+    # what the scheduled _handle_stop parks on the playing queue before the player goes idle
+    queue.resume_pos = int(stopped_at)
+    ctrl._update_queue_from_player(_player(PlaybackState.IDLE, stopped_item, stopped_at))
+
+    await ctrl.resume("q1")
+
+    assert ctrl.play_index.call_args.args[1:3] == resumes_at

@@ -500,10 +500,25 @@ class PlaybackTrackerMixin(_PlayerQueuesBase):
             and new_state["state"] == PlaybackState.IDLE
         ):
             return
-        sleep_timer_stopped = queue_data.sleep_timer_stopped
-        queue_data.sleep_timer_stopped = False
+        sleep_timer_stopped_target = queue_data.sleep_timer_stopped_target
+        queue_data.sleep_timer_stopped_target = None
         # check if no more items in the queue (next_item should be None at end of queue)
         if queue.next_item is not None:
+            if (
+                sleep_timer_stopped_target is not None
+                and (stopped_item := queue.current_item) is not None
+                and stopped_item.queue_item_id == sleep_timer_stopped_target.queue_item_id
+                and sleep_timer_stopped_target.stop_position >= (stopped_item.duration or 0)
+                and (next_index := self.index_by_id(queue.queue_id, queue.next_item.queue_item_id))
+                is not None
+            ):
+                # the sleep timer stopped at the end of the item: playing on starts the next one
+                queue.current_index = next_index
+                queue.current_item = queue.next_item
+                queue.next_item = self.get_next_item(queue.queue_id, next_index)
+                queue.elapsed_time = 0
+                queue.elapsed_time_last_updated = time.time()
+                queue.resume_pos = 0
             return
         # check if we had a previous item playing
         if prev_state["current_item_id"] is None:
@@ -522,7 +537,7 @@ class PlaybackTrackerMixin(_PlayerQueuesBase):
             return
 
         async def _settle_or_resume_delayed() -> None:
-            if sleep_timer_stopped:
+            if sleep_timer_stopped_target is not None:
                 # the sleep timer ended playback here: nothing resumes or refills the queue
                 self._finish_queue(queue, prev_item)
                 return
@@ -680,7 +695,14 @@ class PlaybackTrackerMixin(_PlayerQueuesBase):
     ) -> None:
         """Stop the queue once it reaches the point its sleep timer waits for."""
         queue_id = queue.queue_id
-        target = self._queue_data[queue_id].sleep_timer_target
+        queue_data = self._queue_data[queue_id]
+        if (
+            new_state["state"] == PlaybackState.PLAYING
+            and prev_state["state"] != PlaybackState.PLAYING
+        ):
+            # playing again: a stop a sleep timer made before no longer ends the queue
+            queue_data.sleep_timer_stopped_target = None
+        target = queue_data.sleep_timer_target
         if target is None:
             return
         if not queue.active:
@@ -688,8 +710,10 @@ class PlaybackTrackerMixin(_PlayerQueuesBase):
             self._clear_sleep_timer(queue_id)
             return
         if new_state["state"] == PlaybackState.IDLE:
-            # the player stopped, or ran out of audio: the queue feeds nothing past the target
-            self._stop_for_sleep_timer(queue_id)
+            if prev_state["state"] == PlaybackState.PLAYING:
+                # the player stopped, or ran out of audio: the queue feeds nothing past the target
+                self._stop_for_sleep_timer(queue_id)
+            # an idle paused player (a pause timeout) still stops at the target once resumed
             return
         current_item_id = new_state["current_item_id"]
         if current_item_id is None or (
@@ -700,13 +724,18 @@ class PlaybackTrackerMixin(_PlayerQueuesBase):
             return
         # a player that holds its next item, or the target as its own repeat, moves on from the
         # end of the target on its own
+        left_target = prev_state["current_item_id"] == target.queue_item_id
         left_target_end = (
-            prev_state["current_item_id"] == target.queue_item_id
+            left_target
             and prev_state["last_playing_elapsed_time"]
             >= target.stop_position - SLEEP_TIMER_NATURAL_END_MARGIN
         )
         if current_item_id != target.queue_item_id:
-            if left_target_end:
+            # the item handed to the player ahead of time follows the target's real end, which
+            # can come well before its stated duration
+            if left_target_end or (
+                left_target and current_item_id == queue_data.next_item_id_enqueued
+            ):
                 self._stop_for_sleep_timer(queue_id)
             else:
                 # a skip on the device: stop at the end of what plays now
@@ -724,9 +753,7 @@ class PlaybackTrackerMixin(_PlayerQueuesBase):
         ):
             self._stop_for_sleep_timer(queue_id)
             return
-        self.mass.players.update_sleep_timer_expires_at(
-            queue_id, self._sleep_timer_expires_at(queue)
-        )
+        self._update_player_sleep_timer(queue)
 
     def _handle_playback_progress_report(
         self, queue: PlayerQueue, prev_state: CompareState, new_state: CompareState

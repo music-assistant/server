@@ -1064,8 +1064,12 @@ class TestSleepTimer:
             controller.set_sleep_timer("player_1", mode=SleepTimerMode.END_OF_CHAPTER)
         assert player.sleep_timer_mode is None
 
-        set_target.side_effect = None
-        set_target.return_value = 123.0
+        def _set_target(queue_id: str, mode: SleepTimerMode) -> float:
+            # the queue shows its target on the player
+            controller.update_sleep_timer(queue_id, mode, 123.0)
+            return 123.0
+
+        set_target.side_effect = _set_target
         expires_at = controller.set_sleep_timer("player_1", mode=SleepTimerMode.END_OF_CHAPTER)
 
         assert expires_at == 123.0
@@ -1090,7 +1094,7 @@ class TestSleepTimer:
         assert player.sleep_timer_expires_at is None
 
     @pytest.mark.parametrize(
-        ("mode", "expires_at", "update", "expected"),
+        ("update_mode", "expires_at", "update", "expected"),
         [
             # position reports jitter
             (SleepTimerMode.END_OF_CHAPTER, 123.0, 123.4, 123.0),
@@ -1098,14 +1102,14 @@ class TestSleepTimer:
             # paused, and playing again
             (SleepTimerMode.END_OF_CHAPTER, 123.0, None, None),
             (SleepTimerMode.END_OF_CHAPTER, None, 125.0, 125.0),
-            # a duration timer is not the queue's to update
-            (SleepTimerMode.DURATION, 123.0, 125.0, 123.0),
+            # a chapter timer moved to an item without chapters
+            (SleepTimerMode.END_OF_ITEM, 123.0, 123.4, 123.4),
         ],
     )
-    def test_update_sleep_timer_expires_at(
+    def test_update_sleep_timer(
         self,
         mock_mass: MagicMock,
-        mode: SleepTimerMode,
+        update_mode: SleepTimerMode,
         expires_at: float | None,
         update: float | None,
         expected: float | None,
@@ -1115,12 +1119,13 @@ class TestSleepTimer:
         provider = MockProvider("test_provider", instance_id="test", mass=mock_mass)
         player = MockPlayer(provider, "player_1", "Player 1")
         controller._players = {"player_1": player}
-        player.set_sleep_timer_mode(mode)
+        player.set_sleep_timer_mode(SleepTimerMode.END_OF_CHAPTER)
         player.set_sleep_timer_expires_at(expires_at)
 
-        controller.update_sleep_timer_expires_at("player_1", update)
+        controller.update_sleep_timer("player_1", update_mode, update)
 
         assert player.sleep_timer_expires_at == expected
+        assert player.sleep_timer_mode == update_mode
 
 
 class TestUnregisterCleanup:

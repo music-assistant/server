@@ -524,7 +524,7 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         self._queue_data[queue_id].sleep_timer_target = SleepTimerTarget(
             mode, queue.current_item.queue_item_id, stop_position
         )
-        return self._sleep_timer_expires_at(queue)
+        return self._update_player_sleep_timer(queue)
 
     def drop_sleep_timer_target(self, queue_id: str) -> None:
         """
@@ -1136,7 +1136,7 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
             queue_data.flow_mode_stream_log = []
             queue_data.flow_buffer_completed = None
             queue_data.flow_queue_exhausted = None
-            queue_data.sleep_timer_stopped = False
+            queue_data.sleep_timer_stopped_target = None
             target_player = self.mass.players.get_player(queue_id)
             if target_player is None:
                 raise PlayerUnavailableError(f"Player {queue_id} is not available")
@@ -1224,7 +1224,8 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
                         # the same actionable error.
                         if isinstance(err, MediaNotFoundError):
                             queue_item.available = False
-                next_index = self._get_next_index(queue_id, index, allow_repeat=False)
+                # moving past an item that fails to load is a skip, also past a sleep timer target
+                next_index = self._get_next_index(queue_id, index, is_skip=True, allow_repeat=False)
                 if next_index is None and queue.is_dynamic and not refilled:
                     refilled = True
                     await self._fill_dynamic_tracks(queue_id)
@@ -2294,9 +2295,24 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         queue_data.sleep_timer_target = SleepTimerTarget(
             target.mode, queue.current_item.queue_item_id, stop_position
         )
-        self.mass.players.update_sleep_timer_expires_at(
-            queue_id, self._sleep_timer_expires_at(queue)
-        )
+        self._update_player_sleep_timer(queue)
+
+    def _update_player_sleep_timer(self, queue: PlayerQueue) -> float | None:
+        """Show the queue's sleep timer target on its player, returns the estimated stop."""
+        target = self._queue_data[queue.queue_id].sleep_timer_target
+        if target is None:
+            return None
+        mode = target.mode
+        item = self.get_item(queue.queue_id, target.queue_item_id)
+        if mode == SleepTimerMode.END_OF_CHAPTER and not (
+            item and item.media_item and item.media_item.metadata.chapters
+        ):
+            # an item without chapters stops at its end; the target keeps the chapter mode for
+            # the next item it moves to
+            mode = SleepTimerMode.END_OF_ITEM
+        expires_at = self._sleep_timer_expires_at(queue)
+        self.mass.players.update_sleep_timer(queue.queue_id, mode, expires_at)
+        return expires_at
 
     def _forget_sleep_timer_target(self, queue_id: str) -> bool:
         """Drop the sleep timer target and give the queue its next item back, False if none."""
@@ -2315,16 +2331,19 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
             return
         # the player itself, not its sync leader: the queue's player is the one with the timer
         if (player := self.mass.players.get_player(queue_id)) is not None:
-            self.mass.players._clear_sleep_timer(player)
+            self.mass.players.reset_sleep_timer(player)
 
     def _stop_for_sleep_timer(self, queue_id: str) -> None:
         """Stop the queue at the point its sleep timer waited for."""
         # cleared first: with its next item back, the stop reads as a stop and not as the end
         # of the queue, which would settle or resume it
+        target = self._queue_data[queue_id].sleep_timer_target
         self._clear_sleep_timer(queue_id)
         # on the last item there is no next item to give back, so the end of queue check
         # must know this stop ends playback
-        self._queue_data[queue_id].sleep_timer_stopped = True
+        self._queue_data[queue_id].sleep_timer_stopped_target = target
+        # with its next item back, a flow stream that ran out must not resume the queue
+        self.mass.cancel_task(f"queue_buffer_completed_{queue_id}")
         self.mass.create_task(self._handle_stop(queue_id))
 
     def _clear(self, queue_id: str, skip_stop: bool = False) -> None:
