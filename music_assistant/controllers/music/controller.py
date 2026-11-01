@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Awaitable, Callable, Coroutine, Iterable, Sequence
-from contextlib import suppress
+from collections.abc import Awaitable, Callable, Coroutine, Iterable, Mapping, Sequence
+from contextlib import aclosing, suppress
 from copy import deepcopy
 from datetime import datetime
 from itertools import zip_longest
@@ -1198,7 +1198,18 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             )
         else:
             provider_clause = f"p.provider IN {available_providers_str}"
-        query = f"SELECT p.* FROM {DB_TABLE_MEDIA_PROGRESS} p WHERE {media_type_clause} AND {provider_clause} "
+        # a play is logged under the id it was started from, so resolve provider rows to the
+        # library item they map to; one item can otherwise show up twice
+        entry_item_id = "COALESCE(CAST(l.item_id AS TEXT), p.item_id)"
+        entry_provider = "CASE WHEN l.item_id IS NULL THEN p.provider ELSE 'library' END"
+        query = (
+            f"SELECT p.*, {entry_item_id} AS entry_item_id, {entry_provider} AS entry_provider "
+            f"FROM {DB_TABLE_MEDIA_PROGRESS} p "
+            f"LEFT JOIN {DB_TABLE_PROVIDER_MAPPINGS} l ON p.provider != 'library' "
+            "AND l.media_type = p.media_type AND l.provider_instance = p.provider "
+            "AND l.provider_item_id = p.item_id "
+            f"WHERE {media_type_clause} AND {provider_clause} "
+        )
         if fully_played_only:
             query += "AND p.fully_played = 1 "
         if userid:
@@ -1213,13 +1224,11 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         if played_after_timestamp is not None:
             query += "AND p.timestamp >= :played_after_timestamp "
             params["played_after_timestamp"] = played_after_timestamp
-        query += "ORDER BY p.timestamp DESC"
-        db_rows = await self.mass.music.database.get_rows_from_query(
-            query, params=params or None, limit=limit
-        )
+        query += "ORDER BY p.timestamp DESC, p.rowid DESC"
         result: list[ItemMapping] = []
         available_providers = ("library", *get_global_cache_value("available_providers", []))
-        for db_row in db_rows:
+        # an entry keeps the id its newest play was logged under, so it matches a playlog row
+        for db_row in await self._get_newest_playlog_entries(query, params, limit):
             provider = db_row["provider"]
             result.append(
                 ItemMapping.from_dict(
@@ -3124,6 +3133,25 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             podcasts=visible_items(self.mass, results.podcasts, user),
             sound_effects=visible_items(self.mass, results.sound_effects, user),
         )
+
+    async def _get_newest_playlog_entries(
+        self, query: str, params: dict[str, Any], limit: int
+    ) -> list[Mapping[str, Any]]:
+        """Return the newest playlog row of each entry, up to limit entries (0 for all)."""
+        # the limit counts entries rather than rows, so it can't go into the query
+        entries: list[Mapping[str, Any]] = []
+        seen: set[tuple[str, str, str]] = set()
+        db_rows = self.mass.music.database.iter_rows_from_query(query, params or None)
+        async with aclosing(db_rows):
+            async for db_row in db_rows:
+                entry = (db_row["media_type"], db_row["entry_provider"], db_row["entry_item_id"])
+                if entry in seen:
+                    continue
+                seen.add(entry)
+                entries.append(db_row)
+                if len(entries) == limit:
+                    break
+        return entries
 
     async def _search_shareable_url(self, search_query: str) -> SearchResults | None:
         """
