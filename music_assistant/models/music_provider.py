@@ -31,6 +31,7 @@ from music_assistant_models.media_items import (
     Audiobook,
     BrowseFolder,
     ItemMapping,
+    MediaItemBookmark,
     MediaItemImage,
     MediaItemTranscriptCue,
     MediaItemType,
@@ -736,6 +737,49 @@ class MusicProvider(MediaCatalogMixin, RecommendationsMixin, AudioStreamMixin, P
         Returns a boolean with the fully_played status
         an integer with the resume position in ms,
         and an optional timestamp as datetime giving when this resume position was set
+        """
+        raise NotImplementedError
+
+    async def get_bookmarks(
+        self, media_type: MediaType, prov_item_id: str
+    ) -> list[MediaItemBookmark]:
+        """
+        Get the user's bookmarks of the given audiobook or podcast episode.
+
+        Will only be called if the provider supports ProviderFeature.AUDIOBOOK_BOOKMARKS
+        or ProviderFeature.PODCAST_EPISODE_BOOKMARKS for the media type.
+
+        :param media_type: MediaType.AUDIOBOOK or MediaType.PODCAST_EPISODE.
+        :param prov_item_id: The id of the item on the provider.
+        """
+        raise NotImplementedError
+
+    async def set_bookmark(
+        self, media_type: MediaType, prov_item_id: str, start: float, name: str
+    ) -> None:
+        """
+        Add a bookmark to the given item, or rename the one at the same start.
+
+        Will only be called if the provider supports ProviderFeature.AUDIOBOOK_BOOKMARKS_EDIT
+        or ProviderFeature.PODCAST_EPISODE_BOOKMARKS_EDIT for the media type.
+
+        :param media_type: MediaType.AUDIOBOOK or MediaType.PODCAST_EPISODE.
+        :param prov_item_id: The id of the item on the provider.
+        :param start: Position of the bookmark in seconds.
+        :param name: Name of the bookmark.
+        """
+        raise NotImplementedError
+
+    async def remove_bookmark(self, media_type: MediaType, prov_item_id: str, start: float) -> None:
+        """
+        Remove the bookmark at the given start of the given item.
+
+        Will only be called if the provider supports ProviderFeature.AUDIOBOOK_BOOKMARKS_EDIT
+        or ProviderFeature.PODCAST_EPISODE_BOOKMARKS_EDIT for the media type.
+
+        :param media_type: MediaType.AUDIOBOOK or MediaType.PODCAST_EPISODE.
+        :param prov_item_id: The id of the item on the provider.
+        :param start: Position of the bookmark in seconds.
         """
         raise NotImplementedError
 

@@ -486,6 +486,9 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
                     "provider": prov_mapping.provider_instance,
                 },
             )
+            await self.mass.music.bookmarks.remove_copy(
+                self.media_type, prov_mapping.provider_instance, prov_mapping.item_id
+            )
         # delete genre exclusions for this media item
         await self.mass.music.database.delete(
             DB_TABLE_GENRE_MEDIA_ITEM_EXCLUSION,
@@ -1588,6 +1591,9 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
                 "provider": provider_instance_id,
             },
         )
+        await self.mass.music.bookmarks.remove_copy(
+            self.media_type, provider_instance_id, provider_item_id
+        )
         library_item.provider_mappings = remaining_mappings
         # if this was the last mapping for the provider instance, strip any artwork
         # that belonged to it (e.g. local file paths that are no longer resolvable)
@@ -1656,6 +1662,10 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
                 "provider_instance": provider_instance_id,
             },
         )
+        for prov_mapping in library_item.provider_mappings - remaining_mappings:
+            await self.mass.music.bookmarks.remove_copy(
+                self.media_type, provider_instance_id, prov_mapping.item_id
+            )
         library_item.provider_mappings = remaining_mappings
         # the item is kept (it still has other providers), but it may carry artwork
         # that belonged to the removed provider (e.g. local file paths that are no

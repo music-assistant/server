@@ -649,6 +649,12 @@ class WebsocketClientHandler:
                 # a like or dislike is the business of its own user only
                 return
 
+            if event.event == EventType.BOOKMARKS_UPDATED and (
+                self._authenticated_user is None or event.data != self._authenticated_user.user_id
+            ):
+                # as are bookmarks; the data is the id of the user they belong to
+                return
+
             if isinstance(event.data, MediaItem) and event.data.favorite is not None:
                 # a library item carries the favorite state of the user that touched it; every
                 # client keeps its own and learns of changes through the favorite event

@@ -552,7 +552,7 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
     @api_command(
         "player_queues/play_media", required_scope=Scope.QUEUES_CONTROL, allow_impersonation=True
     )
-    async def play_media(
+    async def play_media(  # noqa: PLR0913
         self,
         queue_id: str,
         media: MediaItemType | ItemMapping | str | list[MediaItemType | ItemMapping | str],
@@ -564,6 +564,7 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         shuffle: bool | None = None,
         sort_field: SortField | None = None,
         sort_direction: SortDirection | None = None,
+        start_position: float | None = None,
     ) -> None:
         """
         Play media item(s) on the given queue.
@@ -586,12 +587,16 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         :param sort_field: Play an album or playlist in the order its tracks listing shows for
             this sort field, before applying start_item; the listing's default when omitted.
         :param sort_direction: Sort direction, the field's default when omitted.
-        :raises InvalidDataError: When the sort key is unknown, or an album or playlist does
-            not offer the sort field.
+        :param start_position: Position in seconds to start an audiobook or episode at, e.g. a
+            bookmark, instead of its resume position.
+        :raises InvalidDataError: When the sort key is unknown, an album or playlist does
+            not offer the sort field, or a start position comes with more than one item.
         """
         self._check_player_permission(queue_id)
         if not self.get(queue_id):
             raise PlayerUnavailableError(f"Queue {queue_id} is not available")
+        if start_position is not None and isinstance(media, list) and len(media) > 1:
+            raise InvalidDataError("A start position fits a single audiobook or episode only")
         # a request with a sort that is not offered is rejected before anything is played
         sort_field, sort_direction = await _resolve_play_sort(
             media, sort_field, sort_direction, sort_by
@@ -613,6 +618,7 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
             sort_direction,
             start_from_beginning,
             shuffle,
+            start_position,
         )
 
     @api_command("player_queues/move_item", required_scope=Scope.QUEUES_CONTROL)
