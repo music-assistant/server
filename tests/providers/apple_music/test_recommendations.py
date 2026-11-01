@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING, Any, cast
 from unittest.mock import AsyncMock, Mock
 
 import pytest
-from music_assistant_models.media_items import Radio, UniqueList
+from music_assistant_models.media_items import Album, Artist, Playlist, Radio, Track, UniqueList
 
 from music_assistant.providers.apple_music.provider import AppleMusicProvider
 
@@ -288,3 +288,118 @@ async def test_unnamed_station_answered_under_other_id_resolves_on_its_own(
     api_get_data.side_effect = [payload, batch, single]
     folders = await provider.recommendation_manager.get_personal_recommendations()
     assert [(item.item_id, item.name) for item in folders[0].items] == [("ra.u-1", "Mine")]
+
+
+@pytest.mark.asyncio
+async def test_mixed_personal_recommendations_preserve_supported_media(
+    provider: AppleMusicProvider,
+) -> None:
+    """Personal recommendations expose playable albums, artists, songs, and playlists."""
+    response = _recommendations_response(
+        {
+            "Made for You": [
+                {
+                    "type": "playlists",
+                    "id": "pl.pm-example",
+                    "attributes": {
+                        "name": "New Music Mix",
+                        "curatorName": "Apple Music",
+                        "playParams": {"id": "pl.pm-example", "kind": "playlist"},
+                    },
+                },
+                {
+                    "type": "albums",
+                    "id": "al.example",
+                    "attributes": {
+                        "name": "Example Album",
+                        "artistName": "Example Artist",
+                        "playParams": {"id": "al.example", "kind": "album"},
+                    },
+                },
+                {"type": "artists", "id": "ar.example", "attributes": {"name": "Queen"}},
+                {
+                    "type": "songs",
+                    "id": "tr.example",
+                    "attributes": {
+                        "name": "Example Track",
+                        "artistName": "Queen",
+                        "durationInMillis": 183000,
+                        "playParams": {"id": "tr.example", "kind": "song"},
+                    },
+                },
+                _station("ra.example", "Personal Station"),
+            ]
+        }
+    )
+    api_get_data = cast("AsyncMock", provider.api_client.get_data)
+    api_get_data.return_value = response
+
+    rows = await provider.get_recommendations()
+    await asyncio.sleep(0)
+    items = await provider.get_recommendation_items("made_for_you")
+
+    assert [row.name for row in rows] == ["Made for You"]
+    assert [type(item) for item in items] == [Playlist, Album, Artist, Track, Radio]
+    assert [item.name for item in items] == [
+        "New Music Mix",
+        "Example Album",
+        "Queen",
+        "Example Track",
+        "Personal Station",
+    ]
+    assert items[0].item_id == "pl.pm-example"
+    assert items[3].duration == 183
+    api_get_data.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_mixed_personal_recommendations_keep_radio_browse_isolated(
+    provider: AppleMusicProvider,
+) -> None:
+    """Ordinary playlists in a personalised shelf never appear as radio stations."""
+    payload = _recommendations_response(
+        {
+            "Made for You": [
+                {"type": "playlists", "id": "pl.pm-1", "attributes": {"name": "Favorites Mix"}},
+                _station("ra.2", "Your Station"),
+            ]
+        }
+    )
+    provider.api_client.get_data = AsyncMock(return_value=payload)  # type: ignore[method-assign]
+
+    items = await provider.get_recommendation_items("made_for_you")
+    stations = await provider.recommendation_manager.browse_stations()
+    assert [item.item_id for item in items] == ["pl.pm-1", "ra.2"]
+    assert [station.item_id for station in stations] == ["ra.2"]
+
+    manager = provider.recommendation_manager
+    manager._station_id_to_name.clear()
+    manager._station_name_to_id.clear()
+    manager._populate_station_maps(await provider._recommendation_payload())
+    assert manager._station_id_to_name == {"ra.2": "Your Station"}
+    assert manager._station_name_to_id == {"Your Station": "ra.2"}
+
+
+@pytest.mark.asyncio
+async def test_mixed_personal_recommendations_skip_unresolved_media(
+    provider: AppleMusicProvider,
+) -> None:
+    """Incomplete references and unsupported media do not fabricate catalogue results."""
+    payload = _recommendations_response(
+        {
+            "Personal": [
+                {"type": "albums", "id": "al.ref-only"},
+                {"type": "music-videos", "id": "mv.1", "attributes": {"name": "Unsupported"}},
+                _station("ra.live", "Live", is_live=True),
+                {"type": "artists", "id": "ar.known", "attributes": {"name": "Cold Chisel"}},
+            ]
+        }
+    )
+    provider.api_client.get_data = AsyncMock(return_value=payload)  # type: ignore[method-assign]
+
+    rows = await provider.get_recommendations()
+    await asyncio.sleep(0)
+    items = await provider.get_recommendation_items("personal")
+
+    assert [row.name for row in rows] == ["Personal"]
+    assert [item.name for item in items] == ["Cold Chisel"]
