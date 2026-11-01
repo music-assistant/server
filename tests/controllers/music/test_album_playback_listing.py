@@ -407,9 +407,9 @@ async def test_an_album_outside_the_library_lists_each_track_under_its_own_id(
 ) -> None:
     """An album that is not in the library plays as its provider lists it."""
     fetch = AsyncMock(side_effect=lambda *_: _listed_tracks("qobuz_1", 2, 1))
+    provider = SimpleNamespace(instance_id="qobuz_1", available=True, get_album_tracks=fetch)
     with (
-        patch.object(mass, "get_provider", return_value=SimpleNamespace(instance_id="qobuz_1")),
-        patch.object(mass.music.albums, "_get_provider_album_tracks", fetch),
+        patch.object(mass, "get_provider", return_value=provider),
         patch.object(mass.music.albums, "_backfill_album_on_tracks", AsyncMock()),
     ):
         listing = await mass.music.albums.playback_listing("album_x", "qobuz_1")
