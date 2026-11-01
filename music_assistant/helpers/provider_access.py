@@ -71,7 +71,7 @@ def visible_music_sources(mass: MusicAssistant, user: User | None) -> list[str] 
 
 def hidden_music_sources(mass: MusicAssistant, user: User | None) -> set[str]:
     """
-    Return the instance ids of the music sources the given user may not see.
+    Return the instance ids, and service domains, of the music sources the user may not see.
 
     The domain of a service is included when the user may see none of its accounts, so a
     reference by domain is refused like one by instance id.
