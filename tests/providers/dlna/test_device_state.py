@@ -127,6 +127,307 @@ async def test_position_from_before_a_resume_is_not_extrapolated() -> None:
     assert player.elapsed_time_last_updated >= resumed_at
 
 
+class _Clock:
+    """Stand-in for the time module that the test moves forward by hand."""
+
+    def __init__(self, now: float) -> None:
+        self.now = now
+
+    def time(self) -> float:
+        return self.now
+
+
+def _mock_clock(monkeypatch: pytest.MonkeyPatch) -> _Clock:
+    """
+    Replace the clock of the player and of its base class by one moved forward by hand.
+
+    :param monkeypatch: The pytest monkeypatch fixture.
+    """
+    clock = _Clock(REPORTED_AT.timestamp() + 600)
+    monkeypatch.setattr("music_assistant.providers.dlna.player.time", clock)
+    monkeypatch.setattr("music_assistant.models.player.time", clock)
+    return clock
+
+
+def _stamp(clock: _Clock) -> datetime:
+    """
+    Return the current time of the mocked clock as a device position timestamp.
+
+    :param clock: The mocked clock.
+    """
+    return datetime.fromtimestamp(clock.now, UTC)
+
+
+async def _start(
+    monkeypatch: pytest.MonkeyPatch, media_position: float | None
+) -> tuple[DLNAPlayer, MagicMock, _Clock]:
+    """
+    Start playback on a mocked clock the way play_media does, and return the player.
+
+    :param monkeypatch: The pytest monkeypatch fixture.
+    :param media_position: The position the device reports.
+    """
+    clock = _mock_clock(monkeypatch)
+    device = _mock_device(
+        transport_state=TransportState.STOPPED,
+        media_position=media_position,
+        media_position_updated_at=REPORTED_AT,
+        async_update=AsyncMock(),
+    )
+    player = _player(device)
+    await player.set_dynamic_attributes()
+    # what play_media assumes until the device reports otherwise
+    player._attr_playback_state = PlaybackState.PLAYING
+    player._attr_elapsed_time = 0
+    player._attr_elapsed_time_last_updated = clock.now
+    device.transport_state = TransportState.PLAYING
+    if media_position is not None:
+        device.media_position_updated_at = _stamp(clock)
+    await player.set_dynamic_attributes()
+    return player, device, clock
+
+
+async def _set_state(player: DLNAPlayer, device: MagicMock, state: TransportState) -> None:
+    """
+    Let the device report a new transport state, which polls it first like the event does.
+
+    :param player: The player of the device.
+    :param device: The mocked device.
+    :param state: The transport state the device reports.
+    """
+    device.transport_state = state
+    await player.poll()
+    await player.set_dynamic_attributes()
+
+
+@pytest.mark.parametrize("media_position", [0, None])
+async def test_resume_continues_on_a_device_that_does_not_advance_its_position(
+    monkeypatch: pytest.MonkeyPatch, media_position: int | None
+) -> None:
+    """
+    A resume continues from the pause on a device whose position does not move.
+
+    Some LinkPlay devices report 00:00:00 for as long as they play, others no position at
+    all, so what the device reports after a resume is no better than before the pause.
+    """
+    player, device, clock = await _start(monkeypatch, media_position)
+    clock.now += 12
+    await _set_state(player, device, TransportState.PAUSED_PLAYBACK)
+    clock.now += 90
+    await _set_state(player, device, TransportState.PLAYING)
+
+    assert player.elapsed_time == 12.0
+    assert player.elapsed_time_last_updated == clock.now
+
+    clock.now += 16
+    await _set_state(player, device, TransportState.PAUSED_PLAYBACK)
+    clock.now += 30
+    await _set_state(player, device, TransportState.PLAYING)
+    clock.now += 2
+
+    assert player.corrected_elapsed_time == 30.0
+
+
+async def test_placeholder_position_restamped_during_the_pause_is_ignored(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An event that repeats 00:00:00 during the pause re-stamps it, which changes nothing."""
+    player, device, clock = await _start(monkeypatch, 0)
+    clock.now += 12
+    await _set_state(player, device, TransportState.PAUSED_PLAYBACK)
+    clock.now += 40
+    device.media_position_updated_at = _stamp(clock)
+    await player.set_dynamic_attributes()
+    clock.now += 50
+    await _set_state(player, device, TransportState.PLAYING)
+
+    assert player.elapsed_time == 12.0
+    assert player.elapsed_time_last_updated == clock.now
+
+
+async def test_normal_device_that_reports_late_after_play_media_is_followed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A device that was slow to start is not taken to be stuck at its first position."""
+    player, device, clock = await _start(monkeypatch, None)
+    clock.now += 9
+    device.media_position = 1
+    device.media_position_updated_at = _stamp(clock)
+    await _set_state(player, device, TransportState.PLAYING)
+
+    assert player.corrected_elapsed_time == 1.0
+
+    clock.now += 10
+    device.volume_level = 0.3
+    await player.set_dynamic_attributes()
+
+    assert player.corrected_elapsed_time == 11.0
+
+
+@pytest.mark.parametrize("media_position", [0, None])
+async def test_stop_starts_the_position_over(
+    monkeypatch: pytest.MonkeyPatch, media_position: int | None
+) -> None:
+    """Playback that starts over after a stop starts from 0, or the device's position, again."""
+    player, device, clock = await _start(monkeypatch, media_position)
+    clock.now += 12
+    await _set_state(player, device, TransportState.PAUSED_PLAYBACK)
+    await _set_state(player, device, TransportState.STOPPED)
+    clock.now += 5
+    await _set_state(player, device, TransportState.PLAYING)
+
+    assert player.elapsed_time == 0.0
+    assert player.elapsed_time_last_updated == clock.now
+
+
+async def test_next_track_starts_at_0_on_a_device_that_reports_no_position(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A track the device moves on to by itself starts at 0, not where the last one was."""
+    player, device, clock = await _start(monkeypatch, None)
+    clock.now += 60
+    device.current_track_uri = "http://192.168.1.10/next.mp3"
+    await player.set_dynamic_attributes()
+
+    assert player.elapsed_time == 0.0
+    assert player.elapsed_time_last_updated == clock.now
+
+
+async def test_position_kept_from_before_a_stop_does_not_count_as_moving(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """
+    A stopped device that still reports its old position is not taken to advance.
+
+    Otherwise the 00:00:00 it reports once playing differs from that old position, and a
+    resume would start the elapsed time over again.
+    """
+    clock = _mock_clock(monkeypatch)
+    device = _mock_device(
+        transport_state=TransportState.STOPPED,
+        media_position=200,
+        media_position_updated_at=REPORTED_AT,
+        async_update=AsyncMock(),
+    )
+    player = _player(device)
+    await player.set_dynamic_attributes()
+    player._attr_playback_state = PlaybackState.PLAYING
+    player._attr_elapsed_time = 0
+    player._attr_elapsed_time_last_updated = clock.now
+    device.transport_state = TransportState.PLAYING
+    device.media_position = 0
+    device.media_position_updated_at = _stamp(clock)
+    await player.set_dynamic_attributes()
+    clock.now += 12
+    await _set_state(player, device, TransportState.PAUSED_PLAYBACK)
+    clock.now += 30
+    await _set_state(player, device, TransportState.PLAYING)
+
+    assert player.elapsed_time == 12.0
+    assert player.elapsed_time_last_updated == clock.now
+
+
+async def test_pause_noticed_late_follows_the_position_the_device_paused_at(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """
+    A device that reports where it paused keeps that position until it resumes.
+
+    MA's clock ran on until the pause was noticed, which must not make the device's
+    position look stuck once it is reported again.
+    """
+    player, device, clock = await _start(monkeypatch, 0)
+    clock.now += 70
+    device.media_position = 70
+    device.media_position_updated_at = _stamp(clock)
+    await player.set_dynamic_attributes()
+    # paused at 100 s, noticed 30 s later
+    clock.now += 60
+    device.media_position = 100
+    device.media_position_updated_at = _stamp(clock)
+    await _set_state(player, device, TransportState.PAUSED_PLAYBACK)
+
+    assert player.elapsed_time == 100.0
+
+    clock.now += 10
+    await _set_state(player, device, TransportState.PAUSED_PLAYBACK)
+
+    assert player.elapsed_time == 100.0
+    clock.now += 30
+    await _set_state(player, device, TransportState.PLAYING)
+
+    assert player.elapsed_time == 100.0
+    assert player.elapsed_time_last_updated == clock.now
+
+
+async def test_placeholder_position_restamped_while_playing_is_recognised(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A device that repeats 00:00:00 every few seconds while playing still pauses in place."""
+    player, device, clock = await _start(monkeypatch, 0)
+    for _ in range(3):
+        clock.now += 4
+        device.media_position_updated_at = _stamp(clock)
+        await player.set_dynamic_attributes()
+    await _set_state(player, device, TransportState.PAUSED_PLAYBACK)
+
+    assert player.elapsed_time == 12.0
+
+
+@pytest.mark.parametrize("pause", [False, True])
+async def test_normal_device_that_stalls_while_restamping_is_followed(
+    monkeypatch: pytest.MonkeyPatch, pause: bool
+) -> None:
+    """A device whose position advanced and then stalls (e.g. buffering) stays where it is."""
+    player, device, clock = await _start(monkeypatch, 0)
+    for position in (10, 20, 30):
+        clock.now += 10
+        device.media_position = position
+        device.media_position_updated_at = _stamp(clock)
+        await player.set_dynamic_attributes()
+    # the device re-sends 30 with a fresh timestamp while it buffers
+    for _ in range(3):
+        clock.now += 5
+        device.media_position_updated_at = _stamp(clock)
+        await _set_state(player, device, TransportState.PLAYING)
+
+    assert player.corrected_elapsed_time == 30.0
+    if pause:
+        await _set_state(player, device, TransportState.PAUSED_PLAYBACK)
+
+        assert player.elapsed_time == 30.0
+
+        clock.now += 20
+        await _set_state(player, device, TransportState.PLAYING)
+    clock.now += 3
+    device.media_position = 33
+    device.media_position_updated_at = _stamp(clock)
+    await _set_state(player, device, TransportState.PLAYING)
+
+    assert player.corrected_elapsed_time == 33.0
+
+
+async def test_placeholder_position_restamped_after_a_track_change_is_recognised(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A device that advanced on its last track and re-sends 00:00:00 on the next one."""
+    player, device, clock = await _start(monkeypatch, 0)
+    clock.now += 10
+    device.media_position = 10
+    device.media_position_updated_at = _stamp(clock)
+    await player.set_dynamic_attributes()
+    device.current_track_uri = "http://192.168.1.10/other.mp3"
+    device.media_position = 0
+    await player.set_dynamic_attributes()
+    for _ in range(3):
+        clock.now += 4
+        device.media_position_updated_at = _stamp(clock)
+        await player.set_dynamic_attributes()
+    await _set_state(player, device, TransportState.PAUSED_PLAYBACK)
+
+    assert player.elapsed_time == 12.0
+
+
 async def test_position_of_a_player_found_while_playing_keeps_its_own_anchor() -> None:
     """Without having seen playback start, the timestamp the device reports is all there is."""
     player = await _updated_player(media_position=200, media_position_updated_at=REPORTED_AT)

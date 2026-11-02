@@ -100,6 +100,9 @@ class DLNAPlayer(Player):
 
         self._observed_playback_state: PlaybackState | None = None
         self._playing_since: float | None = None
+        # the first position the device reported for this track, and whether it moved since
+        self._first_position: float | None = None
+        self._position_moved = False
 
         # Track BOOTID in SSDP advertisements for device changes
         self.bootid: int | None = None
@@ -172,6 +175,15 @@ class DLNAPlayer(Player):
         self._attr_playback_state = _playback_state
 
         _device_uri = self.device.current_track_uri or ""
+        prev_uri = self._attr_current_media.uri if self._attr_current_media else None
+        if _playback_state == PlaybackState.IDLE or (prev_uri and prev_uri != _device_uri):
+            # a new track (or a stop) starts the position over
+            self._first_position = None
+            self._position_moved = False
+            if _playback_state != PlaybackState.IDLE:
+                # a device that reports no position would otherwise carry on from the last track
+                self._attr_elapsed_time = 0.0
+                self._attr_elapsed_time_last_updated = time.time()
         try:
             media_title = self.device.media_title
             media_artist = self.device.media_artist
@@ -222,19 +234,7 @@ class DLNAPlayer(Player):
             # No URI - idle or unknown
             self._attr_active_source = None
         # TODO: extend this list with other possible sources
-        # a device reports 'no position' as None (RelativeTimePosition unset, sent as
-        # NOT_IMPLEMENTED or unparsable), so a reported 0 is a position like any other
-        # and is adopted instead of being discarded as 'not reported'.
-        if (media_position := self.device.media_position) is not None:
-            self._attr_elapsed_time = float(media_position)
-            if (position_updated_at := self.device.media_position_updated_at) is not None:
-                anchor = position_updated_at.timestamp()
-                if self._playing_since is not None:
-                    # a device only re-stamps a position that actually changed, so shortly
-                    # after a resume the timestamp still dates from before the pause. The
-                    # position may not be extrapolated across the time it was not playing.
-                    anchor = max(anchor, self._playing_since)
-                self._attr_elapsed_time_last_updated = anchor
+        self._update_elapsed_time(_playback_state, prev_playback_state)
 
     async def get_config_entries(self) -> list[ConfigEntry]:
         """Return all (provider/player specific) Config Entries for the given player (if any)."""
@@ -274,6 +274,8 @@ class DLNAPlayer(Player):
         # that is slow or failing to report state changes.
         prev_state = self._attr_playback_state
         self.set_current_media(uri=url, clear_all=True)
+        self._first_position = None
+        self._position_moved = False
         self._attr_playback_state = PlaybackState.PLAYING
         self._attr_elapsed_time = 0
         self._attr_elapsed_time_last_updated = time.time()
@@ -658,6 +660,59 @@ class DLNAPlayer(Player):
             )
 
         return None
+
+    def _update_elapsed_time(
+        self, playback_state: PlaybackState, prev_playback_state: PlaybackState | None
+    ) -> None:
+        """Update the elapsed time from the position the device reports, or MA's own clock."""
+        # a device reports 'no position' as None (RelativeTimePosition unset, sent as
+        # NOT_IMPLEMENTED or unparsable), so a reported 0 is a position like any other
+        # and is adopted instead of being discarded as 'not reported'.
+        assert self.device is not None  # for type checking
+        media_position = self.device.media_position
+        if (
+            media_position is not None
+            and not self._position_moved
+            # a stopped device may still report where it was, which is not this track's start
+            and playback_state != PlaybackState.IDLE
+        ):
+            # some renderers (e.g. LinkPlay) keep reporting 00:00:00 while they play, which
+            # would restart the elapsed time at every resume: until the position has moved
+            # on this track, it is only adopted once and MA keeps its own clock after that
+            if self._first_position is None:
+                self._first_position = media_position
+            elif media_position != self._first_position:
+                self._position_moved = True
+            else:
+                media_position = None
+        if media_position is not None:
+            self._attr_elapsed_time = float(media_position)
+            if (position_updated_at := self.device.media_position_updated_at) is not None:
+                anchor = position_updated_at.timestamp()
+                if self._playing_since is not None:
+                    # a device only re-stamps a position that actually changed, so shortly
+                    # after a resume the timestamp still dates from before the pause. The
+                    # position may not be extrapolated across the time it was not playing.
+                    anchor = max(anchor, self._playing_since)
+                self._attr_elapsed_time_last_updated = anchor
+            return
+        # MA's own clock, which follows a pause, a resume or a stop of the device
+        if self._attr_elapsed_time is None or self._attr_elapsed_time_last_updated is None:
+            return
+        now = time.time()
+        if playback_state == PlaybackState.IDLE:
+            self._attr_elapsed_time = 0.0
+            self._attr_elapsed_time_last_updated = now
+        elif prev_playback_state == PlaybackState.PLAYING != playback_state:
+            # paused: hold the position where it was
+            self._attr_elapsed_time += now - self._attr_elapsed_time_last_updated
+            self._attr_elapsed_time_last_updated = now
+        elif self._playing_since is not None and prev_playback_state not in (
+            None,
+            PlaybackState.PLAYING,
+        ):
+            # resumed: continue from where it was paused
+            self._attr_elapsed_time_last_updated = self._playing_since
 
     def _get_playback_state(self) -> PlaybackState | None:
         """Return current PlaybackState of the player."""
