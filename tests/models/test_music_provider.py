@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from typing import cast
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from music_assistant_models.enums import MediaType, ProviderFeature, ProviderType
@@ -135,3 +135,51 @@ async def test_cancelled_stream_slot_wait_does_not_consume_capacity() -> None:
         assert not provider.has_available_stream_slot
 
     assert provider.has_available_stream_slot
+
+
+def _listing(*positions: int) -> list[MagicMock]:
+    """Return a mocked listing page whose items carry the given playlist positions."""
+    return [MagicMock(position=position) for position in positions]
+
+
+async def test_move_playlist_tracks_replays_single_moves() -> None:
+    """Without an override, a block move becomes single moves over the counted playlist."""
+    provider = _make_provider(_StreamingProvider)
+    pages = {0: _listing(1, 2, 3), 1: _listing(4, 5)}
+    provider.get_playlist_tracks = AsyncMock(  # type: ignore[method-assign]
+        side_effect=lambda _id, page=0: pages.get(page, [])
+    )
+    provider.move_playlist_track = AsyncMock()  # type: ignore[method-assign]
+
+    await provider.move_playlist_tracks("playlist_1", [4, 5], 1)
+
+    assert [call.args for call in provider.move_playlist_track.await_args_list] == [
+        ("playlist_1", 4, 1),
+        ("playlist_1", 5, 2),
+    ]
+
+
+@pytest.mark.parametrize(
+    ("listed", "positions", "to_position", "expected"),
+    [
+        pytest.param((1, 3), [3], 1, [("playlist_1", 3, 1)], id="skipped-middle-entry"),
+        pytest.param((1, 3), [1], None, [("playlist_1", 1, 3)], id="to-end-past-skipped"),
+        pytest.param((1, 2), [1], None, [("playlist_1", 1, 2)], id="to-end-of-listing"),
+    ],
+)
+async def test_move_playlist_tracks_counts_entries_the_listing_leaves_out(
+    listed: tuple[int, ...],
+    positions: list[int],
+    to_position: int | None,
+    expected: list[tuple[str, int, int]],
+) -> None:
+    """Positions past the listed count are valid, and None moves the tracks to the end."""
+    provider = _make_provider(_StreamingProvider)
+    provider.get_playlist_tracks = AsyncMock(  # type: ignore[method-assign]
+        side_effect=lambda _id, page=0: _listing(*listed) if page == 0 else []
+    )
+    provider.move_playlist_track = AsyncMock()  # type: ignore[method-assign]
+
+    await provider.move_playlist_tracks("playlist_1", positions, to_position)
+
+    assert [call.args for call in provider.move_playlist_track.await_args_list] == expected

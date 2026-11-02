@@ -19,13 +19,16 @@
         "similar": "Similar to what you played",
         "library": "Infinite mix from your library",
         "playlist": "Tracks from a playlist",
+        "similar_artists": "Similar artists",
         "global": "Global"
       },
       "option_descriptions": {
+        "similar_artists": "Plays a similar artist of the last track's artist, the same way as playing that artist.",
         "global": "Follow the Player Queues default."
       },
       "disabled_reasons": {
-        "similar": "No music or metadata provider that can supply similar tracks is currently available."
+        "similar": "No music or metadata provider that can supply similar tracks is currently available.",
+        "similar_artists": "No music provider that can supply similar artists is currently available."
       }
     },
     "autoplay_playlist": {

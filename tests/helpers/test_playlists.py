@@ -44,6 +44,7 @@ from music_assistant.helpers.playlists import (
     parse_m3u_playlist_name,
     sanitize_m3u_value,
 )
+from music_assistant.models.media_capabilities import MediaCatalogMixin
 
 # --------------------------------------------------------------------------- #
 #  Existing tests (EXTINF parsing)                                             #
@@ -1685,36 +1686,39 @@ def test_construct_keeps_the_provider_instance() -> None:
 # --------------------------------------------------------------------------- #
 
 
-def _make_controller() -> PlaylistController:
-    """Return a PlaylistController with a minimal mock mass."""
+def _make_controller(pages: list[list[Any]]) -> tuple[PlaylistController, AsyncMock]:
+    """Return a PlaylistController whose single resolved provider serves the given pages."""
     controller = PlaylistController.__new__(PlaylistController)
     controller.mass = MagicMock()
-    return controller
+    provider = MagicMock(spec=MediaCatalogMixin)
+    provider.get_playlist_tracks = AsyncMock(side_effect=pages)
+    controller.mass.music.resolve_visible_provider.return_value = provider
+    return controller, provider.get_playlist_tracks
 
 
 @pytest.mark.asyncio
 async def test_tracks_relays_all_provider_pages() -> None:
     """iter_tracks() relays every non-empty provider page until exhausted (provider decides size)."""
-    controller = _make_controller()
     page0 = [MagicMock(spec=Track) for _ in range(20)]
     page1 = [MagicMock(spec=Track) for _ in range(15)]
-    get_tracks = AsyncMock(side_effect=[page0, page1, []])
-    cast("Any", controller)._get_provider_playlist_tracks = get_tracks
+    controller, get_tracks = _make_controller([page0, page1, []])
 
     result = [t async for t in controller.iter_tracks("abc", "some_provider")]
 
     # No controller-side cap: a multi-page (e.g. dynamic) list is relayed in full.
     assert len(result) == 35
     assert get_tracks.await_count == 3
+    # the provider is resolved once for the whole listing, not again per page
+    cast("Any", controller.mass).music.resolve_visible_provider.assert_called_once_with(
+        "some_provider", strict=False
+    )
 
 
 @pytest.mark.asyncio
 async def test_tracks_stops_on_empty_page() -> None:
     """iter_tracks() stops fetching once the provider yields an empty page."""
-    controller = _make_controller()
     page0 = [MagicMock(spec=Track) for _ in range(7)]
-    get_tracks = AsyncMock(side_effect=[page0, []])
-    cast("Any", controller)._get_provider_playlist_tracks = get_tracks
+    controller, get_tracks = _make_controller([page0, []])
 
     result = [t async for t in controller.iter_tracks("abc", "some_provider")]
 
@@ -1735,16 +1739,13 @@ def _playlist_track(item_id: str, audio_metadata: AudioMetadata | None = None) -
 @pytest.mark.asyncio
 async def test_tracks_add_audio_metadata_per_page() -> None:
     """Tracks without audio metadata get it from stored analysis, one lookup per page."""
-    controller = _make_controller()
     from_provider = AudioMetadata(bpm=99.0)
     page0 = [_playlist_track("a"), _playlist_track("b", from_provider)]
     page1 = [
         _playlist_track("c"),
         Radio(item_id="r", provider="some_provider", name="r", provider_mappings=set()),
     ]
-    cast("Any", controller)._get_provider_playlist_tracks = AsyncMock(
-        side_effect=[page0, page1, []]
-    )
+    controller, _ = _make_controller([page0, page1, []])
     lookup = AsyncMock(side_effect=[[AudioMetadata(bpm=120.0)], [None]])
     cast("Any", controller.mass).streams.audio_analysis.get_tracks_audio_metadata = lookup
 
@@ -2195,3 +2196,64 @@ def test_media_item_to_playlist_item_track_round_trip_preserves_own_image() -> N
 
     assert reconstructed is not None
     assert reconstructed.metadata.images == UniqueList([image])
+
+
+def _apply_single_moves(items: list[int], steps: list[tuple[int, int]]) -> list[int]:
+    """Apply single-track moves, where each to_position is the track's final position."""
+    result = list(items)
+    for from_position, to_position in steps:
+        result.insert(to_position - 1, result.pop(from_position - 1))
+    return result
+
+
+@pytest.mark.parametrize(
+    ("positions", "to_position", "expected"),
+    [
+        pytest.param([2, 3], 4, [1, 4, 5, 2, 3], id="block-down"),
+        pytest.param([4, 5], 1, [4, 5, 1, 2, 3], id="block-to-top"),
+        pytest.param([1, 3], 4, [2, 4, 5, 1, 3], id="scattered-to-bottom"),
+        pytest.param([5, 2], 2, [1, 2, 5, 3, 4], id="unsorted-keeps-playlist-order"),
+        pytest.param([3], 1, [3, 1, 2, 4, 5], id="single"),
+    ],
+)
+def test_move_playlist_block(positions: list[int], to_position: int, expected: list[int]) -> None:
+    """The moved items keep their order and the block starts at to_position."""
+    assert playlists.move_playlist_block([1, 2, 3, 4, 5], positions, to_position) == expected
+
+
+@pytest.mark.parametrize(
+    ("positions", "to_position"),
+    [
+        pytest.param([], 1, id="nothing-to-move"),
+        pytest.param([2, 2], 1, id="duplicate"),
+        pytest.param([0], 1, id="below-the-first"),
+        pytest.param([6], 1, id="past-the-last"),
+        pytest.param([1, 2], 5, id="block-does-not-fit"),
+        pytest.param([1], 0, id="target-below-the-first"),
+    ],
+)
+def test_move_playlist_block_refuses_invalid_moves(positions: list[int], to_position: int) -> None:
+    """Positions outside the playlist, duplicates and a block that does not fit raise."""
+    with pytest.raises(InvalidDataError):
+        playlists.move_playlist_block([1, 2, 3, 4, 5], positions, to_position)
+    with pytest.raises(InvalidDataError):
+        playlists.playlist_block_move_steps(5, positions, to_position)
+
+
+def test_playlist_block_move_steps_match_the_block_move() -> None:
+    """For every block move in a short playlist, the single moves end in the same order."""
+    length = 6
+    items = list(range(1, length + 1))
+    for mask in range(1, 1 << length):
+        positions = [position for position in items if mask & (1 << (position - 1))]
+        for to_position in range(1, length - len(positions) + 2):
+            steps = playlists.playlist_block_move_steps(length, positions, to_position)
+            expected = playlists.move_playlist_block(items, positions, to_position)
+            assert _apply_single_moves(items, steps) == expected
+            assert len(steps) <= len(positions)
+            assert all(1 <= pos <= length for step in steps for pos in step)
+
+
+def test_playlist_block_move_steps_skip_a_block_already_in_place() -> None:
+    """Moving a block onto its own place needs no moves."""
+    assert playlists.playlist_block_move_steps(5, [2, 3], 2) == []
