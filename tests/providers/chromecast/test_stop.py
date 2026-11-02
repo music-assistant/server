@@ -54,6 +54,7 @@ def _fake_cast(
     fake.cc.app_id = running_app_id
     fake.app_quit_sent = False
     fake._app_quit_task_id = "cast_quit_app_test"
+    fake._app_track_change_task_id = "cast_app_track_change_test"
     fake.cancel_pending_app_quit = partial(
         ChromecastPlayer.cancel_pending_app_quit, cast("ChromecastPlayer", fake)
     )

@@ -47,6 +47,7 @@ def _fake_player(
     fake._flow_stream_underrun = MagicMock(return_value=flow_underrun)
     fake._media_error_reported = False
     fake._app_quit_task_id = "cast_quit_app_test"
+    fake._app_track_change_task_id = "cast_app_track_change_test"
     fake.active_cast_group = active_cast_group
     # display_name is a cached property, normally built from the config in __init__
     fake._cache = {"display_name": "Test Cast"}
