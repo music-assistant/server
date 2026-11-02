@@ -15,7 +15,6 @@ from music_assistant_models.errors import MediaNotFoundError, PlayerCommandFaile
 from music_assistant_models.player import PlayerSource
 
 from music_assistant.constants import EXTERNAL_PAUSE_IDLE_TIMEOUT
-from music_assistant.models.protocol_backed_player import ProtocolBackedPlayer
 
 from .constants import (
     CONF_SHAIRPORT_MQTT_TOPIC,
@@ -492,7 +491,6 @@ class ShairportSyncPlayer(GenericAirPlayPlayer):
         self._attr_current_media = None
         self._attr_elapsed_time = None
         self._attr_elapsed_time_last_updated = None
-        self._release_parent_output_protocol()
         if held := self._held_metadata:
             self._held_metadata = {}
             self._show_held_metadata(session, held)
@@ -544,21 +542,6 @@ class ShairportSyncPlayer(GenericAirPlayPlayer):
         """Forget a session the base class ended on its own (the pause timeout)."""
         if self._session is not None and self._attr_active_source != EXTERNAL_SOURCE_ID:
             self._drop_session()
-
-    def _release_parent_output_protocol(self) -> None:
-        """
-        Clear the parent's output protocol when it still points at this player.
-
-        A queue that ended by itself leaves it set, which keeps the parent from showing
-        the external session; a stop command would have cleared it.
-        """
-        if not (parent_id := self.protocol_parent_id):
-            return
-        parent = self.mass.players.get_player(parent_id)
-        if isinstance(parent, ProtocolBackedPlayer) and parent.active_output_protocol == (
-            self.player_id
-        ):
-            parent.set_active_output_protocol(None)
 
     def _publish(self) -> None:
         """Publish the player state, and refresh the parent that presents it."""

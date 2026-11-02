@@ -399,25 +399,6 @@ def test_airplay_external_session_shows_on_universal_player() -> None:
     assert [source.id for source in universal.source_list] == ["airplay"]
 
 
-def test_airplay_external_session_releases_stale_output_protocol() -> None:
-    """
-    A foreign sender is shown even though our queue ended on the AirPlay child without a stop.
-
-    Only a stop clears the output protocol, and while it stays set the universal player
-    would present the child's playback as our own last track.
-    """
-    mass = _make_mock_mass()
-    universal = _make_universal_player(mass, ["apaabbccddeeff"])
-    child = _make_shairport_child(mass)
-    _register_players(mass, universal, child)  # type: ignore[arg-type]
-    universal.set_active_output_protocol(child.player_id)
-
-    child.evaluate_session_flag()
-
-    assert universal.active_output_protocol is None
-    assert universal.active_source == "airplay"
-
-
 def test_airplay_external_session_keeps_another_output_protocol() -> None:
     """Playback through another protocol of the device keeps its output protocol."""
     mass = _make_mock_mass()

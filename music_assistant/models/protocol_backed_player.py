@@ -35,6 +35,21 @@ FORWARDED_FEATURES = {
 }
 
 
+def plays_external_source(protocol_player: Player) -> bool:
+    """
+    Return whether a protocol player plays an external source rather than Music Assistant.
+
+    :param protocol_player: The protocol player to check.
+    """
+    return bool(
+        protocol_player.available
+        and protocol_player.provider.domain in EXTERNAL_SOURCE_PROTOCOLS
+        and protocol_player.active_source
+        and protocol_player.active_source.lower() in EXTERNAL_SOURCES
+        and protocol_player.playback_state != PlaybackState.IDLE
+    )
+
+
 class ProtocolBackedPlayer(Player):
     """
     Base for players whose playback is delegated to linked protocol players.
@@ -199,15 +214,7 @@ class ProtocolBackedPlayer(Player):
         result: Player | None = None
         for pid in self._backing_protocol_player_ids():
             protocol_player = self.mass.players.get_player(pid)
-            if not protocol_player or not protocol_player.available:
-                continue
-            if protocol_player.provider.domain not in EXTERNAL_SOURCE_PROTOCOLS:
-                continue
-            if (
-                protocol_player.active_source
-                and protocol_player.active_source.lower() in EXTERNAL_SOURCES
-                and protocol_player.playback_state != PlaybackState.IDLE
-            ):
+            if protocol_player and plays_external_source(protocol_player):
                 # chromecast is preferred, return immediately
                 if protocol_player.provider.domain == "chromecast":
                     return protocol_player

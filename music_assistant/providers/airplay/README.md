@@ -599,8 +599,9 @@ receiver. `ShairportSyncPlayer` ([shairport_player.py](shairport_player.py))
 shows that playback as the passive external source `airplay` on the receiver's
 player, and so on the Universal Player (or LinkPlay/WiiM shell) it belongs to.
 When Music Assistant's own queue had ended on that receiver without a stop, the
-parent still points its output protocol at the AirPlay player, so the session
-start clears it first.
+parent still points its output protocol at the AirPlay player. The players
+controller clears it once the session has run for a few seconds, as it does for
+any protocol player that an external source takes over.
 
 ### Detection
 
@@ -676,8 +677,8 @@ The version comes from the autodiscovery messages. When it or the stream type
 is unknown, control is offered. MQTT gives no reply, so a command waits up to 3
 seconds for the change it should cause. When nothing arrives, the command fails
 and the session stays read-only until it ends. Read-only sessions show Stop
-instead of pause in the frontend, and stop, volume and mute commands on them
-fail.
+instead of pause in the frontend. Stop on them does nothing, and volume commands
+on them fail.
 
 ### Limits
 
@@ -686,9 +687,8 @@ fail.
   scale.
 - No control of iPhone sessions on AirPlay 2 Shairport builds older than 5.6.
 - A paused session ends after 60 seconds (`EXTERNAL_PAUSE_IDLE_TIMEOUT`).
-- Commands that fail on a read-only session also fail where Music Assistant
-  sends them itself, such as powering off the Universal Player or a group
-  volume change.
+- Volume commands that fail on a read-only session also fail where Music Assistant
+  sends them itself, such as a group volume change.
 
 ## Configuration Options
 

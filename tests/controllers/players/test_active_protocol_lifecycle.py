@@ -87,14 +87,15 @@ def _make_player_with_protocol(
     controller: PlayerController,
     protocol_state: PlaybackState,
     native_play_media: bool = True,
+    protocol_domain: str = "sendspin",
 ) -> tuple[PlayableMockPlayer, PlayableMockPlayer]:
-    """Create a native player with one linked sendspin protocol player."""
+    """Create a native player with one linked protocol player (sendspin by default)."""
     native_provider = MockProvider("sonos", mass=mock_mass)
     player = PlayableMockPlayer(native_provider, "player_1", "Test Player")
     if native_play_media:
         player._attr_supported_features.add(PlayerFeature.PLAY_MEDIA)
 
-    protocol_provider = MockProvider("sendspin", mass=mock_mass)
+    protocol_provider = MockProvider(protocol_domain, mass=mock_mass)
     protocol_player = PlayableMockPlayer(
         protocol_provider, "proto_1", "Test Protocol", player_type=PlayerType.PROTOCOL
     )
@@ -105,7 +106,7 @@ def _make_player_with_protocol(
         [
             LinkedOutputProtocol(
                 output_protocol_id="proto_1",
-                protocol_domain="sendspin",
+                protocol_domain=protocol_domain,
                 priority=40,
             )
         ]
@@ -367,3 +368,46 @@ class TestCmdStopWithPinnedProtocol:
         protocol_player.stop.assert_awaited_once()
         player.stop.assert_not_awaited()
         controller.schedule_active_output_protocol_clear.assert_called_once_with(player)
+
+
+class TestExternalSourceOnPinnedProtocol:
+    """An external source on the pinned protocol player releases the parent's pin."""
+
+    @pytest.mark.parametrize(
+        ("active_source", "protocol_state", "pin", "expected_pin"),
+        [
+            ("airplay", PlaybackState.PLAYING, "proto_1", None),
+            ("airplay", PlaybackState.IDLE, "proto_1", "proto_1"),
+            (None, PlaybackState.PLAYING, "proto_1", "proto_1"),
+            ("airplay", PlaybackState.PLAYING, "native", "native"),
+        ],
+        ids=["external_playing", "external_idle", "ma_stream", "other_output"],
+    )
+    def test_external_source_releases_the_pin(
+        self,
+        mock_mass: MagicMock,
+        controller: PlayerController,
+        active_source: str | None,
+        protocol_state: PlaybackState,
+        pin: str,
+        expected_pin: str | None,
+    ) -> None:
+        """
+        A queue that ended by itself left the pin, which hid the external source.
+
+        Once another device streams to the protocol player, Music Assistant no longer
+        renders through it, so the parent must stop pointing at it. The pin stays while
+        that protocol player is idle or plays Music Assistant's own stream, and when it
+        points at another output.
+        """
+        player, protocol_player = _make_player_with_protocol(
+            mock_mass, controller, protocol_state, protocol_domain="airplay"
+        )
+        protocol_player.set_protocol_parent_id("player_1")
+        protocol_player._attr_active_source = active_source
+        protocol_player.update_state(signal_event=False)
+        player.set_active_output_protocol(pin)
+
+        controller._check_external_source_takeover(protocol_player)
+
+        assert player.active_output_protocol == expected_pin
