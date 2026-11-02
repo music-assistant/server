@@ -62,7 +62,7 @@ jobs:
         run: uv pip install --system --index-strategy unsafe-best-match . .[test] -r requirements_all.txt
 
       - name: Run benchmarks
-        uses: CodSpeedHQ/action@78102a468f96d8e0ccb92d0ec49425753fc42062  # v5.6.0
+        uses: CodSpeedHQ/action@61efe07e57e55bedeab750c434504de272a56e8c  # v5.6.1
         with:
           mode: simulation
           # tests/benchmarks/ holds only deterministic pure-function benchmarks, so their
