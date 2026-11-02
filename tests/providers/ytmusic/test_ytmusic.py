@@ -1223,6 +1223,45 @@ async def test_on_played_reports_a_stop_before_the_first_progress_report(
     assert (stop["st"], stop["et"]) == (["1516"], ["1523"])
 
 
+async def test_on_played_reports_after_a_resume_without_a_new_stream(
+    reporting_provider: YoutubeMusicProvider,
+) -> None:
+    """A paused episode that resumes on the same stream is announced again and its stop sent."""
+    with patch(
+        "music_assistant.providers.ytmusic.get_playback_tracking",
+        AsyncMock(return_value=_tracking()),
+    ) as mock_tracking:
+        await _started(reporting_provider, 100)
+        await _played(reporting_provider, 130, is_playing=False)
+        await _played(reporting_provider, 130, is_playing=True)
+        await _played(reporting_provider, 160, is_playing=False)
+
+    assert mock_tracking.await_count == 2
+    *_, stop = _reported(reporting_provider)
+    assert (stop["st"], stop["et"]) == (["130"], ["160"])
+
+
+async def test_get_stream_details_marks_an_episode_as_a_podcast_episode(
+    reporting_provider: YoutubeMusicProvider,
+) -> None:
+    """The stream details of an episode name its media type, so its playback is reported."""
+    stream_format = {"url": "https://example.com/a", "audio_ext": "m4a", "format": "140"}
+    with (
+        patch.object(
+            reporting_provider, "_get_stream_format", AsyncMock(return_value=stream_format)
+        ),
+        patch(
+            "music_assistant.providers.ytmusic.get_playback_tracking",
+            AsyncMock(return_value=_tracking()),
+        ),
+    ):
+        details = await reporting_provider.get_stream_details("pod1|v1", MediaType.PODCAST_EPISODE)
+        await reporting_provider.on_stream_started(details)
+
+    assert details.media_type == MediaType.PODCAST_EPISODE
+    assert "v1" in reporting_provider._episode_playbacks
+
+
 async def test_on_played_reports_position_after_interval(
     reporting_provider: YoutubeMusicProvider,
 ) -> None:
