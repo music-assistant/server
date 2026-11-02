@@ -78,6 +78,7 @@ SUPPORTED_FEATURES = {
     ProviderFeature.BROWSE,
     ProviderFeature.SEARCH,
     ProviderFeature.PLAYLIST_TRACKS_EDIT,
+    ProviderFeature.PLAYLIST_TRACKS_MOVE,
     ProviderFeature.PLAYLIST_CREATE,
     ProviderFeature.RECOMMENDATIONS,
     ProviderFeature.SIMILAR_TRACKS,
@@ -319,6 +320,12 @@ class DeezerProvider(RecommendationPayloadMixin, MusicProvider):
     ) -> None:
         """Remove track(s) from playlist."""
         await self.media_manager.remove_playlist_tracks(prov_playlist_id, positions_to_remove)
+
+    async def move_playlist_track(
+        self, prov_playlist_id: str, from_position: int, to_position: int
+    ) -> None:
+        """Move one track of a playlist to another position (both 1-based)."""
+        await self.media_manager.move_playlist_track(prov_playlist_id, from_position, to_position)
 
     async def create_playlist(self, name: str, media_types: set[MediaType]) -> Playlist:
         """Create a new playlist on provider with given name."""
