@@ -675,7 +675,7 @@ class ArtistsController(MediaControllerBase[Artist]):
         :param item_id: The library artist ID.
         :param provider_instance_id_or_domain: Must be ``library``.
         :param search: Apply the discography search.
-        :param album_types: Restrict the count to these album types.
+        :param album_types: Only count the releases MusicBrainz gives one of these types.
         """
         # a search or type filter runs over the assembled listing, otherwise count release groups
         if search or album_types:
