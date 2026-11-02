@@ -214,7 +214,7 @@ class EpisodePlayback:
 
     cpn: str
     position: int
-    reported_at: float = 0.0
+    reported_at: float = float("-inf")
     announced: bool = False
     watchtime_url: str | None = None
 
