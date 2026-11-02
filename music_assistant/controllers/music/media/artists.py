@@ -588,6 +588,7 @@ class ArtistsController(MediaControllerBase[Artist]):
         sort_direction: SortDirection | None = None,
         limit: int | None = 500,
         offset: int = 0,
+        album_types: list[AlbumType] | None = None,
         random_seed: int | None = None,
     ) -> list[Album]:
         """
@@ -605,6 +606,7 @@ class ArtistsController(MediaControllerBase[Artist]):
         :param limit: Maximum number of albums to return; 0 returns them all.
         :param offset: Number of albums to skip.
         :param random_seed: Keep random ordering stable across pages with the same seed.
+        :param album_types: Only list albums whose type is included.
         :raises InvalidDataError: When the artist is not a library artist, or the sort field
             is not offered for a discography.
         """
@@ -649,6 +651,8 @@ class ArtistsController(MediaControllerBase[Artist]):
                     cover_provider,
                 )
             )
+        if album_types:
+            discography = [album for album in discography if album.album_type in album_types]
         return apply_listing(
             discography,
             ListingType.ARTIST_DISCOGRAPHY,
@@ -665,6 +669,7 @@ class ArtistsController(MediaControllerBase[Artist]):
         item_id: str,
         provider_instance_id_or_domain: str,
         search: str | None = None,
+        album_types: list[AlbumType] | None = None,
     ) -> int:
         """
         Return the number of releases in a library artist's discography.
@@ -672,15 +677,17 @@ class ArtistsController(MediaControllerBase[Artist]):
         :param item_id: The library artist ID.
         :param provider_instance_id_or_domain: Must be ``library``.
         :param search: Apply the discography search.
+        :param album_types: Restrict the count to these album types.
         """
-        # the search runs over the assembled listing; without one only the release groups count
-        if search:
+        # a search or type filter runs over the assembled listing, otherwise count release groups
+        if search or album_types:
             return len(
                 await self.discography(
                     item_id,
                     provider_instance_id_or_domain,
                     search=search,
                     limit=0,
+                    album_types=album_types,
                 )
             )
         data = await self._get_artist_discography_data(

@@ -497,6 +497,44 @@ async def test_discography_count_matches_the_searchable_release_groups() -> None
         )
 
 
+async def test_discography_filters_by_album_type() -> None:
+    """Only the requested types are listed, library and MusicBrainz albums alike."""
+    library_album = _library_album("7", "OK Computer", album_type=AlbumType.ALBUM)
+    groups = [
+        _release_group(RG_OK_COMPUTER, "OK Computer"),
+        _release_group(RG_IN_RAINBOWS, "In Rainbows"),
+        _release_group(RG_KARMA_POLICE, "Karma Police", primary_type="Single"),
+        _release_group(RG_BEST_OF, "The Best Of", secondary_types=["Compilation"]),
+    ]
+    with _harness(_artist(), release_groups=groups, artist_albums=[library_album]) as harness:
+        types = [AlbumType.SINGLE, AlbumType.COMPILATION]
+        listed = await harness.ctrl.discography(LIBRARY_ARTIST_ID, "library", album_types=types)
+        assert {album.name for album in listed} == {"Karma Police", "The Best Of"}
+        albums_only = await harness.ctrl.discography(
+            LIBRARY_ARTIST_ID, "library", album_types=[AlbumType.ALBUM]
+        )
+        assert library_album in albums_only
+        assert {album.name for album in albums_only} == {"OK Computer", "In Rainbows"}
+        paged = await harness.ctrl.discography(
+            LIBRARY_ARTIST_ID, "library", album_types=types, search="karma", limit=1
+        )
+        assert [album.name for album in paged] == ["Karma Police"]
+
+
+async def test_discography_count_honors_the_album_type_filter() -> None:
+    """The count covers the filtered listing, not every release group."""
+    groups = [
+        _release_group(RG_IN_RAINBOWS, "In Rainbows"),
+        _release_group(RG_OK_COMPUTER, "OK Computer"),
+        _release_group(RG_KARMA_POLICE, "Karma Police", primary_type="Single"),
+    ]
+    with _harness(_artist(), release_groups=groups) as harness:
+        count = await harness.ctrl.discography_count(
+            LIBRARY_ARTIST_ID, "library", album_types=[AlbumType.SINGLE]
+        )
+        assert count == 1
+
+
 async def test_discography_keeps_musicbrainz_reference_if_provider_unloads_during_lookup() -> None:
     """An in-flight listing uses the MusicBrainz provider instance it started with."""
     with _harness(
