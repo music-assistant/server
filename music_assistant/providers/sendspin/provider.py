@@ -100,6 +100,7 @@ from music_assistant.providers.sendspin.constants import (
     CONF_VIRTUAL_PLAYER_OWNER,
     VIRTUAL_PLAYER_ID_PREFIX,
 )
+from music_assistant.providers.sendspin.hass_auto_pair import HassAutoPairer
 from music_assistant.providers.sendspin.helpers import (
     SecurityActionError,
     effective_pair_methods,
@@ -418,6 +419,7 @@ class SendspinProvider(PlayerProvider):
         self._unloading = False
         self._hass_available = False
         self._server_start_failed = False
+        self._hass_auto_pairer = HassAutoPairer(self)
         self.unregister_cbs = []
 
     async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
@@ -494,6 +496,8 @@ class SendspinProvider(PlayerProvider):
         # seed the hass availability snapshot so the first (un)load is seen as a change
         hass = self.mass.get_provider("hass")
         self._hass_available = hass is not None and hass.available
+        if self._hass_available:
+            self._hass_auto_pairer.subscribe()
 
     async def update_config(self, config: ProviderConfig, changed_keys: set[str]) -> None:
         """Handle logic when the config is updated."""
@@ -531,6 +535,7 @@ class SendspinProvider(PlayerProvider):
                 # A reconnect within aiosendspin's cleanup delay reuses the player, and this
                 # event fires before the new connection's roles are attached.
                 self.mass.loop.call_soon(self._refresh_player_state, client_id)
+                self.mass.loop.call_soon(self._hass_auto_pairer.on_client_connected, client_id)
             case ClientDisconnectedEvent(client_id, goodbye_reason):
                 self._set_held_elsewhere(
                     client_id, held=goodbye_reason in HELD_ELSEWHERE_GOODBYE_REASONS
@@ -1161,6 +1166,7 @@ class SendspinProvider(PlayerProvider):
             self.mass.cancel_timer(_management_idle_task_id(management_session.client_id))
         self._management_sessions.clear()
         self._pairing_config_snapshots.clear()
+        self._hass_auto_pairer.close()
         if self._running_pairing_evictions:
             await asyncio.gather(*self._running_pairing_evictions, return_exceptions=True)
         player_ids = [player.player_id for player in self.players]
@@ -1935,6 +1941,10 @@ class SendspinProvider(PlayerProvider):
         if hass_available != self._hass_available:
             self._hass_available = hass_available
             await self._refresh_hass_esphome_enrichment()
+            if hass_available:
+                self._hass_auto_pairer.subscribe()
+            else:
+                self._hass_auto_pairer.unsubscribe()
 
     def _on_queue_updated(self, event: MassEvent) -> None:
         """Forward a queue change to the Sendspin players, so repeat and shuffle stay current."""

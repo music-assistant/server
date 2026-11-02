@@ -262,6 +262,7 @@ class RadiothekProvider(MusicProvider):
             skip = 0
             async with self.mass.http_session.get(
                 url,
+                # TODO: check whether this can use MASS_USER_AGENT
                 headers={"User-Agent": "Music Assistant"},
                 timeout=CATCHUP_AUDIO_TIMEOUT,
             ) as resp:
@@ -277,6 +278,7 @@ class RadiothekProvider(MusicProvider):
         await self._throttler.acquire()
         async with self.mass.http_session.get(
             url,
+            # TODO: check whether this can use MASS_USER_AGENT
             headers={"User-Agent": "Music Assistant"},
             timeout=ClientTimeout(total=20),
         ) as resp:

@@ -21,7 +21,6 @@ from music_assistant_models.api import (
     SuccessResultMessage,
 )
 from music_assistant_models.auth import Scope, User
-from music_assistant_models.bookmarks_update import BookmarksUpdate
 from music_assistant_models.enums import EventType
 from music_assistant_models.errors import (
     AuthenticationRequired,
@@ -643,12 +642,17 @@ class WebsocketClientHandler:
             ):
                 return
 
-            if isinstance(event.data, FavoriteUpdate | BookmarksUpdate) and (
+            if isinstance(event.data, FavoriteUpdate) and (
                 self._authenticated_user is None
                 or event.data.user_id != self._authenticated_user.user_id
             ):
                 # a like or dislike is the business of its own user only
-                # (as are bookmarks)
+                return
+
+            if event.event == EventType.BOOKMARKS_UPDATED and (
+                self._authenticated_user is None or event.data != self._authenticated_user.user_id
+            ):
+                # as are bookmarks; the data is the id of the user they belong to
                 return
 
             if isinstance(event.data, MediaItem) and event.data.favorite is not None:

@@ -11,7 +11,6 @@ import pytest
 from aiohttp import web
 from aiohttp.test_utils import make_mocked_request
 from music_assistant_models.auth import User, UserRole
-from music_assistant_models.bookmarks_update import BookmarksUpdate
 from music_assistant_models.enums import EventType, MediaType
 from music_assistant_models.favorite_update import FavoriteUpdate
 from music_assistant_models.media_items import Track
@@ -261,22 +260,15 @@ async def test_full_access_user_receives_events_outside_their_filter(
                 user_id="user1",
             ),
         ),
-        (
-            EventType.BOOKMARKS_UPDATED,
-            BookmarksUpdate(
-                media_type=MediaType.AUDIOBOOK,
-                provider_instance_id="abs",
-                provider_item_id="book1",
-                user_id="user1",
-            ),
-        ),
+        # a bookmark event carries the user id as its data
+        (EventType.BOOKMARKS_UPDATED, "user1"),
     ],
 )
 async def test_favorite_update_reaches_its_own_user_only(
     mass_minimal: MusicAssistant,
     webserver: WebserverController,
     event: EventType,
-    update: FavoriteUpdate | BookmarksUpdate,
+    update: FavoriteUpdate | str,
 ) -> None:
     """A like, dislike or bookmark change is announced to its user's connection only."""
     client1 = create_ws_client(webserver, "user1")
@@ -289,7 +281,8 @@ async def test_favorite_update_reaches_its_own_user_only(
     mass_minimal.signal_event(event, "library://track/1", update)
     await drain_event_callbacks()
 
-    assert json.loads(get_written_message(client1))["data"]["user_id"] == "user1"
+    sent = json.loads(get_written_message(client1))["data"]
+    assert sent == "user1" or sent["user_id"] == "user1"
     assert client2._to_write.empty()
     assert anonymous._to_write.empty()
 

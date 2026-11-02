@@ -9,7 +9,7 @@
     "[FastMCP](https://github.com/jlowin/fastmcp)",
     "[Model Context Protocol](https://modelcontextprotocol.io/)"
   ],
-  "requirements": ["fastmcp==4.1.0"],
+  "requirements": ["fastmcp==4.1.3"],
   "documentation": "https://music-assistant.io/plugins/fastmcp-server/",
   "multi_instance": false,
   "builtin": false

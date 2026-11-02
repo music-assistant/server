@@ -18,6 +18,7 @@ from typing import TYPE_CHECKING, Any, cast
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from music_assistant_models.auth import User, UserRole
 from music_assistant_models.enums import PlaybackState, PlayerFeature, PlayerType
 from music_assistant_models.player_queue import PlayerQueue
 
@@ -25,6 +26,10 @@ from music_assistant.controllers.player_queues.helpers import handle_play_action
 from music_assistant.controllers.player_queues.state import PlayerQueueData
 from music_assistant.controllers.players import PlayerController
 from music_assistant.controllers.players.constants import PlayerLockPurpose
+from music_assistant.controllers.webserver.helpers.auth_middleware import (
+    get_current_user,
+    set_current_user,
+)
 from music_assistant.models.player import LinkedOutputProtocol
 from tests.common import MockPlayer, MockProvider, use_real_create_task
 
@@ -1488,6 +1493,36 @@ class TestSessionBoundLeaderJoinsAnotherGroup:
 
         assert leader.group_members == ["leader", "member"]
         assert member.synced_to == "leader"
+
+
+async def test_leadership_transfer_runs_as_the_server(mock_mass: MagicMock) -> None:
+    """The queue moves to the server's choice of leader, whatever players the acting user has."""
+    controller = PlayerController(mock_mass)
+    provider = MockProvider("test", instance_id="test", mass=mock_mass)
+    leader = MockPlayer(provider, "leader", "Leader")
+    member = MockPlayer(provider, "member", "Member")
+    controller._players = {"leader": leader, "member": member}
+    mock_mass.players = controller
+    controller.get_active_queue = MagicMock(return_value=_queue_stub("leader"))  # type: ignore[method-assign]
+    acting_users: list[User | None] = []
+
+    async def _transfer(*_args: Any, **_kwargs: Any) -> None:
+        acting_users.append(get_current_user())
+
+    mock_mass.player_queues.transfer_queue = AsyncMock(side_effect=_transfer)
+    mock_mass.player_queues.resume = AsyncMock(side_effect=_transfer)
+    user = User(user_id="u1", username="u1", role=UserRole.USER, player_filter=["leader"])
+    set_current_user(user)
+    try:
+        await controller._transfer_ad_hoc_leadership(leader, ["member"])
+        assert get_current_user() is user
+    finally:
+        set_current_user(None)
+
+    mock_mass.player_queues.transfer_queue.assert_awaited_once_with(
+        "leader", "member", auto_play=False
+    )
+    assert acting_users == [None, None]
 
 
 if __name__ == "__main__":

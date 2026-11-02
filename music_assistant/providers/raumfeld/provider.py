@@ -757,7 +757,7 @@ class RaumfeldPlayerProvider(PlayerProvider):
         """
         # Flow mode and the chunked profile come from the player and its config entries.
         # The ICY preference, however, is read straight from stored config with the base
-        # entry's own default ("disabled"), so the "full" default this provider's entry
+        # entry's own default ("disabled"), so the "basic" default this provider's entry
         # declares would only take effect once the user saves the player's settings. Store
         # it once - only while nothing is stored, so a value the user picks later stays.
         if (
@@ -765,7 +765,7 @@ class RaumfeldPlayerProvider(PlayerProvider):
             is None
         ):
             self.mass.config.set_raw_player_config_value(
-                player_id, CONF_ENABLE_ICY_METADATA, "full"
+                player_id, CONF_ENABLE_ICY_METADATA, "basic"
             )
 
     def _zone_rooms_leader_first(self, zone_rooms: list[str]) -> list[str]:

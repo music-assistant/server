@@ -1145,6 +1145,78 @@ async def test_the_wait_ends_once_the_joined_room_plays() -> None:
     assert reads.await_count == 3
 
 
+async def test_the_wait_ends_once_the_joined_room_cannot_hook_in() -> None:
+    """A room that runs out of buffer and drops the stream gets the restart at once."""
+    bar, _, _ = _joined_group(lambda sofa: _allow(sofa, 96000), stream_started_in_group=False)
+    sofa_id = bar._attr_group_members[1]
+    states = iter(
+        [
+            {"TransportState": "TRANSITIONING", "TransportStatus": "OK"},
+            {"TransportState": "NO_MEDIA_PRESENT", "TransportStatus": "buffer underrun"},
+            {"TransportState": "PLAYING", "TransportStatus": "OK"},
+        ]
+    )
+    reads = AsyncMock(side_effect=lambda _url: next(states))
+    with (
+        patch.object(bar.raumfeld, "room_transport_url", return_value="http://sofa/ctrl"),
+        patch("music_assistant.providers.raumfeld.player.JOIN_SETTLE_INTERVAL", 0),
+        patch.object(bar, "_read_room_state", reads),
+    ):
+        await bar._wait_for_rooms_playing([sofa_id])
+    assert reads.await_count == 2
+
+
+async def test_a_room_that_cannot_hook_in_leaves_the_others_waited_for() -> None:
+    """One room dropping the stream does not end the wait for another still hooking in."""
+    bar, _, _ = _joined_group(lambda sofa: _allow(sofa, 96000), stream_started_in_group=False)
+    rooms = {"raumfeld_sofa": _player("Sofa"), "raumfeld_kitchen": _player("Kitchen")}
+    states = {
+        "http://sofa/ctrl": iter(
+            [{"TransportState": "NO_MEDIA_PRESENT", "TransportStatus": "buffer underrun"}]
+        ),
+        "http://kitchen/ctrl": iter(
+            [
+                {"TransportState": "TRANSITIONING", "TransportStatus": "OK"},
+                {"TransportState": "TRANSITIONING", "TransportStatus": "OK"},
+                {"TransportState": "PLAYING", "TransportStatus": "OK"},
+            ]
+        ),
+    }
+    reads = AsyncMock(side_effect=lambda url: next(states[url]))
+    with (
+        patch.object(bar.mass.players, "get_player", side_effect=rooms.get),
+        patch.object(
+            bar.raumfeld,
+            "room_transport_url",
+            side_effect=lambda room: f"http://{room.lower()}/ctrl",
+        ),
+        patch("music_assistant.providers.raumfeld.player.JOIN_SETTLE_INTERVAL", 0),
+        patch.object(bar, "_read_room_state", reads),
+    ):
+        await bar._wait_for_rooms_playing(list(rooms))
+    assert reads.await_count == 4
+
+
+async def test_a_room_without_media_but_no_underrun_is_waited_for() -> None:
+    """NO_MEDIA_PRESENT with status OK is a room not hooked in yet, so the wait goes on."""
+    bar, _, _ = _joined_group(lambda sofa: _allow(sofa, 96000), stream_started_in_group=False)
+    sofa_id = bar._attr_group_members[1]
+    states = iter(
+        [
+            {"TransportState": "NO_MEDIA_PRESENT", "TransportStatus": "OK"},
+            {"TransportState": "PLAYING", "TransportStatus": "OK"},
+        ]
+    )
+    reads = AsyncMock(side_effect=lambda _url: next(states))
+    with (
+        patch.object(bar.raumfeld, "room_transport_url", return_value="http://sofa/ctrl"),
+        patch("music_assistant.providers.raumfeld.player.JOIN_SETTLE_INTERVAL", 0),
+        patch.object(bar, "_read_room_state", reads),
+    ):
+        await bar._wait_for_rooms_playing([sofa_id])
+    assert reads.await_count == 2
+
+
 async def test_the_wait_for_slow_rooms_keeps_to_its_budget() -> None:
     """Rooms whose reads hang hold the restart up for JOIN_SETTLE_TIME in all, not per read."""
     bar, mass, _ = _joined_group(lambda sofa: _allow(sofa, 96000), stream_started_in_group=False)
@@ -1732,3 +1804,33 @@ async def test_an_ended_update_loop_drops_the_connection_at_once() -> None:
     await _supervise_cycles(provider, check, 1)
     provider._disconnect.assert_awaited_once_with("host connection lost")  # type: ignore[attr-defined]
     check.assert_not_called()
+
+
+def _icy_provider(stored: dict[str, Any]) -> RaumfeldPlayerProvider:
+    """
+    Build a provider whose player config holds the given raw values.
+
+    :param stored: The raw values stored for the player, changed in place on a write.
+    """
+    provider = RaumfeldPlayerProvider.__new__(RaumfeldPlayerProvider)
+    mass = MagicMock()
+    mass.config.get_raw_player_config_value.side_effect = lambda _pid, key: stored.get(key)
+    mass.config.set_raw_player_config_value.side_effect = lambda _pid, key, value: (
+        stored.__setitem__(key, value)
+    )
+    provider.mass = mass
+    return provider
+
+
+@pytest.mark.parametrize(
+    ("stored", "expected"),
+    [({}, "basic"), ({"enable_icy_metadata": "full"}, "full")],
+    ids=["new_room", "own_choice"],
+)
+def test_a_room_without_an_icy_preference_gets_basic(stored: dict[str, Any], expected: str) -> None:
+    """A room with nothing stored gets "basic"; a stored value is left for the user."""
+    provider = _icy_provider(stored)
+
+    provider._ensure_icy_default("raumfeld_bar")
+
+    assert stored["enable_icy_metadata"] == expected

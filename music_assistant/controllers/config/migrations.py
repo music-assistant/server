@@ -18,6 +18,7 @@ from music_assistant.constants import (
     CONF_CROSSFADE_MODE,
     CONF_EMBY_ALBUM_ARTISTS_HEAL_MIGRATED,
     CONF_EMBY_ALBUM_ARTISTS_HEAL_PENDING,
+    CONF_ENABLE_ICY_METADATA,
     CONF_HTTP_PROFILE,
     CONF_ICON,
     CONF_LINKED_PROTOCOL_IDS,
@@ -27,6 +28,7 @@ from music_assistant.constants import (
     CONF_PLAYERS,
     CONF_PROTOCOL_PARENT_ID,
     CONF_PROVIDERS,
+    CONF_RAUMFELD_ICY_BASIC_MIGRATED,
     CONF_SMART_FADES_MODE,
     CONF_VALUE_DISABLED,
     CONF_VALUE_ENABLED,
@@ -684,6 +686,11 @@ async def migrate(data: dict[str, Any]) -> bool:  # noqa: C901, PLR0912, PLR0915
     # provider only supports logging in with a user_session cookie.
     # TODO: remove after 2.13 release
     if _migrate_nicovideo_drop_mail_login(data):
+        changed = True
+
+    # Move Raumfeld players still on the former "full" ICY default to "basic".
+    # TODO: remove after 2.13 release
+    if _migrate_raumfeld_icy_basic(data):
         changed = True
 
     return changed
@@ -2062,4 +2069,41 @@ def _migrate_nicovideo_drop_mail_login(data: dict[str, Any]) -> bool:
     if not dropped:
         return False
     LOGGER.info("Removed %d unused nicovideo mail login value(s)", dropped)
+    return True
+
+
+def _migrate_raumfeld_icy_basic(data: dict[str, Any]) -> bool:
+    """
+    Move Raumfeld players still on the former "full" ICY default to "basic", once.
+
+    The Raumfeld provider stored "full" for every room, so it cannot be told apart from a
+    user's pick; the Raumfeld app does not use the cover link "full" adds. Guarded by
+    CONF_RAUMFELD_ICY_BASIC_MIGRATED so a "full" the user picks afterwards is kept. Returns
+    True when the settings were modified, including the first run's marker.
+    """
+    if data.get(CONF_RAUMFELD_ICY_BASIC_MIGRATED):
+        return False
+    all_player_configs = data.get(CONF_PLAYERS, {})
+    if not isinstance(all_player_configs, dict):
+        return False
+    raumfeld_configs = [
+        player_cfg
+        for player_cfg in all_player_configs.values()
+        if isinstance(player_cfg, dict) and player_cfg.get("provider") == "raumfeld"
+    ]
+    if not raumfeld_configs:
+        return False
+    migrated = 0
+    for player_cfg in raumfeld_configs:
+        player_values = player_cfg.get("values")
+        if (
+            isinstance(player_values, dict)
+            and player_values.get(CONF_ENABLE_ICY_METADATA) == "full"
+        ):
+            player_values[CONF_ENABLE_ICY_METADATA] = "basic"
+            migrated += 1
+    if migrated:
+        LOGGER.info("Moved %d Raumfeld player(s) from ICY metadata full to basic", migrated)
+    # claim the marker even when nothing moved, so a "full" picked later is kept
+    data[CONF_RAUMFELD_ICY_BASIC_MIGRATED] = True
     return True

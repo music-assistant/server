@@ -176,6 +176,9 @@
         "this_device": "This device"
       }
     },
+    "source_autostart_unavailable": {
+      "label": "This device does not support automatically playing its line-in on a speaker."
+    },
     "source_input_action": {
       "label": "Audio input",
       "options": {
@@ -252,6 +255,10 @@
     "approve_device_source": {
       "title": "How do you want to connect?",
       "description": "You can connect to this device straight away, or set up a secure pairing first. Without pairing the connection can be intercepted. This device can also send audio to Music Assistant. If that input could be sensitive, such as a microphone, pairing is the safer choice."
+    },
+    "source_autostart": {
+      "title": "Play line-in automatically",
+      "description": "This device can start playing its line-in on a player when a signal arrives, such as a record starting to play. You can change this later in the player settings."
     }
   },
   "manifest": {

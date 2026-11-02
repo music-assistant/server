@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import asyncio
+import time
 from collections.abc import AsyncIterator
 from unittest.mock import AsyncMock, MagicMock, PropertyMock, patch
 
 import pytest
-from music_assistant_models.enums import MediaType, RepeatMode
+from aioslimproto.models import PlayerState as SlimPlayerState
+from music_assistant_models.enums import MediaType, PlaybackState, RepeatMode
 from music_assistant_models.player import PlayerMedia
 
 from music_assistant.constants import (
@@ -203,6 +206,7 @@ async def test_grouped_play_media_passes_per_member_mime_type() -> None:
     player._player_id = "leader"
     player._attr_group_members = ["leader", "member_flac", "member_mp3"]
     player.multi_client_stream = None
+    player.client = MagicMock(elapsed_seconds=0)
     use_real_create_task(mass)
 
     mass.player_queues.get_item.return_value = None
@@ -241,3 +245,96 @@ async def test_grouped_play_media_passes_per_member_mime_type() -> None:
     flac_client, mp3_client = clients
     assert flac_client.play_url.call_args.kwargs["mime_type"] == "audio/flac"
     assert mp3_client.play_url.call_args.kwargs["mime_type"] == "audio/mpeg"
+
+
+async def test_regroup_supersedes_pending_resume() -> None:
+    """A member removed and re-added while the leader is busy restarts the leader once."""
+    player, mass = _player_with_mocked_mass()
+    player._player_id = "leader"
+    player._attr_group_members = ["leader", "member"]
+    player._attr_playback_state = PlaybackState.PLAYING
+    use_real_create_task(mass)
+    member = MagicMock()
+    member.player_id = "member"
+    member.state = SlimPlayerState.STOPPED
+    mass.players.get_player.return_value = member
+    # the playback lock an announcement holds on the leader while it plays
+    leader_busy = asyncio.Event()
+    resumed: list[str] = []
+
+    async def _cmd_resume(player_id: str) -> None:
+        await leader_busy.wait()
+        resumed.append(player_id)
+
+    mass.players.cmd_resume = _cmd_resume
+
+    with (
+        patch.object(SqueezelitePlayer, "synced_to", new_callable=PropertyMock, return_value=None),
+        patch.object(SqueezelitePlayer, "state", new_callable=PropertyMock),
+        patch.object(player, "_get_sync_clients", return_value=[member]),
+        patch.object(player, "update_state"),
+    ):
+        await player.set_members(player_ids_to_remove=["member"])
+        await player.set_members(player_ids_to_add=["member"])
+        leader_busy.set()
+        await asyncio.gather(*mass._tracked_tasks.values(), return_exceptions=True)
+
+    assert resumed == ["leader"]
+
+
+async def test_play_media_resets_elapsed_anchor() -> None:
+    """A new stream does not carry the previous stream's position."""
+    player, mass = _player_with_mocked_mass()
+    player.multi_client_stream = None
+    player.client = MagicMock(elapsed_seconds=0)
+    player._provider = MagicMock(mass=mass)
+    player._attr_elapsed_time = 3.9
+    player._attr_elapsed_time_last_updated = time.time() - 4
+    mass.streams.resolve_stream_url = AsyncMock(return_value="http://127.0.0.1:8097/x.flac")
+
+    with (
+        patch.object(SqueezelitePlayer, "synced_to", new_callable=PropertyMock, return_value=None),
+        patch.object(
+            SqueezelitePlayer, "group_members", new_callable=PropertyMock, return_value=[]
+        ),
+        patch.object(SqueezelitePlayer, "player_id", new_callable=PropertyMock, return_value="p1"),
+        patch.object(player, "_handle_play_url_for_slimplayer", new=AsyncMock()),
+        patch.object(player, "update_attributes"),
+        patch.object(player, "update_state"),
+    ):
+        await player.play_media(
+            PlayerMedia(uri="fake://x", media_type=MediaType.TRACK, source_id="queue_1")
+        )
+
+    assert player._attr_elapsed_time == 0
+    assert time.time() - player._attr_elapsed_time_last_updated < 1
+
+
+async def test_play_media_drops_heartbeat_from_before_the_flush() -> None:
+    """An old-stream heartbeat that lands before the flush does not survive the restart."""
+    player, mass = _player_with_mocked_mass()
+    player.multi_client_stream = None
+    player._extra_data = {}
+    player.client = client = MagicMock(elapsed_seconds=0)
+    client.play_url = AsyncMock()
+    player._provider = MagicMock(mass=mass)
+    mass.player_queues.get.return_value = None
+
+    async def _resolve_with_heartbeat(*_args: object) -> str:
+        player._attr_elapsed_time = 3.9
+        return "http://127.0.0.1:8097/x.flac"
+
+    mass.streams.resolve_stream_url = _resolve_with_heartbeat
+
+    with (
+        patch.object(SqueezelitePlayer, "synced_to", new_callable=PropertyMock, return_value=None),
+        patch.object(
+            SqueezelitePlayer, "group_members", new_callable=PropertyMock, return_value=[]
+        ),
+        patch.object(SqueezelitePlayer, "player_id", new_callable=PropertyMock, return_value="p1"),
+    ):
+        await player.play_media(
+            PlayerMedia(uri="fake://x", media_type=MediaType.TRACK, source_id="queue_1")
+        )
+
+    assert player._attr_elapsed_time == 0

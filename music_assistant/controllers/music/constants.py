@@ -150,3 +150,5 @@ AUDIO_ANALYSIS_MOVE_BATCH_SIZE: Final[int] = 5000
 # twice (decoded and packed) while it converts. Progress is logged once per this many rows.
 AUDIO_ANALYSIS_PACK_BATCH_SIZE: Final[int] = 100
 AUDIO_ANALYSIS_PACK_PROGRESS_ROWS: Final[int] = 2000
+# a collapsed collection shows the covers of its first items with a thumb as a stack
+COLLECTION_COVER_COUNT: Final[int] = 3

@@ -41,6 +41,8 @@ if TYPE_CHECKING:
 class BluesoundPlayer(Player):
     """Holds the details of the (discovered) BluOS player."""
 
+    _attr_trusts_reported_source = True
+
     def __init__(
         self,
         provider: BluesoundPlayerProvider,
@@ -300,12 +302,14 @@ class BluesoundPlayer(Player):
             self._attr_active_source = name
             self._attr_source_list.append(player_source)
         else:
-            self._attr_active_source = self.status.input_id
+            # Library and service playback may omit input_id in a valid BluOS status.
+            source_id = self.status.input_id or self.status.service or "bluos_external"
+            self._attr_active_source = source_id
             self.logger.debug("Appending new PlayerSource")
             self._attr_source_list.append(
                 PlayerSource(
-                    id=cast("str", self.status.input_id),
-                    name=cast("str", self.status.input_id),
+                    id=source_id,
+                    name=source_id,
                     passive=True,
                     can_play_pause=True,
                     can_seek=self.status.can_seek,
