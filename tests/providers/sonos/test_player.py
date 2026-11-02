@@ -1153,3 +1153,48 @@ async def test_set_members_gives_up_when_the_sonos_group_never_reports_the_membe
         await player.set_members(player_ids_to_add=["sonos_player_2"])
 
     assert client.player.group_members == [player.player_id]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("coordinator_state", ["connected", "disconnected", "unknown"])
+async def test_ungroup_leaves_a_group_whose_coordinator_is_offline_by_creating_its_own(
+    coordinator_state: str,
+) -> None:
+    """A member can only leave through a reachable coordinator, else it forms its own group."""
+    mass = MagicMock()
+    player, client = _bind_player(mass)
+    client.player.is_coordinator = False
+    client.player.group.coordinator_id = "coordinator"
+    client.player.leave_group = AsyncMock()
+    client.create_group = AsyncMock()
+    coordinator, _ = _bind_player(mass)
+    coordinator._attr_available = coordinator.connected = coordinator_state == "connected"
+    mass.players.get_player.return_value = None if coordinator_state == "unknown" else coordinator
+
+    await player.ungroup()
+
+    if coordinator_state == "connected":
+        client.player.leave_group.assert_awaited_once()
+        client.create_group.assert_not_awaited()
+    else:
+        client.create_group.assert_awaited_once_with(["sonos_player"])
+        client.player.leave_group.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("situation", ["coordinator", "no_group"])
+async def test_ungroup_without_a_coordinator_to_reach_leaves_the_group(situation: str) -> None:
+    """A coordinator, or a speaker without a group, simply leaves its group."""
+    mass = MagicMock()
+    player, client = _bind_player(mass)
+    client.player.is_coordinator = situation == "coordinator"
+    if situation == "no_group":
+        client.player.group = None
+    client.player.leave_group = AsyncMock()
+    client.create_group = AsyncMock()
+
+    await player.ungroup()
+
+    client.player.leave_group.assert_awaited_once()
+    client.create_group.assert_not_awaited()
+    mass.players.get_player.assert_not_called()

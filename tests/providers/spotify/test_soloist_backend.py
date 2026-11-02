@@ -937,3 +937,84 @@ async def test_a_seek_replaces_the_held_run(tmp_path: Path) -> None:
     held.stop.assert_awaited_once()
     assert run is not held
     assert backend._run is run
+
+
+async def test_a_held_run_whose_teardown_was_cut_short_is_reclaimed(tmp_path: Path) -> None:
+    """A stopped run left behind finishes its teardown instead of reporting capacity."""
+    backend = _make_backend(tmp_path, {CONF_SOLOIST_API_KEY: "k" * 20})
+    backend._server = MagicMock()
+    backend._binary = tmp_path / "soloist-bin"
+    held = _make_run(tmp_path, uri=TRACK_A, media_key=_streamdetails_for(uri=TRACK_A).uri)
+    held._stopped = True
+    held.stop = AsyncMock()  # type: ignore[method-assign]
+    backend._run = held
+
+    with (
+        patch(
+            "music_assistant.providers.spotify.backends.soloist.SoloistBinaryManager.ensure_fresh",
+            AsyncMock(),
+        ),
+        patch.object(soloist_backend._SingleTrackRun, "start", AsyncMock()),
+    ):
+        run = await backend._acquire_run(
+            TRACK_B, 0, _streamdetails_for(uri=TRACK_B), continuation=False
+        )
+    held.stop.assert_awaited_once()
+    assert run is not held
+    assert backend._run is run
+
+
+async def test_a_stream_cancelled_again_during_its_teardown_releases_the_run(
+    tmp_path: Path,
+) -> None:
+    """
+    A second cancel while the stream tears its run down must not leave the run held.
+
+    The teardown runs as its own task, so the second cancel finds nothing to interrupt
+    and the run is released once that task finishes.
+    """
+    backend = _make_backend(tmp_path)
+    backend._server = MagicMock()
+    backend._binary = tmp_path / "soloist-bin"
+    run = _make_run(tmp_path, uri=TRACK_A, media_key=TRACK_A)
+    backend._run = run
+    teardown_started = asyncio.Event()
+    finish_teardown = asyncio.Event()
+    tasks: list[asyncio.Task[Any]] = []
+
+    async def _stop() -> None:
+        teardown_started.set()
+        await finish_teardown.wait()
+
+    async def _stream() -> AsyncGenerator[bytes]:
+        yield b"\x00" * 64
+        await asyncio.Event().wait()
+
+    def _create_task(coro: Any) -> asyncio.Task[Any]:
+        tasks.append(task := asyncio.get_running_loop().create_task(coro))
+        return task
+
+    run.stop = _stop  # type: ignore[method-assign]
+    run.stream = _stream  # type: ignore[method-assign]
+    first_chunk = asyncio.Event()
+
+    async def _consume() -> None:
+        async for _chunk in backend.stream_spotify_uri(TRACK_A):
+            first_chunk.set()
+
+    with (
+        patch.object(backend, "_acquire_run", AsyncMock(return_value=run)),
+        patch.object(backend.mass, "create_task", side_effect=_create_task),
+    ):
+        consumer = asyncio.create_task(_consume())
+        await first_chunk.wait()
+        consumer.cancel()
+        await teardown_started.wait()
+        consumer.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await consumer
+        # released only once its teardown is through, never by the cancel itself
+        assert backend._run is run
+        finish_teardown.set()
+        await asyncio.gather(*tasks)
+    assert backend._run is None

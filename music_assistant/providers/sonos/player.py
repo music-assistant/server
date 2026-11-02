@@ -811,7 +811,20 @@ class SonosPlayer(Player):
 
         Will only be called if the PlayerFeature.SET_MEMBERS is supported.
         """
-        await self.client.player.leave_group()
+        sonos_player = self.client.player
+        if not sonos_player.is_coordinator and sonos_player.group:
+            coordinator = self.mass.players.get_player(sonos_player.group.coordinator_id)
+            if (
+                not isinstance(coordinator, SonosPlayer)
+                or not coordinator.available
+                or not coordinator.connected
+            ):
+                # leaving a group is handled by its coordinator, so it can't succeed while
+                # that coordinator is offline; creating a group is handled by this speaker
+                # itself and moves it into a group of its own
+                await self.client.create_group([self.player_id])
+                return
+        await sonos_player.leave_group()
 
     async def play_announcement(
         self, announcement: PlayerMedia, volume_level: int | None = None

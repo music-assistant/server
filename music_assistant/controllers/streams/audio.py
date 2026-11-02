@@ -183,7 +183,7 @@ from music_assistant.helpers.throttle_retry import RequestPriority, request_prio
 from music_assistant.helpers.util import (
     clean_stream_title,
     detect_charset,
-    parse_quoted_stream_title,
+    parse_station_stream_title,
     parse_title_and_version,
     remove_file,
 )
@@ -5388,7 +5388,7 @@ class StreamsAudio:
         # Parse the original title for structured fields first so stations that announce
         # an album can refine the artwork lookup; fall back to the "Artist - Track" split.
         album: str | None = None
-        if parsed := parse_quoted_stream_title(stream_title):
+        if parsed := parse_station_stream_title(stream_title):
             track_name, artist_name_raw, album = parsed
         elif " - " in cleaned_stream_title:
             artist_name_raw, track_name = (
