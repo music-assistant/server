@@ -1912,7 +1912,12 @@ class LocalFileSystemProvider(MusicProvider):
                 )
             except Exception as err:
                 # one artist must not fail the whole sync
-                self.logger.error("Error refreshing artist %s - %s", artist_path, err)
+                self.logger.error(
+                    "Error refreshing artist %s - %s",
+                    artist_path,
+                    err,
+                    exc_info=err if self.logger.isEnabledFor(logging.DEBUG) else None,
+                )
 
     async def _register_metadata_file(
         self, item: FileSystemItem, representative_track: str | None
