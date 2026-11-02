@@ -20,6 +20,7 @@ from music_assistant.providers.airplay.shairport_player import (
     volume_steps,
 )
 from tests.providers.airplay.test_shairport_player import (
+    FOREIGN_DACP_ID,
     PLAYER_ID,
     _armed_timer,
     _make_player,
@@ -172,6 +173,40 @@ async def test_unanswered_command_makes_the_session_read_only() -> None:
     player.on_shairport_metadata({"play_begin": True})
 
     assert player.source_list[0].can_play_pause is True
+
+
+async def test_sender_taking_over_starts_a_fresh_session() -> None:
+    """A sender that takes over while the flag stays up gets none of the previous session."""
+    player, _mqtt = _controlled_session()
+    player.on_shairport_metadata({"title": "Song", "artwork": b"image"})
+    with (
+        patch("music_assistant.providers.airplay.shairport_player.COMMAND_CONFIRM_TIMEOUT", 0.01),
+        pytest.raises(PlayerCommandFailed),
+    ):
+        await player.pause()
+
+    player.on_shairport_metadata({"dacp_id": FOREIGN_DACP_ID + 1})
+
+    assert player.active_source == "airplay"
+    assert player.current_media is None
+    assert player.source_list[0].can_play_pause is True
+
+
+async def test_failed_volume_change_is_not_what_the_retry_steps_from() -> None:
+    """A volume change whose steps were not delivered falls back to the reported level."""
+    player, mqtt = _controlled_session()
+    player.on_shairport_metadata({"volume": 70, "airplay_volume": -9.0})
+    mqtt.publish_remote.side_effect = PlayerCommandFailed("Not connected to the MQTT broker")
+    with pytest.raises(PlayerCommandFailed):
+        await player.volume_set(50)
+
+    assert player.volume_level == 70
+
+    mqtt.publish_remote.reset_mock(side_effect=True)
+    _answer_with(player, mqtt, {"volume": 45, "airplay_volume": -16.5})
+    await player.volume_set(50)
+
+    assert _published(mqtt) == ["volumedown"] * 4
 
 
 @pytest.mark.parametrize("topic", [None, "shairport/kitchen"], ids=["read_only", "ignored"])

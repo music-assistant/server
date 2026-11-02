@@ -221,6 +221,8 @@ class ShairportMetadataDecoder:
         elif command == "updateMRPlaybackState":
             state = params.get("mrPlaybackState")
             if isinstance(state, int) and (key := PLAYBACK_STATE_KEYS.get(state)):
+                # a later now-playing merge without a rate must not bring back the old one
+                self._now_playing[NOW_PLAYING_PLAYBACK_RATE] = 1.0 if key == "resumed" else 0.0
                 self._on_update({key: True})
 
     def _process_now_playing(self, params: dict[str, Any]) -> None:

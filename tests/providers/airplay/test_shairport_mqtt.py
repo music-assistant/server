@@ -108,11 +108,14 @@ async def _settle() -> None:
         await _real_sleep(0)
 
 
-def _player(player_id: str, name: str, topic: str = "") -> MagicMock:
-    """Create a ShairportSyncPlayer stand-in."""
+def _player(
+    player_id: str, name: str, topic: str = "", display_name: str | None = None
+) -> MagicMock:
+    """Create a ShairportSyncPlayer stand-in, advertised as name and shown as display_name."""
     player = MagicMock()
     player.player_id = player_id
-    player.display_name = name
+    player.name = name
+    player.display_name = display_name or name
     player.mqtt_topic_setting = topic
     return player
 
@@ -269,8 +272,8 @@ async def test_autodiscovered_topic_matches_device_id(connect: Connect, broker: 
 async def test_autodiscovered_topic_matches_device_name(
     connect: Connect, broker: FakeBroker
 ) -> None:
-    """A Classic receiver is matched to the player with the same name, ignoring case."""
-    lounge = _player("ap222222222222", "Living Room")
+    """A Classic receiver matches the player with its advertised name, whatever it is renamed to."""
+    lounge = _player("ap222222222222", "Living Room", display_name="Lounge Speaker")
     client = await connect(_provider(lounge))
 
     broker.current.deliver(*_discovery("Living Room", "shairport/lounge", "living room"))

@@ -276,6 +276,20 @@ def test_copl_playback_state(state: int, expected: list[dict[str, Any]]) -> None
     assert updates == expected
 
 
+def test_copl_merge_after_a_playback_state_keeps_that_state() -> None:
+    """A merge without a rate after a pause reports paused, not the rate stored before it."""
+    decoder, updates = _decoder()
+    decoder.process_item(
+        "ssnc", "copl", _now_playing({f"{NPI}Title": "Title", f"{NPI}PlaybackRate": 1.0})
+    )
+    decoder.process_item("ssnc", "copl", _playback_state(2))
+    decoder.process_item("ssnc", "copl", _now_playing({f"{NPI}ArtworkData": b"\x89PNG"}))
+    assert updates[1:] == [
+        {"paused": True},
+        {"title": "Title", "artwork": b"\x89PNG", "paused": True},
+    ]
+
+
 @pytest.mark.parametrize(
     "data",
     [

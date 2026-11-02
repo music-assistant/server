@@ -345,11 +345,12 @@ class ShairportMqttClient:
     def _match_receiver(self, player: ShairportSyncPlayer) -> _DiscoveredReceiver | None:
         """Return the discovered receiver matching a player by device id, else by name."""
         device_id = player.player_id[2:].replace(":", "").casefold()
-        name = player.display_name.casefold()
+        # the name the receiver advertises, which a custom display name does not change
+        name = (player.name or "").casefold()
         by_name: _DiscoveredReceiver | None = None
         for receiver_id, receiver in self._receivers.items():
             if receiver_id.replace(":", "").casefold() == device_id:
                 return receiver
-            if by_name is None and receiver.name is not None and receiver.name.casefold() == name:
+            if by_name is None and name and receiver.name and receiver.name.casefold() == name:
                 by_name = receiver
         return by_name

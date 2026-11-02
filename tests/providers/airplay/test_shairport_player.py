@@ -6,6 +6,7 @@ import logging
 import time
 from collections.abc import Awaitable, Callable
 from contextlib import AbstractContextManager
+from functools import partial
 from ipaddress import ip_address
 from typing import cast
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -82,10 +83,10 @@ def _start_metadata_session(player: ShairportSyncPlayer) -> None:
 
 
 def _armed_timer(player: ShairportSyncPlayer, task_id: str) -> tuple[float, Callable[[], None]]:
-    """Return the delay and callback of the last timer armed under a task id."""
+    """Return the delay and callback (with its arguments bound) of the last timer under a task id."""
     for call in reversed(cast("MagicMock", player.mass.call_later).call_args_list):
         if call.kwargs.get("task_id") == task_id:
-            return call.args[0], call.args[1]
+            return call.args[0], partial(call.args[1], *call.args[2:])
     msg = f"no timer armed for {task_id}"
     raise AssertionError(msg)
 
@@ -365,6 +366,49 @@ def test_paused_session_ends_after_the_pause_timeout() -> None:
     _set_flags(player, RECEIVER_SESSION_ACTIVE_BIT)
 
     assert player.active_source is None
+
+
+def test_session_resumed_after_the_pause_timeout_still_follows_the_flag() -> None:
+    """A session that resumes while the flag stays up is paused, not ended, by a play end."""
+    player = _make_player()
+    player.evaluate_session_flag()
+    _set_flags(player, RECEIVER_SESSION_ACTIVE_BIT)
+    player.on_shairport_metadata({"dacp_id": FOREIGN_DACP_ID})
+    player.on_shairport_metadata({"paused": True})
+    with patch("time.time", return_value=time.time() + EXTERNAL_PAUSE_IDLE_TIMEOUT + 1):
+        player.update_state()
+
+    player.on_shairport_metadata({"resumed": True})
+    player.on_shairport_metadata({"play_end": True})
+
+    assert player.active_source == "airplay"
+    assert player.playback_state == PlaybackState.PAUSED
+
+
+@pytest.mark.parametrize("pause", ["paused", "flush"])
+def test_pause_and_resume_keep_the_position_where_playback_stopped(pause: str) -> None:
+    """Pausing freezes the position where playback stopped, and resuming carries on from there."""
+    clock = [1_000_000.0]
+    with patch("time.time", side_effect=lambda: clock[0]):
+        player = _make_player()
+        _start_metadata_session(player)
+        player.on_shairport_metadata({"elapsed_time": 10, "duration": 240})
+        clock[0] += 20
+        player.on_shairport_metadata({pause: True})
+        if pause == "flush":
+            # nothing follows the flush, so it counts as a pause once the delay has passed
+            clock[0] += 1
+            _, pause_after_flush = _armed_timer(player, f"airplay_external_flush_{PLAYER_ID}")
+            pause_after_flush()
+
+        assert player.playback_state == PlaybackState.PAUSED
+        assert player.corrected_elapsed_time == 30
+
+        clock[0] += 60
+        player.on_shairport_metadata({"resumed": True})
+        clock[0] += 5
+
+        assert player.corrected_elapsed_time == 35
 
 
 def test_own_sender_metadata_is_ignored_after_our_stream() -> None:

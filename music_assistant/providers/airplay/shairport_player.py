@@ -98,6 +98,9 @@ class ExternalSession:
     # remote volume steps sent but not reported back yet, and until when to wait for them
     volume_steps_pending: int = 0
     volume_steps_deadline: float = 0.0
+    # the last volume the receiver reported, what a failed volume change falls back to
+    reported_volume: int | None = None
+    reported_airplay_volume: float | None = None
 
 
 class ShairportSyncPlayer(GenericAirPlayPlayer):
@@ -253,7 +256,16 @@ class ShairportSyncPlayer(GenericAirPlayPlayer):
         session.volume_steps_deadline = now + COMMAND_CONFIRM_TIMEOUT
         self._publish()
         command = "volumeup" if steps > 0 else "volumedown"
-        await self._send_session_command(session, [command] * abs(steps), _CONFIRMED_BY_VOLUME)
+        try:
+            await self._send_session_command(session, [command] * abs(steps), _CONFIRMED_BY_VOLUME)
+        except PlayerCommandFailed:
+            # steps that never left, or never came back, must not be what the next change
+            # steps from; reports of any that did reach the receiver show its real level
+            session.volume_steps_pending = 0
+            session.volume = session.reported_volume
+            session.airplay_volume = session.reported_airplay_volume
+            self._publish()
+            raise
 
     async def volume_mute(self, muted: bool) -> None:
         """Mute Music Assistant's stream; another sender's session cannot be muted."""
@@ -331,26 +343,34 @@ class ShairportSyncPlayer(GenericAirPlayPlayer):
         :param update: Decoded metadata, as produced by ShairportMetadataDecoder.
         """
         self._drop_ended_session()
-        self._update_sender(update)
+        took_over = self._update_sender(update)
         if not self._accepts_session_metadata():
             if self._sender_is_foreign():
                 # a sender that took the receiver over from our stream, which still runs
                 self._hold_metadata(update)
             return
         session = self._session
+        if took_over and session is not None:
+            # another sender took the receiver over while its session flag stayed up, so
+            # nothing of the previous sender's session (read-only, artwork, volume) carries on
+            self._drop_session()
+            session = self._begin_external_session()
         if update.get("play_begin") or update.get("resumed"):
             session = session or self._begin_external_session()
             self.mass.cancel_timer(self._flush_timer_id)
-            self._attr_playback_state = PlaybackState.PLAYING
+            self._set_session_state(PlaybackState.PLAYING)
         if session is None:
             # a Classic sender sends its metadata before play begins or the flag comes up
             self._hold_metadata(update)
             return
         if update.get("paused"):
-            self._attr_playback_state = PlaybackState.PAUSED
+            self._set_session_state(PlaybackState.PAUSED)
         if update.get("flush"):
             self.mass.call_later(
-                FLUSH_PAUSE_DELAY, self._pause_after_flush, task_id=self._flush_timer_id
+                FLUSH_PAUSE_DELAY,
+                self._pause_after_flush,
+                time.time(),
+                task_id=self._flush_timer_id,
             )
         if not session.flag_seen and (update.get("play_end") or update.get("active_end")):
             # without a session flag this is the only end of the session the receiver reports
@@ -358,7 +378,7 @@ class ShairportSyncPlayer(GenericAirPlayPlayer):
             return
         if update.get("play_end"):
             # the sender may still be connected: the flag or the pause timeout ends the session
-            self._attr_playback_state = PlaybackState.PAUSED
+            self._set_session_state(PlaybackState.PAUSED)
         events = set(update)
         if self._apply_media(session, update):
             events.add("track_changed")
@@ -463,7 +483,8 @@ class ShairportSyncPlayer(GenericAirPlayPlayer):
 
     def _begin_external_session(self) -> ExternalSession:
         """Start presenting another sender's session as the active ``airplay`` source."""
-        session = self._session = ExternalSession()
+        # a session that metadata (re)starts while the flag is already up gets no flag change
+        session = self._session = ExternalSession(flag_seen=self._receiver_session_flag())
         self._external_source_ids.add(EXTERNAL_SOURCE_ID)
         self._attr_active_source = EXTERNAL_SOURCE_ID
         self._attr_playback_state = PlaybackState.PLAYING
@@ -503,8 +524,7 @@ class ShairportSyncPlayer(GenericAirPlayPlayer):
             self._attr_elapsed_time = elapsed_time
             self._attr_elapsed_time_last_updated = time.time()
         if "volume" in held and not self.ignore_volume_reports:
-            session.volume = held["volume"]
-            session.airplay_volume = held.get("airplay_volume")
+            self._apply_volume_report(session, held)
         if held.get("paused"):
             self._attr_playback_state = PlaybackState.PAUSED
 
@@ -588,20 +608,28 @@ class ShairportSyncPlayer(GenericAirPlayPlayer):
             return True, not classic
         return classic, classic
 
-    def _update_sender(self, update: dict[str, Any]) -> None:
-        """Keep track of the connected sender, whoever it is."""
+    def _update_sender(self, update: dict[str, Any]) -> bool:
+        """
+        Keep track of the connected sender, whoever it is.
+
+        :param update: Decoded metadata.
+        :return: Whether a sender other than the one we knew connected.
+        """
         sender = self._sender
         if "dacp_id" in update or "active_remote" in update:
             # a sender connects, so what was held came from an earlier connection
             self._held_metadata.clear()
+        took_over = False
         if (dacp_id := update.get("dacp_id")) is not None and dacp_id != sender.dacp_id:
             # a new sender connected, and the stream type was the previous one's
+            took_over = sender.dacp_id is not None
             sender.dacp_id = dacp_id
             sender.stream_type = None
         if sender_name := update.get("sender_name"):
             sender.name = sender_name
         if stream_type := update.get("stream_type"):
             sender.stream_type = stream_type
+        return took_over
 
     def _sender_is_foreign(self) -> bool:
         """Return whether the connected sender is known and is not our own stream."""
@@ -682,6 +710,8 @@ class ShairportSyncPlayer(GenericAirPlayPlayer):
 
     def _apply_volume_report(self, session: ExternalSession, update: dict[str, Any]) -> None:
         """Show the volume the receiver reports, once the steps we sent have all come back."""
+        session.reported_volume = update["volume"]
+        session.reported_airplay_volume = update.get("airplay_volume")
         now = time.monotonic()
         if session.volume_steps_pending and now < session.volume_steps_deadline:
             session.volume_steps_pending -= 1
@@ -690,14 +720,37 @@ class ShairportSyncPlayer(GenericAirPlayPlayer):
                 # a step on the way: the level shown, and stepped from next, stays the target
                 return
         session.volume_steps_pending = 0
-        session.volume = update["volume"]
-        session.airplay_volume = update.get("airplay_volume")
+        session.volume = session.reported_volume
+        session.airplay_volume = session.reported_airplay_volume
 
-    def _pause_after_flush(self) -> None:
-        """Show a flushed session as paused once no track change followed the flush."""
+    def _set_session_state(self, state: PlaybackState, stopped_at: float | None = None) -> None:
+        """
+        Change the playback state of the session, keeping the position where playback left it.
+
+        :param state: The new playback state.
+        :param stopped_at: When playback stopped, if that was before now.
+        """
+        if state == self._attr_playback_state:
+            return
+        now = time.time()
+        last_updated = self._attr_elapsed_time_last_updated
+        if self._attr_elapsed_time is not None and last_updated is not None:
+            if self._attr_playback_state == PlaybackState.PLAYING:
+                # the position stops where playback stopped
+                self._attr_elapsed_time += max(0.0, (stopped_at or now) - last_updated)
+            # and runs on from the moment playback resumes
+            self._attr_elapsed_time_last_updated = now
+        self._attr_playback_state = state
+
+    def _pause_after_flush(self, flushed_at: float) -> None:
+        """
+        Show a flushed session as paused once no track change followed the flush.
+
+        :param flushed_at: When the flush arrived, which is when playback stopped.
+        """
         if self._session is None:
             return
-        self._attr_playback_state = PlaybackState.PAUSED
+        self._set_session_state(PlaybackState.PAUSED, stopped_at=flushed_at)
         self._publish()
         # a Classic sender pauses with a flush alone, it never reports paus
         self._resolve_confirmations({"paused"})
