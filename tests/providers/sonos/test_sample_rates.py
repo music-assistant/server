@@ -14,7 +14,7 @@ from music_assistant.providers.sonos.player import SonosPlayer
 
 HI_RES_MODEL = "Era 300"
 # a model from NON_HIRES_MODELS, which is kept at 16 bit
-NON_HI_RES_MODEL = "Play:3"
+NON_HI_RES_MODEL = "Connect:Amp"
 
 
 def _make_player(model: str, config_value: Any = None) -> SonosPlayer:

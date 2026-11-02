@@ -115,15 +115,52 @@ class ListenBrainzScrobbleProvider(PluginProvider):
                 headers={"Authorization": f"Token {token}"},
                 timeout=_REQUEST_TIMEOUT,
             ) as response:
+                if response.status in (401, 403):
+                    self.logger.warning(
+                        "ListenBrainz server refused access at %s (HTTP %s)",
+                        api_base_url,
+                        response.status,
+                    )
+                    raise SetupFailedError(
+                        "ListenBrainz server refused access",
+                        translation_key="access_denied",
+                        translation_owner="provider.listenbrainz_scrobble",
+                    )
+                if response.status == 404:
+                    self.logger.warning("ListenBrainz endpoint was not found at %s", url)
+                    raise SetupFailedError(
+                        "ListenBrainz endpoint was not found; check the configured Base URL",
+                        translation_key="endpoint_not_found",
+                        translation_owner="provider.listenbrainz_scrobble",
+                    )
                 response.raise_for_status()
                 result = await response.json()
-        except (aiohttp.ClientError, TimeoutError, ValueError) as err:
+        except (aiohttp.ClientConnectionError, TimeoutError) as err:
+            error = str(err) or err.__class__.__name__
+            self.logger.warning(
+                "Unable to validate ListenBrainz token at %s: %s", api_base_url, error
+            )
+            raise SetupFailedError(
+                f"Unable to connect to ListenBrainz: {error}",
+                translation_key="connection_failed",
+                translation_owner="provider.listenbrainz_scrobble",
+            ) from err
+        except (aiohttp.ClientError, ValueError) as err:
             # ValueError covers a malformed JSON body from response.json()
-            raise SetupFailedError(f"Unable to connect to ListenBrainz: {err}") from err
+            error = str(err) or err.__class__.__name__
+            self.logger.warning(
+                "Unable to validate ListenBrainz token at %s: %s", api_base_url, error
+            )
+            raise SetupFailedError(f"Unable to connect to ListenBrainz: {error}") from err
         # only an explicit boolean valid=false proves the token is bad; any other
         # shape is a response we can't trust, so keep setup retryable
         valid = result.get("valid") if isinstance(result, dict) else None
         if not isinstance(valid, bool):
+            self.logger.warning(
+                "Unexpected response while validating ListenBrainz token at %s: "
+                "expected a boolean 'valid' field",
+                api_base_url,
+            )
             raise SetupFailedError("Unexpected response from ListenBrainz")
         if not valid:
             raise InvalidToken("Invalid ListenBrainz user token")

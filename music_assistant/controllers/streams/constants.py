@@ -71,6 +71,16 @@ DSD_BUFFER_MAX_BYTES: Final[dict[str, int]] = {
 # Buffer size for radio streams (short rolling buffer)
 RADIO_BUFFER_SIZE: Final[int] = 15
 
+# Seconds an HLS radio input may read ahead of playback, so a slow playlist reload and
+# segment fetch at each boundary does not starve the player. Must stay below RADIO_BUFFER_SIZE.
+HLS_RADIO_INPUT_BURST: Final[int] = 5
+
+# Generic artwork some radio platforms send in the ICY 'StreamUrl' field when a track has
+# no cover of its own; treated as no image so the artwork lookup and station image apply.
+ICY_PLACEHOLDER_IMAGE_URLS: Final[frozenset[str]] = frozenset(
+    {"https://broadcaster.live365.com/static/assets/img/blankart.jpg"}
+)
+
 
 # Ceiling on how fast stream output is handed to a player, once it has had its opening
 # burst. Music Assistant serves audio for listening, not for collecting: barely above

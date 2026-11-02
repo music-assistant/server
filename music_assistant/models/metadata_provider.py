@@ -36,6 +36,15 @@ class MetadataProvider(RecommendationsMixin, MusicDiscoveryMixin, Provider):
         """Whether the provider currently holds its requests back because of a rate limit."""
         return False
 
+    @property
+    def is_local(self) -> bool:
+        """
+        Whether this provider reads metadata from local storage instead of an online service.
+
+        Such a provider needs no network access and does not rely on a MusicBrainz id.
+        """
+        return False
+
     async def get_artist_metadata(self, artist: Artist) -> MediaItemMetadata | None:
         """Retrieve metadata for an artist on this Metadata provider."""
         if ProviderFeature.ARTIST_METADATA in self.supported_features:

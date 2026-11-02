@@ -21,7 +21,7 @@ from ytmusicapi.exceptions import YTMusicError, YTMusicServerError
 from music_assistant.providers.ytmusic.constants import YTMRecommendationIcons
 
 # subset of ytmusicapi's accepted search filters that we use
-YTMSearchFilter = Literal["artists", "albums", "songs", "playlists", "podcasts"]
+YTMSearchFilter = Literal["artists", "albums", "songs", "videos", "playlists", "podcasts"]
 
 
 async def get_artist(
@@ -81,15 +81,19 @@ async def get_album(
         if prov_album_id.startswith("FEmusic_library_privately_owned_release"):
             ytm = ytmusicapi.YTMusic(auth=headers, language=language, user=user)
             album = ytm.get_library_upload_album(browseId=prov_album_id)
+
+            # sigma67/ytmusicapi#1022 - uploaded album audioPlaylistId currently not resolvable
+            album.pop("audioPlaylistId", None)
         else:
             ytm = ytmusicapi.YTMusic(auth=headers, language=language, user=user)
             album = ytm.get_album(browseId=prov_album_id)
 
-        if album.get("audioPlaylistId"):
+        playlist_id = album.get("audioPlaylistId")
+        if playlist_id:
             # Track id's from album tracks do not match with actual album tracks. E.g. a track
             # points to the videoId of the original version, while we want the album version
             try:
-                album_playlist = ytm.get_playlist(playlistId=album["audioPlaylistId"], limit=None)
+                album_playlist = ytm.get_playlist(playlistId=playlist_id, limit=None)
             except YTMusicError:
                 return album
 

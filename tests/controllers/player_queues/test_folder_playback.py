@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from typing import cast
 from unittest.mock import AsyncMock, patch
 from uuid import uuid4
 
@@ -18,7 +19,11 @@ from music_assistant_models.media_items import (
     Track,
     UniqueList,
 )
+from music_assistant_models.player_queue import PlayerQueue
 
+from music_assistant.constants import DB_TABLE_ALBUMS
+from music_assistant.controllers.player_queues.helpers import build_queue_item
+from music_assistant.controllers.player_queues.state import PlayerQueueData
 from music_assistant.mass import MusicAssistant
 
 PROVIDER = "test_folder_prov"
@@ -231,6 +236,81 @@ async def test_album_folder_and_its_disc_subfolder_play_as_the_album(mass: Music
     assert bonus_origin.container is not None
     assert bonus_origin.container.media_type == MediaType.FOLDER
     assert bonus_origin.container.item_id == f"{album_path}/Bonus"
+
+
+async def test_an_album_folder_plays_its_disc_subfolders_as_the_album(mass: MusicAssistant) -> None:
+    """The files in the disc subfolders of a played album folder play as that album."""
+    album = await _scanned_album(mass, "In a Silent Way", "Music/In a Silent Way")
+    album_folder = BrowseFolder(
+        item_id="Music/In a Silent Way", provider=PROVIDER, name="In a Silent Way", is_playable=True
+    )
+    disc_folder = BrowseFolder(
+        item_id="Music/In a Silent Way/CD1", provider=PROVIDER, name="CD1", is_playable=True
+    )
+    file = _file("Music/In a Silent Way/CD1/01.flac")
+    browse = AsyncMock(
+        side_effect=lambda path, **_kwargs: [disc_folder] if path == album_folder.path else [file]
+    )
+    with patch.object(mass.music, "browse", browse):
+        resolved = await mass.player_queues._media_resolver._resolve_media_items(album_folder)
+
+    origin = resolved[0].origin
+    assert origin is not None
+    assert origin.container is not None
+    assert (origin.container.media_type, origin.container.item_id) == (
+        MediaType.ALBUM,
+        album.item_id,
+    )
+    assert (origin.provider_instance, origin.item_id) == (PROVIDER, file.item_id)
+
+
+async def test_an_album_folder_play_counts_as_a_play_of_the_album(mass: MusicAssistant) -> None:
+    """The first file of an album folder to play to the end counts the album as played, once."""
+    user = await mass.webserver.auth.create_user("folderalbumcredit")
+    album = await _scanned_album(mass, "Miles Smiles", "Music/Miles Smiles")
+    album_folder = BrowseFolder(
+        item_id="Music/Miles Smiles", provider=PROVIDER, name="Miles Smiles", is_playable=True
+    )
+    files = [_file("Music/Miles Smiles/01.flac"), _file("Music/Miles Smiles/02.flac")]
+    with patch.object(mass.music, "browse", AsyncMock(return_value=files)):
+        resolved = await mass.player_queues._media_resolver._resolve_media_items(album_folder)
+    items = [
+        build_queue_item("q1", cast("Track", entry.item), origin=entry.origin) for entry in resolved
+    ]
+    queue = PlayerQueue(queue_id="q1", active=True, display_name="Q1", available=True, items=0)
+    queue_data = PlayerQueueData(queue=queue, items=items, userid=user.user_id)
+    tracker = mass.player_queues
+
+    credit = tracker._claim_album_credit(queue_data, items[0])
+    assert credit is not None
+    assert tracker._claim_album_credit(queue_data, items[1]) is None
+    await tracker._mark_album_played(credit, cast("Track", items[0].media_item), queue_data)
+
+    row = await mass.music.database.get_row(DB_TABLE_ALBUMS, {"item_id": album.item_id})
+    assert row is not None
+    assert row["play_count"] == 1
+
+
+async def test_an_album_folder_played_with_its_parent_is_no_album_play(
+    mass: MusicAssistant,
+) -> None:
+    """Playing the folder above an album folder does not count that album as played."""
+    await _scanned_album(mass, "Nefertiti", "Music/Nefertiti")
+    parent = BrowseFolder(item_id="Music", provider=PROVIDER, name="Music", is_playable=True)
+    album_folder = BrowseFolder(
+        item_id="Music/Nefertiti", provider=PROVIDER, name="Nefertiti", is_playable=True
+    )
+    file = _file("Music/Nefertiti/01.flac")
+    browse = AsyncMock(
+        side_effect=lambda path, **_kwargs: [album_folder] if path == parent.path else [file]
+    )
+    with patch.object(mass.music, "browse", browse):
+        resolved = await mass.player_queues._media_resolver._resolve_media_items(parent)
+    item = build_queue_item("q1", cast("Track", resolved[0].item), origin=resolved[0].origin)
+    queue = PlayerQueue(queue_id="q1", active=True, display_name="Q1", available=True, items=0)
+    queue_data = PlayerQueueData(queue=queue, items=[item])
+
+    assert mass.player_queues._claim_album_credit(queue_data, item) is None
 
 
 async def test_a_disc_subfolder_played_by_uri_plays_as_the_album(mass: MusicAssistant) -> None:

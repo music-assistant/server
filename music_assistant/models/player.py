@@ -3092,7 +3092,9 @@ class Player(ABC):
                 elapsed_time, elapsed_time_last_updated = _resolve_position(
                     stream_metadata.elapsed_time,
                     stream_metadata.elapsed_time_last_updated,
-                    active_queue.elapsed_time,
+                    # a duration is the song's, and how long the stream has played is no
+                    # position in that song
+                    None if stream_metadata.duration else active_queue.elapsed_time,
                     active_queue.elapsed_time_last_updated,
                 )
                 return PlayerMedia(

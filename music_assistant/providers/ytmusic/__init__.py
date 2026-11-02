@@ -13,6 +13,7 @@ from contextlib import suppress
 from datetime import datetime
 from functools import lru_cache
 from io import StringIO
+from itertools import zip_longest
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 from urllib.parse import parse_qs, unquote, urlparse
@@ -20,8 +21,10 @@ from urllib.parse import parse_qs, unquote, urlparse
 import ytmusicapi
 from aiohttp import ClientError, ClientSession, ClientTimeout, DummyCookieJar
 from duration_parser import parse as parse_str_duration
+from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption
 from music_assistant_models.enums import (
     AlbumType,
+    ConfigEntryType,
     ContentType,
     ImageType,
     MediaType,
@@ -66,6 +69,7 @@ from music_assistant.constants import (
     VERBOSE_LOG_LEVEL,
 )
 from music_assistant.controllers.cache import use_cache
+from music_assistant.controllers.music.constants import CACHE_CATEGORY_SEARCH_RESULTS
 from music_assistant.helpers.aiohttp_client import create_clientsession
 from music_assistant.helpers.util import (
     import_module_in_thread,
@@ -104,15 +108,19 @@ from .helpers import (
 )
 
 if TYPE_CHECKING:
-    from music_assistant_models.config_entries import ConfigEntry, ProviderConfig
+    from music_assistant_models.config_entries import ProviderConfig
     from music_assistant_models.provider import ProviderManifest
 
     from music_assistant import MusicAssistant
     from music_assistant.models import ProviderInstanceType
 
 
+CONF_INCLUDE_VIDEOS = "include_videos_in_search"
 CONF_COOKIE = "cookie"
 CONF_PO_TOKEN_SERVER_URL = "po_token_server_url"  # noqa: S105 - URL
+CONF_STREAM_PROFILE = "stream_profile"
+STREAM_PROFILE_STABLE = "stable"
+STREAM_PROFILE_FAST = "fast"
 DEFAULT_PO_TOKEN_SERVER_URL = "http://127.0.0.1:4416"  # noqa: S105 - URL
 
 YTM_DOMAIN = "https://music.youtube.com"
@@ -211,7 +219,24 @@ class YoutubeMusicProvider(RecommendationPayloadMixin, MusicProvider):
 
     async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
         """Return Config entries to configure this provider."""
-        return (CONF_ENTRY_UNOFFICIAL_PROVIDER,)
+        return (
+            CONF_ENTRY_UNOFFICIAL_PROVIDER,
+            ConfigEntry(
+                key=CONF_INCLUDE_VIDEOS,
+                type=ConfigEntryType.BOOLEAN,
+                default_value=False,
+            ),
+            ConfigEntry(
+                key=CONF_STREAM_PROFILE,
+                type=ConfigEntryType.STRING,
+                options=[
+                    ConfigValueOption(STREAM_PROFILE_STABLE),
+                    ConfigValueOption(STREAM_PROFILE_FAST),
+                ],
+                default_value=STREAM_PROFILE_STABLE,
+                advanced=True,
+            ),
+        )
 
     async def handle_async_init(self) -> None:
         """Set up the YTMusic provider."""
@@ -272,8 +297,20 @@ class YoutubeMusicProvider(RecommendationPayloadMixin, MusicProvider):
             await self._rotate_session.close()
         await super().unload(is_removed)
 
+    async def update_config(self, config: ProviderConfig, changed_keys: set[str]) -> None:
+        """Handle a config update."""
+        await super().update_config(config, changed_keys)
+        if f"values/{CONF_INCLUDE_VIDEOS}" in changed_keys:
+            # cached search results do not record the video preference they were made with
+            for provider in (self.instance_id, self.mass.music.domain):
+                await self.mass.cache.delete(
+                    None, category=CACHE_CATEGORY_SEARCH_RESULTS, provider=provider
+                )
+
     # the checksum invalidates entries cached before the search was pinned to English
-    @use_cache(3600 * 24 * 7, cache_checksum="english_search_v1")  # Cache for 7 days
+    @use_cache(
+        3600 * 24 * 7, category=CACHE_CATEGORY_SEARCH_RESULTS, cache_checksum="english_search_v1"
+    )  # Cache for 7 days
     async def search(
         self, search_query: str, media_types: list[MediaType], limit: int = 5
     ) -> SearchResults:
@@ -306,6 +343,11 @@ class YoutubeMusicProvider(RecommendationPayloadMixin, MusicProvider):
             ytm_filter=ytm_filter,
             limit=limit,
         )
+        if ytm_filter == "songs" and self.config.get_value(CONF_INCLUDE_VIDEOS):
+            # some tracks only exist as a video; interleave so videos survive the limit cut
+            videos = await search(query=search_query, ytm_filter="videos", limit=limit)
+            results = [item for pair in zip_longest(results, videos) for item in pair if item]
+            results = results[:limit]
         parsed_results = SearchResults()
         artists: list[Artist | ItemMapping] = []
         albums: list[Album | ItemMapping] = []
@@ -1020,6 +1062,7 @@ class YoutubeMusicProvider(RecommendationPayloadMixin, MusicProvider):
     def _initialize_headers(self) -> None:
         """Initialize the headers to include in the requests."""
         headers = {
+            # mimics a browser on the YouTube Music website, which has no public API
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:72.0) Gecko/20100101 Firefox/72.0",
             "Accept": "*/*",
             "Accept-Language": "en-US,en;q=0.5",
@@ -1071,7 +1114,11 @@ class YoutubeMusicProvider(RecommendationPayloadMixin, MusicProvider):
                     item_id=str(album_id),
                     provider_domain=self.domain,
                     provider_instance=self.instance_id,
-                    url=f"{YTM_DOMAIN}/playlist?list={album_obj.get('audioPlaylistId')}",
+                    url=(
+                        f"{YTM_DOMAIN}/playlist?list={playlist_id}"
+                        if (playlist_id := album_obj.get("audioPlaylistId"))
+                        else f"{YTM_DOMAIN}/browse/{album_id}"
+                    ),
                 )
             },
             favorite=_favorite_from_like_status(album_obj),
@@ -1317,6 +1364,22 @@ class YoutubeMusicProvider(RecommendationPayloadMixin, MusicProvider):
         self, item_id: str, *, require_login: bool = False
     ) -> dict[str, Any]:
         """Figure out the stream URL to use and return the highest quality."""
+        youtube_args: dict[str, list[str]] = {
+            "skip": ["translated_subs", "dash"],
+            "player_client": ["web_music"],
+        }
+        # Login checks and brand accounts need the webpage and config that fast skips.
+        # Premium web_music formats stream without a GVS PO token; missing_pot keeps them.
+        if (
+            self.config.get_value(CONF_STREAM_PROFILE) == STREAM_PROFILE_FAST
+            and not require_login
+            and self._yt_user is None
+        ):
+            youtube_args |= {
+                "player_skip": ["webpage", "configs", "initial_data"],
+                "fetch_pot": ["never"],
+                "formats": ["missing_pot"],
+            }
 
         def _extract_best_stream_url_format() -> tuple[dict[str, Any], dict[str, str]]:
             if self._yt_dlp_module is None:
@@ -1332,10 +1395,7 @@ class YoutubeMusicProvider(RecommendationPayloadMixin, MusicProvider):
                     "youtubepot-bgutilhttp": {
                         "base_url": [self._po_token_server_url],
                     },
-                    "youtube": {
-                        "skip": ["translated_subs", "dash"],
-                        "player_client": ["web_music"],
-                    },
+                    "youtube": youtube_args,
                 },
             }
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:

@@ -9,6 +9,8 @@ from unittest.mock import AsyncMock, MagicMock
 import numpy as np
 import pytest
 
+from music_assistant.controllers.streams.audio_analysis import _parse_row
+from music_assistant.providers.sonic_similarity import provider as provider_module
 from music_assistant.providers.sonic_similarity.similarity import ScoredCandidate
 from tests.providers.sonic_similarity.conftest import make_analysis_row
 
@@ -93,6 +95,28 @@ class TestRebuildClapIndexFromDatabase:
         plugin = make_plugin()
         await plugin._rebuild_clap_index_from_database()
         assert mock_mass.streams.audio_analysis.iter_audio_analysis_rows.call_count == 0
+
+    @pytest.mark.asyncio
+    async def test_unpacks_only_the_embedding(
+        self, make_plugin: Callable[..., Any], mock_mass: MagicMock, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Rows are parsed with just the clap_embedding array, not every stored array."""
+        requested: list[Any] = []
+
+        def _spy(row: Any, *args: Any, **kwargs: Any) -> Any:
+            requested.append(kwargs.get("arrays"))
+            return _parse_row(row, *args, **kwargs)
+
+        monkeypatch.setattr(provider_module, "_parse_row", _spy)
+        mock_mass._iter_audio_analysis_rows_data = [
+            make_analysis_row(item_id="a", clap_embedding=[0.1] * 1024),
+        ]
+        plugin = make_plugin(clap_enabled=True)
+
+        await plugin._rebuild_clap_index_from_database()
+
+        assert requested == [("clap_embedding",)]
+        assert plugin._clap_index.add.await_count == 1
 
     @pytest.mark.asyncio
     async def test_adds_new_embeddings_and_saves(

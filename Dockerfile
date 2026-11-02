@@ -4,8 +4,8 @@ ARG BASE_IMAGE_VERSION=latest
 FROM --platform=$BUILDPLATFORM ghcr.io/music-assistant/base:$BASE_IMAGE_VERSION AS cliairplay-download
 
 # Bump the version and checksum-manifest hash together.
-ARG CLIAIRPLAY_VERSION=v0.5.8
-ARG CLIAIRPLAY_CHECKSUMS_SHA256=f780c4185c2d8da01718744ca52af82a4a09da0670039c7c6ef5c0604e4ddc48
+ARG CLIAIRPLAY_VERSION=v0.5.9
+ARG CLIAIRPLAY_CHECKSUMS_SHA256=b007597b927ae5c88bcf568b055b3d94647f9efa2e02249749e45e48c0861bc8
 ARG TARGETARCH
 
 # Download the cliairplay release asset for this image architecture.
@@ -125,6 +125,11 @@ FROM ghcr.io/music-assistant/base:$BASE_IMAGE_VERSION
 ENV VIRTUAL_ENV=/app/venv
 ENV PATH="$VIRTUAL_ENV/bin:$PATH"
 
+# tini as PID 1 reaps orphaned subprocesses; -s keeps that working under docker --init.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends tini \
+    && rm -rf /var/lib/apt/lists/*
+
 # copy the already built /app dir
 COPY --from=builder /app /app
 
@@ -164,4 +169,4 @@ for path in /usr/lib/*/libjemalloc.so.2; do\n\
 done\n\
 exec mass "$@"\n' > /usr/local/bin/entrypoint.sh && chmod +x /usr/local/bin/entrypoint.sh
 
-ENTRYPOINT ["/usr/local/bin/entrypoint.sh", "--data-dir", "/data", "--cache-dir", "/data/.cache"]
+ENTRYPOINT ["/usr/bin/tini", "-s", "--", "/usr/local/bin/entrypoint.sh", "--data-dir", "/data", "--cache-dir", "/data/.cache"]

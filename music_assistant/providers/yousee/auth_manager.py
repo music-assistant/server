@@ -1,62 +1,23 @@
 """YouSee Musik authentication manager."""
 
+from __future__ import annotations
+
 import re
-import time
-from typing import TYPE_CHECKING
+
+from music_assistant_models.errors import LoginFailed
 
 from music_assistant.constants import CONF_PASSWORD, CONF_USERNAME
-from music_assistant.helpers.util import (
-    lock,
-    try_parse_int,
+from music_assistant.providers.music247e.auth_manager import (
+    Music247eAccessToken,
+    Music247eAuthManager,
 )
-from music_assistant.providers.yousee.api_client import JsonLike
-
-if TYPE_CHECKING:
-    from music_assistant.providers.yousee.provider import YouSeeMusikProvider
 
 
-class YouSeeAccessToken:
-    """YouSee Musik access token wrapper."""
-
-    def __init__(self, access_token: str) -> None:
-        """Initialize YouSeeAccessToken."""
-        self._access_token = access_token
-        self._token_parts = self._parse_access_token(access_token)
-
-    def is_expired(self) -> bool:
-        """Return True if token is expired."""
-        expires_at = try_parse_int(self._token_parts.get("ExpiresOn", 0))
-        return not expires_at or expires_at <= time.time()
-
-    def _parse_access_token(self, token: str) -> JsonLike:
-        return dict(part.split("=", 1) for part in token.split("&") if "=" in part)
-
-    def __str__(self) -> str:
-        """Return string representation of the access token."""
-        return self._access_token
-
-
-class YouSeeAuthManager:
+class YouSeeAuthManager(Music247eAuthManager):
     """YouSee Musik authentication manager."""
 
-    def __init__(self, provider: YouSeeMusikProvider):
-        """Initialize YouSeeAuthManager."""
-        self._access_token: YouSeeAccessToken | None = None
-        self._refresh_token: str | None = None
-        self.mass = provider.mass
-        self.provider = provider
-        self.logger = provider.logger
-
-    def invalidate(self) -> None:
-        """Invalidate current access token."""
-        self._access_token = None
-
-    @lock
-    async def auth_token(self) -> YouSeeAccessToken | None:
-        """Authenticate and return access token."""
-        if self._access_token and not self._access_token.is_expired():
-            return self._access_token
-
+    async def _fetch_token(self) -> Music247eAccessToken | None:
+        """Perform the YouSee login flow and return a fresh access token."""
         # Try refresh token flow first
         if self._refresh_token:
             self.logger.debug("Trying to fetch refresh token")
@@ -64,23 +25,28 @@ class YouSeeAuthManager:
             async with self.mass.http_session.post(
                 "https://musik.yousee.dk/api/token", data={"refresh_token": self._refresh_token}
             ) as refresh_response:
-                refresh_result = await refresh_response.json()
+                refresh_result = (
+                    await refresh_response.json(content_type=None) if refresh_response.ok else {}
+                )
                 if refresh_result.get("status", 4) == 0:
                     access_token = refresh_result["tokenResult"]["access_token"]
 
                     self.logger.debug("Refresh token flow success")
-                    self._access_token = YouSeeAccessToken(access_token)
                     self._refresh_token = refresh_result["tokenResult"]["refresh_token"]
-                    return self._access_token
+                    return Music247eAccessToken(access_token)
 
-        async with (
-            self.mass.http_session.get(
-                "https://musik.yousee.dk/api/delegatedlogin"
-            ) as delegate_response,
-        ):
+            self.logger.warning(
+                "Refresh token flow failed: status=%s", refresh_result.get("status")
+            )
+            # stale refresh token will keep failing, clear it so later logins skip it
+            self._refresh_token = None
+
+        async with self.mass.http_session.get(
+            "https://musik.yousee.dk/api/delegatedlogin"
+        ) as delegate_response:
             post_action_re = re.search('action="([^"]+)"', await delegate_response.text())
             if not post_action_re:
-                return None
+                raise LoginFailed("YouSee login failed: no login form in delegated login response")
 
             cookies = delegate_response.cookies
 
@@ -94,23 +60,22 @@ class YouSeeAuthManager:
                 },
                 cookies=cookies,
             ) as login_response:
+                login_page = await login_response.text()
                 access_token_re = re.search(
-                    r'localStorage.setItem\("accesstoken", "([^"]+)"',
-                    await login_response.text(),
+                    r'localStorage.setItem\("accesstoken", "([^"]+)"', login_page
                 )
-
                 refresh_token_re = re.search(
-                    r'localStorage.setItem\("refreshtoken", "([^"]+)"',
-                    await login_response.text(),
+                    r'localStorage.setItem\("refreshtoken", "([^"]+)"', login_page
                 )
 
                 if not access_token_re or not refresh_token_re:
-                    return None
+                    raise LoginFailed(
+                        "YouSee login failed: access/refresh token not found in response"
+                    )
 
                 access_token = access_token_re.group(1)
                 self._refresh_token = refresh_token_re.group(1)
 
-                self._access_token = YouSeeAccessToken(access_token)
                 self.logger.debug("Got new auth token")
 
-                return self._access_token
+                return Music247eAccessToken(access_token)

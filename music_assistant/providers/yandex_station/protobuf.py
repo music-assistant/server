@@ -67,7 +67,7 @@ class Protobuf:
                     parsed = nested.read_dict()
                     # Only accept as nested message if ALL bytes were consumed
                     v = parsed if nested.pos == len(nested.raw) and parsed else raw_bytes
-                except Exception:
+                except IndexError, NotImplementedError, RecursionError:
                     v = raw_bytes
             elif typ == 5:  # I32
                 v = self.read(4)

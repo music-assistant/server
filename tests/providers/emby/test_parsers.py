@@ -131,3 +131,29 @@ def test_playlist_image_url_carries_tag(provider: Mock) -> None:
     }
     playlist = parse_playlist(INSTANCE_ID, provider, item)
     assert _image_path(playlist) == (f"{BASE_URL}Items/playlist-1/Images/Primary?tag=pl-tag")
+
+
+def test_album_artists_prefer_album_artists_over_artist_items(provider: Mock) -> None:
+    """Featured track artists in ArtistItems must not become album artists."""
+    item: dict[str, Any] = {
+        "Id": "album-1",
+        "Name": "Album",
+        "AlbumArtists": [{"Id": "artist-a", "Name": "Artist A"}],
+        "ArtistItems": [
+            {"Id": "artist-a", "Name": "Artist A"},
+            {"Id": "artist-b", "Name": "Featured B"},
+        ],
+    }
+    album = parse_album(INSTANCE_ID, provider, item)
+    assert [artist.item_id for artist in album.artists] == ["artist-a"]
+
+
+def test_album_artists_fall_back_to_artist_items(provider: Mock) -> None:
+    """Without AlbumArtists the album artists come from ArtistItems."""
+    item: dict[str, Any] = {
+        "Id": "album-1",
+        "Name": "Album",
+        "ArtistItems": [{"Id": "artist-a", "Name": "Artist A"}],
+    }
+    album = parse_album(INSTANCE_ID, provider, item)
+    assert [artist.item_id for artist in album.artists] == ["artist-a"]

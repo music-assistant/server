@@ -312,11 +312,11 @@ async def test_uri_parsing() -> None:
 
 async def test_apple_music_uri_parsing() -> None:
     """Test parsing of Apple Music share URLs."""
-    # station — should resolve as PLAYLIST (is_dynamic)
+    # station — should resolve as RADIO (is_dynamic)
     media_type, provider, item_id = await uri.parse_uri(
         "https://music.apple.com/de/station/dead-sara-essentials/ra.331701075"
     )
-    assert media_type == MediaType.PLAYLIST
+    assert media_type == MediaType.RADIO
     assert provider == "apple_music"
     assert item_id == "ra.331701075"
     # playlist
@@ -351,7 +351,7 @@ async def test_apple_music_uri_parsing() -> None:
     media_type, provider, item_id = await uri.parse_uri(
         "https://music.apple.com/de/station/some-station/ra.111222333/"
     )
-    assert media_type == MediaType.PLAYLIST
+    assert media_type == MediaType.RADIO
     assert item_id == "ra.111222333"
     # query string stripped (non-track query params)
     media_type, provider, item_id = await uri.parse_uri(

@@ -430,6 +430,19 @@ class TestRebuildSearchIndexLocked:
     """The 18-dim rebuild path: corpus stats, atomic swap, versioned file writes."""
 
     @pytest.mark.asyncio
+    async def test_requests_only_the_arrays_the_vector_reads(self, mock_mass: MagicMock) -> None:
+        """The bulk read unpacks just the two time-series arrays the vector is built from."""
+        plugin = _build_plugin_for_init(mock_mass)
+        mock_mass._iter_merged_audio_analysis_rows_data = []
+
+        await plugin._rebuild_search_index_locked()
+
+        call_kwargs = (
+            mock_mass.streams.audio_analysis.iter_merged_audio_analysis_rows.call_args.kwargs
+        )
+        assert call_kwargs["arrays"] == ("rms_energy", "spectral_centroid")
+
+    @pytest.mark.asyncio
     async def test_empty_iter_preserves_prior_state(self, mock_mass: MagicMock) -> None:
         """No rows from the controller → early return, prior state untouched."""
         plugin = _build_plugin_for_init(mock_mass)

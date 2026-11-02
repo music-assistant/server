@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING, Any, cast
 from unittest.mock import AsyncMock, Mock
 
 import pytest
-from music_assistant_models.media_items import Playlist, UniqueList
+from music_assistant_models.media_items import Radio, UniqueList
 
 from music_assistant.providers.apple_music.provider import AppleMusicProvider
 
@@ -112,7 +112,7 @@ async def test_rows_and_items_share_one_backend_fetch(provider: AppleMusicProvid
 
     api_get_data.assert_awaited_once()
     assert [item.item_id for item in items_one] == ["ra.111"]
-    assert all(isinstance(item, Playlist) for item in items_one)
+    assert all(isinstance(item, Radio) and item.is_dynamic for item in items_one)
     # the live station in the payload is skipped
     assert [item.item_id for item in items_two] == ["ra.222"]
 
@@ -220,6 +220,32 @@ async def test_resolve_station_id_unknown_returns_none(provider: AppleMusicProvi
 
     assert result is None
     api_get_data.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_dynamic_radio_tracks_retry_a_rotated_station_id(
+    provider: AppleMusicProvider,
+) -> None:
+    """A station that returns no tracks is retried under the id Apple rotated it to."""
+    api_get_data = cast("AsyncMock", provider.api_client.get_data)
+    rotated = _recommendations_response({"Made for You": [_station("ra.999", "My Station One")]})
+    api_get_data.side_effect = [_default_response(), rotated]
+    song = {
+        "id": "1",
+        "type": "songs",
+        "attributes": {"name": "Track 1", "artistName": "Artist 1", "playParams": {"id": "1"}},
+    }
+    post_data = AsyncMock(side_effect=[{"data": []}, {"data": [song]}])
+    provider.api_client.post_data = post_data  # type: ignore[method-assign]
+
+    tracks = await provider.get_dynamic_radio_tracks("ra.111")
+
+    assert [track.item_id for track in tracks] == ["1"]
+    assert [call.args for call in post_data.await_args_list] == [
+        ("me/stations/next-tracks/ra.111",),
+        ("me/stations/next-tracks/ra.999",),
+    ]
+    assert all(call.kwargs == {"include": "artists"} for call in post_data.await_args_list)
 
 
 def _unnamed(station_id: str) -> dict[str, Any]:

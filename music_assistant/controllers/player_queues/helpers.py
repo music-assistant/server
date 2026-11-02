@@ -7,6 +7,7 @@ import random
 from collections.abc import Awaitable, Callable, Coroutine
 from typing import TYPE_CHECKING, Any, Concatenate, Protocol, TypedDict, TypeGuard
 
+from music_assistant_models.enums import MediaType
 from music_assistant_models.media_items import (
     ItemMapping,
     MediaItemMetadata,
@@ -199,6 +200,21 @@ def origin_for(
         provider_instance=item.provider if pinned else None,
         item_id=item.item_id if pinned else None,
     )
+
+
+def played_from_album(queue_item: QueueItem) -> ItemMapping | None:
+    """
+    Return the album a queue item was played from, if it was played from one.
+
+    An item played from an album folder, or from a disc subfolder of one, was played from
+    that album.
+
+    :param queue_item: The queue item to check.
+    """
+    container = queue_item.origin.container if queue_item.origin else None
+    if container is None or container.media_type != MediaType.ALBUM:
+        return None
+    return container
 
 
 def album_release_order(album: Album) -> tuple[bool, int, str, str]:

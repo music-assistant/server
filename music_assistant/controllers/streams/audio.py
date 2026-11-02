@@ -105,6 +105,8 @@ from music_assistant.controllers.streams.constants import (
     CACHE_PROVIDER,
     CONF_ALLOW_CROSSFADE_SAME_ALBUM,
     DEFAULT_VOLUME_NORMALIZATION_MODE,
+    HLS_RADIO_INPUT_BURST,
+    ICY_PLACEHOLDER_IMAGE_URLS,
     MIN_VOICE_OVER_DURATION,
     NO_TRACK_MATCH_EXPIRATION,
     OUTCOME_ONLY_NORMALIZATION_MODES,
@@ -181,7 +183,7 @@ from music_assistant.helpers.throttle_retry import RequestPriority, request_prio
 from music_assistant.helpers.util import (
     clean_stream_title,
     detect_charset,
-    parse_quoted_stream_title,
+    parse_station_stream_title,
     parse_title_and_version,
     remove_file,
 )
@@ -240,6 +242,12 @@ RADIO_MIRROR_FAILOVER_ERRORS = (
     RetriesExhausted,
     InvalidDataError,
 )
+
+# Signed radio urls expire, so a failing station restarts on fresh stream details. Runs
+# shorter than the minimum playtime count toward the limit so its provider is not hammered.
+RADIO_MAX_FAILED_RESTARTS = 3
+RADIO_RESTART_MIN_PLAYTIME = 60
+RADIO_RESTART_DELAY = 1.0
 
 
 @dataclass
@@ -749,6 +757,9 @@ class StreamsAudio:
         """
         Get audio stream for given media details as raw PCM.
 
+        A radio station that fails after it played is restarted on fresh stream details
+        from its provider, which are updated in place.
+
         :param streamdetails: Details of the stream to fetch.
         :param pcm_format: Target PCM format the consumer expects.
         :param seek_position: Seek offset in seconds (only honoured when the
@@ -762,7 +773,12 @@ class StreamsAudio:
             on the providing music provider, or None to wait without a timeout.
         :raises ProviderStreamLimitError: If the provider has no free slot within the timeout.
         """
-        media_stream = self._get_media_stream(
+        get_stream = (
+            self._get_restarting_radio_media_stream
+            if streamdetails.media_type == MediaType.RADIO
+            else self._get_media_stream
+        )
+        media_stream = get_stream(
             streamdetails,
             pcm_format,
             seek_position,
@@ -2096,6 +2112,9 @@ class StreamsAudio:
             discard_position = float(streamdetails.seek_position)
 
         total_chunks_received = 0
+        # the buffer this item plays from, as of its first chunk: a stop detaches it from
+        # the streamdetails before it releases it, and the duration writeback must see that
+        source_buffer: AudioBuffer | None = None
         playback_speed = cast("float", queue_item.extra_attributes.get("playback_speed", 1.0))
         try:
             async for chunk in self.get_queue_item_stream(
@@ -2109,6 +2128,8 @@ class StreamsAudio:
                 consumer_connected=consumer_connected,
             ):
                 total_chunks_received += 1
+                if total_chunks_received == 1 and queue_item.streamdetails:
+                    source_buffer = queue_item.streamdetails.buffer
                 tail_window.extend(chunk)
                 del chunk
                 hold_target = tail_hold_target(queue_item, crossfade_buffer_size, frame_size)
@@ -2444,7 +2465,7 @@ class StreamsAudio:
         streamdetails.seconds_streamed = seconds_streamed
         # an externally aborted source ends in a clean EOF mid-track, so the
         # streamed length must not be written back as the item's duration
-        source_buffer = streamdetails.buffer
+        source_buffer = source_buffer or streamdetails.buffer
         if source_buffer is None or not source_buffer.cancelled:
             uncredited_tail_seconds = uncredited_tail_bytes / pcm_format.pcm_sample_size
             # streamdetails.duration is in media-time; seconds_streamed is stream-time
@@ -2828,6 +2849,10 @@ class StreamsAudio:
                 bytes_written = 0
                 crossfade_buffer = bytearray()
                 first_chunk_received = False
+                # the buffer this item plays from, as of its first chunk: a stop detaches it
+                # from the streamdetails before it releases it, which the duration writeback
+                # must see
+                source_buffer: AudioBuffer | None = None
                 holding_back = item_crossfade_mode != CrossfadeMode.DISABLED
 
                 item_stream = await incoming_prefetcher.take(queue_track, int(raw_seek_position))
@@ -2861,6 +2886,7 @@ class StreamsAudio:
                         total_chunks_received += 1
                         if not first_chunk_received:
                             first_chunk_received = True
+                            source_buffer = queue_track.streamdetails.buffer
                             # inform the queue that the track is now loaded in the buffer
                             # so the next track can be preloaded
                             self.mass.player_queues.track_loaded_in_buffer(
@@ -3071,6 +3097,15 @@ class StreamsAudio:
                             del crossfade_buffer[: len(pcm_slice)]
                             await asyncio.sleep(0)
 
+                if _superseded():
+                    # a stop ends the session before it releases its audio (a clean EOF):
+                    # booked as finished, the queue would end and resume from its start
+                    self.logger.debug(
+                        "Flow stream for queue %s superseded - exiting before end-of-track",
+                        queue.display_name,
+                    )
+                    return
+
                 # A source error after partial audio must not look like a completed item.
                 # Progress reporting skips items with stream_error, so the item is not
                 # marked played; move on to the next queue item like the zero-audio path.
@@ -3151,6 +3186,9 @@ class StreamsAudio:
                         await asyncio.sleep(0)
                 crossfade_buffer = bytearray()
 
+                if _superseded():
+                    # the tail flush above yields, so a stop can land between the two checks
+                    return
                 # update duration details based on the actual pcm data we sent
                 # this also accounts for crossfade and silence stripping
                 seconds_streamed = bytes_written / pcm_sample_size
@@ -3158,7 +3196,7 @@ class StreamsAudio:
                 play_log_entry.seconds_streamed = seconds_streamed
                 # an externally aborted source ends in a clean EOF mid-track, so the
                 # streamed length must not be written back as the item's duration
-                source_buffer = queue_track.streamdetails.buffer
+                source_buffer = source_buffer or queue_track.streamdetails.buffer
                 source_aborted = source_buffer is not None and source_buffer.cancelled
                 if not source_aborted:
                     # the held-back crossfade tail still counts as this track's media-time
@@ -3761,23 +3799,7 @@ class StreamsAudio:
                 self._fill_in_mapping_audio_format(media_item, streamdetails)
 
             # work out how to handle radio stream
-            if (
-                streamdetails.stream_type in (StreamType.ICY, StreamType.HLS, StreamType.HTTP)
-                and streamdetails.media_type == MediaType.RADIO
-                and isinstance(streamdetails.path, str)
-            ):
-                resolved_url, stream_type = await self.resolve_radio_stream(streamdetails.path)
-                streamdetails.path = resolved_url
-                streamdetails.stream_type = stream_type
-                # Set up metadata monitoring callback for HLS radio streams, if not already set
-                if (
-                    stream_type == StreamType.HLS
-                    and not streamdetails.stream_metadata_update_callback
-                ):
-                    streamdetails.stream_metadata_update_callback = partial(
-                        self._update_hls_radio_metadata
-                    )
-                    streamdetails.stream_metadata_update_interval = 5
+            await self._resolve_radio_stream_details(streamdetails)
 
         # providers report an unknown duration as either None or 0
         if not streamdetails.duration:
@@ -4718,6 +4740,87 @@ class StreamsAudio:
                 streamdetails.uri,
             )
 
+    async def _get_restarting_radio_media_stream(
+        self,
+        streamdetails: StreamDetails,
+        pcm_format: AudioFormat,
+        seek_position: int,
+        filter_params: list[str] | None,
+        chunk_seconds: float,
+    ) -> AsyncGenerator[bytes]:
+        """Stream a radio station as raw PCM, restarting it on fresh stream details when it fails."""
+        played = False
+        failed_restarts = 0
+        while True:
+            run_bytes = 0
+            try:
+                if played:
+                    await self._refresh_radio_stream_details(streamdetails)
+                async with aclosing(
+                    self._get_media_stream(
+                        streamdetails, pcm_format, seek_position, filter_params, chunk_seconds
+                    )
+                ) as media_stream:
+                    async for chunk in media_stream:
+                        played = True
+                        run_bytes += len(chunk)
+                        yield chunk
+                return
+            except ProviderStreamLimitError:
+                raise
+            except (MusicAssistantError, aiohttp.ClientError, TimeoutError) as err:
+                if not played:
+                    raise
+                if run_bytes / pcm_format.pcm_sample_size >= RADIO_RESTART_MIN_PLAYTIME:
+                    failed_restarts = 0
+                failed_restarts += 1
+                if failed_restarts > RADIO_MAX_FAILED_RESTARTS:
+                    raise
+                self.logger.warning(
+                    "Radio stream %s failed (%s), restarting on fresh stream details (%d/%d)",
+                    streamdetails.uri,
+                    err,
+                    failed_restarts,
+                    RADIO_MAX_FAILED_RESTARTS,
+                )
+            await asyncio.sleep(RADIO_RESTART_DELAY)
+
+    async def _refresh_radio_stream_details(self, streamdetails: StreamDetails) -> None:
+        """Point radio stream details at a fresh stream from the provider that issued them."""
+        # pin the exact instance, see _resolve_media_stream_source
+        provider = self.mass.get_provider(streamdetails.provider, return_unavailable=True)
+        if provider is None or not provider.available:
+            raise ProviderUnavailableError(
+                f"Provider {streamdetails.provider} for stream is no longer available"
+            )
+        stream_prov = cast("AudioStreamMixin", provider)
+        with request_priority(RequestPriority.HIGH):
+            fresh = await stream_prov.get_stream_details(
+                streamdetails.item_id, streamdetails.media_type
+            )
+        await self._resolve_radio_stream_details(fresh)
+        # updated in place: the queue item holds these details, metadata callback included
+        streamdetails.path = fresh.path
+        streamdetails.stream_type = fresh.stream_type
+        streamdetails.audio_format = fresh.audio_format
+        streamdetails.data = fresh.data
+
+    async def _resolve_radio_stream_details(self, streamdetails: StreamDetails) -> None:
+        """Resolve the playable url and stream type of radio stream details in place."""
+        if not (
+            streamdetails.stream_type in (StreamType.ICY, StreamType.HLS, StreamType.HTTP)
+            and streamdetails.media_type == MediaType.RADIO
+            and isinstance(streamdetails.path, str)
+        ):
+            return
+        resolved_url, stream_type = await self.resolve_radio_stream(streamdetails.path)
+        streamdetails.path = resolved_url
+        streamdetails.stream_type = stream_type
+        # Set up metadata monitoring callback for HLS radio streams, if not already set
+        if stream_type == StreamType.HLS and not streamdetails.stream_metadata_update_callback:
+            streamdetails.stream_metadata_update_callback = partial(self._update_hls_radio_metadata)
+            streamdetails.stream_metadata_update_interval = 5
+
     def _report_crossfade_mode(
         self,
         queue_id: str,
@@ -5096,7 +5199,14 @@ class StreamsAudio:
                 # HLS streams (especially the BBC) struggle when they're played directly
                 # with ffmpeg, where they just stop after some minutes,
                 # so we tell ffmpeg to loop around in this case.
-                extra_input_args += ["-stream_loop", "-1", "-re"]
+                extra_input_args += [
+                    "-stream_loop",
+                    "-1",
+                    "-readrate",
+                    "1",
+                    "-readrate_initial_burst",
+                    str(HLS_RADIO_INPUT_BURST),
+                ]
             return substream.path, seek_position, extra_input_args
 
         # all other stream types (HTTP, FILE, etc)
@@ -5278,7 +5388,7 @@ class StreamsAudio:
         # Parse the original title for structured fields first so stations that announce
         # an album can refine the artwork lookup; fall back to the "Artist - Track" split.
         album: str | None = None
-        if parsed := parse_quoted_stream_title(stream_title):
+        if parsed := parse_station_stream_title(stream_title):
             track_name, artist_name_raw, album = parsed
         elif " - " in cleaned_stream_title:
             artist_name_raw, track_name = (
@@ -5325,6 +5435,8 @@ class StreamsAudio:
         if parsed.scheme not in ("http", "https"):
             return None
         if not parsed.path.lower().endswith((".png", ".jpg", ".jpeg")):
+            return None
+        if image_url in ICY_PLACEHOLDER_IMAGE_URLS:
             return None
         self.logger.debug("ICY metadata: StreamUrl image='%s'", image_url)
         return image_url

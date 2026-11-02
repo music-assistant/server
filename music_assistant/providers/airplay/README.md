@@ -112,6 +112,10 @@ to target) the same feature-bit test the binary uses is mirrored in
 `supports_airplay2()`: any device advertising AirPlay 2 gets AirPlay 2, RAOP is
 only used for devices that do not support it.
 
+One exception: an AirPlay 2 shairport-sync receiver advertised from this host
+(e.g. a Home Assistant add-on) gets `--protocol airplay2-compat` on Automatic.
+Its nqptp and MA's PTP engine both need UDP 319/320, so the native lane can't work.
+
 ### Streaming mode (escape hatch)
 
 The only user override is the advanced per-player `streaming_mode` selector. It

@@ -1,10 +1,14 @@
-"""Helper(s) to create DIDL Lite metadata for Sonos/DLNA players."""
+"""Helper(s) to create DIDL Lite metadata and AVTransport requests for Sonos/DLNA players."""
 
 from __future__ import annotations
 
+import logging
+from contextlib import suppress
+from dataclasses import dataclass
 from typing import TYPE_CHECKING
 from xml.sax.saxutils import escape as xmlescape
 
+import aiohttp
 from music_assistant_models.enums import MediaType
 
 from music_assistant.constants import MASS_LOGO_ONLINE
@@ -12,6 +16,8 @@ from music_assistant.helpers.audio import get_mime_type
 
 if TYPE_CHECKING:
     from music_assistant.models.player import PlayerMedia
+
+LOGGER = logging.getLogger(__name__)
 
 
 # XML
@@ -232,3 +238,94 @@ def create_didl_metadata(media: PlayerMedia, url: str | None = None) -> str:
 def create_didl_metadata_str(media: PlayerMedia) -> str:
     """Create (xml-escaped) DIDL metadata string from url and PlayerMedia."""
     return xmlescape(create_didl_metadata(media))
+
+
+def search_xml(xml: str, tag: str) -> str | None:
+    """Search single line xml for these tags."""
+    start_str = f"<{tag}>"
+    end_str = f"</{tag}>"
+    start_int = xml.find(start_str)
+    end_int = xml.find(end_str)
+    if start_int == -1 or end_int == -1:
+        return None
+    return xml[start_int + len(start_str) : end_int]
+
+
+@dataclass(frozen=True)
+class AVTransport:
+    """UPnP AVTransport service of a renderer, controlled with plain SOAP requests."""
+
+    client: aiohttp.ClientSession
+    ctrl_url: str
+    user_agent: str
+    encoding: str = "utf-8"
+
+    async def play(self) -> None:
+        """Play."""
+        await self._post(*get_xml_soap_play(), "Play")
+
+    async def stop(self) -> None:
+        """Stop."""
+        await self._post(*get_xml_soap_stop(), "Stop")
+
+    async def next(self) -> None:
+        """Next."""
+        await self._post(*get_xml_soap_next(), "Next")
+
+    async def previous(self) -> None:
+        """Previous."""
+        await self._post(*get_xml_soap_previous(), "Previous")
+
+    async def set_url(self, player_media: PlayerMedia, enqueue: bool = False) -> None:
+        """
+        Set the url to play, or with enqueue the url to play next.
+
+        If the renderer is playing, it continues with the new media.
+
+        :param player_media: Media to play.
+        :param enqueue: Set the next url instead of the current one.
+        """
+        if enqueue:
+            xml, soap_action = get_xml_soap_set_next_url(player_media)
+            op_name = "SetNextAVTransportURI"
+        else:
+            xml, soap_action = get_xml_soap_set_url(player_media)
+            op_name = "SetAVTransportURI"
+        LOGGER.debug("AVT %s uri=%s", op_name, player_media.uri)
+        await self._post(xml, soap_action, op_name)
+
+    async def get_media_info(self) -> str:
+        """Get the GetMediaInfo response xml."""
+        body = await self._post(*get_xml_soap_media_info(), "GetMediaInfo", read_body=True)
+        if body is None:
+            raise aiohttp.ClientError("GetMediaInfo failed")
+        return body
+
+    async def _post(
+        self, xml: str, soap_action: str, op_name: str, read_body: bool = False
+    ) -> str | None:
+        headers = {
+            "Content-Type": 'text/xml; charset="utf-8"',
+            "SOAPACTION": f'"{soap_action}"',
+            "Accept": "*/*",
+            "User-Agent": self.user_agent,
+        }
+        # commands skip the body, a renderer can hold it back until it fetched the stream
+        async with self.client.post(
+            self.ctrl_url, headers=headers, data=xml.encode(self.encoding)
+        ) as response:
+            if response.status < 400:
+                if not read_body:
+                    return None
+                return (await response.read()).decode(self.encoding, errors="replace")
+            body_excerpt = ""
+            with suppress(aiohttp.ClientError):
+                body_excerpt = (await response.read())[:300].decode(self.encoding, errors="replace")
+        LOGGER.warning(
+            "AVT %s failed: status=%s url=%s body=%s",
+            op_name,
+            response.status,
+            self.ctrl_url,
+            body_excerpt,
+        )
+        return None

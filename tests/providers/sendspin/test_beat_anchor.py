@@ -42,8 +42,26 @@ def test_flow_offset_sums_prior_tracks() -> None:
             ]
         ),
     )
-    offset_us = SendspinPlayer._flow_track_offset_us(data, _queue_item("t3"))
+    offset_us = SendspinPlayer._flow_track_offset_us(data, _queue_item("t3"), 400.0)
     assert offset_us == int((100.0 + 200.5) * 1_000_000)
+
+
+def test_flow_offset_picks_the_playing_pass_when_the_stream_runs_ahead() -> None:
+    """A repeated track resolves to the pass that is playing, not one already buffered."""
+    data = cast(
+        "PlayerQueueData",
+        SimpleNamespace(
+            flow_mode_stream_log=[
+                _log_entry("a", 10.0),
+                _log_entry("b", 10.0),
+                _log_entry("a", 10.0),
+                _log_entry("b", 10.0),
+                _log_entry("a", None),
+            ]
+        ),
+    )
+
+    assert SendspinPlayer._flow_track_offset_us(data, _queue_item("b"), 12.0) == 10_000_000
 
 
 @pytest.mark.parametrize(
@@ -59,7 +77,10 @@ def test_flow_offset_uses_recorded_seek(
         SimpleNamespace(flow_mode_stream_log=[PlayLogEntry("book", seek_position=recorded_seek)]),
     )
 
-    assert SendspinPlayer._flow_track_offset_us(data, _queue_item("book", shared_seek)) == expected
+    assert (
+        SendspinPlayer._flow_track_offset_us(data, _queue_item("book", shared_seek), 0.0)
+        == expected
+    )
 
 
 def test_repeated_flow_offset_includes_previous_pass() -> None:
@@ -74,4 +95,4 @@ def test_repeated_flow_offset_includes_previous_pass() -> None:
         ),
     )
 
-    assert SendspinPlayer._flow_track_offset_us(data, _queue_item("book", 59)) == 61_000_000
+    assert SendspinPlayer._flow_track_offset_us(data, _queue_item("book", 59), 70.0) == 61_000_000

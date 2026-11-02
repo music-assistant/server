@@ -289,7 +289,8 @@ def _compare_album_metadata(
 ) -> AlbumMatchEvidence:
     """Return match evidence from the albums' own metadata, without any identity checks."""
     # barcode/ASIN are shared across pressings and are non-unique corroboration only,
-    # so they are never used on their own, only to resolve a year or edition ambiguity below
+    # so they are never used on their own, only to resolve a year, edition or album
+    # artist difference below
     secondary_external_id_match = any(
         compare_external_ids(base_item.external_ids, compare_item.external_ids, ext_id) is True
         for ext_id in (ExternalID.ASIN, ExternalID.BARCODE)
@@ -327,7 +328,11 @@ def _compare_album_metadata(
     if compare_explicit(base_item.metadata, compare_item.metadata) is False:
         return AlbumMatchEvidence.NO_MATCH
     # compare album artist(s)
-    if not compare_artists(base_item.artists, compare_item.artists, not strict):
+    # providers list different performers for the same retail product,
+    # so a shared barcode/ASIN needs just one shared artist
+    if not compare_artists(
+        base_item.artists, compare_item.artists, not strict or secondary_external_id_match
+    ):
         return AlbumMatchEvidence.NO_MATCH
     return _finalize_album_evidence(ambiguous, base_tracks, compare_tracks)
 

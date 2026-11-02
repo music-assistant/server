@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import contextlib
 from collections.abc import AsyncIterator
+from functools import partial
 from typing import TYPE_CHECKING, Any, cast
 from unittest.mock import AsyncMock, MagicMock
 
@@ -40,6 +41,9 @@ def _fake_controller() -> MagicMock:
         side_effect=lambda qid: d.queue if (d := fake._queue_data.get(qid)) else None
     )
     fake.mass.players._handle_cmd_stop = AsyncMock()
+    fake._cancel_pending_playback = partial(
+        PlayerQueuesController._cancel_pending_playback, cast("PlayerQueuesController", fake)
+    )
 
     def _close_coro(target: Any, **_kwargs: Any) -> None:
         # the cleanup is handed to create_task as a coroutine; nothing awaits it here
@@ -151,3 +155,16 @@ async def test_a_stop_that_lost_the_race_to_a_new_session_leaves_it_alone() -> N
     # the cleanup is handed the stopped session, so it tears down that session's audio
     # without touching what the replacement already prepared
     fake._cleanup_queue_audio_data.assert_called_once_with("q", "sess-1")
+
+
+@pytest.mark.asyncio
+async def test_stop_on_a_removed_queue_reports_it_unavailable() -> None:
+    """A stop for a queue whose player was unregistered raises PlayerUnavailableError."""
+    fake = _fake_controller()
+    fake._handle_stop = partial(
+        PlayerQueuesController._handle_stop, cast("PlayerQueuesController", fake)
+    )
+    fake._queue_data.pop("q")
+
+    with pytest.raises(PlayerUnavailableError):
+        await PlayerQueuesController.stop(cast("PlayerQueuesController", fake), "q")

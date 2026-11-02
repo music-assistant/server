@@ -613,6 +613,23 @@ class GenreController(MediaControllerBase[Genre]):
             },
         )
 
+    async def has_genre_mappings(self, media_type: MediaType, media_id: str | int) -> bool:
+        """
+        Return True if this media item has any genre mappings.
+
+        :param media_type: The type of media item.
+        :param media_id: The database ID of the media item.
+        """
+        try:
+            media_id_int = int(media_id)
+        except ValueError, TypeError:
+            return False
+        row = await self.mass.music.database.get_row(
+            DB_TABLE_GENRE_MEDIA_ITEM_MAPPING,
+            {"media_type": media_type.value, "media_id": media_id_int},
+        )
+        return row is not None
+
     async def has_derived_genre_mappings(self, media_type: MediaType, media_id: str | int) -> bool:
         """
         Return True if this media item has propagation-derived genre mappings.

@@ -932,12 +932,13 @@ def multi_strip(line: str) -> str:
     ).rstrip()
 
 
-def parse_quoted_stream_title(line: str) -> tuple[str, str, str | None] | None:
+def parse_station_stream_title(line: str) -> tuple[str, str, str | None] | None:
     """
-    Parse stream titles that name the track in natural language with a quoted title.
+    Parse stream titles that name the track in a known station format.
 
-    Recognises '"Track" by Artist from "Album"' (album optional) and the German
-    '"Track" von Artist'.
+    Recognises '"Track" by Artist from "Album"' (album optional), the German
+    '"Track" von Artist' and the "Artist~Track~Album~Year~..." fields of the Italian
+    RadioMediaset stations.
 
     :param line: Raw (uncleaned) stream title.
     :returns: Tuple of (title, artist, album), or None when the line is not in one of
@@ -956,6 +957,11 @@ def parse_quoted_stream_title(line: str) -> tuple[str, str, str | None] | None:
         artist = multi_strip(match.group("artist")).strip('"')
         if title and artist:
             return title, artist, None
+    # at least four fields, so an ordinary title holding a "~" is left alone
+    if len(fields := stripped.split("~")) >= 4:
+        artist, title, album = (multi_strip(x) for x in fields[:3])
+        if title and artist:
+            return title, artist, album or None
     return None
 
 
@@ -965,7 +971,7 @@ def clean_stream_title(line: str) -> str:
     artist: str = ""
 
     if not keyword_pattern.search(line):
-        if parsed := parse_quoted_stream_title(line):
+        if parsed := parse_station_stream_title(line):
             track_name, artist_name, _ = parsed
             return f"{artist_name} - {track_name}"
         return multi_strip(line)
@@ -2247,9 +2253,10 @@ def guard_single_request[SelfT: _SupportsMass, **P, R](
 
     Callers arriving while an identical call is already in flight await that same call and
     receive its result. Cancelling one caller leaves both the request and the other callers
-    unaffected. Calls count as identical when they are made on the same object with equal
-    arguments, no matter whether those were passed positionally or by keyword; the request
-    runs with the arguments of the caller that started it.
+    unaffected. Calls count as identical when they are made on the same object, by the same
+    user in the same role (or no user), with equal arguments, no matter whether those were
+    passed positionally or by keyword; the request runs with the arguments of the caller that
+    started it.
 
     Every argument must be a scalar or an object identified by its ``uri``, so that equal
     arguments are guaranteed to produce an equal key.
@@ -2260,8 +2267,14 @@ def guard_single_request[SelfT: _SupportsMass, **P, R](
 
     @functools.wraps(func)
     async def wrapper(self: SelfT, /, *args: P.args, **kwargs: P.kwargs) -> R:
+        from music_assistant.controllers.webserver.helpers.auth_middleware import (  # noqa: PLC0415
+            get_current_user,
+        )
+
         mass = self.mass
-        # create a task_id dynamically based on the bound method and args/kwargs.
+        # create a task_id dynamically based on the bound method, the user and args/kwargs.
+        # a request may resolve differently per user and role (which music sources it may
+        # use), so two identities never join the same flight.
         # the instance is part of the key because a decorated method may be inherited by
         # multiple subclasses (all media controllers share
         # MediaControllerBase.get_provider_item) and a class may have multiple instances
@@ -2278,6 +2291,7 @@ def guard_single_request[SelfT: _SupportsMass, **P, R](
                 type(self).__name__,
                 id(self),
                 func.__qualname__,
+                (user.user_id, user.role) if (user := get_current_user()) else None,
                 # skip the instance: it is the first parameter and is keyed by id() above
                 *(
                     (name, _canonical_key_part(value))

@@ -3,6 +3,7 @@
 import json
 import logging
 from collections import deque
+from collections.abc import Awaitable, Callable
 from typing import cast
 from unittest.mock import AsyncMock, MagicMock
 
@@ -96,7 +97,23 @@ def _make_player(items: list[QueueItem], current_index: int = 0) -> tuple[SonosP
     player.cloud_queue_item_generation = 0
     player._announcement_media = None
     player._woken_from_sleep = False
+    player._flow_queue_id = None
+    player._queue_session_id = None
+    player._evicted_cloud_queue = None
     return player, queues
+
+
+def _loads_into_a_session(
+    group: MagicMock, on_load: Callable[..., Awaitable[None]] | None = None
+) -> None:
+    """Let a mocked group load a cloud queue into a session of its own, as the speaker does."""
+
+    async def _play_cloud_queue(*args: object, **kwargs: object) -> None:
+        if on_load is not None:
+            await on_load(*args, **kwargs)
+        group.active_session_id = "loaded-session"
+
+    group.play_cloud_queue = AsyncMock(side_effect=_play_cloud_queue)
 
 
 def _make_player_on_real_queues(count: int, repeat_mode: RepeatMode) -> SonosPlayer:
@@ -528,7 +545,7 @@ async def test_a_successful_load_releases_the_replaced_sessions_streams() -> Non
     player, _ = _make_player([_make_queue_item("track0")])
     client = MagicMock()
     client.player.is_passive = False
-    client.player.group.play_cloud_queue = AsyncMock()
+    _loads_into_a_session(client.player.group)
     player.client = client
 
     with pytest.MonkeyPatch.context() as patch:
@@ -639,7 +656,7 @@ async def test_a_reload_of_the_same_item_gets_a_fresh_wire_id() -> None:
     async def _play_cloud_queue(*_args: object, item_id: str = "", **_kwargs: object) -> None:
         loaded_ids.append(item_id)
 
-    client.player.group.play_cloud_queue = _play_cloud_queue
+    _loads_into_a_session(client.player.group, _play_cloud_queue)
     player.client = client
     media = PlayerMedia(
         uri="library://track/1",
@@ -737,7 +754,7 @@ async def test_play_media_keeps_describing_the_queue_until_the_new_one_is_loaded
         # by the time the speaker is told to load, the id must already point at the new queue
         loaded_with_queue_id.append(player.cloud_queue_id)
 
-    client.player.group.play_cloud_queue = _play_cloud_queue
+    _loads_into_a_session(client.player.group, _play_cloud_queue)
     player.client = client
 
     with pytest.MonkeyPatch.context() as patch:
@@ -983,7 +1000,7 @@ async def test_a_load_after_a_wake_nudges_a_speaker_that_stays_paused(
     player, _ = _make_player([_make_queue_item("track0")])
     client = MagicMock()
     client.player.is_passive = False
-    client.player.group.play_cloud_queue = AsyncMock()
+    _loads_into_a_session(client.player.group)
     client.player.group.play = AsyncMock()
     reported = PlaybackState.PLAYING if playing else PlaybackState.PAUSED
     client.player.group.playback_state = next(

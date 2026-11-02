@@ -14,6 +14,7 @@ ITEM_KEY_NAME = "Name"
 ITEM_KEY_ALBUM_ID = "AlbumId"
 ITEM_KEY_ALBUM_NAME = "Album"
 ITEM_KEY_ARTIST_ITEMS = "ArtistItems"
+ITEM_KEY_ALBUM_ARTISTS = "AlbumArtists"
 ITEM_KEY_IMAGE_TAGS = "ImageTags"
 ITEM_KEY_DATE_CREATED = "DateCreated"
 ITEM_KEY_PRODUCTION_YEAR = "ProductionYear"
@@ -58,6 +59,7 @@ ALBUM_FIELDS = [
     "Name",
     "Artists",
     "ArtistItems",
+    "AlbumArtists",
     "Overview",
     "ImageTags",
     "PrimaryImageItemId",

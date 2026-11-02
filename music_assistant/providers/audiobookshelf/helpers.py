@@ -117,6 +117,9 @@ class ProgressGuard:
         mass external updates. Here, we compare this property against a potential
         stored one.
         """
+        # abs sends no library item id for a progress it could not map to an item
+        if abs_progress.library_item_id is None:
+            return False
         return self.guard_ok_mass(abs_progress.library_item_id, abs_progress.episode_id)
 
     def guard_ok_mass(self, item_id: str, episode_id: str | None = None) -> bool:

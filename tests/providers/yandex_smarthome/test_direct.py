@@ -168,9 +168,21 @@ def test_oauth_constants() -> None:
 
 
 def test_register_routes(handler: DirectConnectionHandler, mock_mass: MagicMock) -> None:
-    """register_routes should register all 10 HTTP routes."""
+    """register_routes should register all 11 HTTP routes."""
     handler.register_routes()
-    assert mock_mass.webserver.register_dynamic_route.call_count == 10
+    assert mock_mass.webserver.register_dynamic_route.call_count == 11
+
+
+def test_register_routes_serves_trailing_slash_health(
+    handler: DirectConnectionHandler, mock_mass: MagicMock
+) -> None:
+    """Yandex's backend URI validation also probes HEAD on the base path with a slash."""
+    handler.register_routes()
+    registered = {
+        (call.args[0], call.args[2])
+        for call in mock_mass.webserver.register_dynamic_route.call_args_list
+    }
+    assert (f"{DIRECT_API_BASE_PATH}/", "HEAD") in registered
 
 
 def test_unregister_routes(handler: DirectConnectionHandler) -> None:
@@ -802,7 +814,7 @@ async def test_start_direct_mode_registers_routes(mock_mass: MagicMock) -> None:
     await plugin.loaded_in_mass()
 
     assert plugin._direct_handler is not None
-    assert mock_mass.webserver.register_dynamic_route.call_count == 10
+    assert mock_mass.webserver.register_dynamic_route.call_count == 11
     assert plugin._state_notifier is not None
 
 
@@ -827,7 +839,7 @@ async def test_start_direct_mode_missing_skill_id(mock_mass: MagicMock) -> None:
     await plugin.loaded_in_mass()
 
     assert plugin._direct_handler is not None
-    assert mock_mass.webserver.register_dynamic_route.call_count == 10
+    assert mock_mass.webserver.register_dynamic_route.call_count == 11
     assert plugin._state_notifier is None
     plugin.logger.info.assert_called()
 

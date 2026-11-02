@@ -208,6 +208,18 @@ class MusicDiscoveryMixin(Provider):
             raise NotImplementedError
         return []
 
+    async def get_artist_toptrack_titles(self, artist: Artist, limit: int = 25) -> list[str]:
+        """
+        Retrieve the titles of an artist's top tracks, without resolving them to playable items.
+
+        Optional, only asked of providers that declare ProviderFeature.ARTIST_TOPTRACKS. Returns
+        no titles by default.
+
+        :param artist: The reference artist.
+        :param limit: Maximum number of titles to return.
+        """
+        return []
+
     async def get_artist_topalbums(self, artist: Artist, limit: int = 25) -> list[Album]:
         """
         Retrieve a list of top albums for the given artist.

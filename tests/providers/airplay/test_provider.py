@@ -4,6 +4,7 @@ import asyncio
 import logging
 import time
 from contextlib import AbstractContextManager
+from ipaddress import ip_address
 from typing import cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -1048,6 +1049,42 @@ async def test_setup_player_skips_own_receiver_before_service_lookup() -> None:
 
     prov.mass.discovery.async_find_mdns_service.assert_not_called()
     prov.mass.players.register.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    ("address", "model", "expected"),
+    [
+        ("192.168.1.10", "ShairportSync", True),
+        ("192.168.1.55", "ShairportSync", False),
+        ("192.168.1.10", "MacBookAir10,1", False),
+    ],
+)
+async def test_setup_player_flags_shairport_on_this_host(
+    address: str, model: str, expected: bool
+) -> None:
+    """Only a shairport-sync receiver advertised from this host is flagged as local."""
+    prov = AirPlayProvider.__new__(AirPlayProvider)
+    prov.mass = MagicMock()
+    prov.logger = logging.getLogger("test.airplay.provider")
+    prov.mass.config.get_raw_player_config_value.side_effect = (
+        lambda _player_id, _key, default=None: default
+    )
+    prov.mass.discovery.async_find_mdns_service = AsyncMock(return_value=None)
+    prov.mass.players.get_player.return_value = None
+    prov.mass.players.register = AsyncMock()
+    prov._is_own_airplay_receiver = AsyncMock(return_value=False)  # type: ignore[method-assign]
+    prov._bridge_manager = MagicMock(evaluate_bridge=AsyncMock())
+    info = _discovery_info([address], properties={"am": model})
+    info.type = "_airplay._tcp.local."
+    info.ip_addresses_by_version.return_value = [ip_address(address)]
+
+    with (
+        _patch_host_ips(),
+        patch("music_assistant.providers.airplay.provider.GenericAirPlayPlayer") as player_cls,
+    ):
+        await prov._setup_player("apdb1ff0aae80e", "Shairport", info)
+
+    assert player_cls.call_args.kwargs["is_local_shairport"] is expected
 
 
 def _password_marker_provider(

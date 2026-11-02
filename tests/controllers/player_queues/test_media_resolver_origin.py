@@ -911,3 +911,64 @@ async def test_a_subfolder_and_a_playlist_in_a_folder_are_the_origin_of_their_ow
         (FILESYSTEM, "Music/Album/01.flac"),
         (FILESYSTEM, "Music/Other/02.flac"),
     ]
+
+
+async def test_an_album_folder_below_the_played_folder_plays_as_part_of_it() -> None:
+    """The tracks of an album folder inside the played folder are played from the folder."""
+    resolver = _resolver()
+    folder = BrowseFolder(
+        item_id="Music/Miles Davis", provider=FILESYSTEM, name="Miles Davis", is_playable=True
+    )
+    album_folder = BrowseFolder(
+        item_id=FOLDER_PATH, provider=FILESYSTEM, name="Kind of Blue", is_playable=True
+    )
+    album = Album(
+        item_id="7",
+        provider="library",
+        name="Kind of Blue",
+        provider_mappings={_mapping(FILESYSTEM, FOLDER_PATH)},
+    )
+    track = _track(f"{FOLDER_PATH}/01.flac", FILESYSTEM)
+    resolver.mass.music.albums.get_library_item_by_prov_id = AsyncMock(  # type: ignore[method-assign]
+        side_effect=lambda item_id, _provider: album if item_id == FOLDER_PATH else None
+    )
+    resolver.mass.music.browse = AsyncMock(  # type: ignore[method-assign]
+        side_effect=lambda path, **_kwargs: [album_folder] if path == folder.path else [track]
+    )
+
+    album_play = await resolver._resolve_media_items(album_folder)
+    folder_play = await resolver._resolve_media_items(folder)
+
+    assert _container(album_play[0]).media_type == MediaType.ALBUM
+    assert [(_container(x).media_type, _container(x).item_id) for x in folder_play] == [
+        (MediaType.FOLDER, "Music/Miles Davis")
+    ]
+    assert [_pin(x) for x in folder_play] == [(FILESYSTEM, f"{FOLDER_PATH}/01.flac")]
+
+
+async def test_an_album_a_folder_lists_plays_as_part_of_the_folder() -> None:
+    """The tracks of an album listed in a played folder keep their pins but are played from it."""
+    resolver = _resolver()
+    folder = BrowseFolder(item_id="albums", provider=TIDAL, name="Albums", is_playable=True)
+    album = Album(
+        item_id="a1", provider=TIDAL, name="Kind of Blue", provider_mappings={_mapping(TIDAL, "a1")}
+    )
+    track = _track("t1", TIDAL)
+    resolver.mass.music.browse = AsyncMock(return_value=[album])  # type: ignore[method-assign]
+    resolver._resolve_album = AsyncMock(  # type: ignore[method-assign]
+        return_value=[
+            ResolvedItem(
+                track,
+                QueueItemOrigin(
+                    container=ItemMapping.from_item(album), provider_instance=TIDAL, item_id="t1"
+                ),
+            )
+        ]
+    )
+
+    resolved = await resolver._resolve_media_items(folder)
+
+    assert [(_container(x).media_type, _container(x).item_id) for x in resolved] == [
+        (MediaType.FOLDER, "albums")
+    ]
+    assert [_pin(x) for x in resolved] == [(TIDAL, "t1")]

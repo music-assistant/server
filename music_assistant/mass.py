@@ -50,6 +50,7 @@ from music_assistant.constants import (
     CONFIGURABLE_CORE_CONTROLLERS,
     DEFAULT_PROVIDERS,
     MASS_LOGGER_NAME,
+    MASS_VERSION,
     MIN_SCHEMA_VERSION,
     VERBOSE_LOG_LEVEL,
 )
@@ -71,6 +72,7 @@ from music_assistant.controllers.metadata import MetaDataController
 from music_assistant.controllers.music import MusicController
 from music_assistant.controllers.player_queues import PlayerQueuesController
 from music_assistant.controllers.players import PlayerController
+from music_assistant.controllers.statistics import StatisticsController
 from music_assistant.controllers.storage import StorageController
 from music_assistant.controllers.streams import StreamsController
 from music_assistant.controllers.tasks import TasksController
@@ -85,7 +87,6 @@ from music_assistant.helpers.images import detect_provider_icons
 from music_assistant.helpers.provider_access import visible_music_sources
 from music_assistant.helpers.util import (
     TaskManager,
-    get_package_version,
     is_hass_supervisor,
     load_provider_module,
     warn_if_missing_x86_64_v2,
@@ -234,6 +235,7 @@ class MusicAssistant:
     translations: TranslationController
     diagnostics: DiagnosticsController
     dashboard: DashboardController
+    statistics: StatisticsController
     storage: StorageController
 
     def __init__(self, storage_path: str, cache_path: str, safe_mode: bool = False) -> None:
@@ -275,7 +277,7 @@ class MusicAssistant:
         # __main__ but embedded usage boots the server directly)
         install_diagnostics_log_handler()
         self.running_as_hass_addon = await is_hass_supervisor()
-        self.version = await get_package_version("music_assistant") or "0.0.0"
+        self.version = MASS_VERSION
         self.build_info = await get_official_build_info()
         # setup config controller first and fetch important config values
         self.config = ConfigController(self)
@@ -327,6 +329,7 @@ class MusicAssistant:
             tg.create_task(setup_controller(self.player_queues))
             tg.create_task(setup_controller(self.diagnostics))
             tg.create_task(setup_controller(self.dashboard))
+            tg.create_task(setup_controller(self.statistics))
             tg.create_task(setup_controller(self.storage))
 
         for controller_name in (
@@ -1270,6 +1273,7 @@ class MusicAssistant:
             self.streams.audio_analysis,
             self.diagnostics,
             self.dashboard,
+            self.statistics,
             self.storage,
         ):
             for attr_name in dir(cls):
@@ -1307,6 +1311,7 @@ class MusicAssistant:
         self.translations = TranslationController(self)
         self.diagnostics = DiagnosticsController(self)
         self.dashboard = DashboardController(self)
+        self.statistics = StatisticsController(self)
         self.storage = StorageController(self)
         # add manifests for core controllers
         for controller_name in CONFIGURABLE_CORE_CONTROLLERS:

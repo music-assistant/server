@@ -4,7 +4,7 @@ Tests for tagging explicit (user-initiated) plays in the playlog.
 These cover the player-queue side of the decision: which plays count as
 user-initiated so they surface in the Discover "Recently played" row. The pure
 decisions are exercised as plain unit tests against a bare controller instance,
-mirroring ``test_play_report_dedup`` and ``test_enqueued_album_decision``.
+mirroring ``test_play_report_dedup`` and ``test_album_play_is_credited_once``.
 """
 
 from __future__ import annotations
@@ -58,7 +58,7 @@ def test_directly_enqueued_track_is_user_initiated() -> None:
 
 
 async def test_mark_album_played_is_user_initiated() -> None:
-    """Crediting an enqueued album records it as a user-initiated play."""
+    """Crediting an album play records it as a user-initiated play."""
     tracker = PlayerQueuesController.__new__(PlayerQueuesController)
     tracker.logger = Mock()
     mark = AsyncMock()
@@ -359,13 +359,38 @@ async def test_configured_replace_default_clears_the_previously_enqueued_items()
     )
     ctrl = _play_media_controller(track, QueueOption.REPLACE.value)
     ctrl._queue_data["q1"].enqueued_media_items.append(album)
-    ctrl._queue_data["q1"].credited_albums.add(album)
 
     await ctrl._handle_play_media("q1", track)
 
     assert ctrl._queue_data["q1"].enqueued_media_items == [track]
-    # the credits only mark which enqueued albums were counted, so they go with them
-    assert ctrl._queue_data["q1"].credited_albums == set()
+
+
+async def test_playing_an_album_again_lets_it_be_credited_again() -> None:
+    """A new play of an album re-arms its credit; the credits of other albums are kept."""
+    album = Album(item_id="a1", provider="library", name="A1", provider_mappings=set())
+    track = Track(
+        item_id="t1",
+        provider="library",
+        name="T1",
+        provider_mappings={
+            ProviderMapping(
+                item_id="track-prov-1",
+                provider_domain="spotify",
+                provider_instance="spotify--abc",
+            )
+        },
+    )
+    ctrl = _play_media_controller(album, QueueOption.REPLACE.value)
+    ctrl._media_resolver._resolve_media_items = AsyncMock(  # type: ignore[method-assign]
+        return_value=[ResolvedItem(track, QueueItemOrigin(container=ItemMapping.from_item(album)))]
+    )
+    queue_data = ctrl._queue_data["q1"]
+    queue_data.credited_albums = {"library://album/a1", "library://album/a2"}
+
+    await ctrl._handle_play_media("q1", album)
+
+    # another album's tracks may still be on the queue, so its credit stays
+    assert queue_data.credited_albums == {"library://album/a2"}
 
 
 async def test_configured_add_default_feeds_a_dynamic_queue() -> None:
