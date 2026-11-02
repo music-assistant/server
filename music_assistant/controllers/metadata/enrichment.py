@@ -167,7 +167,9 @@ class MetadataEnrichmentMixin:
             unique_keys.add(prov_key)
             with suppress(MediaNotFoundError):
                 prov_item = await self.mass.music.artists.get_provider_item(
-                    prov_mapping.item_id, prov_mapping.provider_instance
+                    prov_mapping.item_id,
+                    prov_mapping.provider_instance,
+                    force_refresh=force_refresh,
                 )
                 # a provider miss hands back the stored library item, which is not fresh
                 if prov_item.provider != "library":
@@ -221,7 +223,9 @@ class MetadataEnrichmentMixin:
             if not (online_enabled or provider.is_local):
                 continue
             try:
-                metadata = await provider.get_artist_metadata(artist)
+                # a forced refresh asks the provider again, rather than reading a cached result
+                async with self.mass.cache.handle_refresh(force_refresh):
+                    metadata = await provider.get_artist_metadata(artist)
             except _TEMPORARY_ERRORS as err:
                 retry_soon = True
                 self.logger.debug(
@@ -408,7 +412,9 @@ class MetadataEnrichmentMixin:
             self.mass.config.get_raw_provider_config_value(provider_instance, "enabled", False)
         )
 
-    async def _update_album_metadata(self, album: Album, force_refresh: bool = False) -> None:
+    async def _update_album_metadata(  # noqa: PLR0915
+        self, album: Album, force_refresh: bool = False
+    ) -> None:
         """Get/update rich metadata for an album."""
         # collect metadata from all (online) music + metadata providers
         # NOTE: we only do/allow this every REFRESH_INTERVAL
@@ -439,7 +445,9 @@ class MetadataEnrichmentMixin:
             unique_keys.add(prov_key)
             with suppress(MediaNotFoundError):
                 prov_item = await self.mass.music.albums.get_provider_item(
-                    prov_mapping.item_id, prov_mapping.provider_instance
+                    prov_mapping.item_id,
+                    prov_mapping.provider_instance,
+                    force_refresh=force_refresh,
                 )
                 # a provider miss hands back the stored library item, which is not fresh
                 if prov_item.provider != "library":
@@ -471,7 +479,9 @@ class MetadataEnrichmentMixin:
                 if ProviderFeature.ALBUM_METADATA not in provider.supported_features:
                     continue
                 try:
-                    metadata = await provider.get_album_metadata(album)
+                    # a forced refresh asks the provider again, rather than reading a cached result
+                    async with self.mass.cache.handle_refresh(force_refresh):
+                        metadata = await provider.get_album_metadata(album)
                 except _TEMPORARY_ERRORS as err:
                     retry_soon = True
                     self.logger.debug(
@@ -551,7 +561,9 @@ class MetadataEnrichmentMixin:
             unique_keys.add(prov_key)
             with suppress(MediaNotFoundError):
                 prov_item = await self.mass.music.tracks.get_provider_item(
-                    prov_mapping.item_id, prov_mapping.provider_instance
+                    prov_mapping.item_id,
+                    prov_mapping.provider_instance,
+                    force_refresh=force_refresh,
                 )
                 # a provider miss hands back the stored library item, which is not fresh
                 if prov_item.provider != "library":
@@ -579,12 +591,9 @@ class MetadataEnrichmentMixin:
                 if ProviderFeature.TRACK_METADATA not in provider.supported_features:
                     continue
 
-                # a forced refresh looks the lyrics up again, rather than reading a cached result
-                bypass_cache = (
-                    force_refresh and ProviderFeature.LYRICS in provider.supported_features
-                )
                 try:
-                    async with self.mass.cache.handle_refresh(bypass_cache):
+                    # a forced refresh asks the provider again, rather than reading a cached result
+                    async with self.mass.cache.handle_refresh(force_refresh):
                         metadata = await provider.get_track_metadata(track)
                 except _TEMPORARY_ERRORS as err:
                     retry_soon = True

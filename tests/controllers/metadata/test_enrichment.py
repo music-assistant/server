@@ -305,7 +305,7 @@ async def test_forced_track_refresh_takes_the_lyrics_of_the_local_file_first() -
         "tidal": _track_with_lyrics("tidal plain", None),
     }
     _mass(enrichment).music.tracks.get_provider_item = AsyncMock(
-        side_effect=lambda item_id, _instance: prov_items[item_id]
+        side_effect=lambda item_id, _instance, **_kwargs: prov_items[item_id]
     )
     lyrics_provider = _lyrics_provider(MediaItemMetadata(lyrics="lrclib"))
     enrichment.providers = [lyrics_provider]  # type: ignore[misc]
@@ -907,7 +907,7 @@ def _sources(
     )
     supplied = {"folder": folder, "service": service}
     getattr(mass.music, f"{media_type.value}s").get_provider_item = AsyncMock(
-        side_effect=lambda item_id, instance: _provider_item(
+        side_effect=lambda item_id, instance, **_kwargs: _provider_item(
             media_type, supplied[item_id] or MediaItemMetadata(), instance
         )
     )
@@ -1049,6 +1049,31 @@ async def test_forced_update_skips_an_empty_text(media_type: MediaType) -> None:
 
     assert written == {"style": "Online style"}
     assert item.metadata.mood == "Old mood"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("media_type", list(_ITEM_TYPES))
+@pytest.mark.parametrize("force_refresh", [True, False])
+async def test_only_a_forced_update_asks_every_source_again(
+    media_type: MediaType, force_refresh: bool
+) -> None:
+    """A forced update looks past cached results of the music sources and metadata providers."""
+    enrichment = _enrichment()
+    mappings = _sources(
+        enrichment,
+        media_type,
+        service=MediaItemMetadata(style="New style"),
+        online=MediaItemMetadata(mood="New mood"),
+    )
+    item = _item(media_type, MediaItemMetadata(), *mappings)
+
+    await _update(enrichment, item, force_refresh=force_refresh)
+
+    get_provider_item = getattr(_mass(enrichment).music, f"{media_type.value}s").get_provider_item
+    get_provider_item.assert_awaited_once_with(
+        "service", _SERVICE.provider_instance, force_refresh=force_refresh
+    )
+    _mass(enrichment).cache.handle_refresh.assert_called_once_with(force_refresh)
 
 
 @pytest.mark.asyncio
@@ -1921,7 +1946,9 @@ async def test_track_refresh_keeps_the_provider_tracks_isrcs() -> None:
         "GBSTK0700001",
         "USRC17607839",
     }
-    _mass(enrichment).music.tracks.get_provider_item.assert_awaited_once_with("sp-1", "spotify_1")
+    _mass(enrichment).music.tracks.get_provider_item.assert_awaited_once_with(
+        "sp-1", "spotify_1", force_refresh=True
+    )
     _mass(enrichment).music.tracks.update_item_in_library.assert_awaited_once_with("1", track)
 
 
