@@ -843,8 +843,8 @@ for more details.
             MediaItemBookmark(
                 name=bookmark.title,
                 start=bookmark.time,
-                provider_instance_id=self.instance_id,
-                provider_item_id=prov_item_id,
+                provider_instance=self.instance_id,
+                item_id=prov_item_id,
             )
             for bookmark in user.bookmarks
             if bookmark.library_item_id == prov_item_id

@@ -25,7 +25,7 @@ async def test_bookmarks_of_the_book_are_read_from_the_user(provider: Audiobooks
         MediaItemBookmark(
             name="Arrakis",
             start=754.5,
-            provider_instance_id="audiobookshelf--test123",
-            provider_item_id="book1",
+            provider_instance="audiobookshelf--test123",
+            item_id="book1",
         )
     ]
