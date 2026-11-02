@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import html
+import re
 from typing import Any
 
 from music_assistant_models.enums import ExternalID, MediaType
 from music_assistant_models.media_items import (
     Artist,
     ItemMapping,
+    MediaItemMetadata,
     Playlist,
     ProviderMapping,
     Track,
@@ -23,12 +26,20 @@ def parse_playlist(
 ) -> Playlist:
     """Parse a ListenBrainz JSPF playlist."""
     playlist_id = playlist_data["identifier"].rsplit("/", 1)[-1]
+    annotation = playlist_data.get("annotation")
+    if isinstance(annotation, str):
+        annotation = html.unescape(annotation)
+        annotation = re.sub(r"<[^>]+>", " ", annotation)
+        annotation = " ".join(annotation.split())
+        if not annotation:
+            annotation = None
     return Playlist(
         item_id=playlist_id,
         provider=provider_instance,
         name=playlist_data["title"],
         owner="listenbrainz",
         is_editable=False,
+        metadata=MediaItemMetadata(description=annotation) if annotation else MediaItemMetadata(),
         provider_mappings={
             ProviderMapping(
                 item_id=playlist_id,
