@@ -463,6 +463,7 @@ def parse_podcast_episode(
     podcast: Podcast | ItemMapping,
     position: int = 0,
     podcast_image_url: str | None = None,
+    podcast_explicit: bool | None = None,
 ) -> PodcastEpisode:
     """
     Parse a GQL podcast episode model to Music Assistant PodcastEpisode.
@@ -472,6 +473,7 @@ def parse_podcast_episode(
     :param podcast: Parent podcast reference.
     :param position: Sort position / episode number.
     :param podcast_image_url: Fallback image from parent podcast if episode has none.
+    :param podcast_explicit: Whether Deezer marks the parent podcast explicit.
     """
     images: UniqueList[MediaItemImage] = UniqueList()
     if img := _cover_image(provider, episode.cover):
@@ -485,7 +487,8 @@ def parse_podcast_episode(
                 remotely_accessible=True,
             )
         )
-    metadata = MediaItemMetadata(images=images)
+    # Deezer only marks the podcast explicit, not its episodes
+    metadata = MediaItemMetadata(images=images, explicit=podcast_explicit)
     if episode.description:
         metadata.description = episode.description
     episode_name = episode.title

@@ -21,6 +21,8 @@ PERSONAL_ALBUM_PREFIX = "personal_album_"
 
 # Bump when personal-item parsing changes to invalidate cached parsed items.
 PERSONAL_METADATA_VERSION = "2"
+# Bump when podcast episode parsing changes to invalidate cached parsed episodes.
+PODCAST_EPISODE_METADATA_VERSION = "1"
 
 # -- Pagination page sizes --
 

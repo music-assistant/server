@@ -45,6 +45,7 @@ async def test_clients_use_the_shared_session() -> None:
     """Both clients run on the server-wide session, no provider owned one."""
     mass = Mock()
     mass.config.get.return_value = {}
+    mass.cache = AsyncMock()
     provider = _provider("deezer--first", "arl-one", mass)
 
     with (
@@ -52,6 +53,8 @@ async def test_clients_use_the_shared_session() -> None:
         patch("music_assistant.providers.deezer.provider.GWClient") as gw_client,
     ):
         gql_client.return_value.get_me = AsyncMock(return_value=Mock(id="user123"))
+        gql_client.return_value.execute = AsyncMock()
+        gql_client.return_value.get_data.return_value = {}
         gw_client.return_value.setup = AsyncMock()
         await provider.handle_async_init()
 
