@@ -20,17 +20,14 @@ PARSE_TAGS_TARGET = "music_assistant.providers.filesystem_local.async_parse_tags
 
 def _write_artist_nfo(folder: Path, biography: str, mtime: int) -> None:
     """
-    Write an artist.nfo with the given biography, as a user editing it would.
+    Write an artist.nfo with only the given biography, as a user editing it would.
 
     :param folder: The artist folder.
     :param biography: The biography to write.
     :param mtime: The modification time to give the file.
     """
     nfo = folder / "artist.nfo"
-    nfo.write_text(
-        f"<artist><name>{folder.name}</name><biography>{biography}</biography></artist>",
-        encoding="utf-8",
-    )
+    nfo.write_text(f"<artist><biography>{biography}</biography></artist>", encoding="utf-8")
     os.utime(nfo, (mtime, mtime))
 
 
@@ -112,6 +109,32 @@ async def test_an_edited_artist_nfo_updates_its_artist(
     await _sync(provider)
 
     artist = await mass.music.artists.get_library_item(artist.item_id)
+    assert artist.metadata.description == "Bio B"
+
+
+async def test_an_edited_artist_nfo_keeps_the_stored_artist_name(
+    mass: MusicAssistant, tmp_path: Path
+) -> None:
+    """An artist.nfo edit does not rename the artist to the spelling of its track's tags."""
+    artist_folder = tmp_path / "Queen"
+    album_folder = artist_folder / "A Night at the Opera"
+    album_folder.mkdir(parents=True)
+    (album_folder / "Love of My Life.mp3").write_bytes(b"dummy audio")
+    _write_artist_nfo(artist_folder, "Bio A", 1_900_000_000)
+    provider = await _load_provider(mass, tmp_path)
+    await _sync(provider)
+    artist = await mass.music.artists.get_library_item_by_prov_id("Queen", INSTANCE_ID)
+    assert artist is not None
+    # another album spelled the name differently and that spelling was stored first
+    await mass.music.database.update(
+        "artists", {"item_id": int(artist.item_id)}, {"name": "Queen (UK)"}
+    )
+
+    _write_artist_nfo(artist_folder, "Bio B", 2_000_000_000)
+    await _sync(provider)
+
+    artist = await mass.music.artists.get_library_item(artist.item_id)
+    assert artist.name == "Queen (UK)"
     assert artist.metadata.description == "Bio B"
 
 

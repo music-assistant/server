@@ -1901,6 +1901,10 @@ class LocalFileSystemProvider(MusicProvider):
             )
             if not db_artist:
                 continue
+            # the cached artist was parsed from a track's tags, which may spell it differently
+            await self.cache.delete(
+                key=artist_path, category=CACHE_CATEGORY_ARTIST_INFO, provider=self.instance_id
+            )
             try:
                 artist = await self.get_artist(artist_path)
                 await self.mass.music.artists.update_item_in_library(
