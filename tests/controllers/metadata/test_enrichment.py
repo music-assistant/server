@@ -323,18 +323,29 @@ async def test_forced_track_refresh_takes_the_lyrics_of_the_local_file_first() -
     ("lookup", "online_metadata"),
     [
         (RetriesExhausted("retries exhausted"), True),
+        (ValueError("unexpected answer"), True),
+        (None, True),
+        ("no lyrics provider", True),
         (MediaItemMetadata(lyrics="lrclib"), False),
     ],
-    ids=["lookup_failed", "online_metadata_disabled"],
+    ids=[
+        "lookup_failed",
+        "provider_error",
+        "nothing_found",
+        "no_lyrics_provider",
+        "online_metadata_disabled",
+    ],
 )
-async def test_forced_track_refresh_without_a_lookup_keeps_the_stored_lyrics(
-    lookup: MediaItemMetadata | Exception, online_metadata: bool
+async def test_forced_track_refresh_that_finds_no_lyrics_keeps_the_stored_lyrics(
+    lookup: MediaItemMetadata | Exception | str | None, online_metadata: bool
 ) -> None:
-    """Lyrics that could not be looked up again are not dropped."""
+    """Stored lyrics are only replaced by lyrics the refresh finds."""
     enrichment = _enrichment()
     if not online_metadata:
         enrichment.config.get_value = lambda *_args, **_kwargs: False  # type: ignore[method-assign]
-    enrichment.providers = [_lyrics_provider(lookup)]  # type: ignore[misc]
+    enrichment.providers = (  # type: ignore[misc]
+        [] if isinstance(lookup, str) else [_lyrics_provider(lookup)]
+    )
     track = _track_with_lyrics("stored", "[00:01.00]stored")
 
     await enrichment._update_track_metadata(track, force_refresh=True)

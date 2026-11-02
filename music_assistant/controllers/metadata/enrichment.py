@@ -427,7 +427,6 @@ class MetadataEnrichmentMixin:
             # drop the stored lyrics so they are looked up again
             track.metadata.lyrics = None
             track.metadata.lrc_lyrics = None
-        online_metadata = bool(self.config.get_value(CONF_ENABLE_ONLINE_METADATA))
 
         # collect metadata from all [music] providers
         # note that we sort the providers by priority so that we always
@@ -462,7 +461,7 @@ class MetadataEnrichmentMixin:
         # Only fetch metadata from these sources if force_refresh is set OR
         # if the track needs a refresh (based on REFRESH_INTERVAL) AND
         # online metadata is enabled.
-        if (force_refresh or needs_refresh) and online_metadata:
+        if (force_refresh or needs_refresh) and self.config.get_value(CONF_ENABLE_ONLINE_METADATA):
             for provider in self.providers:
                 if ProviderFeature.TRACK_METADATA not in provider.supported_features:
                     continue
@@ -501,13 +500,8 @@ class MetadataEnrichmentMixin:
                         track.name,
                         provider.name,
                     )
-        if force_refresh and not (
-            track.metadata.lyrics
-            or track.metadata.lrc_lyrics
-            or (online_metadata and not retry_soon)
-        ):
-            # without a completed online lookup, finding no lyrics says nothing about the
-            # stored ones, so they are kept
+        if force_refresh and not (track.metadata.lyrics or track.metadata.lrc_lyrics):
+            # finding no lyrics says nothing about the stored ones, so they are kept
             track.metadata.lyrics, track.metadata.lrc_lyrics = prev_lyrics
         elif force_refresh:
             # the library keeps stored lyrics on an update, so the refreshed ones are written over
