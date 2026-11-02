@@ -158,9 +158,7 @@ class MetadataEnrichmentMixin:
             )
             if prov is None:
                 # a music source that is set up but unreachable has no say this time
-                source_missing |= bool(
-                    self.mass.get_provider(prov_mapping.provider_instance, return_unavailable=True)
-                )
+                source_missing |= self._music_source_unreachable(prov_mapping.provider_instance)
                 continue
             # prefer domain for streaming providers as the catalog is the same across instances
             prov_key = prov.domain if prov.is_streaming_provider else prov.instance_id
@@ -171,7 +169,9 @@ class MetadataEnrichmentMixin:
                 prov_item = await self.mass.music.artists.get_provider_item(
                     prov_mapping.item_id, prov_mapping.provider_instance
                 )
-                sources.append((_music_source_rank(prov), prov_item.metadata))
+                # a provider miss hands back the stored library item, which is not fresh
+                if prov_item.provider != "library":
+                    sources.append((_music_source_rank(prov), prov_item.metadata))
                 merge_metadata(artist.metadata, _without_description(prov_item.metadata))
 
         # The musicbrainz ID is mandatory for all metadata lookups
@@ -348,14 +348,20 @@ class MetadataEnrichmentMixin:
         description, language = self._select_description(
             [(lang, text) for _, lang, text in candidates], *prev_description
         )
-        metadata.description, metadata.description_language = description, language
+        winner = next(
+            (rank for rank, lang, text in candidates if (lang, text) == (language, description)),
+            None,
+        )
         replacements: dict[str, Any] = {}
-        # a library update keeps a stored description, so a new one is written explicitly
-        if (description, language) != prev_description and any(
-            (lang, text) == (language, description) and (replace_stored or rank == _LOCAL_METADATA)
-            for rank, lang, text in candidates
+        # a run that only fills gaps keeps a stored description, unless a local metadata
+        # provider supplies one
+        if winner is not None and (
+            replace_stored or winner == _LOCAL_METADATA or metadata.description is None
         ):
-            replacements |= {"description": description, "description_language": language}
+            if (description, language) != prev_description:
+                # a library update keeps a stored description, so a new one is written explicitly
+                replacements |= {"description": description, "description_language": language}
+            metadata.description, metadata.description_language = description, language
         fresh = MediaItemMetadata()
         for rank, source in sources:
             if replace_stored or rank == _LOCAL_METADATA:
@@ -390,6 +396,16 @@ class MetadataEnrichmentMixin:
             )
         return force_refresh and not source_failed
 
+    def _music_source_unreachable(self, provider_instance: str) -> bool:
+        """
+        Return whether a music source that is not loaded is set up and switched on.
+
+        :param provider_instance: The instance id of the music source.
+        """
+        return bool(
+            self.mass.config.get_raw_provider_config_value(provider_instance, "enabled", False)
+        )
+
     async def _update_album_metadata(self, album: Album, force_refresh: bool = False) -> None:
         """Get/update rich metadata for an album."""
         # collect metadata from all (online) music + metadata providers
@@ -412,9 +428,7 @@ class MetadataEnrichmentMixin:
             )
             if prov is None:
                 # a music source that is set up but unreachable has no say this time
-                source_missing |= bool(
-                    self.mass.get_provider(prov_mapping.provider_instance, return_unavailable=True)
-                )
+                source_missing |= self._music_source_unreachable(prov_mapping.provider_instance)
                 continue
             # prefer domain for streaming providers as the catalog is the same across instances
             prov_key = prov.domain if prov.is_streaming_provider else prov.instance_id
@@ -425,7 +439,9 @@ class MetadataEnrichmentMixin:
                 prov_item = await self.mass.music.albums.get_provider_item(
                     prov_mapping.item_id, prov_mapping.provider_instance
                 )
-                sources.append((_music_source_rank(prov), prov_item.metadata))
+                # a provider miss hands back the stored library item, which is not fresh
+                if prov_item.provider != "library":
+                    sources.append((_music_source_rank(prov), prov_item.metadata))
                 album.metadata.update(_without_description(prov_item.metadata))
                 # backfill identifiers (e.g. barcode) missing on a sparse library add
                 album.external_ids.update(prov_item.external_ids)
@@ -524,9 +540,7 @@ class MetadataEnrichmentMixin:
             )
             if prov is None:
                 # a music source that is set up but unreachable has no say this time
-                source_missing |= bool(
-                    self.mass.get_provider(prov_mapping.provider_instance, return_unavailable=True)
-                )
+                source_missing |= self._music_source_unreachable(prov_mapping.provider_instance)
                 continue
             # prefer domain for streaming providers as the catalog is the same across instances
             prov_key = prov.domain if prov.is_streaming_provider else prov.instance_id
@@ -537,7 +551,9 @@ class MetadataEnrichmentMixin:
                 prov_item = await self.mass.music.tracks.get_provider_item(
                     prov_mapping.item_id, prov_mapping.provider_instance
                 )
-                sources.append((_music_source_rank(prov), prov_item.metadata))
+                # a provider miss hands back the stored library item, which is not fresh
+                if prov_item.provider != "library":
+                    sources.append((_music_source_rank(prov), prov_item.metadata))
                 track.metadata.update(_without_description(prov_item.metadata))
                 # a provider's full track carries the ISRCs its album listing may leave out
                 for id_type, value in prov_item.external_ids:

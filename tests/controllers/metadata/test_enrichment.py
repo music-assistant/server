@@ -528,16 +528,18 @@ async def test_forced_update_with_an_unreachable_source_replaces_nothing() -> No
 
 
 @pytest.mark.asyncio
-async def test_forced_update_with_an_unreachable_music_source_replaces_nothing() -> None:
-    """A forced update while a music source of the artist is unreachable keeps the stored bio."""
+@pytest.mark.parametrize(("enabled", "replaced"), [(True, False), (False, True)])
+async def test_forced_update_with_a_music_source_that_is_not_loaded(
+    enabled: bool, replaced: bool
+) -> None:
+    """An unreachable music source keeps the stored bio, a switched off one does not."""
     enrichment = _enrichment()
     enrichment.providers = [  # type: ignore[misc]
         _bio_provider("online", "Online bio", "en", is_local=False)
     ]
-    # the music folder is set up but its storage is offline
-    _mass(enrichment).get_provider = MagicMock(
-        side_effect=lambda _id, **kwargs: MagicMock() if kwargs.get("return_unavailable") else None
-    )
+    # the music folder is not loaded, as when its storage was offline at startup
+    _mass(enrichment).get_provider = MagicMock(return_value=None)
+    _mass(enrichment).config.get_raw_provider_config_value = MagicMock(return_value=enabled)
     artist = _artist_with_bio("Own bio", "en")
     artist.provider_mappings = {
         ProviderMapping(
@@ -547,6 +549,40 @@ async def test_forced_update_with_an_unreachable_music_source_replaces_nothing()
 
     await enrichment._update_artist_metadata(artist, force_refresh=True)
 
+    assert _mass(enrichment).music.artists.replace_metadata.await_count == int(replaced)
+
+
+@pytest.mark.asyncio
+async def test_forced_update_ignores_the_stored_copy_a_provider_miss_returns() -> None:
+    """The stored item a music source hands back after a miss does not count as fresh."""
+    enrichment = _enrichment()
+    mappings = _sources(enrichment, MediaType.ALBUM, online=MediaItemMetadata(label="New label"))
+    album = _item(MediaType.ALBUM, MediaItemMetadata(label="Old label"), *mappings, _FOLDER)
+    # the music folder no longer finds the album and hands back the stored copy
+    _mass(enrichment).music.albums.get_provider_item = AsyncMock(return_value=album)
+
+    written = await _update(enrichment, album, force_refresh=True)
+
+    assert written == {"label": "New label"}
+
+
+@pytest.mark.asyncio
+async def test_a_run_that_only_fills_gaps_keeps_a_stored_description() -> None:
+    """A forced update with an unreachable source keeps a stored text in another language."""
+    enrichment = _enrichment()
+    enrichment.preferred_language = "nl"  # type: ignore[misc]
+    online = _bio_provider("online", "Nederlandse bio", "nl", is_local=False)
+    failing = _metadata_provider("failing", ProviderFeature.ARTIST_METADATA)
+    failing.get_artist_metadata = AsyncMock(side_effect=ProviderUnavailableError("offline"))
+    enrichment.providers = [failing, online]  # type: ignore[misc]
+    artist = _artist_with_bio("English bio", "en")
+
+    await enrichment._update_artist_metadata(artist, force_refresh=True)
+
+    assert (artist.metadata.description, artist.metadata.description_language) == (
+        "English bio",
+        "en",
+    )
     _mass(enrichment).music.artists.replace_metadata.assert_not_awaited()
 
 
@@ -835,6 +871,15 @@ def _item(
     )
 
 
+def _provider_item(
+    media_type: MediaType, metadata: MediaItemMetadata, provider_instance: str
+) -> Artist | Album | Track:
+    """Return an item as a music source supplies it."""
+    item = _item(media_type, metadata)
+    item.provider = provider_instance
+    return item
+
+
 def _sources(
     enrichment: MetadataEnrichmentMixin,
     media_type: MediaType,
@@ -862,8 +907,8 @@ def _sources(
     )
     supplied = {"folder": folder, "service": service}
     getattr(mass.music, f"{media_type.value}s").get_provider_item = AsyncMock(
-        side_effect=lambda item_id, _instance: _item(
-            media_type, supplied[item_id] or MediaItemMetadata()
+        side_effect=lambda item_id, instance: _provider_item(
+            media_type, supplied[item_id] or MediaItemMetadata(), instance
         )
     )
     feature, method = _REFRESHES[media_type]
