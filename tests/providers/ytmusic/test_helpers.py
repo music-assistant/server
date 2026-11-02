@@ -118,3 +118,19 @@ async def test_get_album_survives_missing_audio_playlist_id() -> None:
         album = await helpers.get_album(headers={}, prov_album_id="album")
     assert album == {"audioPlaylistId": None, "tracks": []}
     mock_ytm.get_playlist.assert_not_called()
+
+
+async def test_get_album_upload_does_not_resolve_audio_playlist_id() -> None:
+    """An uploaded album's audioPlaylistId must not be passed to get_playlist."""
+    album_id = "FEmusic_library_privately_owned_release_detailb_123"
+    mock_ytm = MagicMock()
+    mock_ytm.get_library_upload_album.return_value = {
+        "audioPlaylistId": "upload_playlist",
+        "tracks": [{"title": "track", "videoId": "upload_video"}],
+    }
+    with patch.object(ytmusicapi, "YTMusic", return_value=mock_ytm):
+        album = await helpers.get_album(headers={}, prov_album_id=album_id)
+    mock_ytm.get_library_upload_album.assert_called_once_with(browseId=album_id)
+    mock_ytm.get_album.assert_not_called()
+    mock_ytm.get_playlist.assert_not_called()
+    assert album["tracks"] == [{"title": "track", "videoId": "upload_video"}]
