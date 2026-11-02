@@ -91,6 +91,7 @@ from .helpers import (
     get_album,
     get_artist,
     get_artist_albums,
+    get_episode_start_seconds,
     get_home,
     get_library_albums,
     get_library_artists,
@@ -754,8 +755,6 @@ class YoutubeMusicProvider(RecommendationPayloadMixin, MusicProvider):
         """
         Get the resume point YouTube holds for a podcast episode.
 
-        YouTube only reports progress as a whole percentage, so the position is approximate.
-
         :param item_id: The podcast episode id.
         :param media_type: The media type of the item.
         """
@@ -766,18 +765,31 @@ class YoutubeMusicProvider(RecommendationPayloadMixin, MusicProvider):
             episode_obj = await get_podcast_episode(
                 video_id, headers=self._headers, user=self._yt_user
             )
-            percentage = int(episode_obj.get("progressPercentage") or 0)
-            if percentage <= 0:
-                return False, 0, None
-            # the episode page only shows a rounded duration, the (cached) video details the exact one
-            duration = (await self.get_track(video_id)).duration
+            # the percentage only tells whether the episode was finished, as YouTube updates it
+            # less often than the resume point
+            if int(episode_obj.get("progressPercentage") or 0) >= 100:
+                # the episode page only shows a rounded duration, the (cached) video details the exact one
+                duration = (await self.get_track(video_id)).duration
+                return True, duration * 1000, None
+            start_seconds = await get_episode_start_seconds(
+                video_id, headers=self._headers, user=self._yt_user
+            )
         except (YTMusicError, RequestException, KeyError, MediaNotFoundError) as err:
             # without YouTube's progress the episode resumes from Music Assistant's own
             self.logger.debug("Unable to get the progress of episode %s: %s", video_id, err)
             raise NotImplementedError from err
-        if percentage >= 100:
-            return True, duration * 1000, None
-        return False, duration * percentage * 10, None
+        return False, start_seconds * 1000, None
+
+    async def on_stream_started(self, streamdetails: StreamDetails) -> None:
+        """Announce a started podcast episode to YouTube, so even a short listen is reported."""
+        if streamdetails.media_type != MediaType.PODCAST_EPISODE:
+            return
+        video_id = streamdetails.item_id
+        cpn = "".join(secrets.choice(CPN_ALPHABET) for _ in range(16))
+        playback = EpisodePlayback(cpn=cpn, position=int(streamdetails.seek_position))
+        self._episode_playbacks[video_id] = playback
+        playback.watchtime_url = await self._start_episode_playback(video_id, cpn)
+        playback.announced = True
 
     async def on_played(
         self,
@@ -801,24 +813,15 @@ class YoutubeMusicProvider(RecommendationPayloadMixin, MusicProvider):
         if media_type != MediaType.PODCAST_EPISODE:
             return
         video_id = prov_item_id.split(PODCAST_EPISODE_SPLITTER)[1]
+        # only a playback started here is reported, marking an episode (un)played is not one
         playback = self._episode_playbacks.get(video_id)
-        # marking an episode (un)played is no playback, so YouTube gets no report of it
-        if playback is None and not is_playing:
-            return
-        if (
-            is_playing
-            and playback
-            and time.monotonic() - playback.reported_at < PROGRESS_REPORT_INTERVAL
-        ):
-            return
         if playback is None:
-            cpn = "".join(secrets.choice(CPN_ALPHABET) for _ in range(16))
-            playback = EpisodePlayback(cpn=cpn, position=position)
+            return
+        if is_playing and time.monotonic() - playback.reported_at < PROGRESS_REPORT_INTERVAL:
+            return
         # stamped before any request, so a failed or slow report is not retried every tick
         playback.reported_at = time.monotonic()
-        if is_playing:
-            self._episode_playbacks[video_id] = playback
-        else:
+        if not is_playing:
             # a pause, stop or finish ends this playback, a resume starts a new one
             self._episode_playbacks.pop(video_id, None)
         # a failed announcement is tried again with the next report

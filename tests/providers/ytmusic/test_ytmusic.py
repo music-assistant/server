@@ -1169,14 +1169,26 @@ async def _played(
     )
 
 
+async def _started(
+    provider: YoutubeMusicProvider,
+    position: int = 0,
+    media_type: MediaType = MediaType.PODCAST_EPISODE,
+) -> None:
+    """Tell the provider that episode v1 started streaming."""
+    await provider.on_stream_started(
+        SimpleNamespace(media_type=media_type, item_id="v1", seek_position=position)  # type: ignore[arg-type]
+    )
+
+
 async def test_on_played_reports_episode_playback(
     reporting_provider: YoutubeMusicProvider,
 ) -> None:
-    """A playing episode is announced once, its position is throttled and its stop is sent."""
+    """A started episode is announced once, its position is throttled and its stop is sent."""
     with patch(
         "music_assistant.providers.ytmusic.get_playback_tracking",
         AsyncMock(return_value=_tracking()),
     ) as mock_tracking:
+        await _started(reporting_provider, 100)
         await _played(reporting_provider, 100, is_playing=True)
         await _played(reporting_provider, 130, is_playing=True)
         await _played(reporting_provider, 400, is_playing=False)
@@ -1196,6 +1208,21 @@ async def test_on_played_reports_episode_playback(
     assert not reporting_provider._episode_playbacks
 
 
+async def test_on_played_reports_a_stop_before_the_first_progress_report(
+    reporting_provider: YoutubeMusicProvider,
+) -> None:
+    """An episode paused right after it started still has its position sent."""
+    with patch(
+        "music_assistant.providers.ytmusic.get_playback_tracking",
+        AsyncMock(return_value=_tracking()),
+    ):
+        await _started(reporting_provider, 1516)
+        await _played(reporting_provider, 1523, is_playing=False)
+
+    _, stop = _reported(reporting_provider)
+    assert (stop["st"], stop["et"]) == (["1516"], ["1523"])
+
+
 async def test_on_played_reports_position_after_interval(
     reporting_provider: YoutubeMusicProvider,
 ) -> None:
@@ -1204,6 +1231,7 @@ async def test_on_played_reports_position_after_interval(
         "music_assistant.providers.ytmusic.get_playback_tracking",
         AsyncMock(return_value=_tracking()),
     ):
+        await _started(reporting_provider, 100)
         await _played(reporting_provider, 100, is_playing=True)
         reporting_provider._episode_playbacks["v1"].reported_at -= 300
         await _played(reporting_provider, 400, is_playing=True)
@@ -1211,15 +1239,16 @@ async def test_on_played_reports_position_after_interval(
     assert len(_reported(reporting_provider)) == 3
 
 
-async def test_on_played_ignores_tracks_and_untracked_episodes(
+async def test_on_stream_started_ignores_tracks_and_untracked_episodes(
     reporting_provider: YoutubeMusicProvider,
 ) -> None:
     """Tracks are never reported, and nor is an episode YouTube offers no tracking for."""
     with patch(
         "music_assistant.providers.ytmusic.get_playback_tracking", AsyncMock(return_value=None)
     ) as mock_tracking:
-        await _played(reporting_provider, 100, is_playing=False, media_type=MediaType.TRACK)
+        await _started(reporting_provider, media_type=MediaType.TRACK)
         mock_tracking.assert_not_awaited()
+        await _started(reporting_provider, 100)
         await _played(reporting_provider, 100, is_playing=True)
         await _played(reporting_provider, 130, is_playing=True)
 
@@ -1250,29 +1279,43 @@ async def test_on_played_announces_again_after_a_failed_announcement(
     tracking = AsyncMock(side_effect=[ReadTimeout("timed out"), _tracking()])
     with patch("music_assistant.providers.ytmusic.get_playback_tracking", tracking):
         with pytest.raises(ReadTimeout):
-            await _played(reporting_provider, 100, is_playing=True)
+            await _started(reporting_provider, 100)
         await _played(reporting_provider, 130, is_playing=True)
         await _played(reporting_provider, 400, is_playing=False)
 
     assert tracking.await_count == 2
-    start, stop = _reported(reporting_provider)
+    start, first, stop = _reported(reporting_provider)
     assert start["url"] == ["https://s.youtube.com/api/stats/playback"]
-    assert (stop["st"], stop["et"]) == (["100"], ["400"])
+    assert (first["st"], first["et"]) == (["100"], ["130"])
+    assert (stop["st"], stop["et"]) == (["130"], ["400"])
 
 
 @pytest.mark.parametrize(
-    ("percentage", "expected"),
-    [(0, (False, 0, None)), (50, (False, 1_800_000, None)), (100, (True, 3_600_000, None))],
+    ("percentage", "start_seconds", "expected"),
+    [
+        (0, 0, (False, 0, None)),
+        # YouTube updates the percentage later than the resume point, which is what counts
+        (0, 1007, (False, 1_007_000, None)),
+        (37, 1007, (False, 1_007_000, None)),
+        (100, 0, (True, 3_600_000, None)),
+    ],
 )
 async def test_get_resume_position_from_progress(
-    provider: YoutubeMusicProvider, percentage: int, expected: tuple[bool, int, None]
+    provider: YoutubeMusicProvider,
+    percentage: int,
+    start_seconds: int,
+    expected: tuple[bool, int, None],
 ) -> None:
-    """The resume point is the share of the episode YouTube reports as played."""
+    """The resume point is the second YouTube resumes from, or the end for a finished episode."""
     with (
         patch.object(provider, "get_track", AsyncMock(return_value=SimpleNamespace(duration=3600))),
         patch(
             "music_assistant.providers.ytmusic.get_podcast_episode",
             AsyncMock(return_value={"progressPercentage": percentage}),
+        ),
+        patch(
+            "music_assistant.providers.ytmusic.get_episode_start_seconds",
+            AsyncMock(return_value=start_seconds),
         ),
     ):
         result = await provider.get_resume_position("pod1|v1", MediaType.PODCAST_EPISODE)

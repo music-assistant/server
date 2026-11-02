@@ -211,6 +211,29 @@ async def get_playback_tracking(
     return await _run_ytmusic(_get_playback_tracking)
 
 
+async def get_episode_start_seconds(
+    video_id: str, headers: dict[str, str], language: str = "en", user: str | None = None
+) -> int:
+    """Return the second YouTube resumes the given episode from, 0 if it has no resume point."""
+
+    def _get_episode_start_seconds() -> int:
+        ytm = ytmusicapi.YTMusic(auth=headers, language=language, user=user)
+        # get_song drops this part of the player response, so the request is made directly
+        response = ytm._send_request(
+            "player",
+            {
+                "video_id": video_id,
+                "playbackContext": {
+                    "contentPlaybackContext": {"signatureTimestamp": int(time() // 86400) - 1}
+                },
+            },
+        )
+        start_config = response.get("playerConfig", {}).get("playbackStartConfig", {})
+        return int(start_config.get("startSeconds") or 0)
+
+    return await _run_ytmusic(_get_episode_start_seconds)
+
+
 async def get_library_artists(
     headers: dict[str, str], language: str = "en", user: str | None = None
 ) -> list[dict[str, Any]]:
