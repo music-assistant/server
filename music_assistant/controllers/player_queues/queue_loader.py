@@ -69,6 +69,7 @@ from music_assistant.controllers.player_queues.managed_pool import gate_tracks
 from music_assistant.controllers.webserver.helpers.auth_middleware import (
     get_current_user,
     set_current_user,
+    set_impersonated_user,
 )
 from music_assistant.helpers.audio import get_probed_duration, store_probed_duration
 from music_assistant.helpers.provider_access import playback_sources, resolve_playback_user
@@ -572,6 +573,8 @@ class QueueLoaderMixin(_PlayerQueuesBase):
             else None
         )
         set_current_user(playback_user)
+        # the refill runs as the owner, not as a user the scheduling call impersonated
+        set_impersonated_user(None)
         # Top up from the queue's dynamic sources (dynamic playlists and any mixed-in finite items),
         # weighted per source and recency-gated. fill() already sizes the batch to the pool target;
         # the tail cap below is a defensive ceiling so the unplayed tail never grows past
@@ -618,6 +621,8 @@ class QueueLoaderMixin(_PlayerQueuesBase):
             else None
         )
         set_current_user(playback_user)
+        # the refill runs as the owner, not as a user the scheduling call impersonated
+        set_impersonated_user(None)
         if self._queue_data.get(queue_id) is not queue_data:
             # the queue was removed or re-registered while the user context was restored
             return

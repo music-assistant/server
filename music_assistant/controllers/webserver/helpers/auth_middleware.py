@@ -383,11 +383,18 @@ def is_own_client_player(player: Player | None) -> bool:
     A private client player (browser session, desktop or mobile app) is bound to the
     connection that announced it, so its owner may always use it regardless of their
     player filter. Only private players qualify, so a shared speaker cannot be claimed
-    by announcing its id.
+    by announcing its id. Another user the caller acts as never connected on it, so it does
+    not count for them.
 
     :param player: The player to check, or None.
     """
-    return player is not None and player.private and player.player_id == get_sendspin_player_id()
+    if player is None or not player.private or player.player_id != get_sendspin_player_id():
+        return False
+    acting_user = get_impersonated_user()
+    authenticated_user = current_user.get()
+    return acting_user is None or (
+        authenticated_user is not None and acting_user.user_id == authenticated_user.user_id
+    )
 
 
 def player_access_filter(user: User | None) -> list[str] | None:

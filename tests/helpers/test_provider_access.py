@@ -166,11 +166,13 @@ def test_hidden_music_sources_lists_the_sources_a_user_may_not_see() -> None:
         {
             "builtin": None,
             "spotify--aaaa": ProviderAccess(owner=OWNER, sharing=ProviderSharing.PRIVATE),
+            "spotify--cccc": ProviderAccess(owner=MEMBER, sharing=ProviderSharing.PRIVATE),
             "tidal--bbbb": ProviderAccess(owner=MEMBER, sharing=ProviderSharing.PRIVATE),
         },
     )
+    # a service's domain is hidden too once the user may see none of its accounts
     assert hidden_music_sources(mass, _user(MEMBER)) == {"spotify--aaaa"}
-    assert hidden_music_sources(mass, _user(OWNER)) == {"tidal--bbbb"}
+    assert hidden_music_sources(mass, _user(OWNER)) == {"spotify--cccc", "tidal--bbbb", "tidal"}
 
 
 def test_visible_playback_sources_for_anonymous_playback() -> None:

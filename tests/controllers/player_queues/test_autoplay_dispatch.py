@@ -35,6 +35,11 @@ from music_assistant.controllers.player_queues.autoplay import AutoplayMode
 from music_assistant.controllers.player_queues.media_resolver import MediaResolver
 from music_assistant.controllers.player_queues.playback_tracker import PlaybackTrackerMixin
 from music_assistant.controllers.player_queues.queue_loader import QueueLoaderMixin
+from music_assistant.controllers.webserver.helpers.auth_middleware import (
+    get_current_user,
+    set_current_user,
+    set_impersonated_user,
+)
 from music_assistant.helpers.collections import get_collection_item_id
 
 if TYPE_CHECKING:
@@ -364,6 +369,26 @@ async def test_autoplay_disabled_appends_nothing() -> None:
 
     loader._fill_autoplay_music_tracks.assert_not_awaited()
     loader._fill_autoplay_next_in_series.assert_not_awaited()
+
+
+async def test_autoplay_refill_runs_as_the_queue_owner_not_an_impersonated_user() -> None:
+    """A refill scheduled by a call impersonating another user still runs as the queue's owner."""
+    loader = _loader(_queue_item(_track()), seeds=[_track()])
+    loader._queue_data["q1"].userid = "owner"
+    owner = User(user_id="owner", username="owner", role=UserRole.USER)
+    loader.mass.webserver.auth.get_user = AsyncMock(return_value=owner)
+    acting_users: list[User | None] = []
+    loader._fill_autoplay_music_tracks = AsyncMock(
+        side_effect=lambda _queue_id: acting_users.append(get_current_user())
+    )
+    set_impersonated_user(User(user_id="other", username="other", role=UserRole.USER))
+    try:
+        await QueueLoaderMixin._fill_autoplay_tracks(loader, "q1")
+    finally:
+        set_impersonated_user(None)
+        set_current_user(None)
+
+    assert acting_users == [owner]
 
 
 @pytest.mark.parametrize("reregistered", [False, True])
