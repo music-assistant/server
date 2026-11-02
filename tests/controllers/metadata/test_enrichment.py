@@ -1033,6 +1033,25 @@ async def test_forced_update_takes_the_music_folder_value_first(media_type: Medi
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("media_type", list(_ITEM_TYPES))
+async def test_forced_update_skips_an_empty_text(media_type: MediaType) -> None:
+    """An empty text from a source neither clears the stored value nor blocks a later source."""
+    enrichment = _enrichment()
+    mappings = _sources(
+        enrichment,
+        media_type,
+        service=MediaItemMetadata(style="", mood=""),
+        online=MediaItemMetadata(style="Online style"),
+    )
+    item = _item(media_type, MediaItemMetadata(style="Old style", mood="Old mood"), *mappings)
+
+    written = await _update(enrichment, item, force_refresh=True)
+
+    assert written == {"style": "Online style"}
+    assert item.metadata.mood == "Old mood"
+
+
+@pytest.mark.asyncio
 async def test_forced_artist_update_takes_values_in_source_order() -> None:
     """Local metadata, the music folder, a music service, then online sources; dates complete."""
     enrichment = _enrichment()

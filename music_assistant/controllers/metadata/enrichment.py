@@ -365,9 +365,11 @@ class MetadataEnrichmentMixin:
         fresh = MediaItemMetadata()
         for rank, source in sources:
             if replace_stored or rank == _LOCAL_METADATA:
+                # an empty text is no value, so a later source can still supply one
+                values = {name: getattr(source, name) for name in field_names}
                 merge_metadata(
                     fresh,
-                    MediaItemMetadata(**{name: getattr(source, name) for name in field_names}),
+                    MediaItemMetadata(**{k: v for k, v in values.items() if v != ""}),
                 )
         # stored dates no source supplies complete a fresh life span
         merge_metadata(fresh, MediaItemMetadata(life_span=metadata.life_span))
