@@ -81,6 +81,9 @@ async def get_album(
         if prov_album_id.startswith("FEmusic_library_privately_owned_release"):
             ytm = ytmusicapi.YTMusic(auth=headers, language=language, user=user)
             album = ytm.get_library_upload_album(browseId=prov_album_id)
+
+            # sigma67/ytmusicapi#1022 - uploaded album audioPlaylistId currently not resolvable
+            album.pop("audioPlaylistId", None)
         else:
             ytm = ytmusicapi.YTMusic(auth=headers, language=language, user=user)
             album = ytm.get_album(browseId=prov_album_id)
