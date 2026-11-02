@@ -752,12 +752,7 @@ class YoutubeMusicProvider(RecommendationPayloadMixin, MusicProvider):
         """Announce a started podcast episode to YouTube, so even a short listen is reported."""
         if streamdetails.media_type != MediaType.PODCAST_EPISODE:
             return
-        video_id = streamdetails.item_id
-        cpn = "".join(secrets.choice(CPN_ALPHABET) for _ in range(16))
-        playback = EpisodePlayback(cpn=cpn, position=int(streamdetails.seek_position))
-        self._episode_playbacks[video_id] = playback
-        playback.watchtime_url = await self._start_episode_playback(video_id, cpn)
-        playback.announced = True
+        await self._start_episode_playback(streamdetails.item_id, int(streamdetails.seek_position))
 
     async def on_played(
         self,
@@ -781,20 +776,23 @@ class YoutubeMusicProvider(RecommendationPayloadMixin, MusicProvider):
         if media_type != MediaType.PODCAST_EPISODE:
             return
         video_id = prov_item_id.split(PODCAST_EPISODE_SPLITTER)[1]
-        # only a playback started here is reported, marking an episode (un)played is not one
         playback = self._episode_playbacks.get(video_id)
         if playback is None:
-            return
+            # marking an episode (un)played is no playback, so YouTube gets no report of it
+            if not is_playing:
+                return
+            # the stream of a resumed pause is the same, so no start was announced for it
+            playback = await self._start_episode_playback(video_id, position)
         if is_playing and time.monotonic() - playback.reported_at < PROGRESS_REPORT_INTERVAL:
             return
         # stamped before any request, so a failed or slow report is not retried every tick
         playback.reported_at = time.monotonic()
         if not is_playing:
-            # a pause, stop or finish ends this playback, a resume starts a new one
+            # a pause, stop or finish ends this playback
             self._episode_playbacks.pop(video_id, None)
         # a failed announcement is tried again with the next report
         if not playback.announced:
-            playback.watchtime_url = await self._start_episode_playback(video_id, playback.cpn)
+            playback.watchtime_url = await self._announce_episode_playback(video_id, playback.cpn)
             playback.announced = True
         if playback.watchtime_url:
             await self._report_episode_position(playback, position)
@@ -958,6 +956,7 @@ class YoutubeMusicProvider(RecommendationPayloadMixin, MusicProvider):
         stream_details = StreamDetails(
             provider=self.instance_id,
             item_id=item_id,
+            media_type=media_type,
             audio_format=AudioFormat(
                 content_type=ContentType.try_parse(stream_format["audio_ext"]),
             ),
@@ -1508,7 +1507,16 @@ class YoutubeMusicProvider(RecommendationPayloadMixin, MusicProvider):
         self._store_cookies(changed)
         return stream_format
 
-    async def _start_episode_playback(self, video_id: str, cpn: str) -> str | None:
+    async def _start_episode_playback(self, video_id: str, position: int) -> EpisodePlayback:
+        """Start tracking a playback of a podcast episode and announce it to YouTube."""
+        cpn = "".join(secrets.choice(CPN_ALPHABET) for _ in range(16))
+        playback = EpisodePlayback(cpn=cpn, position=position)
+        self._episode_playbacks[video_id] = playback
+        playback.watchtime_url = await self._announce_episode_playback(video_id, cpn)
+        playback.announced = True
+        return playback
+
+    async def _announce_episode_playback(self, video_id: str, cpn: str) -> str | None:
         """Announce a new playback of a podcast episode to YouTube and return its report address."""
         tracking = await get_playback_tracking(video_id, headers=self._headers, user=self._yt_user)
         playback_url = (tracking or {}).get("videostatsPlaybackUrl", {}).get("baseUrl")
