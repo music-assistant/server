@@ -517,43 +517,6 @@ class PlaylistMetadataProvider(MetadataProvider):
             with contextlib.suppress(OSError):
                 fpath.unlink()
 
-    async def _get_smart_playlist_rules(self, playlist: Playlist) -> dict[str, Any] | None:
-        """
-        Get the Smart Playlist rules for a playlist if it's a smart playlist.
-
-        :param playlist: The playlist to check.
-        :return: The rules dictionary or None if not a smart playlist.
-        """
-        try:
-            smart_playlist_provider = None
-            for provider in self.mass.providers:
-                if provider.domain == "smart_playlist":
-                    smart_playlist_provider = provider
-                    break
-
-            if not smart_playlist_provider:
-                return None
-
-            smart_mapping = None
-            for pm in playlist.provider_mappings:
-                if pm.provider_domain == "smart_playlist":
-                    smart_mapping = pm
-                    break
-
-            if not smart_mapping:
-                return None
-
-            if not hasattr(smart_playlist_provider, "get_smart_playlist_rules"):
-                LOGGER.debug("Smart playlist provider not fully initialized yet")
-                return None
-
-            return await smart_playlist_provider.get_smart_playlist_rules(  # type: ignore[union-attr, no-any-return]
-                smart_mapping.item_id
-            )
-        except Exception as err:
-            LOGGER.debug("Could not get smart playlist rules for %s: %s", playlist.name, err)
-            return None
-
     async def _collect_images_from_smart_playlist_rules(
         self, rules: dict[str, Any]
     ) -> tuple[list[MediaItemImage], list[MediaItemImage]]:
@@ -642,7 +605,7 @@ class PlaylistMetadataProvider(MetadataProvider):
         album_image_map: dict[str, MediaItemImage] = {}  # path → image (deduped)
         album_count: dict[str, int] = {}  # path → track count
 
-        smart_rules = await self._get_smart_playlist_rules(playlist)
+        smart_rules = await self._ai.smart_playlist_rules(playlist)
         if smart_rules:
             LOGGER.debug(
                 "Playlist %s is a smart playlist, collecting images from rules", playlist.name

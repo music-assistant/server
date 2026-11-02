@@ -688,6 +688,24 @@ class AIArtwork:
             [img for img in playlist.metadata.images or [] if not self.is_own_image(img)]
         )
 
+    async def smart_playlist_rules(self, playlist: Playlist) -> dict[str, Any] | None:
+        """Return the rules of a smart playlist, None for any other playlist."""
+        for mapping in playlist.provider_mappings:
+            if mapping.provider_domain != SMART_PLAYLIST_DOMAIN:
+                continue
+            provider = self.mass.get_provider(mapping.provider_instance)
+            if provider is None or provider.domain != SMART_PLAYLIST_DOMAIN:
+                continue
+            try:
+                return await cast("SmartPlaylistProvider", provider).get_smart_playlist_rules(
+                    mapping.item_id
+                )
+            except Exception as err:
+                self.logger.warning(
+                    "Could not read the rules of '%s': %s", playlist.name, err, exc_info=err
+                )
+        return None
+
     async def refresh(self) -> None:
         """
         Queue what the playlists lack, and refresh the ones whose generated cover must go.
@@ -1274,7 +1292,7 @@ class AIArtwork:
         """
         if not _is_smart_playlist(playlist):
             return ""
-        if (rules := await self._smart_playlist_rules(playlist)) is None:
+        if (rules := await self.smart_playlist_rules(playlist)) is None:
             return None
         shaping = {key: rules.get(key) for key in PROMPT_RULE_KEYS}
         return hashlib.sha1(json_dumps(shaping).encode(), usedforsecurity=False).hexdigest()
@@ -1308,7 +1326,7 @@ class AIArtwork:
 
     async def _playlist_context(self, playlist: Playlist) -> PlaylistContext:
         """Return the context of a playlist: its smart playlist rules, else its tracks."""
-        if (rules := await self._smart_playlist_rules(playlist)) is not None:
+        if (rules := await self.smart_playlist_rules(playlist)) is not None:
             return _context_from_rules(rules)
         artist_counts: Counter[str] = Counter()
         genre_counts: Counter[str] = Counter()
@@ -1344,24 +1362,6 @@ class AIArtwork:
             artists=top_artists,
             genres=[genre for genre, _ in genre_counts.most_common(MAX_CONTEXT_GENRES)],
         )
-
-    async def _smart_playlist_rules(self, playlist: Playlist) -> dict[str, Any] | None:
-        """Return the rules of a smart playlist, None for any other playlist."""
-        for mapping in playlist.provider_mappings:
-            if mapping.provider_domain != SMART_PLAYLIST_DOMAIN:
-                continue
-            provider = self.mass.get_provider(mapping.provider_instance)
-            if provider is None or provider.domain != SMART_PLAYLIST_DOMAIN:
-                continue
-            try:
-                return await cast("SmartPlaylistProvider", provider).get_smart_playlist_rules(
-                    mapping.item_id
-                )
-            except Exception as err:
-                self.logger.warning(
-                    "Could not read the rules of '%s': %s", playlist.name, err, exc_info=err
-                )
-        return None
 
     async def _file_name(self, playlist: Playlist, image_engine: ImageEngine) -> str | None:
         """
