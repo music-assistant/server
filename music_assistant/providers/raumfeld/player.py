@@ -657,8 +657,12 @@ class RaumfeldPlayer(Player):
             else self.get_supported_sample_rates()
         )
         url = await self.mass.streams.resolve_stream_url(self.player_id, media)
-        didl_metadata = create_didl_metadata(media, url)
         self._flow_url = url if self._is_queue_flow(url) else None
+        didl_metadata = (
+            self._flow_didl_metadata(media, url)
+            if self._flow_url
+            else create_didl_metadata(media, url)
+        )
         self._announced_item_id = None
         self._announced_index = None
         self._passed_item_id = None
@@ -1728,6 +1732,19 @@ class RaumfeldPlayer(Player):
         parts = url.removeprefix(f"{base_url}/").split("/") if url.startswith(base_url) else []
         return len(parts) > 2 and parts[0] == "flow" and parts[2] == self.player_id
 
+    @staticmethod
+    def _flow_didl_metadata(media: PlayerMedia, url: str) -> str:
+        """
+        Describe a track of the queue's flow stream to the zone.
+
+        :param media: The track the flow stream plays or starts with.
+        :param url: The flow stream.
+        """
+        # After a seek the media's stream duration is what is left of the track, but a flow
+        # carries on past it. A zone told it gets just those seconds drops the stream at their
+        # end and requests it again or stops (seen on a One S with 1 and 3.5 s left).
+        return create_didl_metadata(dataclasses.replace(media, stream_duration=None), url)
+
     def _maybe_announce_flow_item(self) -> None:
         """Announce the flow stream's current track to the zone, if it has not been yet."""
         if (
@@ -1901,7 +1918,7 @@ class RaumfeldPlayer(Player):
                 zone,
                 "BendAVTransportURI",
                 CurrentURI=url,
-                CurrentURIMetaData=create_didl_metadata(media, url),
+                CurrentURIMetaData=self._flow_didl_metadata(media, url),
             )
         except PlayerCommandFailed as err:
             self.logger.debug("Could not announce %s to %s: %s", media.title, self.room, err)

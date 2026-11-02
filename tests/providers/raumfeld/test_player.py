@@ -2417,6 +2417,52 @@ async def test_the_announcement_describes_the_track_on_the_same_flow_url() -> No
     assert "cover.jpg" in didl
 
 
+def _seeked_media() -> PlayerMedia:
+    """Return a track started 4 s before its end."""
+    return PlayerMedia(
+        uri="library://track/1",
+        title="Buena",
+        duration=198,
+        stream_duration=4,
+        queue_item_id="q2",
+    )
+
+
+async def test_the_announcement_gives_the_whole_track_after_a_seek() -> None:
+    """A flow carries on past the track, so the seconds left are not what the zone gets."""
+    player = _announcing_player()
+    cast("MagicMock", player.mass.player_queues).player_media_from_queue_item = AsyncMock(
+        return_value=_seeked_media()
+    )
+    with (
+        patch.object(player, "_active_zone", return_value=["Bar"]),
+        patch.object(player, "_zone_command", AsyncMock()) as zone_command,
+    ):
+        await player._announce_flow_item(FLOW_URL, "q2", 0)
+
+    assert 'duration="00:03:18"' in zone_command.call_args.kwargs["CurrentURIMetaData"]
+
+
+@pytest.mark.parametrize(
+    ("url", "duration"),
+    [
+        (f"{BASE_URL}/flow/session1/raumfeld_bar/item1.flac", "00:03:18"),
+        (f"{BASE_URL}/single/session1/raumfeld_bar/item1.flac", "00:00:04"),
+    ],
+    ids=["flow", "single_item"],
+)
+async def test_only_a_flow_describes_the_whole_track_after_a_seek(url: str, duration: str) -> None:
+    """A stream of one item does end after the seconds left; a flow carries on."""
+    player, action = _zone_player()
+    cast("MagicMock", player.mass.streams).resolve_stream_url = AsyncMock(return_value=url)
+
+    with patch.object(player, "update_state"), _flow_mode_on():
+        await player.play_media(_seeked_media())
+
+    didl = action.await_args_list[0].kwargs["CurrentURIMetaData"]
+    assert f'duration="{duration}"' in didl
+
+
 async def test_a_refused_announcement_leaves_playback_alone() -> None:
     """A zone that refuses the announcement only costs the track description."""
     player = _announcing_player()
