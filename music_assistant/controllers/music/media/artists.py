@@ -606,7 +606,7 @@ class ArtistsController(MediaControllerBase[Artist]):
         :param limit: Maximum number of albums to return; 0 returns them all.
         :param offset: Number of albums to skip.
         :param random_seed: Keep random ordering stable across pages with the same seed.
-        :param album_types: Only list albums whose type is included.
+        :param album_types: Only list the releases MusicBrainz gives one of these types.
         :raises InvalidDataError: When the artist is not a library artist, or the sort field
             is not offered for a discography.
         """
@@ -640,19 +640,17 @@ class ArtistsController(MediaControllerBase[Artist]):
         cover_provider = "coverartarchive" if self.mass.get_provider("coverartarchive") else None
         discography: list[Album] = []
         for group in release_groups:
+            # filtered on the MusicBrainz type, also where a library album takes the group's
+            # place: its own type comes from a music provider and may differ or be unknown
+            album_type = musicbrainz.album_type_from_release_group(group)
+            if album_types and album_type not in album_types:
+                continue
             if library_album := albums_by_release_group.get(group.id):
                 discography.append(library_album)
                 continue
             discography.append(
-                _album_from_release_group(
-                    group,
-                    artist_mapping,
-                    musicbrainz.album_type_from_release_group(group),
-                    cover_provider,
-                )
+                _album_from_release_group(group, artist_mapping, album_type, cover_provider)
             )
-        if album_types:
-            discography = [album for album in discography if album.album_type in album_types]
         return apply_listing(
             discography,
             ListingType.ARTIST_DISCOGRAPHY,

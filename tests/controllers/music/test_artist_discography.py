@@ -521,6 +521,21 @@ async def test_discography_filters_by_album_type() -> None:
         assert [album.name for album in paged] == ["Karma Police"]
 
 
+async def test_discography_filters_a_library_album_on_its_musicbrainz_type() -> None:
+    """A library album in a release group's place is filtered on the group's type."""
+    library_album = _library_album("7", "OK Computer", album_type=AlbumType.UNKNOWN)
+    groups = [_release_group(RG_OK_COMPUTER, "OK Computer")]
+    with _harness(_artist(), release_groups=groups, artist_albums=[library_album]) as harness:
+        albums = await harness.ctrl.discography(
+            LIBRARY_ARTIST_ID, "library", album_types=[AlbumType.ALBUM]
+        )
+        assert albums == [library_album]
+        singles = await harness.ctrl.discography(
+            LIBRARY_ARTIST_ID, "library", album_types=[AlbumType.SINGLE]
+        )
+        assert singles == []
+
+
 async def test_discography_count_honors_the_album_type_filter() -> None:
     """The count covers the filtered listing, not every release group."""
     groups = [
