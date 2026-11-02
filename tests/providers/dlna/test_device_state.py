@@ -293,6 +293,18 @@ async def test_next_track_starts_at_0_on_a_device_that_reports_no_position(
     assert player.elapsed_time_last_updated == clock.now
 
 
+async def test_next_track_starts_at_0_when_the_zero_position_keeps_its_timestamp(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A fixed 00:00:00 with an unchanged timestamp does not carry the last track's time over."""
+    player, device, clock = await _start(monkeypatch, 0)
+    clock.now += 60
+    device.current_track_uri = "http://192.168.1.10/next.mp3"
+    await player.set_dynamic_attributes()
+
+    assert player.corrected_elapsed_time == 0.0
+
+
 async def test_position_kept_from_before_a_stop_does_not_count_as_moving(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

@@ -184,6 +184,9 @@ class DLNAPlayer(Player):
                 # a device that reports no position would otherwise carry on from the last track
                 self._attr_elapsed_time = 0.0
                 self._attr_elapsed_time_last_updated = time.time()
+                if _playback_state == PlaybackState.PLAYING:
+                    # the position timestamp may still date from the last track
+                    self._playing_since = self._attr_elapsed_time_last_updated
         try:
             media_title = self.device.media_title
             media_artist = self.device.media_artist
