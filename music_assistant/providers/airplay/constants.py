@@ -375,11 +375,31 @@ BASE_PLAYER_FEATURES: Final[set[PlayerFeature]] = {
 PIN_REQUIRED = 0x8
 PASSWORD_BIT = 0x80
 LEGACY_PAIRING_BIT = 0x200
+# Status flag set while a sender holds the receiver (Apple TV, shairport-sync 5.6+).
+RECEIVER_SESSION_ACTIVE_BIT: Final[int] = 1 << 17
+# shairport-sync 4.x and 5.0-5.5 AirPlay 2 builds toggle this bit per session instead.
+# On other devices it means "supports relay", so it only counts for shairport-sync.
+SHAIRPORT_SYNC_SESSION_BIT: Final[int] = 1 << 11
+
+# How long after Music Assistant's own stream ended that what the device reports about
+# playback is still taken for that stream rather than for another sender. A warm-to-cold
+# fallback briefly tears the stream down mid-playback, and the device's view of that
+# dying session must not surface as an external source.
+EXTERNAL_STATE_GRACE_S: Final[float] = 15.0
 
 # Provider setting: opt-in for the shared PTP daemon's per-packet timing trace
 # (Announce/Sync/Follow_Up) when verbose logging is active. Off by default —
 # the trace floods the log and only matters for clock-sync debugging.
 CONF_VERBOSE_PTP_LOGGING: Final[str] = "verbose_ptp_logging"
+
+# MQTT broker that shairport-sync receivers publish their metadata to (provider
+# settings), and the topic one receiver publishes under (player setting).
+CONF_SHAIRPORT_MQTT_HOST: Final[str] = "shairport_mqtt_host"
+CONF_SHAIRPORT_MQTT_PORT: Final[str] = "shairport_mqtt_port"
+CONF_SHAIRPORT_MQTT_USERNAME: Final[str] = "shairport_mqtt_username"
+CONF_SHAIRPORT_MQTT_PASSWORD: Final[str] = "shairport_mqtt_password"  # noqa: S105 - config key
+CONF_SHAIRPORT_MQTT_DISCOVERY_PREFIX: Final[str] = "shairport_mqtt_discovery_prefix"
+CONF_SHAIRPORT_MQTT_TOPIC: Final[str] = "shairport_mqtt_topic"
 
 # The cliairplay binary tags no log levels on its output, so a genuine problem is
 # recognised by keyword and promoted to a warning that stays visible at normal levels.

@@ -13,14 +13,12 @@ import pyatv
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueType
 from music_assistant_models.enums import (
     ConfigEntryType,
-    ImageType,
     MediaType,
     PlaybackState,
     PlayerFeature,
     PlayerType,
 )
 from music_assistant_models.errors import MediaNotFoundError, PlayerCommandFailed
-from music_assistant_models.media_items import MediaItemImage
 from music_assistant_models.player import PlayerSource
 from pyatv import exceptions as pyatv_exceptions
 from pyatv.conf import AppleTV as AppleTVConfig
@@ -59,7 +57,6 @@ from .constants import (
     CONF_MRP_PAIRING_PIN,
     CONF_NATIVE_MRP_CREDENTIALS,
     CONF_STORED_VOLUME,
-    EXTERNAL_ARTWORK_PATH_PREFIX,
     FALLBACK_VOLUME,
     PAIRING_PIN_FORMAT,
 )
@@ -704,26 +701,7 @@ class AirPlayControlPlayer(AirPlayPlayer):
     @property
     def _stream_active(self) -> bool:
         """Return whether Music Assistant is actively streaming to this device."""
-        active = bool((stream := getattr(self, "stream", None)) and stream.running)
-        if active:
-            self._stream_last_active = time.monotonic()
-        return active
-
-    @property
-    def _external_state_blocked(self) -> bool:
-        """
-        Return whether externally observed playback state must be ignored.
-
-        While Music Assistant streams to this device, the stream is the SOLE
-        authority on player state. The check extends a grace period past a
-        stream's end because a warm-to-cold fallback briefly tears the stream
-        down mid-playback: a Companion/MRP update slipping through that window
-        applies the device's view of our own dying session as an "external
-        source", freezing the UI on a stale snapshot.
-        """
-        if self._stream_active:
-            return True
-        return time.monotonic() - getattr(self, "_stream_last_active", 0.0) < 15.0
+        return bool((stream := getattr(self, "stream", None)) and stream.running)
 
     @property
     def _mrp_endpoint(self) -> tuple[AsyncServiceInfo, Protocol] | None:
@@ -1117,7 +1095,7 @@ class AirPlayControlPlayer(AirPlayPlayer):
 
     def _handle_playing_update(self, playing: Playing) -> None:
         """Apply external playback state received over the MRP tunnel."""
-        if self._external_state_blocked:
+        if self.external_state_blocked:
             return
         app = self._mrp_device.metadata.app if self._mrp_device else None
         playback_state = {
@@ -1185,10 +1163,6 @@ class AirPlayControlPlayer(AirPlayPlayer):
 
     def _ensure_source(self, source_id: str, source_name: str) -> None:
         """Add a passive source reported by MRP playback monitoring."""
-        # Track external ids so the stream can reclaim the device state from a
-        # leaked external snapshot (see AirPlayPlayer.set_state_from_stream).
-        if not hasattr(self, "_external_source_ids"):
-            self._external_source_ids: set[str] = set()
         self._external_source_ids.add(source_id)
         can_play_pause = bool(
             self._device_for_feature(FeatureName.Play)
@@ -1215,16 +1189,6 @@ class AirPlayControlPlayer(AirPlayPlayer):
                 can_next_previous=can_next_previous,
             )
         )
-
-    def _get_external_artwork_url(self, artwork_id: str) -> str:
-        """Return the image-proxy URL for external MRP artwork."""
-        image = MediaItemImage(
-            type=ImageType.THUMB,
-            path=f"{EXTERNAL_ARTWORK_PATH_PREFIX}/{self.player_id}/{artwork_id}",
-            provider=self.provider_id,
-            remotely_accessible=False,
-        )
-        return self.mass.metadata.get_image_url(image)
 
     def _handle_connection_closed(
         self,
@@ -1270,7 +1234,7 @@ class AirPlayControlPlayer(AirPlayPlayer):
 
     def _clear_external_state(self) -> None:
         """Drop the playback snapshot observed over a closed MRP connection."""
-        if self._external_state_blocked or self._attr_active_source is None:
+        if self.external_state_blocked or self._attr_active_source is None:
             return
         # Without a live connection the snapshot can no longer be updated, and the
         # last one is typically an app held at paused: leaving it in place keeps

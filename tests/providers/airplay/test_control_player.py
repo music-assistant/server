@@ -114,6 +114,8 @@ def _make_control_player(
     provider.mass.config.get_raw_player_config_value.side_effect = (
         lambda _player_id, _key, default=None: default
     )
+    # a bare mock would read as a Sendspin bridge streaming to the device
+    provider.bridge_manager.is_streaming.return_value = False
     # Real Companion services advertise the flags under the mixed-case key
     # "rpFl"; zeroconf preserves TXT key casing as sent on the wire.
     companion_info = (

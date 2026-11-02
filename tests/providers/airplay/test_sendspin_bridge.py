@@ -3285,6 +3285,28 @@ async def test_a_stop_never_reaches_a_player_without_a_bridge() -> None:
     assert _bridge_manager_for(bridge).stop_streaming("apother") is False
 
 
+# --- Whether a bridge holds the AirPlay receiver -------------------------------
+
+
+async def test_bridge_counts_as_streaming_while_its_start_is_pending() -> None:
+    """A pending stream start holds the receiver, and a finished one no longer does."""
+    bridge = _make_bridge(clock_now_us=SENDSPIN_EPOCH_US)
+    manager = _bridge_manager_for(bridge)
+    player_id = bridge.airplay_player.player_id
+    bridge._is_streaming = False
+    release = asyncio.Event()
+    start_task = asyncio.create_task(release.wait())
+    bridge._airplay_stream_start_task = cast("asyncio.Task[None]", start_task)
+
+    assert manager.is_streaming(player_id) is True
+
+    release.set()
+    await start_task
+
+    assert manager.is_streaming(player_id) is False
+    assert manager.is_streaming("ap000000000000") is False
+
+
 # --- A stop on the Sendspin side skips the warm grace (support#6195) -----------
 
 

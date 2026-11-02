@@ -12,6 +12,7 @@ aiohttp-fast-zlib==0.3.0
 aiohttp-socks==0.12.0
 aiojellyfin==0.14.1
 aiolibdatachannel @ git+https://github.com/music-assistant/aiolibdatachannel@feat/certpem-testdrive
+aiomqtt==2.5.1
 aiomusiccast==0.15.0
 aiosendspin[server]==10.2.1
 aioslimproto==3.3.0

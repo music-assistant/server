@@ -34,6 +34,7 @@ from music_assistant.providers.airplay.constants import (
     CONF_RAOP_CREDENTIALS,
     CONF_STORED_VOLUME,
     CONF_STREAMING_MODE,
+    EXTERNAL_STATE_GRACE_S,
     STREAMING_MODE_AP2_COMPAT,
     STREAMING_MODE_AP2_NTP,
     STREAMING_MODE_AUTO,
@@ -42,6 +43,7 @@ from music_assistant.providers.airplay.constants import (
 )
 from music_assistant.providers.airplay.player import AirPlayPlayer
 from music_assistant.providers.airplay.provider import AirPlayProvider
+from music_assistant.providers.airplay.stream import AirPlayStream
 from music_assistant.providers.airplay.stream_session import AirPlayStreamSession
 
 # _airplay._tcp features bitmask with the AirPlay 2 feature bits set (bit 38/48).
@@ -80,6 +82,8 @@ def airplay_player() -> AirPlayPlayer:
     provider = MagicMock()
     _stub_raw_config(provider)
     _stub_volume_scaling(provider)
+    # a bare mock would read as a Sendspin bridge streaming to the device
+    provider.bridge_manager.is_streaming.return_value = False
     return AirPlayPlayer(
         provider=provider,
         player_id="test_player",
@@ -2192,3 +2196,92 @@ def test_pin_pairing_keeps_its_own_setup_reason(airplay_player: AirPlayPlayer) -
 
     assert airplay_player.needs_setup is True
     assert airplay_player.setup_reason == "pairing_required"
+
+
+# --- Whether Music Assistant holds the receiver ---
+
+
+def _stream_state(running: bool, stopping: bool, cleanup_complete: bool) -> MagicMock:
+    """Build a stream mock in the given lifecycle state."""
+    return MagicMock(running=running, stopping=stopping, cleanup_complete=cleanup_complete)
+
+
+@pytest.mark.parametrize(
+    ("stream", "expected"),
+    [
+        (None, False),
+        (_stream_state(running=True, stopping=False, cleanup_complete=False), True),
+        (_stream_state(running=False, stopping=True, cleanup_complete=False), True),
+        (_stream_state(running=False, stopping=True, cleanup_complete=True), False),
+        # the process died on its own, without a stop
+        (_stream_state(running=False, stopping=False, cleanup_complete=False), False),
+    ],
+    ids=["no_stream", "running", "tearing_down", "torn_down", "died"],
+)
+def test_ma_stream_active_follows_the_stream(
+    airplay_player: AirPlayPlayer, stream: MagicMock | None, expected: bool
+) -> None:
+    """A stream counts as ours from its start until its teardown released the receiver."""
+    airplay_player.stream = stream
+
+    assert airplay_player.ma_stream_active is expected
+
+
+async def test_ma_stream_active_while_a_stream_spawns(airplay_player: AirPlayPlayer) -> None:
+    """A stream that is being spawned already holds the receiver."""
+    async with airplay_player.stream_spawn_lock:
+        assert airplay_player.ma_stream_active is True
+
+
+def test_ma_stream_active_while_the_bridge_streams(airplay_player: AirPlayPlayer) -> None:
+    """A Sendspin bridge feeding the receiver counts as our stream."""
+    cast("MagicMock", airplay_player.provider).bridge_manager.is_streaming.return_value = True
+
+    assert airplay_player.ma_stream_active is True
+
+
+def test_external_state_stays_blocked_for_the_grace_period(airplay_player: AirPlayPlayer) -> None:
+    """The device's own view of playback is ignored for a while after our stream ended."""
+    assert airplay_player.external_state_blocked is False
+
+    airplay_player.record_stream_end()
+
+    assert airplay_player.external_state_blocked is True
+    with patch("time.monotonic", return_value=time.monotonic() + EXTERNAL_STATE_GRACE_S):  # type: ignore[unreachable]
+        assert airplay_player.external_state_blocked is False
+
+
+async def test_stream_stop_keeps_the_receiver_ours_until_it_is_released() -> None:
+    """A stopping stream counts as ours, and its end opens the grace period."""
+    provider = MagicMock()
+    _stub_raw_config(provider)
+    provider.bridge_manager.is_streaming.return_value = False
+    airplay_player = AirPlayPlayer(
+        provider=provider,
+        player_id="apaabbccddeeff",
+        display_name="Test Player",
+        address="127.0.0.1",
+        manufacturer="Test Manufacturer",
+        model="Test Model",
+        raop_discovery_info=None,
+        airplay_discovery_info=None,
+    )
+    stream = AirPlayStream(airplay_player)
+    airplay_player.stream = stream
+    seen_during_teardown: list[bool] = []
+
+    async def close() -> None:
+        seen_during_teardown.append(airplay_player.ma_stream_active)
+
+    stream._cli_proc = MagicMock(
+        closed=False, write_eof=AsyncMock(), close=AsyncMock(side_effect=close)
+    )
+    with (
+        patch.object(stream, "_write_cli_command", AsyncMock(return_value=True)),
+        patch.object(stream.commands_pipe, "remove", AsyncMock()),
+    ):
+        await stream.stop()
+
+    assert seen_during_teardown == [True]
+    assert airplay_player.ma_stream_active is False
+    assert airplay_player.external_state_blocked is True

@@ -12,6 +12,8 @@ from music_assistant_models.enums import PlaybackState, PlayerFeature, PlayerTyp
 
 from music_assistant.models.player import DeviceInfo, Player
 from music_assistant.models.protocol_backed_player import ProtocolBackedPlayer
+from music_assistant.providers.airplay.constants import RECEIVER_SESSION_ACTIVE_BIT
+from music_assistant.providers.airplay.shairport_player import ShairportSyncPlayer
 from music_assistant.providers.universal_player.player import UniversalPlayer
 from music_assistant.providers.universal_player.provider import UniversalPlayerProvider
 
@@ -357,3 +359,56 @@ async def test_remove_player_unregisters_before_deleting_stale_protocol_configs(
     mass.players.unregister.assert_awaited_once_with("up_test", permanent=True)
     mass.players.delete_player_config.assert_called_once_with("airplay_1")
     assert [c[0] for c in calls.mock_calls] == ["unregister", "delete"]
+
+
+def _make_shairport_child(mass: MagicMock) -> ShairportSyncPlayer:
+    """Return a shairport-sync protocol child of up_test whose receiver reports a sender."""
+    provider = MagicMock()
+    provider.domain = "airplay"
+    provider.mass = mass
+    provider.logger = logging.getLogger("test.universal_player.airplay")
+    provider.shairport_mqtt = None
+    provider.bridge_manager.is_streaming.return_value = False
+    discovery_info = MagicMock()
+    discovery_info.properties = {b"flags": hex(RECEIVER_SESSION_ACTIVE_BIT).encode()}
+    child = ShairportSyncPlayer(
+        provider=provider,
+        player_id="apaabbccddeeff",
+        raop_discovery_info=None,
+        airplay_discovery_info=discovery_info,
+        address="192.168.1.20",
+        display_name="Kitchen",
+        manufacturer="AirPlay",
+        model="ShairportSync",
+    )
+    child.set_protocol_parent_id("up_test")
+    return child
+
+
+def test_airplay_external_session_shows_on_universal_player() -> None:
+    """Another device streaming to the AirPlay child shows as the universal player's source."""
+    mass = _make_mock_mass()
+    universal = _make_universal_player(mass, ["apaabbccddeeff"])
+    child = _make_shairport_child(mass)
+    _register_players(mass, universal, child)  # type: ignore[arg-type]
+
+    child.evaluate_session_flag()
+
+    assert universal.active_source == "airplay"
+    assert universal.playback_state == PlaybackState.PLAYING
+    assert [source.id for source in universal.source_list] == ["airplay"]
+
+
+def test_airplay_external_session_keeps_another_output_protocol() -> None:
+    """Playback through another protocol of the device keeps its output protocol."""
+    mass = _make_mock_mass()
+    universal = _make_universal_player(mass, ["apaabbccddeeff", "cc_1"])
+    child = _make_shairport_child(mass)
+    chromecast = _make_protocol_player("cc_1", "chromecast")
+    _register_players(mass, universal, child, chromecast)  # type: ignore[arg-type]
+    universal.set_active_output_protocol("cc_1")
+
+    child.evaluate_session_flag()
+
+    assert universal.active_output_protocol == "cc_1"
+    assert universal.active_source is None

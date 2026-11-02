@@ -121,6 +121,7 @@ from music_assistant.models.core_controller import CoreController
 from music_assistant.models.player import Player, PlayerMedia, PlayerState
 from music_assistant.models.player_provider import PlayerProvider
 from music_assistant.models.plugin import PluginProvider, SourceControlValue
+from music_assistant.models.protocol_backed_player import plays_external_source
 
 from .announcements import AnnouncementsMixin
 from .audio_sources import AudioSourceMixin, AudioSourceSession
@@ -2134,8 +2135,12 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
                     removed_player.refresh_state()
 
         # detect when active_source changes to
-        # something external while we have a grouped protocol active
-        if ATTR_ACTIVE_SOURCE in changed_values:
+        # something external while we have a grouped protocol active.
+        # a protocol player reports its parent's source, so an external source taking
+        # it over only shows as a change of its playback state
+        if ATTR_ACTIVE_SOURCE in changed_values or (
+            player.state.type == PlayerType.PROTOCOL and "playback_state" in changed_values
+        ):
             task_id = f"external_source_takeover_{player_id}"
             self.mass.call_later(
                 5,
@@ -3547,8 +3552,8 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
 
         :param player: The player whose active_source changed.
         """
-        # Only relevant for non-protocol players
         if player.type == PlayerType.PROTOCOL:
+            self._release_output_protocol_taken_over(player)
             return
 
         # Not a takeover if the player is not actively playing
@@ -3598,6 +3603,32 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
 
         # Ungroup the protocol player (async task)
         self.mass.create_task(protocol_player.ungroup())
+
+    def _release_output_protocol_taken_over(self, protocol_player: Player) -> None:
+        """
+        Clear the parent's output protocol once an external source took its protocol player.
+
+        A queue that ends by itself sends no stop, so the parent keeps pointing at the
+        protocol player. Music Assistant no longer renders through it once it plays an
+        external source (another device streaming over AirPlay, a Cast app), and while the
+        parent still points at it, the parent cannot show that source.
+
+        :param protocol_player: The protocol player whose active_source changed.
+        """
+        if not (parent_id := protocol_player.protocol_parent_id):
+            return
+        parent = self.get_player(parent_id)
+        if parent is None or parent.active_output_protocol != protocol_player.player_id:
+            return
+        if not plays_external_source(protocol_player):
+            return
+        self.logger.info(
+            "External source '%s' took over %s on %s - clearing its active output protocol",
+            protocol_player.active_source,
+            protocol_player.provider.domain,
+            parent.display_name,
+        )
+        parent.set_active_output_protocol(None)
 
     def _is_ma_managed_source(self, player: Player, source: str | None) -> bool:
         """

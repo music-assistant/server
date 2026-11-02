@@ -4,14 +4,15 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import binascii
 import os
 import re
-import struct
 import time
 from contextlib import suppress
 from typing import TYPE_CHECKING, Any
 
 from music_assistant.constants import VERBOSE_LOG_LEVEL
+from music_assistant.helpers.shairport_metadata import ShairportMetadataDecoder
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -38,9 +39,8 @@ class MetadataReader:
         self.logger = logger
         self.on_metadata = on_metadata
         self._reader_task: asyncio.Task[None] | None = None
-        self._background_tasks: set[asyncio.Task[None]] = set()
         self._stop = False
-        self._current_metadata: dict[str, Any] = {}
+        self._decoder = ShairportMetadataDecoder(self._on_decoder_update, logger)
         self._fd: int | None = None
         self._buffer = ""
         self.cover_art_bytes: bytes | None = None
@@ -195,222 +195,54 @@ class MetadataReader:
 
     def _parse_xml_item(self, item_xml: str) -> None:
         """
-        Parse a single XML metadata item.
+        Parse a single XML metadata item and pass it to the decoder.
 
         :param item_xml: XML string containing a metadata item.
         """
-        try:
-            # Extract type (hex format)
-            type_match = re.search(r"<type>([0-9a-fA-F]{8})</type>", item_xml)
-            code_match = re.search(r"<code>([0-9a-fA-F]{8})</code>", item_xml)
-            length_match = re.search(r"<length>(\d+)</length>", item_xml)
+        type_match = re.search(r"<type>([0-9a-fA-F]{8})</type>", item_xml)
+        code_match = re.search(r"<code>([0-9a-fA-F]{8})</code>", item_xml)
+        length_match = re.search(r"<length>(\d+)</length>", item_xml)
+        if not type_match or not code_match or not length_match:
+            return
 
-            if not type_match or not code_match or not length_match:
+        # Type and code are four ASCII characters, sent as hex
+        item_type = bytes.fromhex(type_match.group(1)).decode("ascii", errors="ignore")
+        code = bytes.fromhex(code_match.group(1)).decode("ascii", errors="ignore")
+
+        data = b""
+        if int(length_match.group(1)) > 0 and (
+            data_match := re.search(r"<data encoding=\"base64\">([^<]+)</data>", item_xml)
+        ):
+            try:
+                data = base64.b64decode(data_match.group(1).strip())
+            except binascii.Error as err:
+                self.logger.debug("Error decoding base64 data of %s/%s: %s", item_type, code, err)
                 return
 
-            # Convert hex type and code to ASCII strings
-            type_hex = int(type_match.group(1), 16)
-            code_hex = int(code_match.group(1), 16)
-            length = int(length_match.group(1))
-
-            # Convert hex to 4-character ASCII codes
-            type_str = type_hex.to_bytes(4, "big").decode("ascii", errors="ignore")
-            code_str = code_hex.to_bytes(4, "big").decode("ascii", errors="ignore")
-
-            # Extract data if present
-            data: str | bytes | None = None
-            if length > 0:
-                data_match = re.search(r"<data encoding=\"base64\">([^<]+)</data>", item_xml)
-                if data_match:
-                    try:
-                        # Decode base64 data
-                        data_b64 = data_match.group(1).strip()
-                        decoded_data = base64.b64decode(data_b64)
-
-                        # For binary fields (PICT, astm), keep as raw bytes
-                        # For text fields, decode to UTF-8
-                        if code_str in ("PICT", "astm"):
-                            # Cover art and duration: keep as raw bytes
-                            data = decoded_data
-                        else:
-                            # Text metadata: decode to UTF-8
-                            data = decoded_data.decode("utf-8", errors="ignore")
-                    except Exception as err:
-                        self.logger.debug("Error decoding base64 data: %s", err)
-
-            # Process the metadata item
-            task = asyncio.create_task(self._process_metadata_item(type_str, code_str, data))
-            self._background_tasks.add(task)
-
-            def _on_task_done(t: asyncio.Task[None]) -> None:
-                self._background_tasks.discard(t)
-                if not t.cancelled() and (exc := t.exception()):
-                    self.logger.debug("Background task failed", exc_info=exc)
-
-            task.add_done_callback(_on_task_done)
-
-        except Exception as err:
-            self.logger.debug("Error parsing XML item: %s", err)
-
-    async def _process_metadata_item(
-        self, item_type: str, code: str, data: str | bytes | None
-    ) -> None:
-        """
-        Process a metadata item and update current metadata.
-
-        :param item_type: Type of metadata (e.g., 'core' or 'ssnc').
-        :param code: Metadata code identifier.
-        :param data: Optional metadata data (string, bytes, or None).
-        """
-        # Don't log binary data (like cover art)
-        if code == "PICT":
+        if code in ("PICT", "copl"):
             self.logger.log(
                 VERBOSE_LOG_LEVEL,
-                "Metadata: type=%s, code=%s, data=<binary image data>",
+                "Metadata: type=%s, code=%s, data=<%d bytes>",
                 item_type,
                 code,
+                len(data),
             )
         else:
             self.logger.log(
                 VERBOSE_LOG_LEVEL, "Metadata: type=%s, code=%s, data=%s", item_type, code, data
             )
+        self._decoder.process_item(item_type, code, data)
 
-        # Handle metadata start/end markers
-        if item_type == "ssnc" and code == "mdst":
-            self._current_metadata = {}
-            # Note: We don't clear cover_art_bytes here because:
-            # 1. Cover art may arrive before mdst (at playback start)
-            # 2. New cover art will overwrite old bytes when it arrives
-            # 3. Cache-busting timestamp ensures browser gets correct image
-            if self.on_metadata:
-                self.on_metadata({"metadata_start": True})
-            return
-
-        if item_type == "ssnc" and code == "mden":
-            if self.on_metadata and self._current_metadata:
-                self.on_metadata(dict(self._current_metadata))
-            return
-
-        # Parse core metadata (from iTunes/iOS)
-        if item_type == "core" and data is not None:
-            self._parse_core_metadata(code, data)
-
-        # Parse shairport-sync metadata
-        if item_type == "ssnc" and data is not None:
-            self._parse_ssnc_metadata(code, data)
-
-    def _parse_core_metadata(self, code: str, data: str | bytes) -> None:
+    def _on_decoder_update(self, update: dict[str, Any]) -> None:
         """
-        Parse core metadata from iTunes/iOS.
+        Forward a decoded metadata update, keeping cover art bytes for resolve_image.
 
-        :param code: Metadata code identifier.
-        :param data: Metadata data.
+        :param update: Metadata update from the decoder.
         """
-        # Text metadata fields - expect string data
-        if isinstance(data, str):
-            if code == "asar":  # Artist
-                self._current_metadata["artist"] = data
-            elif code == "asal":  # Album
-                self._current_metadata["album"] = data
-            elif code == "minm":  # Title
-                self._current_metadata["title"] = data
-
-        # Binary metadata fields - expect bytes data
-        elif isinstance(data, bytes):
-            if code == "PICT":  # Cover art (raw bytes)
-                # Store raw bytes for later retrieval via resolve_image
-                self.cover_art_bytes = data
-                self.logger.debug("Stored cover art: %d bytes", len(data))
-                # Signal that cover art is available with timestamp for cache-busting
-                timestamp = str(int(time.time() * 1000))
-                self._current_metadata["cover_art_timestamp"] = timestamp
-                # Send cover art update immediately (cover art often arrives in separate block)
-                if self.on_metadata:
-                    self.on_metadata({"cover_art_timestamp": timestamp})
-            elif code == "astm":  # Track duration in milliseconds (stored as 32-bit big-endian int)
-                try:
-                    # Duration is sent as 4-byte big-endian integer
-                    if len(data) >= 4:
-                        duration_ms = struct.unpack(">I", data[:4])[0]
-                        self._current_metadata["duration"] = duration_ms // 1000
-                except (ValueError, TypeError, struct.error) as err:
-                    self.logger.debug("Error parsing duration: %s", err)
-
-    def _parse_ssnc_metadata(self, code: str, data: str | bytes) -> None:
-        """
-        Parse shairport-sync metadata.
-
-        :param code: Metadata code identifier.
-        :param data: Metadata data.
-        """
-        # Handle binary data (cover art can come as ssnc type)
-        if isinstance(data, bytes):
-            if code == "PICT":  # Cover art (raw bytes)
-                # Store raw bytes for later retrieval via resolve_image
-                self.cover_art_bytes = data
-                self.logger.debug("Stored cover art: %d bytes", len(data))
-                # Signal that cover art is available with timestamp for cache-busting
-                timestamp = str(int(time.time() * 1000))
-                self._current_metadata["cover_art_timestamp"] = timestamp
-                # Send cover art update immediately (cover art often arrives in separate block)
-                if self.on_metadata:
-                    self.on_metadata({"cover_art_timestamp": timestamp})
-            return
-
-        # Process string data for ssnc metadata (volume/progress are text-based)
-        if code == "pvol":  # Volume
-            self._parse_volume(data)
-            # Send volume updates immediately (not batched with mden)
-            if self.on_metadata and "volume" in self._current_metadata:
-                self.on_metadata({"volume": self._current_metadata["volume"]})
-        elif code == "prgr":  # Progress
-            self._parse_progress(data)
-            # Send progress updates immediately (not batched with mden)
-            if self.on_metadata and "elapsed_time" in self._current_metadata:
-                self.on_metadata({"elapsed_time": self._current_metadata["elapsed_time"]})
-        elif code == "paus":  # Paused
-            self._current_metadata["paused"] = True
-        elif code == "prsm":  # Playing/resumed
-            self._current_metadata["paused"] = False
-
-    def _parse_volume(self, data: str) -> None:
-        """
-        Parse volume metadata from shairport-sync.
-
-        Format: airplay_volume,min_volume,max_volume,mute
-        AirPlay volume is in dB, typically ranging from -30.0 (silent) to 0.0 (max).
-        Special value -144.0 means muted.
-
-        :param data: Volume data string (e.g., "-21.88,0.00,0.00,0.00").
-        """
-        try:
-            parts = data.split(",")
-            if len(parts) >= 1:
-                airplay_volume = float(parts[0])
-                # -144.0 means muted
-                if airplay_volume <= -144.0:
-                    volume_percent = 0
-                else:
-                    # Convert dB to percentage: -30dB = 0%, 0dB = 100%
-                    volume_percent = int(((airplay_volume + 30.0) / 30.0) * 100)
-                    volume_percent = max(0, min(100, volume_percent))
-                self._current_metadata["volume"] = volume_percent
-        except (ValueError, IndexError) as err:
-            self.logger.debug("Error parsing volume: %s", err)
-
-    def _parse_progress(self, data: str) -> None:
-        """
-        Parse progress metadata.
-
-        :param data: Progress data string.
-        """
-        try:
-            parts = data.split("/")
-            if len(parts) >= 3:
-                start_rtp = int(parts[0])
-                current_rtp = int(parts[1])
-                elapsed_frames = current_rtp - start_rtp
-                elapsed_seconds = elapsed_frames / 44100
-                self._current_metadata["elapsed_time"] = int(elapsed_seconds)
-        except (ValueError, IndexError) as err:
-            self.logger.debug("Error parsing progress: %s", err)
+        if (artwork := update.pop("artwork", None)) is not None:
+            self.cover_art_bytes = artwork
+            self.logger.debug("Stored cover art: %d bytes", len(artwork))
+            # A new timestamp changes the cover art URL, so clients fetch the new image
+            update["cover_art_timestamp"] = str(int(time.time() * 1000))
+        if update and self.on_metadata:
+            self.on_metadata(update)

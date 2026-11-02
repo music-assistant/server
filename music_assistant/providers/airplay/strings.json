@@ -57,6 +57,30 @@
     "verbose_ptp_logging": {
       "label": "Verbose PTP daemon logging",
       "description": "Log the shared PTP clock daemon's per-packet timing trace (Announce/Sync/Follow_Up) when verbose logging is active. Only useful when diagnosing multi-room clock sync issues; it floods the log at ~10 lines per second."
+    },
+    "shairport_mqtt_host": {
+      "label": "MQTT broker for shairport-sync receivers",
+      "description": "The MQTT broker your shairport-sync receivers publish to. With a broker set, Music Assistant shows what other devices, such as an iPhone, play on those receivers, and can control that playback. Leave it empty to only show that another device is playing."
+    },
+    "shairport_mqtt_port": {
+      "label": "MQTT broker port",
+      "description": "The port of the MQTT broker."
+    },
+    "shairport_mqtt_username": {
+      "label": "MQTT username",
+      "description": "The username for the MQTT broker, if it needs one."
+    },
+    "shairport_mqtt_password": {
+      "label": "MQTT password",
+      "description": "The password for the MQTT broker, if it needs one."
+    },
+    "shairport_mqtt_discovery_prefix": {
+      "label": "MQTT autodiscovery prefix",
+      "description": "Music Assistant finds the topic of each shairport-sync receiver from the autodiscovery messages the receiver publishes. This must match mqtt.autodiscovery_prefix in the shairport-sync configuration."
+    },
+    "shairport_mqtt_topic": {
+      "label": "shairport-sync MQTT topic",
+      "description": "The topic this receiver publishes to on the MQTT broker set in the AirPlay provider settings. Leave it empty to take it from the receiver's autodiscovery messages. It must match mqtt.topic in the receiver's shairport-sync configuration, which needs these settings:\n\nmqtt = {\n  enabled = \"yes\";\n  hostname = \"<broker>\";\n  topic = \"<a topic unique to this receiver>\";\n  publish_raw = \"yes\";\n  publish_parsed = \"yes\";\n  enable_autodiscovery = \"yes\";\n  enable_remote = \"yes\";\n};\nmetadata = {\n  include_cover_art = \"yes\";\n};\n\nAdd the broker port, username and password too if your broker needs them."
     }
   },
   "setup_flow": {
