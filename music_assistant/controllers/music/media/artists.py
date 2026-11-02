@@ -677,8 +677,8 @@ class ArtistsController(MediaControllerBase[Artist]):
         :param search: Apply the discography search.
         :param album_types: Only count the releases MusicBrainz gives one of these types.
         """
-        # a search or type filter runs over the assembled listing, otherwise count release groups
-        if search or album_types:
+        # a search runs over the assembled listing, otherwise count release groups
+        if search:
             return len(
                 await self.discography(
                     item_id,
@@ -691,7 +691,15 @@ class ArtistsController(MediaControllerBase[Artist]):
         data = await self._get_artist_discography_data(
             item_id, provider_instance_id_or_domain, include_library_albums=False
         )
-        return len(data.release_groups) if data else 0
+        if not data:
+            return 0
+        if not album_types:
+            return len(data.release_groups)
+        return sum(
+            1
+            for group in data.release_groups
+            if data.musicbrainz.album_type_from_release_group(group) in album_types
+        )
 
     async def top_tracks(
         self,

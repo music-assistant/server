@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 from contextlib import contextmanager
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
@@ -537,7 +537,7 @@ async def test_discography_filters_a_library_album_on_its_musicbrainz_type() -> 
 
 
 async def test_discography_count_honors_the_album_type_filter() -> None:
-    """The count covers the filtered listing, not every release group."""
+    """The count covers the release groups of the given types, without the library albums."""
     groups = [
         _release_group(RG_IN_RAINBOWS, "In Rainbows"),
         _release_group(RG_OK_COMPUTER, "OK Computer"),
@@ -548,6 +548,7 @@ async def test_discography_count_honors_the_album_type_filter() -> None:
             LIBRARY_ARTIST_ID, "library", album_types=[AlbumType.SINGLE]
         )
         assert count == 1
+        cast("AsyncMock", harness.ctrl.albums).assert_not_awaited()
 
 
 async def test_discography_keeps_musicbrainz_reference_if_provider_unloads_during_lookup() -> None:
