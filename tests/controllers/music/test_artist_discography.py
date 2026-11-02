@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 from contextlib import contextmanager
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
@@ -495,6 +495,60 @@ async def test_discography_count_matches_the_searchable_release_groups() -> None
         assert (
             await harness.ctrl.discography_count(LIBRARY_ARTIST_ID, "library", search="karma") == 1
         )
+
+
+async def test_discography_filters_by_album_type() -> None:
+    """Only the requested types are listed, library and MusicBrainz albums alike."""
+    library_album = _library_album("7", "OK Computer", album_type=AlbumType.ALBUM)
+    groups = [
+        _release_group(RG_OK_COMPUTER, "OK Computer"),
+        _release_group(RG_IN_RAINBOWS, "In Rainbows"),
+        _release_group(RG_KARMA_POLICE, "Karma Police", primary_type="Single"),
+        _release_group(RG_BEST_OF, "The Best Of", secondary_types=["Compilation"]),
+    ]
+    with _harness(_artist(), release_groups=groups, artist_albums=[library_album]) as harness:
+        types = [AlbumType.SINGLE, AlbumType.COMPILATION]
+        listed = await harness.ctrl.discography(LIBRARY_ARTIST_ID, "library", album_types=types)
+        assert {album.name for album in listed} == {"Karma Police", "The Best Of"}
+        albums_only = await harness.ctrl.discography(
+            LIBRARY_ARTIST_ID, "library", album_types=[AlbumType.ALBUM]
+        )
+        assert library_album in albums_only
+        assert {album.name for album in albums_only} == {"OK Computer", "In Rainbows"}
+        paged = await harness.ctrl.discography(
+            LIBRARY_ARTIST_ID, "library", album_types=types, search="karma", limit=1
+        )
+        assert [album.name for album in paged] == ["Karma Police"]
+
+
+async def test_discography_filters_a_library_album_on_its_musicbrainz_type() -> None:
+    """A library album in a release group's place is filtered on the group's type."""
+    library_album = _library_album("7", "OK Computer", album_type=AlbumType.UNKNOWN)
+    groups = [_release_group(RG_OK_COMPUTER, "OK Computer")]
+    with _harness(_artist(), release_groups=groups, artist_albums=[library_album]) as harness:
+        albums = await harness.ctrl.discography(
+            LIBRARY_ARTIST_ID, "library", album_types=[AlbumType.ALBUM]
+        )
+        assert albums == [library_album]
+        singles = await harness.ctrl.discography(
+            LIBRARY_ARTIST_ID, "library", album_types=[AlbumType.SINGLE]
+        )
+        assert singles == []
+
+
+async def test_discography_count_honors_the_album_type_filter() -> None:
+    """The count covers the release groups of the given types, without the library albums."""
+    groups = [
+        _release_group(RG_IN_RAINBOWS, "In Rainbows"),
+        _release_group(RG_OK_COMPUTER, "OK Computer"),
+        _release_group(RG_KARMA_POLICE, "Karma Police", primary_type="Single"),
+    ]
+    with _harness(_artist(), release_groups=groups) as harness:
+        count = await harness.ctrl.discography_count(
+            LIBRARY_ARTIST_ID, "library", album_types=[AlbumType.SINGLE]
+        )
+        assert count == 1
+        cast("AsyncMock", harness.ctrl.albums).assert_not_awaited()
 
 
 async def test_discography_keeps_musicbrainz_reference_if_provider_unloads_during_lookup() -> None:

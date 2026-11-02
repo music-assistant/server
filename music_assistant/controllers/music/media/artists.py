@@ -588,6 +588,7 @@ class ArtistsController(MediaControllerBase[Artist]):
         sort_direction: SortDirection | None = None,
         limit: int | None = 500,
         offset: int = 0,
+        album_types: list[AlbumType] | None = None,
         random_seed: int | None = None,
     ) -> list[Album]:
         """
@@ -605,6 +606,7 @@ class ArtistsController(MediaControllerBase[Artist]):
         :param limit: Maximum number of albums to return; 0 returns them all.
         :param offset: Number of albums to skip.
         :param random_seed: Keep random ordering stable across pages with the same seed.
+        :param album_types: Only list the releases MusicBrainz gives one of these types.
         :raises InvalidDataError: When the artist is not a library artist, or the sort field
             is not offered for a discography.
         """
@@ -638,16 +640,16 @@ class ArtistsController(MediaControllerBase[Artist]):
         cover_provider = "coverartarchive" if self.mass.get_provider("coverartarchive") else None
         discography: list[Album] = []
         for group in release_groups:
+            # filtered on the MusicBrainz type, also where a library album takes the group's
+            # place: its own type comes from a music provider and may differ or be unknown
+            album_type = musicbrainz.album_type_from_release_group(group)
+            if album_types and album_type not in album_types:
+                continue
             if library_album := albums_by_release_group.get(group.id):
                 discography.append(library_album)
                 continue
             discography.append(
-                _album_from_release_group(
-                    group,
-                    artist_mapping,
-                    musicbrainz.album_type_from_release_group(group),
-                    cover_provider,
-                )
+                _album_from_release_group(group, artist_mapping, album_type, cover_provider)
             )
         return apply_listing(
             discography,
@@ -665,6 +667,7 @@ class ArtistsController(MediaControllerBase[Artist]):
         item_id: str,
         provider_instance_id_or_domain: str,
         search: str | None = None,
+        album_types: list[AlbumType] | None = None,
     ) -> int:
         """
         Return the number of releases in a library artist's discography.
@@ -672,8 +675,9 @@ class ArtistsController(MediaControllerBase[Artist]):
         :param item_id: The library artist ID.
         :param provider_instance_id_or_domain: Must be ``library``.
         :param search: Apply the discography search.
+        :param album_types: Only count the releases MusicBrainz gives one of these types.
         """
-        # the search runs over the assembled listing; without one only the release groups count
+        # a search runs over the assembled listing, otherwise count release groups
         if search:
             return len(
                 await self.discography(
@@ -681,12 +685,21 @@ class ArtistsController(MediaControllerBase[Artist]):
                     provider_instance_id_or_domain,
                     search=search,
                     limit=0,
+                    album_types=album_types,
                 )
             )
         data = await self._get_artist_discography_data(
             item_id, provider_instance_id_or_domain, include_library_albums=False
         )
-        return len(data.release_groups) if data else 0
+        if not data:
+            return 0
+        if not album_types:
+            return len(data.release_groups)
+        return sum(
+            1
+            for group in data.release_groups
+            if data.musicbrainz.album_type_from_release_group(group) in album_types
+        )
 
     async def top_tracks(
         self,
