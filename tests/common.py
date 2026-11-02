@@ -337,6 +337,7 @@ def bare_player_controller() -> PlayerController:
     players._player_command_locks = {}
     players._players = {}
     players._task_held_locks = weakref.WeakKeyDictionary()
+    players._playback_locks_turn = asyncio.Lock()
     players.logger = MagicMock()
     return players
 
