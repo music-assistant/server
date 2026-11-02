@@ -919,7 +919,7 @@ class AIArtwork:
             context = await self._playlist_context(playlist)
             concept = await self._concept(playlist, context)
             cover = await self._render(playlist, engine, self._look(), context, concept)
-            await asyncio.to_thread(_write_file, self._images_dir, file_name, cover)
+            await asyncio.to_thread(write_file, self._images_dir, file_name, cover)
         except Exception as err:
             # an unreachable or misbehaving engine must not stop the worker
             self.logger.warning(
@@ -1569,6 +1569,19 @@ class LimitReachedError(Exception):
         self.retry_in = retry_in
 
 
+def write_file(directory: str, file_name: str, data: bytes) -> None:
+    """Write a file in full or not at all, so a failed write never leaves a partial cover."""
+    fd, tmp_name = tempfile.mkstemp(dir=directory, suffix=".tmp")
+    tmp_path = Path(tmp_name)
+    try:
+        with os.fdopen(fd, "wb") as file:
+            file.write(data)
+        tmp_path.replace(Path(directory, file_name))
+    except BaseException:
+        tmp_path.unlink(missing_ok=True)
+        raise
+
+
 def _is_smart_playlist(playlist: Playlist) -> bool:
     """Return whether the playlist comes from the smart playlist provider."""
     return any(m.provider_domain == SMART_PLAYLIST_DOMAIN for m in playlist.provider_mappings)
@@ -1676,19 +1689,6 @@ def _overlay_layout(look: CoverLook) -> TitleLayout | None:
     if not look.title_overlay:
         return None
     return CUSTOM_LAYOUT if look.style == Style.CUSTOM else STYLE_PRESETS[look.style].layout
-
-
-def _write_file(directory: str, file_name: str, data: bytes) -> None:
-    """Write a file in full or not at all, so a failed write never leaves a partial cover."""
-    fd, tmp_name = tempfile.mkstemp(dir=directory, suffix=".tmp")
-    tmp_path = Path(tmp_name)
-    try:
-        with os.fdopen(fd, "wb") as file:
-            file.write(data)
-        tmp_path.replace(Path(directory, file_name))
-    except BaseException:
-        tmp_path.unlink(missing_ok=True)
-        raise
 
 
 def _render_cover(image: bytes, layout: TitleLayout | None, title: str) -> bytes:

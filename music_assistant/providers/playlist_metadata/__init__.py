@@ -29,7 +29,6 @@ import logging
 import math
 import os
 import random
-import tempfile
 from collections import Counter
 from io import BytesIO
 from pathlib import Path
@@ -57,7 +56,7 @@ from music_assistant.mass import MusicAssistant
 from music_assistant.models import ProviderInstanceType
 from music_assistant.models.metadata_provider import MetadataProvider
 
-from .ai import PREVIEW_KEYS, AIArtwork
+from .ai import PREVIEW_KEYS, AIArtwork, write_file
 from .ai_constants import (
     CONF_ACTION_PREVIEW,
     CONF_ACTION_REGENERATE,
@@ -723,13 +722,7 @@ class PlaylistMetadataProvider(MetadataProvider):
         filename = f"{playlist.item_id}_{int(time())}_{suffix}.jpg"
         file_path = os.path.join(self._images_dir, filename)
 
-        # mkstemp prevents collisions if multiple calls regenerate the same playlist concurrently
-        tmp_fd, tmp_path = await asyncio.to_thread(
-            tempfile.mkstemp, dir=self._images_dir, suffix=".tmp"
-        )
-        await asyncio.to_thread(os.close, tmp_fd)
-        await asyncio.to_thread(_write_bytes, tmp_path, img_data)
-        await asyncio.to_thread(os.replace, tmp_path, file_path)
+        await asyncio.to_thread(write_file, self._images_dir, filename, img_data)
 
         return MediaItemImage(
             type=image_type,
@@ -1265,12 +1258,6 @@ async def _fetch(mass: MusicAssistant, image: MediaItemImage) -> bytes | None:
             "Failed to fetch image path=%s provider=%s: %s", image.path, image.provider, err
         )
         return None
-
-
-def _write_bytes(path: str, data: bytes) -> None:
-    """Write bytes to a file (used in thread pool)."""
-    with open(path, "wb") as fh:
-        fh.write(data)
 
 
 def _read_bytes(path: str) -> bytes:
