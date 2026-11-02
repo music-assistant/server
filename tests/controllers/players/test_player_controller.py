@@ -1070,12 +1070,16 @@ class TestSleepTimer:
             return 123.0
 
         set_target.side_effect = _set_target
+        controller.set_sleep_timer("player_1", 30)
+        mock_mass.call_later.reset_mock()
         expires_at = controller.set_sleep_timer("player_1", mode=SleepTimerMode.END_OF_CHAPTER)
 
         assert expires_at == 123.0
         set_target.assert_called_with("player_1", SleepTimerMode.END_OF_CHAPTER)
         assert player.state.sleep_timer_mode == SleepTimerMode.END_OF_CHAPTER
         assert player.state.sleep_timer_expires_at == 123.0
+        # the queue's timer replaces the duration timer, which stops nothing any more
+        mock_mass.cancel_timer.assert_called_with("player_sleep_timer_player_1")
         # the queue stops itself, no stop is scheduled here
         assert not any(
             c.kwargs.get("task_id") == "player_sleep_timer_player_1"
@@ -1086,6 +1090,13 @@ class TestSleepTimer:
             object_id="player_1",
             data=123.0,
         )
+
+        # a duration timer replaces the queue's, the queue advances on its own again
+        mock_mass.player_queues.drop_sleep_timer_target.reset_mock()
+        controller.set_sleep_timer("player_1", 30)
+        mock_mass.player_queues.drop_sleep_timer_target.assert_called_once_with("player_1")
+        replaced_state = player.state
+        assert replaced_state.sleep_timer_mode == SleepTimerMode.DURATION
 
         controller.clear_sleep_timer("player_1")
 

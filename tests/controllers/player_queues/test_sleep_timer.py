@@ -223,6 +223,21 @@ def test_nothing_follows_the_sleep_timer_target_on_its_own(
     assert ctrl._get_next_index("q1", cur_index, is_skip=is_skip) == expected
 
 
+def test_dropping_the_sleep_timer_target_lets_the_queue_advance_again() -> None:
+    """A cancelled or replaced timer gives the queue its next item back, also on the player."""
+    ctrl, queue, _ = _controller()
+    ctrl.update_next_item_on_player = Mock()  # type: ignore[method-assign]
+    ctrl.set_sleep_timer_target("q1", SleepTimerMode.END_OF_ITEM)
+
+    ctrl.drop_sleep_timer_target("q1")
+
+    assert ctrl._queue_data["q1"].sleep_timer_target is None
+    assert ctrl._get_next_index("q1", 0) == 1
+    assert queue.next_item is not None
+    assert queue.next_item.queue_item_id == "item_2"
+    ctrl.update_next_item_on_player.assert_called_once_with("q1")
+
+
 def test_queue_stops_once_it_reaches_the_sleep_timer_position() -> None:
     """Position reports re-estimate the stop until one reaches it, then the queue stops."""
     ctrl, queue, mass = _controller()
