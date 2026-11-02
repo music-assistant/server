@@ -27,6 +27,10 @@
     "models": {
       "label": "Models",
       "description": "Pick the models you want to use. Each one becomes a separate choice for the AI features, so you can use a fast model for simple tasks and a smarter one where it matters."
+    },
+    "image_models": {
+      "label": "Image models",
+      "description": "Pick the models that can generate images, for example google/gemini-2.5-flash-image on OpenRouter or gpt-image-1 on OpenAI. Each one becomes a separate choice for features that create artwork."
     }
   },
   "setup_flow": {

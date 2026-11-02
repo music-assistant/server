@@ -9,7 +9,7 @@ import time
 from collections.abc import Awaitable, Callable
 from contextlib import suppress
 from datetime import UTC
-from typing import TYPE_CHECKING, Any, TypeVar, cast
+from typing import TYPE_CHECKING, Any, NamedTuple, TypeVar, cast
 
 from aiohttp import client_exceptions
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption
@@ -36,12 +36,16 @@ from music_assistant_models.media_items import (
     Album,
     Artist,
     AudioFormat,
+    BrowseFolder,
+    ItemMapping,
     MediaItemImage,
     MediaItemType,
     Playlist,
     ProviderMapping,
+    RecommendationFolder,
     SearchResults,
     Track,
+    UniqueList,
 )
 from music_assistant_models.streamdetails import StreamDetails
 
@@ -103,6 +107,7 @@ SUPPORTED_FEATURES = {
     ProviderFeature.ARTIST_TOPTRACKS,
     ProviderFeature.TRACK_BY_EXTERNAL_ID,
     ProviderFeature.ALBUM_BY_EXTERNAL_ID,
+    ProviderFeature.RECOMMENDATIONS,
 }
 
 VARIOUS_ARTISTS_ID = "145383"
@@ -110,6 +115,53 @@ VARIOUS_ARTISTS_ID = "145383"
 PARSED_ITEM_CACHE_CHECKSUM = "instance_id_provider_v2"
 
 CONF_QUALITY = "quality"
+
+
+class QobuzRecommendationRow(NamedTuple):
+    """A Discover row backed by a Qobuz album list."""
+
+    # album/getFeatured list type, None for rows backed by another endpoint
+    featured_type: str | None
+    name: str
+    icon: str
+    translation_key: str | None
+    enabled_by_default: bool = False
+
+
+# Discover row with the latest releases of the user's favorite artists
+FAVORITE_ARTIST_RELEASES_ROW = "favorite_artist_releases"
+# Discover rows, keyed on their (stable) row id
+RECOMMENDATION_ROWS = {
+    FAVORITE_ARTIST_RELEASES_ROW: QobuzRecommendationRow(
+        None,
+        "New From Your Artists",
+        "mdi-account-music",
+        "favorite_artist_releases",
+        enabled_by_default=True,
+    ),
+    "new_releases": QobuzRecommendationRow(
+        "new-releases", "New Releases", "mdi-new-box", "new_releases", enabled_by_default=True
+    ),
+    "best_sellers": QobuzRecommendationRow(
+        "best-sellers", "Best Sellers", "mdi-chart-line", "best_sellers"
+    ),
+    "most_streamed": QobuzRecommendationRow(
+        "most-streamed", "Most Streamed", "mdi-trending-up", "most_streamed"
+    ),
+    "press_awards": QobuzRecommendationRow(
+        "press-awards", "Press Awards", "mdi-trophy", "press_awards"
+    ),
+    "editor_picks": QobuzRecommendationRow(
+        "editor-picks", "Editor's Picks", "mdi-star", "editor_picks", enabled_by_default=True
+    ),
+    # "qobuzissims" is the actual API type value; Qobuzissime is a brand name, so not translated
+    "qobuzissime": QobuzRecommendationRow(
+        "qobuzissims", "Qobuzissime", "mdi-star-circle", translation_key=None
+    ),
+    "ideal_discography": QobuzRecommendationRow(
+        "ideal-discography", "Ideal Discography", "mdi-bookshelf", "ideal_discography"
+    ),
+}
 
 _LookupItemT = TypeVar("_LookupItemT", Track, Album)
 
@@ -449,6 +501,35 @@ class QobuzProvider(MusicProvider):
                 and str(item["performer"]["id"]) == str(prov_artist_id)
             )
         ]
+
+    async def get_recommendations(self) -> list[RecommendationFolder]:
+        """Get this provider's available recommendation rows, without items."""
+        return [
+            RecommendationFolder(
+                item_id=row_id,
+                provider=self.instance_id,
+                name=row.name,
+                translation_key=row.translation_key,
+                icon=row.icon,
+                enabled_by_default=row.enabled_by_default,
+            )
+            for row_id, row in RECOMMENDATION_ROWS.items()
+        ]
+
+    async def get_recommendation_items(
+        self, item_id: str
+    ) -> UniqueList[MediaItemType | ItemMapping | BrowseFolder]:
+        """
+        Get the items for a single recommendation row.
+
+        :param item_id: The item_id of the row, as returned by get_recommendations.
+        """
+        if item_id == FAVORITE_ARTIST_RELEASES_ROW:
+            return UniqueList(await self._get_favorite_artist_releases())
+        row = RECOMMENDATION_ROWS.get(item_id)
+        if not row or not row.featured_type:
+            return UniqueList()
+        return UniqueList(await self._get_featured_albums(row.featured_type))
 
     async def library_add(self, item: MediaItemType) -> bool:
         """Add item to library."""
@@ -862,6 +943,51 @@ class QobuzProvider(MusicProvider):
             playlist.date_added = datetime.datetime.fromtimestamp(timestamp, tz=datetime.UTC)
         return playlist
 
+    @use_cache(
+        3600 * 6, cache_checksum=PARSED_ITEM_CACHE_CHECKSUM, allow_expired_cache=True
+    )  # Cache for 6 hours
+    async def _get_featured_albums(self, featured_type: str) -> list[Album]:
+        """
+        Get the albums of a Qobuz editorial list.
+
+        :param featured_type: The Qobuz featured album type, e.g. 'press-awards'.
+        """
+        result = await self._get_data("album/getFeatured", type=featured_type, limit=50)
+        if not result:
+            return []
+        return await self._parse_recommended_albums(result.get("albums", {}).get("items", []))
+
+    @use_cache(
+        3600 * 6, cache_checksum=PARSED_ITEM_CACHE_CHECKSUM, allow_expired_cache=True
+    )  # Cache for 6 hours
+    async def _get_favorite_artist_releases(self) -> list[Album]:
+        """Get the latest releases of the user's favorite artists, newest first."""
+        result = await self._get_data("favorite/getNewReleases", type="artists", limit=50)
+        if not result:
+            return []
+        return await self._parse_recommended_albums(
+            [_flatten_album_obj(item) for item in result.get("items", []) if item]
+        )
+
+    async def _parse_recommended_albums(self, album_objs: list[dict[str, Any]]) -> list[Album]:
+        """
+        Parse the albums of a recommendation row, leaving out the ones that cannot be used.
+
+        :param album_objs: Qobuz album objects.
+        """
+        # skip items without artist, as _parse_album would fetch each of those in full,
+        # and unplayable (e.g. purchase-only or region-blocked) releases
+        required_keys = ("id", "artist", "streamable", "displayable")
+        albums: list[Album] = []
+        for item in album_objs:
+            if not item or not all(item.get(key) for key in required_keys):
+                continue
+            try:
+                albums.append(await self._parse_album(item))
+            except (KeyError, TypeError) as err:
+                self.logger.debug("Skipping recommended album %s: %s", item["id"], err)
+        return albums
+
     async def _get_item_by_external_id(
         self,
         *,
@@ -1117,3 +1243,29 @@ def _require_qobuz_artist_id(item_id: str) -> None:
     """
     if not _is_qobuz_artist_id(item_id):
         raise MediaNotFoundError(f"{item_id} is not a Qobuz artist id")
+
+
+def _flatten_album_obj(album_obj: dict[str, Any]) -> dict[str, Any]:
+    """
+    Flatten an album from favorite/getNewReleases into the format the other endpoints return.
+
+    :param album_obj: Album object with its artists, rights, audio_info and dates nested.
+    """
+    rights = album_obj.get("rights") or {}
+    audio_info = album_obj.get("audio_info") or {}
+    flat_obj = {
+        **album_obj,
+        # the main artist is listed first
+        "artist": (album_obj.get("artists") or [None])[0],
+        "streamable": rights.get("streamable"),
+        # this format has no displayable flag, so streamable stands in for it
+        "displayable": rights.get("streamable"),
+        "maximum_sampling_rate": audio_info.get("maximum_sampling_rate"),
+        "maximum_bit_depth": audio_info.get("maximum_bit_depth"),
+    }
+    if release_date := (album_obj.get("dates") or {}).get("original"):
+        with suppress(ValueError, TypeError):
+            flat_obj["released_at"] = (
+                datetime.datetime.fromisoformat(release_date).replace(tzinfo=UTC).timestamp()
+            )
+    return flat_obj

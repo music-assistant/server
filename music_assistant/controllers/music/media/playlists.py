@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import asyncio
 from bisect import bisect_right
-from collections.abc import AsyncGenerator, Sequence
-from contextlib import nullcontext
+from collections.abc import AsyncGenerator, Iterator, Sequence
+from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass
 from functools import partial
 from itertools import batched
@@ -24,6 +24,7 @@ from music_assistant_models.enums import (
     ProviderType,
     SortDirection,
     SortField,
+    TaskStatus,
 )
 from music_assistant_models.errors import (
     InsufficientPermissions,
@@ -31,6 +32,7 @@ from music_assistant_models.errors import (
     InvalidProviderURI,
     MediaNotFoundError,
     ProviderUnavailableError,
+    ResourceBusyError,
     ResourceTemporarilyUnavailable,
 )
 from music_assistant_models.helpers import create_safe_string
@@ -73,7 +75,6 @@ from music_assistant.helpers.playlists import (
 )
 from music_assistant.helpers.provider_access import access_allows, visible_music_sources
 from music_assistant.helpers.uri import create_uri, parse_uri
-from music_assistant.helpers.util import guard_single_request
 from music_assistant.models.media_capabilities import MediaCatalogMixin
 from music_assistant.models.music_provider import (
     PROVIDER_FETCH_ERRORS,
@@ -90,6 +91,7 @@ _PROVIDER_PLAYLIST_ADD_BATCH_SIZE: Final[int] = 100
 _MIGRATION_REPORT_DETAIL_LIMIT: Final[int] = 200
 _MIGRATION_RESOLVE_BATCH_SIZE: Final[int] = 5
 _MIGRATION_VERIFY_RETRY_DELAYS: Final[tuple[int, ...]] = (1, 2, 4)
+_PLAYLIST_REMOVE_TASK_DOMAIN: Final[str] = "playlist_remove_tracks"
 # on top of the fetch failures, a provider may offer no playlist details at all
 _PLAYLIST_DETAILS_ERRORS: Final[tuple[type[Exception], ...]] = (
     *PROVIDER_FETCH_ERRORS,
@@ -153,23 +155,34 @@ class PlaylistController(MediaControllerBase[Playlist]):
             f"music/{api_base}/create_playlist",
             self.create_playlist,
             required_scope=Scope.LIBRARY_WRITE,
+            allow_impersonation=True,
         )
         self.mass.register_api_command(
-            "music/playlists/playlist_tracks", self.tracks, required_scope=Scope.LIBRARY_READ
+            "music/playlists/playlist_tracks",
+            self.tracks,
+            required_scope=Scope.LIBRARY_READ,
+            allow_impersonation=True,
         )
         self.mass.register_api_command(
             "music/playlists/add_playlist_tracks",
             self.add_playlist_tracks,
             required_scope=Scope.LIBRARY_WRITE,
+            allow_impersonation=True,
         )
         self.mass.register_api_command(
             "music/playlists/remove_playlist_tracks",
             self.remove_playlist_tracks,
             required_scope=Scope.LIBRARY_WRITE,
+            allow_impersonation=True,
         )
         self.mass.register_api_command(
             "music/playlists/move_playlist_track",
             self.move_playlist_track,
+            required_scope=Scope.LIBRARY_WRITE,
+        )
+        self.mass.register_api_command(
+            "music/playlists/move_playlist_tracks",
+            self.move_playlist_tracks,
             required_scope=Scope.LIBRARY_WRITE,
         )
         self.mass.register_api_command(
@@ -192,6 +205,8 @@ class PlaylistController(MediaControllerBase[Playlist]):
             self.set_access,
             required_scope=Scope.LIBRARY_WRITE,
         )
+        # library ids of the playlists a move is under way for
+        self._moving_playlists: set[str] = set()
 
     @property
     def summary_query(self) -> tuple[str, dict[str, Any]]:
@@ -253,6 +268,8 @@ class PlaylistController(MediaControllerBase[Playlist]):
         sort_field, sort_direction = resolve_listing_sort(
             ListingType.PLAYLIST_TRACKS, sort_field, sort_direction
         )
+        # a library playlist is served by the exact account its visible mapping names
+        strict_provider_instance |= provider_instance_id_or_domain == "library"
         item_id, provider_instance_id_or_domain, library_item = await self._playlist_source(
             item_id, provider_instance_id_or_domain
         )
@@ -273,7 +290,8 @@ class PlaylistController(MediaControllerBase[Playlist]):
             )
             items = await with_user_favorites(self.mass, get_current_user(), listing.items)
         else:
-            # a refresh assembles the listing anew and replaces the cached one
+            # a refresh assembles the listing anew and replaces the cached one; the fill is
+            # pinned to the resolved account, so no other account answers for it dropping
             async with self.mass.cache.handle_refresh(True) if force_refresh else nullcontext():
                 items = await cached_listing(
                     self.mass,
@@ -284,7 +302,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
                         item_id,
                         provider.instance_id,
                         force_refresh,
-                        strict_provider_instance,
+                        True,
                         library_item,
                     ),
                     item_type=PlaylistPlayableItem,
@@ -319,6 +337,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
         :param allow_dynamic_tracks: Request a fresh sample from dynamic playlists.
         :param strict_provider_instance: Do not fall back to another provider instance.
         """
+        strict_provider_instance |= provider_instance_id_or_domain == "library"
         item_id, provider_instance_id_or_domain, _ = await self._playlist_source(
             item_id, provider_instance_id_or_domain
         )
@@ -367,18 +386,9 @@ class PlaylistController(MediaControllerBase[Playlist]):
         :param strict_provider_instance: Do not fall back to another provider instance.
         """
         # if provider is omitted, just pick builtin provider
-        if provider_instance_or_domain:
-            provider = self.mass.get_provider(
-                provider_instance_or_domain,
-                return_unavailable=strict_provider_instance,
-            )
-            if provider is None or (
-                strict_provider_instance
-                and (provider.instance_id != provider_instance_or_domain or not provider.available)
-            ):
-                raise ProviderUnavailableError
-        else:
-            provider = self.mass.get_provider("builtin")
+        provider = self.mass.music.resolve_visible_provider(
+            provider_instance_or_domain or "builtin", strict=strict_provider_instance
+        )
 
         # Default is track for backwards compatibility.
         media_types_set = {MediaType.TRACK} if not media_types else set(media_types)
@@ -476,8 +486,12 @@ class PlaylistController(MediaControllerBase[Playlist]):
         :param db_playlist_id: Library playlist id.
         :param positions_to_remove: Provider playlist positions to remove.
         :return: Managed background task for the requested playlist update.
+        :raises ResourceBusyError: A move or removal of the playlist is still in progress.
         """
-        playlist_name = (await self._get_editable_library_item(db_playlist_id)).name
+        playlist = await self._get_editable_library_item(db_playlist_id)
+        playlist_name = playlist.name
+        # positions only hold while nothing else changes the order, so nothing waits its turn
+        self._ensure_order_idle(playlist)
         user = get_current_user()
         user_id = user.user_id if user else None
         return self.mass.tasks.run_background_task(
@@ -490,8 +504,8 @@ class PlaylistController(MediaControllerBase[Playlist]):
             translation_args=[playlist_name],
             user_id=user.user_id if user else None,
             metadata={
-                "task_domain": "playlist_remove_tracks",
-                "playlist_id": str(db_playlist_id),
+                "task_domain": _PLAYLIST_REMOVE_TASK_DOMAIN,
+                "playlist_id": playlist.item_id,
                 "playlist_name": playlist_name,
                 "item_count": len(positions_to_remove),
             },
@@ -509,27 +523,66 @@ class PlaylistController(MediaControllerBase[Playlist]):
         :param db_playlist_id: Library playlist id.
         :param from_position: The current position of the item, 1-based.
         :param to_position: The position the item ends up at after the move, 1-based.
+        :raises ResourceBusyError: A move or removal of the playlist is still in progress.
         """
-        playlist = await self._get_editable_library_item(db_playlist_id)
-        if not playlist.is_editable:
-            msg = f"Playlist {playlist.name} is not editable"
-            raise InvalidDataError(msg)
-        # use _select_provider_id to respect user's provider filter
-        playlist_prov_instance, playlist_prov_item_id = self._select_provider_id(playlist)
-        provider = self.mass.get_provider(playlist_prov_instance)
-        if not provider or not isinstance(provider, MusicProvider):
-            raise ProviderUnavailableError(f"Provider {playlist_prov_instance} is not available")
-        if ProviderFeature.PLAYLIST_TRACKS_MOVE not in provider.supported_features:
-            msg = f"Provider {provider.name} does not support reordering playlists"
-            raise InvalidDataError(msg)
+        playlist, provider, playlist_prov_item_id = await self._get_reorderable_playlist(
+            db_playlist_id
+        )
         if from_position < 1 or to_position < 1:
             msg = "Playlist positions start at 1"
             raise InvalidDataError(msg)
         if from_position == to_position:
             return
-        await provider.move_playlist_track(playlist_prov_item_id, from_position, to_position)
-        await self._refresh_provider_playlist_tracks(playlist_prov_item_id, provider.instance_id)
-        await self._request_metadata_refresh(playlist)
+        with self._moving_order(playlist):
+            await provider.move_playlist_track(playlist_prov_item_id, from_position, to_position)
+            await self._refresh_provider_playlist_tracks(
+                playlist_prov_item_id, provider.instance_id
+            )
+            await self._request_metadata_refresh(playlist)
+
+    async def move_playlist_tracks(
+        self, db_playlist_id: str | int, positions: list[int], to_position: int | None = None
+    ) -> None:
+        """
+        Move items of a playlist as one block to another position.
+
+        The moved items keep their order. Returns once the provider holds the new order, so
+        the caller can reload the playlist. When the move fails part way, the playlist is
+        still read back and announced, so a reload shows the order the provider holds.
+
+        :param db_playlist_id: Library playlist id.
+        :param positions: The current positions of the items, 1-based.
+        :param to_position: The position the block's first item ends up at, 1-based. Omit it
+            to move the items to the end of the playlist.
+        :raises ResourceBusyError: A move or removal of the playlist is still in progress.
+        """
+        playlist, provider, playlist_prov_item_id = await self._get_reorderable_playlist(
+            db_playlist_id
+        )
+        if not positions:
+            msg = "No playlist positions to move"
+            raise InvalidDataError(msg)
+        if len(set(positions)) != len(positions):
+            msg = "Each playlist position can only be moved once"
+            raise InvalidDataError(msg)
+        if min(positions) < 1 or (to_position is not None and to_position < 1):
+            msg = "Playlist positions start at 1"
+            raise InvalidDataError(msg)
+        selected = sorted(positions)
+        if to_position is not None and selected == list(
+            range(to_position, to_position + len(selected))
+        ):
+            return
+        with self._moving_order(playlist):
+            try:
+                await provider.move_playlist_tracks(playlist_prov_item_id, selected, to_position)
+            finally:
+                # a provider that replays the block as single moves can fail part way and
+                # leave the playlist partly moved, so read it back and announce it even then
+                await self._refresh_provider_playlist_tracks(
+                    playlist_prov_item_id, provider.instance_id
+                )
+                await self._request_metadata_refresh(playlist)
 
     async def match_providers(self, db_item: Playlist) -> None:
         """
@@ -909,6 +962,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
             f"music/{self.api_base}/update",
             self.update_playlist,
             required_scope=Scope.LIBRARY_WRITE,
+            allow_impersonation=True,
         )
 
     async def _handle_migrate_playlist(  # noqa: C901, PLR0912
@@ -1682,25 +1736,17 @@ class PlaylistController(MediaControllerBase[Playlist]):
         self, provider_instance_id_or_domain: str, strict_provider_instance: bool
     ) -> MediaCatalogMixin | None:
         """
-        Return the provider that lists a playlist, None when no such provider is loaded.
+        Return the provider that lists a playlist, None when it serves no catalog.
 
         :param provider_instance_id_or_domain: The provider instance id or domain.
         :param strict_provider_instance: Only accept this exact instance, and only when it is
             available.
-        :raises ProviderUnavailableError: The exact instance is required but not available.
+        :raises InsufficientPermissions: The source is not one of the user's music sources.
+        :raises ProviderUnavailableError: No provider the user may see serves it.
         """
-        provider = self.mass.get_provider(
-            provider_instance_id_or_domain,
-            return_unavailable=strict_provider_instance,
+        provider = self.mass.music.resolve_visible_provider(
+            provider_instance_id_or_domain, strict=strict_provider_instance
         )
-        if strict_provider_instance and (
-            provider is None
-            or provider.instance_id != provider_instance_id_or_domain
-            or not provider.available
-        ):
-            raise ProviderUnavailableError(
-                f"Provider {provider_instance_id_or_domain} is not available"
-            )
         return provider if isinstance(provider, MediaCatalogMixin) else None
 
     async def _iter_provider_playlist(
@@ -1711,18 +1757,17 @@ class PlaylistController(MediaControllerBase[Playlist]):
         strict_provider_instance: bool,
     ) -> AsyncGenerator[PlaylistPlayableItem]:
         """Yield the items of a provider playlist, page by page."""
+        # the provider is resolved once, so every page is served by the same account
+        provider = self._playlist_provider(provider_instance_id_or_domain, strict_provider_instance)
+        if provider is None:
+            return
         # playlist tracks are not stored in the db, we always fetch them (cached) from the
         # provider. The provider decides how many tracks to return; for a dynamic playlist it
         # returns a bounded sample/batch and terminates by yielding no further pages.
         page = 0
         while True:
-            tracks = await self._get_provider_playlist_tracks(
-                item_id,
-                provider_instance_id_or_domain,
-                page=page,
-                force_refresh=force_refresh,
-                strict_provider_instance=strict_provider_instance,
-            )
+            async with self.mass.cache.handle_refresh(force_refresh):
+                tracks = await provider.get_playlist_tracks(item_id, page=page)
             if not tracks:
                 break
             await self._add_audio_metadata(tracks)
@@ -1789,23 +1834,6 @@ class PlaylistController(MediaControllerBase[Playlist]):
         # the fresh sample a dynamic playlist hands out is never kept
         return Listing(listing.items, complete=not playlist.is_dynamic)
 
-    @guard_single_request
-    async def _get_provider_playlist_tracks(
-        self,
-        item_id: str,
-        provider_instance_id_or_domain: str,
-        page: int = 0,
-        force_refresh: bool = False,
-        strict_provider_instance: bool = False,
-    ) -> Sequence[PlaylistPlayableItem]:
-        """Return playlist tracks for the given provider playlist id."""
-        assert provider_instance_id_or_domain != "library"
-        provider = self._playlist_provider(provider_instance_id_or_domain, strict_provider_instance)
-        if provider is None:
-            return []
-        async with self.mass.cache.handle_refresh(force_refresh):
-            return await provider.get_playlist_tracks(item_id, page=page)
-
     async def _add_audio_metadata(self, items: Sequence[PlaylistPlayableItem]) -> None:
         """
         Fill in bpm and musical key from stored audio analysis on tracks that lack them.
@@ -1852,10 +1880,10 @@ class PlaylistController(MediaControllerBase[Playlist]):
         # grab all existing track ids in the playlist so we can check for duplicates
         # use _select_provider_id to respect user's provider filter
         playlist_prov_instance, playlist_prov_item_id = self._select_provider_id(playlist)
-        playlist_prov = self.mass.get_provider(playlist_prov_instance)
-        if not playlist_prov or not playlist_prov.available:
-            raise ProviderUnavailableError(f"Provider {playlist_prov_instance} is not available")
-        playlist_prov = cast("MusicProvider", playlist_prov)
+        playlist_prov = cast(
+            "MusicProvider",
+            self.mass.music.resolve_visible_provider(playlist_prov_instance, strict=True),
+        )
 
         if ProviderFeature.PLAYLIST_TRACKS_EDIT not in playlist_prov.supported_features:
             msg = f"Provider {playlist_prov.name} does not support editing playlists"
@@ -1919,6 +1947,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
         # work out the track id's that need to be added
         # filter out duplicates and items that not exist on the provider.
         ids_to_add: list[str] = []
+        hidden_sources = self._hidden_sources()
         total_candidates = len(unwrapped_uris)
         for index, uri in enumerate(unwrapped_uris, start=1):
             _update_stage_progress(
@@ -1939,6 +1968,16 @@ class PlaylistController(MediaControllerBase[Playlist]):
 
             # special: the builtin provider can handle uri's from all providers (with uri as id)
             if playlist_prov.domain == "builtin":
+                # it stores the uri as given, so one naming a source the user may not see is
+                # left out here (it resolves the items itself, as this user, when read)
+                _, provider_instance_id_or_domain, _ = await parse_uri(uri)
+                if provider_instance_id_or_domain in hidden_sources:
+                    self.logger.warning(
+                        "Not adding %s to playlist %s - not a music source of this user",
+                        uri,
+                        playlist.name,
+                    )
+                    continue
                 ids_to_add.append(uri)
                 continue
 
@@ -2021,7 +2060,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
                     continue
                 if item_mapping.item_id in cur_playlist_track_ids:
                     break  # already existing in the playlist
-                item_prov = self.mass.get_provider(item_mapping.provider_instance)
+                item_prov = self.mass.music.get_visible_provider(item_mapping.provider_instance)
                 if not item_prov:
                     continue
                 track_version_uri = create_uri(
@@ -2081,14 +2120,74 @@ class PlaylistController(MediaControllerBase[Playlist]):
             raise InvalidDataError(msg)
         # use _select_provider_id to respect user's provider filter
         playlist_prov_instance, playlist_prov_item_id = self._select_provider_id(playlist)
-        provider = self.mass.get_provider(playlist_prov_instance)
-        if not provider or not isinstance(provider, MusicProvider):
+        provider = self.mass.music.resolve_visible_provider(playlist_prov_instance, strict=True)
+        if not isinstance(provider, MusicProvider):
             raise ProviderUnavailableError(f"Provider {playlist_prov_instance} is not available")
         if ProviderFeature.PLAYLIST_TRACKS_EDIT not in provider.supported_features:
             msg = f"Provider {provider.name} does not support editing playlists"
             raise InvalidDataError(msg)
         await provider.remove_playlist_tracks(playlist_prov_item_id, positions_to_remove)
         await self._request_metadata_refresh(playlist)
+
+    async def _get_reorderable_playlist(
+        self, db_playlist_id: str | int
+    ) -> tuple[Playlist, MusicProvider, str]:
+        """
+        Return a library playlist the current user may reorder, its provider and provider id.
+
+        :param db_playlist_id: Library playlist id.
+        :raises InvalidDataError: The playlist or its provider cannot be reordered.
+        """
+        playlist = await self._get_editable_library_item(db_playlist_id)
+        if not playlist.is_editable:
+            msg = f"Playlist {playlist.name} is not editable"
+            raise InvalidDataError(msg)
+        # use _select_provider_id to respect user's provider filter
+        playlist_prov_instance, playlist_prov_item_id = self._select_provider_id(playlist)
+        provider = self.mass.get_provider(playlist_prov_instance)
+        if not provider or not isinstance(provider, MusicProvider):
+            raise ProviderUnavailableError(f"Provider {playlist_prov_instance} is not available")
+        if ProviderFeature.PLAYLIST_TRACKS_MOVE not in provider.supported_features:
+            msg = f"Provider {provider.name} does not support reordering playlists"
+            raise InvalidDataError(msg)
+        return playlist, provider, playlist_prov_item_id
+
+    def _ensure_order_idle(self, playlist: Playlist) -> None:
+        """
+        Refuse a change of the playlist's order while another one is still in progress.
+
+        :param playlist: Library playlist about to be moved or removed from.
+        :raises ResourceBusyError: A move or removal of the playlist is still in progress.
+        """
+        if playlist.item_id in self._moving_playlists:
+            msg = f"Playlist {playlist.name} is still being reordered, try again once it is done"
+            raise ResourceBusyError(msg)
+        for task in self.mass.tasks.list_tasks_for_user(None):
+            if (
+                task.metadata.get("task_domain") == _PLAYLIST_REMOVE_TASK_DOMAIN
+                and task.metadata.get("playlist_id") == playlist.item_id
+                and task.status in (TaskStatus.PENDING, TaskStatus.RUNNING)
+            ):
+                msg = (
+                    f"Items are still being removed from playlist {playlist.name}, "
+                    "try again once it is done"
+                )
+                raise ResourceBusyError(msg)
+
+    @contextmanager
+    def _moving_order(self, playlist: Playlist) -> Iterator[None]:
+        """
+        Hold the playlist for a move, refusing other moves and removals until it is done.
+
+        :param playlist: Library playlist about to be moved.
+        :raises ResourceBusyError: A move or removal of the playlist is still in progress.
+        """
+        self._ensure_order_idle(playlist)
+        self._moving_playlists.add(playlist.item_id)
+        try:
+            yield
+        finally:
+            self._moving_playlists.discard(playlist.item_id)
 
     async def _refresh_provider_playlist_tracks(
         self, prov_playlist_id: str, provider_instance_id: str
@@ -2101,13 +2200,11 @@ class PlaylistController(MediaControllerBase[Playlist]):
         """
         page = 0
         try:
-            while await self._get_provider_playlist_tracks(
-                prov_playlist_id,
-                provider_instance_id,
-                page=page,
-                force_refresh=True,
-                strict_provider_instance=True,
-            ):
+            provider = self._playlist_provider(provider_instance_id, strict_provider_instance=True)
+            while provider is not None:
+                async with self.mass.cache.handle_refresh(True):
+                    if not await provider.get_playlist_tracks(prov_playlist_id, page=page):
+                        break
                 page += 1
         except PROVIDER_FETCH_ERRORS as err:
             # the change itself is done, only the cached copy may stay stale until it expires
@@ -2190,7 +2287,10 @@ class PlaylistController(MediaControllerBase[Playlist]):
 
     async def _get_visible_library_item(self, item_id: int | str) -> Playlist:
         """Return the library playlist, hidden from the caller when it may not see it."""
-        playlist = await self.get_library_item(item_id)
+        # one on music sources the caller may not see is a plain miss, without its name
+        playlist = await self.get_visible_library_item_by_prov_id(str(item_id), "library")
+        if playlist is None:
+            raise MediaNotFoundError(f"playlist not found in library: {item_id}")
         self._check_visible(playlist)
         return playlist
 
