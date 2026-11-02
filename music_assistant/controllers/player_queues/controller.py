@@ -140,6 +140,11 @@ _PLAYBACK_LISTINGS: Final[dict[MediaType, ListingType]] = {
     MediaType.PLAYLIST: ListingType.PLAYLIST_TRACKS,
 }
 
+# the media a start position applies to; a podcast starts the episode it resolves to there
+_START_POSITION_MEDIA_TYPES: Final[frozenset[MediaType]] = frozenset(
+    {MediaType.AUDIOBOOK, MediaType.PODCAST, MediaType.PODCAST_EPISODE}
+)
+
 
 async def _media_type(item: MediaItemType | ItemMapping | str) -> MediaType:
     """
@@ -182,6 +187,38 @@ async def _resolve_play_sort(
             if (listing := _PLAYBACK_LISTINGS.get(await _media_type(item))) is not None:
                 resolve_listing_sort(listing, sort_field, sort_direction)
     return sort_field, sort_direction
+
+
+async def _resolve_start_position(
+    media: MediaItemType | ItemMapping | str | list[MediaItemType | ItemMapping | str],
+    start_item: PlayableMediaItemType | str | None,
+    start_position: float | None,
+    start_from_beginning: bool,
+) -> float | None:
+    """
+    Return the position a play request starts its audiobook, podcast or episode at.
+
+    The deprecated start from beginning only counts when no start position is given.
+
+    :param media: The media a play request was given.
+    :param start_item: The item the request starts from, a chapter for an audiobook.
+    :param start_position: The requested start position in seconds.
+    :param start_from_beginning: The deprecated flag of an outdated client for position 0.
+    :return: The start position, None to start at the resume position.
+    :raises InvalidDataError: When the position does not fit a single audiobook, podcast or
+        episode, or comes with a chapter of an audiobook.
+    """
+    if start_position is None and start_from_beginning:
+        start_position = 0
+    if start_position is None:
+        return None
+    items = media if isinstance(media, list) else [media]
+    media_type = await _media_type(items[0]) if len(items) == 1 else None
+    if media_type not in _START_POSITION_MEDIA_TYPES:
+        raise InvalidDataError("A start position fits a single audiobook, podcast or episode only")
+    if media_type == MediaType.AUDIOBOOK and start_item is not None:
+        raise InvalidDataError("A start position does not combine with a chapter to start at")
+    return start_position
 
 
 async def _resolve_audio_source_request(
@@ -638,8 +675,8 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         :param start_item: Optional item to start the playlist or album from.
         :param sort_by: Deprecated, use sort_field and sort_direction: the sort key of an
             outdated client, which only counts when no sort_field is given.
-        :param start_from_beginning: Start a podcast episode at position 0, ignoring any
-            saved resume position. The stored progress itself is left untouched.
+        :param start_from_beginning: Deprecated, use start_position=0: an outdated client's
+            flag, which only counts when no start_position is given.
         :param shuffle: Play the media shuffled (or explicitly in order). Only applies to the
             options that start playing right away (play/replace), and never to a dynamic source
             (an always-on smart mix). Omit to follow the queue's own shuffle setting, which media
@@ -649,18 +686,22 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
             this sort field, before applying start_item; the listing's default when omitted.
         :param sort_direction: Sort direction, the field's default when omitted.
         :param start_position: Position in seconds to start an audiobook or episode at, e.g. a
-            bookmark, instead of its resume position.
+            bookmark, instead of its resume position; for a podcast, the episode it resolves
+            to. The stored progress itself is left untouched.
         :raises InvalidDataError: When the sort key is unknown, an album or playlist does
-            not offer the sort field, or a start position comes with more than one item.
+            not offer the sort field, or a start position does not fit a single audiobook,
+            podcast or episode, or comes with a chapter of an audiobook.
         """
         self._check_player_permission(queue_id)
         if not self.get(queue_id):
             raise PlayerUnavailableError(f"Queue {queue_id} is not available")
-        if start_position is not None and isinstance(media, list) and len(media) > 1:
-            raise InvalidDataError("A start position fits a single audiobook or episode only")
         # a request with a sort that is not offered is rejected before anything is played
         sort_field, sort_direction = await _resolve_play_sort(
             media, sort_field, sort_direction, sort_by
+        )
+        # and so is one with a start position that has nothing to start
+        start_position = await _resolve_start_position(
+            media, start_item, start_position, start_from_beginning
         )
         # A live source is not queue content: it plays on the player while the queue
         # keeps its own items. Selecting it is the real operation, so a play request
@@ -677,7 +718,6 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
             start_item,
             sort_field,
             sort_direction,
-            start_from_beginning,
             shuffle,
             start_position,
         )

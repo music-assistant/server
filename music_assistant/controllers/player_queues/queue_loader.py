@@ -809,7 +809,6 @@ class QueueLoaderMixin(_PlayerQueuesBase):
         start_item: PlayableMediaItemType | str | None = None,
         sort_field: SortField | None = None,
         sort_direction: SortDirection | None = None,
-        start_from_beginning: bool = False,
         shuffle: bool | None = None,
         start_position: float | None = None,
     ) -> None:
@@ -1037,7 +1036,6 @@ class QueueLoaderMixin(_PlayerQueuesBase):
                         queue_id=queue_id,
                         sort_field=sort_field,
                         sort_direction=sort_direction,
-                        start_from_beginning=start_from_beginning,
                         # under shuffle "start here and play forward" has no meaning, so keep the
                         # whole playlist/album (chosen track first) instead of dropping everything
                         # before it - the chosen track is pinned in front of the shuffled rest
