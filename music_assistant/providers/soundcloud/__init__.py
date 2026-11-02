@@ -876,9 +876,10 @@ class SoundcloudMusicProvider(RecommendationPayloadMixin, MusicProvider):
                 "refresh_token": refresh_token,
             },
         ) as response:
-            if response.status != 200:
+            if response.status in (400, 401, 403):
                 msg = f"Soundcloud did not accept the refresh token (status {response.status})"
                 raise LoginFailed(msg)
+            response.raise_for_status()
             token_data = await response.json()
         # the refresh token is single use, so store the rotated one before anything else
         if new_refresh_token := token_data.get("refresh_token"):

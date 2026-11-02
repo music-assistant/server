@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, MagicMock, Mock, patch
 
 import pytest
-from aiohttp import ClientError
+from aiohttp import ClientError, ClientResponseError
 from music_assistant_models.errors import LoginFailed
 
 from music_assistant.providers.soundcloud import (
@@ -41,6 +41,8 @@ def _token_response(status: int = 200, payload: dict[str, Any] | None = None) ->
     response = Mock()
     response.status = status
     response.json = AsyncMock(return_value=payload or {})
+    if status >= 400:
+        response.raise_for_status = Mock(side_effect=ClientResponseError(Mock(), (), status=status))
     context = MagicMock()
     context.__aenter__ = AsyncMock(return_value=response)
     context.__aexit__ = AsyncMock(return_value=False)
@@ -150,14 +152,53 @@ async def test_refresh_without_refresh_token_fails(provider: SoundcloudMusicProv
         await provider._refresh_access_token()
 
 
-async def test_refresh_rejected_fails(provider: SoundcloudMusicProvider) -> None:
+@pytest.mark.parametrize("status", [400, 401, 403])
+async def test_refresh_rejected_fails(provider: SoundcloudMusicProvider, status: int) -> None:
     """A refresh token Soundcloud no longer accepts is a login failure."""
     _setup_values(provider, refresh_token="revoked")
     provider._soundcloud = _api_with_token(f"OAuth {_jwt(exp=NOW)}")
-    post = Mock(return_value=_token_response(status=400))
+    post = Mock(return_value=_token_response(status=status))
 
     with patch.object(provider.mass.http_session, "post", post), pytest.raises(LoginFailed):
         await provider._refresh_access_token()
+
+
+@pytest.mark.parametrize("status", [429, 503])
+async def test_refresh_server_error_is_not_login_failure(
+    provider: SoundcloudMusicProvider, stored: dict[str, Any], status: int
+) -> None:
+    """A temporary Soundcloud error keeps the refresh token, so a retry can still use it."""
+    _setup_values(provider, refresh_token="still-valid")
+    provider._soundcloud = _api_with_token(f"OAuth {_jwt(exp=NOW)}")
+    post = Mock(return_value=_token_response(status=status))
+
+    with (
+        patch.object(provider.mass.http_session, "post", post),
+        pytest.raises(ClientResponseError),
+    ):
+        await provider._refresh_access_token()
+
+    assert stored == {}
+
+
+async def test_scheduled_refresh_retries_server_error(
+    provider: SoundcloudMusicProvider,
+) -> None:
+    """A 503 from the token endpoint retries soon instead of unloading the provider."""
+    _setup_values(provider, refresh_token="still-valid")
+    provider._soundcloud = _api_with_token(f"OAuth {_jwt(exp=NOW)}")
+    provider._token_lock = asyncio.Lock()
+    post = Mock(return_value=_token_response(status=503))
+
+    with (
+        patch.object(provider.mass.http_session, "post", post),
+        patch.object(provider, "unload_with_error") as unload,
+        patch.object(provider.mass, "call_later") as call_later,
+    ):
+        await provider._scheduled_token_refresh()
+
+    unload.assert_not_called()
+    call_later.assert_called_once()
 
 
 async def test_async_init_checks_token_before_requests(
