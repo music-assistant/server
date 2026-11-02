@@ -454,6 +454,27 @@ async def test_remove_playlist_tracks_delegates_to_playlists(provider: TidalProv
         mock_remove.assert_called_with("123", (1, 2, 3))
 
 
+async def test_move_playlist_track_delegates_to_playlists(provider: TidalProvider) -> None:
+    """Test move_playlist_track delegates to playlist manager."""
+    with patch.object(provider.playlists, "move_track", new_callable=AsyncMock) as mock_move:
+        await provider.move_playlist_track("123", 2, 5)
+
+        mock_move.assert_called_with("123", 2, 5)
+
+
+async def test_move_playlist_tracks_delegates_to_playlists(provider: TidalProvider) -> None:
+    """Test move_playlist_tracks delegates to playlist manager."""
+    with patch.object(provider.playlists, "move_tracks", new_callable=AsyncMock) as mock_move:
+        await provider.move_playlist_tracks("123", [2, 3], 5)
+
+        mock_move.assert_called_with("123", [2, 3], 5)
+
+
+def test_supported_features_include_playlist_tracks_move() -> None:
+    """Test reordering playlist tracks is advertised."""
+    assert ProviderFeature.PLAYLIST_TRACKS_MOVE in SUPPORTED_FEATURES
+
+
 async def test_get_user(provider: TidalProvider) -> None:
     """Test get_user fetches user data."""
     with patch.object(provider.api, "get", new_callable=AsyncMock) as mock_get:
