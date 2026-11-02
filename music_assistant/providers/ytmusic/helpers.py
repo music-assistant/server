@@ -88,11 +88,12 @@ async def get_album(
             ytm = ytmusicapi.YTMusic(auth=headers, language=language, user=user)
             album = ytm.get_album(browseId=prov_album_id)
 
-        if album.get("audioPlaylistId"):
+        playlist_id = album.get("audioPlaylistId")
+        if playlist_id:
             # Track id's from album tracks do not match with actual album tracks. E.g. a track
             # points to the videoId of the original version, while we want the album version
             try:
-                album_playlist = ytm.get_playlist(playlistId=album["audioPlaylistId"], limit=None)
+                album_playlist = ytm.get_playlist(playlistId=playlist_id, limit=None)
             except YTMusicError:
                 return album
 
