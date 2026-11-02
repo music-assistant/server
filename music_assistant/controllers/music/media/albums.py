@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import logging
 from collections.abc import Iterable
 from dataclasses import dataclass, replace
 from itertools import groupby
@@ -69,14 +68,12 @@ from music_assistant.helpers.external_ids import (
     normalize_external_id,
 )
 from music_assistant.helpers.json import serialize_to_json
-from music_assistant.helpers.logging import log_once
 from music_assistant.helpers.uri import parse_uri, share_url_provider
 from music_assistant.models.music_provider import (
     PROVIDER_FETCH_ERRORS,
     MusicProvider,
     provider_fetch_log_level,
 )
-from music_assistant.providers.musicbrainz.constants import MUSICBRAINZ_WEB_URL
 from music_assistant.providers.musicbrainz.provider import (
     is_digital_release,
     relation_urls,
@@ -87,7 +84,7 @@ from .album_tracks import AlbumListing, album_listing, album_track_backfills, ma
 from .base import EXTERNAL_ID_LOOKUP_ERRORS, MAX_EXTERNAL_ID_MATCH_LOOKUPS, MediaControllerBase
 
 if TYPE_CHECKING:
-    from collections.abc import Hashable, Mapping, Sequence
+    from collections.abc import Mapping, Sequence
 
     from music_assistant import MusicAssistant
     from music_assistant.providers.musicbrainz import MusicbrainzProvider
@@ -134,8 +131,6 @@ class AlbumsController(MediaControllerBase[Album]):
     def __init__(self, mass: MusicAssistant) -> None:
         """Initialize class."""
         super().__init__(mass)
-        # the hints already logged, so each is logged once
-        self._logged_hints: set[Hashable] = set()
         # register (extra) api handlers
         api_base = self.api_base
         self.mass.register_api_command(
@@ -1180,26 +1175,22 @@ class AlbumsController(MediaControllerBase[Album]):
             if differing := [
                 number for number, agrees in enumerate(agreeing, 1) if agrees is False
             ]:
-                log_once(
-                    self.logger,
-                    self._logged_hints,
-                    ("release_lengths", release.id, domain),
-                    logging.DEBUG,
+                self.logger.debug(
                     (
-                        'MusicBrainz links album "%s" on %s to release %s/release/%s, but the '
-                        "lengths of tracks %s (counted across discs) differ; if %s plays another "
-                        "version, remove the link from the release"
+                        'MusicBrainz links album "%s" on %s to release '
+                        "https://musicbrainz.org/release/%s, but the lengths of tracks %s (counted "
+                        "across discs) differ; if %s plays another version, remove the link from "
+                        "the release"
                     )
                     if linked
                     else (
                         'Album "%s" on %s has the track count of MusicBrainz release '
-                        "%s/release/%s, but the lengths of tracks %s (counted across discs) "
-                        "differ; it may be another edition on %s or a wrong length on "
-                        "MusicBrainz, compare with another service"
+                        "https://musicbrainz.org/release/%s, but the lengths of tracks %s (counted "
+                        "across discs) differ; it may be another edition on %s or a wrong length "
+                        "on MusicBrainz, compare with another service"
                     ),
                     album.name,
                     domain,
-                    MUSICBRAINZ_WEB_URL,
                     release.id,
                     ", ".join(map(str, differing)),
                     domain,

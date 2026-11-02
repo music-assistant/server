@@ -473,7 +473,6 @@ def _album_harness(
     """
     ctrl = AlbumsController.__new__(AlbumsController)
     ctrl.logger = logging.getLogger("test.musicbrainz.linking")
-    ctrl._logged_hints = set()
     ctrl.mass = Mock()
     ctrl.mass.music.database.deferred_commit = MagicMock()
     ctrl.mass.music.tracks.update_item_in_library = AsyncMock()
@@ -750,10 +749,9 @@ async def test_release_tracks_of_a_linked_service_album_match_in_order_whatever_
     album = _library_album("1", SPOTIFY_LINKED_ALBUM)
     release = _linking_release(SPOTIFY_ALBUM_URL)
     with _album_harness() as harness:
-        for _ in range(2):
-            await harness.ctrl.link_album_tracks(
-                album, _service_tracks(*durations), release, link_providers=False
-            )
+        await harness.ctrl.link_album_tracks(
+            album, _service_tracks(*durations), release, link_providers=False
+        )
 
     assert [(track.item_id, track.mbid) for track in harness.updated_tracks()[:3]] == [
         ("t1", RECORDING_ID),
@@ -812,14 +810,13 @@ async def test_release_tracks_count_only_the_link_of_the_same_service(
 async def test_release_tracks_without_a_link_need_every_length_to_agree(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    """One length off leaves an unlinked service's tracks to the title check, logged once."""
+    """One length off leaves an unlinked service's tracks to the title check, with a hint."""
     caplog.set_level(logging.DEBUG, logger="test.musicbrainz.linking")
     release = _two_disc_release()
     with _album_harness() as harness:
-        for _ in range(2):
-            await harness.ctrl.link_album_tracks(
-                _library_album(), _service_tracks(440, 593, 340), release
-            )
+        await harness.ctrl.link_album_tracks(
+            _library_album(), _service_tracks(440, 593, 340), release
+        )
 
     assert harness.updated_tracks() == []
     assert _length_hints(caplog) == [
