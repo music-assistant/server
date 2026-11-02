@@ -400,14 +400,21 @@ class TestExternalSourceOnPinnedProtocol:
         that protocol player is idle or plays Music Assistant's own stream, and when it
         points at another output.
         """
+        # the queue ended by itself: the protocol player is idle and the parent still pins it
         player, protocol_player = _make_player_with_protocol(
-            mock_mass, controller, protocol_state, protocol_domain="airplay"
+            mock_mass, controller, PlaybackState.IDLE, protocol_domain="airplay"
         )
         protocol_player.set_protocol_parent_id("player_1")
-        protocol_player._attr_active_source = active_source
-        protocol_player.update_state(signal_event=False)
+        protocol_player.initialized.set()
         player.set_active_output_protocol(pin)
+        protocol_player.update_state(signal_event=False)
 
-        controller._check_external_source_takeover(protocol_player)
+        protocol_player._attr_active_source = active_source
+        protocol_player._attr_playback_state = protocol_state
+        protocol_player.update_state()
+        for call in mock_mass.call_later.call_args_list:
+            if call.kwargs.get("task_id") == "external_source_takeover_proto_1":
+                # the debounced check, once its delay has passed
+                call.args[1](*call.args[2:])
 
         assert player.active_output_protocol == expected_pin

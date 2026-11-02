@@ -2135,8 +2135,12 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
                     removed_player.refresh_state()
 
         # detect when active_source changes to
-        # something external while we have a grouped protocol active
-        if ATTR_ACTIVE_SOURCE in changed_values:
+        # something external while we have a grouped protocol active.
+        # a protocol player reports its parent's source, so an external source taking
+        # it over only shows as a change of its playback state
+        if ATTR_ACTIVE_SOURCE in changed_values or (
+            player.state.type == PlayerType.PROTOCOL and "playback_state" in changed_values
+        ):
             task_id = f"external_source_takeover_{player_id}"
             self.mass.call_later(
                 5,
