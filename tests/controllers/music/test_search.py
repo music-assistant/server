@@ -19,6 +19,7 @@ from music_assistant_models.errors import (
 from music_assistant_models.media_items import (
     Artist,
     Genre,
+    Playlist,
     ProviderMapping,
     Radio,
     SearchResults,
@@ -93,6 +94,11 @@ def _make_controller(providers: list[Mock]) -> MusicController:
             (p for p in providers if p.instance_id == instance_id), None
         )
     )
+    # mass.providers is a property on the real class; a plain attribute on the Mock
+    # is enough for the tests, and letting it iterate the given providers lets
+    # URL-interception logic that picks a specific instance work the same way as
+    # it does in production.
+    mass.providers = providers
     # mimic the task_id deduplication behavior of the real create_task implementation
     tracked_tasks: dict[str, asyncio.Task[Any]] = {}
 
@@ -792,3 +798,114 @@ async def test_plugin_search_leaves_out_tracks_on_hidden_sources(mock_get_user: 
     cached = await controller.search("My Song", media_types=[MediaType.TRACK], limit=5)
     assert [track.item_id for track in cached.tracks] == ["t1"]
     plugin.search.assert_awaited_once()
+
+
+def _make_playlist(item_id: str, provider: str, name: str) -> Playlist:
+    """Return a minimal Playlist for the given provider."""
+    return Playlist(
+        item_id=item_id,
+        provider=provider,
+        name=name,
+        provider_mappings={
+            ProviderMapping(
+                item_id=item_id,
+                provider_domain=provider,
+                provider_instance=provider,
+            )
+        },
+    )
+
+
+def _match_by_instance_or_domain(providers: list[Mock]) -> Mock:
+    """Mimic MA's get_provider: resolve by instance_id OR domain."""
+    return Mock(
+        side_effect=lambda id_or_domain, **_kwargs: next(
+            (p for p in providers if id_or_domain in (p.instance_id, p.domain)), None
+        )
+    )
+
+
+@patch("music_assistant.controllers.music.controller.parse_uri", new_callable=AsyncMock)
+async def test_search_shareable_url_resolves_on_matching_scoped_provider(
+    mock_parse: AsyncMock,
+) -> None:
+    """A scoped search whose target matches the URL's provider still resolves."""
+    mock_parse.return_value = (MediaType.PLAYLIST, "spotify", "pl1")
+    prov = _make_search_provider("spotify--abc", domain="spotify")
+    controller = _make_controller([prov])
+    controller.mass.get_provider = _match_by_instance_or_domain(  # type: ignore[method-assign]
+        [prov]
+    )
+    playlist = _make_playlist("pl1", "spotify", "My Playlist")
+    controller.get_item = AsyncMock(return_value=playlist)  # type: ignore[method-assign]
+
+    result = await controller._search_shareable_url(
+        "https://open.spotify.com/playlist/pl1", providers=["spotify--abc"]
+    )
+
+    assert result is not None
+    assert [p.item_id for p in result.playlists] == ["pl1"]
+    controller.get_item.assert_awaited_once()
+
+
+@patch("music_assistant.controllers.music.controller.parse_uri", new_callable=AsyncMock)
+async def test_search_shareable_url_skipped_on_unrelated_scoped_provider(
+    mock_parse: AsyncMock,
+) -> None:
+    """A scoped search whose targets don't match the URL's provider skips the lookup."""
+    mock_parse.return_value = (MediaType.PLAYLIST, "spotify", "pl1")
+    prov_sp = _make_search_provider("spotify--abc", domain="spotify")
+    prov_a = _make_search_provider("prov_a", domain="prov_a")
+    controller = _make_controller([prov_sp, prov_a])
+    controller.mass.get_provider = _match_by_instance_or_domain(  # type: ignore[method-assign]
+        [prov_sp, prov_a]
+    )
+    controller.get_item = AsyncMock()  # type: ignore[method-assign]
+
+    result = await controller._search_shareable_url(
+        "https://open.spotify.com/playlist/pl1", providers=["prov_a"]
+    )
+
+    assert result == SearchResults()
+    controller.get_item.assert_not_awaited()
+
+
+@patch("music_assistant.controllers.music.controller.parse_uri", new_callable=AsyncMock)
+async def test_search_shareable_url_skipped_when_media_type_excluded(
+    mock_parse: AsyncMock,
+) -> None:
+    """A URL resolving to a type not in media_types returns empty without a lookup."""
+    mock_parse.return_value = (MediaType.PLAYLIST, "spotify", "pl1")
+    controller = _make_controller([])
+    controller.get_item = AsyncMock()  # type: ignore[method-assign]
+
+    result = await controller._search_shareable_url(
+        "https://open.spotify.com/playlist/pl1", media_types=[MediaType.TRACK]
+    )
+
+    assert result == SearchResults()
+    controller.get_item.assert_not_awaited()
+
+
+@patch("music_assistant.controllers.music.controller.parse_uri", new_callable=AsyncMock)
+async def test_search_shareable_url_scopes_to_requested_account(
+    mock_parse: AsyncMock,
+) -> None:
+    """With two accounts of a service, a scoped request resolves against the requested one."""
+    mock_parse.return_value = (MediaType.TRACK, "spotify", "t1")
+    first = _make_search_provider("spotify--first", domain="spotify")
+    second = _make_search_provider("spotify--second", domain="spotify")
+    controller = _make_controller([first, second])
+    controller.get_item = AsyncMock(  # type: ignore[method-assign]
+        return_value=_make_track("t1", "spotify--second", "My Song")
+    )
+
+    await controller._search_shareable_url(
+        "https://open.spotify.com/track/t1", providers=["spotify--second"]
+    )
+
+    # get_item is scoped to the requested instance, not just the service domain.
+    controller.get_item.assert_awaited_once()
+    assert (
+        controller.get_item.await_args.kwargs["provider_instance_id_or_domain"] == "spotify--second"
+    )
