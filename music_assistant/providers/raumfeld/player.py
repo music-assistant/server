@@ -316,8 +316,6 @@ class RaumfeldPlayer(Player):
             # from the stored position (resume_pos) - which resumes where the user paused.
         }
         self._update_power()
-        # Raumfeld rooms can be (sync-)grouped with any other room of this provider.
-        self._attr_can_group_with = {provider.instance_id}
         # expose the room's analog input as a selectable source when it has one
         if self._line_in is not None:
             self._attr_supported_features.add(PlayerFeature.SELECT_SOURCE)
@@ -359,6 +357,17 @@ class RaumfeldPlayer(Player):
         # the timer is held by mass, not by this player, so it would otherwise fire after
         # it is gone, against a dropped player
         self._clear_next()
+
+    @property
+    def can_group_with(self) -> set[str]:
+        """Return the other Raumfeld rooms, which this room can be (sync-)grouped with."""
+        # not the provider's instance id: that would offer the hidden speakers of a room of
+        # several speakers as well
+        return {
+            player.player_id
+            for player in self.raumfeld.players
+            if isinstance(player, RaumfeldPlayer) and player.player_id != self.player_id
+        }
 
     @property
     def needs_poll(self) -> bool:
