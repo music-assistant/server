@@ -67,6 +67,7 @@ from music_assistant.helpers.compare import (
     compare_track,
 )
 from music_assistant.helpers.database import UNSET
+from music_assistant.helpers.external_ids import normalize_external_ids
 from music_assistant.helpers.json import serialize_to_json
 from music_assistant.helpers.provider_access import visible_items
 from music_assistant.models.music_provider import (
@@ -1719,6 +1720,31 @@ class ArtistsController(MediaControllerBase[Artist]):
             )
         return Artist.from_dict({**item.to_dict(), "provider_mappings": provider_mappings})
 
+    async def get_or_add_library_artist_id(self, artist: Artist | ItemMapping) -> int:
+        """
+        Return the library ID of the given artist, adding it to the library when needed.
+
+        An artist already in the library, found by its provider id or matched by its ids or
+        name, only gains the provider mappings and the types of external ids it lacks, and is
+        never overwritten.
+
+        :param artist: The artist as credited on an album or track.
+        """
+        if artist.provider == "library":
+            return int(artist.item_id)
+        if db_artist := await self.get_library_item_by_prov_id(artist.item_id, artist.provider):
+            await self._add_new_artist_ids(db_artist, artist)
+            return int(db_artist.item_id)
+        # Convert ItemMapping to Artist if needed
+        artist_to_add = (
+            self.artist_from_item_mapping(artist) if isinstance(artist, ItemMapping) else artist
+        )
+        if library_id := await self._get_library_item_by_match(artist_to_add):
+            await self._add_new_artist_ids(await self.get_library_item(library_id), artist_to_add)
+            return library_id
+        db_artist = await self.add_item_to_library(artist_to_add)
+        return int(db_artist.item_id)
+
     async def _get_visible_library_item(self, item_id: str | int) -> Artist:
         """Return the library artist, not found when none of its sources is the caller's."""
         artist = await self.get_visible_library_item_by_prov_id(str(item_id), "library")
@@ -2116,6 +2142,22 @@ class ArtistsController(MediaControllerBase[Artist]):
             f"JOIN {DB_TABLE_PROVIDER_MAPPINGS} ON {' AND '.join(mapping_conditions)} "
             f"WHERE {DB_TABLE_ALBUM_ARTISTS}.artist_id = {DB_TABLE_ARTISTS}.item_id)"
         )
+
+    async def _add_new_artist_ids(self, db_artist: Artist, artist: Artist | ItemMapping) -> None:
+        """Add the provider mappings and external id types a library artist lacks."""
+        stored_types = {id_type for id_type, _ in db_artist.external_ids}
+        new_ids = {
+            (id_type, value)
+            for id_type, value in normalize_external_ids(artist.external_ids)
+            if id_type not in stored_types
+        }
+        new_mappings = set(getattr(artist, "provider_mappings", ())) - db_artist.provider_mappings
+        if not new_ids and not new_mappings:
+            return
+        # the stored artist itself is the update, so nothing but the new ids changes
+        db_artist.external_ids.update(new_ids)
+        db_artist.provider_mappings.update(new_mappings)
+        await self.update_item_in_library(db_artist.item_id, db_artist)
 
 
 _SHORT_FORM_TYPES = {AlbumType.SINGLE, AlbumType.EP}

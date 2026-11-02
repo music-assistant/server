@@ -1782,7 +1782,7 @@ class TracksController(MediaControllerBase[Track]):
             DB_TABLE_TRACK_ARTISTS,
             {
                 "track_id": db_id,
-                "artist_id": await self._get_library_artist_id(artist),
+                "artist_id": await self.mass.music.artists.get_or_add_library_artist_id(artist),
             },
         )
 

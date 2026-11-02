@@ -1632,7 +1632,7 @@ class AlbumsController(MediaControllerBase[Album]):
             DB_TABLE_ALBUM_ARTISTS,
             {
                 "album_id": db_id,
-                "artist_id": await self._get_library_artist_id(artist),
+                "artist_id": await self.mass.music.artists.get_or_add_library_artist_id(artist),
             },
         )
 
