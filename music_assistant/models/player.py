@@ -526,9 +526,35 @@ class Player(ABC):
         )
 
     @property
-    def available(self) -> bool:
-        """Return if the player is available."""
+    @final
+    def own_available(self) -> bool:
+        """
+        Return if the player's own transport is connected, ignoring its outputs.
+
+        Unlike :attr:`available`, this reports the availability of the audio path the
+        player owns itself (native playback), not of the device as a whole: a player
+        whose own transport has dropped but that can still be reached through a linked
+        output protocol is available while not own_available.
+        """
         return self._attr_available
+
+    @property
+    def available(self) -> bool:
+        """
+        Return if the player is available.
+
+        A player that owns linked output protocols stays available while one of those
+        outputs can play, even when the player's own transport has dropped - the
+        outputs are alternative paths to the same device, so the device as a whole is
+        still usable.
+        """
+        if self._attr_available:
+            return True
+        return any(
+            (protocol_player := self.mass.players.get_player(link.output_protocol_id))
+            and protocol_player.available_for_playback
+            for link in self.linked_output_protocols
+        )
 
     @property
     def type(self) -> PlayerType:
@@ -1821,7 +1847,9 @@ class Player(ABC):
                     name=self.provider.name,
                     protocol_domain=self.provider.domain,
                     priority=0,  # Native is always highest priority
-                    available=self.available_for_playback,
+                    # the native output IS the player's own transport, so it reports
+                    # own availability, not the aggregated (output-aware) availability
+                    available=self.own_available and not self.needs_setup,
                     is_native=True,
                 )
             )
@@ -1836,7 +1864,7 @@ class Player(ABC):
                     name=self.provider.name,
                     protocol_domain=self.provider.domain,
                     priority=PROTOCOL_PRIORITY[self.provider.domain],
-                    available=self.available_for_playback,
+                    available=self.own_available and not self.needs_setup,
                     is_native=True,
                 )
             )
@@ -2613,6 +2641,9 @@ class Player(ABC):
             "type": self.type,
             "private": self.private,
             "available": self.available,
+            # the aggregate can stay True on an output while the own transport drops;
+            # the native output entry and playback selection follow the own path only
+            "own_available": self.own_available,
             "name": self.name,
             "needs_setup": self.needs_setup,
             "setup_reason": self.setup_reason,
