@@ -47,6 +47,8 @@ from music_assistant.models.player import (
 from .constants import (
     CONF_ENTRY_DISPLAY,
     CONF_ENTRY_VISUALIZATION,
+    CONF_STORED_MUTED,
+    CONF_STORED_VOLUME,
     DEFAULT_PLAYER_VOLUME,
     DEVIATION_JUMP_IGNORE,
     MAX_SKIP_AHEAD_MS,
@@ -142,15 +144,21 @@ class SqueezelitePlayer(Player):
         self.logger.info("Player %s connected", self.client.name or player_id)
         # update all dynamic attributes
         self.update_attributes()
-        # restore volume state
+        # restore volume state, the (expiring) cache entry only covers values
+        # stored by older versions
+        init_muted = False
+        init_volume = DEFAULT_PLAYER_VOLUME
         if last_state := await self.mass.cache.get(
             key=player_id, provider=self.provider.instance_id, category=CACHE_CATEGORY_PREV_STATE
         ):
             init_muted = last_state[0]
             init_volume = last_state[1]
-        else:
-            init_muted = False
-            init_volume = DEFAULT_PLAYER_VOLUME
+        init_muted = bool(
+            self.mass.config.get_raw_player_config_value(player_id, CONF_STORED_MUTED, init_muted)
+        )
+        init_volume = int(
+            self.mass.config.get_raw_player_config_value(player_id, CONF_STORED_VOLUME, init_volume)
+        )
         await self.client.stop()
         await self.client.mute(init_muted)
         await self.client.volume_set(init_volume)
@@ -191,24 +199,16 @@ class SqueezelitePlayer(Player):
     async def volume_set(self, volume_level: int) -> None:
         """Handle VOLUME_SET command on the player."""
         await self.client.volume_set(volume_level)
-        # store last state in cache
-        await self.mass.cache.set(
-            key=self.player_id,
-            data=[self.client.muted, volume_level],
-            provider=self.provider.instance_id,
-            category=CACHE_CATEGORY_PREV_STATE,
+        # stored in the player config so it does not expire while the volume is
+        # controlled elsewhere (e.g. by an AVR) and these commands never arrive
+        self.mass.config.set_raw_player_config_value(
+            self.player_id, CONF_STORED_VOLUME, volume_level
         )
 
     async def volume_mute(self, muted: bool) -> None:
         """Handle VOLUME MUTE command on the player."""
         await self.client.mute(muted)
-        # store last state in cache
-        await self.mass.cache.set(
-            key=self.player_id,
-            data=[muted, self.client.volume_level],
-            provider=self.provider.instance_id,
-            category=CACHE_CATEGORY_PREV_STATE,
-        )
+        self.mass.config.set_raw_player_config_value(self.player_id, CONF_STORED_MUTED, muted)
 
     async def power(self, powered: bool) -> None:
         """Handle POWER command on the player."""
