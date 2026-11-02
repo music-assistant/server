@@ -958,6 +958,11 @@ class SendspinProvider(PlayerProvider):
             await self.server_api.trust_unpaired(
                 client_id, approved_roles=frozenset({"source"} if allow_input else ())
             )
+            # A device that refused this server only comes back when dialed.
+            if client_id in self._refused_here and (
+                url := self.server_api.get_client_url(client_id)
+            ):
+                self.server_api.connect_to_client(url)
         else:
             await self.server_api.untrust_unpaired(client_id)
         await self._refresh_player(client_id)

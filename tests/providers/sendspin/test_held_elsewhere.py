@@ -59,6 +59,13 @@ class _HeldServerApi:
         self.pairing_store = InMemoryServerPairingStore()
         security = SimpleNamespace(psk_category=PskCategory.SENTINEL) if encrypted else None
         self._client = SimpleNamespace(connection_security=security)
+        self.dialed: list[str] = []
+
+    def get_client_url(self, client_id: str) -> str:
+        return "ws://device/sendspin"
+
+    def connect_to_client(self, url: str) -> None:
+        self.dialed.append(url)
 
     def get_client(self, client_id: str) -> Any:
         return self._client
@@ -158,6 +165,22 @@ async def test_approving_a_held_device_clears_its_setup_state() -> None:
 
     assert not provider.is_held_unapproved("c1")
     player.update_state.assert_called()
+
+
+@pytest.mark.parametrize(
+    ("reason", "dialed"),
+    [(GoodbyeReason.UNPAIRED, True), (GoodbyeReason.CONCURRENT_ATTEMPT, False)],
+)
+async def test_approving_a_refused_device_dials_it(reason: GoodbyeReason, dialed: bool) -> None:
+    """A device that refused this server is dialed, one another server holds is left alone."""
+    api = _HeldServerApi()
+    provider, _player = _make_provider(api)
+    provider.event_cb(cast("SendspinServer", None), ClientDisconnectedEvent("c1", reason))
+    await _settle()
+
+    await provider.set_trusted_unpaired("c1", enabled=True)
+
+    assert api.dialed == (["ws://device/sendspin"] if dialed else [])
 
 
 async def test_a_device_that_reconnects_here_is_no_longer_held() -> None:
