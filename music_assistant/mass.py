@@ -50,6 +50,7 @@ from music_assistant.constants import (
     CONFIGURABLE_CORE_CONTROLLERS,
     DEFAULT_PROVIDERS,
     MASS_LOGGER_NAME,
+    MASS_VERSION,
     MIN_SCHEMA_VERSION,
     VERBOSE_LOG_LEVEL,
 )
@@ -86,7 +87,6 @@ from music_assistant.helpers.images import detect_provider_icons
 from music_assistant.helpers.provider_access import visible_music_sources
 from music_assistant.helpers.util import (
     TaskManager,
-    get_package_version,
     is_hass_supervisor,
     load_provider_module,
     warn_if_missing_x86_64_v2,
@@ -277,7 +277,7 @@ class MusicAssistant:
         # __main__ but embedded usage boots the server directly)
         install_diagnostics_log_handler()
         self.running_as_hass_addon = await is_hass_supervisor()
-        self.version = await get_package_version("music_assistant") or "0.0.0"
+        self.version = MASS_VERSION
         self.build_info = await get_official_build_info()
         # setup config controller first and fetch important config values
         self.config = ConfigController(self)

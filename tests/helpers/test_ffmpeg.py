@@ -18,6 +18,7 @@ from music_assistant_models.errors import AudioError
 from music_assistant_models.helpers import get_global_cache_value, set_global_cache_values
 from music_assistant_models.media_items import AudioFormat
 
+from music_assistant.constants import MASS_USER_AGENT
 from music_assistant.helpers.dsp import ComplexFilter, ComplexFilterInput
 from music_assistant.helpers.ffmpeg import (
     _INPUT_READ_ARGS,
@@ -228,6 +229,39 @@ def test_get_ffmpeg_args_skips_tls_verify_on_request(
 
     input_args, _ = _split_at_input(args)
     assert _has_tls_verify_off(input_args) is expected
+
+
+def _user_agents(args: list[str]) -> list[str]:
+    """Return the values of every -user_agent option in the args."""
+    return [args[i + 1] for i, arg in enumerate(args[:-1]) if arg == "-user_agent"]
+
+
+@pytest.mark.parametrize(
+    ("input_path", "extra_input_args", "expected"),
+    [
+        ("https://host/a.mp3", [], [MASS_USER_AGENT]),
+        ("http://host/a.mp3", ["-headers", "Cookie: a=b\r\n"], [MASS_USER_AGENT]),
+        ("https://host/a.mp3", ["-user_agent", "Caller/1.0"], ["Caller/1.0"]),
+        ("https://host/a.mp3", ["-headers", "user-agent: Caller/1.0\r\n"], []),
+        ("/music/a.mp3", [], []),
+        ("-", [], []),
+    ],
+    ids=["https", "http-other-headers", "caller-option", "caller-header", "local-file", "pipe"],
+)
+def test_get_ffmpeg_args_identifies_to_http_inputs(
+    input_path: str, extra_input_args: list[str], expected: list[str]
+) -> None:
+    """An http input gets our user agent, unless the caller already sets one."""
+    args = get_ffmpeg_args(
+        AudioFormat(content_type=ContentType.MP3),
+        _PCM_OUT,
+        [],
+        input_path=input_path,
+        extra_input_args=extra_input_args,
+    )
+
+    input_args, _ = _split_at_input(args)
+    assert _user_agents(input_args) == expected
 
 
 def test_multichannel_pcm_folds_down_without_stretching(tmp_path: Path) -> None:
@@ -1065,6 +1099,7 @@ def test_overlay_mixer_reconnects_for_http_sources() -> None:
     """An http overlay source additionally gets the reconnect options."""
     (overlay,) = _build_overlay_mixer("http://host/sound.mp3", _PCM_FORMAT, 100).inputs
     assert "-reconnect" in overlay.input_args
+    assert _user_agents(overlay.input_args) == [MASS_USER_AGENT]
     assert overlay.input_args[-2:] == ["-stream_loop", "-1"]
 
 
@@ -1746,7 +1781,21 @@ async def test_probe_audio_stream_opens_the_input_like_the_decoder(
     read_args_start = proc.args.index(_INPUT_READ_ARGS[0])
     assert proc.args[read_args_start : read_args_start + len(_INPUT_READ_ARGS)] == _INPUT_READ_ARGS
     assert proc.args.index("-user_agent") < proc.args.index("-i")
+    # the source's own user agent replaces ours
+    assert _user_agents(proc.args) == ["test"]
     assert proc.args[-2:] == ["-i", "https://example.com/a.flac"]
+
+
+async def test_probe_audio_stream_identifies_to_http_inputs(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The probe sends the same user agent as the decoder."""
+    proc = _FakeProbeProcess(_probe_output(codec_name="flac", sample_rate="44100", channels=2))
+    monkeypatch.setattr("music_assistant.helpers.ffmpeg.AsyncProcess", proc)
+
+    await probe_audio_stream("https://example.com/a.flac")
+
+    assert _user_agents(proc.args[: proc.args.index("-i")]) == [MASS_USER_AGENT]
 
 
 @pytest.mark.parametrize("verify_ssl", [False, True])
