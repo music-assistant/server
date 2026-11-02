@@ -1321,7 +1321,12 @@ class BandcampProvider(MusicProvider):
         :param person_id: Person to query. None = authenticated user.
         """
         cache_key = f"_browse_person_following_{person_id}"
-        cached = await self.mass.cache.get(cache_key, provider=self.instance_id, base_class=Artist)
+        cached = await self.mass.cache.get(
+            cache_key,
+            provider=self.instance_id,
+            base_class=Artist,
+            checksum=PARSED_ITEM_CACHE_CHECKSUM,
+        )
         if cached is not None:
             return cached  # type: ignore[no-any-return]
         async with self._map_api_errors(f"Failed to get following for person {person_id}"):
@@ -1336,6 +1341,7 @@ class BandcampProvider(MusicProvider):
             [a.to_dict() for a in artists],
             expiration=CACHE_USER_LISTS if artists else CACHE_EMPTY_RESULTS,
             provider=self.instance_id,
+            checksum=PARSED_ITEM_CACHE_CHECKSUM,
         )
         return artists
 

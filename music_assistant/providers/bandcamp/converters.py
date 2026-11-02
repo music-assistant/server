@@ -138,7 +138,6 @@ class BandcampConverters:
             item_id=album_id,
             provider=self.instance_id,
             name=item.name,
-            uri=item.url,
             artists=UniqueList(
                 [
                     ItemMapping(
@@ -146,7 +145,6 @@ class BandcampConverters:
                         item_id=artist_item_id,
                         provider=self.instance_id,
                         name=item.artist_name,
-                        uri=item.artist_url,
                     )
                 ]
             ),
@@ -176,7 +174,6 @@ class BandcampConverters:
             item_id=str(item.id),
             provider=self.instance_id,
             name=item.name,
-            uri=item.url,
             provider_mappings={
                 ProviderMapping(
                     item_id=str(item.id),
@@ -206,7 +203,6 @@ class BandcampConverters:
             item_id=str(item.band_id),
             provider=self.instance_id,
             name=item.name,
-            uri=item.url,
             provider_mappings={
                 ProviderMapping(
                     item_id=str(item.band_id),
@@ -422,7 +418,6 @@ class BandcampConverters:
         """Convert an API Artist object to MA Artist format."""
         output = MAArtist(
             item_id=str(artist.id),
-            uri=artist.url,
             provider=self.instance_id,
             name=artist.name,
             provider_mappings={

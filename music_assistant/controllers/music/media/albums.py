@@ -48,6 +48,7 @@ from music_assistant.controllers.music.helpers import (
 )
 from music_assistant.controllers.music.listing import apply_listing, resolve_listing_sort
 from music_assistant.controllers.music.listing_cache import Listing, cached_listing
+from music_assistant.controllers.music.sharing import check_share_source_access
 from music_assistant.helpers.compare import (
     ALBUM_RETAIL_SUFFIX_KEYS,
     AlbumMatchEvidence,
@@ -598,7 +599,7 @@ class AlbumsController(MediaControllerBase[Album]):
         )
 
     async def resolve_musicbrainz_release_group(
-        self, release_group_id: str, allow_update_metadata: bool = True
+        self, release_group_id: str, allow_update_metadata: bool = True, recursive: bool = True
     ) -> Album:
         """
         Return the album a MusicBrainz release group is, on one of the user's music providers.
@@ -610,6 +611,7 @@ class AlbumsController(MediaControllerBase[Album]):
 
         :param release_group_id: MusicBrainz release group id.
         :param allow_update_metadata: Whether the album's metadata may be refreshed on the way.
+        :param recursive: Resolve full details of nested artists.
         :raises ProviderUnavailableError: The MusicBrainz provider is not loaded.
         :raises MediaNotFoundError: None of the user's music providers has the album.
         """
@@ -646,14 +648,14 @@ class AlbumsController(MediaControllerBase[Album]):
                 self.mass.music.providers,
             )
             if album := await self._first_available_album(
-                linked, release_group_id, allow_update_metadata
+                linked, release_group_id, allow_update_metadata, recursive
             ):
                 return album
             # a barcode lookup fans out over every provider, so it is spent only when none
             # of the links resolves; a linked provider is asked too, as its link may be stale
             by_barcode = await self._album_candidates_by_barcode(release)
             if album := await self._first_available_album(
-                by_barcode, release_group_id, allow_update_metadata
+                by_barcode, release_group_id, allow_update_metadata, recursive
             ):
                 return album
         msg = f"Release group {release_group_id} is not available on any music provider"
@@ -1358,6 +1360,7 @@ class AlbumsController(MediaControllerBase[Album]):
     async def _album_by_barcode(self, provider: MusicProvider, upc: str) -> Album | None:
         """Return the album a provider finds by a barcode, if it has one and answers."""
         try:
+            check_share_source_access(provider.instance_id, provider.domain)
             return await provider.get_album_by_external_id(upc, ExternalID.BARCODE)
         except EXTERNAL_ID_LOOKUP_ERRORS as err:
             self.logger.debug(
@@ -1370,17 +1373,22 @@ class AlbumsController(MediaControllerBase[Album]):
         candidates: Sequence[ProviderMapping],
         release_group_id: str,
         allow_update_metadata: bool,
+        recursive: bool = True,
     ) -> Album | None:
         """Return the first candidate its provider still serves as an album, if any."""
         for candidate in candidates:
             try:
-                if library_album := await self.get_library_item_by_prov_id(
+                check_share_source_access(candidate.provider_instance, candidate.provider_domain)
+                library_album = await self.get_library_item_by_prov_id(
                     candidate.item_id, candidate.provider_instance
-                ):
+                )
+                check_share_source_access(candidate.provider_instance, candidate.provider_domain)
+                if library_album:
                     return await self.get(
                         library_album.item_id,
                         "library",
                         allow_update_metadata=allow_update_metadata,
+                        recursive=recursive,
                     )
                 # the candidate names one of the user's own sources, so an unavailable one
                 # must not fall back to another account of the same service

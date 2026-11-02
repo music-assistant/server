@@ -129,12 +129,28 @@ async def get_playlist(
 
 
 async def get_track(
-    prov_track_id: str, headers: dict[str, str], language: str = "en"
+    prov_track_id: str,
+    headers: dict[str, str],
+    language: str = "en",
+    *,
+    check_access: Callable[[], None] | None = None,
 ) -> dict[str, Any] | None:
-    """Async wrapper around the ytmusicapi get_playlist function."""
+    """
+    Return song metadata and public visibility from ytmusicapi's get_song response.
+
+    :param prov_track_id: YouTube video ID.
+    :param headers: Auth headers for the YTMusic client.
+    :param language: Response language.
+    :param check_access: Optional guard that raises if this lookup is no longer authorized.
+    """
 
     def _get_song() -> dict[str, Any] | None:
+        # Access can change while the executor is queued or the client is initialized.
+        if check_access is not None:
+            check_access()
         ytm = ytmusicapi.YTMusic(auth=headers, language=language)
+        if check_access is not None:
+            check_access()
         track_obj = ytm.get_song(videoId=prov_track_id)
         track: dict[str, Any] = {}
         if "videoDetails" not in track_obj:
@@ -149,9 +165,15 @@ async def get_track(
             }
         ]
         track["duration"] = track_obj["videoDetails"]["lengthSeconds"]
-        track["thumbnails"] = track_obj["microformat"]["microformatDataRenderer"]["thumbnail"][
-            "thumbnails"
-        ]
+        video_details = track_obj["videoDetails"]
+        microformat = track_obj.get("microformat", {}).get("microformatDataRenderer", {})
+        track["isPublic"] = (
+            video_details.get("isPrivate") is False
+            and video_details.get("isCrawlable", True) is True
+            and video_details.get("musicVideoType") != "MUSIC_VIDEO_TYPE_PRIVATELY_OWNED_TRACK"
+            and microformat.get("unlisted") is False
+        )
+        track["thumbnails"] = microformat.get("thumbnail", {}).get("thumbnails", [])
         if track_thumbs := track_obj["videoDetails"].get("thumbnail", {}).get("thumbnails"):
             track["thumbnails"] = track.get("thumbnails", []) + track_thumbs
         track["isAvailable"] = track_obj["playabilityStatus"]["status"] == "OK"

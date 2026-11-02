@@ -281,7 +281,9 @@ async def test_resolve_returns_the_library_album_of_a_linked_one() -> None:
         album = await harness.resolve()
 
     assert album is library_album
-    harness.get.assert_awaited_once_with("42", "library", allow_update_metadata=True)
+    harness.get.assert_awaited_once_with(
+        "42", "library", allow_update_metadata=True, recursive=True
+    )
     harness.get_provider_item.assert_not_awaited()
 
 
@@ -828,8 +830,8 @@ async def test_get_item_resolves_a_musicbrainz_album_on_demand() -> None:
 
     # the metadata flag is handed on: a lookup by id refreshes by default, one by uri does not
     assert resolve.await_args_list == [
-        call(RELEASE_GROUP_ID, allow_update_metadata=True),
-        call(RELEASE_GROUP_ID, allow_update_metadata=False),
+        call(RELEASE_GROUP_ID, allow_update_metadata=True, recursive=True),
+        call(RELEASE_GROUP_ID, allow_update_metadata=False, recursive=True),
     ]
 
 
@@ -859,7 +861,7 @@ async def test_add_item_to_library_takes_a_musicbrainz_album_uri(mass: MusicAssi
             f"musicbrainz://album/{RELEASE_GROUP_ID}"
         )
 
-    resolve.assert_awaited_once_with(RELEASE_GROUP_ID, allow_update_metadata=False)
+    resolve.assert_awaited_once_with(RELEASE_GROUP_ID, allow_update_metadata=False, recursive=True)
     assert isinstance(library_album, Album)
     assert library_album.provider == "library"
     assert {(m.provider_domain, m.item_id) for m in library_album.provider_mappings} == {

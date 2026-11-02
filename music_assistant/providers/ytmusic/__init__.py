@@ -11,7 +11,7 @@ from collections import Counter
 from collections.abc import AsyncGenerator, Iterable
 from contextlib import suppress
 from datetime import datetime
-from functools import lru_cache
+from functools import lru_cache, partial
 from io import StringIO
 from itertools import zip_longest
 from pathlib import Path
@@ -69,8 +69,13 @@ from music_assistant.constants import (
     VERBOSE_LOG_LEVEL,
 )
 from music_assistant.controllers.cache import use_cache
-from music_assistant.controllers.music.constants import CACHE_CATEGORY_SEARCH_RESULTS
+from music_assistant.controllers.music.constants import (
+    CACHE_CATEGORY_SEARCH_RESULTS,
+    CACHE_CATEGORY_SHARE_VISIBILITY,
+)
+from music_assistant.controllers.music.sharing import check_share_source_access
 from music_assistant.helpers.aiohttp_client import create_clientsession
+from music_assistant.helpers.throttle_retry import ThrottlerManager, throttle_with_retries
 from music_assistant.helpers.util import (
     import_module_in_thread,
     infer_album_type,
@@ -157,6 +162,7 @@ DYNAMIC_PLAYLIST_TRACK_LIMIT = 300
 YTM_PREMIUM_CHECK_TRACK_ID = "dQw4w9WgXcQ"
 PACKAGES_TO_INSTALL = ("yt-dlp[default]", "bgutil-ytdlp-pot-provider")
 DEFAULT_STREAM_URL_EXPIRATION = 3600  # 1 hour
+TRACK_METADATA_EXPIRATION = 3600 * 24 * 30
 
 SUPPORTED_FEATURES = {
     ProviderFeature.LIBRARY_ARTISTS,
@@ -198,6 +204,8 @@ async def setup(
 
 class YoutubeMusicProvider(RecommendationPayloadMixin, MusicProvider):
     """Provider for Youtube Music."""
+
+    throttler = ThrottlerManager(rate_limit=1, period=1)
 
     _headers: dict[str, str]
     _context: dict[str, Any]
@@ -503,14 +511,32 @@ class YoutubeMusicProvider(RecommendationPayloadMixin, MusicProvider):
         msg = f"Item {prov_artist_id} not found"
         raise MediaNotFoundError(msg)
 
-    @use_cache(3600 * 24 * 30)  # Cache for 30 days
+    @use_cache(TRACK_METADATA_EXPIRATION, cache_checksum="track_visibility_v1")
+    @throttle_with_retries
     async def get_track(self, prov_track_id: str) -> Track:
         """Get full track details by id."""
-        if track_obj := await get_track(
+        check_access = partial(check_share_source_access, self.instance_id, self.domain)
+        check_access()
+        track_obj = await get_track(
             prov_track_id=prov_track_id,
             headers=self._headers,
             language=self.language,
-        ):
+            check_access=check_access,
+        )
+        check_access()
+        await self.mass.cache.set(
+            f"track.{prov_track_id}",
+            bool(
+                track_obj
+                and track_obj.get("videoId") == prov_track_id
+                and track_obj.get("isPublic") is True
+            ),
+            provider=self.instance_id,
+            category=CACHE_CATEGORY_SHARE_VISIBILITY,
+            expiration=TRACK_METADATA_EXPIRATION,
+        )
+        check_access()
+        if track_obj:
             return self._parse_track(track_obj)
         msg = f"Item {prov_track_id} not found"
         raise MediaNotFoundError(msg)
