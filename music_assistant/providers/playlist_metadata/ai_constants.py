@@ -35,6 +35,9 @@ DEFAULT_MAX_PER_HOUR: Final = 30
 # the generated covers share the collage directory, told apart by this file name prefix
 IMAGE_PREFIX: Final = "ai_"
 IMAGE_EXTENSION: Final = ".jpg"
+# a new cover is referenced only once the throttled metadata refresh ran, which can take far
+# longer than the collage grace during a scan, and it was paid for, so orphans are kept a day
+IMAGE_GRACE_SECONDS: Final = 24 * 3600
 CANVAS_SIZE: Final = 1024
 # an overlaid title takes at most this many lines; past that the font shrinks, down to
 # this fraction of its size, before more lines are allowed

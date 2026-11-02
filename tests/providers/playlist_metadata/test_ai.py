@@ -57,6 +57,7 @@ from music_assistant.providers.playlist_metadata.ai_constants import (
     CONF_TEXT_ENGINE,
     CONF_TITLE_OVERLAY,
     CONF_USE_PROMPT_ENGINE,
+    IMAGE_GRACE_SECONDS,
     MAX_OUTAGE_RETRIES,
     PLAYLISTS_ALL,
     PLAYLISTS_SMART,
@@ -1163,7 +1164,9 @@ async def test_the_cleanup_keeps_covers_in_use_and_removes_orphans(
     fresh_orphan = Path(provider._images_dir, "ai_9_new.jpg")
     for path in (in_use, orphan):
         path.write_bytes(b"old")
-        os.utime(path, (time.time() - 3600, time.time() - 3600))
+        os.utime(
+            path, (time.time() - 2 * IMAGE_GRACE_SECONDS, time.time() - 2 * IMAGE_GRACE_SECONDS)
+        )
     fresh_orphan.write_bytes(b"new")
     playlist = _smart_playlist(item_id="1", images=[_image(in_use.name, provider=INSTANCE_ID)])
     _mass(provider).music.playlists.iter_library_items = MagicMock(

@@ -58,7 +58,13 @@ from music_assistant.models import ProviderInstanceType
 from music_assistant.models.metadata_provider import MetadataProvider
 
 from .ai import PREVIEW_KEYS, AIArtwork
-from .ai_constants import CONF_ACTION_PREVIEW, CONF_ACTION_REGENERATE, TEMPLATE_AI
+from .ai_constants import (
+    CONF_ACTION_PREVIEW,
+    CONF_ACTION_REGENERATE,
+    IMAGE_GRACE_SECONDS,
+    IMAGE_PREFIX,
+    TEMPLATE_AI,
+)
 from .fonts import get_font
 
 if TYPE_CHECKING:
@@ -505,7 +511,8 @@ class PlaylistMetadataProvider(MetadataProvider):
                 mtime = await asyncio.to_thread(fpath.stat)
             except OSError:
                 continue
-            if time() - mtime.st_mtime < 300:
+            grace = IMAGE_GRACE_SECONDS if fname.startswith(IMAGE_PREFIX) else 300
+            if time() - mtime.st_mtime < grace:
                 continue
             with contextlib.suppress(OSError):
                 fpath.unlink()
