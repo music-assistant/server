@@ -5,6 +5,8 @@ import os
 import pathlib
 import re
 from copy import deepcopy
+from importlib.metadata import PackageNotFoundError
+from importlib.metadata import version as pkg_version
 from typing import Any, Final, cast
 
 from music_assistant_models.config_entries import (
@@ -31,6 +33,20 @@ from music_assistant_models.media_items import (
 
 APPLICATION_NAME: Final = "Music Assistant"
 
+
+def _get_own_version() -> str:
+    """Return the installed version of Music Assistant."""
+    try:
+        return pkg_version("music_assistant")
+    except PackageNotFoundError:
+        return "0.0.0"
+
+
+MASS_VERSION: Final[str] = _get_own_version()
+
+# User agent that identifies Music Assistant on outgoing HTTP requests
+MASS_USER_AGENT: Final[str] = f"{APPLICATION_NAME}/{MASS_VERSION} (https://music-assistant.io)"
+
 # Type alias for items that can be added to playlists
 PlaylistPlayableItem = Track | Radio | PodcastEpisode | Audiobook | SoundEffect
 
@@ -54,7 +70,7 @@ PLAYLIST_MEDIA_TYPES: Final[tuple[MediaType, ...]] = (
 # a new enum value or error code, a change in what an existing field holds, or a command that
 # only the bundled frontend uses: the frontend ships in lockstep with the server and never
 # gates on this.
-API_SCHEMA_VERSION: Final[int] = 99
+API_SCHEMA_VERSION: Final[int] = 101
 
 # MIN_SCHEMA_VERSION is the minimum API schema version that the current server
 # version can work with. Only bump when there are breaking changes to existing

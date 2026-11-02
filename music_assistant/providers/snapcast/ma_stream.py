@@ -98,6 +98,8 @@ class SnapcastMAStream:
         self._setup_done = False
         self._is_streaming = False
         self._restart_requested: bool = False
+        # only a restart stops without draining, as play_media detaches the group first
+        self._stop_without_drain: bool = False
         self._stop_requested: bool = False
         self._streaming_started_at: float | None = None
         self._played_out_at: float | None = None
@@ -267,6 +269,7 @@ class SnapcastMAStream:
         """
         self._stop_requested = True
         self._restart_requested = False  # explicit stop cancels any pending restart
+        self._stop_without_drain = False
         self._stop_streamer_evt.set()
 
         self._stop_timer_started_at = None
@@ -389,7 +392,9 @@ class SnapcastMAStream:
                     self._snap_on_stream_update,
                     task_id=f"snapcast_playback_started_{self.stream_name}",
                 )
-                self._streamer_started_evt.set()
+                # a run stopped while FFmpeg started must not release the wait for its replacement
+                if not self._stop_streamer_evt.is_set():
+                    self._streamer_started_evt.set()
                 self._is_streaming = True
 
                 done, pending = await asyncio.wait(
@@ -401,6 +406,8 @@ class SnapcastMAStream:
                     self._logger.debug("Stopping stream %s requested.", self.stream_name)
                     wait_ffmpeg.cancel()
                     await asyncio.gather(wait_ffmpeg, return_exceptions=True)
+                    if self._stop_without_drain:
+                        await ffmpeg_proc.kill()
                     return
 
                 await wait_ffmpeg
@@ -482,6 +489,7 @@ class SnapcastMAStream:
             # reset per-run state
             self._restart_requested = False
             self._stop_requested = False
+            self._stop_without_drain = False
             self._stop_streamer_evt.clear()
             self._streamer_started_evt.clear()
 
@@ -501,7 +509,11 @@ class SnapcastMAStream:
 
         self._restart_requested = True
         self._stop_requested = True
+        self._stop_without_drain = True
         self._stop_streamer_evt.set()
+        self._streamer_started_evt.clear()
+        # the group can rejoin before the old run ends; its start must not anchor elapsed time
+        self._streaming_started_at = None
 
         self._stop_timer_started_at = None
         if self._stop_timer:
@@ -816,6 +828,4 @@ class SnapcastMAStream:
 
     def _get_playback_delay(self) -> float:
         """Return the delay in seconds between streaming start and playback at the clients."""
-        if self._provider._use_builtin_server:
-            return self._provider._snapcast_server_buffer_size / 1000.0
-        return 0.0
+        return self._provider._snapcast_server_buffer_size / 1000.0

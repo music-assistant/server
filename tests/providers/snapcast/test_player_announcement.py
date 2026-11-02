@@ -28,7 +28,7 @@ def _make_player(queue: SimpleNamespace) -> tuple[SnapCastPlayer, MagicMock]:
     player.snap_client = cast(
         "SnapclientProto", SimpleNamespace(group=group, identifier="kitchen-client", group_id=None)
     )
-    provider = MagicMock(_use_builtin_server=False)
+    provider = MagicMock(_use_builtin_server=False, _snapcast_server_buffer_size=0)
     provider.get_snap_ma_stream.return_value = MagicMock(stream_id="music")
     streams = {
         "announce.mp3": MagicMock(

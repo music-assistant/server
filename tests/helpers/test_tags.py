@@ -19,7 +19,7 @@ from mutagen.id3 import ID3, TCOM, TDOR, TDRC, TXXX, UFID
 from mutagen.mp4 import MP4, MP4FreeForm
 from PIL import Image
 
-from music_assistant.constants import UNKNOWN_ARTIST
+from music_assistant.constants import MASS_USER_AGENT, UNKNOWN_ARTIST
 from music_assistant.helpers import tags
 from music_assistant.helpers.process import AsyncProcess
 from music_assistant.helpers.tags import (
@@ -94,6 +94,22 @@ def test_parse_tags_skips_tls_verify_on_request(monkeypatch: pytest.MonkeyPatch)
     tls_index = args.index("-tls_verify")
     assert args[tls_index + 1] == "0"
     assert tls_index < args.index("-i")
+
+
+def test_parse_tags_identifies_as_music_assistant_on_urls(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Tag parsing of a URL sends the Music Assistant user agent, of a local file none."""
+    check_output = MagicMock(return_value=b'{"format": {}, "streams": []}')
+    monkeypatch.setattr(subprocess, "check_output", check_output)
+
+    with pytest.raises(InvalidDataError):
+        tags.parse_tags("https://example.com/a.mp3")
+    args = list(check_output.call_args.args[0])
+    assert args[args.index("-user_agent") + 1] == MASS_USER_AGENT
+    assert args.index("-user_agent") < args.index("-i")
+
+    with pytest.raises(InvalidDataError):
+        tags.parse_tags("/music/a.mp3")
+    assert "-user_agent" not in check_output.call_args.args[0]
 
 
 def test_parse_rejects_file_without_audio_channels() -> None:
@@ -1439,6 +1455,11 @@ async def test_get_embedded_image_extracts_cover_with_protocol_whitelist(
     assert args.index("-protocol_whitelist") < args.index("-i")
     expected_whitelist = "http,https,tcp,tls" if over_http else "file"
     assert args[args.index("-protocol_whitelist") + 1] == expected_whitelist
+    if over_http:
+        assert args[args.index("-user_agent") + 1] == MASS_USER_AGENT
+        assert args.index("-user_agent") < args.index("-i")
+    else:
+        assert "-user_agent" not in args
 
 
 def _create_mp3_with_cover(tmp_path: pathlib.Path, track_path: str) -> None:

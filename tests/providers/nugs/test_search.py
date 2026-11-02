@@ -307,6 +307,7 @@ async def test_core_track_search_capability(provider: NugsProvider) -> None:
     _stub_search(provider, "song")
     provider.manifest.type = ProviderType.MUSIC
     cast("Mock", provider.mass.get_provider).return_value = provider
+    cast("Mock", provider.mass.music.get_visible_provider).return_value = provider
     controller = TracksController(provider.mass)
     result = await controller.search("Dust in a Baggie", provider.instance_id, limit=1)
     assert len(result) == 1

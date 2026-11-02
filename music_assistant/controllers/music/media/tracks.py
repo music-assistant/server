@@ -250,14 +250,18 @@ class TracksController(MediaControllerBase[Track]):
                 item = await self.mass.music.get_item_by_uri(album_uri, allow_update_metadata=False)
                 if isinstance(item, Album):
                     track.album = item
-            elif provider_instance_id_or_domain == "library":
-                # grab the first album this track is attached to
+            elif track.provider == "library":
+                # grab the first album this track is attached to, on the user's sources; the
+                # row's album mapping is dropped when none is
+                track.album = None
                 for album_track_row in await self.mass.music.database.get_rows(
-                    DB_TABLE_ALBUM_TRACKS, {"track_id": int(item_id)}, limit=1
+                    DB_TABLE_ALBUM_TRACKS, {"track_id": int(track.item_id)}
                 ):
-                    track.album = await self.mass.music.albums.get_library_item(
-                        album_track_row["album_id"]
-                    )
+                    if album := await self.mass.music.albums.get_visible_library_item_by_prov_id(
+                        str(album_track_row["album_id"]), "library"
+                    ):
+                        track.album = album
+                        break
             elif isinstance(track.album, ItemMapping) or (track.album and not track.album.image):
                 track.album = await self.mass.music.albums.get(
                     track.album.item_id,
@@ -547,7 +551,7 @@ class TracksController(MediaControllerBase[Track]):
                 continue
             unique_ids.add(unique_id)
             # prefer db item
-            if db_item := await self.mass.music.albums.get_library_item_by_prov_id(
+            if db_item := await self.mass.music.albums.get_visible_library_item_by_prov_id(
                 prov_item.album.item_id, prov_item.album.provider
             ):
                 result.append(db_item)
@@ -718,6 +722,7 @@ class TracksController(MediaControllerBase[Track]):
             limit=0,
             extra_query_parts=[query],
             extra_query_params={"track_id": db_id},
+            provider_filter=self._ensure_provider_filter(None),
             in_library_only=True,
         )
 
@@ -1873,14 +1878,14 @@ class TracksController(MediaControllerBase[Track]):
         search_query = f"{track.artist_str} - {track.name}"
         result: UniqueList[Track] = UniqueList()
         for provider_id in self.mass.music.get_unique_providers():
-            provider = self.mass.get_provider(provider_id)
+            provider = self.mass.music.get_visible_provider(provider_id)
             if not isinstance(provider, MusicProvider):
                 continue
             if MediaType.TRACK not in provider.supported_media_types:
                 continue
             result.extend(
                 prov_item
-                for prov_item in await self.search(search_query, provider_id)
+                for prov_item in await self.search(search_query, provider.instance_id)
                 if loose_compare_strings(track.name, prov_item.name)
                 and compare_artists(prov_item.artists, track.artists, any_match=True)
                 # make sure that the 'base' version is NOT included
@@ -1935,6 +1940,7 @@ class TracksController(MediaControllerBase[Track]):
         )
         provider_responded = False
         unanswered = False
+        hidden_sources = self._hidden_sources()
 
         def cross_type_candidates(
             prov_type: ProviderType,
@@ -1948,7 +1954,10 @@ class TracksController(MediaControllerBase[Track]):
 
         candidates = cross_type_candidates(ProviderType.PLUGIN)
         for prov_mapping in sorted_mappings:
-            prov = self.mass.get_provider(prov_mapping.provider_instance)
+            prov = self.mass.music.get_visible_provider(prov_mapping.provider_instance)
+            if prov is None and prov_mapping.provider_instance in hidden_sources:
+                # a source the user may not use is no gap in their listing
+                continue
             # an unloaded source keeps its place, as it leaves any later answer incomplete
             if prov is None or (
                 isinstance(prov, MusicProvider)

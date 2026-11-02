@@ -1059,10 +1059,16 @@ class ProtocolLinkingMixin:
                 and native_player.player_id in player._protocol_player_ids
             )
 
-            if not identifiers_match and not player_id_in_protocols:
-                continue
-
             known_protocol_ids = set(self._get_known_protocol_ids(player))
+
+            if not identifiers_match and not player_id_in_protocols:
+                # The native's stored protocol list claims the wrapped protocols as well, unless
+                # it already owns a protocol of their domain, which makes that entry stale.
+                if known_protocol_ids.isdisjoint(
+                    self._get_cached_protocol_ids(native_player.player_id)
+                ) or self._owns_domain_of_protocols(native_player.player_id, known_protocol_ids):
+                    continue
+
             refused_protocol_ids: set[str] = set()
             moved_protocol_ids: set[str] = set()
 
@@ -1178,6 +1184,23 @@ class ProtocolLinkingMixin:
         }
         groups.extend([entry] for entry in registered if entry[1].player_id not in grouped_ids)
         return groups
+
+    def _owns_domain_of_protocols(self, native_id: str, protocol_ids: set[str]) -> bool:
+        """Check if a native player already owns a protocol from one of these protocols' domains."""
+        all_player_configs: dict[str, dict[str, Any]] = self.mass.config.get(CONF_PLAYERS, {})
+        domains = {
+            str(config.get("provider", "")).split("--", 1)[0]
+            for protocol_id in protocol_ids
+            if (config := all_player_configs.get(protocol_id)) and config.get("provider")
+        }
+        for player_id, config in all_player_configs.items():
+            if player_id in protocol_ids or config.get("player_type") != "protocol":
+                continue
+            if (config.get("values") or {}).get(CONF_PROTOCOL_PARENT_ID) != native_id:
+                continue
+            if str(config.get("provider", "")).split("--", 1)[0] in domains:
+                return True
+        return False
 
     def _migrate_universal_player_config(self, universal_id: str, native_id: str) -> None:
         """

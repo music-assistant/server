@@ -8,6 +8,10 @@
       "label": "Experimental: Enable intercept feature",
       "description": "Master switch for the intercept feature. When ON, individual stations can be configured (in their player settings) to redirect Alice-initiated playback to another Music Assistant player. When OFF, intercept is fully disabled regardless of per-player settings. Requires the 'yandex_music' music provider to be configured to actually resolve tracks."
     },
+    "alice_text_commands": {
+      "label": "Allow text requests to Alice through the API",
+      "description": "Enables the yandex_station/command API command, which hands any text to Alice as if it had been spoken on a Station. Alice can then control everything linked to the Yandex account, such as smart home devices, so only turn this on if every Music Assistant user and integration with player control may do that. Changes apply after the provider reloads."
+    },
     "method": {
       "label": "Login method",
       "description": "Sign in with a short device code, by scanning a QR code with the Yandex app, or by pasting browser cookies.",
