@@ -12,7 +12,7 @@ from music_assistant_models.errors import MediaNotFoundError, MusicAssistantErro
 from music_assistant_models.media_items import ProviderMapping, Track
 
 from music_assistant.providers.listenbrainz import ListenBrainzProvider
-from music_assistant.providers.listenbrainz.playlist import ListenBrainzPlaylistManager
+from music_assistant.providers.listenbrainz.playlists import ListenBrainzPlaylistManager
 
 if TYPE_CHECKING:
     from music_assistant_models.config_entries import ProviderConfig
@@ -261,11 +261,11 @@ async def test_musicbrainz_links_resolve_via_provider_item() -> None:
 
     with (
         patch(
-            "music_assistant.providers.listenbrainz.playlist.relation_urls",
+            "music_assistant.providers.listenbrainz.playlists.relation_urls",
             return_value=["https://synthetic.invalid/track/synthetic-track-id"],
         ) as get_relation_urls,
         patch(
-            "music_assistant.providers.listenbrainz.playlist.provider_mappings_from_urls",
+            "music_assistant.providers.listenbrainz.playlists.provider_mappings_from_urls",
             AsyncMock(return_value=[mapping]),
         ) as get_mappings,
     ):
@@ -305,11 +305,11 @@ async def test_track_without_musicbrainz_provider_mapping_stays_unresolved() -> 
     relation_url = "https://catalog.synthetic.invalid/track/synthetic-track-id"
     with (
         patch(
-            "music_assistant.providers.listenbrainz.playlist.relation_urls",
+            "music_assistant.providers.listenbrainz.playlists.relation_urls",
             return_value=[relation_url],
         ),
         patch(
-            "music_assistant.providers.listenbrainz.playlist.provider_mappings_from_urls",
+            "music_assistant.providers.listenbrainz.playlists.provider_mappings_from_urls",
             AsyncMock(return_value=[]),
         ),
     ):
@@ -341,7 +341,7 @@ async def test_resolved_track_from_search_carries_recording_mbid() -> None:
     )
 
     with patch(
-        "music_assistant.providers.listenbrainz.playlist.provider_mappings_from_urls",
+        "music_assistant.providers.listenbrainz.playlists.provider_mappings_from_urls",
         AsyncMock(return_value=[]),
     ):
         resolved = await manager._get_or_resolve_track(_track())
@@ -396,11 +396,11 @@ async def test_musicbrainz_link_removed_by_provider_falls_through_to_search() ->
 
     with (
         patch(
-            "music_assistant.providers.listenbrainz.playlist.relation_urls",
+            "music_assistant.providers.listenbrainz.playlists.relation_urls",
             return_value=["https://synthetic.invalid/track/synthetic-track-id"],
         ),
         patch(
-            "music_assistant.providers.listenbrainz.playlist.provider_mappings_from_urls",
+            "music_assistant.providers.listenbrainz.playlists.provider_mappings_from_urls",
             AsyncMock(return_value=[mapping]),
         ),
     ):
@@ -440,11 +440,11 @@ async def test_musicbrainz_link_provider_error_falls_through_to_search() -> None
 
     with (
         patch(
-            "music_assistant.providers.listenbrainz.playlist.relation_urls",
+            "music_assistant.providers.listenbrainz.playlists.relation_urls",
             return_value=["https://synthetic.invalid/track/synthetic-track-id"],
         ),
         patch(
-            "music_assistant.providers.listenbrainz.playlist.provider_mappings_from_urls",
+            "music_assistant.providers.listenbrainz.playlists.provider_mappings_from_urls",
             AsyncMock(return_value=[mapping]),
         ),
     ):
@@ -486,7 +486,7 @@ async def test_search_skips_non_matching_results() -> None:
     )
 
     with patch(
-        "music_assistant.providers.listenbrainz.playlist.provider_mappings_from_urls",
+        "music_assistant.providers.listenbrainz.playlists.provider_mappings_from_urls",
         AsyncMock(return_value=[]),
     ):
         resolved = await manager._get_or_resolve_track(_track())
@@ -516,7 +516,7 @@ async def test_search_with_no_matching_results_returns_none() -> None:
     )
 
     with patch(
-        "music_assistant.providers.listenbrainz.playlist.provider_mappings_from_urls",
+        "music_assistant.providers.listenbrainz.playlists.provider_mappings_from_urls",
         AsyncMock(return_value=[]),
     ):
         resolved = await manager._get_or_resolve_track(_track())

@@ -17,7 +17,7 @@ from music_assistant.providers.listenbrainz.constants import (
     CONF_ENABLE_YEARLY_MISSED_TRACKS,
     CONF_ENABLE_YEARLY_TOP_DISCOVERIES,
 )
-from music_assistant.providers.listenbrainz.playlist import ListenBrainzPlaylistManager
+from music_assistant.providers.listenbrainz.playlists import ListenBrainzPlaylistManager
 
 if TYPE_CHECKING:
     from music_assistant_models.config_entries import ProviderConfig

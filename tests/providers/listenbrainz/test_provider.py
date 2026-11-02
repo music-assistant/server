@@ -11,7 +11,7 @@ from music_assistant_models.enums import ConfigEntryType
 from music_assistant.constants import CONF_USERNAME
 from music_assistant.providers.listenbrainz import ListenBrainzProvider
 from music_assistant.providers.listenbrainz.api_client import ListenBrainzAPIClient
-from music_assistant.providers.listenbrainz.playlist import ListenBrainzPlaylistManager
+from music_assistant.providers.listenbrainz.playlists import ListenBrainzPlaylistManager
 
 if TYPE_CHECKING:
     from music_assistant_models.config_entries import ProviderConfig
