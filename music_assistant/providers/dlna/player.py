@@ -13,7 +13,7 @@ from xml.etree.ElementTree import ParseError
 import defusedxml.ElementTree as DefusedET
 from aiohttp import ClientPayloadError
 from aiohttp.http_exceptions import ContentLengthError
-from async_upnp_client.exceptions import UpnpError, UpnpResponseError
+from async_upnp_client.exceptions import UpnpActionResponseError, UpnpError, UpnpResponseError
 from async_upnp_client.profiles.dlna import DmrDevice, TransportState
 from music_assistant_models.enums import IdentifierType, PlaybackState, PlayerFeature, PlayerType
 from music_assistant_models.errors import PlayerUnavailableError
@@ -100,6 +100,8 @@ class DLNAPlayer(Player):
 
         self._observed_playback_state: PlaybackState | None = None
         self._playing_since: float | None = None
+        # set once the device refused a Pause, to log that only once
+        self._pause_refused = False
 
         # Track BOOTID in SSDP advertisements for device changes
         self.bootid: int | None = None
@@ -314,14 +316,21 @@ class DLNAPlayer(Player):
             await self.stop()
             return
 
-        if self.device.can_pause:
-            await self.device.async_pause()
-            return
-
-        # Some devices expose Pause but report stale CurrentTransportActions.
-        # Force-call Pause when action exists; otherwise fallback to Stop.
-        if not await self._force_avt_action("Pause"):
-            await self._force_avt_action("Stop")
+        try:
+            if self.device.can_pause:
+                await self.device.async_pause()
+                return
+            # Some devices expose Pause but report stale CurrentTransportActions.
+            # Force-call Pause when action exists; otherwise fallback to Stop.
+            if not await self._force_avt_action("Pause"):
+                await self._force_avt_action("Stop")
+        except UpnpActionResponseError as err:
+            # Some renderers refuse to pause a stream they cannot seek in, such as an
+            # endless (chunked) stream, typically with 701. Stop rather than keep playing.
+            log = self.logger.debug if self._pause_refused else self.logger.warning
+            self._pause_refused = True
+            log("%s refused to pause (%s), stopping playback instead", self.display_name, err)
+            await self.stop()
 
     @catch_request_errors
     async def next_track(self) -> None:
