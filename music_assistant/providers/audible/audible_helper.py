@@ -80,6 +80,10 @@ AUDIOBOOK_CACHE_CHECKSUM = "series_v1"
 # short on purpose: only spares the repeated lookup of a book queued during its metadata
 # refresh, while title, description and series stay as fresh as on audible
 AUDIOBOOK_CACHE_EXPIRATION = 60 * 60
+# library pages read by the browse and artist lookups, which would page the whole library each time
+API_CACHE_EXPIRATION = 10 * 60
+# one set for all lookups, so a single cached pass through the library serves them all
+BROWSE_RESPONSE_GROUPS = "contributors,media,product_attrs,product_desc,series"
 # bookmarks, notes and clips of a book; unofficial, documented for the US marketplace only
 SIDECAR_URL = "https://cde-ta-g7g.amazon.com/FionaCDEServiceEngine/sidecar"
 # one person can be author and narrator, so the role is part of the artist id
@@ -319,6 +323,7 @@ class AudibleHelper:
         self,
         response_groups: str,
         content_types: tuple[str, ...],
+        use_cache: bool = True,
     ) -> AsyncGenerator[dict[str, Any]]:
         """Fetch items from the library with pagination."""
         page = 1
@@ -337,7 +342,7 @@ class AudibleHelper:
 
             library = await self._call_api(
                 "library",
-                use_cache=False,
+                use_cache=use_cache,
                 response_groups=response_groups,
                 page=page,
                 num_results=page_size,
@@ -408,7 +413,7 @@ class AudibleHelper:
         ]
 
         async for item in self._fetch_library_items(
-            ",".join(response_groups), AUDIOBOOK_CONTENT_TYPES
+            ",".join(response_groups), AUDIOBOOK_CONTENT_TYPES, use_cache=False
         ):
             if album := await self._process_audiobook_item(item):
                 yield album
@@ -773,9 +778,14 @@ class AudibleHelper:
                 raise ProviderUnavailableError(
                     f"Audible API request failed for '{path}': {exc}"
                 ) from exc
-            await self.mass.cache.set(
-                key=cache_key_with_params, provider=self.provider_instance, data=response
-            )
+            if use_cache:
+                await self.mass.cache.set(
+                    key=cache_key_with_params,
+                    provider=self.provider_instance,
+                    category=CACHE_CATEGORY_API,
+                    data=response,
+                    expiration=API_CACHE_EXPIRATION,
+                )
         return response
 
     @throttle_with_retries
@@ -1012,7 +1022,7 @@ class AudibleHelper:
         ]
 
         async for item in self._fetch_library_items(
-            ",".join(response_groups), PODCAST_CONTENT_TYPES
+            ",".join(response_groups), PODCAST_CONTENT_TYPES, use_cache=False
         ):
             if podcast := await self._process_podcast_item(item):
                 yield podcast
@@ -1292,7 +1302,7 @@ class AudibleHelper:
         """
         authors: dict[str, str] = {}
         async for item in self._fetch_library_items(
-            "contributors,product_attrs", AUDIOBOOK_CONTENT_TYPES
+            BROWSE_RESPONSE_GROUPS, AUDIOBOOK_CONTENT_TYPES
         ):
             for author in item.get("authors") or []:
                 if (contributor_id := _contributor_id(author)) and (name := author.get("name")):
@@ -1307,7 +1317,7 @@ class AudibleHelper:
         """
         series: dict[str, str] = {}
         async for item in self._fetch_library_items(
-            "series,product_attrs", AUDIOBOOK_CONTENT_TYPES
+            BROWSE_RESPONSE_GROUPS, AUDIOBOOK_CONTENT_TYPES
         ):
             for s in item.get("series") or []:
                 asin = s.get("asin")
@@ -1324,7 +1334,7 @@ class AudibleHelper:
         """
         narrators: dict[str, str] = {}
         async for item in self._fetch_library_items(
-            "contributors,product_attrs", AUDIOBOOK_CONTENT_TYPES
+            BROWSE_RESPONSE_GROUPS, AUDIOBOOK_CONTENT_TYPES
         ):
             for narrator in item.get("narrators") or []:
                 if (contributor_id := _contributor_id(narrator)) and (name := narrator.get("name")):
@@ -1334,7 +1344,9 @@ class AudibleHelper:
     async def get_genres(self) -> set[str]:
         """Get all unique genres from the library."""
         genres: set[str] = set()
-        async for item in self._fetch_library_items("product_attrs", AUDIOBOOK_CONTENT_TYPES):
+        async for item in self._fetch_library_items(
+            BROWSE_RESPONSE_GROUPS, AUDIOBOOK_CONTENT_TYPES
+        ):
             for keyword in item.get("thesaurus_subject_keywords") or []:
                 genres.add(keyword.replace("_", " ").replace("-", " ").title())
         return genres
@@ -1342,7 +1354,9 @@ class AudibleHelper:
     async def get_publishers(self) -> set[str]:
         """Get all unique publishers from the library."""
         publishers: set[str] = set()
-        async for item in self._fetch_library_items("product_attrs", AUDIOBOOK_CONTENT_TYPES):
+        async for item in self._fetch_library_items(
+            BROWSE_RESPONSE_GROUPS, AUDIOBOOK_CONTENT_TYPES
+        ):
             publisher = item.get("publisher_name")
             if publisher:
                 publishers.add(publisher)
@@ -1352,7 +1366,7 @@ class AudibleHelper:
         """Get all audiobooks by a specific author, sorted by release date."""
         audiobooks: list[tuple[str, Audiobook]] = []
         async for item in self._fetch_library_items(
-            "contributors,media,product_attrs,product_desc,series", AUDIOBOOK_CONTENT_TYPES
+            BROWSE_RESPONSE_GROUPS, AUDIOBOOK_CONTENT_TYPES
         ):
             for author in item.get("authors") or []:
                 if _contributor_id(author) == author_asin:
@@ -1366,7 +1380,7 @@ class AudibleHelper:
         """Get all audiobooks by a specific narrator, sorted by release date."""
         audiobooks: list[tuple[str, Audiobook]] = []
         async for item in self._fetch_library_items(
-            "contributors,media,product_attrs,product_desc,series", AUDIOBOOK_CONTENT_TYPES
+            BROWSE_RESPONSE_GROUPS, AUDIOBOOK_CONTENT_TYPES
         ):
             for narrator in item.get("narrators") or []:
                 if _contributor_id(narrator) == narrator_asin:
@@ -1382,7 +1396,7 @@ class AudibleHelper:
         genre_key = genre.lower().replace(" ", "_")
         genre_key_alt = genre.lower().replace(" ", "-")
         async for item in self._fetch_library_items(
-            "contributors,media,product_attrs,product_desc,series", AUDIOBOOK_CONTENT_TYPES
+            BROWSE_RESPONSE_GROUPS, AUDIOBOOK_CONTENT_TYPES
         ):
             keywords = item.get("thesaurus_subject_keywords") or []
             if genre_key in keywords or genre_key_alt in keywords:
@@ -1395,7 +1409,7 @@ class AudibleHelper:
         """Get all audiobooks from a specific publisher, sorted by release date."""
         audiobooks: list[tuple[str, Audiobook]] = []
         async for item in self._fetch_library_items(
-            "contributors,media,product_attrs,product_desc,series", AUDIOBOOK_CONTENT_TYPES
+            BROWSE_RESPONSE_GROUPS, AUDIOBOOK_CONTENT_TYPES
         ):
             if item.get("publisher_name") == publisher:
                 release_date = item.get("release_date") or "0000-00-00"
@@ -1407,7 +1421,7 @@ class AudibleHelper:
         """Get all audiobooks in a specific series, ordered by sequence."""
         audiobooks: list[tuple[float, Audiobook]] = []
         async for item in self._fetch_library_items(
-            "contributors,media,product_attrs,product_desc,series", AUDIOBOOK_CONTENT_TYPES
+            BROWSE_RESPONSE_GROUPS, AUDIOBOOK_CONTENT_TYPES
         ):
             for s in item.get("series") or []:
                 if s.get("asin") == series_asin:

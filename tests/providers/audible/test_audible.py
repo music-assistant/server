@@ -661,3 +661,37 @@ async def test_rate_limited_request_is_retried(
     )
 
     assert await helper._call_api("library", page=1) == {"items": []}
+
+
+async def test_browse_lookups_share_one_cached_pass_through_the_library(
+    helper: AudibleHelper, mass_mock: AsyncMock, audible_client_mock: AsyncMock
+) -> None:
+    """Each browse lookup used to page through the whole library again; the sync stays fresh."""
+    store: dict[tuple[int, str], Any] = {}
+
+    async def cache_get(key: str, default: Any = None, **kwargs: Any) -> Any:
+        return store.get((kwargs["category"], key), default)
+
+    async def cache_set(key: str, data: Any, **kwargs: Any) -> None:
+        store[(kwargs["category"], key)] = data
+
+    mass_mock.cache.get = AsyncMock(side_effect=cache_get)
+    mass_mock.cache.set = AsyncMock(side_effect=cache_set)
+    book = {
+        "asin": "book_1",
+        "title": "Book 1",
+        "content_delivery_type": "SinglePartBook",
+        "authors": [{"asin": "author_1", "name": "Jane Doe"}],
+    }
+
+    async def library_page(_path: str, **kwargs: Any) -> dict[str, Any]:
+        return {"items": [book] if kwargs["page"] == 1 else []}
+
+    audible_client_mock.get = AsyncMock(side_effect=library_page)
+
+    assert await helper.get_authors() == {"author_1": "Jane Doe"}
+    assert [x.item_id for x in await helper.get_audiobooks_by_author("author_1")] == ["book_1"]
+    assert [x.item_id async for x in helper.get_library()] == ["book_1"]
+
+    # one cached pass for both lookups, one fresh pass for the sync
+    assert audible_client_mock.get.await_count == 2
