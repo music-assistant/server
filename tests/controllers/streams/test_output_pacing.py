@@ -56,7 +56,7 @@ def test_the_near_realtime_profile_leaves_room_for_a_source_to_bank_ahead() -> N
 
 def test_the_near_realtime_pacing_is_the_measured_one() -> None:
     """
-    The pace and the burst were picked from measurements on real speakers.
+    The pace and the burst come from measurements on real speakers and their production logs.
 
     A player that fetches each track only once the previous download completes (Sonos
     does) holds at a boundary just the burst plus what the pace banked over the track it
@@ -81,8 +81,8 @@ def test_a_track_of_a_slow_source_earns_the_room_for_a_fade() -> None:
     already. A stream per track is the tight case, as its burst comes out of that room
     with every track, where the flow stream opens with one burst for a whole session.
     At the first track change of a 200 s track that room may fall up to one second short
-    of a full default fade, traded for the lead a player holds at a boundary; longer
-    tracks earn it in full. The tolerance keeps a future pace from eating more than that.
+    of a full default fade, traded for the lead a player holds at a boundary; tracks from
+    about 220 s earn it in full. The tolerance keeps a future pace from eating more than that.
     """
     args = output_pacing_args(PacingProfile.NEAR_REALTIME)
     stream_seconds = (TRACK_SECONDS - _value(args, "-readrate_initial_burst")) / _value(
