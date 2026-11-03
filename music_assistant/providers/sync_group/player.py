@@ -1341,13 +1341,18 @@ class SyncGroupPlayer(Player):
 
         Returns ``True`` when the member is verified unsynced (downstream flows
         like leader selection / play_media on the leader are safe to proceed),
-        or ``False`` when the player is genuinely stuck (the caller should
-        abort rather than issue a play_media that will be rejected by the
-        provider's "I'm synced to another player" guard).
+        also for a member that is unregistered or unavailable since the form
+        leaves it out, or ``False`` when the player is genuinely stuck (the
+        caller should abort rather than issue a play_media that will be
+        rejected by the provider's "I'm synced to another player" guard).
 
         :param member_id: The player to wait on.
         :param timeout: Seconds to wait for the first state propagation.
         """
+        member = self.mass.players.get_player(member_id)
+        if member is None or not member.state.available:
+            # a member that is gone can neither report the unsync nor be released
+            return True
         async with self.mass.players.wait_for_player_update(
             member_id,
             attribute_name="synced_to",
@@ -1718,18 +1723,26 @@ class SyncGroupPlayer(Player):
                         stuck_members,
                     )
                     return
+                # Preselect the new leader, with the protocol hint when there is one,
+                # so the form picks a member compatible with the previous session's
+                # protocol (e.g. keep AirPlay if the session was AirPlay).
+                new_leader = self._select_sync_leader(
+                    preferred_protocol_domain=self._reform_protocol_domain
+                )
+                if new_leader is None:
+                    # the members stay recorded, so a later play forms the group
+                    # once one of them is back
+                    self.logger.info(
+                        "Not re-forming syncgroup %s: none of its members is available",
+                        self.display_name,
+                    )
+                    return
                 self.logger.info(
                     "Re-forming syncgroup %s with %s member(s) and resuming playback",
                     self.display_name,
                     len(members),
                 )
-                # Preselect the new leader with the protocol hint so the form
-                # picks a member compatible with the previous session's protocol
-                # (e.g. keep AirPlay if the session was AirPlay).
-                if self._reform_protocol_domain is not None:
-                    self.sync_leader = self._select_sync_leader(
-                        preferred_protocol_domain=self._reform_protocol_domain
-                    )
+                self.sync_leader = new_leader
                 await self.play()
         finally:
             # normal completion detaches us via play() -> _form_syncgroup already;
