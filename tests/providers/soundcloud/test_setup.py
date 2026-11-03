@@ -54,9 +54,7 @@ async def test_async_init_stores_user_id(provider: SoundcloudMusicProvider) -> N
     api = AsyncMock()
     api.get_account_details.return_value = {"id": 42}
 
-    with patch(
-        "music_assistant.providers.soundcloud.SoundcloudAsyncAPI", return_value=api
-    ) as api_cls:
+    with patch("music_assistant.providers.soundcloud._SoundcloudAPI", return_value=api) as api_cls:
         await provider.handle_async_init()
 
     api_cls.assert_called_once()
