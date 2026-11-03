@@ -4111,6 +4111,34 @@ class TestProtocolSwitchingDuringPlayback:
 
         assert selected_on_resume == ["leader_bridge"]
 
+    async def test_switch_that_would_strand_a_member_is_refused(self, mock_mass: MagicMock) -> None:
+        """
+        A player whose protocol a grouped member cannot follow is not added to the group.
+
+        The re-added member would move the group back onto a protocol the new player cannot
+        join, which hands the output back and forth without end.
+        """
+        controller, players = self._build_protocol_group(mock_mass)
+        players["member_bridge"]._attr_available = False
+        for player in players.values():
+            player.update_state(signal_event=False)
+        controller._handle_cmd_stop = AsyncMock()  # type: ignore[method-assign]
+        controller.cmd_resume = AsyncMock()  # type: ignore[method-assign]
+        controller._handle_set_members = AsyncMock()  # type: ignore[method-assign]
+
+        await controller._forward_protocol_set_members(
+            parent_player=players["leader"],
+            parent_protocol_player=players["leader_bridge"],
+            protocol_members_to_add=["joiner"],
+            protocol_members_to_remove=[],
+        )
+
+        assert (
+            players["leader"].active_output_protocol,
+            players["leader_bridge"].group_members,
+            controller._handle_cmd_stop.await_count,
+        ) == ("leader_airplay", [], 0)
+
     async def test_joining_member_protocol_is_active_before_its_stream_starts(
         self, mock_mass: MagicMock
     ) -> None:

@@ -3075,6 +3075,26 @@ class ProtocolLinkingMixin:
             )
             return
 
+        # A join that switches protocols moves every member along, silencing those without it.
+        if filtered_protocol_add and (
+            unable_to_follow := self._members_unable_to_follow(
+                parent_player, parent_protocol_player
+            )
+        ):
+            self.logger.warning(
+                "Cannot add %s to %s: %s cannot move along to the %s protocol",
+                ", ".join(
+                    player.display_name if (player := self.get_player(pid)) else pid
+                    for pid in filtered_protocol_add
+                ),
+                parent_player.state.name,
+                ", ".join(unable_to_follow),
+                parent_protocol_player.provider.domain,
+            )
+            filtered_protocol_add = []
+            if not filtered_protocol_remove:
+                return
+
         # Members that ride the parent's own stream are stranded by the protocol switch below,
         # so they join the protocol group in this very same call and are released from the
         # parent's native grouping afterwards.
@@ -3273,6 +3293,32 @@ class ProtocolLinkingMixin:
             parent_player, old_protocol_player, [], old_protocol_members
         )
         return old_parent_members
+
+    def _members_unable_to_follow(
+        self, parent_player: Player, parent_protocol_player: Player
+    ) -> list[str]:
+        """
+        Return the names of the members a handover to the given protocol would leave silent.
+
+        :param parent_player: The parent player that would hand its output over.
+        :param parent_protocol_player: The protocol player that would take the output over.
+        """
+        if parent_player.state.playback_state not in (PlaybackState.PLAYING, PlaybackState.PAUSED):
+            return []
+        if not (
+            old_protocol_player := self._get_previous_protocol_player(
+                parent_player.active_output_protocol, parent_protocol_player
+            )
+        ):
+            return []
+        protocol_domain = parent_protocol_player.provider.domain
+        names: list[str] = []
+        for _, member_id in self._get_protocol_group_members(parent_player, old_protocol_player):
+            member = self.get_player(member_id)
+            output = member.get_output_protocol_by_domain(protocol_domain) if member else None
+            if not output or not output.available:
+                names.append(member.display_name if member else member_id)
+        return names
 
     def _get_previous_protocol_player(
         self, previous_protocol: str | None, parent_protocol_player: Player
