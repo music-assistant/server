@@ -18,6 +18,8 @@ from music_assistant_models.media_items import Artist, BrowseFolder, ItemMapping
 from music_assistant.constants import CONF_ENTRY_UNOFFICIAL_PROVIDER
 from music_assistant.models.music_provider import MusicProvider
 from music_assistant.providers.audible.audible_helper import (
+    AUTHOR_ID_PREFIX,
+    NARRATOR_ID_PREFIX,
     AudibleHelper,
     cached_authenticator_from_file,
     evict_cached_authenticator,
@@ -95,11 +97,15 @@ class Audibleprovider(MusicProvider):
 
     async def get_author_audiobooks(self, prov_artist_id: str) -> list[Audiobook]:
         """Get all audiobooks of an author."""
-        return await self.helper.get_audiobooks_by_author(prov_artist_id)
+        return await self.helper.get_audiobooks_by_author(
+            prov_artist_id.removeprefix(AUTHOR_ID_PREFIX)
+        )
 
     async def get_narrator_audiobooks(self, prov_artist_id: str) -> list[Audiobook]:
         """Get all audiobooks of a narrator."""
-        return await self.helper.get_audiobooks_by_narrator(prov_artist_id)
+        return await self.helper.get_audiobooks_by_narrator(
+            prov_artist_id.removeprefix(NARRATOR_ID_PREFIX)
+        )
 
     async def get_library_artists(self) -> AsyncGenerator[Artist]:
         """Get all authors and narrators from the library."""

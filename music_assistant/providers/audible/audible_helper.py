@@ -73,6 +73,9 @@ PODCAST_CONTENT_TYPES = ("PodcastParent", "Periodical")
 SHOW_CONTENT_TYPE = "Show"
 # Bump to re-fetch cached audiobook payloads whenever the requested response groups change
 AUDIOBOOK_CACHE_CHECKSUM = "series_v1"
+# one person can be author and narrator, so the role is part of the artist id
+AUTHOR_ID_PREFIX = "author:"
+NARRATOR_ID_PREFIX = "narrator:"
 
 _AUTH_CACHE: dict[str, audible.Authenticator] = {}
 
@@ -227,22 +230,30 @@ class AudibleHelper:
         for asin, name in (await self.get_narrators()).items():
             yield self._parse_artist(asin, name, ArtistType.NARRATOR)
 
-    async def get_artist(self, asin: str) -> Artist:
+    async def get_artist(self, prov_artist_id: str) -> Artist:
         """
-        Get an author or narrator by asin.
+        Get an author or narrator by id.
 
-        :param asin: The contributor's asin, as carried by its provider mapping.
+        :param prov_artist_id: The artist id, the contributor's id prefixed with its role.
         """
-        # the library holds name and type, while audible can only be searched page by page
+        if prov_artist_id.startswith(AUTHOR_ID_PREFIX):
+            artist_type = ArtistType.AUTHOR
+            contributor_id = prov_artist_id.removeprefix(AUTHOR_ID_PREFIX)
+            get_contributors = self.get_authors
+        elif prov_artist_id.startswith(NARRATOR_ID_PREFIX):
+            artist_type = ArtistType.NARRATOR
+            contributor_id = prov_artist_id.removeprefix(NARRATOR_ID_PREFIX)
+            get_contributors = self.get_narrators
+        else:
+            raise MediaNotFoundError(f"Artist {prov_artist_id} not found")
+        # the library holds the name, while audible can only be searched page by page
         if library_artist := await self.mass.music.artists.get_library_item_by_prov_id(
-            asin, self.provider_instance
+            prov_artist_id, self.provider_instance
         ):
-            return self._parse_artist(asin, library_artist.name, library_artist.artist_type)
-        if name := (await self.get_authors()).get(asin):
-            return self._parse_artist(asin, name, ArtistType.AUTHOR)
-        if name := (await self.get_narrators()).get(asin):
-            return self._parse_artist(asin, name, ArtistType.NARRATOR)
-        raise MediaNotFoundError(f"Artist with ASIN {asin} not found")
+            return self._parse_artist(contributor_id, library_artist.name, artist_type)
+        if name := (await get_contributors()).get(contributor_id):
+            return self._parse_artist(contributor_id, name, artist_type)
+        raise MediaNotFoundError(f"Artist {prov_artist_id} not found")
 
     async def _fetch_library_items(
         self,
@@ -727,22 +738,24 @@ class AudibleHelper:
                     )
         return result
 
-    def _parse_artist(self, asin: str, name: str, artist_type: ArtistType) -> Artist:
+    def _parse_artist(self, contributor_id: str, name: str, artist_type: ArtistType) -> Artist:
         """
         Build the Artist for an audiobook author or narrator.
 
-        :param asin: The contributor's asin, or its name when it has none.
+        :param contributor_id: The contributor's asin, or its name when it has none.
         :param name: The contributor's name.
         :param artist_type: Author or narrator.
         """
+        prefix = AUTHOR_ID_PREFIX if artist_type == ArtistType.AUTHOR else NARRATOR_ID_PREFIX
+        prov_artist_id = f"{prefix}{contributor_id}"
         return Artist(
-            item_id=asin,
+            item_id=prov_artist_id,
             provider=self.provider_instance,
             name=name,
             artist_type=artist_type,
             provider_mappings={
                 ProviderMapping(
-                    item_id=asin,
+                    item_id=prov_artist_id,
                     provider_domain=self.provider_domain,
                     provider_instance=self.provider_instance,
                 )
