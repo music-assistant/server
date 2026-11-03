@@ -3240,7 +3240,7 @@ class ProtocolLinkingMixin:
         previous_protocol: str | None,
     ) -> list[str]:
         """
-        Stop the protocol player the parent was rendering through and return its members.
+        Stop the protocol player the parent was rendering through, ungroup and return its members.
 
         The returned IDs are parent player IDs, so the caller can re-add them to the group
         once the new protocol carries the audio. Empty if there is nothing to hand over.
@@ -3256,6 +3256,7 @@ class ProtocolLinkingMixin:
         if old_protocol_player.player_id == parent_protocol_player.player_id:
             return []
         # Translate the old protocol's child members back to parent player IDs
+        old_protocol_members: list[str] = []
         old_parent_members: list[str] = []
         for member_id in old_protocol_player.group_members:
             if member_id == old_protocol_player.player_id:
@@ -3264,6 +3265,7 @@ class ProtocolLinkingMixin:
                 continue
             parent_id = member_player.protocol_parent_id or member_id
             if parent_id != parent_player.player_id:
+                old_protocol_members.append(member_id)
                 old_parent_members.append(parent_id)
         self.logger.debug(
             "Stopping old protocol player %s before switching to %s, migrating members: %s",
@@ -3274,4 +3276,9 @@ class ProtocolLinkingMixin:
         # Use internal handler to stop the specific protocol player,
         # bypassing group/sync redirect and queue redirect logic.
         await self.mass.players._handle_cmd_stop(old_protocol_player.player_id)
+        # A stopped protocol player keeps its group, which would win the output selection
+        # of the resume over the protocol that takes over.
+        await self._forward_protocol_set_members(
+            parent_player, old_protocol_player, [], old_protocol_members
+        )
         return old_parent_members
