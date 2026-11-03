@@ -67,6 +67,7 @@ SPOTIFY_ID = "4Z8W4fKeB5YxbusRsdQVPb"
         # qobuz
         ("https://open.qobuz.com/album/0634904032432", (MediaType.ALBUM, "qobuz", "0634904032432")),
         ("https://play.qobuz.com/artist/1044", (MediaType.ARTIST, "qobuz", "1044")),
+        ("https://play.qobuz.com/album/0634904032432", (MediaType.ALBUM, "qobuz", "0634904032432")),
         (
             "https://www.qobuz.com/us-en/album/in-rainbows-radiohead/0634904032432",
             (MediaType.ALBUM, "qobuz", "0634904032432"),
