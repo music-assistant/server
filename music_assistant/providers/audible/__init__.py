@@ -188,7 +188,7 @@ class Audibleprovider(MusicProvider):
 
     async def get_audiobook(self, prov_audiobook_id: str) -> Audiobook:
         """Get full audiobook details by id."""
-        return await self.helper.get_audiobook(asin=prov_audiobook_id, use_cache=False)
+        return await self.helper.get_audiobook(asin=prov_audiobook_id)
 
     async def browse(self, path: str) -> Sequence[MediaItemType | ItemMapping | BrowseFolder]:
         """

@@ -73,6 +73,9 @@ PODCAST_CONTENT_TYPES = ("PodcastParent", "Periodical")
 SHOW_CONTENT_TYPE = "Show"
 # Bump to re-fetch cached audiobook payloads whenever the requested response groups change
 AUDIOBOOK_CACHE_CHECKSUM = "series_v1"
+# short on purpose: only spares the repeated lookup of a book queued during its metadata
+# refresh, while title, description and series stay as fresh as on audible
+AUDIOBOOK_CACHE_EXPIRATION = 60 * 60
 # one person can be author and narrator, so the role is part of the artist id
 AUTHOR_ID_PREFIX = "author:"
 NARRATOR_ID_PREFIX = "narrator:"
@@ -353,26 +356,25 @@ class AudibleHelper:
             if album := await self._process_audiobook_item(item):
                 yield album
 
-    async def get_audiobook(self, asin: str, use_cache: bool = True) -> Audiobook:
+    async def get_audiobook(self, asin: str) -> Audiobook:
         """
         Fetch the full audiobook by asin with all details including chapters.
 
         This method fetches complete audiobook details including chapters and resume position.
         Use this when the user requests full details for a specific audiobook.
         """
-        if use_cache:
-            cached_book = await self.mass.cache.get(
-                key=asin,
-                provider=self.provider_instance,
-                category=CACHE_CATEGORY_AUDIOBOOK,
-                checksum=AUDIOBOOK_CACHE_CHECKSUM,
-                default=None,
-            )
-            if cached_book is not None:
-                book = self._parse_audiobook(cached_book)
-                # Enrich with chapters and resume position
-                await self._enrich_audiobook(book, asin)
-                return book
+        cached_book = await self.mass.cache.get(
+            key=asin,
+            provider=self.provider_instance,
+            category=CACHE_CATEGORY_AUDIOBOOK,
+            checksum=AUDIOBOOK_CACHE_CHECKSUM,
+            default=None,
+        )
+        if cached_book is not None:
+            book = self._parse_audiobook(cached_book)
+            # Enrich with chapters and resume position
+            await self._enrich_audiobook(book, asin)
+            return book
         response = await self._call_api(
             f"library/{asin}",
             response_groups="""
@@ -394,6 +396,7 @@ class AudibleHelper:
             category=CACHE_CATEGORY_AUDIOBOOK,
             checksum=AUDIOBOOK_CACHE_CHECKSUM,
             data=item_data,
+            expiration=AUDIOBOOK_CACHE_EXPIRATION,
         )
         book = self._parse_audiobook(item_data)
         # Enrich with chapters and resume position

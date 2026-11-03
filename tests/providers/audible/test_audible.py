@@ -563,3 +563,35 @@ async def test_author_who_narrates_keeps_both_roles(music_mass: MusicAssistant) 
 
     assert [getattr(x, "name", x) for x in library_book.authors] == ["Jane Doe"]
     assert [getattr(x, "name", x) for x in library_book.narrators] == ["Jane Doe"]
+
+
+async def test_audiobook_is_served_from_its_cache(
+    provider: Audibleprovider, helper: AudibleHelper, mass_mock: AsyncMock
+) -> None:
+    """Every full lookup, e.g. a metadata refresh or a queued book, used to request the book again."""
+    store: dict[tuple[int, str], Any] = {}
+
+    async def cache_get(key: str, default: Any = None, **kwargs: Any) -> Any:
+        return store.get((kwargs["category"], key), default)
+
+    async def cache_set(key: str, data: Any, **kwargs: Any) -> None:
+        store[(kwargs["category"], key)] = data
+
+    mass_mock.cache.get = AsyncMock(side_effect=cache_get)
+    mass_mock.cache.set = AsyncMock(side_effect=cache_set)
+    requested: list[str] = []
+
+    async def call_api(path: str, **_kwargs: Any) -> dict[str, Any]:
+        requested.append(path)
+        if path == "library/book_1":
+            return {"item": {"asin": "book_1", "title": "Book 1"}}
+        return {}
+
+    helper._call_api = AsyncMock(side_effect=call_api)  # type: ignore[method-assign]
+    provider.helper = helper
+
+    first = await provider.get_audiobook("book_1")
+    second = await provider.get_audiobook("book_1")
+
+    assert (first.name, second.name) == ("Book 1", "Book 1")
+    assert requested.count("library/book_1") == 1
