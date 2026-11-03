@@ -23,7 +23,7 @@ from aiosendspin.noise.pairing import (
     RemotePairingAbortError,
 )
 from aiosendspin.noise.trust_store import PskCategory, TrustedUnpairedClient
-from music_assistant_models.enums import ConfigEntryType, FlowStepType
+from music_assistant_models.enums import ConfigEntryType, FlowStepType, PlayerType
 
 from music_assistant.helpers.util import join_task
 from music_assistant.models.setup_flow import (
@@ -39,6 +39,7 @@ from music_assistant.providers.sendspin.constants import (
     CONF_PAIRING_METHOD,
     CONF_PAIRING_PIN,
     CONF_PAIRING_TOKEN,
+    CONF_SOURCE_AUTOSTART_TARGET,
     CONF_SOURCE_INPUT_ACTION,
     CONF_SOURCE_INPUT_DECLINED,
     CONNECT_METHOD_PAIR,
@@ -152,6 +153,7 @@ class _FakeApi:
         self.info_or_none = SimpleNamespace(
             supported_pair_methods=_offer(methods),
             unpaired_access=SimpleNamespace(enabled=unpaired_access),
+            source_support=None,
         )
         self.connection_security: Any = SimpleNamespace(psk_category=psk_category)
         self.active_roles = active_roles
@@ -822,6 +824,85 @@ async def test_opting_into_pairing_for_the_input_offers_only_pair_methods() -> N
     await _wait_for(lambda: session.finished)
     await task
     assert provider.submitted_pins == ["123456"]
+
+
+def _line_sense_combo(api: _FakeApi, player: SendspinBasePlayer) -> mock.MagicMock:
+    """Make the combo sense a line-in signal, with a speaker to autostart on."""
+    api.info_or_none.source_support = SimpleNamespace(features=SimpleNamespace(line_sense=True))
+    mass = _attach_mass(player)
+    player.set_protocol_parent_id(None)
+    mass.players.all_players.return_value = [
+        SimpleNamespace(player_id=pid, display_name=pid, type=PlayerType.PLAYER)
+        for pid in ("client-1", "kitchen")
+    ]
+    return mass
+
+
+async def test_allowing_the_input_offers_line_in_autostart() -> None:
+    """Allowing a line-sensing input asks where it autostarts, prefilled with an earlier pick."""
+    api = _combo_api_with_pending_source()
+    provider = _FakeProvider(api)
+    session, _mass = _make_session(_ok_finish)
+    player = _make_player(api, provider)
+    mass = _line_sense_combo(api, player)
+    session.context.values[CONF_SOURCE_AUTOSTART_TARGET] = "kitchen"
+
+    task = asyncio.create_task(player.run_setup_flow(session))
+    step = await _wait_step(session, step_type=FlowStepType.FORM, step_id="approve_device_source")
+    assert step.last_step is False
+    session.handle_submit({CONF_CONNECT_METHOD: CONNECT_METHOD_UNPAIRED_WITH_INPUT})
+
+    step = await _wait_step(session, step_type=FlowStepType.FORM, step_id="source_autostart")
+    assert step.entries[0].value == "kitchen"
+    session.handle_submit({CONF_SOURCE_AUTOSTART_TARGET: "client-1"})
+
+    await _wait_for(lambda: session.finished)
+    await task
+    mass.config.set_raw_player_config_value.assert_called_with(
+        "client-1", CONF_SOURCE_AUTOSTART_TARGET, None
+    )
+    assert session.finish_step_id == FINISH_STEP_SILENT
+
+
+async def test_declining_the_input_skips_line_in_autostart() -> None:
+    """A declined input never plays, so its autostart target is not asked for."""
+    api = _combo_api_with_pending_source()
+    provider = _FakeProvider(api)
+    session, mass = _make_session(_ok_finish)
+    player = _make_player(api, provider)
+    _line_sense_combo(api, player)
+
+    task = asyncio.create_task(player.run_setup_flow(session))
+    await _wait_step(session, step_type=FlowStepType.FORM, step_id="approve_device_source")
+    session.handle_submit({CONF_CONNECT_METHOD: CONNECT_METHOD_UNPAIRED_WITHOUT_INPUT})
+
+    await _wait_for(lambda: session.finished)
+    await task
+    assert "source_autostart" not in {step.step_id for step in _published_steps(mass)}
+
+
+async def test_pairing_a_line_sensing_device_offers_line_in_autostart() -> None:
+    """Pairing carries the input, so a line-sensing device picks its autostart target after."""
+    api = _combo_api_with_pending_source()
+    provider = _FakeProvider(api)
+    session, _mass = _make_session(_ok_finish)
+    player = _make_player(api, provider)
+    mass = _line_sense_combo(api, player)
+
+    task = asyncio.create_task(player.run_setup_flow(session))
+    await _wait_step(session, step_type=FlowStepType.FORM, step_id="approve_device_source")
+    session.handle_submit({CONF_CONNECT_METHOD: CONNECT_METHOD_PAIR})
+    await _wait_step(session, step_type=FlowStepType.FORM, step_id="enter_pin")
+    session.handle_submit({CONF_PAIRING_PIN: "123456"})
+
+    await _wait_step(session, step_type=FlowStepType.FORM, step_id="source_autostart")
+    session.handle_submit({CONF_SOURCE_AUTOSTART_TARGET: "kitchen"})
+
+    await _wait_for(lambda: session.finished)
+    await task
+    mass.config.set_raw_player_config_value.assert_called_once_with(
+        "client-1", CONF_SOURCE_AUTOSTART_TARGET, "kitchen"
+    )
 
 
 async def test_paired_device_aborts_as_already_paired() -> None:

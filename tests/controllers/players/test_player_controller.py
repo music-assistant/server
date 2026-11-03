@@ -1124,6 +1124,26 @@ class TestUnregisterCleanup:
 
         assert "set_members_other" in controller._player_command_locks
 
+    def test_state_update_after_unregister_is_not_signalled(self, mock_mass: MagicMock) -> None:
+        """A late state update of an unregistered player does not mark it available again."""
+        controller = PlayerController(mock_mass)
+        mock_mass.players = controller
+        provider = MockProvider("test_provider", instance_id="test", mass=mock_mass)
+        player = MockPlayer(provider, "player_1", "Player 1")
+        controller._players = {"player_1": player}
+        player.set_initialized()
+        player.update_state(signal_event=False)
+
+        player._attr_playback_state = PlaybackState.PLAYING
+        controller.trigger_player_update("player_1")
+        debounced_update = mock_mass.call_later.call_args
+        asyncio.run(controller.unregister("player_1"))
+        mock_mass.signal_event.reset_mock()
+        # the debounced update scheduled before the unregister still fires afterwards
+        debounced_update.args[1]()
+
+        mock_mass.signal_event.assert_not_called()
+
 
 class TestRegisterUnregisterRace:
     """Test registration that is interrupted by an unregister of the same player."""
@@ -1687,7 +1707,7 @@ class TestRegisterOrUpdateTypeTransition:
 
         assert player.state.type is PlayerType.PROTOCOL
         mock_mass.player_queues.on_player_remove.assert_called_once_with(
-            "player_1", permanent=False
+            "player_1", permanent=False, release_audio=False
         )
         assert self._signalled(mock_mass, EventType.PLAYER_REMOVED)
 
@@ -1735,10 +1755,35 @@ class TestRegisterOrUpdateTypeTransition:
 
         await controller.register_or_update(parent)
 
-        mock_mass.player_queues.on_player_remove.assert_called_once_with("parent", permanent=False)
+        mock_mass.player_queues.on_player_remove.assert_called_once_with(
+            "parent", permanent=False, release_audio=False
+        )
         assert self._signalled(mock_mass, EventType.PLAYER_REMOVED)
         assert parent.linked_output_protocols == []
         assert child.protocol_parent_id is None
+
+    async def test_protocol_transition_drops_the_queue_before_the_player(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """The queue's final update reaches clients before the PLAYER_REMOVED that drops it."""
+        controller = self._prepare(mock_mass)
+        provider = MockProvider("test_provider", instance_id="test", mass=mock_mass)
+        parent = self._register(controller, provider, "parent", PlayerType.PLAYER)
+        calls = MagicMock()
+        calls.attach_mock(mock_mass.player_queues.on_player_remove, "on_player_remove")
+        calls.attach_mock(mock_mass.signal_event, "signal_event")
+
+        parent._attr_type = PlayerType.PROTOCOL
+        parent.update_state(signal_event=False)
+        await controller.register_or_update(parent)
+
+        names = [c[0] for c in calls.mock_calls]
+        removed_at = next(
+            i
+            for i, c in enumerate(calls.mock_calls)
+            if c[0] == "signal_event" and EventType.PLAYER_REMOVED in c[1]
+        )
+        assert names.index("on_player_remove") < removed_at
 
     async def test_unchanged_type_leaves_queue_alone(self, mock_mass: MagicMock) -> None:
         """Re-registering a player without a type change does not touch its queue."""
@@ -2035,6 +2080,92 @@ class TestCmdUngroupNewBranches:
         await controller.cmd_ungroup_many(["missing", "gone", "follower", "g1"])
 
         controller._handle_cmd_stop.assert_awaited_once_with("g1")
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("leader_available", [True, False])
+    async def test_ungroup_sync_member_routes_by_leader_availability(
+        self, mock_mass: MagicMock, leader_available: bool
+    ) -> None:
+        """A member leaves through its sync leader, or on its own when that leader is offline."""
+        controller = PlayerController(mock_mass)
+        provider = MockProvider("test_provider", instance_id="test_prov", mass=mock_mass)
+        leader = MockPlayer(provider, "leader", "Leader")
+        leader._attr_group_members = ["leader", "follower"]
+        follower = MockPlayer(provider, "follower", "Follower")
+        controller._players = {"leader": leader, "follower": follower}
+        mock_mass.players = controller
+        for player in (leader, follower):
+            player.set_initialized()
+            player.update_state(signal_event=False)
+        leader._attr_available = leader_available
+        leader.update_state(signal_event=False)
+        assert follower.state.synced_to == "leader"
+        controller.cmd_set_members = AsyncMock()  # type: ignore[method-assign]
+
+        with patch.object(follower, "ungroup", new=AsyncMock()) as ungroup:
+            await controller.cmd_ungroup("follower")
+
+        if leader_available:
+            controller.cmd_set_members.assert_awaited_once_with(
+                "leader", player_ids_to_remove=["follower"]
+            )
+            ungroup.assert_not_awaited()
+        else:
+            controller.cmd_set_members.assert_not_awaited()
+            ungroup.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_detach_from_offline_leader_leaves_through_the_synced_protocol_player(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """A member synced over a linked protocol leaves through that protocol player."""
+        controller = PlayerController(mock_mass)
+        protocol_player = MagicMock()
+        protocol_player.synced_to = "leader_airplay"
+        protocol_player.ungroup = AsyncMock()
+        controller._players = {"member_airplay": protocol_player}
+        link = MagicMock(output_protocol_id="member_airplay")
+        member = MagicMock()
+        member.synced_to = None  # not grouped natively
+        member.state.synced_to = "leader"  # not registered (anymore)
+        member.linked_output_protocols = [link]
+        member.ungroup = AsyncMock()
+
+        await controller._detach_member(member)
+
+        protocol_player.ungroup.assert_awaited_once()
+        member.ungroup.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_ungroup_many_continues_when_a_member_cannot_leave_its_offline_leader(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """A member that fails to leave its offline leader doesn't stop the others."""
+        controller = PlayerController(mock_mass)
+        provider = MockProvider("test_provider", instance_id="test_prov", mass=mock_mass)
+        leader = MockPlayer(provider, "leader", "Leader")
+        leader._attr_group_members = ["leader", "first", "second"]
+        first = MockPlayer(provider, "first", "First")
+        second = MockPlayer(provider, "second", "Second")
+        controller._players = {"leader": leader, "first": first, "second": second}
+        mock_mass.players = controller
+        for player in (leader, first, second):
+            player.set_initialized()
+            player.update_state(signal_event=False)
+        leader._attr_available = False
+        leader.update_state(signal_event=False)
+        assert first.state.synced_to == second.state.synced_to == "leader"
+
+        with (
+            patch.object(
+                first, "ungroup", new=AsyncMock(side_effect=PlayerCommandFailed("no route"))
+            ) as first_ungroup,
+            patch.object(second, "ungroup", new=AsyncMock()) as second_ungroup,
+        ):
+            await controller.cmd_ungroup_many(["first", "second"])
+
+        first_ungroup.assert_awaited_once()
+        second_ungroup.assert_awaited_once()
 
 
 class TestPowerOffEndsTheQueue:

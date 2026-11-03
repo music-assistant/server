@@ -63,12 +63,14 @@ from music_assistant.controllers.player_queues.helpers import (
     has_dynamic_source,
     is_dynamic_source,
     is_finite_radio,
+    origin_for,
     played_from_album,
 )
 from music_assistant.controllers.player_queues.managed_pool import gate_tracks
 from music_assistant.controllers.webserver.helpers.auth_middleware import (
     get_current_user,
     set_current_user,
+    set_impersonated_user,
 )
 from music_assistant.helpers.audio import get_probed_duration, store_probed_duration
 from music_assistant.helpers.provider_access import playback_sources, resolve_playback_user
@@ -572,6 +574,8 @@ class QueueLoaderMixin(_PlayerQueuesBase):
             else None
         )
         set_current_user(playback_user)
+        # the refill runs as the owner, not as a user the scheduling call impersonated
+        set_impersonated_user(None)
         # Top up from the queue's dynamic sources (dynamic playlists and any mixed-in finite items),
         # weighted per source and recency-gated. fill() already sizes the batch to the pool target;
         # the tail cap below is a defensive ceiling so the unplayed tail never grows past
@@ -618,6 +622,8 @@ class QueueLoaderMixin(_PlayerQueuesBase):
             else None
         )
         set_current_user(playback_user)
+        # the refill runs as the owner, not as a user the scheduling call impersonated
+        set_impersonated_user(None)
         if self._queue_data.get(queue_id) is not queue_data:
             # the queue was removed or re-registered while the user context was restored
             return
@@ -682,10 +688,13 @@ class QueueLoaderMixin(_PlayerQueuesBase):
         if queue is None:
             return
         queue_data = self._queue_data[queue_id]
+        mode = self._autoplay.resolve_mode(queue_id)
+        if mode == AutoplayMode.SIMILAR_ARTISTS:
+            await self._fill_autoplay_similar_artist(queue_id)
+            return
         if not queue_data.enqueued_media_items:
             # the music refill needs what the user enqueued as its seed
             return
-        mode = self._autoplay.resolve_mode(queue_id)
         self.logger.debug(
             "Filling autoplay tracks (mode: %s) for queue %s", mode.value, queue.display_name
         )
@@ -742,6 +751,54 @@ class QueueLoaderMixin(_PlayerQueuesBase):
             insert_at_index=len(queue_data.items) + 1,
         )
 
+    async def _fill_autoplay_similar_artist(self, queue_id: str) -> None:
+        """Append a similar artist's tracks, picked the same way as playing that artist."""
+        queue_data = self._queue_data[queue_id]
+        queue = queue_data.queue
+        queue_items: list[QueueItem] = []
+        try:
+            similar_artists = await self._autoplay.get_similar_artists(queue)
+        except MusicAssistantError as err:
+            self.logger.warning(
+                "Autoplay failed to fetch similar artists for queue %s: %s",
+                queue.display_name,
+                err,
+            )
+            return
+        for artist in similar_artists:
+            try:
+                tracks = await without_disliked_tracks(
+                    self.mass,
+                    queue_data.userid,
+                    await self._media_resolver.get_artist_tracks(artist),
+                )
+            except MusicAssistantError as err:
+                self.logger.warning(
+                    "Autoplay failed to fetch the tracks of %s for queue %s: %s",
+                    artist.name,
+                    queue.display_name,
+                    err,
+                )
+                continue
+            queue_items = [
+                build_queue_item(queue_id, track, origin=origin_for(artist, track, pin=False))
+                for track in tracks
+                if track.available
+            ]
+            if queue_items:
+                break
+        if not queue_items:
+            self.logger.info(
+                "Autoplay found no similar artist to add for queue %s", queue.display_name
+            )
+            return
+        if self._queue_data.get(queue_id) is not queue_data:
+            # the queue was removed or re-registered while the artist was fetched
+            return
+        if not queue.autoplay_enabled:
+            return
+        await self.load(queue_id, queue_items, insert_at_index=len(queue_data.items) + 1)
+
     @handle_play_action
     async def _handle_play_media(  # noqa: C901, PLR0912
         self,
@@ -752,8 +809,8 @@ class QueueLoaderMixin(_PlayerQueuesBase):
         start_item: PlayableMediaItemType | str | None = None,
         sort_field: SortField | None = None,
         sort_direction: SortDirection | None = None,
-        start_from_beginning: bool = False,
         shuffle: bool | None = None,
+        start_position: float | None = None,
     ) -> None:
         """Handle play media without acquiring the queue lock."""
         # cancel any pending play_index calls for this queue to prevent conflicts
@@ -979,13 +1036,13 @@ class QueueLoaderMixin(_PlayerQueuesBase):
                         queue_id=queue_id,
                         sort_field=sort_field,
                         sort_direction=sort_direction,
-                        start_from_beginning=start_from_beginning,
                         # under shuffle "start here and play forward" has no meaning, so keep the
                         # whole playlist/album (chosen track first) instead of dropping everything
                         # before it - the chosen track is pinned in front of the shuffled rest
                         keep_preceding_items=queue.shuffle_enabled,
                         artist_tracks=artist_tracks.tracks if artist_tracks else None,
                         played_copy=played_copy,
+                        start_position=start_position,
                     )
                     media_items += resolved_items
                     if finite_parent is not None and resolved_items:

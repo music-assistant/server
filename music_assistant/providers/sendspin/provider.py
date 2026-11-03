@@ -96,6 +96,7 @@ from music_assistant.providers.sendspin.bridge_role import (
 )
 from music_assistant.providers.sendspin.constants import (
     CONF_ALLOW_LEGACY_CLIENTS,
+    CONF_LOCAL_PAIRING,
     CONF_SENDSPIN_STATIC_DELAY,
     CONF_VIRTUAL_PLAYER_OWNER,
     VIRTUAL_PLAYER_ID_PREFIX,
@@ -106,6 +107,7 @@ from music_assistant.providers.sendspin.helpers import (
     error_alert,
     speaks_legacy_wire,
 )
+from music_assistant.providers.sendspin.local_pair import LocalAutoPairer
 from music_assistant.providers.sendspin.player import (
     SendspinBasePlayer,
     SendspinPlayer,
@@ -418,6 +420,7 @@ class SendspinProvider(PlayerProvider):
         self._unloading = False
         self._hass_available = False
         self._server_start_failed = False
+        self._local_auto_pairer = LocalAutoPairer(self)
         self.unregister_cbs = []
 
     async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
@@ -426,6 +429,12 @@ class SendspinProvider(PlayerProvider):
             CONF_ENTRY_MANUAL_DISCOVERY_IPS,
             ConfigEntry(
                 key=CONF_ALLOW_LEGACY_CLIENTS,
+                type=ConfigEntryType.BOOLEAN,
+                default_value=True,
+                hidden=True,
+            ),
+            ConfigEntry(
+                key=CONF_LOCAL_PAIRING,
                 type=ConfigEntryType.BOOLEAN,
                 default_value=True,
                 hidden=True,
@@ -531,6 +540,7 @@ class SendspinProvider(PlayerProvider):
                 # A reconnect within aiosendspin's cleanup delay reuses the player, and this
                 # event fires before the new connection's roles are attached.
                 self.mass.loop.call_soon(self._refresh_player_state, client_id)
+                self.mass.loop.call_soon(self._local_auto_pairer.on_client_connected, client_id)
             case ClientDisconnectedEvent(client_id, goodbye_reason):
                 self._set_held_elsewhere(
                     client_id, held=goodbye_reason in HELD_ELSEWHERE_GOODBYE_REASONS
@@ -1161,6 +1171,7 @@ class SendspinProvider(PlayerProvider):
             self.mass.cancel_timer(_management_idle_task_id(management_session.client_id))
         self._management_sessions.clear()
         self._pairing_config_snapshots.clear()
+        self._local_auto_pairer.close()
         if self._running_pairing_evictions:
             await asyncio.gather(*self._running_pairing_evictions, return_exceptions=True)
         player_ids = [player.player_id for player in self.players]

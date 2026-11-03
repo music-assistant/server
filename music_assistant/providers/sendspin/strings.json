@@ -22,6 +22,10 @@
       "label": "Allow legacy clients",
       "description": "Accept legacy Sendspin clients that don't implement the current specification, including clients that connect without encryption, so their traffic can be intercepted on the local network. \nDisable this to accept only spec-compliant clients and to stop holding back newer protocol behavior. \nThis option is temporary and will be removed in a future release."
     },
+    "local_pairing": {
+      "label": "Pair local players automatically",
+      "description": "Pair Sendspin players running on the same Home Assistant host, such as the Local Audio app, without entering a pairing code. Only available when Music Assistant runs as a Home Assistant app."
+    },
     "security_status_disconnected": {
       "label": "The device disconnected and will reappear once it reconnects."
     },
@@ -176,6 +180,9 @@
         "this_device": "This device"
       }
     },
+    "source_autostart_unavailable": {
+      "label": "This device does not support automatically playing its line-in on a speaker."
+    },
     "source_input_action": {
       "label": "Audio input",
       "options": {
@@ -252,6 +259,10 @@
     "approve_device_source": {
       "title": "How do you want to connect?",
       "description": "You can connect to this device straight away, or set up a secure pairing first. Without pairing the connection can be intercepted. This device can also send audio to Music Assistant. If that input could be sensitive, such as a microphone, pairing is the safer choice."
+    },
+    "source_autostart": {
+      "title": "Play line-in automatically",
+      "description": "This device can start playing its line-in on a player when a signal arrives, such as a record starting to play. You can change this later in the player settings."
     }
   },
   "manifest": {

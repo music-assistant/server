@@ -18,6 +18,7 @@ from music_assistant.models.music_provider import MusicProvider
 from music_assistant.providers.ytmusic import (
     CONF_COOKIE,
     CONF_PO_TOKEN_SERVER_URL,
+    CONF_STREAM_PROFILE,
     YoutubeMusicProvider,
 )
 
@@ -1056,3 +1057,63 @@ async def test_late_stream_does_not_overwrite_reconfigured_cookie(
         await provider._get_stream_format("dQw4w9WgXcQ")
 
     update_setup_data.assert_not_called()
+
+
+FAST_ARGS = {
+    "player_skip": ["webpage", "configs", "initial_data"],
+    "fetch_pot": ["never"],
+    "formats": ["missing_pot"],
+}
+
+
+@pytest.mark.parametrize(
+    ("profile", "require_login", "yt_user", "extra_args"),
+    [
+        ("stable", False, None, {}),
+        ("fast", False, None, FAST_ARGS),
+        # the login check and brand accounts need the webpage the fast profile skips
+        ("fast", True, None, {}),
+        ("fast", False, "test-brand-user", {}),
+    ],
+)
+async def test_stream_profile_sets_youtube_extractor_args(
+    provider: YoutubeMusicProvider,
+    profile: str,
+    require_login: bool,
+    yt_user: str | None,
+    extra_args: dict[str, list[str]],
+) -> None:
+    """The stream profile decides which youtube extractor args yt-dlp receives."""
+    provider._netscape_cookie = ""
+    provider._yt_user = yt_user
+    received: list[dict[str, Any]] = []
+
+    class _FakeYoutubeDL:
+        def __init__(self, opts: dict[str, Any]) -> None:
+            received.append(opts["extractor_args"]["youtube"])
+            self.cookiejar: list[SimpleNamespace] = []
+
+        def __enter__(self) -> Self:
+            return self
+
+        def __exit__(self, *args: object) -> None:
+            return None
+
+        def extract_info(self, url: str, download: bool = False) -> dict[str, Any]:
+            return {"formats": []}
+
+        def build_format_selector(self, spec: str) -> Any:
+            return lambda _ctx: iter([{"format_id": "141"}])
+
+    provider._yt_dlp_module = SimpleNamespace(  # type: ignore[assignment]
+        YoutubeDL=_FakeYoutubeDL,
+        utils=SimpleNamespace(DownloadError=type("DownloadError", (Exception,), {})),
+    )
+    cast("MagicMock", provider.config.get_value).side_effect = lambda key: (
+        profile if key == CONF_STREAM_PROFILE else "GLOBAL"
+    )
+    await provider._get_stream_format("dQw4w9WgXcQ", require_login=require_login)
+
+    assert received == [
+        {"skip": ["translated_subs", "dash"], "player_client": ["web_music"], **extra_args}
+    ]

@@ -23,6 +23,7 @@ from urllib.parse import parse_qs, urlsplit
 import pytest
 import yaml
 from aiohttp.test_utils import TestClient, TestServer
+from music_assistant_models.auth import UserRole
 
 from music_assistant.controllers.webserver.auth import TOKEN_LIST_LIMIT
 from music_assistant.providers.fastmcp_server._init_helpers import (
@@ -690,6 +691,33 @@ async def test_token_endpoint_invalid_session_401(
     )
     assert resp.status == 401
     wizard_mass.webserver.auth.create_token.assert_not_called()
+
+
+# MA's User model is typed role: str and UserRole is a StrEnum, so a role can
+# arrive as either value; both must be refused.
+@pytest.mark.parametrize("role", [UserRole.GUEST, "guest"], ids=["enum", "str"])
+async def test_token_endpoint_refuses_guest_accounts(
+    wizard_client: TestClient, wizard_mass: MagicMock, mock_user: MagicMock, role: str
+) -> None:
+    """A guest session gets 403 and neither a token nor a dedup revoke happens."""
+    mock_user.role = role
+    wizard_mass.webserver.auth.create_token.reset_mock()
+    wizard_mass.webserver.auth.get_user_tokens.reset_mock()
+    wizard_mass.webserver.auth.revoke_token.reset_mock()
+
+    resp = await wizard_client.post(
+        "/mcp/v1/connect/token",
+        json={"session_token": "guest-session", "client_id": "cursor"},
+        headers={"Origin": "http://localhost:8095"},
+    )
+
+    assert resp.status == 403
+    assert (await resp.json()) == {
+        "error": "Long-lived tokens cannot be created for guest accounts"
+    }
+    wizard_mass.webserver.auth.create_token.assert_not_called()
+    wizard_mass.webserver.auth.get_user_tokens.assert_not_called()
+    wizard_mass.webserver.auth.revoke_token.assert_not_called()
 
 
 async def test_token_endpoint_server_dedup_revokes_same_name(

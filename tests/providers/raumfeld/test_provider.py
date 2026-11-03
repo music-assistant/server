@@ -43,6 +43,7 @@ def _provider(description: str) -> tuple[RaumfeldPlayerProvider, MagicMock]:
     """Build a provider whose room renderer answers with the given device description."""
     provider = RaumfeldPlayerProvider.__new__(RaumfeldPlayerProvider)
     provider._room_serials = {}
+    provider._room_serial_renderers = {}
     provider._room_models = {}
     provider._room_transport_paths = {}
     provider._room_renderers = {}
@@ -343,6 +344,108 @@ def test_a_room_groups_with_the_other_rooms_only() -> None:
         bar = players["Bar"]
         bar._provider = provider
         assert bar.can_group_with == {"raumfeld_sofa", "raumfeld_kitchen", "raumfeld_office"}
+
+
+# a speaker's renderer UDN -> (description url, serial) on its own hardware
+_SPEAKERS = {
+    "uuid:pi4": ("http://192.168.1.31:34393/pi4.xml", "d8:3a:dd:da:8e:62"),
+    "uuid:pi3": ("http://192.168.1.44:40177/pi3.xml", "b8:27:eb:57:da:f9"),
+}
+
+
+def _moving_provider(rooms: dict[str, tuple[str, str]]) -> RaumfeldPlayerProvider:
+    """
+    Build a provider whose host reports the given rooms, each with the speaker in it.
+
+    :param rooms: Room name -> (room UDN, renderer UDN of the speaker in it).
+    """
+    provider, mass = _provider(_DEVICE_DESCRIPTION)
+    descriptions = {
+        location: _DEVICE_DESCRIPTION.replace("04:a3:16:f3:b6:c4", serial)
+        for location, serial in _SPEAKERS.values()
+    }
+
+    def get(location: str, **_: Any) -> MagicMock:
+        response = MagicMock()
+        response.text = AsyncMock(return_value=descriptions[location])
+        request = MagicMock()
+        request.__aenter__ = AsyncMock(return_value=response)
+        request.__aexit__ = AsyncMock(return_value=None)
+        return request
+
+    mass.http_session.get.side_effect = get
+    _place_speakers(provider, rooms)
+    return provider
+
+
+def _place_speakers(provider: RaumfeldPlayerProvider, rooms: dict[str, tuple[str, str]]) -> None:
+    """Have the host report the given rooms (see ``_moving_provider``)."""
+    provider.host.get_rooms.return_value = list(rooms)
+    provider.host.resolve = {
+        "room_to_udn": {room: room_udn for room, (room_udn, _) in rooms.items()},
+        "roomudn_to_rendudn": dict(rooms.values()),
+        "udn_to_devloc": {renderer: location for renderer, (location, _) in _SPEAKERS.items()},
+    }
+
+
+async def _room_ids(provider: RaumfeldPlayerProvider) -> dict[str, str | None]:
+    """Run the id part of a room sync and return each room's player_id."""
+    rooms = provider.host.get_rooms()
+    provider._forget_moved_renderers(rooms)
+    for room in rooms:
+        await provider._settle_room_renderer(room)
+        await provider._ensure_room_serial(room)
+    provider._assign_room_ids(rooms)
+    return {room: provider._room_player_id(room) for room in rooms}
+
+
+async def test_a_speaker_keeps_its_player_when_it_moves_to_a_new_room() -> None:
+    """A speaker moved to a room set up anew keeps the id from its own serial."""
+    provider = _moving_provider({"Marshall": ("uuid:5e1d", "uuid:pi4")})
+    assert await _room_ids(provider) == {"Marshall": "raumfeld_d83addda8e62"}
+
+    # the speaker moves to another room, and a room set up anew under the old name gets another
+    _place_speakers(
+        provider,
+        {"Test kamer": ("uuid:36e3", "uuid:pi4"), "Marshall": ("uuid:8ec2", "uuid:pi3")},
+    )
+
+    assert await _room_ids(provider) == {
+        "Test kamer": "raumfeld_d83addda8e62",
+        "Marshall": "raumfeld_b827eb57daf9",
+    }
+
+
+async def test_a_speaker_moved_out_of_a_room_that_is_gone_keeps_its_player() -> None:
+    """The serial read for a room that no longer exists does not hold on to its speaker."""
+    provider = _moving_provider({"Keuken": ("uuid:0aaa", "uuid:pi3")})
+    assert await _room_ids(provider) == {"Keuken": "raumfeld_b827eb57daf9"}
+
+    _place_speakers(provider, {"Marshall": ("uuid:8ec2", "uuid:pi3")})
+
+    assert await _room_ids(provider) == {"Marshall": "raumfeld_b827eb57daf9"}
+
+
+async def test_a_room_with_another_speaker_is_read_again() -> None:
+    """A room that got another speaker reads that speaker's serial and control URL."""
+    provider = _moving_provider({"Marshall": ("uuid:5e1d", "uuid:pi4")})
+    await _room_ids(provider)
+
+    _place_speakers(provider, {"Marshall": ("uuid:5e1d", "uuid:pi3")})
+
+    assert await _room_ids(provider) == {"Marshall": "raumfeld_b827eb57daf9"}
+    assert provider.room_transport_url("Marshall") == "http://192.168.1.44:40177/AVTransport/ctrl"
+
+
+async def test_a_room_keeping_its_speaker_is_not_read_again() -> None:
+    """A resync does not fetch the description of a room whose speaker stayed."""
+    provider = _moving_provider({"Marshall": ("uuid:5e1d", "uuid:pi4")})
+    await _room_ids(provider)
+    get = cast("MagicMock", provider.mass.http_session.get)
+    get.reset_mock()
+
+    assert await _room_ids(provider) == {"Marshall": "raumfeld_d83addda8e62"}
+    get.assert_not_called()
 
 
 ROOMS = ("Bar", "Sofa", "Kitchen", "Office")
@@ -1395,6 +1498,78 @@ async def test_the_wait_ends_once_the_joined_room_plays() -> None:
     assert reads.await_count == 3
 
 
+async def test_the_wait_ends_once_the_joined_room_cannot_hook_in() -> None:
+    """A room that runs out of buffer and drops the stream gets the restart at once."""
+    bar, _, _ = _joined_group(lambda sofa: _allow(sofa, 96000), stream_started_in_group=False)
+    sofa_id = bar._attr_group_members[1]
+    states = iter(
+        [
+            {"TransportState": "TRANSITIONING", "TransportStatus": "OK"},
+            {"TransportState": "NO_MEDIA_PRESENT", "TransportStatus": "buffer underrun"},
+            {"TransportState": "PLAYING", "TransportStatus": "OK"},
+        ]
+    )
+    reads = AsyncMock(side_effect=lambda _url: next(states))
+    with (
+        patch.object(bar.raumfeld, "room_transport_url", return_value="http://sofa/ctrl"),
+        patch("music_assistant.providers.raumfeld.player.JOIN_SETTLE_INTERVAL", 0),
+        patch.object(bar, "_read_room_state", reads),
+    ):
+        await bar._wait_for_rooms_playing([sofa_id])
+    assert reads.await_count == 2
+
+
+async def test_a_room_that_cannot_hook_in_leaves_the_others_waited_for() -> None:
+    """One room dropping the stream does not end the wait for another still hooking in."""
+    bar, _, _ = _joined_group(lambda sofa: _allow(sofa, 96000), stream_started_in_group=False)
+    rooms = {"raumfeld_sofa": _player("Sofa"), "raumfeld_kitchen": _player("Kitchen")}
+    states = {
+        "http://sofa/ctrl": iter(
+            [{"TransportState": "NO_MEDIA_PRESENT", "TransportStatus": "buffer underrun"}]
+        ),
+        "http://kitchen/ctrl": iter(
+            [
+                {"TransportState": "TRANSITIONING", "TransportStatus": "OK"},
+                {"TransportState": "TRANSITIONING", "TransportStatus": "OK"},
+                {"TransportState": "PLAYING", "TransportStatus": "OK"},
+            ]
+        ),
+    }
+    reads = AsyncMock(side_effect=lambda url: next(states[url]))
+    with (
+        patch.object(bar.mass.players, "get_player", side_effect=rooms.get),
+        patch.object(
+            bar.raumfeld,
+            "room_transport_url",
+            side_effect=lambda room: f"http://{room.lower()}/ctrl",
+        ),
+        patch("music_assistant.providers.raumfeld.player.JOIN_SETTLE_INTERVAL", 0),
+        patch.object(bar, "_read_room_state", reads),
+    ):
+        await bar._wait_for_rooms_playing(list(rooms))
+    assert reads.await_count == 4
+
+
+async def test_a_room_without_media_but_no_underrun_is_waited_for() -> None:
+    """NO_MEDIA_PRESENT with status OK is a room not hooked in yet, so the wait goes on."""
+    bar, _, _ = _joined_group(lambda sofa: _allow(sofa, 96000), stream_started_in_group=False)
+    sofa_id = bar._attr_group_members[1]
+    states = iter(
+        [
+            {"TransportState": "NO_MEDIA_PRESENT", "TransportStatus": "OK"},
+            {"TransportState": "PLAYING", "TransportStatus": "OK"},
+        ]
+    )
+    reads = AsyncMock(side_effect=lambda _url: next(states))
+    with (
+        patch.object(bar.raumfeld, "room_transport_url", return_value="http://sofa/ctrl"),
+        patch("music_assistant.providers.raumfeld.player.JOIN_SETTLE_INTERVAL", 0),
+        patch.object(bar, "_read_room_state", reads),
+    ):
+        await bar._wait_for_rooms_playing([sofa_id])
+    assert reads.await_count == 2
+
+
 async def test_the_wait_for_slow_rooms_keeps_to_its_budget() -> None:
     """Rooms whose reads hang hold the restart up for JOIN_SETTLE_TIME in all, not per read."""
     bar, mass, _ = _joined_group(lambda sofa: _allow(sofa, 96000), stream_started_in_group=False)
@@ -1982,3 +2157,33 @@ async def test_an_ended_update_loop_drops_the_connection_at_once() -> None:
     await _supervise_cycles(provider, check, 1)
     provider._disconnect.assert_awaited_once_with("host connection lost")  # type: ignore[attr-defined]
     check.assert_not_called()
+
+
+def _icy_provider(stored: dict[str, Any]) -> RaumfeldPlayerProvider:
+    """
+    Build a provider whose player config holds the given raw values.
+
+    :param stored: The raw values stored for the player, changed in place on a write.
+    """
+    provider = RaumfeldPlayerProvider.__new__(RaumfeldPlayerProvider)
+    mass = MagicMock()
+    mass.config.get_raw_player_config_value.side_effect = lambda _pid, key: stored.get(key)
+    mass.config.set_raw_player_config_value.side_effect = lambda _pid, key, value: (
+        stored.__setitem__(key, value)
+    )
+    provider.mass = mass
+    return provider
+
+
+@pytest.mark.parametrize(
+    ("stored", "expected"),
+    [({}, "basic"), ({"enable_icy_metadata": "full"}, "full")],
+    ids=["new_room", "own_choice"],
+)
+def test_a_room_without_an_icy_preference_gets_basic(stored: dict[str, Any], expected: str) -> None:
+    """A room with nothing stored gets "basic"; a stored value is left for the user."""
+    provider = _icy_provider(stored)
+
+    provider._ensure_icy_default("raumfeld_bar")
+
+    assert stored["enable_icy_metadata"] == expected
