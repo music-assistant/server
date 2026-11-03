@@ -1343,11 +1343,16 @@ class SyncGroupPlayer(Player):
         like leader selection / play_media on the leader are safe to proceed),
         or ``False`` when the player is genuinely stuck (the caller should
         abort rather than issue a play_media that will be rejected by the
-        provider's "I'm synced to another player" guard).
+        provider's "I'm synced to another player" guard). An unregistered or
+        unavailable member also counts as unsynced since the form leaves it out.
 
         :param member_id: The player to wait on.
         :param timeout: Seconds to wait for the first state propagation.
         """
+        member = self.mass.players.get_player(member_id)
+        if member is None or not member.state.available:
+            # a member that is gone can neither report the unsync nor be released
+            return True
         async with self.mass.players.wait_for_player_update(
             member_id,
             attribute_name="synced_to",
@@ -1718,6 +1723,17 @@ class SyncGroupPlayer(Player):
                         stuck_members,
                     )
                     return
+                # a re-form needs a member that can lead; the members stay recorded
+                # so a later play forms the group once one of them is back
+                new_leader = self._select_sync_leader(
+                    preferred_protocol_domain=self._reform_protocol_domain
+                )
+                if new_leader is None:
+                    self.logger.info(
+                        "Not re-forming syncgroup %s: none of its members can lead right now",
+                        self.display_name,
+                    )
+                    return
                 self.logger.info(
                     "Re-forming syncgroup %s with %s member(s) and resuming playback",
                     self.display_name,
@@ -1727,9 +1743,7 @@ class SyncGroupPlayer(Player):
                 # picks a member compatible with the previous session's protocol
                 # (e.g. keep AirPlay if the session was AirPlay).
                 if self._reform_protocol_domain is not None:
-                    self.sync_leader = self._select_sync_leader(
-                        preferred_protocol_domain=self._reform_protocol_domain
-                    )
+                    self.sync_leader = new_leader
                 await self.play()
         finally:
             # normal completion detaches us via play() -> _form_syncgroup already;

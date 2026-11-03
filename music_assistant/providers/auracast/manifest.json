@@ -1,0 +1,14 @@
+{
+  "type": "player",
+  "domain": "auracast",
+  "stage": "alpha",
+  "name": "Auracast",
+  "description": "Broadcast Music Assistant audio over Bluetooth LE Audio Auracast.",
+  "codeowners": ["@Yagoor"],
+  "requirements": [
+    "bumble==0.0.235",
+    "lc3py @ git+https://github.com/google/liblc3.git@v1.1.3"
+  ],
+  "documentation": "https://music-assistant.io/player-support/auracast/",
+  "multi_instance": false
+}

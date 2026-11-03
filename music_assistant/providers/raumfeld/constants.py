@@ -50,6 +50,11 @@ HOST_CHECK_TIMEOUT = 10
 # unavailable and rebuilds the connection, too much for one slow answer.
 HOST_CHECK_FAILURES = 3
 
+# How often (seconds) at most the network is searched for a host that stopped answering at
+# its address, in case it got a new one. A host that is only switched off is searched for
+# again and again, so not on every reconnect attempt.
+HOST_SEARCH_INTERVAL = 120
+
 # How often (seconds) the zones the host reports are compared with the groups Music Assistant
 # shows. The comparison reads hassfeld's in-memory model, so it costs no request.
 ZONE_WATCH_INTERVAL = 2

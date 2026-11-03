@@ -16,7 +16,7 @@ from aiosendspin.models.core import (
     SupportedPairMethods,
 )
 from aiosendspin.models.management import ManagementResultData, PairingMethodConfig
-from aiosendspin.models.types import PairAbortReason, PairMethod
+from aiosendspin.models.types import GoodbyeReason, PairAbortReason, PairMethod
 from aiosendspin.noise.pairing import (
     InvalidPairingCodeError,
     PairingError,
@@ -206,6 +206,7 @@ class _FakeProvider:
         self.allow_input_calls: list[bool] = []
         self.held_unapproved = False
         self.held_unpaired = False
+        self.refused_reason_value: GoodbyeReason | None = None
         self._gesture = gesture
         self._submit_outcomes = deque(submit_outcomes or [])
         self._token_errors = deque(token_errors or [])
@@ -218,6 +219,9 @@ class _FakeProvider:
 
     def is_held_unpaired(self, client_id: str) -> bool:
         return self.held_unpaired
+
+    def refused_reason(self, client_id: str) -> GoodbyeReason | None:
+        return self.refused_reason_value
 
     def get_pin_session(self, client_id: str) -> _FakePinSession | None:
         return self.session

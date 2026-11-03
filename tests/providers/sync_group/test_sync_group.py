@@ -2652,6 +2652,20 @@ class TestWaitMemberUnsynced:
         mass.players.cmd_ungroup.assert_not_awaited()
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("registered", [True, False])
+    async def test_does_not_wait_on_a_member_that_is_gone(self, registered: bool) -> None:
+        """An offline or unregistered member can not clear its state, so it is not waited on."""
+        mass = _make_mock_mass()
+        sgp = _make_sync_group(mass)
+        players = {"m1": _make_mock_player("m1", available=False)} if registered else {}
+        mass.players.get_player = _player_lookup(players)
+
+        ok = await sgp._wait_member_unsynced("m1")
+
+        assert ok is True
+        mass.players.wait_for_player_update.assert_not_called()
+
+    @pytest.mark.asyncio
     async def test_attempts_recovery_when_stuck(self) -> None:
         """If the first wait doesn't clear it, kick the member from its stale parent directly."""
         mass = _make_mock_mass()
@@ -3260,6 +3274,59 @@ class TestDebouncedReform:
         )
         mass.players.cmd_resume.assert_awaited_once()
         assert sgp._reform_task is None
+
+    @pytest.mark.asyncio
+    async def test_reform_does_not_wait_on_a_member_that_is_gone(self) -> None:
+        """A member the controller no longer knows can not delay the re-form by its unsync wait."""
+        mass = _make_mock_mass()
+        sgp = self._setup_group(mass, members=["leader", "m2"])
+        mass.players.cmd_resume = AsyncMock()
+        # recorded as a member, but no longer registered with the controller
+        sgp._attr_group_members.append("gone")
+
+        with (
+            patch("music_assistant.providers.sync_group.player.REFORM_DEBOUNCE_SECONDS", 0.05),
+            patch.object(sgp, "update_state"),
+        ):
+            await sgp.set_members(player_ids_to_remove=["leader"])
+            task = sgp._reform_task
+            assert task is not None
+            await task
+
+        assert sgp.sync_leader is mass.players.get_player("m2")
+        assert sgp._attr_group_members == ["m2", "gone"]
+        waited_on = {call.args[0] for call in mass.players.wait_for_player_update.call_args_list}
+        assert "gone" not in waited_on
+        mass.players.cmd_resume.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_reform_with_no_available_member_keeps_them_for_a_later_play(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """A re-form with only offline members left logs why and does not try to resume."""
+        mass = _make_mock_mass()
+        sgp = self._setup_group(mass, members=["leader", "m2"])
+        sgp.logger = logging.getLogger("test.sync_group")
+        mass.players.cmd_resume = AsyncMock()
+        offline = mass.players.get_player("m2")
+        offline.available = offline.state.available = False
+
+        with (
+            patch("music_assistant.providers.sync_group.player.REFORM_DEBOUNCE_SECONDS", 0.05),
+            patch.object(sgp, "update_state"),
+            caplog.at_level(logging.INFO),
+        ):
+            await sgp.set_members(player_ids_to_remove=["leader"])
+            task = sgp._reform_task
+            assert task is not None
+            await task
+
+        assert "none of its members can lead right now" in caplog.text
+        assert sgp.sync_leader is None
+        assert sgp._attr_group_members == ["m2"]
+        assert sgp._reform_task is None
+        mass.players.cmd_resume.assert_not_awaited()
+        mass.players._handle_play_media.assert_not_awaited()
 
     def _setup_offline_leader_with_stale_members(
         self, mass: MagicMock

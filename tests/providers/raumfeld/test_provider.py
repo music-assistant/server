@@ -15,6 +15,7 @@ from music_assistant_models.enums import IdentifierType, MediaType, PlaybackStat
 from music_assistant_models.errors import ResourceBusyError
 from music_assistant_models.player import PlayerMedia
 
+from music_assistant.constants import CONF_IP_ADDRESS
 from music_assistant.providers.raumfeld.constants import (
     CONF_RESTART_ON_JOIN,
     GROUP_SETTLE_TIME,
@@ -2157,6 +2158,100 @@ async def test_an_ended_update_loop_drops_the_connection_at_once() -> None:
     await _supervise_cycles(provider, check, 1)
     provider._disconnect.assert_awaited_once_with("host connection lost")  # type: ignore[attr-defined]
     check.assert_not_called()
+
+
+@contextlib.contextmanager
+def _moved_host(
+    found: list[str], answering: set[str]
+) -> Iterator[tuple[RaumfeldPlayerProvider, AsyncMock]]:
+    """
+    Build a provider whose host stopped answering at its stored address.
+
+    :param found: The host addresses a search of the network finds.
+    :param answering: The addresses a Raumfeld host answers at.
+    """
+    provider = RaumfeldPlayerProvider.__new__(RaumfeldPlayerProvider)
+    provider._host_address = "192.168.1.23"
+    provider._host_port = 47365
+    provider.mass = MagicMock()
+    provider.logger = MagicMock()
+    provider._update_setup_data = MagicMock()  # type: ignore[method-assign]
+
+    async def check(_session: Any, host: str, _port: int) -> bool:
+        return host in answering
+
+    search = AsyncMock(return_value=found)
+    with (
+        patch(
+            "music_assistant.providers.raumfeld.provider.host_is_valid",
+            AsyncMock(side_effect=check),
+        ),
+        patch("music_assistant.providers.raumfeld.provider.discover_hosts", search),
+    ):
+        yield provider, search
+
+
+async def test_a_host_with_a_new_address_is_followed() -> None:
+    """The host found at another address is used, and its address is stored."""
+    with _moved_host(["192.168.1.57"], {"192.168.1.57"}) as (provider, _search):
+        assert await provider._follow_moved_host()
+        assert provider._host_address == "192.168.1.57"
+        provider._update_setup_data.assert_called_once_with(CONF_IP_ADDRESS, "192.168.1.57")  # type: ignore[attr-defined]
+
+
+async def test_a_host_found_at_its_own_address_is_not_a_move() -> None:
+    """A search that only finds the stored address changes nothing."""
+    with _moved_host(["192.168.1.23"], set()) as (provider, _search):
+        assert not await provider._follow_moved_host()
+        assert provider._host_address == "192.168.1.23"
+        provider._update_setup_data.assert_not_called()  # type: ignore[attr-defined]
+
+
+async def test_two_other_hosts_leave_the_address_alone() -> None:
+    """With two other Raumfeld systems around, neither is taken for this one."""
+    with _moved_host(["192.168.1.57", "192.168.1.58"], {"192.168.1.57", "192.168.1.58"}) as (
+        provider,
+        _search,
+    ):
+        assert not await provider._follow_moved_host()
+        assert provider._host_address == "192.168.1.23"
+
+
+async def test_a_found_host_that_does_not_answer_is_not_taken() -> None:
+    """An address that announces a host but does not answer as one is left alone."""
+    with _moved_host(["192.168.1.57"], set()) as (provider, _search):
+        assert not await provider._follow_moved_host()
+        assert provider._host_address == "192.168.1.23"
+
+
+async def test_a_failing_search_keeps_the_address() -> None:
+    """A network that cannot be searched leaves the stored address."""
+    with _moved_host([], set()) as (provider, search):
+        search.side_effect = OSError
+        assert not await provider._follow_moved_host()
+        assert provider._host_address == "192.168.1.23"
+
+
+async def test_the_network_is_not_searched_on_every_attempt() -> None:
+    """A host that stays away is searched for again only after a while."""
+    with _moved_host([], set()) as (provider, search):
+        with patch("music_assistant.providers.raumfeld.provider.time.time", return_value=1000.0):
+            await provider._follow_moved_host()
+            await provider._follow_moved_host()
+        assert search.await_count == 1
+        with patch("music_assistant.providers.raumfeld.provider.time.time", return_value=1121.0):
+            await provider._follow_moved_host()
+        assert search.await_count == 2
+
+
+async def test_a_connect_attempt_follows_a_moved_host() -> None:
+    """Connecting to a host that moved goes on at its new address."""
+    with _moved_host(["192.168.1.57"], {"192.168.1.57"}) as (provider, _search):
+        with patch("music_assistant.providers.raumfeld.provider.hassfeld.RaumfeldHost") as host_cls:
+            host_cls.return_value.async_wait_initial_update = AsyncMock(side_effect=TimeoutError)
+            provider._disconnect = AsyncMock()  # type: ignore[method-assign]
+            await provider._try_connect()
+        assert host_cls.call_args.args[:2] == ("192.168.1.57", 47365)
 
 
 def _icy_provider(stored: dict[str, Any]) -> RaumfeldPlayerProvider:
