@@ -24,6 +24,8 @@ if TYPE_CHECKING:
 
 # seconds between the position reports of a playing track, in line with the Plex apps
 TIMELINE_INTERVAL = 10
+# times a stop the Plex server did not take is sent again, one interval apart
+STOP_RETRIES = 3
 
 PLEX_STATE_PLAYING = "playing"
 PLEX_STATE_PAUSED = "paused"
@@ -44,6 +46,7 @@ class _Timeline:
     seen_at: float
     reported_at: float = 0.0
     reported_state: str | None = None
+    delivered: bool = False
 
     def position_at(self, now: float) -> int:
         """
@@ -76,6 +79,7 @@ class PlexPlaybackReporter:
         self.mass = provider.mass
         self.logger = provider.logger
         self._timelines: dict[str, _Timeline] = {}
+        self._unsent_stops: list[tuple[_Timeline, int, int]] = []
         self._play_queues: dict[str, Callable[[PlayerQueue], dict[str, str]]] = {}
         self._wake = asyncio.Event()
         self._task: asyncio.Task[None] | None = None
@@ -133,23 +137,22 @@ class PlexPlaybackReporter:
             self._wake.clear()
 
     def _next_report_delay(self) -> float:
-        """Return the seconds until the position of a playing track is due to be reported."""
+        """Return the seconds until the next report to the Plex server is due."""
         now = time.monotonic()
+        due = [
+            timeline.reported_at
+            for timeline in self._timelines.values()
+            if timeline.state == PLEX_STATE_PLAYING or not timeline.delivered
+        ]
+        due.extend(timeline.reported_at for timeline, _position, _tries in self._unsent_stops)
         return max(
-            0.0,
-            min(
-                (
-                    timeline.reported_at + TIMELINE_INTERVAL - now
-                    for timeline in self._timelines.values()
-                    if timeline.state == PLEX_STATE_PLAYING
-                ),
-                default=TIMELINE_INTERVAL,
-            ),
+            0.0, min((at + TIMELINE_INTERVAL - now for at in due), default=TIMELINE_INTERVAL)
         )
 
     async def _report_queues(self) -> None:
         """Report the track each queue plays to the Plex server, where it changed or is due."""
         now = time.monotonic()
+        await self._resend_stops(now)
         queue_ids: set[str] = set()
         for queue in self.mass.player_queues.all():
             queue_ids.add(queue.queue_id)
@@ -169,21 +172,44 @@ class PlexPlaybackReporter:
         if previous and (
             seen is None or (seen.queue_item_id, seen.key) != (previous.queue_item_id, previous.key)
         ):
-            await self._send(previous, PLEX_STATE_STOPPED, previous.position_at(now))
+            position_ms = previous.position_at(now)
+            previous.reported_at = now
+            if not await self._send(previous, PLEX_STATE_STOPPED, position_ms):
+                self._unsent_stops.append((previous, position_ms, 1))
             previous = None
         if seen is None:
             return
         if previous and previous.reported_state == seen.state:
             seen.reported_at = previous.reported_at
             seen.reported_state = previous.reported_state
-            if seen.state != PLEX_STATE_PLAYING or now - seen.reported_at < TIMELINE_INTERVAL:
+            seen.delivered = previous.delivered
+            # a failed report is not retried before the next interval either
+            due = now - seen.reported_at >= TIMELINE_INTERVAL
+            if not due or (seen.delivered and seen.state != PLEX_STATE_PLAYING):
                 self._timelines[queue_id] = seen
                 return
-        # a failed report is not retried before the next interval either
         seen.reported_at = now
         seen.reported_state = seen.state
         self._timelines[queue_id] = seen
-        await self._send(seen, seen.state, seen.position_ms)
+        seen.delivered = await self._send(seen, seen.state, seen.position_ms)
+
+    async def _resend_stops(self, now: float) -> None:
+        """
+        Send the stops the Plex server did not take again, once an interval has passed.
+
+        :param now: Monotonic time of this report.
+        """
+        unsent_stops = self._unsent_stops
+        self._unsent_stops = []
+        for timeline, position_ms, tries in unsent_stops:
+            if now - timeline.reported_at < TIMELINE_INTERVAL:
+                self._unsent_stops.append((timeline, position_ms, tries))
+                continue
+            timeline.reported_at = now
+            if not await self._send(timeline, PLEX_STATE_STOPPED, position_ms) and (
+                tries < STOP_RETRIES
+            ):
+                self._unsent_stops.append((timeline, position_ms, tries + 1))
 
     def _seen_timeline(self, queue: PlayerQueue, now: float) -> _Timeline | None:
         """
@@ -219,9 +245,9 @@ class PlexPlaybackReporter:
             seen_at=now,
         )
 
-    async def _send(self, timeline: _Timeline, state: str, position_ms: int) -> None:
+    async def _send(self, timeline: _Timeline, state: str, position_ms: int) -> bool:
         """
-        Send a timeline update of a track to the Plex server.
+        Send a timeline update of a track to the Plex server, and return whether it took it.
 
         :param timeline: The track to report.
         :param state: The Plex playback state to report.
@@ -244,3 +270,5 @@ class PlexPlaybackReporter:
             )
         except (plexapi.exceptions.PlexApiException, requests.exceptions.RequestException) as err:
             self.logger.debug("Failed to report %s of %s to Plex: %s", state, timeline.key, err)
+            return False
+        return True

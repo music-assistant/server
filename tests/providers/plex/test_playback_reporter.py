@@ -289,6 +289,74 @@ async def test_failed_report_waits_for_the_interval(clock: MagicMock) -> None:
     assert reporter._next_report_delay() == 9.0
 
 
+async def test_failed_pause_is_sent_again(clock: MagicMock) -> None:
+    """A pause the Plex server did not take is sent again at the interval, until it takes it."""
+    queue = _queue()
+    reporter = _reporter(queue)
+    query = reporter.provider._plex_server.query
+
+    await reporter._report_queues()
+    clock.return_value = 102.0
+    queue.state = PlaybackState.PAUSED
+    queue.corrected_elapsed_time = 32.0
+    query.side_effect = requests.exceptions.ConnectionError
+    await reporter._report_queues()
+    clock.return_value = 105.0
+    await reporter._report_queues()
+    assert reporter._next_report_delay() == 7.0
+
+    query.side_effect = None
+    for now in (112.0, 113.0, 200.0):
+        clock.return_value = now
+        await reporter._report_queues()
+
+    assert [params["state"] for params, _ in _sent(reporter)] == ["playing", "paused", "paused"]
+
+
+async def test_failed_stop_is_sent_again(clock: MagicMock) -> None:
+    """A stop the Plex server did not take is sent again at the interval, until it takes it."""
+    queue = _queue()
+    reporter = _reporter(queue)
+    query = reporter.provider._plex_server.query
+
+    await reporter._report_queues()
+    clock.return_value = 104.0
+    queue.state = PlaybackState.IDLE
+    query.side_effect = requests.exceptions.ConnectionError
+    await reporter._report_queues()
+    clock.return_value = 110.0
+    await reporter._report_queues()
+    assert reporter._next_report_delay() == 4.0
+
+    query.side_effect = None
+    for now in (114.0, 130.0):
+        clock.return_value = now
+        await reporter._report_queues()
+
+    assert [(params["state"], params["time"]) for params, _ in _sent(reporter)] == [
+        ("playing", "30000"),
+        ("stopped", "34000"),
+        ("stopped", "34000"),
+    ]
+
+
+async def test_failed_stop_is_given_up(clock: MagicMock) -> None:
+    """A stop the Plex server keeps refusing is sent a limited number of times."""
+    queue = _queue()
+    reporter = _reporter(queue)
+    await reporter._report_queues()
+    queue.state = PlaybackState.IDLE
+    reporter.provider._plex_server.query.side_effect = requests.exceptions.ConnectionError
+
+    for step in range(1, 10):
+        clock.return_value = 100.0 + step * playback_reporter.TIMELINE_INTERVAL
+        await reporter._report_queues()
+
+    stops = [params for params, _ in _sent(reporter) if params["state"] == "stopped"]
+    assert len(stops) == playback_reporter.STOP_RETRIES + 1
+    assert reporter._unsent_stops == []
+
+
 @pytest.mark.usefixtures("clock")
 def test_next_report_delay() -> None:
     """The next report is due when the earliest playing track reaches the interval."""
