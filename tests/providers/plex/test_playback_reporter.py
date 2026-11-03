@@ -56,6 +56,7 @@ def _reporter(*queues: SimpleNamespace) -> Any:
     provider = MagicMock()
     provider.instance_id = INSTANCE_ID
     provider.mass.player_queues.all.return_value = queues
+    provider.mass.player_queues.queue_data.return_value.served_item_ids = {"qi1", "qi2"}
     return PlexPlaybackReporter(provider)
 
 
@@ -106,6 +107,16 @@ async def test_reports_playing_track_as_the_player() -> None:
 async def test_ignores_items_not_streamed_as_track_by_this_provider(item: SimpleNamespace) -> None:
     """Only tracks streamed from this Plex server are reported."""
     reporter = _reporter(_queue(item))
+
+    await reporter._report_queues()
+
+    assert _sent(reporter) == []
+
+
+@pytest.mark.usefixtures("clock")
+async def test_item_never_served_is_not_reported() -> None:
+    """A track the player names but never received audio for is not reported."""
+    reporter = _reporter(_queue(_item(queue_item_id="preloaded")))
 
     await reporter._report_queues()
 

@@ -201,6 +201,10 @@ class PlexPlaybackReporter:
         # only a track this provider streamed was played from this Plex server
         if streamdetails is None or streamdetails.provider != self.provider.instance_id:
             return None
+        # a player can name an item it never received audio for, nothing of which has played
+        queue_data = self.mass.player_queues.queue_data(queue.queue_id)
+        if item.queue_item_id not in queue_data.served_item_ids:
+            return None
         duration = streamdetails.duration or item.duration or 0
         client_id = compute_client_id(self.provider.instance_id, queue.queue_id)
         play_queue_params = self._play_queues.get(queue.queue_id)
