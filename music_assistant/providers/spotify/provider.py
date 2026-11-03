@@ -634,25 +634,17 @@ class SpotifyProvider(MusicProvider):
         for idx, episode_data in enumerate(episodes_data):
             episode = parse_podcast_episode(episode_data, self, podcast)
             episode.position = total - idx
-
-            # Set played status if sync is enabled and resume data exists
-            if self.podcast_progress_sync_enabled and "resume_point" in episode_data:
-                resume_point = episode_data["resume_point"]
-                fully_played = resume_point.get("fully_played", False)
-                position_ms = resume_point.get("resume_position_ms", 0)
-
-                episode.fully_played = fully_played or None
-                episode.resume_position_ms = position_ms if position_ms > 0 else None
-
+            self._apply_resume_point(episode, episode_data)
             yield episode
 
-    @use_cache(86400)  # 24 hours
     async def get_podcast_episode(self, prov_episode_id: str) -> PodcastEpisode:
         """Get full podcast episode details by id."""
-        episode_obj = await self._get_data(f"episodes/{prov_episode_id}", market="from_token")
+        episode_obj = await self._get_podcast_episode_data(prov_episode_id)
         if not episode_obj:
             raise MediaNotFoundError(f"Episode not found: {prov_episode_id}")
-        return parse_podcast_episode(episode_obj, self)
+        episode = parse_podcast_episode(episode_obj, self)
+        self._apply_resume_point(episode, episode_obj)
+        return episode
 
     async def get_resume_position(
         self, item_id: str, media_type: MediaType
@@ -1718,6 +1710,30 @@ class SpotifyProvider(MusicProvider):
             raise
 
         return episodes_data
+
+    @use_cache(86400)  # 24 hours
+    async def _get_podcast_episode_data(self, prov_episode_id: str) -> dict[str, Any]:
+        """
+        Get raw episode data from Spotify API (cached).
+
+        :param prov_episode_id: Spotify episode ID.
+        """
+        return await self._get_data(f"episodes/{prov_episode_id}", market="from_token")
+
+    def _apply_resume_point(self, episode: PodcastEpisode, episode_obj: dict[str, Any]) -> None:
+        """
+        Fill in the played state and resume position Spotify reports, when progress sync is on.
+
+        :param episode: The parsed episode to fill in.
+        :param episode_obj: The raw Spotify episode object it was parsed from.
+        """
+        if not self.podcast_progress_sync_enabled or "resume_point" not in episode_obj:
+            return
+        resume_point = episode_obj["resume_point"]
+        fully_played = resume_point.get("fully_played", False)
+        position_ms = resume_point.get("resume_position_ms", 0)
+        episode.fully_played = fully_played or None
+        episode.resume_position_ms = position_ms if position_ms > 0 else None
 
     @use_cache()
     async def _get_audiobook_chapters_data(self, prov_audiobook_id: str) -> list[dict[str, Any]]:

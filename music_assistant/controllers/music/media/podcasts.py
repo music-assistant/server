@@ -414,13 +414,11 @@ class PodcastsController(MediaControllerBase[Podcast]):
         """
         Fill in the current user's resume position and played state for a single episode.
 
-        Skipped when the episode already has resume info set by the provider.
+        What Music Assistant recorded for the user wins over what the provider reports.
 
         :param episode: The episode to enrich with resume info.
         :param provider_instance_id: The provider instance the episode belongs to.
         """
-        if episode.fully_played is not None or episode.resume_position_ms:
-            return
         user: User | None = None
         if session_user := get_current_user():
             user = session_user
@@ -439,13 +437,7 @@ class PodcastsController(MediaControllerBase[Podcast]):
         rows = await self.mass.music.database.get_rows(
             DB_TABLE_MEDIA_PROGRESS, match=match, order_by="timestamp DESC", limit=1
         )
-        row = rows[0] if rows else None
-        if row is None:
-            return
-        if row["seconds_played"]:
-            episode.resume_position_ms = int(row["seconds_played"] * 1000)
-        if row["fully_played"] is not None:
-            episode.fully_played = bool(row["fully_played"])
+        self._apply_resume_row(episode, rows[0] if rows else None)
 
     async def _assemble_versions(
         self, item_id: str, provider_instance_id_or_domain: str

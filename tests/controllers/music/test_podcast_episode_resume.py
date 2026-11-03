@@ -384,6 +384,32 @@ async def test_single_episode_lookup_fills_resume_info_from_playlog(
     assert episode.fully_played is False
 
 
+async def test_single_episode_lookup_prefers_playlog_over_provider(
+    mass: MusicAssistant,
+) -> None:
+    """The single-episode endpoint applies the user's progress over what the provider reports."""
+    user = await mass.webserver.auth.create_user("podcastsingleprovider")
+    await _add_playlog_row(mass, "ep-001", user.user_id, seconds_played=90, fully_played=True)
+
+    provider_episode = _episode(1, fully_played=False, resume_position_ms=5000)
+    episode = await _get_episode(mass, [provider_episode], "ep-001", user=user)
+
+    assert episode.fully_played is True
+    assert episode.resume_position_ms == 90000
+
+
+async def test_single_episode_lookup_keeps_provider_progress_without_playlog(
+    mass: MusicAssistant,
+) -> None:
+    """Without progress recorded by Music Assistant, the provider's progress is kept."""
+    user = await mass.webserver.auth.create_user("podcastsingleprovideronly")
+
+    provider_episode = _episode(1, fully_played=True)
+    episode = await _get_episode(mass, [provider_episode], "ep-001", user=user)
+
+    assert episode.fully_played is True
+
+
 async def test_single_episode_lookup_without_a_session_user_uses_newest_row(
     mass: MusicAssistant,
 ) -> None:
