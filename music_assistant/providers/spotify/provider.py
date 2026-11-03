@@ -1711,7 +1711,7 @@ class SpotifyProvider(MusicProvider):
 
         return episodes_data
 
-    @use_cache(86400)  # 24 hours
+    @use_cache(43200)  # 12 hours, as the episode listing, since it carries the progress
     async def _get_podcast_episode_data(self, prov_episode_id: str) -> dict[str, Any]:
         """
         Get raw episode data from Spotify API (cached).
