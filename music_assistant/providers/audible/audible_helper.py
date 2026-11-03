@@ -13,7 +13,7 @@ from collections.abc import AsyncGenerator
 from contextlib import suppress
 from datetime import UTC, datetime, timedelta
 from os import PathLike
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 from urllib.parse import parse_qs, urlparse
 
 import audible
@@ -36,6 +36,8 @@ from music_assistant_models.errors import (
     LoginFailed,
     MediaNotFoundError,
     ProviderUnavailableError,
+    RateLimited,
+    RetriesExhausted,
 )
 from music_assistant_models.media_items import (
     Artist,
@@ -56,6 +58,7 @@ from music_assistant_models.streamdetails import StreamDetails
 from music_assistant.constants import DEFAULT_AUDIOBOOK_PODCAST_GENRE
 from music_assistant.helpers.datetime import from_iso_string, utc
 from music_assistant.helpers.podcast_parsers import rank_episodes_by_date
+from music_assistant.helpers.throttle_retry import ThrottlerManager, throttle_with_retries
 from music_assistant.mass import MusicAssistant
 
 CACHE_DOMAIN = "audible"
@@ -228,6 +231,8 @@ class AudibleHelper:
         self.provider = provider
         self.logger = logger or logging.getLogger("audible_helper")
         self._acr_cache: dict[tuple[str, MediaType], str] = {}
+        # audible documents no rate limit
+        self.throttler = ThrottlerManager(rate_limit=5, period=1)
 
     async def get_library_artists(self) -> AsyncGenerator[Artist]:
         """Yield every author and narrator of the library."""
@@ -268,11 +273,11 @@ class AudibleHelper:
         :param asin: The audiobook's asin.
         """
         try:
-            response = await self.client.get(SIDECAR_URL, params={"type": "AUDI", "key": asin})
+            response = await self._request("get", SIDECAR_URL, params={"type": "AUDI", "key": asin})
         except audible.exceptions.NotFoundError:
             # audible answers 404 for a book without bookmarks, notes or clips
             return []
-        except audible.exceptions.RequestError as exc:
+        except (audible.exceptions.RequestError, RetriesExhausted) as exc:
             # the api is unofficial: its failure must not hide the bookmarks stored in MA
             self.logger.warning("Could not get the Audible bookmarks of %s: %s", asin, exc)
             return []
@@ -506,7 +511,8 @@ class AudibleHelper:
         try:
             # Podcasts use Mpeg (non-DRM MP3), audiobooks use HLS
             if media_type == MediaType.PODCAST_EPISODE:
-                playback_info = await self.client.post(
+                playback_info = await self._request(
+                    "post",
                     f"content/{asin}/licenserequest",
                     body={
                         "consumption_type": "Streaming",
@@ -515,7 +521,8 @@ class AudibleHelper:
                     },
                 )
             else:
-                playback_info = await self.client.post(
+                playback_info = await self._request(
+                    "post",
                     f"content/{asin}/licenserequest",
                     body={
                         "quality": "High",
@@ -710,8 +717,10 @@ class AudibleHelper:
                 self.logger.warning(f"No ACR available for ASIN {asin}, cannot report position")
                 return
 
-            await self.client.put(
-                f"lastpositions/{asin}", body={"acr": acr, "asin": asin, "position_ms": position_ms}
+            await self._request(
+                "put",
+                f"lastpositions/{asin}",
+                body={"acr": acr, "asin": asin, "position_ms": position_ms},
             )
 
             self.logger.debug(f"Successfully reported position {position_ms}ms for ASIN {asin}")
@@ -759,7 +768,7 @@ class AudibleHelper:
             )
         if not response:
             try:
-                response = await self.client.get(path, **kwargs)
+                response = await self._request("get", path, **kwargs)
             except audible.exceptions.RequestError as exc:
                 raise ProviderUnavailableError(
                     f"Audible API request failed for '{path}': {exc}"
@@ -768,6 +777,16 @@ class AudibleHelper:
                 key=cache_key_with_params, provider=self.provider_instance, data=response
             )
         return response
+
+    @throttle_with_retries
+    async def _request(
+        self, method: Literal["get", "post", "put"], path: str, /, **kwargs: Any
+    ) -> Any:
+        """Send a request to audible; every request goes through here to be throttled."""
+        try:
+            return await getattr(self.client, method)(path, **kwargs)
+        except audible.exceptions.RatelimitError as exc:
+            raise RateLimited(f"Audible rate limit on '{path}'") from exc
 
     def _parse_contributors(
         self,

@@ -11,6 +11,7 @@ import pytest
 from music_assistant_models.enums import ArtistType, MediaType
 from music_assistant_models.media_items import Artist, PodcastEpisode
 
+from music_assistant.helpers.throttle_retry import ThrottlerManager
 from music_assistant.mass import MusicAssistant
 from music_assistant.providers.audible import Audibleprovider
 from music_assistant.providers.audible.audible_helper import (
@@ -647,3 +648,16 @@ async def test_failed_bookmark_lookup_returns_no_bookmarks(
 
     assert await helper.get_bookmarks("book_1") == []
     assert await helper.get_bookmarks("book_1") == []
+
+
+async def test_rate_limited_request_is_retried(
+    helper: AudibleHelper, audible_client_mock: AsyncMock
+) -> None:
+    """Audible's 429 used to fail the request instead of backing off and retrying."""
+    helper.throttler = ThrottlerManager(rate_limit=5, period=1, initial_backoff=0)
+    rate_limited = MagicMock(status_code=429, reason_phrase="Too Many Requests")
+    audible_client_mock.get = AsyncMock(
+        side_effect=[audible.exceptions.RatelimitError(rate_limited, {}), {"items": []}]
+    )
+
+    assert await helper._call_api("library", page=1) == {"items": []}
