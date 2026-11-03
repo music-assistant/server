@@ -18,6 +18,7 @@ from music_assistant_models.enums import (
     PlayerFeature,
     PlayerType,
 )
+from music_assistant_models.errors import PlayerCommandFailed
 from music_assistant_models.media_items import AudioSource
 from music_assistant_models.media_items.provider_mapping import ProviderMapping
 from music_assistant_models.player import PlayerMedia
@@ -4126,12 +4127,13 @@ class TestProtocolSwitchingDuringPlayback:
         controller.cmd_resume = AsyncMock()  # type: ignore[method-assign]
         controller._handle_set_members = AsyncMock()  # type: ignore[method-assign]
 
-        await controller._forward_protocol_set_members(
-            parent_player=players["leader"],
-            parent_protocol_player=players["leader_bridge"],
-            protocol_members_to_add=["joiner"],
-            protocol_members_to_remove=[],
-        )
+        with pytest.raises(PlayerCommandFailed):
+            await controller._forward_protocol_set_members(
+                parent_player=players["leader"],
+                parent_protocol_player=players["leader_bridge"],
+                protocol_members_to_add=["joiner"],
+                protocol_members_to_remove=[],
+            )
 
         assert (
             players["leader"].active_output_protocol,
