@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import cast
 from unittest.mock import AsyncMock, MagicMock
 
+import pytest
 from music_assistant_models.enums import ContentType, MediaType, StreamType
 from music_assistant_models.media_items import AudioFormat
 from music_assistant_models.queue_item import QueueItem
@@ -20,7 +21,13 @@ LIMITED = "limited--1"
 UNLIMITED = "local--1"
 
 
-def _item(queue_id: str, item_id: str, provider: str | None, buffering: bool = True) -> QueueItem:
+def _item(
+    queue_id: str,
+    item_id: str,
+    provider: str | None,
+    buffering: bool = True,
+    valid: bool = False,
+) -> QueueItem:
     """
     Build a queue item, optionally with a buffer attached to its stream details.
 
@@ -28,12 +35,15 @@ def _item(queue_id: str, item_id: str, provider: str | None, buffering: bool = T
     :param item_id: The queue item id.
     :param provider: Provider instance owning the source, or None for an item without details.
     :param buffering: Whether the attached buffer is still filling from its source.
+    :param valid: Whether the attached buffer can serve the position the item starts from.
     """
     queue_item = QueueItem(queue_id=queue_id, queue_item_id=item_id, name=item_id, duration=180)
     if provider is None:
         return queue_item
     audio_buffer = MagicMock(spec=AudioBuffer)
     audio_buffer.is_buffering = buffering
+    audio_buffer.has_error = False
+    audio_buffer.is_valid.return_value = valid
     audio_buffer.clear = AsyncMock()
     queue_item.streamdetails = StreamDetails(
         provider=provider,
@@ -149,6 +159,47 @@ async def test_freeing_a_slot_first_lets_the_successor_keep_its_prewarm() -> Non
     assert upcoming.streamdetails is not None
     assert upcoming.streamdetails.buffer is not None
     assert upcoming.streamdetails.buffer.clear.await_count == 0
+
+
+async def test_an_item_resuming_from_its_own_buffer_leaves_the_successors_prewarm_alone() -> None:
+    """A buffer that still serves the start position opens no source, so no slot is needed."""
+    target = _item(QUEUE_ID, "target", LIMITED, valid=True)
+    upcoming = _item(QUEUE_ID, "upcoming", LIMITED)
+    ctrl = _controller((QUEUE_ID, [target, upcoming]))
+    _limited_double(ctrl).has_available_stream_slot = False
+
+    await ctrl._abort_superseded_source_buffers(target, seek_position_ms=168_000)
+
+    assert target.streamdetails is not None
+    assert target.streamdetails.buffer is not None
+    target.streamdetails.buffer.is_valid.assert_called_once_with(168_000)
+    assert upcoming.streamdetails is not None
+    assert upcoming.streamdetails.buffer is not None
+    assert upcoming.streamdetails.buffer.clear.await_count == 0
+
+
+@pytest.mark.parametrize(
+    ("valid", "has_error"),
+    [(False, False), (True, True)],
+    ids=["cannot_serve_seek", "producer_failed"],
+)
+async def test_a_buffer_that_cannot_resume_the_started_item_frees_the_successors_slot(
+    valid: bool, has_error: bool
+) -> None:
+    """The started item opens a new source, so a saturated provider takes the prewarm back."""
+    target = _item(QUEUE_ID, "target", LIMITED, valid=valid)
+    upcoming = _item(QUEUE_ID, "upcoming", LIMITED)
+    ctrl = _controller((QUEUE_ID, [target, upcoming]))
+    _limited_double(ctrl).has_available_stream_slot = False
+    assert target.streamdetails is not None
+    assert target.streamdetails.buffer is not None
+    target.streamdetails.buffer.has_error = has_error
+
+    await ctrl._abort_superseded_source_buffers(target, seek_position_ms=168_000)
+
+    assert upcoming.streamdetails is not None
+    assert upcoming.streamdetails.buffer is not None
+    upcoming.streamdetails.buffer.clear.assert_awaited_once()
 
 
 async def test_completed_and_unlimited_sources_are_left_alone() -> None:
