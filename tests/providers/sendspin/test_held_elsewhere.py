@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING, Any, cast
 from unittest.mock import Mock
 
 import pytest
-from aiosendspin.models.types import GoodbyeReason, PairAbortReason, PairMethod, PlayerCommand
+from aiosendspin.models.types import GoodbyeReason, PairAbortReason, PairMethod
 from aiosendspin.noise.keys import generate_psk, psk_id_for
 from aiosendspin.noise.pairing import RemotePairingAbortError
 from aiosendspin.noise.trust_store import (
@@ -20,7 +20,6 @@ from aiosendspin.noise.trust_store import (
     TrustedUnpairedClient,
 )
 from aiosendspin.server import ClientConnectedEvent, ClientDisconnectedEvent
-from aiosendspin.server.roles.player.v1 import PlayerPersistentState
 from music_assistant_models.enums import FlowStepType, PlayerFeature
 
 from music_assistant.models.setup_flow import AbortFlow
@@ -201,38 +200,20 @@ async def test_only_a_takeover_goodbye_counts_as_held_elsewhere(
 
 
 @pytest.mark.parametrize(
-    ("held", "features", "commands", "status_key"),
+    ("held", "features", "status_key"),
     [
-        (
-            True,
-            {PlayerFeature.PLAY_MEDIA},
-            [PlayerCommand.SET_STATIC_DELAY],
-            "security_status_held_elsewhere_delay",
-        ),
-        (
-            True,
-            {PlayerFeature.PLAY_MEDIA},
-            [PlayerCommand.VOLUME],
-            "security_status_held_elsewhere",
-        ),
-        (True, set(), [], "security_status_disconnected"),
-        (
-            False,
-            {PlayerFeature.PLAY_MEDIA},
-            [PlayerCommand.SET_STATIC_DELAY],
-            "security_status_disconnected",
-        ),
+        (True, {PlayerFeature.PLAY_MEDIA}, "security_status_held_elsewhere"),
+        (True, set(), "security_status_disconnected"),
+        (False, {PlayerFeature.PLAY_MEDIA}, "security_status_disconnected"),
     ],
 )
 async def test_settings_tell_how_to_take_back_a_held_device(
-    held: bool, features: set[PlayerFeature], commands: list[PlayerCommand], status_key: str
+    held: bool, features: set[PlayerFeature], status_key: str
 ) -> None:
     """Only a playable device gets the note, and a drop keeps its text."""
     api = _FakeApi([_desc(PairMethod.DYNAMIC_PAIRING_CODE)])
     api.connection_security = None
     api.is_connected = False
-    player_state = PlayerPersistentState(state_supported_commands=commands)
-    cast("Any", api).get_role_state = lambda _family, _cls: player_state
     provider = _FakeProvider(api)
     provider.held_elsewhere = held
     player = _make_player(api, provider)

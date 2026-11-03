@@ -953,15 +953,7 @@ class SendspinBasePlayer(Player):
             provider.is_held_elsewhere(self.player_id)
             and PlayerFeature.PLAY_MEDIA in self.supported_features
         ):
-            # aiosendspin keeps the commands the device last reported after its roles detach.
-            player_state = self.api.get_role_state("player", PlayerPersistentState)
-            status_key = (
-                "security_status_held_elsewhere_delay"
-                if player_state is not None
-                and not _OUTPUT_DELAY_COMMANDS.isdisjoint(player_state.state_supported_commands)
-                else "security_status_held_elsewhere"
-            )
-            return ConfigEntry(key=status_key, type=ConfigEntryType.LABEL), []
+            return ConfigEntry(key="security_status_held_elsewhere", type=ConfigEntryType.LABEL), []
         if not self.api.is_connected:
             # The action dropped the connection; the client will reconnect
             return ConfigEntry(key="security_status_disconnected", type=ConfigEntryType.LABEL), []
@@ -2078,6 +2070,17 @@ class SendspinPlayer(SendspinBasePlayer):
                     advanced=False,
                 )
             )
+        elif player_role is None and not self.api.is_connected:
+            # aiosendspin keeps the commands the device last reported after its roles detach.
+            player_state = self.api.get_role_state("player", PlayerPersistentState)
+            if player_state is not None and not _OUTPUT_DELAY_COMMANDS.isdisjoint(
+                player_state.state_supported_commands
+            ):
+                entries.append(
+                    ConfigEntry(
+                        key="sendspin_static_delay_disconnected", type=ConfigEntryType.LABEL
+                    )
+                )
 
         return entries
 
