@@ -3249,24 +3249,15 @@ class ProtocolLinkingMixin:
         :param parent_protocol_player: The protocol player taking the output over.
         :param previous_protocol: The parent's previous active output protocol, if any.
         """
-        if previous_protocol in (None, "native"):
+        if not (
+            old_protocol_player := self._get_previous_protocol_player(
+                previous_protocol, parent_protocol_player
+            )
+        ):
             return []
-        if not (old_protocol_player := self.get_player(previous_protocol)):
-            return []
-        if old_protocol_player.player_id == parent_protocol_player.player_id:
-            return []
-        # Translate the old protocol's child members back to parent player IDs
-        old_protocol_members: list[str] = []
-        old_parent_members: list[str] = []
-        for member_id in old_protocol_player.group_members:
-            if member_id == old_protocol_player.player_id:
-                continue
-            if not (member_player := self.get_player(member_id)):
-                continue
-            parent_id = member_player.protocol_parent_id or member_id
-            if parent_id != parent_player.player_id:
-                old_protocol_members.append(member_id)
-                old_parent_members.append(parent_id)
+        members = self._get_protocol_group_members(parent_player, old_protocol_player)
+        old_protocol_members = [protocol_id for protocol_id, _ in members]
+        old_parent_members = [parent_id for _, parent_id in members]
         self.logger.debug(
             "Stopping old protocol player %s before switching to %s, migrating members: %s",
             old_protocol_player.state.name,
@@ -3282,3 +3273,44 @@ class ProtocolLinkingMixin:
             parent_player, old_protocol_player, [], old_protocol_members
         )
         return old_parent_members
+
+    def _get_previous_protocol_player(
+        self, previous_protocol: str | None, parent_protocol_player: Player
+    ) -> Player | None:
+        """
+        Return the protocol player a parent renders through before switching to another one.
+
+        :param previous_protocol: The parent's active output protocol before the switch.
+        :param parent_protocol_player: The protocol player taking the output over.
+        """
+        if previous_protocol in (None, "native"):
+            return None
+        old_protocol_player = self.get_player(previous_protocol)
+        if (
+            not old_protocol_player
+            or old_protocol_player.player_id == parent_protocol_player.player_id
+        ):
+            return None
+        return old_protocol_player
+
+    def _get_protocol_group_members(
+        self, parent_player: Player, protocol_player: Player
+    ) -> list[tuple[str, str]]:
+        """
+        Return the members of a protocol group, other than the parent, as pairs of IDs.
+
+        Each pair holds the member's protocol player ID and its parent player ID.
+
+        :param parent_player: The parent player leading the group.
+        :param protocol_player: The protocol player of the parent that holds the group.
+        """
+        members: list[tuple[str, str]] = []
+        for member_id in protocol_player.group_members:
+            if member_id == protocol_player.player_id:
+                continue
+            if not (member_player := self.get_player(member_id)):
+                continue
+            parent_id = member_player.protocol_parent_id or member_id
+            if parent_id != parent_player.player_id:
+                members.append((member_id, parent_id))
+        return members
