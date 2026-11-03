@@ -97,6 +97,8 @@ class RaumfeldPlayerProvider(PlayerProvider):
     # room name -> renderer hardware serial, the basis for the player_id. Read from the
     # device once and kept, so a resync does not refetch a description per room.
     _room_serials: dict[str, str]
+    # room name -> UDN of the renderer the room's serial, model and control URL were read from
+    _room_renderers: dict[str, str]
     # room name -> renderer model name, read from the same device description
     _room_models: dict[str, str]
     # room name -> AVTransport control URL of its renderer as the description gives it,
@@ -174,6 +176,7 @@ class RaumfeldPlayerProvider(PlayerProvider):
         self._host_port = cast("int", self.get_setup_value(CONF_PORT) or DEFAULT_PORT)
         self._line_in = {}
         self._room_serials = {}
+        self._room_renderers = {}
         self._room_models = {}
         self._room_transport_paths = {}
         self._room_ids = {}
@@ -449,6 +452,7 @@ class RaumfeldPlayerProvider(PlayerProvider):
         """Register (or re-activate) a Music Assistant player for every Raumfeld room."""
         # ``get_rooms`` returns the list of room names currently known to the host.
         rooms = self.host.get_rooms()
+        self._forget_moved_renderers(rooms)
         # the id comes from the renderer's hardware serial, which has to be read from the
         # device once; a room whose serial we cannot read yet is skipped for now rather than
         # registered under an id that would have to change once the serial comes in
@@ -721,14 +725,53 @@ class RaumfeldPlayerProvider(PlayerProvider):
             return None
         return udn
 
+    def _room_renderer_udn(self, room: str) -> str | None:
+        """Return the UDN of a room's own renderer as the host reports it, or ``None``."""
+        if (room_udn := self._room_udn(room)) is None:
+            return None
+        try:
+            renderer_udn: str | None = self.host.resolve["roomudn_to_rendudn"].get(room_udn)
+        except KeyError, AttributeError:
+            return None
+        return renderer_udn
+
+    def _forget_moved_renderers(self, rooms: list[str]) -> None:
+        """
+        Drop what was read for a room whose renderer now sits in another room.
+
+        :param rooms: The rooms the host reports now.
+        """
+        # A speaker moved to another room (or a room set up again under a new UDN) still
+        # holds its serial under the room it left. Kept, it would claim that serial first
+        # and push the speaker in its new room onto a room-UDN id, a new player each move.
+        owners = {
+            renderer_udn: room
+            for room in rooms
+            if (renderer_udn := self._room_renderer_udn(room)) is not None
+        }
+        for room, renderer_udn in list(self._room_renderers.items()):
+            if owners.get(renderer_udn, room) != room:
+                self._forget_room(room)
+
+    def _forget_room(self, room: str) -> None:
+        """Drop the serial, model and control URL read for a room."""
+        self._room_serials.pop(room, None)
+        self._room_renderers.pop(room, None)
+        self._room_models.pop(room, None)
+        self._room_transport_paths.pop(room, None)
+
     def _room_sort_key(self, room: str) -> str:
         """Return a stable sort key for a room: its UDN, or its name if that is unknown."""
         return self._room_udn(room) or room
 
     async def _ensure_room_serial(self, room: str) -> str | None:
         """Read (and remember) the hardware serial of a room's renderer."""
+        renderer_udn = self._room_renderer_udn(room)
         if (cached := self._room_serials.get(room)) is not None:
-            return cached
+            if renderer_udn is None or self._room_renderers.get(room) == renderer_udn:
+                return cached
+            # another speaker took the room's place: what was read belongs to the one it had
+            self._forget_room(room)
         location = self.room_renderer_location(room)
         if location is None:
             return None
@@ -743,6 +786,8 @@ class RaumfeldPlayerProvider(PlayerProvider):
             self.logger.debug("Renderer of room %s reports no serial number", room)
             return None
         self._room_serials[room] = serial
+        if renderer_udn is not None:
+            self._room_renderers[room] = renderer_udn
         if (model := parse_model_name(description)) is not None:
             self._room_models[room] = model
         if (control_url := parse_control_url(description, "AVTransport")) is not None:
