@@ -399,13 +399,13 @@ class QueueLoaderMixin(_PlayerQueuesBase):
         # update queue_item.duration from streamdetails if we got a better value
         self._apply_probed_duration(queue_item)
         if (
-            isinstance(queue_item.media_item, PodcastEpisode)
+            isinstance(queue_item.media_item, PodcastEpisode | Audiobook)
             and queue_item.media_item.metadata.chapters is None
         ):
-            # episode listings skip the chapter download, so look the episode up once
+            # listings skip the chapters, so look the item up once
             self.mass.create_task(
-                self._load_episode_chapters(queue_id, queue_item.media_item),
-                task_id=f"episode_chapters_{queue_item.queue_item_id}",
+                self._load_chapters(queue_item),
+                task_id=f"chapters_{queue_item.queue_item_id}",
             )
 
         # pre-initialize the AudioBuffer so audio is ready
@@ -490,20 +490,31 @@ class QueueLoaderMixin(_PlayerQueuesBase):
         if duration := await get_probed_duration(self.mass, uri):
             self._set_missing_duration(queue_item, duration)
 
-    async def _load_episode_chapters(self, queue_id: str, episode: PodcastEpisode) -> None:
-        """Fill in the chapters of a queued podcast episode from its full details."""
+    async def _load_chapters(self, queue_item: QueueItem) -> None:
+        """Fill in the chapters of a queued podcast episode or audiobook from its full details."""
+        media_item = cast("PodcastEpisode | Audiobook", queue_item.media_item)
         # extra metadata must not compete with the playback requests of the same item
         set_request_priority(RequestPriority.LOW)
-        # an empty list marks the episode as looked up, so a seek does not repeat it
-        episode.metadata.chapters = []
+        # an empty list marks the item as looked up, so a seek does not repeat it
+        media_item.metadata.chapters = []
+        details: PodcastEpisode | Audiobook
         try:
-            details = await self.mass.music.podcasts.episode(episode.item_id, episode.provider)
+            if isinstance(media_item, PodcastEpisode):
+                details = await self.mass.music.podcasts.episode(
+                    media_item.item_id, media_item.provider
+                )
+            else:
+                # the chapters have to match the copy that streams
+                assert queue_item.streamdetails is not None
+                details = await self.mass.music.audiobooks.get_provider_item(
+                    queue_item.streamdetails.item_id, queue_item.streamdetails.provider
+                )
         except MusicAssistantError as err:
-            self.logger.debug("Could not look up the chapters of %s: %s", episode.name, err)
+            self.logger.debug("Could not look up the chapters of %s: %s", media_item.name, err)
             return
         if details.metadata.chapters:
-            episode.metadata.chapters = details.metadata.chapters
-            self.signal_update(queue_id, items_changed=True)
+            media_item.metadata.chapters = details.metadata.chapters
+            self.signal_update(queue_item.queue_id, items_changed=True)
 
     def _set_missing_duration(self, queue_item: QueueItem, duration: int) -> bool:
         """
