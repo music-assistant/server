@@ -4127,7 +4127,7 @@ class TestProtocolSwitchingDuringPlayback:
         controller.cmd_resume = AsyncMock()  # type: ignore[method-assign]
         controller._handle_set_members = AsyncMock()  # type: ignore[method-assign]
 
-        with pytest.raises(PlayerCommandFailed):
+        with pytest.raises(PlayerCommandFailed) as err:
             await controller._forward_protocol_set_members(
                 parent_player=players["leader"],
                 parent_protocol_player=players["leader_bridge"],
@@ -4136,10 +4136,11 @@ class TestProtocolSwitchingDuringPlayback:
             )
 
         assert (
+            err.value.translation_key,
             players["leader"].active_output_protocol,
             players["leader_bridge"].group_members,
             controller._handle_cmd_stop.await_count,
-        ) == ("leader_airplay", [], 0)
+        ) == ("member_cannot_follow_protocol", "leader_airplay", [], 0)
 
     async def test_joining_member_protocol_is_active_before_its_stream_starts(
         self, mock_mass: MagicMock

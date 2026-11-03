@@ -106,6 +106,7 @@ class ProtocolLinkingMixin:
         _pending_protocol_evaluations: dict[str, asyncio.TimerHandle]
         _delayed_evaluation_lock: asyncio.Lock
         logger: logging.Logger
+        translation_owner: str
 
         def all_players(  # noqa: D102
             self,
@@ -3085,12 +3086,18 @@ class ProtocolLinkingMixin:
                 player.display_name if (player := self.get_player(pid)) else pid
                 for pid in filtered_protocol_add
             )
+            stranded_names = ", ".join(unable_to_follow)
+            protocol = parent_protocol_player.provider.manifest.name
             msg = (
                 f"Cannot add {added_names} to {parent_player.state.name}: "
-                f"{', '.join(unable_to_follow)} cannot move along to the "
-                f"{parent_protocol_player.provider.domain} protocol"
+                f"{stranded_names} cannot play over {protocol}"
             )
-            raise PlayerCommandFailed(msg)
+            raise PlayerCommandFailed(
+                msg,
+                translation_key="member_cannot_follow_protocol",
+                translation_owner=self.translation_owner,
+                translation_args=[added_names, parent_player.state.name, stranded_names, protocol],
+            )
 
         # Members that ride the parent's own stream are stranded by the protocol switch below,
         # so they join the protocol group in this very same call and are released from the
