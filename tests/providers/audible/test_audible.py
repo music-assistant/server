@@ -595,3 +595,55 @@ async def test_audiobook_is_served_from_its_cache(
 
     assert (first.name, second.name) == ("Book 1", "Book 1")
     assert requested.count("library/book_1") == 1
+
+
+async def test_bookmarks_are_named_by_the_note_or_clip_at_their_position(
+    helper: AudibleHelper, audible_client_mock: AsyncMock
+) -> None:
+    """A bookmark takes a clip's title at its start, else a note's text, else its position."""
+    audible_client_mock.get = AsyncMock(
+        return_value={
+            "payload": {
+                "records": [
+                    {"type": "audible.bookmark", "startPosition": "65000.0"},
+                    {"type": "audible.bookmark", "startPosition": "3725000"},
+                    {"type": "audible.note", "startPosition": "3725000", "text": "Plot twist"},
+                    {"type": "audible.bookmark", "startPosition": "7200000"},
+                    {"type": "audible.note", "startPosition": "7200000", "text": "Remember"},
+                    {
+                        "type": "audible.clip",
+                        "startPosition": "7200000",
+                        "endPosition": "7260000",
+                        "metadata": {"title": "Best scene", "note": "Remember"},
+                    },
+                    {"type": "audible.last_heard", "startPosition": "9000000"},
+                    {"type": "audible.note", "startPosition": "100", "text": "No bookmark"},
+                ]
+            }
+        }
+    )
+
+    bookmarks = await helper.get_bookmarks("book_1")
+
+    assert [(x.name, x.start, x.item_id) for x in bookmarks] == [
+        ("01:05", 65.0, "book_1"),
+        ("Plot twist", 3725.0, "book_1"),
+        ("Best scene", 7200.0, "book_1"),
+    ]
+
+
+async def test_failed_bookmark_lookup_returns_no_bookmarks(
+    helper: AudibleHelper, audible_client_mock: AsyncMock
+) -> None:
+    """A 404 means no annotations; other failures must not hide the bookmarks stored in MA."""
+    not_found = MagicMock(status_code=404, reason_phrase="Not Found")
+    failure = MagicMock(status_code=500, reason_phrase="Server Error")
+    audible_client_mock.get = AsyncMock(
+        side_effect=[
+            audible.exceptions.NotFoundError(not_found, {}),
+            audible.exceptions.UnexpectedError(failure, {}),
+        ]
+    )
+
+    assert await helper.get_bookmarks("book_1") == []
+    assert await helper.get_bookmarks("book_1") == []

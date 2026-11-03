@@ -13,7 +13,12 @@ from urllib.parse import quote, unquote
 import audible
 from music_assistant_models.enums import ArtistType, MediaType, ProviderFeature
 from music_assistant_models.errors import LoginFailed, MediaNotFoundError
-from music_assistant_models.media_items import Artist, BrowseFolder, ItemMapping
+from music_assistant_models.media_items import (
+    Artist,
+    BrowseFolder,
+    ItemMapping,
+    MediaItemBookmark,
+)
 
 from music_assistant.constants import CONF_ENTRY_UNOFFICIAL_PROVIDER
 from music_assistant.models.music_provider import MusicProvider
@@ -56,6 +61,8 @@ SUPPORTED_FEATURES = {
     ProviderFeature.LIBRARY_ARTISTS,  # authors/ narrators
     ProviderFeature.AUTHOR_AUDIOBOOKS,
     ProviderFeature.NARRATOR_AUDIOBOOKS,
+    # read only: writing goes through an undocumented api
+    ProviderFeature.AUDIOBOOK_BOOKMARKS,
 }
 
 
@@ -115,6 +122,12 @@ class Audibleprovider(MusicProvider):
     async def get_artist(self, prov_artist_id: str) -> Artist:
         """Get full artist (author or narrator) details by id."""
         return await self.helper.get_artist(prov_artist_id)
+
+    async def get_bookmarks(
+        self, media_type: MediaType, prov_item_id: str
+    ) -> list[MediaItemBookmark]:
+        """Get the user's bookmarks of the given audiobook."""
+        return await self.helper.get_bookmarks(prov_item_id)
 
     async def _login(self) -> None:
         """Authenticate with Audible using the saved authentication file."""

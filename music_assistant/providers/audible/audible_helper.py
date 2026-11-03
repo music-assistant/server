@@ -42,6 +42,7 @@ from music_assistant_models.media_items import (
     Audiobook,
     AudioFormat,
     ItemMapping,
+    MediaItemBookmark,
     MediaItemChapter,
     MediaItemCollection,
     MediaItemImage,
@@ -76,6 +77,8 @@ AUDIOBOOK_CACHE_CHECKSUM = "series_v1"
 # short on purpose: only spares the repeated lookup of a book queued during its metadata
 # refresh, while title, description and series stay as fresh as on audible
 AUDIOBOOK_CACHE_EXPIRATION = 60 * 60
+# bookmarks, notes and clips of a book; unofficial, documented for the US marketplace only
+SIDECAR_URL = "https://cde-ta-g7g.amazon.com/FionaCDEServiceEngine/sidecar"
 # one person can be author and narrator, so the role is part of the artist id
 AUTHOR_ID_PREFIX = "author:"
 NARRATOR_ID_PREFIX = "narrator:"
@@ -257,6 +260,55 @@ class AudibleHelper:
         if name := (await get_contributors()).get(contributor_id):
             return self._parse_artist(contributor_id, name, artist_type)
         raise MediaNotFoundError(f"Artist {prov_artist_id} not found")
+
+    async def get_bookmarks(self, asin: str) -> list[MediaItemBookmark]:
+        """
+        Get the user's bookmarks of an audiobook.
+
+        :param asin: The audiobook's asin.
+        """
+        try:
+            response = await self.client.get(SIDECAR_URL, params={"type": "AUDI", "key": asin})
+        except audible.exceptions.NotFoundError:
+            # audible answers 404 for a book without bookmarks, notes or clips
+            return []
+        except audible.exceptions.RequestError as exc:
+            # the api is unofficial: its failure must not hide the bookmarks stored in MA
+            self.logger.warning("Could not get the Audible bookmarks of %s: %s", asin, exc)
+            return []
+        payload = response.get("payload") if isinstance(response, dict) else None
+        records = [x for x in (payload or {}).get("records") or [] if isinstance(x, dict)]
+        # a bookmark carries no name: a clip's title at its position names it, else a note
+        names: dict[int, str] = {}
+        for record in records:
+            if (start_ms := _start_ms(record)) is None:
+                continue
+            metadata = record.get("metadata")
+            if not isinstance(metadata, dict):
+                metadata = {}
+            if record.get("type") == "audible.clip" and metadata.get("title"):
+                names[start_ms] = str(metadata["title"])
+            elif name := record.get("text") or metadata.get("note"):
+                names.setdefault(start_ms, str(name))
+        bookmarks: list[MediaItemBookmark] = []
+        for record in records:
+            if record.get("type") != "audible.bookmark" or (start_ms := _start_ms(record)) is None:
+                continue
+            # unnamed, it is called by its position, like a bookmark added in Music Assistant
+            hours, rest = divmod(start_ms // 1000, 3600)
+            minutes, seconds = divmod(rest, 60)
+            position = (
+                f"{hours:02}:{minutes:02}:{seconds:02}" if hours else f"{minutes:02}:{seconds:02}"
+            )
+            bookmarks.append(
+                MediaItemBookmark(
+                    name=names.get(start_ms) or position,
+                    start=start_ms / 1000,
+                    provider_instance=self.provider_instance,
+                    item_id=asin,
+                )
+            )
+        return bookmarks
 
     async def _fetch_library_items(
         self,
@@ -1358,6 +1410,14 @@ class AudibleHelper:
 def _contributor_id(contributor: dict[str, Any]) -> str | None:
     """Return the id of an author or narrator: its asin, or its name as not all carry one."""
     return contributor.get("asin") or contributor.get("name")
+
+
+def _start_ms(record: dict[str, Any]) -> int | None:
+    """Return the start of a bookmark, note or clip in milliseconds, None if it has none."""
+    try:
+        return int(float(record["startPosition"]))
+    except KeyError, TypeError, ValueError:
+        return None
 
 
 def _html_to_txt(html_text: str) -> str:
