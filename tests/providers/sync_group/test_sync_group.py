@@ -3321,7 +3321,7 @@ class TestDebouncedReform:
             assert task is not None
             await task
 
-        assert "none of its members is available" in caplog.text
+        assert "none of its members can lead right now" in caplog.text
         assert sgp.sync_leader is None
         assert sgp._attr_group_members == ["m2"]
         assert sgp._reform_task is None
