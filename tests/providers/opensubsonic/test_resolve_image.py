@@ -18,8 +18,8 @@ async def test_resolve_image_returns_remote_urls(url: str) -> None:
     """Remote image URLs are returned as-is instead of being passed to getCoverArt."""
     prov = OpenSonicProvider.__new__(OpenSonicProvider)
     prov.logger = MagicMock()
-    prov._conn = MagicMock()
-    prov._conn.get_cover_art = AsyncMock()
+    prov.conn = MagicMock()
+    prov.conn.get_cover_art = AsyncMock()
 
     assert await prov.resolve_image(url) == url
-    prov._conn.get_cover_art.assert_not_called()
+    prov.conn.get_cover_art.assert_not_called()
