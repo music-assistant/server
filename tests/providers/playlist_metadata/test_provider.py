@@ -128,7 +128,7 @@ async def test_get_playlist_metadata_returns_none_when_insufficient_images(
         if False:  # pragma: no cover
             yield  # type: ignore[unreachable]
 
-    with patch.object(provider.mass.music.playlists, "tracks", side_effect=mock_tracks_iter):
+    with patch.object(provider.mass.music.playlists, "iter_tracks", side_effect=mock_tracks_iter):
         result = await provider.get_playlist_metadata(playlist)
 
     assert result is None
@@ -160,7 +160,7 @@ async def test_get_playlist_metadata_returns_metadata_when_sufficient_images(
 
     # Mock _render to return fake image data
     with (
-        patch.object(provider.mass.music.playlists, "tracks", side_effect=mock_tracks_iter),
+        patch.object(provider.mass.music.playlists, "iter_tracks", side_effect=mock_tracks_iter),
         patch.object(provider, "_render", new_callable=AsyncMock) as mock_render,
     ):
         mock_render.return_value = b"fake_image_data"
@@ -255,7 +255,7 @@ async def test_get_playlist_metadata_keeps_service_artwork(
             yield track
 
     with (
-        patch.object(provider.mass.music.playlists, "tracks", side_effect=mock_tracks_iter),
+        patch.object(provider.mass.music.playlists, "iter_tracks", side_effect=mock_tracks_iter),
         patch.object(provider, "_render", new_callable=AsyncMock) as mock_render,
     ):
         mock_render.return_value = b"fake_image_data"
@@ -354,7 +354,7 @@ async def test_get_playlist_metadata_cleans_up_old_files(
             yield track
 
     with (
-        patch.object(provider.mass.music.playlists, "tracks", side_effect=mock_tracks_iter),
+        patch.object(provider.mass.music.playlists, "iter_tracks", side_effect=mock_tracks_iter),
         patch.object(provider, "_render", new_callable=AsyncMock) as mock_render,
     ):
         mock_render.return_value = b"new_image_data"
@@ -396,7 +396,7 @@ async def test_get_playlist_metadata_always_creates_unique_filename(
             yield track
 
     with (
-        patch.object(provider.mass.music.playlists, "tracks", side_effect=mock_tracks_iter),
+        patch.object(provider.mass.music.playlists, "iter_tracks", side_effect=mock_tracks_iter),
         patch.object(provider, "_render", new_callable=AsyncMock) as mock_render,
     ):
         mock_render.return_value = b"new_image_data"
@@ -513,7 +513,7 @@ async def test_analyze_playlist_genres_returns_most_common_genres(
         for track in tracks:
             yield track
 
-    with patch.object(provider.mass.music.playlists, "tracks", side_effect=mock_tracks_iter):
+    with patch.object(provider.mass.music.playlists, "iter_tracks", side_effect=mock_tracks_iter):
         result = await provider._analyze_playlist_genres(playlist)
 
     assert result is not None
@@ -558,7 +558,7 @@ async def test_analyze_playlist_genres_respects_threshold(
         for track in tracks:
             yield track
 
-    with patch.object(provider.mass.music.playlists, "tracks", side_effect=mock_tracks_iter):
+    with patch.object(provider.mass.music.playlists, "iter_tracks", side_effect=mock_tracks_iter):
         result = await provider._analyze_playlist_genres(playlist)
 
     assert result is not None
@@ -592,7 +592,7 @@ async def test_analyze_playlist_genres_returns_none_for_empty_playlist(
         if False:  # pragma: no cover
             yield  # type: ignore[unreachable]
 
-    with patch.object(provider.mass.music.playlists, "tracks", side_effect=mock_tracks_iter):
+    with patch.object(provider.mass.music.playlists, "iter_tracks", side_effect=mock_tracks_iter):
         result = await provider._analyze_playlist_genres(playlist)
 
     assert result is None
@@ -632,7 +632,7 @@ async def test_analyze_playlist_genres_returns_none_when_no_genres_meet_threshol
         for track in tracks:
             yield track
 
-    with patch.object(provider.mass.music.playlists, "tracks", side_effect=mock_tracks_iter):
+    with patch.object(provider.mass.music.playlists, "iter_tracks", side_effect=mock_tracks_iter):
         result = await provider._analyze_playlist_genres(playlist)
 
     assert result is None
@@ -667,7 +667,7 @@ async def test_analyze_playlist_genres_handles_exception(
             yield  # type: ignore[unreachable]
         raise AttributeError("Failed to get tracks")
 
-    with patch.object(provider.mass.music.playlists, "tracks", side_effect=mock_tracks_iter):
+    with patch.object(provider.mass.music.playlists, "iter_tracks", side_effect=mock_tracks_iter):
         result = await provider._analyze_playlist_genres(playlist)
 
     assert result is None
@@ -715,7 +715,7 @@ async def test_get_playlist_metadata_includes_genres_when_enabled(
             yield track
 
     with (
-        patch.object(provider.mass.music.playlists, "tracks", side_effect=mock_tracks_iter),
+        patch.object(provider.mass.music.playlists, "iter_tracks", side_effect=mock_tracks_iter),
         patch.object(provider, "_render", new_callable=AsyncMock) as mock_render,
     ):
         mock_render.return_value = b"fake_image_data"
@@ -771,7 +771,7 @@ async def test_get_playlist_metadata_excludes_genres_when_disabled(
             yield track
 
     with (
-        patch.object(provider.mass.music.playlists, "tracks", side_effect=mock_tracks_iter),
+        patch.object(provider.mass.music.playlists, "iter_tracks", side_effect=mock_tracks_iter),
         patch.object(provider, "_render", new_callable=AsyncMock) as mock_render,
     ):
         mock_render.return_value = b"fake_image_data"

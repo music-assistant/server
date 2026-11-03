@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
+from unittest.mock import patch
 from uuid import uuid4
 
 from music_assistant_models.auth import User, UserRole
@@ -236,3 +237,32 @@ async def test_with_user_favorites_applies_the_asking_users_state(
 
     tracks = await with_user_favorites(mass, None, [liked, disliked, plain])
     assert [x.favorite for x in tracks] == [None, None, None]
+
+
+async def test_with_user_favorites_reaches_the_items_straight_from_a_source(
+    music_mass_module: MusicAssistant,
+) -> None:
+    """A source's item carries the state of its library item, or none, all in one query."""
+    mass = music_mass_module
+    library_track = await _add_track(mass, "In The Library", second_source=True)
+    await mass.music.favorites.set(MediaType.TRACK, int(library_track.item_id), False, [USER_A])
+    # the copy of the track on its second source, and a track that is not in the library
+    second_source = next(
+        x for x in library_track.provider_mappings if x.provider_instance == PROV_B
+    )
+    from_source = create_track(PROV_B, second_source.item_id)
+    not_in_library = create_track(PROV_A, uuid4().hex)
+    # what the sources reported for their own account
+    from_source.favorite = not_in_library.favorite = True
+
+    user_a = User(user_id=USER_A, username=USER_A, role=UserRole.USER)
+    database = mass.music.database
+    with patch.object(database, "get_rows_from_query", wraps=database.get_rows_from_query) as query:
+        items = await with_user_favorites(
+            mass, user_a, [library_track, from_source, not_in_library]
+        )
+    assert [item.favorite for item in items] == [False, False, None]
+    assert query.await_count == 1
+
+    items = await with_user_favorites(mass, None, [library_track, from_source, not_in_library])
+    assert [item.favorite for item in items] == [None, None, None]

@@ -21,7 +21,7 @@ from niconico.objects.nvapi import (
 )
 from niconico.objects.user import NicoUser, UserMylistItem, UserSeriesItem
 from niconico.objects.video import EssentialVideo, Mylist
-from niconico.objects.video.watch import WatchData
+from niconico.objects.video.watch import WatchData, WatchLazyData
 from pydantic import BaseModel
 
 from music_assistant.providers.nicovideo.converters.stream import (
@@ -46,6 +46,18 @@ class APIResponseConverterMapping[T: BaseModel]:
     convert_func: Callable[[T, NicovideoConverterManager], ConvertedResult]
 
 
+def _convert_stream(
+    conversion_data: StreamConversionData,
+    watch_lazy_data: WatchLazyData | None,
+    cm: NicovideoConverterManager,
+) -> ConvertedResult:
+    """Convert stream data along with the track the provider would get from get_track."""
+    track = cm.track.convert_by_watch_data(conversion_data.watch_data, watch_lazy_data)
+    if track is None:
+        return None
+    return cm.stream.convert_from_conversion_data(conversion_data, track)
+
+
 # API type to converter function mappings
 API_RESPONSE_CONVERTER_MAPPINGS = (
     # Track Types
@@ -53,6 +65,8 @@ API_RESPONSE_CONVERTER_MAPPINGS = (
         source_type=EssentialVideo,
         convert_func=lambda data, cm: cm.track.convert_by_essential_video(data),
     ),
+    # Without lazy data (owner/series fetch failed); the full conversion with lazy data
+    # is covered by test_convert_by_watch_data_with_lazy_data and the stream fixture
     APIResponseConverterMapping(
         source_type=WatchData,
         convert_func=lambda data, cm: cm.track.convert_by_watch_data(data),
@@ -156,11 +170,11 @@ API_RESPONSE_CONVERTER_MAPPINGS = (
     # Stream Types
     APIResponseConverterMapping(
         source_type=StreamConversionData,
-        convert_func=lambda data, cm: cm.stream.convert_from_conversion_data(data),
+        convert_func=lambda data, cm: _convert_stream(data, None, cm),
     ),
     APIResponseConverterMapping(
         source_type=StreamFixtureData,
-        convert_func=lambda data, cm: cm.stream.convert_from_conversion_data(
+        convert_func=lambda data, cm: _convert_stream(
             StreamConversionData(
                 watch_data=data.watch_data,
                 selected_audio=data.selected_audio,
@@ -180,10 +194,17 @@ API_RESPONSE_CONVERTER_MAPPINGS = (
                     "segment2.m4s\n"
                     "#EXT-X-ENDLIST\n"
                 ),
-            )
+            ),
+            data.watch_lazy_data,
+            cm,
         ),
     ),
 )
+
+
+# Types whose fixtures have no conversion of their own and are only used together with
+# another fixture (e.g. WatchLazyData in test_convert_by_watch_data_with_lazy_data)
+COMPANION_FIXTURE_TYPES: frozenset[type[BaseModel]] = frozenset({WatchLazyData})
 
 
 class APIResponseConverterMappingRegistry:
@@ -196,6 +217,10 @@ class APIResponseConverterMappingRegistry:
             self._registry[mapping.source_type] = cast(
                 "APIResponseConverterMapping[BaseModel]", mapping
             )
+
+    def is_companion_type(self, source_type: type) -> bool:
+        """Return whether fixtures of this type are only used together with other fixtures."""
+        return source_type in COMPANION_FIXTURE_TYPES
 
     def get_by_type(self, source_type: type) -> APIResponseConverterMapping[BaseModel] | None:
         """Get mapping by type with O(1) lookup."""

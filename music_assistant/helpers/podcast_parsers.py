@@ -456,8 +456,8 @@ def parse_podcast_episode(
     if episode_published is not None:
         mass_episode.metadata.release_date = datetime.fromtimestamp(episode_published, tz=UTC)
 
-    # description (podcastparser normalizes this to plain text, defaulting to "")
-    if description := episode.get("description"):
+    # prefer the full show notes: feeds often cut the plain-text summary short
+    if description := episode.get("description_html") or episode.get("description"):
         mass_episode.metadata.description = description
 
     # explicit flag (itunes:explicit); only set when the feed actually declared it

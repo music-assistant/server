@@ -217,7 +217,7 @@ async def test_overlay_reads_the_checked_file(tree: Path, repoint_after_check: R
     overlay = await audio._resolve_overlay_input(queue)  # type: ignore[arg-type]
 
     assert overlay is not None
-    overlay_input, pass_fds = overlay
+    overlay_input, pass_fds, _ = overlay
     try:
         assert Path(overlay_input).read_bytes() == (tree / "inside-track.flac").read_bytes()
     finally:

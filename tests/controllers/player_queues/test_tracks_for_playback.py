@@ -53,7 +53,7 @@ async def test_track_resolves_to_itself() -> None:
 
 @pytest.mark.asyncio
 async def test_finite_radio_resolves_to_its_tracklist() -> None:
-    """A finite station resolves to its tracklist; dynamic/stream radios resolve to nothing."""
+    """A finite station resolves to its tracklist; a stream-only radio resolves to nothing."""
     resolver = _resolver()
     resolver.mass = MagicMock()
     tracks = [_trk("show")]
@@ -67,14 +67,26 @@ async def test_finite_radio_resolves_to_its_tracklist() -> None:
         is_endless=False,
     )
     live = Radio(item_id="s2", provider="test", name="Live", provider_mappings=set())
-    dynamic = Radio(
-        item_id="s3", provider="test", name="Pandora", provider_mappings=set(), is_dynamic=True
-    )
 
     assert await resolver.get_tracks_for_playback(show) == tracks
     assert await resolver.get_tracks_for_playback(live) == []
-    assert await resolver.get_tracks_for_playback(dynamic) == []
     resolver.mass.music.radio.tracks.assert_awaited_once_with(show)
+
+
+@pytest.mark.asyncio
+async def test_dynamic_radio_resolves_to_a_fresh_batch() -> None:
+    """A dynamic station resolves to the playable tracks of its next batch."""
+    resolver = _resolver()
+    resolver.mass = MagicMock()
+    playable = _trk("next")
+    unplayable = Track(item_id="gone", provider="library", name="gone", provider_mappings=set())
+    resolver.mass.music.radio.dynamic_tracks = AsyncMock(return_value=[playable, unplayable])
+    station = Radio(
+        item_id="s3", provider="test", name="Pandora", provider_mappings=set(), is_dynamic=True
+    )
+
+    assert await resolver.get_tracks_for_playback(station) == [playable]
+    resolver.mass.music.radio.dynamic_tracks.assert_awaited_once_with(station)
 
 
 @pytest.mark.asyncio
@@ -118,7 +130,7 @@ async def test_genre_samples_artists_via_top_tracks() -> None:
 
     result = await resolver.get_genre_tracks(genre, None)
 
-    resolver.mass.music.artists.top_tracks.assert_awaited_once_with("a1", "test")
+    resolver.mass.music.artists.top_tracks.assert_awaited_once_with("a1", "test", limit=None)
     resolver.get_artist_tracks.assert_not_awaited()
     assert {t.item_id for t in result} == {"top1", "top2"}
 
@@ -141,7 +153,7 @@ async def test_genre_artist_without_top_tracks_falls_back() -> None:
 
     result = await resolver.get_genre_tracks(genre, None)
 
-    resolver.mass.music.artists.tracks.assert_awaited_once_with("a1", "test")
+    resolver.mass.music.artists.tracks.assert_awaited_once_with("a1", "test", limit=None)
     resolver.get_artist_tracks.assert_not_awaited()
     assert {t.item_id for t in result} == {"full1"}
 

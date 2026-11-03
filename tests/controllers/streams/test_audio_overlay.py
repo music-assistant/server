@@ -148,7 +148,7 @@ async def test_mixes_when_source_resolves(monkeypatch: pytest.MonkeyPatch) -> No
     """A resolvable overlay source is handed to the ffmpeg mixer with the queue's volume."""
     provider = MagicMock()
     provider.get_stream_details = AsyncMock(
-        return_value=MagicMock(stream_type=StreamType.HTTP, path=_OVERLAY_URL)
+        return_value=MagicMock(stream_type=StreamType.HTTP, path=_OVERLAY_URL, verify_ssl=False)
     )
     audio = _make_streams_audio(provider=provider)
     queue = _make_queue(source=_make_source_mapping(), volume=55)
@@ -170,3 +170,4 @@ async def test_mixes_when_source_resolves(monkeypatch: pytest.MonkeyPatch) -> No
     assert mixer_kwargs["overlay_input"] == _OVERLAY_URL
     assert mixer_kwargs["overlay_volume"] == 55
     assert mixer_kwargs["pcm_format"] is _PCM_FORMAT
+    assert mixer_kwargs["verify_ssl"] is False

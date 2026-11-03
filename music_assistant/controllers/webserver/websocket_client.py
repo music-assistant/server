@@ -337,7 +337,9 @@ class WebsocketClientHandler:
         try:
             # handle the optional impersonation argument for impersonation-enabled commands
             if handler.allow_impersonation and msg.args:
-                if impersonation_user := await resolve_command_impersonation(self.mass, msg.args):
+                if impersonation_user := await resolve_command_impersonation(
+                    self.mass, msg.args, handler.required_scope
+                ):
                     set_impersonated_user(impersonation_user)
             args = parse_arguments(handler.signature, handler.type_hints, msg.args)
             result: Any = handler.target(**args)
@@ -645,6 +647,12 @@ class WebsocketClientHandler:
                 or event.data.user_id != self._authenticated_user.user_id
             ):
                 # a like or dislike is the business of its own user only
+                return
+
+            if event.event == EventType.BOOKMARKS_UPDATED and (
+                self._authenticated_user is None or event.data != self._authenticated_user.user_id
+            ):
+                # as are bookmarks; the data is the id of the user they belong to
                 return
 
             if isinstance(event.data, MediaItem) and event.data.favorite is not None:

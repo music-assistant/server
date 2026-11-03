@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from typing import Any, cast
-from unittest.mock import Mock, patch
+from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
 from music_assistant_models.enums import PlaybackState, PlayerFeature, PlayerType
@@ -13,7 +13,9 @@ from music_assistant_models.player import PlayerMedia
 from music_assistant_models.player_queue import PlayerQueue
 
 from music_assistant.constants import CONF_HTTP_PROFILE
+from music_assistant.providers.msx_bridge.http_server import MSXHTTPServer
 from music_assistant.providers.msx_bridge.player import MSXPlayer
+from music_assistant.providers.msx_bridge.provider import MSXBridgeProvider
 from tests.providers.msx_bridge.factories import queue_item as make_queue_item
 
 # --- Initialization and properties ---
@@ -40,16 +42,14 @@ def test_init_defaults(player: MSXPlayer) -> None:
     assert player._attr_available is True
     assert player._attr_powered is True
     assert player._attr_volume_level == 100
-    assert player.output_format == "mp3"
     assert player.requires_flow_mode is False
 
 
 def test_init_custom_params(provider: Any) -> None:
-    """MSXPlayer should accept custom name and output_format."""
-    p = MSXPlayer(provider, "msx_custom", name="Living Room TV", output_format="flac")
+    """MSXPlayer should accept a custom name."""
+    p = MSXPlayer(provider, "msx_custom", name="Living Room TV")
     cast("Any", p).update_state = Mock()
     assert p._attr_name == "Living Room TV"
-    assert p.output_format == "flac"
 
 
 async def test_http_profile_defaults_to_chunked(player: MSXPlayer) -> None:
@@ -318,6 +318,23 @@ async def test_volume_set(player: MSXPlayer) -> None:
     _update_state_mock(player).assert_called()
 
 
+async def test_volume_set_reaches_native_client(
+    player: MSXPlayer, provider: MSXBridgeProvider, mass_mock: Mock
+) -> None:
+    """A volume command must reach the TV, not only change the MA state."""
+    server = MSXHTTPServer(provider, 0)
+    provider.http_server = server
+    ws = Mock(closed=False, send_str=AsyncMock())
+    server._ws_clients[player.player_id] = {ws}
+    tasks: list[asyncio.Task[Any]] = []
+    mass_mock.create_task = Mock(side_effect=lambda coro: tasks.append(asyncio.ensure_future(coro)))
+
+    await player.volume_set(25)
+    await asyncio.gather(*tasks)
+
+    ws.send_str.assert_called_once_with('{"type": "volume", "level": 25}')
+
+
 async def test_poll_updates_elapsed(player: MSXPlayer) -> None:
     """poll() should accumulate elapsed time during PLAYING."""
     player._attr_playback_state = PlaybackState.PLAYING
@@ -392,50 +409,10 @@ async def test_play_media_queue_sends_playlist(player: MSXPlayer, mass_mock: Moc
 
     mock_playlist.assert_called_once_with("msx_test", 2, queue_id="msx_test")
     mock_play.assert_not_called()
-    assert player._playing_from_queue is True
-
-
-async def test_play_media_reloads_playlist_when_playing_from_queue(
-    player: MSXPlayer, mass_mock: Mock
-) -> None:
-    """Same-queue play reloads a rotated playlist so MSX index 0 is the current item."""
-    player.mark_queue_playback("msx_test")
-
-    media = _player_media(
-        "http://ma-server/stream/12345", source_id="msx_test", queue_item_id="qi2"
-    )
-
-    queue = PlayerQueue(
-        queue_id="msx_test",
-        active=True,
-        display_name="Test queue",
-        available=True,
-        items=5,
-        current_index=3,
-    )
-
-    mass_mock.player_queues.get.return_value = queue
-    mass_mock.player_queues.get_item.return_value = None
-    mass_mock.player_queues.items.return_value = [
-        make_queue_item(queue_item_id=f"qi{index}") for index in range(5)
-    ]
-
-    with (
-        patch.object(player.provider, "notify_goto_index") as mock_goto,
-        patch.object(player.provider, "notify_play_playlist") as mock_playlist,
-        patch.object(player.provider, "notify_play_started") as mock_play,
-    ):
-        await player.play_media(media)
-
-    mock_goto.assert_not_called()
-    mock_playlist.assert_called_once_with("msx_test", 3, queue_id="msx_test")
-    mock_play.assert_not_called()
 
 
 async def test_play_media_skips_ws_when_skip_notify_set(player: MSXPlayer, mass_mock: Mock) -> None:
     """Native transitions suppress playback commands while allowing a clock reset."""
-    player.mark_queue_playback("msx_test")
-
     media = _player_media(
         "http://ma-server/stream/12345", source_id="msx_test", queue_item_id="qi2"
     )
@@ -443,14 +420,12 @@ async def test_play_media_skips_ws_when_skip_notify_set(player: MSXPlayer, mass_
     mass_mock.player_queues.get_item.return_value = None
 
     with (
-        patch.object(player.provider, "notify_goto_index") as mock_goto,
         patch.object(player.provider, "notify_play_playlist") as mock_playlist,
         patch.object(player.provider, "notify_play_started") as mock_play,
         player.suppress_ws_notify(),
     ):
         await player.play_media(media)
 
-    mock_goto.assert_not_called()
     mock_playlist.assert_not_called()
     mock_play.assert_not_called()
 
@@ -483,13 +458,6 @@ async def test_play_media_non_queue_sends_broadcast_play(
         next_action=f"execute:/api/next/{player.player_id}",
         prev_action=f"execute:/api/previous/{player.player_id}",
     )
-
-
-async def test_stop_resets_playing_from_queue(player: MSXPlayer) -> None:
-    """stop() should reset _playing_from_queue flag."""
-    player.mark_queue_playback("msx_test")
-    await player.stop()
-    assert player._playing_from_queue is False
 
 
 # --- WebSocket position reporting ---

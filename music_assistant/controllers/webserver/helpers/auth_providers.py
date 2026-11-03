@@ -8,7 +8,7 @@ import logging
 import time
 from abc import ABC, abstractmethod
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Any, Final, TypedDict, cast
 from urllib.parse import urlparse
@@ -16,8 +16,10 @@ from urllib.parse import urlparse
 from hass_client import HomeAssistantClient
 from hass_client.exceptions import BaseHassClientError
 from hass_client.utils import base_url, get_auth_url, get_token, get_websocket_url
+from mashumaro import DataClassDictMixin, field_options
 from music_assistant_models.auth import AuthProviderType, User, UserRole
-from music_assistant_models.errors import AuthenticationFailed
+from music_assistant_models.errors import AuthenticationFailed, RateLimited
+from music_assistant_models.translations import resolve_translation
 
 from music_assistant.constants import CONF_AUTH_ALLOW_SELF_REGISTRATION, MASS_LOGGER_NAME
 from music_assistant.helpers.datetime import utc
@@ -372,8 +374,35 @@ class AuthResult:
     success: bool
     user: User | None = None
     error: str | None = None
+    # the key of the error in the common errors strings
+    translation_key: str | None = None
     access_token: str | None = None
     return_url: str | None = None
+
+
+@dataclass
+class AuthFailure(DataClassDictMixin):
+    """A failed sign-in, as returned by the sign-in commands of the API."""
+
+    success: bool = field(default=False, init=False)
+    # in English; an API result carries it in the language of the client
+    error: str
+    # the key of the error in the common errors strings, also sent to the client
+    translation_key: str | None = None
+    translation_args: list[Any] = field(
+        default_factory=list, metadata=field_options(serialize="omit"), repr=False
+    )
+
+    def __post_serialize__(self, d: dict[str, Any]) -> dict[str, Any]:
+        """Localize the error when a resolver for the language of the client is active."""
+        if self.translation_key:
+            localized = resolve_translation(
+                f"errors.{self.translation_key}",
+                params=[str(arg) for arg in self.translation_args] or None,
+            )
+            if localized is not None:
+                d["error"] = localized
+        return d
 
 
 class LoginProvider(ABC):
@@ -496,6 +525,7 @@ class BuiltinLoginProvider(LoginProvider):
             return AuthResult(
                 success=False,
                 error=f"Too many failed attempts. Please try again in {remaining_delay} seconds.",
+                translation_key=RateLimited.translation_key,
             )
 
         # First, look up user by username to get user_id
@@ -514,13 +544,21 @@ class BuiltinLoginProvider(LoginProvider):
         if not user_row or not user:
             # Record failed attempt
             await self._rate_limiter.record_failed_attempt(username)
-            return AuthResult(success=False, error="Invalid username or password")
+            return AuthResult(
+                success=False,
+                error="Invalid username or password",
+                translation_key="login_failed",
+            )
 
         # Check if user is enabled
         if not user.enabled:
             # Record failed attempt for disabled accounts too
             await self._rate_limiter.record_failed_attempt(username)
-            return AuthResult(success=False, error="User account is disabled")
+            return AuthResult(
+                success=False,
+                error="User account is disabled",
+                translation_key="user_account_disabled",
+            )
 
         # Successful login - clear any failed attempts
         await self._rate_limiter.clear_attempts(username)

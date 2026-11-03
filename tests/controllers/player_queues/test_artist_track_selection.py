@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import logging
 from functools import partial
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, Any, cast
 from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
 
@@ -260,7 +260,7 @@ async def test_provider_artist_tracks_skips_failing_provider() -> None:
     artist = _artist_obj({_prov_mapping("p1", "a1"), _prov_mapping("p2", "a2")})
     fake.mass.music.get_unique_providers = MagicMock(return_value=["p1", "p2"])
 
-    async def _tracks(item_id: str, _provider_instance: str) -> list[Track]:
+    async def _tracks(item_id: str, _provider_instance: str, **_kwargs: Any) -> list[Track]:
         if item_id == "a2":
             raise MediaNotFoundError("provider returned garbage")
         return [_track_obj("Dancing Queen")]

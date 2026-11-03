@@ -124,6 +124,11 @@ LOUDNESS_MEASURE_TIMEOUT = 60
 # bookkeeping, so it is billed as an average length song
 FALLBACK_TRACK_SECONDS = 210
 
+# the queue only preloads the item after the current one, so a clip behind a song that fails
+# or is skipped would be due before a slow engine finished it: clips this close are rendered
+# ahead instead
+RENDER_AHEAD_ITEMS = 2
+
 # spoken clips are handed to MA already decoded, so the filter chain runs once here
 # instead of once per output
 TTS_CLIP_PCM_FORMAT = AudioFormat(

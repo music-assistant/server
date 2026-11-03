@@ -7,14 +7,24 @@ library item, the item's first provider mapping must not decide whose progress i
 
 from __future__ import annotations
 
+import asyncio
 from typing import TYPE_CHECKING, Any
 
+import pytest
 from music_assistant_models.config_entries import ProviderAccess
-from music_assistant_models.enums import MediaType, ProviderSharing
-from music_assistant_models.media_items import Artist, AudioFormat, ProviderMapping, Track
+from music_assistant_models.enums import MediaType, ProviderSharing, ProviderType
+from music_assistant_models.media_items import (
+    Artist,
+    AudioFormat,
+    Podcast,
+    PodcastEpisode,
+    ProviderMapping,
+    Track,
+)
 from music_assistant_models.unique_list import UniqueList
 
 from music_assistant.constants import DB_TABLE_MEDIA_PROGRESS
+from music_assistant.controllers.music.constants import CACHE_CATEGORY_LISTINGS
 from music_assistant.mass import MusicAssistant
 from tests.common import set_music_source_access
 
@@ -127,3 +137,82 @@ async def test_mark_unplayed_uses_the_reporting_instance_user(mass: MusicAssista
 
     await mass.music.mark_item_unplayed(track, provider_instance_id=INSTANCE_A)
     assert await _playlog_row(mass, track, user_a.user_id) is None
+
+
+class _Account:
+    """Loaded music source keeping the resume positions of its own account."""
+
+    type = ProviderType.MUSIC
+    domain = "audiobookshelf"
+    available = True
+
+    def __init__(self, instance_id: str) -> None:
+        self.instance_id = instance_id
+        self.positions: dict[str, int] = {}
+
+    async def on_played(self, prov_item_id: str, position: int, **kwargs: Any) -> None:
+        self.positions[prov_item_id] = position
+
+
+# b_unassigned: a freshly added instance, before it is assigned to its user
+@pytest.mark.parametrize(
+    ("sharing_a", "b_owned"),
+    [(ProviderSharing.PRIVATE, False), (ProviderSharing.MEMBERS, True)],
+    ids=["b_unassigned", "a_shared"],
+)
+async def test_reporting_instance_sync_stays_on_its_account(
+    mass: MusicAssistant, sharing_a: ProviderSharing, b_owned: bool
+) -> None:
+    """A sync of one account never changes the progress of another account."""
+    user_a, user_b, track = await _setup(mass, "syncer")
+    access_b = ProviderAccess(owner=user_b.user_id, sharing=ProviderSharing.PRIVATE)
+    set_music_source_access(
+        mass,
+        {
+            INSTANCE_A: ProviderAccess(owner=user_a.user_id, sharing=sharing_a),
+            INSTANCE_B: access_b if b_owned else None,
+        },
+    )
+    accounts = [_Account(INSTANCE_A), _Account(INSTANCE_B)]
+    for account in accounts:
+        mass._providers[account.instance_id] = account  # type: ignore[assignment]
+
+    await mass.music.mark_item_played(
+        track,
+        fully_played=False,
+        seconds_played=120,
+        user_initiated=False,
+        provider_instance_id=INSTANCE_B,
+    )
+    await mass.music.mark_item_unplayed(track, provider_instance_id=INSTANCE_B)
+    # let the background play reports run
+    await asyncio.sleep(0)
+
+    assert [account.positions for account in accounts] == [{}, {}]
+
+
+async def test_reporting_instance_reset_drops_the_episode_listing(mass: MusicAssistant) -> None:
+    """An episode reset reported by its provider drops the podcast's cached episodes."""
+    podcast = Podcast(
+        item_id="show", provider=INSTANCE_B, name="Show", provider_mappings=_mappings("show")
+    )
+    episode = PodcastEpisode(
+        item_id="episode",
+        provider=INSTANCE_B,
+        name="Episode",
+        position=1,
+        duration=600,
+        provider_mappings=_mappings("episode"),
+        podcast=podcast,
+    )
+    assert podcast.uri is not None
+    await mass.cache.set(
+        "episodes", ["cached"], provider=podcast.uri, category=CACHE_CATEGORY_LISTINGS
+    )
+
+    await mass.music.mark_item_unplayed(episode, provider_instance_id=INSTANCE_B)
+
+    cached = await mass.cache.get(
+        "episodes", provider=podcast.uri, category=CACHE_CATEGORY_LISTINGS
+    )
+    assert cached is None

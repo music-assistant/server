@@ -38,6 +38,7 @@ from music_assistant.controllers.webserver.helpers.auth_middleware import (
     set_current_user,
 )
 from music_assistant.controllers.webserver.helpers.auth_providers import (
+    AuthFailure,
     AuthResult,
     HomeAssistantOAuthProvider,
     HomeAssistantProviderConfig,
@@ -1019,8 +1020,9 @@ async def test_ha_login_exchange_refuses_a_user_that_may_not_sign_in(
     ):
         result = await auth_manager.exchange_authorization_code(pending.state, "ha_code", verifier)
 
-    assert result["success"] is False
-    assert result["translation_key"] == translation_key
+    assert isinstance(result, AuthFailure)
+    assert result.success is False
+    assert result.translation_key == translation_key
     get_token.assert_awaited_once_with(
         "http://ha.local:8123",
         "ha_code",

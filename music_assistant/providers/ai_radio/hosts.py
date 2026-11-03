@@ -4,6 +4,8 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import json
 import logging
 from copy import deepcopy
 from dataclasses import dataclass
@@ -248,6 +250,10 @@ PRESET_HOSTS: tuple[_PresetHost, ...] = (
         ),
     ),
 )
+_PRESETS_BY_ID = {preset.host_id: preset for preset in PRESET_HOSTS}
+
+# host keys that make up a preset copy's content; name, voice and id stay the user's
+_PRESET_CONTENT_KEYS = ("instructions", "section_ids", "section_order", "merge_section_id")
 
 
 class AIRadioHostsMixin:
@@ -312,6 +318,55 @@ class AIRadioHostsMixin:
         await self._write_hosts()
         self.logger.info("Seeded %d preset hosts on this fresh install", len(PRESET_HOSTS))
 
+    async def _refresh_preset_hosts(self) -> None:
+        """Bring untouched preset copies up to the bundled wording and untag edited ones."""
+        hosts_changed = False
+        sections_changed = False
+        for host in self._hosts.values():
+            if "preset_id" not in host:
+                continue
+            preset = _PRESETS_BY_ID.get(host["preset_id"])
+            if preset is None:
+                self.logger.info(
+                    "Host %s comes from a preset that is no longer bundled, keeping it as is",
+                    host["id"],
+                )
+                _strip_preset_tag(host)
+                hosts_changed = True
+                continue
+            fresh_host, fresh_sections = _compile_preset_host(preset, host["id"])
+            current_hash = _preset_content_hash(host, self._sections)
+            if current_hash == fresh_host["preset_hash"]:
+                if host["preset_hash"] != current_hash:
+                    host["preset_hash"] = current_hash
+                    hosts_changed = True
+                continue
+            if current_hash != host["preset_hash"]:
+                self.logger.info(
+                    "Host %s was edited, it no longer follows preset %s", host["id"], preset.host_id
+                )
+                _strip_preset_tag(host)
+                hosts_changed = True
+                continue
+
+            old_section_ids = host["section_ids"]
+            for key in (*_PRESET_CONTENT_KEYS, "preset_hash"):
+                host[key] = fresh_host[key]
+            for section in fresh_sections:
+                if self._sections.get(section["id"]) != section:
+                    self._sections[section["id"]] = section
+                    sections_changed = True
+            in_use = {sid for item in self._hosts.values() for sid in item["section_ids"]}
+            for section_id in set(old_section_ids) - in_use:
+                if self._sections.pop(section_id, None) is not None:
+                    sections_changed = True
+            hosts_changed = True
+            self.logger.info("Refreshed host %s to the bundled preset wording", host["id"])
+        if sections_changed:
+            await self._write_sections()
+        if hosts_changed:
+            await self._write_hosts()
+
     def _normalize_host(
         self,
         host: dict[str, Any],
@@ -365,7 +420,7 @@ class AIRadioHostsMixin:
             if not merge_section or str(merge_section.get("type", "")).strip().lower() != "ai_meta":
                 raise InvalidDataError("merge_section_id must reference an ai_meta section")
 
-        return {
+        normalized = {
             "id": host_id,
             "name": name,
             "instructions": instructions,
@@ -376,6 +431,28 @@ class AIRadioHostsMixin:
             "section_order": deepcopy(raw_section_order),
             "merge_section_id": merge_section_id,
         }
+        preset_id = str(host.get("preset_id") or "").strip()
+        preset_hash = str(host.get("preset_hash") or "").strip()
+        if preset_id and preset_hash:
+            normalized["preset_id"] = preset_id
+            normalized["preset_hash"] = preset_hash
+        return normalized
+
+    def _resolve_preset_tag(self, host: dict[str, Any]) -> None:
+        """Keep the preset tag of a normalized host only while its content is untouched."""
+        if "preset_id" not in host:
+            return
+        preset = _PRESETS_BY_ID.get(host["preset_id"])
+        if preset is None:
+            _strip_preset_tag(host)
+            return
+        current_hash = _preset_content_hash(host, self._sections)
+        bundle_hash = _compile_preset_host(preset, host["id"])[0]["preset_hash"]
+        if current_hash == bundle_hash:
+            host["preset_hash"] = bundle_hash
+        # matching only the carried hash means an untouched copy of an older bundle
+        elif current_hash != host["preset_hash"]:
+            _strip_preset_tag(host)
 
     def _default_host_template(self) -> dict[str, Any]:
         """Return the built-in host template."""
@@ -504,8 +581,11 @@ class AIRadioHostsMixin:
                 )
 
 
-def _compile_preset_host(preset: _PresetHost) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+def _compile_preset_host(
+    preset: _PresetHost, host_id: str | None = None
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     """Build a host profile plus its sections from a preset, exactly as the frontend does."""
+    host_id = host_id or preset.host_id
     sections: list[dict[str, Any]] = []
     start_flow: list[dict[str, Any]] = []
     between_flow: list[dict[str, Any]] = []
@@ -513,7 +593,7 @@ def _compile_preset_host(preset: _PresetHost) -> tuple[dict[str, Any], list[dict
     for segment in preset.segments:
         # host-scoped id: sections live in one flat library, so two hosts must not
         # collide on e.g. both having an "intro"
-        section_id = slugify(f"{preset.host_id}_{segment.segment_id}")
+        section_id = slugify(f"{host_id}_{segment.segment_id}")
         sections.append(
             {
                 "id": section_id,
@@ -542,7 +622,7 @@ def _compile_preset_host(preset: _PresetHost) -> tuple[dict[str, Any], list[dict
     if end_flow:
         section_order.append({"when": "end_of_playlist", "flow": end_flow})
 
-    merge_section_id = f"{preset.host_id}_smoother"
+    merge_section_id = f"{host_id}_smoother"
     sections.append(
         {
             "id": merge_section_id,
@@ -551,8 +631,8 @@ def _compile_preset_host(preset: _PresetHost) -> tuple[dict[str, Any], list[dict
             "prompt": MERGE_SECTION_PROMPT,
         }
     )
-    host = {
-        "id": preset.host_id,
+    host: dict[str, Any] = {
+        "id": host_id,
         "name": preset.name,
         "instructions": preset.instructions,
         "tts_engine": "",
@@ -561,8 +641,26 @@ def _compile_preset_host(preset: _PresetHost) -> tuple[dict[str, Any], list[dict
         "section_ids": [section["id"] for section in sections],
         "section_order": section_order,
         "merge_section_id": merge_section_id,
+        "preset_id": preset.host_id,
     }
+    host["preset_hash"] = _preset_content_hash(
+        host, {section["id"]: section for section in sections}
+    )
     return host, sections
+
+
+def _preset_content_hash(host: dict[str, Any], sections_map: dict[str, dict[str, Any]]) -> str:
+    """Return a short fingerprint of a host's spoken content and the sections it uses."""
+    payload = {key: host[key] for key in _PRESET_CONTENT_KEYS}
+    payload["sections"] = [sections_map[section_id] for section_id in host["section_ids"]]
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(encoded.encode()).hexdigest()[:16]
+
+
+def _strip_preset_tag(host: dict[str, Any]) -> None:
+    """Turn a preset copy into a custom host."""
+    host.pop("preset_id", None)
+    host.pop("preset_hash", None)
 
 
 def _optional_flow_item(section_id: str, segment: _PresetSegment) -> dict[str, Any]:

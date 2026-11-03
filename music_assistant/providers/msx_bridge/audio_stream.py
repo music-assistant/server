@@ -89,7 +89,7 @@ class AudioPipeline:
 
         effective_format = cast(
             "str",
-            player.config.get_value("output_codec", player.output_format),
+            player.config.get_value("output_codec", "mp3"),
         )
 
         pcm_format, out_format, headers = build_audio_params(effective_format)
@@ -329,30 +329,27 @@ def build_audio_params(output_format_str: str) -> tuple[AudioFormat, AudioFormat
 
 async def _collect_prebuffer(
     chunk_queue: asyncio.Queue[bytes | None],
-    done: asyncio.Event | None = None,
-    producer_task: asyncio.Task[None] | None = None,
+    done: asyncio.Event,
+    producer_task: asyncio.Task[None],
 ) -> tuple[list[bytes], bool]:
     """Collect audio until the buffer threshold or EOF, propagating producer failures."""
     pre_buffer: list[bytes] = []
     pre_buffer_size = 0
     ended = False
     while pre_buffer_size < PRE_BUFFER_BYTES:
-        if done is None:
-            chunk = await chunk_queue.get()
-        else:
-            try:
-                chunk = await asyncio.wait_for(chunk_queue.get(), timeout=0.2)
-            except TimeoutError:
-                if done.is_set() and chunk_queue.empty():
-                    ended = True
-                    break
-                continue
+        try:
+            chunk = await asyncio.wait_for(chunk_queue.get(), timeout=0.2)
+        except TimeoutError:
+            if done.is_set() and chunk_queue.empty():
+                ended = True
+                break
+            continue
         if chunk is None:
             ended = True
             break
         pre_buffer.append(chunk)
         pre_buffer_size += len(chunk)
-    if producer_task is not None and producer_task.done():
+    if producer_task.done():
         producer_task.result()
     return pre_buffer, ended
 

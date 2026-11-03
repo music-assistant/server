@@ -20,6 +20,7 @@ from music_assistant_models.media_items import (
 )
 
 from music_assistant.controllers.music import MusicController
+from music_assistant.controllers.music.constants import SIMILAR_ITEMS_LIMIT
 from music_assistant.controllers.music.media.artists import ArtistsController
 from music_assistant.controllers.music.media.tracks import TracksController
 from music_assistant.mass import MusicAssistant
@@ -43,6 +44,21 @@ def _make_prov(
     prov.supported_features = features
     prov.priority = priority
     return prov
+
+
+def _similar_track(item_id: str) -> Track:
+    """Return a track as a provider lists it among the similar tracks."""
+    return Track(item_id=item_id, provider="m_a", name=item_id, provider_mappings=set())
+
+
+def _mass_with_empty_cache() -> Mock:
+    """Return a mocked server whose cache holds nothing, as a listing reads it first."""
+    mass = Mock()
+    mass.music.get_visible_provider = mass.get_provider
+    mass.music.resolve_visible_provider = mass.get_provider
+    mass.cache.get = AsyncMock(return_value=None)
+    mass.cache.set = AsyncMock()
+    return mass
 
 
 def test_get_providers_supporting_feature_orders_by_type_then_priority() -> None:
@@ -90,14 +106,16 @@ def test_get_providers_supporting_feature_respects_custom_priority() -> None:
 
 async def test_similar_tracks_falls_back_to_metadata_provider() -> None:
     """When the music provider doesn't support SIMILAR_TRACKS, try metadata providers."""
-    mass = Mock()
+    mass = _mass_with_empty_cache()
     metadata_prov = Mock(spec=MetadataProvider)
     metadata_prov.instance_id = "meta_a"
     metadata_prov.type = ProviderType.METADATA
     metadata_prov.available = True
     metadata_prov.supported_features = {ProviderFeature.SIMILAR_TRACKS}
     metadata_prov.priority = 50
-    metadata_prov.get_similar_tracks = AsyncMock(return_value=["t1", "t2"])
+    metadata_prov.get_similar_tracks = AsyncMock(
+        return_value=[_similar_track("t1"), _similar_track("t2")]
+    )
     music_prov = _make_prov("m_a", ProviderType.MUSIC, set())
 
     def get_provider(instance_id: str, **_: object) -> Mock | None:
@@ -122,15 +140,69 @@ async def test_similar_tracks_falls_back_to_metadata_provider() -> None:
 
     result = await controller.similar_tracks("abc", "m_a", limit=5)
 
-    assert result == ["t1", "t2"]
+    assert [track.item_id for track in result] == ["t1", "t2"]
     metadata_prov.get_similar_tracks.assert_awaited_once()
     call_kwargs = metadata_prov.get_similar_tracks.await_args.kwargs
-    assert call_kwargs.get("limit") == 5
+    # the limit pages the listing, which holds what the provider is asked for
+    assert call_kwargs.get("limit") == SIMILAR_ITEMS_LIMIT
+
+
+def _cross_type_similar_tracks_controller(music_prov: Mock, cross_prov: Mock) -> TracksController:
+    """Return a controller for a track mapped onto music_prov, with cross_prov registered."""
+    mass = _mass_with_empty_cache()
+    mass.get_provider.side_effect = lambda instance_id, **_: {"m_a": music_prov}.get(instance_id)
+    mass.get_providers_supporting_feature.side_effect = lambda _feature, priority: [
+        prov for prov in (cross_prov,) if prov.type in priority
+    ]
+    ref_item = Mock()
+    ref_item.provider_mappings = [
+        ProviderMapping(item_id="abc", provider_domain="m_a", provider_instance="m_a")
+    ]
+    controller = TracksController.__new__(TracksController)
+    controller.mass = mass
+    controller.get = AsyncMock(return_value=ref_item)  # type: ignore[method-assign]
+    return controller
+
+
+def _similar_tracks_music_prov() -> Mock:
+    """Return a music provider that answers with similar track m1."""
+    music_prov = Mock(spec=MusicProvider)
+    music_prov.supported_features = {ProviderFeature.SIMILAR_TRACKS}
+    music_prov.get_similar_tracks = AsyncMock(return_value=[_similar_track("m1")])
+    return music_prov
+
+
+async def test_similar_tracks_prefers_plugin_over_music_provider() -> None:
+    """A similarity plugin answers before the track's own music provider."""
+    music_prov = _similar_tracks_music_prov()
+    plugin_prov = Mock(spec=PluginProvider)
+    plugin_prov.type = ProviderType.PLUGIN
+    plugin_prov.get_similar_tracks = AsyncMock(return_value=[_similar_track("p1")])
+    controller = _cross_type_similar_tracks_controller(music_prov, plugin_prov)
+
+    result = await controller.similar_tracks("abc", "m_a")
+
+    assert [track.item_id for track in result] == ["p1"]
+    music_prov.get_similar_tracks.assert_not_awaited()
+
+
+async def test_similar_tracks_prefers_music_provider_over_metadata_provider() -> None:
+    """The track's own music provider answers before a metadata provider."""
+    music_prov = _similar_tracks_music_prov()
+    metadata_prov = Mock(spec=MetadataProvider)
+    metadata_prov.type = ProviderType.METADATA
+    metadata_prov.get_similar_tracks = AsyncMock(return_value=[_similar_track("x1")])
+    controller = _cross_type_similar_tracks_controller(music_prov, metadata_prov)
+
+    result = await controller.similar_tracks("abc", "m_a")
+
+    assert [track.item_id for track in result] == ["m1"]
+    metadata_prov.get_similar_tracks.assert_not_awaited()
 
 
 async def test_similar_tracks_skips_failed_provider_mapping() -> None:
     """A transport failure from one mapping does not prevent trying the next provider."""
-    mass = Mock()
+    mass = _mass_with_empty_cache()
     failed_prov = Mock(spec=MusicProvider)
     failed_prov.name = "Failed"
     failed_prov.supported_features = {ProviderFeature.SIMILAR_TRACKS}
@@ -138,7 +210,9 @@ async def test_similar_tracks_skips_failed_provider_mapping() -> None:
     working_prov = Mock(spec=MusicProvider)
     working_prov.name = "Working"
     working_prov.supported_features = {ProviderFeature.SIMILAR_TRACKS}
-    working_prov.get_similar_tracks = AsyncMock(return_value=["t1", "t2"])
+    working_prov.get_similar_tracks = AsyncMock(
+        return_value=[_similar_track("t1"), _similar_track("t2")]
+    )
     mass.get_provider.side_effect = lambda instance_id: {
         "failed": failed_prov,
         "working": working_prov,
@@ -166,14 +240,14 @@ async def test_similar_tracks_skips_failed_provider_mapping() -> None:
 
     result = await controller.similar_tracks("seed", "library")
 
-    assert result == ["t1", "t2"]
+    assert [track.item_id for track in result] == ["t1", "t2"]
     failed_prov.get_similar_tracks.assert_awaited_once()
     working_prov.get_similar_tracks.assert_awaited_once()
 
 
 async def test_similar_tracks_normalizes_provider_transport_failure() -> None:
     """An all-provider transport failure is exposed as a typed MA provider error."""
-    mass = Mock()
+    mass = _mass_with_empty_cache()
     provider = Mock(spec=MusicProvider)
     provider.name = "Failed"
     provider.supported_features = {ProviderFeature.SIMILAR_TRACKS}
@@ -204,7 +278,7 @@ async def test_similar_tracks_normalizes_provider_transport_failure() -> None:
 
 async def test_similar_tracks_preserves_typed_provider_error() -> None:
     """A typed provider failure is re-raised unchanged when no provider responds."""
-    mass = Mock()
+    mass = _mass_with_empty_cache()
     provider = Mock(spec=MusicProvider)
     provider.name = "Failed"
     provider.supported_features = {ProviderFeature.SIMILAR_TRACKS}
@@ -236,6 +310,7 @@ async def test_similar_tracks_preserves_typed_provider_error() -> None:
 async def test_similar_tracks_lookup_failure_after_empty_response_returns_empty() -> None:
     """A failed cross-provider lookup does not override an earlier valid empty response."""
     mass = Mock()
+    mass.music.get_visible_provider = mass.get_provider
     mapped_provider = Mock(spec=MusicProvider)
     mapped_provider.name = "Mapped"
     mapped_provider.supported_features = {ProviderFeature.SIMILAR_TRACKS}
@@ -282,6 +357,7 @@ async def test_similar_tracks_lookup_failure_after_empty_response_returns_empty(
 async def test_similar_tracks_normalizes_provider_matching_failure() -> None:
     """A transport failure while matching a lookup provider is normalized."""
     mass = Mock()
+    mass.music.get_visible_provider = mass.get_provider
     lookup_provider = Mock(spec=MusicProvider)
     lookup_provider.name = "Lookup"
     lookup_provider.instance_id = "lookup"
@@ -310,6 +386,7 @@ async def test_similar_tracks_normalizes_provider_matching_failure() -> None:
 async def test_similar_tracks_preserves_failure_when_lookup_is_not_implemented() -> None:
     """An unsupported matched lookup does not discard an earlier provider failure."""
     mass = Mock()
+    mass.music.get_visible_provider = mass.get_provider
     mapped_provider = Mock(spec=MusicProvider)
     mapped_provider.name = "Mapped"
     mapped_provider.supported_features = {ProviderFeature.SIMILAR_TRACKS}
@@ -357,6 +434,7 @@ async def test_similar_tracks_preserves_failure_when_lookup_is_not_implemented()
 async def test_similar_tracks_lookup_skips_mapped_provider() -> None:
     """Cross-provider lookup does not retry an instance already mapped to the track."""
     mass = Mock()
+    mass.music.get_visible_provider = mass.get_provider
     mapped_provider = Mock(spec=MusicProvider)
     mapped_provider.name = "Mapped"
     mapped_provider.instance_id = "mapped"
@@ -390,6 +468,7 @@ async def test_similar_tracks_lookup_skips_mapped_provider() -> None:
 async def test_similar_tracks_empty_response_wins_without_lookup_provider() -> None:
     """A valid empty response is preserved when no lookup provider is available."""
     mass = Mock()
+    mass.music.get_visible_provider = mass.get_provider
     mapped_provider = Mock(spec=MusicProvider)
     mapped_provider.name = "Mapped"
     mapped_provider.supported_features = {ProviderFeature.SIMILAR_TRACKS}
@@ -420,6 +499,7 @@ async def test_similar_tracks_empty_response_wins_without_lookup_provider() -> N
 async def test_similar_tracks_failure_wins_without_lookup_provider() -> None:
     """A provider failure is preserved when no lookup provider is available."""
     mass = Mock()
+    mass.music.get_visible_provider = mass.get_provider
     mapped_provider = Mock(spec=MusicProvider)
     mapped_provider.name = "Mapped"
     mapped_provider.supported_features = {ProviderFeature.SIMILAR_TRACKS}
@@ -482,7 +562,8 @@ _ARTIST_LISTINGS: dict[
         ProviderFeature.SIMILAR_ARTISTS,
         _artist,
         "get_similar_artists",
-        {"limit": 5},
+        # the providers are asked for the whole listing, whatever page is asked for
+        {"limit": SIMILAR_ITEMS_LIMIT},
     ),
     "top_tracks": (ProviderFeature.ARTIST_TOPTRACKS, _track, "get_artist_toptracks", {}),
 }
@@ -504,7 +585,7 @@ def _artist_listing_setup(
 ) -> tuple[ArtistsController, Mock, Mock, Mock]:
     """Build an artists controller with one music and one metadata provider for a listing."""
     feature, build, method, _kwargs = _ARTIST_LISTINGS[kind]
-    mass = Mock()
+    mass = _mass_with_empty_cache()
     music_prov = Mock(spec=MusicProvider)
     music_prov.available = True
     music_prov.domain = "m_a"
@@ -527,7 +608,7 @@ def _artist_listing_setup(
     mass.get_provider.return_value = music_prov
     mass.get_providers_supporting_feature.return_value = [metadata_prov]
     # keep provider tracks (not resolved to a library equivalent)
-    mass.music.tracks.get_library_item_by_prov_id = AsyncMock(return_value=None)
+    mass.music.tracks.get_visible_library_item_by_prov_id = AsyncMock(return_value=None)
 
     ref_item = Mock()
     ref_item.name = "Ref Artist"
@@ -538,9 +619,10 @@ def _artist_listing_setup(
     controller = ArtistsController.__new__(ArtistsController)
     controller.mass = mass
     controller.logger = Mock()
-    controller.get_library_item = AsyncMock(return_value=ref_item)  # type: ignore[method-assign]
-    # keep provider artists (not resolved to a library equivalent)
-    controller.get_library_item_by_prov_id = AsyncMock(return_value=None)  # type: ignore[method-assign]
+    # the library artist itself resolves, provider artists stay unresolved
+    controller.get_library_item_by_prov_id = AsyncMock(  # type: ignore[method-assign]
+        side_effect=lambda _item_id, provider: ref_item if provider == "library" else None
+    )
     return controller, music_prov, metadata_prov, ref_item
 
 
@@ -650,7 +732,7 @@ async def test_library_artist_listing_dedupes_across_music_providers() -> None:
 
 async def test_similar_artists_provider_queries_named_provider() -> None:
     """Similar artists for a provider artist should query only that provider."""
-    mass = Mock()
+    mass = _mass_with_empty_cache()
     music_prov = Mock(spec=MusicProvider)
     music_prov.name = "Music Provider A"
     music_prov.available = True
@@ -667,12 +749,13 @@ async def test_similar_artists_provider_queries_named_provider() -> None:
     result = await controller.similar_artists("artist_123", "m_a", limit=5)
 
     assert [artist.name for artist in result] == ["Artist X"]
-    music_prov.get_similar_artists.assert_awaited_once_with("artist_123", limit=5)
+    music_prov.get_similar_artists.assert_awaited_once_with("artist_123", limit=SIMILAR_ITEMS_LIMIT)
 
 
 async def test_browse_root_includes_non_music_providers() -> None:
     """Root browse should list every provider declaring BROWSE, regardless of type."""
     mass = Mock()
+    mass.music.get_visible_provider = mass.get_provider
     music_prov = _make_prov("m_a", ProviderType.MUSIC, {ProviderFeature.BROWSE})
     music_prov.domain = "music_a"
     music_prov.name = "Music A"

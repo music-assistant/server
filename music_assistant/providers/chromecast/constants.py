@@ -7,7 +7,6 @@ from music_assistant_models.enums import ConfigEntryType
 
 from music_assistant.constants import (
     CONF_ENTRY_FLOW_MODE,
-    CONF_ENTRY_HTTP_PROFILE_DEFAULT_3,
     CONF_ENTRY_OUTPUT_CODEC,
     CONF_ENTRY_PREFER_WAV_FOR_LIVE_SOURCES_DEFAULT_ENABLED,
     create_sample_rates_config_entry,
@@ -55,6 +54,10 @@ CONF_SENDSPIN_OPT_OUT_PENDING = "sendspin_opt_out_pending"
 SENDSPIN_LINK_WAIT_INTERVAL = 0.5
 SENDSPIN_LINK_WAIT_TRIES = 20
 
+# Seconds to wait for a Cast device to report which app runs, before playback over
+# Sendspin goes ahead on the last status it reported.
+CAST_STATUS_REFRESH_TIMEOUT = 3.0
+
 # Devices known to not work with the Sendspin Cast bridge.
 # Tuple of (manufacturer, model) where "*" is a wildcard.
 # These devices will not get a Sendspin bridge, allowing other protocols
@@ -67,7 +70,6 @@ SENDSPIN_CAST_BLOCKLIST: set[tuple[str, str]] = {
 CAST_PLAYER_CONFIG_ENTRIES = (
     CONF_ENTRY_OUTPUT_CODEC,
     CONF_ENTRY_PREFER_WAV_FOR_LIVE_SOURCES_DEFAULT_ENABLED,
-    CONF_ENTRY_HTTP_PROFILE_DEFAULT_3,
     # enable flow mode by default as cast devices handle a continuous
     # flow stream more reliably than enqueueing individual tracks
     ConfigEntry.from_dict({**CONF_ENTRY_FLOW_MODE.to_dict(), "default_value": True}),

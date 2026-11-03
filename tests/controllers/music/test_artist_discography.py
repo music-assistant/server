@@ -5,11 +5,17 @@ from __future__ import annotations
 import logging
 from contextlib import contextmanager
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, cast
 from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
-from music_assistant_models.enums import AlbumType, ExternalID, ImageType
+from music_assistant_models.enums import (
+    AlbumType,
+    ExternalID,
+    ImageType,
+    SortDirection,
+    SortField,
+)
 from music_assistant_models.errors import InvalidDataError
 from music_assistant_models.media_items import Album, Artist, ItemMapping, ProviderMapping
 
@@ -437,5 +443,139 @@ async def test_discography_needs_a_library_artist() -> None:
     """A discography is only kept for artists in the library."""
     with _harness(_artist()) as harness, pytest.raises(InvalidDataError):
         await harness.discography("spotify_1")
+
+    harness.musicbrainz.browse_release_groups_by_artist.assert_not_awaited()
+
+
+async def test_discography_follows_the_listing_contract() -> None:
+    """The discography is searched, sorted and paged, in MusicBrainz's order by default."""
+    groups = [
+        _release_group(RG_IN_RAINBOWS, "In Rainbows"),
+        _release_group(RG_OK_COMPUTER, "OK Computer", first_release_date="1997-05-21"),
+        _release_group(
+            RG_KARMA_POLICE, "Karma Police", primary_type="Single", first_release_date="1997-08"
+        ),
+    ]
+
+    async def _names(harness: _Harness, **kwargs: Any) -> list[str]:
+        albums = await harness.ctrl.discography(LIBRARY_ARTIST_ID, "library", **kwargs)
+        return [album.name for album in albums]
+
+    with _harness(_artist(), release_groups=groups) as harness:
+        assert await _names(harness) == ["In Rainbows", "OK Computer", "Karma Police"]
+        assert await _names(harness, sort_field=SortField.NAME) == [
+            "In Rainbows",
+            "Karma Police",
+            "OK Computer",
+        ]
+        assert await _names(
+            harness, sort_field=SortField.YEAR, sort_direction=SortDirection.ASC
+        ) == [
+            "OK Computer",
+            "Karma Police",
+            "In Rainbows",
+        ]
+        assert await _names(harness, search="karma") == ["Karma Police"]
+        assert await _names(harness, limit=1, offset=1) == ["OK Computer"]
+
+
+async def test_discography_count_matches_the_searchable_release_groups() -> None:
+    """The count includes every release group and honors the listing search."""
+    groups = [
+        _release_group(RG_IN_RAINBOWS, "In Rainbows"),
+        _release_group(RG_OK_COMPUTER, "OK Computer"),
+        _release_group(RG_KARMA_POLICE, "Karma Police", primary_type="Single"),
+    ]
+    with (
+        _harness(_artist(), release_groups=groups) as harness,
+        patch.object(harness.ctrl, "albums", new_callable=AsyncMock) as albums,
+    ):
+        assert await harness.ctrl.discography_count(LIBRARY_ARTIST_ID, "library") == 3
+        albums.assert_not_awaited()
+        assert (
+            await harness.ctrl.discography_count(LIBRARY_ARTIST_ID, "library", search="karma") == 1
+        )
+
+
+async def test_discography_filters_by_album_type() -> None:
+    """Only the requested types are listed, library and MusicBrainz albums alike."""
+    library_album = _library_album("7", "OK Computer", album_type=AlbumType.ALBUM)
+    groups = [
+        _release_group(RG_OK_COMPUTER, "OK Computer"),
+        _release_group(RG_IN_RAINBOWS, "In Rainbows"),
+        _release_group(RG_KARMA_POLICE, "Karma Police", primary_type="Single"),
+        _release_group(RG_BEST_OF, "The Best Of", secondary_types=["Compilation"]),
+    ]
+    with _harness(_artist(), release_groups=groups, artist_albums=[library_album]) as harness:
+        types = [AlbumType.SINGLE, AlbumType.COMPILATION]
+        listed = await harness.ctrl.discography(LIBRARY_ARTIST_ID, "library", album_types=types)
+        assert {album.name for album in listed} == {"Karma Police", "The Best Of"}
+        albums_only = await harness.ctrl.discography(
+            LIBRARY_ARTIST_ID, "library", album_types=[AlbumType.ALBUM]
+        )
+        assert library_album in albums_only
+        assert {album.name for album in albums_only} == {"OK Computer", "In Rainbows"}
+        paged = await harness.ctrl.discography(
+            LIBRARY_ARTIST_ID, "library", album_types=types, search="karma", limit=1
+        )
+        assert [album.name for album in paged] == ["Karma Police"]
+
+
+async def test_discography_filters_a_library_album_on_its_musicbrainz_type() -> None:
+    """A library album in a release group's place is filtered on the group's type."""
+    library_album = _library_album("7", "OK Computer", album_type=AlbumType.UNKNOWN)
+    groups = [_release_group(RG_OK_COMPUTER, "OK Computer")]
+    with _harness(_artist(), release_groups=groups, artist_albums=[library_album]) as harness:
+        albums = await harness.ctrl.discography(
+            LIBRARY_ARTIST_ID, "library", album_types=[AlbumType.ALBUM]
+        )
+        assert albums == [library_album]
+        singles = await harness.ctrl.discography(
+            LIBRARY_ARTIST_ID, "library", album_types=[AlbumType.SINGLE]
+        )
+        assert singles == []
+
+
+async def test_discography_count_honors_the_album_type_filter() -> None:
+    """The count covers the release groups of the given types, without the library albums."""
+    groups = [
+        _release_group(RG_IN_RAINBOWS, "In Rainbows"),
+        _release_group(RG_OK_COMPUTER, "OK Computer"),
+        _release_group(RG_KARMA_POLICE, "Karma Police", primary_type="Single"),
+    ]
+    with _harness(_artist(), release_groups=groups) as harness:
+        count = await harness.ctrl.discography_count(
+            LIBRARY_ARTIST_ID, "library", album_types=[AlbumType.SINGLE]
+        )
+        assert count == 1
+        cast("AsyncMock", harness.ctrl.albums).assert_not_awaited()
+
+
+async def test_discography_keeps_musicbrainz_reference_if_provider_unloads_during_lookup() -> None:
+    """An in-flight listing uses the MusicBrainz provider instance it started with."""
+    with _harness(
+        _artist(), release_groups=[_release_group(RG_IN_RAINBOWS, "In Rainbows")]
+    ) as harness:
+        musicbrainz = harness.musicbrainz
+
+        def _get_provider(domain: str, **_kwargs: Any) -> Any:
+            return musicbrainz if domain == "musicbrainz" else None
+
+        async def _browse_and_unload(_artist_mbid: str) -> list[MusicBrainzReleaseGroup]:
+            harness.mass.get_provider.side_effect = lambda _domain, **_kwargs: None
+            return [_release_group(RG_IN_RAINBOWS, "In Rainbows")]
+
+        harness.mass.get_provider.side_effect = _get_provider
+        musicbrainz.browse_release_groups_by_artist.side_effect = _browse_and_unload
+
+        albums = await harness.ctrl.discography(LIBRARY_ARTIST_ID, "library")
+
+    assert [album.name for album in albums] == ["In Rainbows"]
+
+
+async def test_discography_rejects_an_unsupported_sort_before_browsing() -> None:
+    """A sort the discography does not offer fails before MusicBrainz is asked anything."""
+    with _harness(_artist()) as harness, pytest.raises(InvalidDataError):
+        await harness.ctrl.discography(LIBRARY_ARTIST_ID, "library", sort_field=SortField.DURATION)
 
     harness.musicbrainz.browse_release_groups_by_artist.assert_not_awaited()

@@ -1119,10 +1119,11 @@ class DeezerBrowseManager:
                 break
             all_edges.extend(result.tracks.edges)
         tracks: list[Track] = []
-        for idx, edge in enumerate(all_edges, 1):
+        for edge in all_edges:
             if edge.node is None:
                 continue
-            track = parse_track(self.provider, edge.node, position=idx)
+            # count only the returned tracks, so an unavailable one leaves no gap in the positions
+            track = parse_track(self.provider, edge.node, position=len(tracks) + 1)
             # when the track was added to the playlist, not to the library
             track.date_added = parse_date(edge.added_at)
             tracks.append(track)

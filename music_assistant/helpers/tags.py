@@ -28,6 +28,7 @@ if TYPE_CHECKING:
     from mutagen.mp4 import MP4Tags
 
 from music_assistant.constants import MASS_LOGGER_NAME, UNKNOWN_ARTIST
+from music_assistant.helpers.ffmpeg import tls_verify_args, user_agent_args
 from music_assistant.helpers.json import json_loads
 from music_assistant.helpers.process import (
     AsyncProcess,
@@ -751,6 +752,7 @@ async def async_parse_tags(
     file_size: int | None = None,
     require_duration: bool = False,
     opener: Callable[[str, int], int] | None = None,
+    verify_ssl: bool = True,
 ) -> AudioTags:
     """
     Parse tags from a media file (or URL). Async friendly.
@@ -760,8 +762,11 @@ async def async_parse_tags(
     :param require_duration: Decode the whole file when its duration is not in its header.
     :param opener: Opens input_file like the opener of open(), with the os.open flags, and
         returns its descriptor; the file is then only read through that descriptor.
+    :param verify_ssl: Whether the certificate of an https source must be verified.
     """
-    return await asyncio.to_thread(parse_tags, input_file, file_size, require_duration, opener)
+    return await asyncio.to_thread(
+        parse_tags, input_file, file_size, require_duration, opener, verify_ssl
+    )
 
 
 def parse_tags(
@@ -769,6 +774,7 @@ def parse_tags(
     file_size: int | None = None,
     require_duration: bool = False,
     opener: Callable[[str, int], int] | None = None,
+    verify_ssl: bool = True,
 ) -> AudioTags:
     """
     Parse tags from a media file (or URL). NOT Async friendly.
@@ -778,6 +784,7 @@ def parse_tags(
     :param require_duration: Decode the whole file when its duration is not in its header.
     :param opener: Opens input_file like the opener of open(), with the os.open flags, and
         returns its descriptor; the file is then only read through that descriptor.
+    :param verify_ssl: Whether the certificate of an https source must be verified.
     """
     try:
         fd = opener(input_file, os.O_RDONLY) if opener else None
@@ -798,6 +805,8 @@ def parse_tags(
         "-show_chapters",
         "-print_format",
         "json",
+        *tls_verify_args(source, verify_ssl),
+        *user_agent_args(source),
         "-i",
         source,
     )
@@ -824,7 +833,7 @@ def parse_tags(
             tags.duration = float(tags.raw["format"]["duration"])
 
         if not tags.duration and require_duration:
-            tags.duration = get_file_duration(source, pass_fds)
+            tags.duration = get_file_duration(source, pass_fds, verify_ssl)
 
         # we parse all (basic) tags for all file formats using ffmpeg
         # but we also try to extract some extra tags for local files using mutagen
@@ -854,7 +863,9 @@ def parse_tags(
             os.close(fd)
 
 
-def get_file_duration(input_file: str, pass_fds: tuple[int, ...] = ()) -> float:
+def get_file_duration(
+    input_file: str, pass_fds: tuple[int, ...] = (), verify_ssl: bool = True
+) -> float:
     """
     Parse file/stream duration from an audio file using ffmpeg.
 
@@ -862,12 +873,15 @@ def get_file_duration(input_file: str, pass_fds: tuple[int, ...] = ()) -> float:
 
     :param input_file: A (local) filename or URL accessible by ffmpeg.
     :param pass_fds: Descriptors ffmpeg needs to open input_file.
+    :param verify_ssl: Whether the certificate of an https source must be verified.
     """
     args = (
         "ffmpeg",
         "-hide_banner",
         "-loglevel",
         "info",
+        *tls_verify_args(input_file, verify_ssl),
+        *user_agent_args(input_file),
         "-i",
         input_file,
         "-f",
@@ -1761,6 +1775,7 @@ async def _get_embedded_image(
         # URL may not open local files, whatever either of them references
         "-protocol_whitelist",
         "http,https,tcp,tls" if is_url else "file",
+        *user_agent_args(source),
         "-i",
         source,
         "-an",

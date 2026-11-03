@@ -68,6 +68,8 @@ PAIRING_DEVICE_NAME = "Music Assistant Pairing"
 PAIRING_TIMEOUT = 300  # seconds the pairing step waits for the user to pick the device
 CHECK_AUTH_TIMEOUT = 30  # seconds
 CREDENTIALS_FILE = "credentials.json"
+# seconds a playlist search waits on the global session, leaving room for the fallback
+GLOBAL_SEARCH_TIMEOUT = 4
 
 # OAuth Settings
 SCOPE = [

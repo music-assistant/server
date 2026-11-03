@@ -40,6 +40,9 @@ OPTIONAL_FIELDS = [
 ]
 OPTIONAL_DEFAULT = 0.5
 
+# Array fields the vector reads: their variance fills the two time-series dimensions
+VECTOR_ARRAY_FIELDS = ("rms_energy", "spectral_centroid")
+
 # 9 required + 4 optional ML + 2 key encoding + 1 mode + 2 time-series variance = 18
 VECTOR_DIMENSIONS = 18
 

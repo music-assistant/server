@@ -138,8 +138,9 @@ async def run_setup(session: SetupSession) -> None:
         )
         setup_data[CONF_REFRESH_TOKEN_GLOBAL] = str(token_result["refresh_token"])
         # an account that cannot work is turned away before the playback authorization
-        account_id = await _verify_account(session, str(token_result["access_token"]))
-        setup_data[CONF_ACCOUNT_ID] = account_id
+        # an unanswered lookup keeps the stored account id, the provider falls back on it
+        if account_id := await _verify_account(session, str(token_result["access_token"])):
+            setup_data[CONF_ACCOUNT_ID] = account_id
         # playback authorization is separate from the Web API tokens and depends on
         # the explicitly chosen playback backend
         await _setup_playback(session, setup_data, account_id)

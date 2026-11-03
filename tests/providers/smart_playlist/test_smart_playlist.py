@@ -21,9 +21,11 @@ from music_assistant_models.enums import (
     ProviderSharing,
     ProviderType,
 )
-from music_assistant_models.errors import InvalidDataError
+from music_assistant_models.errors import InsufficientPermissions, InvalidDataError
 from music_assistant_models.media_items import (
+    BrowseFolder,
     Genre,
+    ItemMapping,
     MediaItemImage,
     Playlist,
     ProviderMapping,
@@ -47,6 +49,7 @@ from music_assistant.providers.smart_playlist.helpers import (
     LOGIC_OR,
     RULES_FILENAME,
     SmartPlaylistRules,
+    validate_rules,
     write_json,
 )
 from tests.common import set_music_source_access, use_real_create_task
@@ -80,6 +83,7 @@ class TestSmartPlaylistRules:
             genre_ids=[1, 2, 3],
             artist_ids=[10],
             album_ids=[],
+            folder_paths=["filesystem_local--abc://Rock/Classic"],
             favorites_only=True,
             seed_track_uris=["library://track/42", "library://track/43"],
             seed_artist_uris=["library://artist/7"],
@@ -109,6 +113,20 @@ class TestSmartPlaylistRules:
         assert rules.favorites_only is True
         assert rules.genre_ids == []
         assert rules.logic == LOGIC_AND
+
+    def test_human_readable_folders(self) -> None:
+        """human_readable only counts the folders, which may be on hidden sources."""
+        rules = SmartPlaylistRules(
+            folder_paths=["filesystem_local--abc://Rock/Classic", "filesystem_local--abc://"]
+        )
+        assert rules.human_readable() == "Folders: 2"
+
+    @pytest.mark.parametrize("folder", ["Rock/Classic", "://Rock", "spotify--x://"])
+    def test_validate_rejects_folder_without_provider(self, folder: str) -> None:
+        """A folder path must name the filesystem provider instance it lives on."""
+        with pytest.raises(InvalidDataError):
+            validate_rules(SmartPlaylistRules(folder_paths=[folder]))
+        validate_rules(SmartPlaylistRules(folder_paths=["filesystem_local--abc://Rock"]))
 
     def test_human_readable_no_rules(self) -> None:
         """human_readable for empty rules returns fallback message."""
@@ -687,6 +705,144 @@ async def test_explicit_filter_generates_sql_query_parts() -> None:
     await plugin._get_library_tracks(explicit=None, limit=10)
     call_kwargs = library_items_mock.call_args.kwargs
     assert call_kwargs["explicit"] is None
+
+
+def _library_track(item_id: str) -> Track:
+    """Build a library track as browse returns it."""
+    mapping = ProviderMapping(
+        item_id=item_id, provider_domain="library", provider_instance="library", available=True
+    )
+    return Track(
+        item_id=item_id,
+        provider="library",
+        name=f"Track {item_id}",
+        uri=f"library://track/{item_id}",
+        provider_mappings={mapping},
+    )
+
+
+@pytest.mark.asyncio
+async def test_folder_tracks_browses_recursively() -> None:
+    """Folder tracks come from browsing the folders and their subfolders."""
+    mass = MagicMock()
+    manifest = MagicMock()
+    manifest.domain = "smart_playlist"
+    config = MagicMock()
+    config.get_value.return_value = "GLOBAL"
+    plugin = SmartPlaylistProvider(mass, manifest, config, set())
+    root, sub = "filesystem_local--abc://Rock", "filesystem_local--abc://Rock/Classic"
+    gone = "filesystem_local--abc://Deleted"
+    listings: dict[str, list[Any]] = {
+        root: [
+            BrowseFolder(item_id="back", provider="x", path="filesystem_local--abc://", name=".."),
+            BrowseFolder(item_id="Rock/Classic", provider="x", path=sub, name="Classic"),
+            _library_track("1"),
+            # not in the library (yet), so no smart playlist can hold it
+            ItemMapping(media_type=MediaType.TRACK, item_id="new.mp3", provider="x", name="new"),
+        ],
+        # more than one page of a browse listing
+        sub: [_library_track(str(i)) for i in range(2, 602)],
+    }
+
+    async def browse(path: str, *, limit: int = 500) -> list[Any]:
+        if path == gone:
+            raise FileNotFoundError(path)
+        if path not in listings:
+            msg = "hidden"
+            raise InsufficientPermissions(msg)
+        return listings[path][:limit] if limit else listings[path]
+
+    mass.music.browse = AsyncMock(side_effect=browse)
+
+    tracks = await plugin._folder_tracks([root, sub, gone, "filesystem_local--hidden://Diary"])
+    assert {t.item_id for t in tracks} == {str(i) for i in range(1, 602)}
+    # the subfolder is in the rule and under the folder, yet browsed once
+    assert [c.args[0] for c in mass.music.browse.call_args_list].count(sub) == 1
+    # the parent entry is not followed
+    assert "filesystem_local--abc://" not in [c.args[0] for c in mass.music.browse.call_args_list]
+
+    # a parent full of explicit tracks still leaves the clean ones of its subfolder in
+    explicit_tracks = [_library_track("e1"), _library_track("e2")]
+    for track in explicit_tracks:
+        track.metadata.explicit = True
+    listings[root] = [*explicit_tracks, listings[root][1]]
+    listings[sub] = [_library_track("clean")]
+    assert [t.item_id for t in await plugin._folder_tracks([root], False)] == ["clean"]
+
+    # a background refresh has no user for browse to check, only the user's sources
+    mass.music.browse.reset_mock()
+    assert await plugin._folder_tracks([root], None, ["filesystem_local--other"]) == []
+    mass.music.browse.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_folder_rule_is_the_base_in_and_and_a_source_in_or(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Folder tracks are the base in AND logic and add a source in OR logic."""
+    mass = MagicMock()
+    manifest = MagicMock()
+    manifest.domain = "smart_playlist"
+    config = MagicMock()
+    config.get_value.return_value = "GLOBAL"
+    plugin = SmartPlaylistProvider(mass, manifest, config, set())
+    folders = ["filesystem_local--abc://Rock"]
+
+    folder_track = _make_mock_track("1", uri="library://track/1", favorite=True)
+    other_folder_track = _make_mock_track("3", uri="library://track/3")
+    fav_track = _make_mock_track("2", uri="library://track/2", favorite=True)
+    folder_mock = AsyncMock(return_value=[folder_track, other_folder_track])
+    library_mock = AsyncMock(return_value=[fav_track])
+    cast("Any", plugin)._folder_tracks = folder_mock
+    cast("Any", plugin)._get_library_tracks = library_mock
+
+    result = await plugin._evaluate_and(SmartPlaylistRules(folder_paths=folders, limit=10))
+    assert result == [folder_track, other_folder_track]
+    library_mock.assert_not_called()
+
+    # favorites narrow the folder tracks down instead of querying the library
+    result = await plugin._evaluate_and(
+        SmartPlaylistRules(folder_paths=folders, favorites_only=True, limit=10)
+    )
+    assert result == [folder_track]
+    library_mock.assert_not_called()
+
+    result = await plugin._evaluate_or(
+        SmartPlaylistRules(folder_paths=folders, favorites_only=True, logic=LOGIC_OR, limit=10)
+    )
+    assert {t.uri for t in result} == {
+        "library://track/1",
+        "library://track/2",
+        "library://track/3",
+    }
+
+    # a folder holding more tracks than the cap keeps a sparse favorite
+    monkeypatch.setattr("music_assistant.providers.smart_playlist.FETCH_LIMIT", 1)
+    result = await plugin._evaluate_and(
+        SmartPlaylistRules(folder_paths=folders, favorites_only=True, limit=10)
+    )
+    assert result == [folder_track]
+
+    # the genres are looked up a batch up to the cap at a time
+    genres_mock = AsyncMock(
+        side_effect=lambda tracks, _genre_ids: [t for t in tracks if t.favorite]
+    )
+    cast("Any", plugin)._filter_tracks_with_all_genres = genres_mock
+    result = await plugin._evaluate_and(
+        SmartPlaylistRules(folder_paths=folders, genre_ids=[1], limit=10)
+    )
+    assert result == [folder_track]
+    assert all(len(call.args[0]) == 1 for call in genres_mock.call_args_list)
+
+    # a track the artist filter keeps is found after the genre matches in earlier batches
+    genres_mock.side_effect = lambda tracks, _genre_ids: tracks
+    monkeypatch.setattr("music_assistant.providers.smart_playlist.random.shuffle", lambda _x: None)
+    artist_track = _make_mock_track("4", uri="library://track/4", artist_ids=["7"])
+    folder_mock.return_value = [folder_track, other_folder_track, artist_track]
+    result = await plugin._evaluate_and(
+        SmartPlaylistRules(folder_paths=folders, genre_ids=[1], artist_ids=[7], limit=1)
+    )
+    assert result == [artist_track]
 
 
 @pytest.mark.asyncio
@@ -1638,6 +1794,53 @@ async def test_get_playlist_tracks_dynamic_cache_key_differs_by_music_sources(
     assert calls[0].args[1] == ()
     assert calls[1].args[1] == ("spotify_instance_id", "tidal_instance_id")
 
+    # a user who sees no source at all gets nothing, not the unrestricted sample
+    no_source_user = User(user_id="user-c", username="user-c", role=UserRole.USER)
+    monkeypatch.setattr(
+        "music_assistant.providers.smart_playlist.get_current_user",
+        lambda: no_source_user,
+    )
+    assert await plugin.get_playlist_tracks("abc") == []
+    assert len(cached_dynamic_sample_mock.await_args_list) == 2
+
+
+@pytest.mark.asyncio
+async def test_rules_hide_folders_on_hidden_music_sources(
+    tmp_path: Any,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Folders on sources hidden from the user are left out of responses but kept on save."""
+    plugin = _make_ai_plugin(tmp_path)
+    await plugin.handle_async_init()
+    mass = cast("Any", plugin.mass)
+    mass.music.playlists.get_library_item_by_prov_id = AsyncMock(return_value=None)
+    shared, private = "filesystem_local--shared://80s", "filesystem_local--private://Diary"
+    plugin._rules_store["abc"] = SmartPlaylistRules(folder_paths=[private, shared])
+    set_music_source_access(
+        mass,
+        {
+            "filesystem_local--shared": None,
+            "filesystem_local--private": ProviderAccess(
+                owner="user-a", sharing=ProviderSharing.PRIVATE
+            ),
+        },
+    )
+    guest = User(user_id="user-b", username="user-b", role=UserRole.GUEST)
+    monkeypatch.setattr("music_assistant.providers.smart_playlist.get_current_user", lambda: guest)
+
+    rules = await plugin.get_smart_playlist_rules("abc")
+    assert rules is not None
+    assert rules["folder_paths"] == [shared]
+    [listed] = await plugin.list_smart_playlists()
+    assert listed["rules"]["folder_paths"] == [shared]
+    assert "Diary" not in listed["summary"]
+
+    # an unchanged save keeps the stored order, so it is no rule change
+    await plugin.update_smart_playlist_rules("abc", {"folder_paths": [shared]})
+    assert plugin._rules_store["abc"].folder_paths == [private, shared]
+    await plugin.update_smart_playlist_rules("abc", {"folder_paths": []})
+    assert plugin._rules_store["abc"].folder_paths == [private]
+
 
 @pytest.mark.asyncio
 async def test_count_tracks_returns_count_and_duration(tmp_path: Any) -> None:
@@ -1916,6 +2119,39 @@ async def test_enrich_tracks_with_db_genres_adds_missing_genres() -> None:
     genres = track_no_genres.metadata.genres
     assert genres == {"Rock", "Alternative"}
     mass.music.genres.get_genres_for_media_item.assert_called_once()  # type: ignore[unreachable]
+
+
+@pytest.mark.asyncio
+async def test_enrich_tracks_with_db_genres_looks_up_up_to_the_cap_at_a_time(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The genres of more tracks than the cap are looked up a batch at a time."""
+    mass = MagicMock()
+    manifest = MagicMock()
+    manifest.domain = "smart_playlist"
+    config = MagicMock()
+    config.get_value.return_value = "GLOBAL"
+    plugin = SmartPlaylistProvider(mass, manifest, config, set())
+    monkeypatch.setattr("music_assistant.providers.smart_playlist.FETCH_LIMIT", 2)
+    tracks = [_library_track(str(i)) for i in range(5)]
+    rock_genre = Genre(item_id="1", provider="library", name="Rock", provider_mappings=set())
+    running = 0
+    most_running = 0
+
+    async def get_genres(_media_type: MediaType, _track_id: int) -> list[Genre]:
+        nonlocal running, most_running
+        running += 1
+        most_running = max(most_running, running)
+        await asyncio.sleep(0)
+        running -= 1
+        return [rock_genre]
+
+    mass.music.genres.get_genres_for_media_item = AsyncMock(side_effect=get_genres)
+
+    await plugin._enrich_tracks_with_db_genres(tracks)
+
+    assert all(t.metadata.genres == {"Rock"} for t in tracks)
+    assert most_running == 2
 
 
 @pytest.mark.asyncio
@@ -2636,7 +2872,7 @@ async def test_update_rules_triggers_metadata_refresh_if_changed(tmp_path: Any) 
     args = mass.call_later.call_args
     assert args[0][0] == 5  # delay
     assert args[0][1] == mass.metadata.update_metadata  # function
-    assert args[0][2] == library_item  # library_item
+    assert args[0][2] == library_item.uri  # loaded fresh, with the new description
     assert args[1]["task_id"] == "smart_playlist_metadata_refresh_abc"
     assert args[1]["force_refresh"] is True
 

@@ -3,7 +3,7 @@
   "domain": "playlist_metadata",
   "stage": "experimental",
   "name": "Playlist Metadata",
-  "description": "Generates metadata for library playlists, including custom artwork with configurable layout templates, and (future) genres and descriptions.",
+  "description": "Generates metadata for library playlists, including custom artwork with configurable layout templates or generated with AI, genres, and AI written descriptions.",
   "codeowners": ["@dmoo500"],
   "multi_instance": false,
   "builtin": true,

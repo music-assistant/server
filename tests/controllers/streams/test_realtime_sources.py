@@ -2130,7 +2130,9 @@ def _single_item_handler(
     )
     mass = MagicMock()
     mass.player_queues.get.return_value = queue
-    mass.player_queues.queue_data.return_value = SimpleNamespace(session_id="session-1")
+    mass.player_queues.queue_data.return_value = SimpleNamespace(
+        session_id="session-1", last_served_item_id=None, last_requested_item_id=None
+    )
     mass.player_queues.get_item.return_value = queue_item
     mass.config.get_raw_core_config_value.return_value = 8
     player = MagicMock(player_id="player-1", protocol_parent_id=None)
@@ -2154,6 +2156,7 @@ def _single_item_handler(
     controller.mass = mass
     controller.audio = audio
     controller._open_item_streams = {}
+    controller._ended_item_streams = {}
     controller.logger = MagicMock()
     controller._log_request = MagicMock()
     controller.get_crossfade_mode = MagicMock(return_value=CrossfadeMode.SMART_CROSSFADE)
@@ -2372,6 +2375,25 @@ async def test_flow_is_always_paced_close_to_playback(
         await controller.serve_queue_flow_stream(request)
 
     assert seen["extra_input_args"] == output_pacing_args(PacingProfile.NEAR_REALTIME)
+
+
+async def test_flow_passes_on_encoded_audio_without_waiting_for_a_full_chunk(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A flow without ICY framing reads whatever the encoder produced (support#6831)."""
+    controller, request, _ = _flow_handler(monkeypatch, is_realtime=False)
+    seen: dict[str, Any] = {}
+
+    def _capture_chunk_size(**kwargs: Any) -> None:
+        seen["chunk_size"] = kwargs.get("chunk_size")
+        raise _FfmpegArgsCaptured
+
+    monkeypatch.setattr(controller_mod, "get_ffmpeg_stream", _capture_chunk_size)
+
+    with pytest.raises(_FfmpegArgsCaptured):
+        await controller.serve_queue_flow_stream(request)
+
+    assert seen["chunk_size"] is None
 
 
 async def test_flow_producer_learns_when_its_player_left(monkeypatch: pytest.MonkeyPatch) -> None:

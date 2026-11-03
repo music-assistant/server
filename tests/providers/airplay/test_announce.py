@@ -25,6 +25,7 @@ from music_assistant.providers.airplay.constants import (
     AIRPLAY_PCM_FORMAT,
     AIRPLAY_VOLUME_ECHO_GRACE_S,
 )
+from music_assistant.providers.airplay.helpers import cli_clock_time
 
 ANNOUNCE_DATA = {
     "announcement_url": "http://ma.local/tts.mp3",
@@ -189,9 +190,9 @@ def test_shared_instant_covers_the_slowest_member() -> None:
     slow.latency_lead_ms = 1900
     unreported = _make_stream()
 
-    before_ms = int(time.time() * 1000)
+    before_ms = int(cli_clock_time() * 1000)
     at_unix_ms = announce._shared_announce_instant([fast, slow, unreported])
-    after_ms = time.time() * 1000
+    after_ms = cli_clock_time() * 1000
 
     # the unreported member's fallback span (2000) is the largest of the three
     expected_lead = AIRPLAY_ANNOUNCE_FALLBACK_SPAN_MS + AIRPLAY_ANNOUNCE_AT_MARGIN_MS
@@ -393,15 +394,15 @@ async def test_armed_members_ignore_their_own_volume_echoes() -> None:
     The receiver echoes each level it is handed back over DACP; an echo read as the
     user reaching for the volume would be written straight back to the device.
     """
-    # taken WITH the wall clock the ack is built from, so the window below is
+    # taken WITH the clock the ack is built from, so the window below is
     # bracketed exactly however slow the run itself is
-    now_ms = int(time.time() * 1000)
+    now_ms = int(cli_clock_time() * 1000)
     file_ms = 3000
     (member,) = _make_playing_group(_make_stream(ack=(now_ms + 300, file_ms)))
 
     with _timeline(member):
         await announce.play_announcement(member, _make_announcement(), 55)
-    elapsed = time.time() - now_ms / 1000
+    elapsed = cli_clock_time() - now_ms / 1000
 
     audible_end_s = (300 + file_ms) / 1000
     window = member.suppress_volume_reports.call_args.args[0]
@@ -600,13 +601,13 @@ async def test_group_entity_fanout_arms_each_member_at_one_shared_instant() -> N
     streams[1].latency_lead_ms = largest_span_ms
     announcement = _make_announcement()
 
-    before_ms = int(time.time() * 1000)
+    before_ms = int(cli_clock_time() * 1000)
     await asyncio.gather(
         announce.play_announcement(leader, announcement, None),
         announce.play_announcement(member_1, announcement, None),
         announce.play_announcement(member_2, announcement, None),
     )
-    after_ms = time.time() * 1000
+    after_ms = cli_clock_time() * 1000
 
     instants = set()
     for stream in streams:
@@ -709,10 +710,10 @@ async def test_return_holds_until_the_audible_end() -> None:
     announce_done reports MIX completion at the delivery head - ahead of
     audibility - and the caller re-mutes muted players the moment this returns.
     """
-    # taken WITH the wall clock the ack is built from, so the hold is measured
+    # taken WITH the clock the ack is built from, so the hold is measured
     # from that same instant however slow the setup below runs
     started = time.monotonic()
-    now_unix_ms = int(time.time() * 1000)
+    now_unix_ms = int(cli_clock_time() * 1000)
     stream = _make_stream(ack=(now_unix_ms + 250, 100))
     members = _make_playing_group(stream)
 

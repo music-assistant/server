@@ -74,14 +74,14 @@ async def test_a_guest_capable_player_is_approved_on_connect() -> None:
     assert api.trusted == ["c1"]
 
 
-async def test_a_combo_with_an_audio_input_is_approved_too() -> None:
-    """Its playback roles still benefit, even though the input itself needs pairing."""
+async def test_a_combo_with_an_audio_input_waits_for_the_setup_step() -> None:
+    """The user decides on the input there, so nothing is approved before it."""
     api = _ApprovalServerApi()
     provider = _make_provider(api)
 
     await provider._auto_trust_guest_access("c1", _client(roles=("player@v1", "source@v1")), 1)
 
-    assert api.trusted == ["c1"]
+    assert api.trusted == []
 
 
 async def test_a_capture_only_device_is_left_to_pair() -> None:

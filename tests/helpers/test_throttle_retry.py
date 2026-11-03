@@ -360,6 +360,48 @@ class TestSharedCooldown:
         assert elapsed >= 0.3
 
 
+class TestLowPriorityRetries:
+    """Background work may get a shorter retry ladder than user actions."""
+
+    async def test_low_priority_call_fails_fast_and_keeps_the_gate_closed(
+        self, provider: FakeProvider, fake_clock: FakeClock
+    ) -> None:
+        """A low priority call stops after its short ladder and still holds back other callers."""
+        provider.throttler = ThrottlerManager(
+            rate_limit=100,
+            period=0.01,
+            retry_attempts=5,
+            initial_backoff=2,
+            low_priority_retry_attempts=2,
+        )
+        provider.set_side_effects([RateLimited("rate limited")] * 5)
+        with request_priority(RequestPriority.LOW), pytest.raises(RetriesExhausted):
+            await provider.api_call("test")
+        assert provider.call_count == 2
+        exhausted_at = fake_clock.now
+
+        provider.set_side_effects(["ok"])
+        assert await provider.api_call("ok") == "ok"
+        # initial_backoff 2, doubled by the single retry
+        assert fake_clock.now - exhausted_at == pytest.approx(4)
+
+    async def test_normal_priority_call_keeps_the_full_ladder(
+        self, provider: FakeProvider, fake_clock: FakeClock
+    ) -> None:
+        """A user action still gets every retry attempt."""
+        provider.throttler = ThrottlerManager(
+            rate_limit=100,
+            period=0.01,
+            retry_attempts=5,
+            initial_backoff=2,
+            low_priority_retry_attempts=2,
+        )
+        provider.set_side_effects([RateLimited("rate limited")] * 5)
+        with pytest.raises(RetriesExhausted):
+            await provider.api_call("test")
+        assert provider.call_count == 5
+
+
 class TestLongWaits:
     """A call asked by the server to wait longer than MAX_WAIT_TIME fails instead."""
 

@@ -20,17 +20,14 @@ from music_assistant.models.player_provider import PlayerProvider
 from .constants import (
     CONF_GROUP_STREAM_MODE,
     CONF_HTTP_PORT,
-    CONF_OUTPUT_FORMAT,
     CONF_PLAYER_IDLE_TIMEOUT,
     CONF_SHOW_STOP_NOTIFICATION,
     DEFAULT_GROUP_STREAM_MODE,
     DEFAULT_HTTP_PORT,
-    DEFAULT_OUTPUT_FORMAT,
     DEFAULT_PLAYER_IDLE_TIMEOUT,
     DEFAULT_SHOW_STOP_NOTIFICATION,
     GROUP_STREAM_MODE_INDEPENDENT,
     GROUP_STREAM_MODE_REDIRECT,
-    LEGACY_GROUP_STREAM_MODE_SHARED,
     MSX_PLAYER_ID_PREFIX,
 )
 from .http_server import MSXHTTPServer
@@ -72,12 +69,6 @@ class MSXBridgeProvider(PlayerProvider):
                 type=ConfigEntryType.INTEGER,
                 required=True,
                 default_value=str(DEFAULT_HTTP_PORT),
-            ),
-            ConfigEntry(
-                key=CONF_OUTPUT_FORMAT,
-                type=ConfigEntryType.STRING,
-                required=True,
-                default_value=DEFAULT_OUTPUT_FORMAT,
             ),
             ConfigEntry(
                 key=CONF_PLAYER_IDLE_TIMEOUT,
@@ -159,16 +150,13 @@ class MSXBridgeProvider(PlayerProvider):
         self._player_last_activity.clear()
         self.logger.info("MSX Bridge provider unloaded")
 
-    async def discover_players(self) -> None:
-        """Discover players — MSX players are registered on demand when TVs connect."""
-
     async def get_or_register_player(
         self,
         player_id: str,
         display_name: str | None = None,
         ip_address: str | None = None,
-    ) -> MSXPlayer | None:
-        """Return the MSX player for this ID, or None if registration fails."""
+    ) -> MSXPlayer:
+        """Return the MSX player for this ID, registering it if needed."""
         # Wait for any pending unregister to complete (race condition handling)
         if pending_event := self._pending_unregisters.get(player_id):
             self.logger.debug("Waiting for pending unregister of %s before registering", player_id)
@@ -179,15 +167,11 @@ class MSXBridgeProvider(PlayerProvider):
                 existing.device_info.ip_address = ip_address
             self.on_player_activity(player_id)
             return existing
-        output_format = cast(
-            "str", self.config.get_value(CONF_OUTPUT_FORMAT, DEFAULT_OUTPUT_FORMAT)
-        )
         name = display_name or self.player_display_name(player_id)
         player = MSXPlayer(
             provider=self,
             player_id=player_id,
             name=name,
-            output_format=output_format,
             ip_address=ip_address,
         )
         await self.mass.players.register(player)
@@ -270,11 +254,6 @@ class MSXBridgeProvider(PlayerProvider):
             url = f"/msx/queue-playlist/{player_id}.json?start={start_index}&queue_id={qid}"
             self.http_server.broadcast_playlist(player_id, url)
 
-    def notify_goto_index(self, player_id: str, index: int) -> None:
-        """Notify WebSocket clients to jump to a specific playlist index."""
-        if self.http_server:
-            self.http_server.broadcast_goto_index(player_id, index)
-
     def notify_play_paused(self, player_id: str) -> None:
         """Notify WebSocket clients that playback is paused (MA pause -> MSX)."""
         if self.http_server:
@@ -304,6 +283,11 @@ class MSXBridgeProvider(PlayerProvider):
         """Notify WebSocket clients to seek to position (MA seek -> MSX)."""
         if self.http_server:
             self.http_server.broadcast_seek(player_id, position_seconds)
+
+    def notify_volume(self, player_id: str, volume_level: int) -> None:
+        """Notify the TV of a volume change requested through MA."""
+        if self.http_server:
+            self.http_server.broadcast_volume(player_id, volume_level)
 
     def is_redirect_stream_mode(self) -> bool:
         """Return whether direct MA Streamserver delivery is enabled."""
@@ -336,9 +320,6 @@ class MSXBridgeProvider(PlayerProvider):
         # Used by redirect stream mode: the TV fetches audio straight from the
         # MA Streamserver, which applies the player's own codec config and DSP —
         # no local proxy/ffmpeg involved.
-        if not media:
-            logger.debug("[MARedirect] No media provided")
-            return None
         try:
             stream_url: str = await self.mass.streams.resolve_stream_url(player_id, media)
         except MusicAssistantError as err:
@@ -388,10 +369,8 @@ class MSXBridgeProvider(PlayerProvider):
         return f"{prefix_label} ({suffix})"
 
     def _load_stream_mode(self) -> str:
-        """Return the configured stream mode; a stored 'shared' mode plays as independent."""
+        """Return the configured stream mode, falling back to redirect for unknown values."""
         raw_mode = self.config.get_value(CONF_GROUP_STREAM_MODE, DEFAULT_GROUP_STREAM_MODE)
-        if raw_mode == LEGACY_GROUP_STREAM_MODE_SHARED:
-            return GROUP_STREAM_MODE_INDEPENDENT
         if raw_mode not in (GROUP_STREAM_MODE_REDIRECT, GROUP_STREAM_MODE_INDEPENDENT):
             self.logger.warning("Unknown stream delivery mode %r; using redirect", raw_mode)
             return DEFAULT_GROUP_STREAM_MODE

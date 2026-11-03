@@ -2,7 +2,7 @@
 Smart Playlist Plugin Provider for Music Assistant.
 
 Allows creating rule-based playlists (dynamic or fixed) from library tracks,
-filtered by genres, artists, albums, favorites, popularity and similar tracks.
+filtered by genres, artists, albums, folders, favorites, popularity and similar tracks.
 
 # TODO (future PR): refactor this file into a package (e.g. __init__.py + evaluator.py +
 # filters.py) — it is growing large and the evaluation / filter logic would benefit from
@@ -37,6 +37,7 @@ from music_assistant_models.enums import (
 from music_assistant_models.errors import InvalidDataError, MediaNotFoundError, MusicAssistantError
 from music_assistant_models.media_items import (
     BrowseFolder,
+    Genre,
     ItemMapping,
     MediaItemType,
     Playlist,
@@ -373,6 +374,9 @@ class SmartPlaylistProvider(PluginProvider):
             return await self._evaluate_rules(rules)
         user = get_current_user()
         visible = visible_music_sources(self.mass, user) if user else None
+        if visible is not None and not visible:
+            # no source to sample from: the empty filter below would read as unrestricted
+            return []
         # Tuple ensures a stable cache key and carries the filter into background SWR refreshes.
         user_provider_filter = tuple(sorted(visible)) if visible is not None else ()
         # Filter the cached sample at the boundary (not inside the cached evaluation) so a
@@ -583,7 +587,7 @@ class SmartPlaylistProvider(PluginProvider):
         rules = self._rules_store.get(prov_id)
         if rules is None:
             return None
-        return rules.to_dict()
+        return self._for_current_user(rules).to_dict()
 
     async def update_smart_playlist_rules(
         self,
@@ -604,6 +608,15 @@ class SmartPlaylistProvider(PluginProvider):
         parsed_rules = SmartPlaylistRules.from_dict(rules)
         if existing is not None:
             parsed_rules.is_dynamic = existing.is_dynamic
+            stored = existing.folder_paths
+            submitted = parsed_rules.folder_paths
+            visible = self._visible_folders(stored)
+            # the user never got the folders on sources hidden from them, so those stay
+            hidden = [folder for folder in stored if folder not in visible]
+            # in the stored order, so an unchanged save does not count as a rule change
+            kept = [folder for folder in stored if folder in hidden or folder in submitted]
+            added = [folder for folder in submitted if folder not in stored]
+            parsed_rules.folder_paths = kept + added
         self._validate_rules(parsed_rules)
 
         rules_changed = existing is None or existing.to_dict() != parsed_rules.to_dict()
@@ -621,10 +634,12 @@ class SmartPlaylistProvider(PluginProvider):
                 library_item.item_id, self._description_for(prov_id, parsed_rules)
             )
             if rules_changed:
+                # by uri, so the refresh loads the item with the new description: the
+                # item fetched above still holds the old one and would write it back
                 self.mass.call_later(
                     5,
                     self.mass.metadata.update_metadata,
-                    library_item,
+                    library_item.uri,
                     task_id=f"smart_playlist_metadata_refresh_{prov_id}",
                     force_refresh=True,
                 )
@@ -632,15 +647,18 @@ class SmartPlaylistProvider(PluginProvider):
 
     async def list_smart_playlists(self) -> list[dict[str, Any]]:
         """Return list of all smart playlist IDs and their rule summaries."""
-        return [
-            {
-                "playlist_id": playlist_id,
-                "name": self._names_store.get(playlist_id, playlist_id),
-                "rules": rules.to_dict(),
-                "summary": rules.human_readable(),
-            }
-            for playlist_id, rules in self._rules_store.items()
-        ]
+        result = []
+        for playlist_id, rules in self._rules_store.items():
+            visible_rules = self._for_current_user(rules)
+            result.append(
+                {
+                    "playlist_id": playlist_id,
+                    "name": self._names_store.get(playlist_id, playlist_id),
+                    "rules": visible_rules.to_dict(),
+                    "summary": visible_rules.human_readable(),
+                }
+            )
+        return result
 
     async def count_tracks(self, rules: dict[str, Any]) -> dict[str, Any]:
         """
@@ -779,7 +797,7 @@ class SmartPlaylistProvider(PluginProvider):
         seed_uris = rules.all_seed_uris()
         if seed_uris:
             # Seed mode: a similar-tracks pool derived from the seeds is the exclusive source.
-            # artist_ids and album_ids are ignored per design.
+            # artist_ids, album_ids and folder_paths are ignored per design.
             tracks = await self._tracks_from_seeds(
                 seed_uris, target_size=rules.limit, is_dynamic=rules.is_dynamic
             )
@@ -1094,14 +1112,17 @@ class SmartPlaylistProvider(PluginProvider):
         if not track_id_to_tracks:
             return
 
-        # Fetch genres for all track IDs in parallel
+        # Fetch genres for the track IDs in parallel, up to the cap at a time, as the
+        # tracks of a folder rule are not capped before this
         track_ids = list(track_id_to_tracks.keys())
-        genre_results = await asyncio.gather(
-            *(
-                self.mass.music.genres.get_genres_for_media_item(MediaType.TRACK, track_id)
-                for track_id in track_ids
+        genre_results: list[list[Genre]] = []
+        for start in range(0, len(track_ids), FETCH_LIMIT):
+            genre_results += await asyncio.gather(
+                *(
+                    self.mass.music.genres.get_genres_for_media_item(MediaType.TRACK, track_id)
+                    for track_id in track_ids[start : start + FETCH_LIMIT]
+                )
             )
-        )
 
         # Apply genres to tracks
         for track_id, genres in zip(track_ids, genre_results, strict=True):
@@ -1166,8 +1187,9 @@ class SmartPlaylistProvider(PluginProvider):
         has_genre = bool(rules.genre_ids)
         has_artist = bool(rules.artist_ids)
         has_album = bool(rules.album_ids)
+        has_folder = bool(rules.folder_paths)
 
-        no_structural_filter = not has_genre and not has_artist and not has_album
+        no_structural_filter = not has_genre and not has_artist and not has_album and not has_folder
 
         if no_structural_filter and not rules.favorites_only:
             return await self._get_library_tracks(
@@ -1178,22 +1200,24 @@ class SmartPlaylistProvider(PluginProvider):
                 user_provider_filter=user_provider_filter,
             )
 
-        favorite = True if rules.favorites_only else None
-        genre_ids = rules.genre_ids if has_genre else None
-        base_tracks = await self._get_library_tracks(
-            favorite=favorite,
-            genre_ids=genre_ids,
-            explicit=rules.explicit,
-            limit=min(rules.limit * 5, 2000),
-            user_provider_filter=user_provider_filter,
-        )
+        if has_folder:
+            base_tracks = await self._folder_tracks(
+                rules.folder_paths, rules.explicit, user_provider_filter
+            )
+        else:
+            favorite = True if rules.favorites_only else None
+            genre_ids = rules.genre_ids if has_genre else None
+            base_tracks = await self._get_library_tracks(
+                favorite=favorite,
+                genre_ids=genre_ids,
+                explicit=rules.explicit,
+                limit=min(rules.limit * 5, 2000),
+                user_provider_filter=user_provider_filter,
+            )
 
-        # When multiple genres are specified with AND logic, filter to tracks that have ALL genres
-        if has_genre and len(rules.genre_ids) > 1:
-            base_tracks = await self._filter_tracks_with_all_genres(base_tracks, rules.genre_ids)
-
-        if not has_artist and not has_album:
-            return base_tracks
+        # the library query applies it already, the browsed folder tracks still need it
+        if rules.favorites_only:
+            base_tracks = [t for t in base_tracks if t.favorite]
 
         if has_artist:
             artist_id_set = set(rules.artist_ids)
@@ -1213,6 +1237,20 @@ class SmartPlaylistProvider(PluginProvider):
                 and str(t.album.item_id).isdigit()
                 and int(t.album.item_id) in album_id_set
             ]
+
+        # When multiple genres are specified with AND logic, filter to tracks that have ALL genres
+        if has_genre and (has_folder or len(rules.genre_ids) > 1):
+            # the genres are looked up per track and a folder can hold more tracks than the cap,
+            # so they are checked a random batch at a time until enough of them match
+            random.shuffle(base_tracks)
+            matching: list[Track] = []
+            for start in range(0, len(base_tracks), FETCH_LIMIT):
+                batch = base_tracks[start : start + FETCH_LIMIT]
+                matching += await self._filter_tracks_with_all_genres(batch, rules.genre_ids)
+                if len(matching) >= min(rules.limit * 5, FETCH_LIMIT):
+                    break
+            base_tracks = matching
+
         return base_tracks
 
     async def _evaluate_or(
@@ -1240,6 +1278,13 @@ class SmartPlaylistProvider(PluginProvider):
                 explicit=rules.explicit,
                 limit=fetch_limit,
                 user_provider_filter=user_provider_filter,
+            ):
+                if track.uri:
+                    track_sets[track.uri] = track
+
+        if rules.folder_paths:
+            for track in await self._folder_tracks(
+                rules.folder_paths, rules.explicit, user_provider_filter
             ):
                 if track.uri:
                     track_sets[track.uri] = track
@@ -1276,6 +1321,7 @@ class SmartPlaylistProvider(PluginProvider):
             and not rules.genre_ids
             and not rules.artist_ids
             and not rules.album_ids
+            and not rules.folder_paths
         )
         if no_filters:
             for track in await self._get_library_tracks(
@@ -1306,6 +1352,48 @@ class SmartPlaylistProvider(PluginProvider):
             provider=user_provider_filter,
             summary=False,
         )
+
+    async def _folder_tracks(
+        self,
+        folder_paths: list[str],
+        explicit: bool | None = None,
+        user_provider_filter: list[str] | None = None,
+    ) -> list[Track]:
+        """
+        Return the library tracks found by browsing the given folders recursively.
+
+        :param folder_paths: The browse paths of the folders.
+        :param explicit: True for explicit tracks only, False to leave them out, None for all.
+        :param user_provider_filter: The music sources the tracks are limited to.
+        """
+        # a background refresh has no user for browse to check, only the user's sources
+        pending = [
+            path
+            for path in folder_paths
+            if user_provider_filter is None or path.partition("://")[0] in user_provider_filter
+        ]
+        tracks: dict[str, Track] = {}
+        # browse each folder only once, in case a rule holds a folder and also one of its subfolders
+        browsed: set[str] = set()
+        while pending:
+            path = pending.pop()
+            if path in browsed:
+                continue
+            browsed.add(path)
+            try:
+                # browse pages its listing, the whole folder is needed
+                items = await self.mass.music.browse(path, limit=0)
+            except (MusicAssistantError, OSError) as err:
+                # e.g. a folder on a source hidden from the user, or one deleted or renamed
+                self.logger.debug("Skipping folder %s: %s", path, err)
+                continue
+            for item in items:
+                if isinstance(item, BrowseFolder):
+                    if item.path and item.name != "..":
+                        pending.append(item.path)
+                elif isinstance(item, Track) and item.provider == "library" and item.uri:
+                    tracks[item.uri] = item
+        return _filter_by_explicit(list(tracks.values()), explicit)
 
     async def _tracks_from_seeds(
         self, seed_uris: list[str], target_size: int, is_dynamic: bool
@@ -1415,6 +1503,17 @@ class SmartPlaylistProvider(PluginProvider):
             )
         except Exception as exc:
             self.logger.debug("Could not update description for %s: %s", library_item_id, exc)
+
+    def _visible_folders(self, folder_paths: list[str]) -> list[str]:
+        """Return the folders on music sources the current user may see."""
+        user = get_current_user()
+        if user is None or (visible := visible_music_sources(self.mass, user)) is None:
+            return folder_paths
+        return [path for path in folder_paths if path.partition("://")[0] in visible]
+
+    def _for_current_user(self, rules: SmartPlaylistRules) -> SmartPlaylistRules:
+        """Return the rules without the folders on music sources hidden from the current user."""
+        return dc_replace(rules, folder_paths=self._visible_folders(rules.folder_paths))
 
     def _description_for(self, playlist_id: str, rules: SmartPlaylistRules) -> str:
         """Return the stored AI description when enabled, else the rules summary."""

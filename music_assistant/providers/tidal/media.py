@@ -214,12 +214,25 @@ class TidalMediaManager:
     async def get_album_tracks(self, prov_album_id: str) -> list[Track]:
         """Get album tracks."""
         tracks: list[Track] = []
+        # Tidal numbers album items across the whole album rather than per
+        # volume, so each volume is offset by the last number before it.
+        # A volume that already restarts its numbering is kept as is.
+        volume_number: int | None = None
+        last_number = volume_offset = 0
         async for doc in self.api.paginate_jsonapi(
             f"albums/{prov_album_id}/relationships/items",
             include=["items.artists", "items.albums.coverArt"],
             replace_media="items",
         ):
             for item in doc.data_list:
+                item_meta = item.get("meta") or {}
+                item_number = item_meta.get("trackNumber", 0) or 0
+                # an item without a number keeps 0 and leaves the volume's numbering alone
+                if item_number:
+                    if item_meta.get("volumeNumber") != volume_number:
+                        volume_number = item_meta.get("volumeNumber")
+                        volume_offset = last_number if item_number > last_number else 0
+                    last_number = item_number
                 # The items relationship is mixed-type: an album's music
                 # videos appear here too, and parsing one as a track would
                 # yield an id that 404s on playback and shift trackNumber.
@@ -229,8 +242,7 @@ class TidalMediaManager:
                     continue
                 if (track := _parse_or_skip(parse_track_v2, self.provider, doc, resource)) is None:
                     continue
-                item_meta = item.get("meta") or {}
-                track.track_number = item_meta.get("trackNumber", 0) or 0
+                track.track_number = item_number - volume_offset if item_number else 0
                 track.disc_number = item_meta.get("volumeNumber", 0) or 0
                 tracks.append(track)
         return tracks

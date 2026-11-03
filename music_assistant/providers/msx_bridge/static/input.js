@@ -1399,7 +1399,25 @@ function InputHandler() {
 //Setup
 /******************************************************************************/
 TVXPluginTools.onReady(function() {
-    TVXInteractionPlugin.setupHandler(new InputHandler());
+    var handler = new InputHandler();
+    var bridge = new window.MSXBridgeHandler();
+    var ready = handler.ready;
+    var handleData = handler.handleData;
+    handler.ready = function() {
+        ready.call(handler);
+        bridge.start();
+    };
+    handler.handleEvent = function(data) {
+        bridge.handleEvent(data);
+    };
+    handler.handleData = function(data) {
+        if (data && typeof data.message === "string" && data.message.indexOf("seek:") === 0) {
+            bridge.handleData(data);
+        } else {
+            handleData.call(handler, data);
+        }
+    };
+    TVXInteractionPlugin.setupHandler(handler);
     TVXInteractionPlugin.init();
 });
 /******************************************************************************/

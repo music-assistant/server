@@ -18,6 +18,7 @@ from music_assistant.controllers.cache import CacheController
 from music_assistant.controllers.config import ConfigController
 from music_assistant.controllers.discovery import DiscoveryController
 from music_assistant.controllers.music import MusicController
+from music_assistant.controllers.statistics import StatisticsController
 from music_assistant.controllers.tasks import TasksController
 from music_assistant.helpers.compare import set_keep_remasters_apart
 from music_assistant.mass import MusicAssistant
@@ -292,6 +293,7 @@ async def _music_mass_context(
         mass_instance.webserver = MagicMock()
         mass_instance.webserver.auth.list_users = AsyncMock(return_value=[])
 
+        mass_instance.statistics = StatisticsController(mass_instance)
         mass_instance.music = MusicController(mass_instance)
         music_config = await mass_instance.config.get_core_config(mass_instance.music.domain)
         await mass_instance.music.setup(music_config)

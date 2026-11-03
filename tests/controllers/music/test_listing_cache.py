@@ -11,7 +11,13 @@ from music_assistant_models.auth import User, UserRole
 from music_assistant_models.enums import ListingType, MediaType
 from music_assistant_models.errors import MediaNotFoundError
 from music_assistant_models.helpers import create_uri
-from music_assistant_models.media_items import Playlist, ProviderMapping, Track
+from music_assistant_models.media_items import (
+    ItemMapping,
+    Playlist,
+    PodcastEpisode,
+    ProviderMapping,
+    Track,
+)
 
 from music_assistant.controllers.music.listing_cache import (
     Listing,
@@ -66,7 +72,7 @@ async def test_a_listing_is_assembled_once(mass: MusicAssistant) -> None:
     second = await _album_tracks(mass, uri, assemble)
 
     assemble.assert_awaited_once()
-    assert first is tracks
+    assert all(item is track for item, track in zip(first, tracks, strict=True))
     assert second == tracks
     assert second[0] is not tracks[0]
     assert second[0].name == "One"
@@ -154,6 +160,35 @@ async def test_a_refresh_of_the_item_drops_the_listings_under_every_id(
     for uri in uris:
         await _album_tracks(mass, uri, assemble)
     assert assemble.await_count == 4
+
+
+async def test_a_reference_to_the_container_drops_its_listings(mass: MusicAssistant) -> None:
+    """A container known only by a reference, as an episode knows its podcast, is dropped too."""
+    podcast = ItemMapping(
+        media_type=MediaType.PODCAST, item_id="show", provider="abs_1", name="Show"
+    )
+    episode = PodcastEpisode(
+        item_id="episode",
+        provider="abs_1",
+        name="Episode",
+        provider_mappings={
+            ProviderMapping(item_id="episode", provider_domain="abs", provider_instance="abs_1")
+        },
+        position=1,
+        podcast=podcast,
+    )
+    assemble = AsyncMock(return_value=Listing([episode]))
+    uri = create_uri(MediaType.PODCAST, "abs_1", "show")
+    await cached_listing(
+        mass, ListingType.PODCAST_EPISODES, uri, assemble, item_type=PodcastEpisode
+    )
+
+    await invalidate_listings(mass, podcast)
+
+    await cached_listing(
+        mass, ListingType.PODCAST_EPISODES, uri, assemble, item_type=PodcastEpisode
+    )
+    assert assemble.await_count == 2
 
 
 async def test_concurrent_misses_assemble_once(mass: MusicAssistant) -> None:

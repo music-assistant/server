@@ -1049,7 +1049,10 @@ async def _probe_source_format(
             return
         try:
             stream_info = await probe_audio_stream(
-                inputs[0], streamdetails.extra_input_args, pass_fds=pass_fds
+                inputs[0],
+                streamdetails.extra_input_args,
+                pass_fds=pass_fds,
+                verify_ssl=streamdetails.verify_ssl,
             )
         finally:
             for fd in pass_fds:

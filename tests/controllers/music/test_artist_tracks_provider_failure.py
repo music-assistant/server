@@ -71,8 +71,10 @@ async def test_provider_artist_tracks_skip_failing_album(
         ),
         patch.object(mass.music.albums, "tracks", side_effect=_failing_album_tracks({"Broken"})),
     ):
-        tracks = await mass.music.artists.get_provider_artist_tracks("artist1", _PROVIDER)
-    assert [track.name for track in tracks] == ["Fine track"]
+        listing = await mass.music.artists.get_provider_artist_tracks("artist1", _PROVIDER)
+    assert [track.name for track in listing.items] == ["Fine track"]
+    # the failing album may list next time, so the listing is not kept as it is
+    assert not listing.complete
     assert "Unable to fetch tracks for album Broken from provider streaming_inst" in caplog.text
 
 

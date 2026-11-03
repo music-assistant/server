@@ -630,6 +630,60 @@ async def test_webrtc_gateway_reconnection_logic(cert_pems: tuple[str, str]) -> 
     assert gateway._current_reconnect_delay <= gateway._max_reconnect_delay
 
 
+async def test_webrtc_gateway_backoff_grows_until_registration_confirmed(
+    cert_pems: tuple[str, str], caplog: pytest.LogCaptureFixture
+) -> None:
+    """Test the reconnect delay only resets once the signaling server confirms registration."""
+    cert_pem, key_pem = cert_pems
+    rate_limited = [
+        aiohttp.WSMessage(aiohttp.WSMsgType.CLOSE, 4029, "Rate limited. Try again in 240 seconds."),
+        aiohttp.WSMessage(aiohttp.WSMsgType.CLOSED, None, None),
+    ]
+    registered = [
+        aiohttp.WSMessage(
+            aiohttp.WSMsgType.TEXT,
+            json.dumps({"type": "registered", "remoteId": "TEST-REMOTE-ID"}),
+            None,
+        ),
+        aiohttp.WSMessage(aiohttp.WSMsgType.CLOSE, 1006, "Abnormal closure"),
+        aiohttp.WSMessage(aiohttp.WSMsgType.CLOSED, None, None),
+    ]
+    scripts = iter([rate_limited, rate_limited, rate_limited, registered])
+    http_session = Mock()
+    http_session.ws_connect = AsyncMock(
+        side_effect=lambda *_args, **_kwargs: _FakeSignalingWS(next(scripts))
+    )
+    gateway = WebRTCGateway(
+        http_session=http_session,
+        remote_id="TEST-REMOTE-ID",
+        cert_pem=cert_pem,
+        key_pem=key_pem,
+    )
+    delays: list[float] = []
+
+    async def _fake_sleep(delay: float) -> None:
+        delays.append(delay)
+        if len(delays) == 4:
+            gateway._running = False
+
+    gateway._running = True
+    with (
+        patch(
+            "music_assistant.controllers.webserver.remote_access.gateway.asyncio.sleep",
+            _fake_sleep,
+        ),
+        caplog.at_level(logging.WARNING, logger=gateway.logger.name),
+    ):
+        await gateway._run()
+
+    assert delays == [10, 20, 40, 10]
+    assert any(
+        "4029" in record.getMessage()
+        and "Rate limited. Try again in 240 seconds." in record.getMessage()
+        for record in caplog.records
+    )
+
+
 async def test_webrtc_gateway_handle_offer_without_session(cert_pems: tuple[str, str]) -> None:
     """Test WebRTCGateway handles offer for non-existent session gracefully."""
     cert_pem, key_pem = cert_pems
@@ -869,6 +923,32 @@ class _FakeSignaling:
     @property
     def answers(self) -> list[dict[str, Any]]:
         return [m for m in self.messages if m.get("type") == "answer"]
+
+
+class _FakeSignalingWS:
+    """Signaling WebSocket stand-in that replays a scripted sequence of received frames."""
+
+    def __init__(self, script: list[aiohttp.WSMessage]) -> None:
+        self.closed = False
+        self.close_code: int | None = None
+        self._script = iter(script)
+
+    async def send_json(self, data: dict[str, Any]) -> None:
+        return
+
+    async def close(self) -> None:
+        self.closed = True
+
+    def exception(self) -> BaseException | None:
+        return None
+
+    async def receive(self) -> aiohttp.WSMessage:
+        msg = next(self._script)
+        if msg.type == aiohttp.WSMsgType.CLOSE:
+            self.close_code = msg.data
+        elif msg.type == aiohttp.WSMsgType.CLOSED:
+            self.closed = True
+        return msg
 
 
 class _FakeLocalWS:

@@ -506,6 +506,8 @@ class ProviderConfigMixin:
             await self.mass.music.cleanup_provider_shortcuts(instance_id)
             await self.mass.music.cleanup_provider(instance_id)
             await self.mass.music.cleanup_library_shortcuts()
+        if existing["type"] == "metadata":
+            await self.mass.music.cleanup_provider_images(instance_id)
         if existing["type"] == "player":
             # all players should already be removed by now through unload_provider
             for player in list(self.mass.players):

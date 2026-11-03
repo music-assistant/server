@@ -321,7 +321,7 @@ async def test_msx_menu_survives_plugin_errors(
 
 async def test_tv_plugin_menu_has_party_entry(http_client: TestClient[Any, Any]) -> None:
     """The TV interaction plugin's client-side menu must link to the party page."""
-    resp = await http_client.get("/msx/plugin.html")
+    resp = await http_client.get("/msx/bridge.js")
     assert resp.status == 200
     body = await resp.text()
     assert "/msx/party.json" in body

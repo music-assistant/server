@@ -3,14 +3,18 @@
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, Mock, PropertyMock, patch
 
 import pytest
-from music_assistant_models.enums import AlbumType, ExternalID
+from music_assistant_models.enums import AlbumType, ExternalID, ProviderFeature
 from music_assistant_models.media_items import Album, Artist, ProviderMapping, Track, UniqueList
 
-from music_assistant.controllers.music.constants import CONF_KEEP_REMASTERS_APART
+from music_assistant.controllers.music.constants import (
+    CONF_KEEP_REMASTERS_APART,
+    SIMILAR_ITEMS_LIMIT,
+)
 from music_assistant.helpers.compare import compare_track
+from music_assistant.models.music_provider import MusicProvider
 
 if TYPE_CHECKING:
     from music_assistant.mass import MusicAssistant
@@ -117,3 +121,48 @@ async def test_a_copy_on_the_same_edition_joins_the_library_track(mass: MusicAss
     )
 
     assert copy.item_id == deluxe.item_id
+
+
+@pytest.mark.usefixtures("music_mass_with_audio_analysis")
+@pytest.mark.parametrize("kept_apart", [True, False], ids=["kept_apart", "not_kept_apart"])
+async def test_a_remaster_finds_the_similar_tracks_of_the_original(
+    mass: MusicAssistant, kept_apart: bool
+) -> None:
+    """A service with only the remaster gives the similar tracks, linked only if not kept apart."""
+    await mass.config.save_core_config("music", {CONF_KEEP_REMASTERS_APART: kept_apart})
+    original = await mass.music.tracks.add_item_to_library(
+        _come_together("filesystem_local--test", "")
+    )
+    remaster = _come_together("spotify--test", "2009 Remaster")
+    something = Track(
+        item_id="something",
+        provider="spotify--test",
+        name="Something",
+        provider_mappings={_mapping("spotify--test", "something")},
+    )
+    provider = Mock(spec=MusicProvider)
+    provider.name = provider.instance_id = "spotify--test"
+    provider.domain = "spotify"
+    provider.supported_features = {ProviderFeature.SEARCH, ProviderFeature.SIMILAR_TRACKS}
+    provider.get_similar_tracks = AsyncMock(return_value=[something])
+
+    with (
+        patch.object(
+            type(mass.music), "providers", new_callable=PropertyMock, return_value=[provider]
+        ),
+        patch.object(mass.music.tracks, "search", AsyncMock(return_value=[remaster])),
+        patch.object(mass.music.tracks, "get_provider_item", AsyncMock(return_value=remaster)),
+    ):
+        similar = await mass.music.tracks.similar_tracks(
+            original.item_id, "library", allow_lookup=True
+        )
+        library_match = await mass.music.tracks.match_provider(original, provider)
+
+    assert [track.item_id for track in similar] == ["something"]
+    provider.get_similar_tracks.assert_awaited_once_with(
+        "spotify--test-track", limit=SIMILAR_ITEMS_LIMIT
+    )
+    library_track = await mass.music.tracks.get_library_item(original.item_id)
+    linked = {mapping.provider_instance for mapping in library_track.provider_mappings}
+    assert ("spotify--test" in linked) is not kept_apart
+    assert bool(library_match) is not kept_apart

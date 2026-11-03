@@ -48,4 +48,6 @@ def translate_media_type_to_apple_type(media_type: MediaType) -> str:
             return "songs"
         case MediaType.PLAYLIST:
             return "playlists"
+        case MediaType.RADIO:
+            return "stations"
     raise MusicAssistantError(f"Unsupported media type: {media_type}")

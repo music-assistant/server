@@ -490,6 +490,55 @@ def test_compare_album_evidence_barcode_never_matches_unrelated_titles() -> None
     assert compare.compare_album(album_a, album_b) is False
 
 
+def test_compare_album_evidence_barcode_needs_one_shared_album_artist() -> None:
+    """A shared barcode matches albums whose providers list different album artists."""
+    barcode = {(ExternalID.BARCODE, "4260306180745")}
+
+    def _artists(
+        provider: str, *names: str
+    ) -> media_items.UniqueList[media_items.Artist | media_items.ItemMapping]:
+        return media_items.UniqueList(
+            [
+                media_items.Artist(
+                    item_id=name,
+                    provider=provider,
+                    name=name,
+                    provider_mappings={
+                        media_items.ProviderMapping(
+                            item_id=name, provider_domain="test", provider_instance=provider
+                        )
+                    },
+                )
+                for name in names
+            ]
+        )
+
+    name = "Sibelius: Symphonies 1 - 7"
+    qobuz = _album(provider="test1", name=name, year=2015, external_ids=barcode)
+    qobuz.artists = _artists("test1", "Simon Rattle")
+    tidal = _album(item_id="2", provider="test2", name=name, year=2015, external_ids=barcode)
+    tidal.artists = _artists("test2", "Berlin Philharmonic Orchestra", "Simon Rattle")
+    spotify = _album(item_id="3", provider="test3", name=name, year=2015, external_ids=barcode)
+    spotify.artists = _artists(
+        "test3", "Jean Sibelius", "Berlin Philharmonic Orchestra", "Simon Rattle"
+    )
+
+    for base_item, compare_item in ((qobuz, tidal), (qobuz, spotify), (tidal, spotify)):
+        assert (
+            compare.compare_album_evidence(base_item, compare_item)
+            == compare.AlbumMatchEvidence.MATCH
+        )
+
+    # without the barcode the strict album artist rule still applies
+    tidal.external_ids = set()
+    assert compare.compare_album_evidence(qobuz, tidal) == compare.AlbumMatchEvidence.NO_MATCH
+
+    # the barcode never matches albums without a single shared album artist
+    tidal.external_ids = barcode
+    tidal.artists = _artists("test2", "Herbert von Karajan")
+    assert compare.compare_album_evidence(qobuz, tidal) == compare.AlbumMatchEvidence.NO_MATCH
+
+
 def test_compare_album_evidence_name_hyphen_spacing_drift_matches() -> None:
     """Punctuation/spacing drift around a title's hyphenation does not block a match."""
     album_a = _album(name="All Change - - EP")
@@ -2167,6 +2216,15 @@ def test_a_loose_track_compare_still_takes_a_remaster_for_its_recording() -> Non
     remaster = _recording("remaster", "provider_b", version="2009 Remaster")
 
     assert compare.compare_track(original, remaster, strict=False) is True
+
+
+@pytest.mark.usefixtures("keep_remasters_apart")
+def test_a_strict_track_compare_can_still_match_a_remaster() -> None:
+    """A caller that asks for it still gets a remaster matched to the original."""
+    original = _recording("original", "provider_a")
+    remaster = _recording("remaster", "provider_b", version="2009 Remaster")
+
+    assert compare.compare_track(original, remaster, match_remasters=True) is True
 
 
 @pytest.mark.usefixtures("keep_remasters_apart")

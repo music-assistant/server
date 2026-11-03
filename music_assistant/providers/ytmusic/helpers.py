@@ -14,14 +14,14 @@ from time import time
 from typing import Any, Literal
 
 import ytmusicapi
-from music_assistant_models.errors import LoginFailed
+from music_assistant_models.errors import LoginFailed, MediaNotFoundError
 from ytmusicapi import LikeStatus
-from ytmusicapi.exceptions import YTMusicError
+from ytmusicapi.exceptions import YTMusicError, YTMusicServerError
 
 from music_assistant.providers.ytmusic.constants import YTMRecommendationIcons
 
 # subset of ytmusicapi's accepted search filters that we use
-YTMSearchFilter = Literal["artists", "albums", "songs", "playlists", "podcasts"]
+YTMSearchFilter = Literal["artists", "albums", "songs", "videos", "playlists", "podcasts"]
 
 
 async def get_artist(
@@ -81,15 +81,19 @@ async def get_album(
         if prov_album_id.startswith("FEmusic_library_privately_owned_release"):
             ytm = ytmusicapi.YTMusic(auth=headers, language=language, user=user)
             album = ytm.get_library_upload_album(browseId=prov_album_id)
+
+            # sigma67/ytmusicapi#1022 - uploaded album audioPlaylistId currently not resolvable
+            album.pop("audioPlaylistId", None)
         else:
             ytm = ytmusicapi.YTMusic(auth=headers, language=language, user=user)
             album = ytm.get_album(browseId=prov_album_id)
 
-        if album.get("audioPlaylistId"):
+        playlist_id = album.get("audioPlaylistId")
+        if playlist_id:
             # Track id's from album tracks do not match with actual album tracks. E.g. a track
             # points to the videoId of the original version, while we want the album version
             try:
-                album_playlist = ytm.get_playlist(playlistId=album["audioPlaylistId"], limit=None)
+                album_playlist = ytm.get_playlist(playlistId=playlist_id, limit=None)
             except YTMusicError:
                 return album
 
@@ -167,7 +171,11 @@ async def get_podcast(
 
     def _get_podcast() -> dict[str, Any]:
         ytm = ytmusicapi.YTMusic(auth=headers, language=language)
-        podcast_obj = ytm.get_podcast(playlistId=prov_podcast_id)
+        try:
+            podcast_obj = ytm.get_podcast(playlistId=prov_podcast_id)
+        except YTMusicServerError as err:
+            _raise_if_rejected_id(err, f"Podcast {prov_podcast_id} not found on YouTube Music")
+            raise
         if "podcastId" not in podcast_obj:
             podcast_obj["podcastId"] = prov_podcast_id
         return podcast_obj
@@ -489,3 +497,10 @@ def _raise_if_signed_out(err: Exception) -> None:
         "Your YouTube Music session is no longer valid. "
         "Please reconfigure this provider with a fresh cookie."
     ) from err
+
+
+def _raise_if_rejected_id(err: YTMusicServerError, message: str) -> None:
+    """Raise MediaNotFoundError if YouTube rejected the requested id."""
+    # ytmusicapi only exposes the HTTP status through the error message
+    if str(err).startswith(("Server returned HTTP 400", "Server returned HTTP 404")):
+        raise MediaNotFoundError(message) from err

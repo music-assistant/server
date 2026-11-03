@@ -78,7 +78,6 @@ DEVICE_FEATURE_WAKEABLE = "WAKEABLE"
 
 UNSUPPORTED_MODELS_NATIVE_ANNOUNCEMENTS = ("Play:1", "Play:3")
 NON_HIRES_MODELS = (
-    "Play:3",
     "Connect:Amp",
     "Table lamp",
 )

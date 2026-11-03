@@ -179,6 +179,20 @@ def test_description_is_populated() -> None:
     assert mass_episode.metadata.description == "All about parsing podcasts."
 
 
+def test_description_prefers_full_show_notes() -> None:
+    """The full show notes win over a summary the feed cut short."""
+    mass_episode = _parse(
+        _episode(
+            description="A bombed out runwayFailing communications equi...",
+            description_html="<ul><li>A bombed out runway</li><li>Failing equipment</li></ul>",
+        )
+    )
+    assert mass_episode is not None
+    assert mass_episode.metadata.description == (
+        "<ul><li>A bombed out runway</li><li>Failing equipment</li></ul>"
+    )
+
+
 def test_empty_description_left_unset() -> None:
     """An empty description (podcastparser's default) leaves metadata.description as None."""
     mass_episode = _parse(_episode(description=""))

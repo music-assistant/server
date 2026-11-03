@@ -758,5 +758,16 @@
   "core.storage.errors.folder_missing": "Тази папка не съществува.",
   "provider.audiobookshelf.media.recommendations.libraries.name": "Библиотеки",
   "provider.audiobookshelf.media.recommendations.library.name": "Библиотека",
-  "provider.deezer.setup_flow.profile.title": "Изберете профил"
+  "provider.deezer.setup_flow.profile.title": "Изберете профил",
+  "provider.nugs.config_entries.quality.label": "Качество на потока",
+  "provider.nugs.config_entries.quality.option_descriptions.lossless": "CD качество или по-добро.",
+  "common.errors.user_account_disabled": "Този потребителски акаунт е деактивиран.",
+  "provider.telmore.config_entries.telmore_quality.label": "Качество на потока",
+  "provider.telmore.config_entries.telmore_quality.options.192": "\"Нормално\" - MP4 192kbps",
+  "provider.telmore.config_entries.telmore_quality.options.320": "\"Високо\" - MP4 320kbps",
+  "core.streams.config_entries.stream_source_mode.options.best_quality": "Най-добро качество",
+  "core.streams.config_entries.stream_source_mode.options.best_quality_per_track": "Най-добро качество за всяка песен",
+  "provider.siriusxm.config_entries.bitrate.options.128k": "128 kbps",
+  "common.errors.join_code_invalid": "Този код е невалиден или е изтекъл.",
+  "core.statistics.manifest.name": "Статистика"
 }

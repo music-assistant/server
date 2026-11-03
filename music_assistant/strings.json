@@ -451,6 +451,13 @@
     },
     "tts_engine_unavailable": {
       "label": "No text-to-speech engine is available. Set up a plugin that provides text-to-speech, for example the Home Assistant plugin with a TTS entity."
+    },
+    "image_engine": {
+      "label": "Image engine",
+      "description": "The image generation engine used for this feature."
+    },
+    "image_engine_unavailable": {
+      "label": "No image engine is available. Set up a plugin that can generate images, for example the Home Assistant plugin with an AI task entity that supports images, or the OpenAI Compatible plugin with an image model selected."
     }
   },
   "config_categories": {
@@ -462,6 +469,7 @@
     "builtin_playlists": "Builtin Playlists",
     "web_player": "Web Player",
     "playback": "Queue Playback",
+    "source_selection": "Source selection",
     "items_to_select": "Items to select",
     "default_enqueue_option": "Default enqueue option",
     "click_actions": "Click actions",
@@ -1222,6 +1230,7 @@
     "sign_in_expired": "This sign-in has expired or was already used. Please sign in again.",
     "self_registration_disabled": "Self-registration is disabled. Please contact an administrator.",
     "user_account_disabled": "This user account is disabled.",
+    "join_code_invalid": "This code is invalid or has expired.",
     "builtin_role_readonly": "A builtin role can not be changed or removed.",
     "role_not_found": "This role does not exist.",
     "role_name_invalid": "A role name must be between 1 and {0} characters long.",

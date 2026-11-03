@@ -933,6 +933,7 @@ async def test_get_dashboard_code_creates_viewer_user_and_code(mass: MusicAssist
     assert code
     result = await mass.webserver.auth.exchange_join_code(code)
 
+    assert isinstance(result, dict)
     assert result["success"] is True
     user = await mass.webserver.auth.authenticate_with_token(result["access_token"])
     assert user is not None
@@ -949,5 +950,7 @@ async def test_get_dashboard_code_mints_fresh_code_each_call(mass: MusicAssistan
     result1 = await mass.webserver.auth.exchange_join_code(code1)
     result2 = await mass.webserver.auth.exchange_join_code(code2)
 
+    assert isinstance(result1, dict)
+    assert isinstance(result2, dict)
     assert result1["success"] is True
     assert result2["success"] is True

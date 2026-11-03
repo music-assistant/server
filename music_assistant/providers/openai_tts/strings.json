@@ -39,6 +39,7 @@
     "endpoint_not_found": "No speech endpoint was found at this address. Please check the API endpoint.",
     "cannot_connect": "Could not reach the speech API. Please check the address and try again.",
     "render_failed": "The speech API could not render the test phrase: {0}. Please check the model and the audio format.",
+    "render_timeout": "The speech API did not answer within {0} seconds. If your server is still loading the model, wait a moment and try again.",
     "render_incomplete": "The speech API stopped before the test phrase was rendered. Please check the model and the audio format.",
     "voices_not_listed": "Your server did not list its voices. If it uses its own voice names, enter them here."
   },

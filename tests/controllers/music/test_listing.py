@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+from collections import Counter
 from dataclasses import fields
 from datetime import UTC, datetime
+from typing import Any
+from unittest.mock import patch
 
 import pytest
 from music_assistant_models.api import SortOptionInfo
@@ -26,6 +29,7 @@ from music_assistant_models.media_items import (
 from music_assistant.controllers.music.listing import (
     _SORT_KEYS,
     apply_listing,
+    legacy_sort,
     resolve_listing_sort,
 )
 from music_assistant.controllers.music.sorting import LIBRARY_LISTINGS, LISTING_SORT_OPTIONS
@@ -99,6 +103,60 @@ def _track(  # noqa: PLR0913
     track.disc_number, track.track_number = disc_number, track_number
     track.position, track.date_added, track.last_played = position, date_added, last_played
     return track
+
+
+@pytest.mark.parametrize("seed", [0, -5, 123456])
+def test_seeded_random_pages_form_one_permutation(seed: int) -> None:
+    """A seeded random listing keeps its order across independently requested pages."""
+    items = [create_track("library", str(index)) for index in range(30)]
+    options: dict[str, Any] = {"sort_field": SortField.RANDOM, "random_seed": seed}
+    first = apply_listing(items, ListingType.LIBRARY_TRACKS, limit=15, **options)
+    second = apply_listing(items, ListingType.LIBRARY_TRACKS, limit=15, offset=15, **options)
+    whole = apply_listing(items, ListingType.LIBRARY_TRACKS, **options)
+
+    assert first + second == whole
+    assert {item.item_id for item in whole} == {item.item_id for item in items}
+    assert len({item.item_id for item in first + second}) == len(items)
+    assert whole != apply_listing(
+        items, ListingType.LIBRARY_TRACKS, sort_field=SortField.RANDOM, random_seed=seed + 1
+    )
+
+
+@pytest.mark.parametrize("seed", [0, 17, -5])
+def test_seeded_random_pages_ignore_source_order_and_keep_repeated_entries(seed: int) -> None:
+    """A source reshuffle cannot change seeded pages or remove repeated playlist entries."""
+    items = [create_track("library", str(index)) for index in range(30)]
+    items.extend([items[3], items[3], create_track("qobuz_1", "0")])
+    original = list(items)
+    permutations = [items, list(reversed(items)), items[7:] + items[:7]]
+    options: dict[str, Any] = {"sort_field": SortField.RANDOM, "random_seed": seed}
+    whole = apply_listing(items, ListingType.LIBRARY_TRACKS, **options)
+    paged = []
+    for page_index, offset in enumerate(range(0, len(items), 7)):
+        paged.extend(
+            apply_listing(
+                permutations[page_index % len(permutations)],
+                ListingType.LIBRARY_TRACKS,
+                limit=7,
+                offset=offset,
+                **options,
+            )
+        )
+
+    assert [item.uri for item in paged] == [item.uri for item in whole]
+    assert Counter(item.uri for item in paged) == Counter(item.uri for item in items)
+    assert items == original
+
+
+def test_unseeded_random_still_uses_global_shuffle() -> None:
+    """An omitted seed preserves the existing per-request shuffle."""
+    items = [create_track("library", str(index)) for index in range(10)]
+    with patch("music_assistant.controllers.music.listing.random.shuffle") as shuffle:
+        apply_listing(items, ListingType.LIBRARY_TRACKS, sort_field=SortField.RANDOM)
+        shuffle.assert_called_once()
+        shuffle.reset_mock()
+        apply_listing(items, ListingType.LIBRARY_TRACKS, sort_field=SortField.RANDOM, random_seed=0)
+        shuffle.assert_not_called()
 
 
 @pytest.fixture
@@ -183,6 +241,7 @@ def _ids(items: list[Track]) -> list[str]:
         (ListingType.PLAYLIST_TRACKS, SortField.TIMESTAMP_ADDED, SortDirection.ASC, ["t3", "t2", "t4", "t1"]),
         (ListingType.PLAYLIST_TRACKS, SortField.TIMESTAMP_ADDED, SortDirection.DESC, ["t1", "t4", "t2", "t3"]),
         (ListingType.PLAYLIST_TRACKS, SortField.ARTIST_NAME, SortDirection.ASC, ["t2", "t4", "t3", "t1"]),
+        # albums that share a name stay apart
         (ListingType.PLAYLIST_TRACKS, SortField.ALBUM_NAME, SortDirection.ASC, ["t3", "t4", "t1", "t2"]),
         (ListingType.VERSIONS, SortField.PROVIDER, SortDirection.ASC, ["t3", "t2", "t4", "t1"]),
         (ListingType.LIBRARY_TRACKS, SortField.LAST_PLAYED, SortDirection.ASC, ["t3", "t2", "t4", "t1"]),
@@ -220,6 +279,45 @@ def test_apply_listing_sorts_albums_by_year() -> None:
         albums, listing, sort_field=SortField.YEAR, sort_direction=SortDirection.ASC
     )
     assert [a.item_id for a in ascending] == ["a2", "a3", "a1"]
+
+
+@pytest.mark.parametrize(
+    ("direction", "expected"),
+    [
+        (SortDirection.ASC, ["t6", "t3", "t4", "t2", "t5", "t1"]),
+        (SortDirection.DESC, ["t5", "t1", "t4", "t2", "t6", "t3"]),
+    ],
+)
+def test_apply_listing_sorts_on_the_album_then_its_disc_and_track_order(
+    direction: SortDirection, expected: list[str]
+) -> None:
+    """Each album lists its tracks in disc and track order, also between same-named albums."""
+    albums = {
+        "abba": create_album("qobuz_1", "greatest_abba", name="Greatest Hits"),
+        "queen": create_album("qobuz_1", "greatest_queen", name="Greatest Hits"),
+        "arrival": create_album("qobuz_1", "arrival", name="Arrival"),
+    }
+    tracks = []
+    for item_id, album, disc_number, track_number in (
+        ("t1", "queen", 1, 2),
+        ("t2", "abba", 1, 2),
+        ("t3", "arrival", 2, 1),
+        ("t4", "abba", 1, 1),
+        ("t5", "queen", 1, 1),
+        # a disc 0 counts as the first disc
+        ("t6", "arrival", 0, 3),
+    ):
+        track = create_track("qobuz_1", item_id)
+        track.album = albums[album]
+        track.disc_number, track.track_number = disc_number, track_number
+        tracks.append(track)
+    result = apply_listing(
+        tracks,
+        ListingType.PLAYLIST_TRACKS,
+        sort_field=SortField.ALBUM_NAME,
+        sort_direction=direction,
+    )
+    assert _ids(result) == expected
 
 
 def test_apply_listing_uses_the_listing_default(tracks: list[Track]) -> None:
@@ -260,6 +358,19 @@ def test_apply_listing_searches_names_without_case_and_accents(
         tracks, ListingType.PLAYLIST_TRACKS, search=search, sort_field=SortField.POSITION
     )
     assert _ids(result) == expected
+
+
+def test_apply_listing_finds_a_folder_by_its_translation_key() -> None:
+    """A folder that only has a translation key is searched and sorted by that key."""
+    folders = [
+        BrowseFolder(item_id="tracks", provider="qobuz_1", name="", translation_key="tracks"),
+        BrowseFolder(item_id="mixes", provider="qobuz_1", name="Mixes"),
+        BrowseFolder(item_id="albums", provider="qobuz_1", name="", translation_key="albums"),
+    ]
+    found = apply_listing(folders, ListingType.BROWSE, search="trac")
+    by_name = apply_listing(folders, ListingType.BROWSE, sort_field=SortField.NAME)
+    assert [folder.item_id for folder in found] == ["tracks"]
+    assert [folder.item_id for folder in by_name] == ["albums", "mixes", "tracks"]
 
 
 def test_apply_listing_pages(tracks: list[Track]) -> None:
@@ -336,6 +447,14 @@ def test_resolve_listing_sort_rejects_what_the_listing_lacks() -> None:
         resolve_listing_sort(ListingType.ALBUM_TRACKS, SortField.YEAR)
     with pytest.raises(InvalidDataError):
         resolve_listing_sort(ListingType.ALBUM_TRACKS, order_by="not_a_sort_key")
+
+
+def test_legacy_sort_maps_a_deprecated_key_to_its_typed_sort() -> None:
+    """A deprecated key stands for a sort field and its direction; an unknown key is rejected."""
+    assert legacy_sort("timestamp_added_desc") == (SortField.TIMESTAMP_ADDED, SortDirection.DESC)
+    assert legacy_sort("random") == (SortField.RANDOM, None)
+    with pytest.raises(InvalidDataError):
+        legacy_sort("not_a_sort_key")
 
 
 def test_every_listing_offers_sort_fields_its_items_carry() -> None:

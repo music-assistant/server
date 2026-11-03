@@ -154,7 +154,11 @@ _LIBRARY_LISTING_SORT_OPTIONS: Final[dict[ListingType, tuple[SortOptionInfo, ...
 LISTING_SORT_OPTIONS: Final[dict[ListingType, tuple[SortOptionInfo, ...]]] = {
     **_LIBRARY_LISTING_SORT_OPTIONS,
     ListingType.ALBUM_TRACKS: _sort_options(
-        SortField.TRACK_NUMBER, SortField.NAME, SortField.ARTIST_NAME, SortField.DURATION
+        SortField.TRACK_NUMBER,
+        SortField.NAME,
+        SortField.SORT_NAME,
+        SortField.ARTIST_NAME,
+        SortField.DURATION,
     ),
     ListingType.PLAYLIST_TRACKS: _sort_options(
         SortField.POSITION,

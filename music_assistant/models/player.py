@@ -214,8 +214,8 @@ def _reconcile_position_anchor(
     progression extrapolates to (nearly) the same corrected position as the previous
     anchor and therefore keeps the previous anchor, so steady playback yields no
     state change at all. The anchor is only adopted when the corrected position
-    jumped more than POSITION_JUMP_THRESHOLD (seek/buffer correction) or when
-    force_adopt is set.
+    jumped more than POSITION_JUMP_THRESHOLD (seek/buffer correction), when the
+    playing state changed or when force_adopt is set.
 
     :param prev_position: Position of the previous anchor.
     :param prev_timestamp: Timestamp of the previous anchor.
@@ -244,7 +244,7 @@ def _reconcile_position_anchor(
     prev_corrected = prev_position + (now - prev_timestamp) if prev_playing else prev_position
     new_corrected = new_position + (now - new_timestamp) if new_playing else new_position
     jumped = abs(prev_corrected - new_corrected) > POSITION_JUMP_THRESHOLD
-    if force_adopt or jumped:
+    if force_adopt or jumped or prev_playing != new_playing:
         return new_position, new_timestamp, jumped
     return prev_position, prev_timestamp, False
 
@@ -2864,7 +2864,8 @@ class Player(ABC):
         )
         if not mirrors_parent:
             # steady playback resolves to the previous anchor, so nothing changed;
-            # a jump (or a previous anchor that was still incomplete) adopts the new one
+            # a jump, a playing-state change (or a previous anchor that was still
+            # incomplete) adopts the new one
             new_media.elapsed_time = int(position) if position is not None else None
             new_media.elapsed_time_last_updated = timestamp
         return jumped
@@ -3091,7 +3092,9 @@ class Player(ABC):
                 elapsed_time, elapsed_time_last_updated = _resolve_position(
                     stream_metadata.elapsed_time,
                     stream_metadata.elapsed_time_last_updated,
-                    active_queue.elapsed_time,
+                    # a duration is the song's, and how long the stream has played is no
+                    # position in that song
+                    None if stream_metadata.duration else active_queue.elapsed_time,
                     active_queue.elapsed_time_last_updated,
                 )
                 return PlayerMedia(
@@ -3278,15 +3281,29 @@ class Player(ABC):
                     repeat_mode=session.repeat_mode,
                 )
             )
-        # standing entries for the audio sources plugins bound to this player, so they
-        # are selectable from the source menu without a session being active first;
+        # standing entries for the audio sources plugins bound to this player or report
+        # as inputs of its own device, so they are selectable from the source menu
+        # without a session being active first;
         # an already listed uri is skipped: the live session entry above carries the
         # live shuffle/repeat state and must win
         present_ids = {x.id for x in sources}
+        # a device's own inputs may be reported on one of its linked protocol players
+        device_player_ids = [
+            self.player_id,
+            *(linked.output_protocol_id for linked in self.linked_output_protocols),
+        ]
         for prov in self.mass.get_providers_supporting_feature(ProviderFeature.AUDIO_SOURCE):
             if not isinstance(prov, PluginProvider):
                 continue
-            for source in prov.get_player_audio_sources(self.player_id) or ():
+            standing_sources = [
+                *(prov.get_player_audio_sources(self.player_id) or ()),
+                *(
+                    source
+                    for device_player_id in device_player_ids
+                    for source in prov.get_player_input_sources(device_player_id)
+                ),
+            ]
+            for source in standing_sources:
                 if not (uri := source.uri) or uri in present_ids:
                     continue
                 present_ids.add(uri)
