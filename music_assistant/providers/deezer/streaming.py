@@ -98,6 +98,12 @@ class DeezerStreamingManager:
                 episode_id=prov_item_id, offset=position
             )
 
+    async def on_stream_started(self, streamdetails: StreamDetails) -> None:
+        """Handle callback when a track starts playing."""
+        if streamdetails.media_type != MediaType.TRACK or not isinstance(streamdetails.data, dict):
+            return
+        self._start_listen(streamdetails)
+
     # -- Stream details --
 
     async def get_stream_details(self, item_id: str, media_type: MediaType) -> StreamDetails:
@@ -305,6 +311,7 @@ class DeezerStreamingManager:
                         self.provider.gw_client.log_listen(last_track=prev_chapter)
                     )
                 current_chapter = chapter_details
+                self._start_listen(chapter_details)
                 seek = chapter_seek if i == start_chapter else 0
                 async for chunk in self._stream_encrypted_track(chapter_details, seek):
                     yield chunk
@@ -333,9 +340,6 @@ class DeezerStreamingManager:
             skip_chunks = 0
 
         buffer = bytearray()
-        streamdetails.data["start_ts"] = utc_timestamp()
-        streamdetails.data["stream_id"] = uuid.uuid1()
-        self.mass.create_task(self.provider.gw_client.log_listen(next_track=streamdetails.item_id))
         async with self.mass.http_session.get(
             streamdetails.data["url"], headers=headers, timeout=timeout
         ) as resp:
@@ -361,6 +365,14 @@ class DeezerStreamingManager:
         if not isinstance(streamdetails.data, dict) or "start_ts" not in streamdetails.data:
             return
         await self.provider.gw_client.log_listen(last_track=streamdetails)
+
+    def _start_listen(self, streamdetails: StreamDetails) -> None:
+        """Record when the given track or chapter started playing and report it to Deezer."""
+        # Deezer keeps one listen per stream_id, so every stream of this playback
+        # (seek, reconnect, crossfade) reports under the same one
+        streamdetails.data["start_ts"] = utc_timestamp()
+        streamdetails.data["stream_id"] = uuid.uuid1()
+        self.mass.create_task(self.provider.gw_client.log_listen(next_track=streamdetails.item_id))
 
     # -- Decryption helpers --
 

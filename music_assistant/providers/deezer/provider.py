@@ -384,6 +384,10 @@ class DeezerProvider(RecommendationPayloadMixin, MusicProvider):
         async for chunk in self.streaming_manager.get_audio_stream(streamdetails, seek_position):
             yield chunk
 
+    async def on_stream_started(self, streamdetails: StreamDetails) -> None:
+        """Handle callback when a track starts playing."""
+        await self.streaming_manager.on_stream_started(streamdetails)
+
     async def on_streamed(self, streamdetails: StreamDetails) -> None:
         """Handle callback when an item completed streaming."""
         await self.streaming_manager.on_streamed(streamdetails)
