@@ -16,6 +16,7 @@ from music_assistant.models.player import PlayerMedia
 from music_assistant.providers.auracast.broadcaster import (
     CONTROLLER_STACK_SETUP_KEY,
     AuracastBroadcaster,
+    parse_device_address,
 )
 from music_assistant.providers.auracast.player import (
     PCM_FORMAT,
@@ -26,11 +27,15 @@ from music_assistant.providers.auracast.player import (
 PLAYER_MODULE = "music_assistant.providers.auracast.player"
 
 
-def create_player() -> AuracastPlayer:
-    """Build a player with a minimal provider and mass stub."""
+def create_player(raw_config: dict[str, Any] | None = None) -> AuracastPlayer:
+    """Build a player with a minimal provider and mass stub, and stored raw config values."""
     mass = MagicMock()
     mass.config.get_base_player_config.return_value = MagicMock()
     mass.config.get_raw_player_config_value.return_value = 100
+    if raw_config is not None:
+        mass.config.get_raw_player_config_value.side_effect = lambda _player_id, key, *_: (
+            raw_config.get(key, 100)
+        )
     mass.streams.audio.get_player_output_plan.return_value = MagicMock(filter_params=[])
     mass.create_task = lambda coro: asyncio.create_task(coro)
     provider = MagicMock()
@@ -483,3 +488,41 @@ def test_player_shows_controller_details_from_setup_probe() -> None:
     assert player_with_details.device_info.model == (
         "Host stack: Bumble; Controller stack: Bluetooth Core 5.4; company ID 0x0059"
     )
+
+
+def test_new_player_generates_and_stores_a_static_device_address() -> None:
+    """Create the address once and keep it with the player."""
+    player = create_player()
+
+    stored = {
+        call.args[1]: call.args[2]
+        for call in cast("Any", player.mass.config).set_raw_player_config_value.call_args_list
+    }
+    address = stored["auracast_device_address"]
+    assert parse_device_address(address) == address
+    assert player._broadcaster.config.device_address == address
+
+
+@pytest.mark.parametrize("stored", ["00:11:22:33:44:55", "nonsense", 7])
+def test_invalid_stored_device_address_is_replaced(stored: object) -> None:
+    """Replace a stored address that is not a valid static address."""
+    player = create_player({"auracast_device_address": stored})
+
+    address = player._broadcaster.config.device_address
+    assert address is not None
+    assert parse_device_address(address) == address
+    cast("Any", player.mass.config).set_raw_player_config_value.assert_any_call(
+        "auracast_test", "auracast_device_address", address
+    )
+
+
+def test_stored_device_address_is_reused() -> None:
+    """Keep the same address across restarts without writing it again."""
+    player = create_player({"auracast_device_address": "F0:F1:F2:F3:F4:F5"})
+
+    assert player._broadcaster.config.device_address == "F0:F1:F2:F3:F4:F5"
+    written_keys = [
+        call.args[1]
+        for call in cast("Any", player.mass.config).set_raw_player_config_value.call_args_list
+    ]
+    assert "auracast_device_address" not in written_keys
