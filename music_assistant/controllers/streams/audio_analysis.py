@@ -109,7 +109,12 @@ LOGGER = logging.getLogger(f"{MASS_LOGGER_NAME}.audio_analysis")
 if TYPE_CHECKING:
     from datetime import datetime
 
-    from music_assistant_models.media_items import AudioFormat, AudioMetadata, Track
+    from music_assistant_models.media_items import (
+        AudioFormat,
+        AudioMetadata,
+        ProviderMapping,
+        Track,
+    )
     from music_assistant_models.streamdetails import StreamDetails
 
     from music_assistant.controllers.streams.audio_buffer import AudioBuffer
@@ -589,6 +594,28 @@ class AudioAnalysisController(AudioAnalysisDatabaseMixin):
                 table,
                 {"media_type": media_type.value, "item_id": item_id, "provider": provider_key},
             )
+
+    async def delete_measured_loudness(self, provider_mappings: Iterable[ProviderMapping]) -> None:
+        """
+        Delete the measured loudness of a track, keeping the loudness its tags or source supply.
+
+        :param provider_mappings: The provider mappings of the track.
+        """
+        if not self._database_ready:
+            return
+        for mapping in provider_mappings:
+            # analysis is stored under the domain or the instance id of the music source
+            for provider_key in {mapping.provider_domain, mapping.provider_instance}:
+                for table in (AA_TABLE_ANALYSIS, AA_TABLE_FAILURES):
+                    await self.database.delete(
+                        table,
+                        {
+                            "media_type": MediaType.TRACK.value,
+                            "item_id": mapping.item_id,
+                            "provider": provider_key,
+                            "aa_provider_domain": LOUDNESS_ANALYSIS_DOMAIN,
+                        },
+                    )
 
     async def get_audio_analysis(
         self,
