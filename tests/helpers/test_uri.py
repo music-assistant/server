@@ -66,6 +66,8 @@ SPOTIFY_ID = "4Z8W4fKeB5YxbusRsdQVPb"
         ),
         # qobuz
         ("https://open.qobuz.com/album/0634904032432", (MediaType.ALBUM, "qobuz", "0634904032432")),
+        ("https://play.qobuz.com/artist/1044", (MediaType.ARTIST, "qobuz", "1044")),
+        ("https://play.qobuz.com/album/0634904032432", (MediaType.ALBUM, "qobuz", "0634904032432")),
         (
             "https://www.qobuz.com/us-en/album/in-rainbows-radiohead/0634904032432",
             (MediaType.ALBUM, "qobuz", "0634904032432"),
@@ -138,6 +140,7 @@ async def test_parse_uri_rejects_truncated_or_unsupported_share_urls(url: str) -
         ("https://www.deezer.com/album/6575789", "deezer"),
         ("https://music.apple.com/us/album/in-rainbows/1109714933", "apple_music"),
         ("https://open.qobuz.com/album/0634904032432", "qobuz"),
+        ("https://play.qobuz.com/artist/1044", "qobuz"),
         ("https://www.qobuz.com/us-en/album/in-rainbows-radiohead/0634904032432", "qobuz"),
         ("https://www.qobuz.com/gb-en/interpreter/whitesnake/download-streaming-albums", None),
         ("https://music.youtube.com/channel/UCr_iyUANcn9OX_yy9piYoLw", "ytmusic"),

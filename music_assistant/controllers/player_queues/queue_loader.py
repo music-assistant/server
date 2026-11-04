@@ -377,7 +377,9 @@ class QueueLoaderMixin(_PlayerQueuesBase):
                 queue_item.media_item.album = album
         if is_start:
             # a track skip should hand its source slot to the item the user is starting
-            await self._abort_superseded_source_buffers(queue_item)
+            await self._abort_superseded_source_buffers(
+                queue_item, seek_position_ms=int(seek_position * 1000)
+            )
 
         # Fetch streamdetails (reuses existing if buffer is still valid for the seek).
         queue_item.streamdetails = await self.mass.streams.audio.get_stream_details(
@@ -399,13 +401,13 @@ class QueueLoaderMixin(_PlayerQueuesBase):
         # update queue_item.duration from streamdetails if we got a better value
         self._apply_probed_duration(queue_item)
         if (
-            isinstance(queue_item.media_item, PodcastEpisode)
+            isinstance(queue_item.media_item, PodcastEpisode | Audiobook)
             and queue_item.media_item.metadata.chapters is None
         ):
-            # episode listings skip the chapter download, so look the episode up once
+            # listings skip the chapters, so look the item up once
             self.mass.create_task(
-                self._load_episode_chapters(queue_id, queue_item.media_item),
-                task_id=f"episode_chapters_{queue_item.queue_item_id}",
+                self._load_chapters(queue_item),
+                task_id=f"chapters_{queue_item.queue_item_id}",
             )
 
         # pre-initialize the AudioBuffer so audio is ready
@@ -490,20 +492,31 @@ class QueueLoaderMixin(_PlayerQueuesBase):
         if duration := await get_probed_duration(self.mass, uri):
             self._set_missing_duration(queue_item, duration)
 
-    async def _load_episode_chapters(self, queue_id: str, episode: PodcastEpisode) -> None:
-        """Fill in the chapters of a queued podcast episode from its full details."""
+    async def _load_chapters(self, queue_item: QueueItem) -> None:
+        """Fill in the chapters of a queued podcast episode or audiobook from its full details."""
+        media_item = cast("PodcastEpisode | Audiobook", queue_item.media_item)
         # extra metadata must not compete with the playback requests of the same item
         set_request_priority(RequestPriority.LOW)
-        # an empty list marks the episode as looked up, so a seek does not repeat it
-        episode.metadata.chapters = []
+        # an empty list marks the item as looked up, so a seek does not repeat it
+        media_item.metadata.chapters = []
+        details: PodcastEpisode | Audiobook
         try:
-            details = await self.mass.music.podcasts.episode(episode.item_id, episode.provider)
+            if isinstance(media_item, PodcastEpisode):
+                details = await self.mass.music.podcasts.episode(
+                    media_item.item_id, media_item.provider
+                )
+            else:
+                # the chapters have to match the copy that streams
+                assert queue_item.streamdetails is not None
+                details = await self.mass.music.audiobooks.get_provider_item(
+                    queue_item.streamdetails.item_id, queue_item.streamdetails.provider
+                )
         except MusicAssistantError as err:
-            self.logger.debug("Could not look up the chapters of %s: %s", episode.name, err)
+            self.logger.debug("Could not look up the chapters of %s: %s", media_item.name, err)
             return
         if details.metadata.chapters:
-            episode.metadata.chapters = details.metadata.chapters
-            self.signal_update(queue_id, items_changed=True)
+            media_item.metadata.chapters = details.metadata.chapters
+            self.signal_update(queue_item.queue_id, items_changed=True)
 
     def _set_missing_duration(self, queue_item: QueueItem, duration: int) -> bool:
         """
@@ -1287,11 +1300,14 @@ class QueueLoaderMixin(_PlayerQueuesBase):
         user = await resolve_playback_user(self.mass, queue_id)
         return [track for track in tracks if self.mass.music.is_item_playable_for_user(track, user)]
 
-    async def _abort_superseded_source_buffers(self, queue_item: QueueItem) -> None:
+    async def _abort_superseded_source_buffers(
+        self, queue_item: QueueItem, seek_position_ms: int = 0
+    ) -> None:
         """
         Abort the still-filling source buffers of other items in the same queue.
 
         :param queue_item: The queue item that is about to start playing.
+        :param seek_position_ms: Position in milliseconds the item starts playing from.
         """
         queue_data = self._queue_data.get(queue_item.queue_id)
         items = tuple(queue_data.items) if queue_data else ()
@@ -1309,8 +1325,18 @@ class QueueLoaderMixin(_PlayerQueuesBase):
             if item.queue_item_id in spared_item_ids:
                 continue
             await self._abort_source_buffer(item, queue_item)
-        if successor is not None:
-            await self._abort_source_buffer(successor, queue_item, only_when_saturated=True)
+        if successor is None:
+            return
+        # an item that resumes from its own buffer (the reuse check of get_buffer) opens no
+        # new source, so the prewarm of its successor has no slot to make room for
+        own_buffer = queue_item.streamdetails.buffer if queue_item.streamdetails else None
+        if (
+            own_buffer is not None
+            and not own_buffer.has_error
+            and own_buffer.is_valid(seek_position_ms)
+        ):
+            return
+        await self._abort_source_buffer(successor, queue_item, only_when_saturated=True)
 
     async def _abort_source_buffer(
         self,
