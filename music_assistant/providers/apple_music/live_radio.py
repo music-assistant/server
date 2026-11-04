@@ -20,8 +20,10 @@ from music_assistant_models.media_items import AudioFormat, Radio
 from music_assistant_models.streamdetails import StreamDetails, StreamMetadata
 from pywidevine import PSSH, Cdm, Device, DeviceTypes
 
+from music_assistant.controllers.cache import use_cache
 from music_assistant.helpers.datetime import utc
 
+from .constants import PARSED_ITEM_CACHE_CHECKSUM
 from .helpers.live_decrypt import TrackEncryption, decrypt_segment, parse_init_segment
 from .helpers.live_monitor import LiveRadioMonitor, LiveSession
 from .parsers import parse_station
@@ -42,6 +44,7 @@ DEFAULT_TARGET_DURATION = 16.0
 SEGMENT_RETRIES = 3
 RENEW_RETRY_SECONDS = 60
 RESUME_WINDOW_SECONDS = 120
+STATIONS_CACHE_SECONDS = 3600 * 24
 SLOW_CONSUMER_SECONDS = 30
 INPUT_BURST_SECONDS = "5"
 _CDN_TIMEOUT = ClientTimeout(total=20)
@@ -234,10 +237,17 @@ class AppleMusicLiveRadioManager:
         """
         self.provider = provider
         self.mass = provider.mass
+        self.instance_id = provider.instance_id
+        self.domain = provider.domain
         self.monitor = LiveRadioMonitor(provider.logger)
         self._mirror_choice = 0
         self._resume: tuple[str, int, float] | None = None
 
+    @use_cache(
+        STATIONS_CACHE_SECONDS,
+        allow_expired_cache=True,
+        cache_checksum=PARSED_ITEM_CACHE_CHECKSUM,
+    )
     async def get_stations(self) -> list[Radio]:
         """Return the live stations of the account's storefront."""
         response = await self.provider.api_client.get_data(
@@ -252,6 +262,50 @@ class AppleMusicLiveRadioManager:
 
         :param station_id: The Apple Music station id.
         """
+        try:
+            return await self._get_stream_details(station_id)
+        except ClientError as err:
+            # the text of this error holds the url, which must not reach a caller's log
+            raise UnplayableMediaError(
+                f"No stream for live station {station_id}: {_describe_error(err)}"
+            ) from None
+
+    async def get_audio_stream(self, streamdetails: StreamDetails) -> AsyncGenerator[bytes]:
+        """
+        Yield a live station as one continuous fragmented MP4, decrypted in memory to play it.
+
+        It ends only by an error or the consumer closing it.
+
+        :param streamdetails: The stream details from get_stream_details.
+        """
+        reason = "ended"
+        session = self.monitor.start_session(streamdetails.item_id)
+        session.substream = _safe_url(streamdetails.data["media_url"])
+        session.key_id = (streamdetails.data["key_id"] or "")[:8]
+        try:
+            async for chunk in self._stream_segments(streamdetails):
+                yield chunk
+        except GeneratorExit:
+            reason = "consumer_closed"
+            raise
+        except asyncio.CancelledError:
+            reason = "cancelled"
+            raise
+        except LiveStreamRestartError as err:
+            reason = f"restart: {err}"
+            raise
+        except Exception as err:
+            reason = _describe_error(err)
+            self.monitor.event("stream_error", level=logging.ERROR, error=reason)
+            if isinstance(err, ClientError):
+                # the text of this error holds the url, which must not reach a caller's log
+                raise UnplayableMediaError(f"Live radio stream failed: {reason}") from None
+            raise
+        finally:
+            self.monitor.end_session(reason)
+
+    async def _get_stream_details(self, station_id: str) -> StreamDetails:
+        """Return the stream details of a live station, as get_stream_details describes."""
         asset = await self._get_asset(station_id)
         async with self.mass.http_session.get(
             asset["url"], headers=_CDN_HEADERS, timeout=_CDN_TIMEOUT
@@ -295,37 +349,6 @@ class AppleMusicLiveRadioManager:
             data=data,
         )
 
-    async def get_audio_stream(self, streamdetails: StreamDetails) -> AsyncGenerator[bytes]:
-        """
-        Yield a live station as one continuous fragmented MP4, decrypted in memory to play it.
-
-        It ends only by an error or the consumer closing it.
-
-        :param streamdetails: The stream details from get_stream_details.
-        """
-        reason = "ended"
-        session = self.monitor.start_session(streamdetails.item_id)
-        session.substream = _safe_url(streamdetails.data["media_url"])
-        session.key_id = (streamdetails.data["key_id"] or "")[:8]
-        try:
-            async for chunk in self._stream_segments(streamdetails):
-                yield chunk
-        except GeneratorExit:
-            reason = "consumer_closed"
-            raise
-        except asyncio.CancelledError:
-            reason = "cancelled"
-            raise
-        except LiveStreamRestartError as err:
-            reason = f"restart: {err}"
-            raise
-        except Exception as err:
-            reason = f"{type(err).__name__}: {err}"
-            self.monitor.event("stream_error", level=logging.ERROR, error=reason)
-            raise
-        finally:
-            self.monitor.end_session(reason)
-
     async def _stream_segments(  # noqa: PLR0915
         self, streamdetails: StreamDetails
     ) -> AsyncGenerator[bytes]:
@@ -348,13 +371,14 @@ class AppleMusicLiveRadioManager:
             try:
                 playlist = await self._fetch_playlist(media_url)
                 target = playlist.target_duration
-                await self._prepare_next_key(playlist, data)
             except (ClientError, TimeoutError, MusicAssistantError) as err:
                 session.playlist_errors += 1
                 self.monitor.event(
                     "playlist_error", level=logging.WARNING, error=_describe_error(err)
                 )
                 playlist = None
+            if playlist is not None:
+                await self._prepare_next_key(playlist, data, session)
             stalled = time.monotonic() - last_new_segment
             if stalled > max(3 * target, MIN_STALL_SECONDS):
                 # try the other mirror the next time this stream is started
@@ -363,7 +387,18 @@ class AppleMusicLiveRadioManager:
                 raise LiveStreamRestartError(f"no new segment for {int(stalled)} seconds")
 
             for segment in self._segments_to_send(playlist, next_sequence):
-                await self._switch_key(segment, data, session)
+                try:
+                    await self._switch_key(segment, data, session)
+                except (ClientError, TimeoutError) as err:
+                    # not sent yet, so the next pass tries again and a lasting failure stalls
+                    session.license_errors += 1
+                    self.monitor.event(
+                        "key_load_error",
+                        level=logging.WARNING,
+                        key=(segment.key_id or "")[:8],
+                        error=_describe_error(err),
+                    )
+                    break
                 if next_sequence is not None and segment.sequence > next_sequence:
                     skipped = segment.sequence - next_sequence
                     session.segments_skipped += skipped
@@ -429,12 +464,26 @@ class AppleMusicLiveRadioManager:
             return playlist.segments[-START_SEGMENTS:]
         return [seg for seg in playlist.segments if seg.sequence >= next_sequence]
 
-    async def _prepare_next_key(self, playlist: LivePlaylist, data: dict[str, Any]) -> None:
-        """Get a key the playlist announces before the stream reaches it."""
+    async def _prepare_next_key(
+        self, playlist: LivePlaylist, data: dict[str, Any], session: LiveSession
+    ) -> None:
+        """Get a key the playlist announces before the stream reaches it, if that works now."""
         newest = playlist.segments[-1]
-        if newest.key_id and newest.key_id not in data["keys"]:
+        if not newest.key_id or newest.key_id in data["keys"]:
+            return
+        try:
             await self._load_key(newest, data)
-            self.monitor.event("key_prepared", key=newest.key_id[:8])
+        except (ClientError, TimeoutError, MusicAssistantError) as err:
+            # the segments on the current key still play, the next pass tries again
+            session.license_errors += 1
+            self.monitor.event(
+                "key_prepare_error",
+                level=logging.WARNING,
+                key=newest.key_id[:8],
+                error=_describe_error(err),
+            )
+            return
+        self.monitor.event("key_prepared", key=newest.key_id[:8])
 
     async def _switch_key(
         self, segment: LiveSegment, data: dict[str, Any], session: LiveSession
@@ -636,6 +685,14 @@ class AppleMusicLiveRadioManager:
                     timeout=_CDN_TIMEOUT,
                 ) as response,
             ):
+                # a rate limit passes, any other client error is Apple's answer to this account
+                if 400 <= response.status < 500 and response.status != 429:
+                    self.monitor.event(
+                        "license_refused", level=logging.ERROR, http_status=response.status
+                    )
+                    raise UnplayableMediaError(
+                        f"Apple refused the live radio license (HTTP {response.status})"
+                    )
                 response.raise_for_status()
                 answer = await response.json(content_type=None)
             status = answer.get("status")
@@ -678,4 +735,6 @@ def _describe_error(err: Exception) -> str:
     """Return an error for the monitor, without a url that could hold a signed part."""
     if isinstance(err, ClientResponseError):
         return f"HTTP {err.status}"
+    if isinstance(err, MusicAssistantError):
+        return str(err) or type(err).__name__
     return type(err).__name__
