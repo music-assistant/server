@@ -398,6 +398,7 @@ class AuracastBroadcaster:
         )
         name_bytes = config.name.encode()
         ad_structures = [
+            (AdvertisingData.COMPLETE_LOCAL_NAME, name_bytes),
             (AdvertisingData.BROADCAST_NAME, name_bytes),
         ]
         if config.manufacturer_data:
