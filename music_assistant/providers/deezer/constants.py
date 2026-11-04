@@ -1,5 +1,7 @@
 """Constants for the Deezer provider."""
 
+from music_assistant_models.enums import MediaType
+
 # -- Virtual playlist IDs --
 
 FLOW_PLAYLIST_ID = "flow"
@@ -54,3 +56,12 @@ DECRYPT_KEY_ERROR = (
     "The Deezer decryption key is missing or invalid. "
     "Use an official Music Assistant build to play encrypted audio."
 )
+
+# -- Listen logging --
+
+# Deezer lists an album, artist or playlist under recently played from the context of a listen
+LISTEN_CONTEXT_TYPES = {
+    MediaType.ALBUM: "album_page",
+    MediaType.ARTIST: "artist_top",
+    MediaType.PLAYLIST: "playlist_page",
+}

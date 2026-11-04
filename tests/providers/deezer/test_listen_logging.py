@@ -1,4 +1,4 @@
-"""Test that Deezer hears of a playback once."""
+"""Test that Deezer hears of a playback once, with the album, artist or playlist it came from."""
 
 from __future__ import annotations
 
@@ -7,10 +7,11 @@ from typing import TYPE_CHECKING, Self
 from unittest.mock import AsyncMock, Mock
 
 import pytest
-from music_assistant_models.enums import ContentType
-from music_assistant_models.media_items import AudioFormat
+from music_assistant_models.enums import ContentType, MediaType
+from music_assistant_models.media_items import AudioFormat, ItemMapping
 from music_assistant_models.streamdetails import StreamDetails
 
+from music_assistant.providers.deezer.gw_client import GWClient
 from music_assistant.providers.deezer.streaming import DeezerStreamingManager
 
 if TYPE_CHECKING:
@@ -79,7 +80,7 @@ def _queue(provider: Mock, *items: SimpleNamespace) -> None:
     )
 
 
-def _played_from(streamdetails: StreamDetails, container: None) -> SimpleNamespace:
+def _played_from(streamdetails: StreamDetails, container: ItemMapping | None) -> SimpleNamespace:
     return SimpleNamespace(streamdetails=streamdetails, origin=SimpleNamespace(container=container))
 
 
@@ -110,3 +111,68 @@ async def test_streams_of_one_playback_share_their_listen(
 
     assert (streamdetails.data["start_ts"], streamdetails.data["stream_id"]) == started
     assert provider.gw_client.log_listen.call_args_list[0].kwargs == {"next_track": "1"}
+
+
+async def test_listen_names_the_library_playlist(
+    provider: Mock, streaming: DeezerStreamingManager
+) -> None:
+    """A library playlist is named by its Deezer id, so Deezer lists it as recently played."""
+    streamdetails = _streamdetails()
+    playlist = ItemMapping(
+        media_type=MediaType.PLAYLIST, item_id="85", provider="library", name="Peaceful Piano"
+    )
+    # the next item can start reaching the player before the queue moves on to it
+    _queue(provider, _played_from(_streamdetails(), None), _played_from(streamdetails, playlist))
+    provider.mass.music.get_controller.return_value.get_library_item = AsyncMock(
+        return_value=SimpleNamespace(
+            provider_mappings=[
+                SimpleNamespace(provider_instance="tidal--test", item_id="abc"),
+                SimpleNamespace(provider_instance=INSTANCE, item_id="14134446001"),
+            ]
+        )
+    )
+
+    await streaming.on_stream_started(streamdetails)
+
+    assert streamdetails.data["context"] == {
+        "t": "playlist_page",
+        "id": "14134446001",
+        "c": "14134446001",
+    }
+
+
+@pytest.mark.parametrize(
+    "container",
+    [
+        ItemMapping(media_type=MediaType.PLAYLIST, item_id="flow", provider=INSTANCE, name="Flow"),
+        ItemMapping(media_type=MediaType.ALBUM, item_id="abc", provider="tidal--test", name="A"),
+        None,
+    ],
+    ids=["virtual playlist", "other service", "no container"],
+)
+async def test_listen_without_deezer_page_keeps_the_default(
+    provider: Mock, streaming: DeezerStreamingManager, container: ItemMapping | None
+) -> None:
+    """A container Deezer has no page for leaves the listen without a context."""
+    streamdetails = _streamdetails()
+    _queue(provider, _played_from(streamdetails, container))
+
+    await streaming.on_stream_started(streamdetails)
+
+    assert "context" not in streamdetails.data
+
+
+async def test_log_listen_sends_the_context(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The listen carries the album's context, a track on its own the default one."""
+    client = GWClient(Mock(), "arl")
+    api_call = AsyncMock()
+    monkeypatch.setattr(client, "_gw_api_call", api_call)
+    streamdetails = _streamdetails()
+    streamdetails.data |= {"start_ts": 0, "stream_id": "s"}
+    sent = []
+    for context in ({"t": "album_page", "id": "2", "c": "2"}, None):
+        streamdetails.data["context"] = context
+        await client.log_listen(last_track=streamdetails)
+        sent.append(api_call.call_args.kwargs["args"]["params"]["ctxt"])
+
+    assert sent == [{"t": "album_page", "id": "2", "c": "2"}, {"t": "search_page", "id": "1"}]

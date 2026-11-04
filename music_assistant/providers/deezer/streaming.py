@@ -24,7 +24,7 @@ from music_assistant_models.streamdetails import StreamDetails
 from music_assistant.helpers.app_vars import app_var
 from music_assistant.helpers.datetime import utc_timestamp
 
-from .constants import DECRYPT_KEY_ERROR, DECRYPT_KEY_LENGTH
+from .constants import DECRYPT_KEY_ERROR, DECRYPT_KEY_LENGTH, LISTEN_CONTEXT_TYPES
 from .gw_client import DeezerGWError
 from .helpers import fetch_all_audiobook_chapter_edges, fetch_all_bookmarks
 from .parsers import parse_date
@@ -103,6 +103,8 @@ class DeezerStreamingManager:
         if streamdetails.media_type != MediaType.TRACK or not isinstance(streamdetails.data, dict):
             return
         self._start_listen(streamdetails)
+        if context := await self._listen_context(streamdetails):
+            streamdetails.data["context"] = context
 
     # -- Stream details --
 
@@ -373,6 +375,55 @@ class DeezerStreamingManager:
         streamdetails.data["start_ts"] = utc_timestamp()
         streamdetails.data["stream_id"] = uuid.uuid1()
         self.mass.create_task(self.provider.gw_client.log_listen(next_track=streamdetails.item_id))
+
+    async def _listen_context(self, streamdetails: StreamDetails) -> dict[str, str] | None:
+        """Return the Deezer context of the album, artist or playlist a track is played from."""
+        if not streamdetails.queue_id or not (
+            queue := self.mass.player_queues.get(streamdetails.queue_id)
+        ):
+            return None
+        # the next item can start reaching the player before the queue moves on to it
+        index = queue.current_index or 0
+        queue_item = next(
+            (
+                item
+                for item in (
+                    self.mass.player_queues.get_item(queue.queue_id, index),
+                    self.mass.player_queues.get_item(queue.queue_id, index + 1),
+                )
+                if item and item.streamdetails is streamdetails
+            ),
+            None,
+        )
+        if (
+            not queue_item
+            or not queue_item.origin
+            or not (container := queue_item.origin.container)
+        ):
+            return None
+        if (context_type := LISTEN_CONTEXT_TYPES.get(container.media_type)) is None:
+            return None
+        item_id: str | None = None
+        if container.provider == self.instance_id:
+            item_id = container.item_id
+        elif container.provider == "library":
+            controller = self.mass.music.get_controller(container.media_type)
+            try:
+                library_item = await controller.get_library_item(container.item_id)
+            except MediaNotFoundError:
+                return None
+            item_id = next(
+                (
+                    mapping.item_id
+                    for mapping in library_item.provider_mappings
+                    if mapping.provider_instance == self.instance_id
+                ),
+                None,
+            )
+        # Flow and the other virtual playlists have no Deezer page to name
+        if not item_id or not item_id.isdigit():
+            return None
+        return {"t": context_type, "id": item_id, "c": item_id}
 
     # -- Decryption helpers --
 
