@@ -798,6 +798,10 @@ class HomeAssistantProvider(PluginProvider):
         """Return the seconds an AI Task entity turns requests away, 0 when it takes them."""
         return self._engine_throttlers.cooldown_remaining(engine_id)
 
+    def note_engine_outage(self, engine_id: str) -> None:
+        """Hold an AI Task entity back after a request to it timed out."""
+        self._engine_throttlers.note_outage(engine_id)
+
     async def play_announcement_on_entity(self, entity_id: str, announcement: PlayerMedia) -> None:
         """
         Play an announcement on a Home Assistant media_player entity.

@@ -152,6 +152,10 @@ class OpenAICompatibleProvider(PluginProvider):
         """Return the seconds a model turns requests away after it failed, 0 when it takes them."""
         return self._engine_throttlers.cooldown_remaining(engine_id)
 
+    def note_engine_outage(self, engine_id: str) -> None:
+        """Hold a model back after a request to it timed out."""
+        self._engine_throttlers.note_outage(engine_id)
+
     @property
     def _base_url(self) -> str:
         """Return the configured API endpoint, without trailing slash."""

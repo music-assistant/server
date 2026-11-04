@@ -23,7 +23,6 @@ import tempfile
 import time
 from collections import Counter
 from dataclasses import dataclass, field
-from functools import partial
 from io import BytesIO
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Final, cast
@@ -192,10 +191,10 @@ class AIArtwork:
     The AI generated covers and descriptions of the Playlist Metadata provider.
 
     A playlist's metadata refresh never waits for a generation: it applies what is ready and
-    queues a background task for what is missing. That task generates the playlist's cover and
-    description within the hourly limits, and then refreshes the playlist so they are applied
-    to it as it is by then. When the hourly limit or an engine holds it back, it is queued
-    again once that has passed.
+    queues the playlist for the next generation pass. A pass generates the queued playlists'
+    covers and descriptions one playlist at a time, within the hourly limits, and then refreshes
+    each playlist so they are applied to it as it is by then. When the hourly limit or an engine
+    holds a playlist back, it is queued again once that has passed.
     """
 
     # one preview at a time, so repeated presses do not stack up paid generations
@@ -211,10 +210,12 @@ class AIArtwork:
     _description_slots: Throttler
     # bumped by the regenerate action, so every cover and description is keyed anew
     _generation: int
-    # the library ids of the playlists a task was queued for, so unloading can stop them all
-    _queued: set[str]
+    # the library ids of the playlists waiting for a generation pass
+    _pending: dict[str, None]
     # the library ids of the playlists waiting to be queued again, which a refresh leaves be
     _waiting: set[str]
+    # whether a pass is queued or running, so a second one is not started
+    _working: bool
     # the metadata refreshes running per playlist, each set once it has returned
     _refreshing: dict[str, set[asyncio.Event]]
     # set when the provider unloads, so nothing is queued afterwards
@@ -237,8 +238,9 @@ class AIArtwork:
         self._cover_slots = Throttler(DEFAULT_MAX_PER_HOUR, THROTTLE_WINDOW_SECONDS)
         self._description_slots = Throttler(DEFAULT_MAX_PER_HOUR, THROTTLE_WINDOW_SECONDS)
         self._generation = 0
-        self._queued = set()
+        self._pending = {}
         self._waiting = set()
+        self._working = False
         self._refreshing = {}
         self._stopped = False
 
@@ -288,12 +290,11 @@ class AIArtwork:
             self.mass.cancel_task(self._task_id(name))
         for task in self._preview_tasks:
             task.cancel()
-        for item_id in self._queued:
-            with contextlib.suppress(InvalidDataError):
-                self.mass.tasks.cancel_task(self._task_id(f"generate_{item_id}"))
+        with contextlib.suppress(InvalidDataError):
+            self.mass.tasks.cancel_task(self._task_id("generate"))
         for item_id in self._waiting:
             self.mass.cancel_timer(self._task_id(f"retry_{item_id}"))
-        self._queued.clear()
+        self._pending.clear()
         self._waiting.clear()
         self.mass.tasks.unregister_scheduled_task(
             self._task_id("refresh"), clear_persisted_state=is_removed
@@ -785,72 +786,92 @@ class AIArtwork:
         return False
 
     def _enqueue(self, playlist: Playlist) -> None:
-        """Queue a background task generating what the playlist is missing."""
+        """Queue the playlist for the next generation pass."""
         if (item_id := str(playlist.item_id)) in self._waiting:
             # it is queued again once the hourly limit or the engine allows
             return
-        self._queue(item_id, playlist.name)
+        self._queue(item_id)
 
-    def _queue(self, item_id: str, name: str) -> None:
+    def _queue(self, item_id: str) -> None:
         """
-        Queue a background task generating what a playlist is missing, unless one is queued.
+        Queue a playlist for the next generation pass, starting one when none runs.
 
         :param item_id: The library id of the playlist.
-        :param name: The name of the playlist, to show with the task.
         """
         self._waiting.discard(item_id)
         if self._stopped:
             return
-        self._queued.add(item_id)
+        self._pending[item_id] = None
+        self._start()
+
+    def _start(self) -> None:
+        """Start a generation pass, unless one is queued or running."""
+        if self._working or not self._pending:
+            return
+        # set before it is queued, as a task the queue starts at once can queue more work
+        self._working = True
         self.mass.tasks.run_background_task(
-            task_id=self._task_id(f"generate_{item_id}"),
-            name=f"Generate AI artwork for {name}",
-            handler=partial(self._generate, item_id),
+            task_id=self._task_id("generate"),
+            name="Generate AI playlist artwork",
+            handler=self._work,
             translation_key="generate_ai_artwork",
-            translation_args=[name],
             translation_owner=self.provider.translation_owner,
         )
 
+    async def _work(self) -> None:
+        """Generate what the queued playlists are missing, one playlist at a time."""
+        try:
+            while self._pending and not self._stopped:
+                item_id = next(iter(self._pending))
+                del self._pending[item_id]
+                try:
+                    await self._generate(item_id)
+                except Exception as err:
+                    # one playlist failing must not stop the others
+                    self.logger.warning(
+                        "Could not generate the AI artwork of playlist %s: %s",
+                        item_id,
+                        err,
+                        exc_info=err,
+                    )
+        finally:
+            self._working = False
+
     async def _generate(self, item_id: str) -> None:
         """
-        Generate what a queued playlist is missing, and refresh it to apply what was made.
+        Generate what a playlist is missing, and refresh it to apply what was made.
 
         What the hourly limit or an engine holds back is queued again once that has passed.
 
         :param item_id: The library id of the playlist.
         """
         try:
+            # fetched now, so the refresh applies the result to the playlist as it is now
+            playlist = await self.mass.music.playlists.get_library_item(item_id)
+        except MediaNotFoundError:
+            return
+        retry_in = 0
+        made = False
+        for make in (self._make_cover, self._make_description):
             try:
-                # fetched now, so the refresh applies the result to the playlist as it is now
-                playlist = await self.mass.music.playlists.get_library_item(item_id)
-            except MediaNotFoundError:
-                return
-            retry_in = 0
-            made = False
-            for make in (self._make_cover, self._make_description):
-                try:
-                    made = await make(playlist) or made
-                except LimitReachedError as err:
-                    retry_in = min(retry_in, err.retry_in) if retry_in else err.retry_in
-            if made:
-                await self._refresh_playlist(playlist)
-            if retry_in and not self._stopped:
-                self.logger.info(
-                    "Waiting for the hourly limit or the engine, continuing with '%s' in %d "
-                    "minutes",
-                    playlist.name,
-                    retry_in // 60 + 1,
-                )
-                self._waiting.add(item_id)
-                self.mass.call_later(
-                    retry_in,
-                    self._queue,
-                    item_id,
-                    playlist.name,
-                    task_id=self._task_id(f"retry_{item_id}"),
-                )
-        finally:
-            self._queued.discard(item_id)
+                made = await make(playlist) or made
+            except LimitReachedError as err:
+                retry_in = min(retry_in, err.retry_in) if retry_in else err.retry_in
+        if made:
+            await self._refresh_playlist(playlist)
+        if retry_in and not self._stopped:
+            self.logger.info(
+                "Waiting for the hourly limit or the engine, continuing with '%s' in %d minutes",
+                playlist.name,
+                retry_in // 60 + 1,
+            )
+            self._waiting.add(item_id)
+            self.mass.call_later(
+                retry_in,
+                self._queue,
+                item_id,
+                task_id=self._task_id(f"retry_{item_id}"),
+            )
 
     async def _make_cover(self, playlist: Playlist) -> bool:
         """
@@ -1172,8 +1193,13 @@ class AIArtwork:
         """Return a newly generated cover for the playlist, with the given look."""
         prompt = _build_prompt(playlist.name, look, context, concept)
         self.logger.debug("Generating a cover for '%s': %s", playlist.name, prompt)
-        async with asyncio.timeout(IMAGE_TIMEOUT_SECONDS):
-            image = await engine.provider.ai_generate_image(prompt, engine_id=engine.id)
+        try:
+            async with asyncio.timeout(IMAGE_TIMEOUT_SECONDS):
+                image = await engine.provider.ai_generate_image(prompt, engine_id=engine.id)
+        except TimeoutError:
+            # the engine did not answer in time, so it rests like one that is unreachable
+            engine.provider.note_engine_outage(engine.id)
+            raise
         return await asyncio.to_thread(_render_cover, image, _overlay_layout(look), playlist.name)
 
     async def _render_preview(
@@ -1226,8 +1252,13 @@ class AIArtwork:
             name=playlist.name,
             seeds=_description_seeds(context),
         )
-        async with asyncio.timeout(PROMPT_TIMEOUT_SECONDS):
-            answer = await engine.provider.ai_query(query, engine_id=engine.id)
+        try:
+            async with asyncio.timeout(PROMPT_TIMEOUT_SECONDS):
+                answer = await engine.provider.ai_query(query, engine_id=engine.id)
+        except TimeoutError:
+            # the engine did not answer in time, so it rests like one that is unreachable
+            engine.provider.note_engine_outage(engine.id)
+            raise
         return " ".join(answer.split()).strip().strip('"')[:MAX_DESCRIPTION_CHARS]
 
     async def _stored_description(self, playlist: Playlist, checksum: str) -> str | None:
@@ -1291,6 +1322,9 @@ class AIArtwork:
             async with asyncio.timeout(PROMPT_TIMEOUT_SECONDS):
                 concept = await engine.provider.ai_query(query, engine_id=engine.id)
         except Exception as err:
+            if isinstance(err, TimeoutError):
+                # the engine did not answer in time, so it rests like one that is unreachable
+                engine.provider.note_engine_outage(engine.id)
             self.logger.warning(
                 "The text engine could not write a visual concept for '%s': %s",
                 playlist.name,

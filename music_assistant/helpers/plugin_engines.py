@@ -30,8 +30,8 @@ if TYPE_CHECKING:
 
 LOGGER = logging.getLogger(f"{MASS_LOGGER_NAME}.helpers.plugin_engines")
 
-# how long an engine that could not be reached turns requests away
-ENGINE_OUTAGE_COOLDOWN: Final = 5 * 60
+# how long an engine that could not be reached, or did not answer in time, turns requests away
+ENGINE_OUTAGE_COOLDOWN: Final = 15 * 60
 
 
 class EngineThrottlers:
@@ -67,6 +67,14 @@ class EngineThrottlers:
         throttler = self._throttlers.get(engine_id)
         return throttler.cooldown_remaining if throttler else 0.0
 
+    def note_outage(self, engine_id: str) -> None:
+        """
+        Hold the engine back for a while after it did not answer in time.
+
+        :param engine_id: The provider-scoped id of the engine.
+        """
+        self._throttler(engine_id).set_cooldown(self._outage_cooldown)
+
     @asynccontextmanager
     async def request(self, engine_id: str) -> AsyncGenerator[None]:
         """
@@ -76,10 +84,7 @@ class EngineThrottlers:
         :raises RateLimited: While the engine turns requests away for longer than a caller
             is made to wait.
         """
-        if (throttler := self._throttlers.get(engine_id)) is None:
-            throttler = self._throttlers[engine_id] = ThrottlerManager(
-                self._rate_limit, self._period
-            )
+        throttler = self._throttler(engine_id)
         async with throttler.acquire():
             try:
                 yield
@@ -91,6 +96,14 @@ class EngineThrottlers:
             except ProviderUnavailableError:
                 throttler.set_cooldown(self._outage_cooldown)
                 raise
+
+    def _throttler(self, engine_id: str) -> ThrottlerManager:
+        """Return the throttler of the engine, creating it when it is first used."""
+        if (throttler := self._throttlers.get(engine_id)) is None:
+            throttler = self._throttlers[engine_id] = ThrottlerManager(
+                self._rate_limit, self._period
+            )
+        return throttler
 
 
 async def get_ai_engines(mass: MusicAssistant) -> list[AIEngine]:

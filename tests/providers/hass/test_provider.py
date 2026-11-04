@@ -728,6 +728,9 @@ async def test_ai_generate_image_leaves_an_entity_alone_after_a_failing_download
 
         assert provider.engine_cooldown("ai_task.images") > 0
         assert provider.engine_cooldown("ai_task.text") == 0
+        # a caller that times a request out holds that entity back as well
+        provider.note_engine_outage("ai_task.text")
+        assert provider.engine_cooldown("ai_task.text") > 0
 
 
 async def test_ai_query_not_advertised_without_entity() -> None:

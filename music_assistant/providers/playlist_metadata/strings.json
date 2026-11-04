@@ -158,6 +158,6 @@
     "ai": "AI covers and descriptions"
   },
   "background_task": {
-    "generate_ai_artwork": "Generate AI artwork for {0}"
+    "generate_ai_artwork": "Generate AI playlist artwork"
   }
 }

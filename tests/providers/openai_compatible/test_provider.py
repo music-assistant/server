@@ -1045,6 +1045,9 @@ async def test_ai_generate_image_leaves_an_unreachable_model_alone(
             await provider.ai_generate_image("A dog", engine_id="gpt-image-1")
 
     generate.assert_awaited_once()
+    # a caller that times a request out holds that model back as well
+    provider.note_engine_outage("other-model")
+    assert provider.engine_cooldown("other-model") > 0
 
 
 async def test_ai_generate_image_raises_without_image_models(

@@ -410,3 +410,13 @@ class PluginProvider(
         :param engine_id: The provider-scoped id of the engine (``PluginEngine.id``).
         """
         return 0.0
+
+    def note_engine_outage(self, engine_id: str) -> None:
+        """
+        Hold an engine of this plugin back for a while after it did not answer in time.
+
+        A caller that times an engine request out reports it here, so the next caller waits
+        for the engine instead of paying its own timeout.
+
+        :param engine_id: The provider-scoped id of the engine (``PluginEngine.id``).
+        """

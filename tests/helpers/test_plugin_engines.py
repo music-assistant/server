@@ -416,6 +416,20 @@ async def test_engine_throttlers_honour_the_wait_a_service_asks_for() -> None:
         assert throttlers.cooldown_remaining("image") == 3600
 
 
+async def test_engine_throttlers_hold_back_an_engine_that_did_not_answer() -> None:
+    """A caller that times an engine out reports it, and the engine turns requests away."""
+    clock = _Clock()
+    throttlers = EngineThrottlers(rate_limit=10, period=60)
+    with patch("music_assistant.helpers.throttle_retry.time.monotonic", clock.monotonic):
+        throttlers.note_outage("image")
+        assert throttlers.cooldown_remaining("image") == ENGINE_OUTAGE_COOLDOWN
+        with pytest.raises(RateLimited):
+            async with throttlers.request("image"):
+                pass
+        # only the engine that was reported, not the others of the plugin
+        assert throttlers.cooldown_remaining("text") == 0
+
+
 async def test_engine_throttlers_keep_engines_apart() -> None:
     """One engine failing does not hold back another engine of the same plugin."""
     throttlers = EngineThrottlers(rate_limit=10, period=60)
