@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
-from unittest.mock import AsyncMock, MagicMock, Mock, patch
+from unittest.mock import ANY, AsyncMock, MagicMock, Mock, patch
 
 from music_assistant_models.auth import User, UserRole
 from music_assistant_models.config_entries import ProviderAccess
@@ -234,7 +234,10 @@ async def test_browse_a_library_row_asks_for_the_full_browse_limit(
     await mass.music.browse("discover://recommendations/recently_played")
 
     spy.assert_awaited_once_with(
-        "recently_played", providers=None, limit=RECOMMENDATIONS_BROWSE_LIMIT
+        "recently_played",
+        providers=None,
+        limit=RECOMMENDATIONS_BROWSE_LIMIT,
+        random_seed=ANY,
     )
 
 
@@ -275,3 +278,54 @@ async def test_browse_a_row_of_a_hidden_source_lists_no_items(
 
     assert [folder.item_id for folder in folders] == ["back"]
     provider.get_recommendation_items.assert_not_awaited()
+
+
+async def test_browse_a_random_row_keeps_one_order_across_pages(
+    mass: MusicAssistant, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A random row is browsed with the same seed on every page request."""
+    builtin = mass.get_provider("recommendations")
+    assert isinstance(builtin, LibraryRecommendationsProvider)
+    spy = AsyncMock(return_value=UniqueList())
+    monkeypatch.setattr(builtin, "get_recommendation_items", spy)
+
+    await mass.music.browse("discover://recommendations/random_albums", limit=50, offset=0)
+    await mass.music.browse("discover://recommendations/random_albums", limit=50, offset=50)
+
+    seeds = [call.kwargs["random_seed"] for call in spy.await_args_list]
+    assert len(seeds) == 2
+    assert seeds[0] is not None
+    assert seeds[0] == seeds[1]
+
+
+async def test_browse_a_random_row_uses_the_callers_seed(
+    mass: MusicAssistant, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A seed passed to the browse command wins over the row's own."""
+    builtin = mass.get_provider("recommendations")
+    assert isinstance(builtin, LibraryRecommendationsProvider)
+    spy = AsyncMock(return_value=UniqueList())
+    monkeypatch.setattr(builtin, "get_recommendation_items", spy)
+
+    await mass.music.browse("discover://recommendations/random_albums", random_seed=4242)
+
+    assert spy.await_args is not None
+    assert spy.await_args.kwargs["random_seed"] == 4242
+
+
+async def test_random_library_rows_forward_the_seed_to_the_listing(
+    mass: MusicAssistant, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The random library rows hand the seed to the library listing they read."""
+    builtin = mass.get_provider("recommendations")
+    assert isinstance(builtin, LibraryRecommendationsProvider)
+    for row_id in ("random_albums", "random_artists", "favorite_playlists"):
+        spy = AsyncMock(return_value=[])
+        monkeypatch.setattr(mass.music.albums, "library_items", spy)
+        monkeypatch.setattr(mass.music.artists, "library_items", spy)
+        monkeypatch.setattr(mass.music.playlists, "library_items", spy)
+
+        await builtin.get_recommendation_items(row_id, limit=50, random_seed=99)
+
+        assert spy.await_args is not None
+        assert spy.await_args.kwargs["random_seed"] == 99, row_id

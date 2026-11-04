@@ -1112,7 +1112,10 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
                 )
             )
         if is_recommendations:
-            return _listed(prepend_items, await self.recommendations.browse(sub_path))
+            return _listed(
+                prepend_items,
+                await self.recommendations.browse(sub_path, random_seed=random_seed),
+            )
         # AudioSource providers don't implement browse(); list their initiable sources directly
         if (
             isinstance(browse_prov, PluginProvider)

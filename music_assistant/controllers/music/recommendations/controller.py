@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import logging
 from itertools import zip_longest
 from typing import TYPE_CHECKING, cast
@@ -83,18 +84,29 @@ class RecommendationsController:
         """
         return await self._get_row_items(provider, item_id, providers)
 
-    async def browse(self, sub_path: str) -> list[MediaItemType | ItemMapping | BrowseFolder]:
+    async def browse(
+        self, sub_path: str, random_seed: int | None = None
+    ) -> list[MediaItemType | ItemMapping | BrowseFolder]:
         """
         Browse the recommendation rows under the discover:// path.
 
         :param sub_path: The path after discover://: empty for the providers owning rows,
             "<provider>" for the rows of that provider, "<provider>/<item_id>" for all
             items of that row.
+        :param random_seed: Keep the order of a random row stable across pages.
         """
         provider, _, item_id = sub_path.partition("/")
         if item_id:
+            # the browse view pages through the row, so a random row needs a seed even
+            # when the caller does not ask for one: its own identity keeps it stable
+            seed = random_seed if random_seed is not None else _row_seed(provider, item_id)
             return list(
-                await self._get_row_items(provider, item_id, limit=RECOMMENDATIONS_BROWSE_LIMIT)
+                await self._get_row_items(
+                    provider,
+                    item_id,
+                    limit=RECOMMENDATIONS_BROWSE_LIMIT,
+                    random_seed=seed,
+                )
             )
         rows = await self.get_recommendations()
         if provider:
@@ -129,6 +141,7 @@ class RecommendationsController:
         item_id: str,
         providers: list[str] | None = None,
         limit: int | None = None,
+        random_seed: int | None = None,
     ) -> UniqueList[MediaItemType | ItemMapping | BrowseFolder]:
         """
         Get the items for a single recommendation row, empty when it can not be fetched.
@@ -138,6 +151,7 @@ class RecommendationsController:
         :param providers: Restrict items to those reachable through one of these provider
             instance ids, on rows that support it.
         :param limit: The maximum number of items a library row returns, None for its default.
+        :param random_seed: Keep the order of a random row stable across pages.
         """
         # the rows listing leaves out the music sources the user may not see, and only lists
         # providers declaring the feature; a row of any other provider does not exist, nor
@@ -156,10 +170,10 @@ class RecommendationsController:
                     if limit is None:
                         return await prov.get_recommendation_items(item_id, providers=providers)
                     return await prov.get_recommendation_items(
-                        item_id, providers=providers, limit=limit
+                        item_id, providers=providers, limit=limit, random_seed=random_seed
                     )
-                # external provider rows don't support provider filtering or a limit: their
-                # SPI signature is unchanged, so `providers` and `limit` are ignored here
+                # external provider rows don't support provider filtering, a limit or a
+                # seed: their SPI signature is unchanged, so those are ignored here
                 items = await cast("RecommendationsMixin", prov).get_recommendation_items(item_id)
             # a plugin or metadata row can list items on any music source
             return UniqueList(visible_items(self.mass, items, get_current_user()))
@@ -199,3 +213,14 @@ class RecommendationsController:
                 exc_info=err if self.logger.isEnabledFor(logging.DEBUG) else None,
             )
             return []
+
+
+def _row_seed(provider: str, item_id: str) -> int:
+    """
+    Return the seed that keeps a row's random order stable across pages.
+
+    :param provider: The provider instance id owning the row.
+    :param item_id: The item_id of the row.
+    """
+    digest = hashlib.blake2s(f"{provider}/{item_id}".encode(), digest_size=4).digest()
+    return int.from_bytes(digest, "big")
