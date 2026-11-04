@@ -1870,6 +1870,12 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
 
         library_id = media_item.item_id if media_item.provider == "library" else None
 
+        if media_type == MediaType.TRACK:
+            # a wrong measured volume is not kept, the track is measured again
+            await self.mass.streams.audio_analysis.delete_measured_loudness(
+                media_item.provider_mappings
+            )
+
         # cache in_library state before the provider fetch overwrites media_item
         in_library_cache: dict[tuple[str, str], bool] = {}
         for m in media_item.provider_mappings:
