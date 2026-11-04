@@ -450,10 +450,10 @@ class Audibleprovider(MusicProvider):
 
     async def _sync_external_history(self) -> None:
         """
-        Import Audible app listening dates without overwriting newer MA plays.
+        Sync changed Audible app progress using Music Assistant's existing play API.
 
-        Uses the local library's provider mappings rather than fetching every
-        Audible book again. Stores per-ASIN watermarks only after successful writes.
+        Uses the local library's provider mappings and owner-scoped watermarks.
+        Each book is reported only when its playback position changes.
         """
         owner_id = source_owner(self.mass, self.instance_id)
         if not owner_id or await self.mass.webserver.auth.get_user(owner_id) is None:
@@ -479,23 +479,41 @@ class Audibleprovider(MusicProvider):
             return
 
         remote = await self.helper.get_library_last_positions(list(books_by_asin))
-        current_watermarks = {
-            asin: watermarks.get(f"{book.item_id}:{asin}") for asin, book in books_by_asin.items()
-        }
+        current_watermarks = {}
+        for asin, book in books_by_asin.items():
+            stored = watermarks.get(f"{book.item_id}:{asin}")
+            current_watermarks[asin] = (
+                stored.get("updated_at") if isinstance(stored, dict) else stored
+            )
         pending = eligible_external_plays(remote, current_watermarks, now=utc())
         for play in pending:
             selected_book = books_by_asin.get(play.asin)
             if selected_book is None:
                 continue
+            key = f"{selected_book.item_id}:{play.asin}"
+            previous = watermarks.get(key)
+            updated_watermark = {
+                "updated_at": play.updated_at.isoformat(),
+                "position_seconds": play.position_seconds,
+            }
+            # A timestamp-only echo is not a new play. Advance its watermark
+            # without changing playlog timestamps or play counts.
+            if isinstance(previous, dict) and previous.get("position_seconds") == play.position_seconds:
+                watermarks[key] = updated_watermark
+                continue
             try:
-                await self.mass.music.import_audiobook_progress(
+                await self.mass.music.mark_item_played(
                     selected_book,
-                    provider_instance_id=self.instance_id,
-                    played_at=play.updated_at,
+                    fully_played=bool(
+                        selected_book.duration
+                        and play.position_seconds >= selected_book.duration - 60
+                    ),
                     seconds_played=play.position_seconds,
+                    user_initiated=False,
+                    provider_instance_id=self.instance_id,
                 )
             except InvalidDataError as exc:
                 self.logger.warning("Unable to sync Audible progress for %s: %s", play.asin, exc)
                 continue
-            watermarks[f"{selected_book.item_id}:{play.asin}"] = play.updated_at.isoformat()
+            watermarks[key] = updated_watermark
         await self.mass.cache.set(key=cache_key, provider=self.instance_id, data=watermarks)

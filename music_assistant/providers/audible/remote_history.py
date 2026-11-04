@@ -1,8 +1,8 @@
 """
 Read Audible Whispersync timestamps without touching Music Assistant's database.
 
-The Audible provider decides which library items are relevant; the music
-controller owns playlog writes and protects newer local progress.
+The Audible provider selects relevant library items and uses the existing
+Music Assistant playback reporting API for progress updates.
 """
 
 from __future__ import annotations

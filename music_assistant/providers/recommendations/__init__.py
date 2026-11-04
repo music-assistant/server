@@ -255,7 +255,6 @@ class LibraryRecommendationsProvider(PluginProvider):
                     ],
                     user_initiated_only=True,
                     always_include_media_types=[MediaType.PODCAST, MediaType.AUDIOBOOK],
-                    include_in_progress_audiobooks=True,
                     providers=providers,
                 )
             case LibraryRowID.RECENTLY_ADDED_TRACKS:

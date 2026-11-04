@@ -228,9 +228,9 @@ class AudibleHelper:
                         "annotations/lastpositions", asins=",".join(group)
                     )
             except ProviderUnavailableError as exc:
-                # A failed batch is retried on the next poll without losing other batches.
+                # Stop calling an unavailable API; the next poll retries the rest.
                 self.logger.warning("Audible history batch failed (%d ASINs): %s", len(group), exc)
-                continue
+                break
             result.extend(parse_lastpositions(payload))
         return result
 
