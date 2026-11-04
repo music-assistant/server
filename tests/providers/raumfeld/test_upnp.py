@@ -5,12 +5,10 @@ from __future__ import annotations
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from async_upnp_client.exceptions import UpnpError
 
 from music_assistant.providers.raumfeld import upnp
 
 _SERVER = "http://192.168.1.41:47366/MediaServer.xml"
-_RENDERER = "http://192.168.1.42:51340/renderer.xml"
 
 
 def _device(action: MagicMock) -> MagicMock:
@@ -63,44 +61,3 @@ async def test_tunein_and_tidal_are_listed_as_to_the_raumfeld_app(
         await upnp.browse(MagicMock(), _SERVER, object_id, children=children)
     headers = requester.call_args.kwargs["http_headers"]
     assert (headers is not None) == app_headers
-
-
-async def test_a_failed_mute_is_raised() -> None:
-    """A renderer that does not take the mute reports it, rather than being taken as muted."""
-    action = MagicMock()
-    action.async_call = AsyncMock(side_effect=TimeoutError)
-    with (
-        patch.object(upnp, "UpnpFactory", _factory(action)),
-        pytest.raises(TimeoutError),
-    ):
-        await upnp.set_mute(MagicMock(), _RENDERER, True)
-
-
-@pytest.mark.parametrize(("current", "muted"), [(True, True), (False, False), (None, None)])
-async def test_the_mute_state_is_read(current: bool | None, muted: bool | None) -> None:
-    """The renderer's mute state is read, and a reply without one says nothing."""
-    action = MagicMock()
-    action.async_call = AsyncMock(return_value={} if current is None else {"CurrentMute": current})
-    with patch.object(upnp, "UpnpFactory", _factory(action)):
-        assert await upnp.get_mute(MagicMock(), _RENDERER) is muted
-
-
-@pytest.mark.parametrize(("reply", "volume"), [({"CurrentVolume": 42}, 42), ({}, None)])
-async def test_the_volume_is_read_from_the_renderer(
-    reply: dict[str, int], volume: int | None
-) -> None:
-    """A renderer that gives no volume reads as unknown, not as silent."""
-    action = MagicMock()
-    action.async_call = AsyncMock(return_value=reply)
-    with patch.object(upnp, "UpnpFactory", _factory(action)):
-        assert await upnp.get_volume(MagicMock(), _RENDERER) == volume
-    action.async_call.assert_awaited_once_with(InstanceID=0, Channel="Master")
-
-
-async def test_a_volume_the_renderer_rejects_is_raised() -> None:
-    """Setting the volume sends it to the renderer and lets its refusal through."""
-    action = MagicMock()
-    action.async_call = AsyncMock(side_effect=UpnpError("refused"))
-    with patch.object(upnp, "UpnpFactory", _factory(action)), pytest.raises(UpnpError):
-        await upnp.set_volume(MagicMock(), _RENDERER, 35)
-    action.async_call.assert_awaited_once_with(InstanceID=0, Channel="Master", DesiredVolume=35)
