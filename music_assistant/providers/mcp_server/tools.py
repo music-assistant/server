@@ -13,6 +13,7 @@ from .registry import ToolError, mcp_tool
 if TYPE_CHECKING:
     from music_assistant_models.media_items import ItemMapping, MediaItemType, SearchResults
     from music_assistant_models.player import PlayerMedia
+    from music_assistant_models.player_queue import PlayerQueue
     from music_assistant_models.queue_item import QueueItem
 
     from music_assistant.mass import MusicAssistant
@@ -29,6 +30,9 @@ INSTRUCTIONS = (
 SearchMediaType = Literal[
     "track", "album", "artist", "playlist", "radio", "podcast", "audiobook", "any"
 ]
+
+# the most rows a tool returns per list, whatever limit the model asks for
+MAX_LIMIT = 50
 
 # the order in which results of a search over all media types are considered
 _ANY_MEDIA_TYPES = (
@@ -51,9 +55,9 @@ async def search_music(
 
     :param query: What to search for, such as a title, an artist or both.
     :param media_type: Only return this type of media.
-    :param limit: The maximum number of results per media type.
+    :param limit: The maximum number of results per media type, at most 50.
     """
-    results = await mass.music.search(query, _media_types(media_type), limit=limit)
+    results = await mass.music.search(query, _media_types(media_type), limit=min(limit, MAX_LIMIT))
     return {"items": [_compact_item(item) for item in _flatten_results(results)]}
 
 
@@ -125,7 +129,7 @@ async def control_player(
         case "power_on" | "power_off":
             await players.cmd_power(player_id, command == "power_on")
         case "clear_queue":
-            mass.player_queues.clear(player_id)
+            mass.player_queues.clear(_active_queue(mass, target).queue_id)
         case _:
             await {
                 "play": players.cmd_play,
@@ -161,7 +165,7 @@ async def set_volume(
     return _compact_player(mass, target)
 
 
-@mcp_tool("set_playback_options", Scope.QUEUES_CONTROL)
+@mcp_tool("set_playback_options", (Scope.PLAYERS_CONTROL, Scope.QUEUES_CONTROL))
 async def set_playback_options(
     mass: MusicAssistant,
     player: str,
@@ -179,15 +183,10 @@ async def set_playback_options(
     if shuffle is None and repeat is None:
         raise ToolError("Pass shuffle, repeat or both")
     if shuffle is not None:
-        await mass.player_queues.set_shuffle(target.player_id, shuffle)
+        await mass.players.cmd_shuffle(target.player_id, shuffle)
     if repeat is not None:
-        await mass.player_queues.set_repeat(target.player_id, RepeatMode(repeat))
-    queue = mass.player_queues.get(target.player_id)
-    return {
-        "player": target.state.name,
-        "shuffle": queue.shuffle_enabled if queue else None,
-        "repeat": queue.repeat_mode.value if queue else None,
-    }
+        await mass.players.cmd_repeat(target.player_id, RepeatMode(repeat))
+    return {"player": target.state.name, "shuffle": shuffle, "repeat": repeat}
 
 
 @mcp_tool("get_queue", Scope.QUEUES_READ)
@@ -196,14 +195,12 @@ async def get_queue(mass: MusicAssistant, player: str, limit: int = 20) -> dict[
     Show what a player is playing now and what comes next in its queue.
 
     :param player: The name or id of the player.
-    :param limit: The maximum number of upcoming items to return.
+    :param limit: The maximum number of upcoming items to return, at most 50.
     """
     target = _resolve_player(mass, player)
-    queue = mass.player_queues.get_player_active_queue(target.player_id)
-    if queue is None:
-        return {"player": target.state.name, "current_item": None, "next_items": []}
+    queue = _active_queue(mass, target)
     offset = queue.current_index + 1 if queue.current_index is not None else 0
-    upcoming = mass.player_queues.get_queue_items(queue.queue_id, limit, offset)
+    upcoming = mass.player_queues.get_queue_items(queue.queue_id, min(limit, MAX_LIMIT), offset)
     return {
         "player": target.state.name,
         "queue": queue.display_name,
@@ -220,9 +217,10 @@ async def get_recently_played(mass: MusicAssistant, limit: int = 20) -> dict[str
     """
     List the items that were played most recently.
 
-    :param limit: The maximum number of items to return.
+    :param limit: The maximum number of items to return, at most 50.
     """
-    return {"items": [_compact_item(item) for item in await mass.music.recently_played(limit)]}
+    items = await mass.music.recently_played(min(limit, MAX_LIMIT))
+    return {"items": [_compact_item(item) for item in items]}
 
 
 @mcp_tool("get_favorites", Scope.LIBRARY_READ)
@@ -233,12 +231,12 @@ async def get_favorites(
     List the favorite items in the library.
 
     :param media_type: Only return this type of media.
-    :param limit: The maximum number of items per media type.
+    :param limit: The maximum number of items per media type, at most 50.
     """
     favorites: list[dict[str, Any]] = []
     for item_type in _media_types(media_type):
         controller = mass.music.get_controller(item_type)
-        items = await controller.library_items(favorite=True, limit=limit)
+        items = await controller.library_items(favorite=True, limit=min(limit, MAX_LIMIT))
         favorites.extend(_compact_item(item) for item in items)
     return {"items": favorites}
 
@@ -334,6 +332,13 @@ def _resolve_player(mass: MusicAssistant, player: str) -> Player:
             return candidate
     available = ", ".join(candidate.state.name for candidate in players) or "none"
     raise ToolError(f"Unknown player {player!r}. Available players: {available}")
+
+
+def _active_queue(mass: MusicAssistant, player: Player) -> PlayerQueue:
+    """Return the queue that plays on the player, such as the queue of its group leader."""
+    if queue := mass.player_queues.get_player_active_queue(player.player_id):
+        return queue
+    raise ToolError(f"{player.state.name} has no queue")
 
 
 async def _resolve_media(

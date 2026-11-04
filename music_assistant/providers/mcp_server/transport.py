@@ -159,12 +159,11 @@ class MCPTransport:
         from_home_assistant: bool,
     ) -> web.Response:
         """Run the tool of a tools/call request and return its result."""
-        tool = TOOLS.get(params.get("name", ""))
+        name = params.get("name")
+        tool = TOOLS.get(name) if isinstance(name, str) else None
         arguments = params.get("arguments") or {}
         if tool is None:
-            return _error_response(
-                message_id, INVALID_PARAMS, f"Unknown tool: {params.get('name')}"
-            )
+            return _error_response(message_id, INVALID_PARAMS, f"Unknown tool: {name}")
         if not isinstance(arguments, dict):
             return _error_response(message_id, INVALID_PARAMS, "Arguments must be an object")
         try:

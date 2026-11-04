@@ -14,7 +14,11 @@ from music_assistant_models.enums import PlaybackState, PlayerType
 
 from music_assistant.constants import HASSIO_SUPERVISOR_IP, INGRESS_SERVER_PORT
 from music_assistant.controllers.discovery import controller as discovery_module
-from music_assistant.controllers.webserver.helpers.auth_middleware import get_current_user
+from music_assistant.controllers.webserver.helpers import auth_middleware
+from music_assistant.controllers.webserver.helpers.auth_middleware import (
+    get_current_user,
+    set_current_user,
+)
 from music_assistant.helpers.hassio import SupervisorError
 from music_assistant.helpers.json import json_dumps, json_loads
 from music_assistant.providers.mcp_server.auth import META_HA_USER_ID
@@ -290,6 +294,117 @@ async def test_discovery_refused_logs_once(
     assert [record.levelname for record in records] == ["INFO"]
 
 
+async def test_meta_disabled_linked_user_refused(mass: MusicAssistant) -> None:
+    """A Home Assistant user linked to a disabled account is refused, not run as the service user."""
+    admin = await _create_admin(mass)
+    member = await mass.webserver.auth.create_user(username="member")
+    await mass.webserver.auth.link_user_to_provider(
+        member, AuthProviderType.HOME_ASSISTANT, "ha-member"
+    )
+    set_current_user(admin)
+    await mass.webserver.auth.disable_user(member.user_id)
+    seen = _capture_user(mass)
+    with seen.patch:
+        response = await _post(
+            mass,
+            _call("get_players", {}, meta={META_HA_USER_ID: "ha-member"}),
+            None,
+            peer=INGRESS_IP,
+            ingress=True,
+        )
+    result = _body(response)["result"]
+    assert result["isError"]
+    assert "disabled" in result["content"][0]["text"]
+    assert seen.users == []
+
+
+async def test_ingress_proxy_runs_as_ingress_user(mass: MusicAssistant) -> None:
+    """A request relayed by the Ingress proxy runs as the signed in HA user, ignoring _meta."""
+    await _create_admin(mass)
+    member = await mass.webserver.auth.create_user(username="member")
+    await mass.webserver.auth.link_user_to_provider(
+        member, AuthProviderType.HOME_ASSISTANT, "ha-member"
+    )
+    other = await mass.webserver.auth.create_user(username="other")
+    await mass.webserver.auth.link_user_to_provider(
+        other, AuthProviderType.HOME_ASSISTANT, "ha-other"
+    )
+    seen = _capture_user(mass)
+    with (
+        seen.patch,
+        patch.object(
+            auth_middleware, "get_ha_user_details", AsyncMock(return_value=(None, None, None))
+        ),
+    ):
+        response = await _post(
+            mass,
+            _call("get_players", {}, meta={META_HA_USER_ID: "ha-other"}),
+            None,
+            headers={"X-Remote-User-ID": "ha-member", "X-Remote-User-Name": "member"},
+            peer=HASSIO_SUPERVISOR_IP,
+            ingress=True,
+        )
+    assert not _body(response)["result"]["isError"]
+    assert [user.user_id if user else None for user in seen.users] == [member.user_id]
+
+
+async def test_player_filter_limits_players(mass: MusicAssistant) -> None:
+    """A user limited to some players neither sees nor controls the others."""
+    await _create_admin(mass)
+    member = await mass.webserver.auth.create_user(username="member")
+    await mass.webserver.auth.update_user_filters(member, ["kitchen_id"])
+    token = await mass.webserver.auth.create_token(member, "test")
+    players = [_fake_player("kitchen_id", "Kitchen"), _fake_player("attic_id", "Attic")]
+    with (
+        patch.object(mass.players, "iter_players", return_value=iter(players)),
+        patch.object(mass.players, "cmd_pause", AsyncMock()) as cmd_pause,
+    ):
+        response = await _post(
+            mass, _call("control_player", {"player": "Attic", "command": "pause"}), token
+        )
+    result = _body(response)["result"]
+    assert result["isError"]
+    assert "Available players: Kitchen" in result["content"][0]["text"]
+    cmd_pause.assert_not_awaited()
+
+
+async def test_discovery_skipped_when_off_or_not_addon(
+    mass: MusicAssistant, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Nothing is offered to Home Assistant when not running as add-on or with the option off."""
+    monkeypatch.setenv("HOSTNAME", "abcd1234-music-assistant")
+    supervisor_request = AsyncMock(return_value={"uuid": "discovery-uuid"})
+    monkeypatch.setattr(discovery_module, "supervisor_request", supervisor_request)
+    provider = mass.get_provider("mcp_server")
+    assert provider is not None
+
+    await provider.loaded_in_mass()
+    await mass.discovery.announce_mcp_server("/mcp")
+
+    monkeypatch.setattr(mass, "running_as_hass_addon", True)
+    with patch.object(provider.config, "get_value", return_value=False):
+        await provider.loaded_in_mass()
+    await asyncio.sleep(0)
+    supervisor_request.assert_not_awaited()
+
+
+async def test_discovery_reannounced_daily(
+    mass: MusicAssistant, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The daily announce to Home Assistant posts the MCP server again."""
+    monkeypatch.setenv("HOSTNAME", "abcd1234-music-assistant")
+    monkeypatch.setattr(mass, "running_as_hass_addon", True)
+    supervisor_request = AsyncMock(return_value={"uuid": "discovery-uuid"})
+    monkeypatch.setattr(discovery_module, "supervisor_request", supervisor_request)
+    await mass.discovery.announce_mcp_server("/mcp")
+    supervisor_request.reset_mock()
+
+    await mass.discovery._announce_to_homeassistant()
+
+    services = [call.kwargs["json_data"]["service"] for call in supervisor_request.await_args_list]
+    assert services == ["music_assistant", "mcp"]
+
+
 class _UserCapture:
     """Record the acting user each time the players are listed."""
 
@@ -390,4 +505,5 @@ def _fake_player(player_id: str, name: str) -> MagicMock:
     player.state.type = PlayerType.PLAYER
     player.state.group_members = []
     player.state.current_media = None
+    player.private = False
     return player

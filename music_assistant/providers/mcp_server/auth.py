@@ -17,6 +17,8 @@ from music_assistant.controllers.webserver.helpers.auth_middleware import (
     set_impersonated_user,
 )
 
+from .registry import ToolError
+
 if TYPE_CHECKING:
     from aiohttp import web
     from music_assistant_models.auth import User
@@ -72,8 +74,6 @@ async def authenticate_request(
                 request.transport.get_extra_info("peername"),
                 request.transport.get_extra_info("sockname"),
             )
-    # a keep-alive connection serves its requests in one task, so every request sets
-    # the whole context instead of inheriting it from the previous request
     set_current_user(user)
     set_current_token(token)
     set_impersonated_user(None)
@@ -89,12 +89,20 @@ async def impersonate_home_assistant_user(mass: MusicAssistant, params: dict[str
 
     :param mass: The Music Assistant instance.
     :param params: The params of the tools/call request.
+    :raises ToolError: When the linked Music Assistant account is disabled.
     :raises InsufficientPermissions: When the current user may not impersonate another user.
     """
     meta = params.get("_meta")
     ha_user_id = meta.get(META_HA_USER_ID) if isinstance(meta, dict) else None
     if not isinstance(ha_user_id, str) or not ha_user_id:
         return
+    linked_user = await mass.webserver.auth.get_user_by_provider_link(
+        AuthProviderType.HOME_ASSISTANT, ha_user_id, include_disabled=True
+    )
+    if linked_user is None:
+        return
+    if not linked_user.enabled:
+        raise ToolError(f"The Music Assistant account of {linked_user.username} is disabled")
     set_impersonated_user(
         await resolve_impersonated_user(
             mass, AuthProviderType.HOME_ASSISTANT, ha_user_id, required=False
