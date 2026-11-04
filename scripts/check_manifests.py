@@ -9,7 +9,7 @@ provider. This pre-commit/CI guard scans every provider manifest up front and pr
 
 Every public provider (folder name not starting with ``_``) must also declare its maintainer ``tier``
 (``core`` or ``community``); ``core`` is only valid with ``@music-assistant`` in ``codeowners``. An
-optional ``support_url`` must be an ``https://`` URL.
+optional ``support_url`` must be an ``https`` URL with a host.
 
 When invoked with file or folder arguments (as pre-commit does for the changed files) only the
 manifests in scope are validated; with no arguments every provider manifest is scanned.
@@ -24,6 +24,7 @@ import json
 import sys
 from collections.abc import Iterable, Sequence
 from pathlib import Path
+from urllib.parse import urlsplit
 
 # ruff: noqa: T201
 
@@ -134,13 +135,8 @@ def _validate(data: dict[str, object], folder_name: str) -> list[str]:
     if "codeowners" in data:
         issues.extend(_validate_codeowners(data["codeowners"]))
     issues.extend(_validate_tier(data, folder_name))
-    support_url = data.get("support_url")
-    if "support_url" in data and not (
-        isinstance(support_url, str)
-        and support_url.startswith("https://")
-        and support_url.removeprefix("https://").strip()
-    ):
-        issues.append("'support_url' must be a non-empty string starting with 'https://'")
+    if "support_url" in data and not _is_https_url(data["support_url"]):
+        issues.append("'support_url' must be an https URL with a host")
     return issues
 
 
@@ -171,6 +167,17 @@ def _validate_tier(data: dict[str, object], folder_name: str) -> list[str]:
     if tier == "core" and not (isinstance(codeowners, list) and CORE_CODEOWNER in codeowners):
         return [f"tier 'core' requires '{CORE_CODEOWNER}' in 'codeowners', use 'community'"]
     return []
+
+
+def _is_https_url(value: object) -> bool:
+    """Return True when ``value`` is an ``https://`` URL with a host."""
+    if not isinstance(value, str):
+        return False
+    try:
+        url = urlsplit(value)
+    except ValueError:
+        return False
+    return url.scheme == "https" and bool(url.hostname)
 
 
 if __name__ == "__main__":

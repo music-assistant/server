@@ -112,11 +112,22 @@ def test_core_tier_requires_org_codeowner() -> None:
 
 
 def test_support_url_must_be_https() -> None:
-    """A support_url must be a non-empty https URL when present."""
+    """A support_url must be an https URL with a host when present."""
     manifest = _valid_manifest()
     manifest["support_url"] = "https://github.com/octocat/demo/issues"
     assert _validate(manifest, "demo") == []
-    for bad_url in ("http://example.com", "https://", "", None, ["https://example.com"]):
+    bad_urls = (
+        "http://example.com",
+        "https://",
+        "https:///issues",
+        "https://?report",
+        "https://#support",
+        "https://[::1",
+        "",
+        None,
+        ["https://example.com"],
+    )
+    for bad_url in bad_urls:
         manifest["support_url"] = bad_url
         assert any("'support_url' must be" in issue for issue in _validate(manifest, "demo"))
 
