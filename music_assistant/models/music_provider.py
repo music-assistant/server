@@ -25,6 +25,9 @@ from music_assistant_models.errors import (
     RetriesExhausted,
     UnsupportedFeaturedException,
 )
+from music_assistant_models.errors import (
+    ProviderStreamHeldError as ProviderStreamHeldErrorBase,
+)
 from music_assistant_models.media_items import (
     Album,
     Artist,
@@ -64,6 +67,7 @@ if TYPE_CHECKING:
     from collections.abc import AsyncGenerator
 
     from music_assistant_models.config_entries import ProviderConfig
+    from music_assistant_models.player_queue import PlayerQueue
     from music_assistant_models.provider import ProviderManifest
     from music_assistant_models.streamdetails import StreamDetails
 
@@ -172,6 +176,43 @@ class ProviderStreamLimitError(AudioError):
             f"{provider.name} has reached its limit of {limit} "
             f"concurrent source streams{wait_text}.",
             translation_args=[provider.name, limit],
+        )
+        self.provider_instance = provider.instance_id
+        self.limit = limit
+
+
+class ProviderStreamHeldError(ProviderStreamLimitError, ProviderStreamHeldErrorBase):
+    """
+    Raised when another player's playback holds the last source-stream slot of a provider.
+
+    A realtime source keeps its slot until its item ends, so waiting for one is pointless:
+    the request is refused right away, naming the player to stop. A ProviderStreamLimitError
+    to every caller that handles capacity, with the error code and data of the shared model
+    on the wire so a client can act on it.
+    """
+
+    translation_key = "provider_stream_held"
+
+    def __init__(self, provider: MusicProvider, holder: PlayerQueue) -> None:
+        """
+        Initialize the error.
+
+        :param provider: Provider instance whose source-stream slots are all held.
+        :param holder: The queue whose playback holds the slot.
+        """
+        limit = provider.max_concurrent_streams
+        assert limit is not None
+        # skips ProviderStreamLimitError.__init__, which phrases the message in terms
+        # of the budget and the time spent waiting for it
+        MusicAssistantError.__init__(
+            self,
+            f"{provider.name} is already playing on {holder.display_name}",
+            translation_args=[provider.name, holder.display_name],
+            data={
+                "queue_id": holder.queue_id,
+                "player_name": holder.display_name,
+                "provider_instance": provider.instance_id,
+            },
         )
         self.provider_instance = provider.instance_id
         self.limit = limit

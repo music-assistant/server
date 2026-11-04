@@ -94,7 +94,10 @@ audio prefs, wire models) is shared infrastructure owned by the Spotify Connect 
   is it. A request for another item while a run is live is reported as
   `ProviderStreamLimitError` capacity: a speculative prepare gives up softly (or waits
   its slot budget out), and the real request gets the slot once the stream holding it
-  is released. The slot frees the moment an item's audio has *fully arrived* — the
+  is released. A start on *another player* while a run plays is refused at once with
+  `ProviderStreamHeldError`, naming the player that holds Spotify: the run delivers at
+  playback pace, so nothing would free the slot within the wait budget anyway. The slot
+  frees the moment an item's audio has *fully arrived* — the
   buffer's fill closes the provider stream at EOF and the fill-complete hook starts
   fetching the next queue item right away, so the engine's ~1.1x delivery surplus
   compounds across a listening session. A new request for the very item being

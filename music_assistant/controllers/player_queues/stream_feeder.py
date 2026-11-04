@@ -37,7 +37,11 @@ from music_assistant.controllers.webserver.helpers.auth_middleware import (
 from music_assistant.models.music_provider import MusicProvider
 
 if TYPE_CHECKING:
+    from collections.abc import Iterator
+
+    from music_assistant_models.player_queue import PlayerQueue
     from music_assistant_models.queue_item import QueueItem
+    from music_assistant_models.streamdetails import StreamDetails
 
 
 class StreamFeederMixin(_PlayerQueuesBase):
@@ -185,6 +189,25 @@ class StreamFeederMixin(_PlayerQueuesBase):
         :param queue_id: The queue that needs the slot.
         """
         return self._paused_stream_slot_holder(provider_instance, queue_id) is not None
+
+    def playing_stream_slot_holder(
+        self, provider_instance: str, queue_id: str
+    ) -> PlayerQueue | None:
+        """
+        Return the player whose playback holds a slot of a full provider until its item ends.
+
+        A realtime source hands its audio over at playback pace, so its slot stays taken for
+        as long as its item plays: a queue starting on that provider has nothing to wait
+        for. A paused holder is left out, as it hands its slot over instead.
+
+        :param provider_instance: The provider instance a slot is needed on.
+        :param queue_id: The queue that needs the slot.
+        :return: The holding queue, or None when there is no such holder.
+        """
+        for holder_id, details in self._held_stream_slots(provider_instance, queue_id):
+            if details.is_realtime and not self._is_paused(holder_id):
+                return self._queue_data[holder_id].queue
+        return None
 
     async def release_paused_stream_slot(self, provider_instance: str, queue_id: str) -> bool:
         """
@@ -512,34 +535,45 @@ class StreamFeederMixin(_PlayerQueuesBase):
         :param provider_instance: The provider instance a slot is needed on.
         :param queue_id: The queue that needs the slot.
         """
+        user = get_current_user()
+        for holder_id, _details in self._held_stream_slots(provider_instance, queue_id):
+            if not self._is_paused(holder_id):
+                continue
+            # the starting user only takes the slot of a player they may control
+            if has_player_access(user, holder_id, self.mass.players.get_player(holder_id)):
+                return holder_id
+        return None
+
+    def _held_stream_slots(
+        self, provider_instance: str, queue_id: str
+    ) -> Iterator[tuple[str, StreamDetails]]:
+        """
+        Yield the queues other than the given one that hold a slot of a full provider.
+
+        :param provider_instance: The provider instance a slot is needed on.
+        :param queue_id: The queue that needs the slot.
+        :return: Pairs of the holding queue and the stream details whose buffer holds the slot.
+        """
         provider = self.mass.get_provider(provider_instance, return_unavailable=True)
         if not isinstance(provider, MusicProvider) or provider.has_available_stream_slot:
-            return None
-        user = get_current_user()
+            return
         for holder_id, queue_data in self._queue_data.items():
             # a stop only releases the audio of a session, so a queue without one has
             # nothing to hand over
-            if (
-                holder_id == queue_id
-                or queue_data.session_id is None
-                or not self._is_paused(holder_id)
-            ):
+            if holder_id == queue_id or queue_data.session_id is None:
                 continue
-            # the starting user only takes the slot of a player they may control
-            if not has_player_access(user, holder_id, self.mass.players.get_player(holder_id)):
-                continue
-            # a buffer holds its provider's slot from its first audio until its source stops
-            # producing; one that is not ready yet can still be waiting for a slot itself
-            if any(
-                (details := item.streamdetails) is not None
-                and details.provider == provider_instance
-                and details.buffer is not None
-                and details.buffer.is_buffering
-                and details.buffer.ready.is_set()
-                for item in queue_data.items
-            ):
-                return holder_id
-        return None
+            for item in queue_data.items:
+                # a buffer holds its provider's slot from its first audio until its source
+                # stops producing; one that is not ready yet can still be waiting for a
+                # slot itself
+                if (
+                    (details := item.streamdetails) is not None
+                    and details.provider == provider_instance
+                    and details.buffer is not None
+                    and details.buffer.is_buffering
+                    and details.buffer.ready.is_set()
+                ):
+                    yield holder_id, details
 
     def _is_paused(self, queue_id: str) -> bool:
         """Return whether the queue is paused and its player confirms it is paused on it."""
