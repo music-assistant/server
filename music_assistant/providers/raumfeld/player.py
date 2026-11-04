@@ -10,9 +10,6 @@ import time
 from typing import TYPE_CHECKING, cast
 
 from async_upnp_client.exceptions import UpnpActionError, UpnpError
-from hassfeld import upnp as hassfeld_upnp
-from hassfeld import webservice as hassfeld_ws
-from hassfeld.constants import SERVICE_AV_TRANSPORT
 from music_assistant_models.config_entries import MULTI_VALUE_SPLITTER
 from music_assistant_models.enums import (
     IdentifierType,
@@ -55,12 +52,12 @@ from .helpers import (
     play_mode_for,
     query_last_change,
 )
+from .upnp import SERVICE_AV_TRANSPORT, get_action, get_mute, get_volume, set_mute, set_volume
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Coroutine
     from typing import Any, Concatenate
 
-    import hassfeld
     from async_upnp_client.client import UpnpAction
     from music_assistant_models.config_entries import ConfigEntry
     from music_assistant_models.player_queue import PlayerQueue
@@ -483,7 +480,7 @@ class RaumfeldPlayer(Player):
             await self._wake_rooms([self.room], strict=True)
         else:
             try:
-                await self.raumfeld.host.async_enter_manual_standby(self.room)
+                await self.raumfeld.enter_standby(self.room)
             except HOST_ERRORS as err:
                 raise PlayerCommandFailed(f"Failed to power off {self.room}: {err!r}") from err
         self._attr_powered = powered
@@ -542,7 +539,7 @@ class RaumfeldPlayer(Player):
                 await self._zone_command(zone, "Stop")
                 if hard_stop:
                     for room in zone:
-                        await self.raumfeld.host.async_enter_manual_standby(room)
+                        await self.raumfeld.enter_standby(room)
             except HOST_ERRORS as err:
                 # do not report IDLE while the renderer may still be playing
                 raise PlayerCommandFailed(f"Failed to stop {self.room}: {err!r}") from err
@@ -736,9 +733,13 @@ class RaumfeldPlayer(Player):
 
     async def volume_set(self, volume_level: int) -> None:
         """Send VOLUME_SET command (Raumfeld volume is 0-100, same as MA)."""
+        if (location := self.raumfeld.room_renderer_location(self.room)) is None:
+            raise PlayerCommandFailed(
+                f"Failed to set volume on {self.room}: its renderer is unknown"
+            )
         try:
-            await self.raumfeld.host.async_set_room_volume(self.room, volume_level)
-        except HOST_ERRORS as err:
+            await set_volume(self.mass.http_session, location, volume_level)
+        except (*HOST_ERRORS, UpnpError) as err:
             raise PlayerCommandFailed(f"Failed to set volume on {self.room}: {err!r}") from err
         self._attr_volume_level = volume_level
         self.update_state()
@@ -750,8 +751,8 @@ class RaumfeldPlayer(Player):
         if (location := self.raumfeld.room_renderer_location(self.room)) is None:
             raise PlayerCommandFailed(f"Failed to mute {self.room}: its renderer is unknown")
         try:
-            await hassfeld_upnp.async_set_mute(self.mass.http_session, location, muted)
-        except HOST_ERRORS as err:
+            await set_mute(self.mass.http_session, location, muted)
+        except (*HOST_ERRORS, UpnpError) as err:
             raise PlayerCommandFailed(f"Failed to mute {self.room}: {err!r}") from err
         self._attr_volume_muted = muted
         self.update_state()
@@ -764,7 +765,6 @@ class RaumfeldPlayer(Player):
         player_ids_to_remove: list[str] | None = None,
     ) -> None:
         """Handle SET_MEMBERS: translate MA group changes into Raumfeld zone changes."""
-        host = self.raumfeld.host
         with self.raumfeld.changing_group():
             # this player is the group leader and owns the zone: add/drop each member's room
             try:
@@ -780,10 +780,11 @@ class RaumfeldPlayer(Player):
                     if self._attr_playback_state == PlaybackState.PLAYING:
                         await self._wake_rooms(add_rooms)
                 for pid in player_ids_to_remove or []:
-                    if (room := self._player_id_to_room(pid)) is not None:
-                        await host.async_drop_room_from_zone(
-                            room, self._active_zone() or [self.room]
-                        )
+                    # only a room in this leader's zone is this leader's to take out
+                    if (room := self._player_id_to_room(pid)) is not None and room in (
+                        self._active_zone() or [self.room]
+                    ):
+                        await self.raumfeld.drop_room(room)
             except HOST_ERRORS as err:
                 raise PlayerCommandFailed(
                     f"Failed to change Raumfeld group for {self.room}: {err!r}"
@@ -821,12 +822,11 @@ class RaumfeldPlayer(Player):
         # The host shows this room taken out of the group's zone the same way as the other
         # rooms taken out of it: each part gets a zone of its own. The part that was taken
         # out stops, so only playback tells them apart.
-        host = self.raumfeld.host
         generation = self._playback_generation
         own_zone = self.raumfeld.get_zone_for_room(self.room)
-        members_play = [await self._zone_plays_queue(host, zone) for zone in member_zones]
+        members_play = [await self._zone_plays_queue(zone) for zone in member_zones]
         # this room may play something else by now, which does not keep the queue here
-        own_plays = False if own_zone is None else await self._zone_plays_queue(host, own_zone)
+        own_plays = False if own_zone is None else await self._zone_plays_queue(own_zone)
         if None in members_play or own_plays is None:
             return None
         # the reads took a while: act only on the playback and layout they were taken for
@@ -878,11 +878,10 @@ class RaumfeldPlayer(Player):
 
         :param zone: The rooms of the zone to read.
         """
-        return await self._zone_plays_queue(self.raumfeld.host, zone)
+        return await self._zone_plays_queue(zone)
 
     async def poll(self) -> None:
         """Poll the Raumfeld host for this room's current state."""
-        host = self.raumfeld.host
         was_powered = self._attr_powered
         self._update_power()
         if (
@@ -912,7 +911,7 @@ class RaumfeldPlayer(Player):
         # stopped group would leave the follower reading as playing until it is ungrouped
         if self.synced_to and self.synced_to != self.player_id:
             generation = self._playback_generation
-            await self._update_volume(host)
+            await self._update_volume()
             if not self._reading_is_current(generation):
                 self.update_state()
                 return
@@ -931,18 +930,18 @@ class RaumfeldPlayer(Player):
         if (zone := self._active_zone()) is None:
             # ... unless Spotify Connect plays on the room itself, outside any zone
             if self._plays_spotify_connect():
-                await self._poll_room_playback(host)
+                await self._poll_room_playback()
                 return
-            await self._update_volume(host)
+            await self._update_volume()
             self._clear_external()
             self._attr_playback_state = PlaybackState.IDLE
             self._attr_poll_interval = IDLE_POLL_INTERVAL
             self.update_state()
             return
 
-        await self._poll_zone(host, zone)
+        await self._poll_zone(zone)
 
-    async def _poll_zone(self, host: hassfeld.RaumfeldHost, zone: list[str]) -> None:
+    async def _poll_zone(self, zone: list[str]) -> None:
         """Read this room's volume and its zone's transport and position, and apply them."""
         # read volume (per room), transport and position (per zone) concurrently so a poll
         # cycle costs one round-trip of wall time instead of three, keeping state snappy.
@@ -950,9 +949,9 @@ class RaumfeldPlayer(Player):
         # a meaningless RelTime, so it can only be asked *whether* it plays, not what.
         generation = self._playback_generation
         _, transport, position = await asyncio.gather(
-            self._update_volume(host),
-            self._read_transport(host, zone),
-            self._read_position(host, zone),
+            self._update_volume(),
+            self._read_transport(zone),
+            self._read_position(zone),
         )
         if not self._reading_is_current(generation):
             # a play or stop command ran meanwhile; the next poll reads what it brought
@@ -1060,9 +1059,9 @@ class RaumfeldPlayer(Player):
         self._attr_supported_features.add(PlayerFeature.POWER)
         self._attr_powered = state != POWER_STATE_OFF
 
-    async def _update_volume(self, host: hassfeld.RaumfeldHost) -> None:
+    async def _update_volume(self) -> None:
         """Read this room's volume and mute state, keeping the last value of one not read."""
-        volume, muted = await asyncio.gather(self._read_volume(host), self._read_mute())
+        volume, muted = await asyncio.gather(self._read_volume(), self._read_mute())
         if volume is not None:
             self._attr_volume_level = volume
         if muted is not None:
@@ -1081,20 +1080,18 @@ class RaumfeldPlayer(Player):
         except HOST_ERRORS:
             return False
 
-    async def _poll_room_playback(self, host: hassfeld.RaumfeldHost) -> None:
+    async def _poll_room_playback(self) -> None:
         """Read what the room's own renderer plays (Spotify Connect), outside any zone."""
         location = self.raumfeld.room_renderer_location(self.room)
         control_url = self.raumfeld.room_transport_url(self.room)
         if location is None or control_url is None:
-            await self._update_volume(host)
+            await self._update_volume()
             self.update_state()
             return
         generation = self._playback_generation
         _, state, position = await asyncio.gather(
-            self._update_volume(host),
+            self._update_volume(),
             self._read_room_state(control_url),
-            # not through hassfeld: its position read expects the track metadata a zone
-            # returns, which a room's own renderer does not have
             self._call_transport(location, "GetPositionInfo"),
         )
         if not self._reading_is_current(generation):
@@ -1236,8 +1233,8 @@ class RaumfeldPlayer(Player):
         # per action. A renderer that reconnects comes back on another port, so another URL.
         key = (location, action_name)
         if (action := self._transport_actions.get(key)) is None:
-            action = await hassfeld_upnp.get_dlna_action(
-                location, SERVICE_AV_TRANSPORT, action_name, session=self.mass.http_session
+            action = await get_action(
+                self.mass.http_session, location, SERVICE_AV_TRANSPORT, action_name
             )
             # a reconnected renderer or a new zone leaves its old URL behind, never called again
             in_use = self._renderer_locations() | {location}
@@ -1599,7 +1596,7 @@ class RaumfeldPlayer(Player):
     async def _leave_zone(self) -> None:
         """Take this room out of its zone on the host, leaving the other rooms in it."""
         try:
-            await self.raumfeld.host.async_drop_room_from_zone(self.room)
+            await self.raumfeld.drop_room(self.room)
         except HOST_ERRORS as err:
             self.logger.debug("Failed to take %s out of its zone: %r", self.room, err)
             return
@@ -1632,11 +1629,11 @@ class RaumfeldPlayer(Player):
             self._zones_without_leader()
         )
 
-    async def _zone_plays_queue(self, host: hassfeld.RaumfeldHost, zone: list[str]) -> bool | None:
+    async def _zone_plays_queue(self, zone: list[str]) -> bool | None:
         """Return whether the zone plays this room's queue, or ``None`` while that cannot be told."""
-        if not (plays := await self._zone_plays(host, zone)):
+        if not (plays := await self._zone_plays(zone)):
             return plays
-        if (position := await self._read_position(host, zone)) is None:
+        if (position := await self._read_position(zone)) is None:
             return None
         # a queue's stream is served at <base url>/flow|single/<session>/<queue id>/...
         base_url = self.mass.streams.base_url
@@ -1644,9 +1641,9 @@ class RaumfeldPlayer(Player):
         parts = uri.removeprefix(f"{base_url}/").split("/") if uri.startswith(base_url) else []
         return len(parts) > 2 and parts[0] in ("flow", "single") and parts[2] == self.player_id
 
-    async def _zone_plays(self, host: hassfeld.RaumfeldHost, zone: list[str]) -> bool | None:
+    async def _zone_plays(self, zone: list[str]) -> bool | None:
         """Return whether the zone is playing, or ``None`` while that cannot be told."""
-        if (transport := await self._read_transport(host, zone)) is None:
+        if (transport := await self._read_transport(zone)) is None:
             return None
         state = (transport.get("CurrentTransportState") or "").upper()
         # it passes through TRANSITIONING on a start as well as on a stop (see _poll_zone)
@@ -1682,7 +1679,7 @@ class RaumfeldPlayer(Player):
         uri = library_uri(host.media_server_udn, object_id, container)
         try:
             # the host wants the item's own description along with the reference
-            metadata = await host.async_browse_media_server(object_id, "BrowseMetadata")
+            metadata = await self.raumfeld.browse_library(object_id, children=False)
             if not metadata:
                 raise PlayerCommandFailed(f"{object_id} is not available on the Raumfeld host")
             zone = await self._ensure_playable_zone()
@@ -1692,7 +1689,7 @@ class RaumfeldPlayer(Player):
                 zone, "SetAVTransportURI", CurrentURI=uri, CurrentURIMetaData=metadata
             )
             await self._zone_command(zone, "Play", Speed="1")
-        except HOST_ERRORS as err:
+        except (*HOST_ERRORS, UpnpError) as err:
             raise PlayerCommandFailed(
                 f"Failed to start {object_id} on {self.room}: {err!r}"
             ) from err
@@ -1889,7 +1886,7 @@ class RaumfeldPlayer(Player):
         if not self._reading_is_current(generation) or url != self._flow_url:
             # a play or stop command replaced the flow meanwhile
             return
-        if not await self._zone_plays_queue(self.raumfeld.host, zone):
+        if not await self._zone_plays_queue(zone):
             # Zones merged in the Raumfeld app: until the groups are followed, the active zone
             # can be one that plays another room's queue. Or it is paused, or can't be read.
             if self._announced_item_id == queue_item_id:
@@ -2039,51 +2036,39 @@ class RaumfeldPlayer(Player):
         else:
             self._attr_poll_interval = IDLE_POLL_INTERVAL
 
-    async def _read_volume(self, host: hassfeld.RaumfeldHost) -> int | None:
-        """Read this room's volume (0-100), or ``None`` on a host error."""
+    async def _read_volume(self) -> int | None:
+        """Read this room's volume (0-100), or ``None`` if it could not be read."""
+        if (location := self.raumfeld.room_renderer_location(self.room)) is None:
+            return None
         try:
-            volume = await host.async_get_room_volume(self.room)
-        except HOST_ERRORS as err:
+            return await get_volume(self.mass.http_session, location)
+        except (*HOST_ERRORS, UpnpError) as err:
             self.logger.debug("Failed to read volume for %s: %r", self.room, err)
             return None
-        if isinstance(volume, dict):
-            volume = volume.get("CurrentVolume")
-        return int(volume) if volume is not None else None
 
     async def _read_mute(self) -> bool | None:
         """Read this room's mute state, or ``None`` if it could not be read."""
         if (location := self.raumfeld.room_renderer_location(self.room)) is None:
             return None
         try:
-            # hassfeld swallows a failed read and returns None
-            muted = await hassfeld_upnp.async_get_mute(self.mass.http_session, location)
-        except HOST_ERRORS as err:
+            return await get_mute(self.mass.http_session, location)
+        except (*HOST_ERRORS, UpnpError) as err:
             self.logger.debug("Failed to read mute state for %s: %r", self.room, err)
             return None
-        return bool(muted) if muted is not None else None
 
-    async def _read_transport(
-        self, host: hassfeld.RaumfeldHost, zone: list[str]
-    ) -> dict[str, str] | None:
+    async def _read_transport(self, zone: list[str]) -> dict[str, str] | None:
         """Read the zone's GetTransportInfo response, or ``None`` if it could not be read."""
-        try:
-            # hassfeld swallows a UPnP timeout and returns None, so an unanswered read has
-            # to stay distinguishable from a real one: as an empty dict it would report a
-            # playing zone as idle for a poll.
-            return await host.async_get_transport_info(zone) or None
-        except HOST_ERRORS as err:
-            self.logger.debug("Failed to read transport info for zone %s: %r", zone, err)
+        # an unanswered read has to stay distinguishable from a real one: as an empty dict
+        # it would report a playing zone as idle for a poll
+        if (location := self.raumfeld.zone_location(zone)) is None:
             return None
+        return await self._call_transport(location, "GetTransportInfo")
 
-    async def _read_position(
-        self, host: hassfeld.RaumfeldHost, zone: list[str]
-    ) -> dict[str, str] | None:
+    async def _read_position(self, zone: list[str]) -> dict[str, str] | None:
         """Read the zone's GetPositionInfo response, or ``None`` if it could not be read."""
-        try:
-            return await host.async_get_position_info(zone) or None
-        except HOST_ERRORS as err:
-            self.logger.debug("Failed to read position info for zone %s: %r", zone, err)
+        if (location := self.raumfeld.zone_location(zone)) is None:
             return None
+        return await self._call_transport(location, "GetPositionInfo")
 
     def _maybe_advance(self, playing: bool, ended: bool) -> None:
         """Play the next queue item when the current track has actually finished."""
@@ -2155,7 +2140,7 @@ class RaumfeldPlayer(Player):
         # a leader whose group left its zone is the zone watcher's to sort out (see poll)
         if self._follows_or_held() or (zone := self._active_zone()) is None:
             return
-        info = await self._read_transport(self.raumfeld.host, zone)
+        info = await self._read_transport(zone)
         if self._follows_or_held():
             return
         if (info or {}).get("CurrentTransportState", "").upper() in ("STOPPED", "NO_MEDIA_PRESENT"):
@@ -2225,7 +2210,7 @@ class RaumfeldPlayer(Player):
                         f"Failed to wake {room}: the host reports no power state for it"
                     )
                 if "STANDBY" in (state or ""):
-                    await host.async_leave_standby(room)
+                    await self.raumfeld.leave_standby(room)
                     woke = True
             except HOST_ERRORS as err:
                 if strict:
@@ -2276,9 +2261,8 @@ class RaumfeldPlayer(Player):
 
     async def _add_rooms_to_zone(self, rooms: list[str]) -> None:
         """Add the given rooms to this leader's zone, waiting until they have joined."""
-        host = self.raumfeld.host
         wanted = [self.room, *rooms]
-        # hassfeld's add-room call does not wait, so during rapid regrouping (a room moving
+        # the host's add-room call does not wait, so during rapid regrouping (a room moving
         # straight from one group to another) it can race and leave the room unassigned;
         # verify the room really landed in the zone and retry while the state settles
         for _ in range(ZONE_CREATE_ATTEMPTS):
@@ -2291,7 +2275,7 @@ class RaumfeldPlayer(Player):
             if not missing:
                 return
             for room in missing:
-                await host.async_add_room_to_zone(room, zone)
+                await self.raumfeld.add_room_to_zone(room, zone)
             await self._wait_for_zone(wanted, addressable=False)
         zone = self._active_zone()
         if missing := [room for room in rooms if zone is None or room not in zone]:
@@ -2305,12 +2289,7 @@ class RaumfeldPlayer(Player):
 
         :param rooms: The rooms of the new zone.
         """
-        host = self.raumfeld.host
-        # Not hassfeld's create-and-wait: that looks the new zone up by room name where it
-        # needs room UDNs, never finds it and so always waits out its full five seconds.
-        await hassfeld_ws.async_connect_rooms_to_zone(
-            self.mass.http_session, host.location, room_udns=host.roomlst_to_udnlst(rooms)
-        )
+        await self.raumfeld.create_zone(rooms)
         await self._wait_for_zone(rooms, addressable=False)
 
     async def _wait_for_zone(self, rooms: list[str], addressable: bool) -> bool:

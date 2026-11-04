@@ -34,6 +34,12 @@ UNLOAD_TIMEOUT = 5
 # room to get the hardware serial the player_id is derived from.
 DEVICE_INFO_TIMEOUT = 10
 
+# How long (seconds) a UPnP request to a speaker or the host may take.
+UPNP_TIMEOUT = 15
+
+# How long (seconds) a command to the host's web service (grouping, standby) may take.
+HOST_COMMAND_TIMEOUT = 15
+
 # How long (seconds) to wait for a renderer to answer a state query. Polls run one after the
 # other for all players, so a renderer that stops answering must not hold them up for long.
 RENDERER_QUERY_TIMEOUT = 5
