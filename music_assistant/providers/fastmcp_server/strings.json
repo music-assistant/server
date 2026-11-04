@@ -100,6 +100,6 @@
     "connect_wizard_unavailable": "The Connect Wizard could not be opened; check the provider logs."
   },
   "manifest": {
-    "description": "Exposes Music Assistant as a Model Context Protocol (MCP) server for Claude, Codex, and other MCP-aware LLM clients."
+    "description": "The extended, community maintained MCP server, with its own token policies, a connect wizard for AI clients and the full Music Assistant command catalog."
   }
 }
