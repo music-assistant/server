@@ -498,7 +498,10 @@ class Audibleprovider(MusicProvider):
             }
             # A timestamp-only echo is not a new play. Advance its watermark
             # without changing playlog timestamps or play counts.
-            if isinstance(previous, dict) and previous.get("position_seconds") == play.position_seconds:
+            if (
+                isinstance(previous, dict)
+                and previous.get("position_seconds") == play.position_seconds
+            ):
                 watermarks[key] = updated_watermark
                 continue
             try:

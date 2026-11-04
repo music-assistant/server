@@ -569,6 +569,16 @@ async def test_external_history_marks_completed_books_and_does_not_repeat(
     mass_mock: AsyncMock,
 ) -> None:
     """Completing in Audible uses native completion accounting without repeat reports."""
+    saved: dict[str, Any] = {}
+
+    async def cache_get(key: str, default: Any, **_kwargs: Any) -> Any:
+        return saved.get(key, default)
+
+    async def cache_set(key: str, data: Any, **_kwargs: Any) -> None:
+        saved[key] = data
+
+    mass_mock.cache.get.side_effect = cache_get
+    mass_mock.cache.set.side_effect = cache_set
     timestamp = datetime.now(UTC) - timedelta(hours=1)
     book = MagicMock(item_id="book", duration=300)
     book.provider_mappings = [MagicMock(provider_instance=provider.instance_id, item_id="ours")]
@@ -620,12 +630,12 @@ async def test_history_watermarks_follow_owner_and_library_identity(
     mass_mock: AsyncMock,
 ) -> None:
     """Changing the owner or re-importing a library book cannot suppress its history."""
-    cache: dict[str, dict[str, str]] = {}
+    cache: dict[str, dict[str, Any]] = {}
 
-    async def get_cache(key: str, default: Any, **_kwargs: Any) -> dict[str, str]:
+    async def get_cache(key: str, default: Any, **_kwargs: Any) -> dict[str, Any]:
         return dict(cache.get(key, default))
 
-    async def set_cache(key: str, data: dict[str, str], **_kwargs: Any) -> None:
+    async def set_cache(key: str, data: dict[str, Any], **_kwargs: Any) -> None:
         cache[key] = dict(data)
 
     mass_mock.cache.get.side_effect = get_cache
