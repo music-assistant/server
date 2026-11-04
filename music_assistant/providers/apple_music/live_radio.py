@@ -8,10 +8,11 @@ import logging
 import re
 import struct
 import time
+from contextlib import aclosing
 from dataclasses import dataclass
 from datetime import datetime
 from typing import TYPE_CHECKING, Any, cast
-from urllib.parse import urljoin, urlsplit
+from urllib.parse import urljoin
 
 from aiohttp import ClientError, ClientResponseError, ClientTimeout
 from music_assistant_models.enums import ContentType, MediaType, StreamType
@@ -220,12 +221,6 @@ def _syncsafe(data: bytes) -> int:
     return (data[0] << 21) | (data[1] << 14) | (data[2] << 7) | data[3] if len(data) == 4 else 0
 
 
-def _safe_url(url: str) -> str:
-    """Return a url without its query, so no signed part reaches a log."""
-    parts = urlsplit(url)
-    return f"{parts.netloc}{parts.path}"
-
-
 class AppleMusicLiveRadioManager:
     """Handles the live radio stations of an Apple Music account."""
 
@@ -280,11 +275,12 @@ class AppleMusicLiveRadioManager:
         """
         reason = "ended"
         session = self.monitor.start_session(streamdetails.item_id)
-        session.substream = _safe_url(streamdetails.data["media_url"])
+        session.mirror = streamdetails.data["mirror"]
         session.key_id = (streamdetails.data["key_id"] or "")[:8]
         try:
-            async for chunk in self._stream_segments(streamdetails):
-                yield chunk
+            async with aclosing(self._stream_segments(streamdetails)) as stream:
+                async for chunk in stream:
+                    yield chunk
         except GeneratorExit:
             reason = "consumer_closed"
             raise
@@ -314,15 +310,18 @@ class AppleMusicLiveRadioManager:
             substreams = parse_master_playlist(await response.text(), asset["url"])
         if not substreams:
             raise UnplayableMediaError(f"No stream found for live station {station_id}")
-        media_url = substreams[self._mirror_choice % len(substreams)]
+        mirror = self._mirror_choice % len(substreams)
+        media_url = substreams[mirror]
         playlist = await self._fetch_playlist(media_url)
         newest = playlist.segments[-1]
         if not newest.widevine_uri or not newest.init_url:
             raise UnplayableMediaError(f"Live station {station_id} offers no Widevine stream")
         data: dict[str, Any] = {
             "media_url": media_url,
+            "mirror": mirror,
             "key_server_url": asset["keyServerUrl"],
             "keys": {},
+            "refused_keys": set(),
             "key_id": newest.key_id,
             "widevine_uri": newest.widevine_uri,
             "init_url": newest.init_url,
@@ -469,21 +468,25 @@ class AppleMusicLiveRadioManager:
     ) -> None:
         """Get a key the playlist announces before the stream reaches it, if that works now."""
         newest = playlist.segments[-1]
-        if not newest.key_id or newest.key_id in data["keys"]:
+        key_id = newest.key_id
+        if not key_id or key_id in data["keys"] or key_id in data["refused_keys"]:
             return
         try:
             await self._load_key(newest, data)
         except (ClientError, TimeoutError, MusicAssistantError) as err:
-            # the segments on the current key still play, the next pass tries again
+            # the segments on the current key still play; only a network or server problem
+            # is worth another request before the stream needs this key
+            if isinstance(err, MusicAssistantError):
+                data["refused_keys"].add(key_id)
             session.license_errors += 1
             self.monitor.event(
                 "key_prepare_error",
                 level=logging.WARNING,
-                key=newest.key_id[:8],
+                key=key_id[:8],
                 error=_describe_error(err),
             )
             return
-        self.monitor.event("key_prepared", key=newest.key_id[:8])
+        self.monitor.event("key_prepared", key=key_id[:8])
 
     async def _switch_key(
         self, segment: LiveSegment, data: dict[str, Any], session: LiveSession
@@ -575,7 +578,7 @@ class AppleMusicLiveRadioManager:
         assets = response.get("results", {}).get("assets") or []
         if not assets:
             raise UnplayableMediaError(f"Apple returned no stream for live station {station_id}")
-        self.monitor.event("assets", station=station_id, url=_safe_url(assets[0]["url"]))
+        self.monitor.event("assets", station=station_id)
         return cast("dict[str, Any]", assets[0])
 
     async def _fetch_playlist(self, url: str) -> LivePlaylist:

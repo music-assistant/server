@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import time
 from collections.abc import Sequence
+from contextlib import aclosing
 from typing import TYPE_CHECKING, Any, cast
 
 import jwt
@@ -433,8 +434,9 @@ class AppleMusicProvider(RecommendationPayloadMixin, MusicProvider):
         :param streamdetails: The StreamDetails from get_stream_details.
         :param seek_position: Ignored, a live station can not seek.
         """
-        async for chunk in self.live_radio_manager.get_audio_stream(streamdetails):
-            yield chunk
+        async with aclosing(self.live_radio_manager.get_audio_stream(streamdetails)) as stream:
+            async for chunk in stream:
+                yield chunk
 
     async def _fetch_recommendation_payload(self) -> list[RecommendationFolder]:
         """Fetch and parse the full recommendations payload (folders with items)."""
