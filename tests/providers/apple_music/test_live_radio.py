@@ -2,17 +2,20 @@
 
 import asyncio
 import struct
+from collections.abc import AsyncGenerator
 from typing import Any, cast
 from unittest.mock import ANY, AsyncMock, MagicMock
 
 import pytest
 from aiohttp import ClientError, ClientResponseError
-from music_assistant_models.enums import MediaType
+from music_assistant_models.enums import MediaType, StreamType
 from music_assistant_models.errors import ResourceTemporarilyUnavailable, UnplayableMediaError
-from music_assistant_models.streamdetails import StreamDetails
+from music_assistant_models.streamdetails import StreamDetails, StreamMetadata
 
+from music_assistant.providers.apple_music import live_radio
 from music_assistant.providers.apple_music.live_radio import (
     RENEW_RETRY_SECONDS,
+    SEGMENT_RETRIES,
     AppleMusicLiveRadioManager,
     LivePlaylist,
     LiveSegment,
@@ -135,9 +138,11 @@ class _Harness:
         self.audio_configs: dict[str, bytes] = {}
         self.key_failures: dict[str, int] = {}
         self.key_error: Exception = TimeoutError()
+        self.key_attempts: dict[str, int] = {}
 
         async def load_key(segment: LiveSegment, data: dict[str, Any]) -> None:
             key_id = cast("str", segment.key_id)
+            self.key_attempts[key_id] = self.key_attempts.get(key_id, 0) + 1
             if self.key_failures.get(key_id, 0) > 0:
                 self.key_failures[key_id] -= 1
                 raise self.key_error
@@ -163,6 +168,8 @@ class _Harness:
                 "media_url": "https://cdn.example/index_1.m3u8",
                 "key_server_url": "https://key.example",
                 "keys": {"k1": (b"k1", MagicMock(audio_config=b"config"))},
+                "refused_keys": set(),
+                "mirror": 0,
                 "key_id": "k1",
                 "init_url": "init",
                 "audio_config": b"config",
@@ -365,6 +372,11 @@ async def test_a_refused_license_renewal_ends_the_stream(monkeypatch: pytest.Mon
     assert harness.radio._get_license.await_count == 1
 
 
+def _cdm() -> MagicMock:
+    """Return the CDM that the license code of the live radio manager gets."""
+    return cast("MagicMock", live_radio.Cdm.from_device.return_value)  # type: ignore[attr-defined]
+
+
 def _license_harness(monkeypatch: pytest.MonkeyPatch, status: int) -> tuple[_Harness, LiveSegment]:
     """Return a harness whose license request gets the given HTTP status."""
     harness = _Harness([_playlist(10, 3)], monkeypatch)
@@ -487,3 +499,359 @@ async def test_a_radio_item_streams_through_the_live_radio_manager() -> None:
 
     assert await AppleMusicProvider.get_stream_details(provider, "ra.1", MediaType.RADIO) is live
     assert await AppleMusicProvider.get_stream_details(provider, "1", MediaType.TRACK) is song
+
+
+class _StreamDetailsApi:
+    """The responses of Apple's catalog, play assets and the CDN for one live station."""
+
+    def __init__(self, harness: _Harness, assets: list[dict[str, Any]], master: str) -> None:
+        provider: Any = harness.radio.provider
+        provider._storefront = "de"
+        provider.api_client.get_data = AsyncMock(
+            side_effect=[
+                {"data": [{"attributes": {"playParams": {"id": "ra.1", "isLive": True}}}]},
+                {"results": {"assets": assets}},
+            ]
+        )
+        self.get_data = provider.api_client.get_data
+        response = MagicMock(text=AsyncMock(return_value=master))
+        mass: Any = harness.radio.mass
+        mass.http_session.get.return_value.__aenter__.return_value = response
+
+
+ASSET = {
+    "url": "https://origin.example/master.m3u8?sig=secret",
+    "keyServerUrl": "https://key.example",
+}
+
+
+def _media_playlist(key: str = "k1") -> LivePlaylist:
+    return _playlist(10, 3, key=key)
+
+
+async def test_stream_details_hold_the_stream_and_the_license_of_this_account(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The asset leads to the playlist, whose newest segment decides the key to load."""
+    harness = _Harness([_media_playlist()], monkeypatch)
+    api = _StreamDetailsApi(harness, [ASSET], MASTER)
+
+    details = await harness.radio.get_stream_details("ra.1")
+
+    assert details.item_id == "ra.1"
+    assert details.media_type == MediaType.RADIO
+    assert details.stream_type == StreamType.CUSTOM
+    assert details.can_seek is False
+    assert details.data["media_url"] == "https://primary.example/index_1.m3u8"
+    assert details.data["mirror"] == 0
+    assert details.data["key_id"] == "k1"
+    assert details.data["audio_config"] == b"config"
+    assert details.data["key_server_url"] == "https://key.example"
+    assert api.get_data.await_args_list[0].args == ("catalog/de/stations/ra.1",)
+    assert api.get_data.await_args_list[1].args == ("play/assets",)
+    assert api.get_data.await_args_list[1].kwargs == {
+        "keyFormat": "web",
+        "id": "ra.1",
+        "isLive": "true",
+    }
+
+
+async def test_stream_details_use_the_other_mirror_after_a_stall(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A stalled stream moves the choice on, which the next start follows."""
+    harness = _Harness([_media_playlist()], monkeypatch)
+    _StreamDetailsApi(harness, [ASSET], MASTER)
+    harness.radio._mirror_choice = 1
+
+    details = await harness.radio.get_stream_details("ra.1")
+
+    assert details.data["media_url"] == "https://backup.example/index_1.m3u8"
+    assert details.data["mirror"] == 1
+
+
+@pytest.mark.parametrize(
+    ("assets", "master", "playlist"),
+    [
+        pytest.param([], MASTER, _media_playlist(), id="no-asset"),
+        pytest.param([ASSET], "#EXTM3U", _media_playlist(), id="no-substream"),
+        pytest.param(
+            [ASSET],
+            MASTER,
+            LivePlaylist(16.0, [LiveSegment(1, "s1", 16.0, None, "k1", None, None)]),
+            id="no-widevine",
+        ),
+    ],
+)
+async def test_stream_details_fail_clearly_without_a_playable_stream(
+    monkeypatch: pytest.MonkeyPatch,
+    assets: list[dict[str, Any]],
+    master: str,
+    playlist: LivePlaylist,
+) -> None:
+    """A station Apple offers no usable stream for is reported as unplayable."""
+    harness = _Harness([playlist], monkeypatch)
+    _StreamDetailsApi(harness, assets, master)
+    with pytest.raises(UnplayableMediaError):
+        await harness.radio.get_stream_details("ra.1")
+
+
+async def test_diagnostics_hold_no_address_of_the_stream(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A whole lookup and playback leaves only the mirror number in the diagnostics."""
+    harness = _Harness([_media_playlist()], monkeypatch)
+    _StreamDetailsApi(harness, [ASSET], MASTER)
+    harness.radio._mirror_choice = 1
+    details = await harness.radio.get_stream_details("ra.1")
+
+    await _read(harness.radio, details, 3)
+
+    diagnostics = harness.radio.monitor.as_dict()
+    for address in ("origin.example", "primary.example", "backup.example", "m3u8", "secret"):
+        assert address not in str(diagnostics)
+    assert diagnostics["sessions"][0]["mirror"] == 1  # type: ignore[index]
+    logger = cast("MagicMock", harness.radio.provider.logger)
+    assert "example" not in str(logger.mock_calls)
+
+
+async def test_live_stations_come_from_the_featured_filter(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The lookup behind the cache asks for the live stations of the storefront."""
+    harness = _Harness([_media_playlist()], monkeypatch)
+    provider: Any = harness.radio.provider
+    provider._storefront = "de"
+    provider.domain = "apple_music"
+    provider.api_client.get_data = AsyncMock(
+        return_value={"data": [{"id": "ra.1", "attributes": {"name": "Club", "isLive": True}}]}
+    )
+
+    get_stations: Any = AppleMusicLiveRadioManager.get_stations
+    stations = await get_stations.__wrapped__(harness.radio)
+
+    assert [(station.item_id, station.name) for station in stations] == [("ra.1", "Club")]
+    provider.api_client.get_data.assert_awaited_once_with(
+        "catalog/de/stations", **{"filter[featured]": "apple-music-live-radio"}
+    )
+
+
+async def test_the_provider_stream_closes_the_whole_chain(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Closing the stream ends the session at once, before a next stream can start."""
+    harness = _Harness([_media_playlist()], monkeypatch)
+    closed: list[str] = []
+    stream_segments = harness.radio._stream_segments
+
+    async def tracked_segments(details: StreamDetails) -> AsyncGenerator[bytes]:
+        try:
+            async for chunk in stream_segments(details):
+                yield chunk
+        finally:
+            closed.append("segments")
+
+    harness.radio._stream_segments = tracked_segments  # type: ignore[method-assign, assignment]
+    provider: Any = MagicMock(live_radio_manager=harness.radio)
+    stream = AppleMusicProvider.get_audio_stream(provider, harness.details)
+
+    assert await anext(stream) == b"init"
+    assert harness.radio.monitor.as_dict()["current_session"] == 1
+    await stream.aclose()
+
+    assert closed == ["segments"]
+    assert harness.radio.monitor.as_dict()["current_session"] is None
+    session = harness.radio.monitor.as_dict()["sessions"][0]  # type: ignore[index]
+    assert session["end_reason"] == "consumer_closed"  # type: ignore[index]
+
+
+async def test_a_new_track_is_scheduled_once_for_when_its_audio_plays(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The same track in later segments is not scheduled again."""
+    harness = _Harness([_media_playlist()], monkeypatch)
+    track = _segment_with_track()
+
+    async def fetch_bytes(url: str) -> bytes:
+        return b"init" if url == "init" else track
+
+    harness.radio._fetch_bytes = fetch_bytes  # type: ignore[method-assign]
+    await _read(harness.radio, harness.details, 3)
+
+    call_later = cast("MagicMock", harness.radio.mass.call_later)
+    call_later.assert_called_once()
+    assert call_later.call_args.kwargs == {"task_id": "apple_music_live_metadata_am"}
+    delay, apply, details, metadata = call_later.call_args.args
+    assert delay == 0
+    assert apply == harness.radio._apply_stream_metadata
+    assert details is harness.details
+    assert (metadata.title, metadata.artist) == ("Song", "Artist")
+    session = harness.radio.monitor.as_dict()["sessions"][0]  # type: ignore[index]
+    assert session["stream_title"] == "Artist - Song"  # type: ignore[index]
+
+
+async def test_metadata_waits_for_the_audio_sent_ahead_of_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Audio the player still has to play delays the new title by that long."""
+    harness = _Harness([_media_playlist()], monkeypatch)
+    session = harness.radio.monitor.start_session("ra.1")
+    session.audio_seconds_sent = 40.0
+    monkeypatch.setattr(f"{MODULE}.time.monotonic", lambda: 110.0)
+
+    harness.radio._schedule_stream_metadata(
+        harness.details, StreamMetadata(title="Song", artist="Artist"), session, 100.0
+    )
+
+    assert cast("MagicMock", harness.radio.mass.call_later).call_args.args[0] == 30.0
+
+
+def test_applied_metadata_updates_the_queue(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The title is published on the stream details and the queue is told."""
+    harness = _Harness([_media_playlist()], monkeypatch)
+    harness.details.queue_id = "queue"
+    metadata = StreamMetadata(title="Song")
+
+    harness.radio._apply_stream_metadata(harness.details, metadata)
+
+    assert harness.details.stream_metadata == metadata
+    assert harness.details.stream_metadata_last_updated is not None
+    cast("MagicMock", harness.radio.mass.player_queues.signal_update).assert_called_once_with(
+        "queue"
+    )
+
+
+async def test_a_failing_segment_is_retried(monkeypatch: pytest.MonkeyPatch) -> None:
+    """One bad answer costs a retry and no audio."""
+    harness = _Harness([_media_playlist()], monkeypatch)
+    harness.radio._fetch_bytes = AsyncMock(  # type: ignore[method-assign]
+        side_effect=[TimeoutError(), _http_error(503), b"audio"]
+    )
+    monkeypatch.setattr(f"{MODULE}.asyncio.sleep", AsyncMock())
+    session = harness.radio.monitor.start_session("ra.1")
+
+    content = await harness.radio._fetch_segment(_playlist(10, 1).segments[0], session)
+
+    assert content == b"audio"
+    assert session.segment_errors == 2
+    assert session.segments_skipped == 0
+    assert "secret" not in str(harness.radio.monitor.as_dict())
+
+
+async def test_a_segment_that_stays_away_is_counted_as_lost(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """After the retries the stream moves on, which the monitor records."""
+    harness = _Harness([_media_playlist()], monkeypatch)
+    harness.radio._fetch_bytes = AsyncMock(  # type: ignore[method-assign]
+        side_effect=TimeoutError()
+    )
+    monkeypatch.setattr(f"{MODULE}.asyncio.sleep", AsyncMock())
+    session = harness.radio.monitor.start_session("ra.1")
+
+    content = await harness.radio._fetch_segment(_playlist(10, 1).segments[0], session)
+
+    assert content is None
+    assert session.segment_errors == SEGMENT_RETRIES
+    assert session.segments_skipped == 1
+    assert "segment_lost" in harness.events()
+
+
+async def test_a_live_playlist_is_read_from_the_cdn(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The login of the account is not sent to the CDN, and an empty playlist is an error."""
+    harness = _Harness([_media_playlist()], monkeypatch)
+    fetch_playlist: Any = AppleMusicLiveRadioManager._fetch_playlist
+    mass: Any = harness.radio.mass
+    response = MagicMock(text=AsyncMock(return_value=MEDIA))
+    mass.http_session.get.return_value.__aenter__.return_value = response
+
+    playlist = await fetch_playlist(harness.radio, f"{BASE}index.m3u8")
+
+    assert [segment.sequence for segment in playlist.segments] == [100, 101]
+    assert "authorization" not in mass.http_session.get.call_args.kwargs["headers"]
+    response.text = AsyncMock(return_value="#EXTM3U")
+    with pytest.raises(UnplayableMediaError):
+        await fetch_playlist(harness.radio, f"{BASE}index.m3u8")
+
+
+async def test_a_granted_license_gives_the_key_of_the_segment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Loading a key stores it with its encryption settings and the renewal interval."""
+    harness, segment = _license_harness(monkeypatch, 200)
+    segment.init_url = "init"
+    response = harness.radio.mass.http_session.post.return_value.__aenter__.return_value  # type: ignore[attr-defined]
+    response.raise_for_status.side_effect = None
+    response.json = AsyncMock(return_value={"status": 0, "license": "granted", "renew-after": 780})
+    cdm = _cdm()
+    cdm.get_keys.return_value = [
+        MagicMock(type="SIGNING"),
+        MagicMock(type="CONTENT", key=bytes.fromhex("aabb"), kid=MagicMock(hex="k1")),
+    ]
+    encryption = MagicMock(key_id="k1")
+    monkeypatch.setattr(f"{MODULE}.parse_init_segment", MagicMock(return_value=encryption))
+    data: dict[str, Any] = {"key_server_url": "https://key.example", "keys": {}, "renew_after": 0}
+
+    load_key: Any = AppleMusicLiveRadioManager._load_key
+    await load_key(harness.radio, segment, data)
+
+    assert data["keys"]["k1"] == (bytes.fromhex("aabb"), encryption)
+    assert data["renew_after"] == 780.0
+    cdm.parse_license.assert_called_once()
+    cdm.close.assert_called_once()
+    post = cast("MagicMock", harness.radio.mass.http_session.post)
+    assert post.call_args.args == ("https://key.example",)
+    body = post.call_args.kwargs["json"]
+    assert body["key-system"] == "com.widevine.alpha"
+    assert body["uri"] == WV
+    assert post.call_args.kwargs["headers"]["x-apple-music-user-token"] == "token"
+    assert "license_key_mismatch" not in harness.events()
+    assert "init_key_mismatch" not in harness.events()
+
+
+@pytest.mark.parametrize(
+    "answer",
+    [{"status": 1, "errorCode": 5, "license": "x"}, {"status": 0}],
+    ids=["refused", "no-license"],
+)
+async def test_an_answer_without_a_license_is_a_refusal(
+    monkeypatch: pytest.MonkeyPatch, answer: dict[str, Any]
+) -> None:
+    """Apple can refuse inside a successful HTTP answer, the CDM session is closed anyway."""
+    harness, segment = _license_harness(monkeypatch, 200)
+    response = harness.radio.mass.http_session.post.return_value.__aenter__.return_value  # type: ignore[attr-defined]
+    response.raise_for_status.side_effect = None
+    response.json = AsyncMock(return_value=answer)
+    cdm = _cdm()
+
+    with pytest.raises(UnplayableMediaError):
+        await harness.radio._get_license("https://key.example", segment)
+
+    assert "license_refused" in harness.events()
+    cdm.close.assert_called_once()
+
+
+async def test_a_refused_next_key_is_not_requested_on_every_pass(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """While the stream has not reached the key, a refusal costs one request."""
+    announced = _playlist(11, 2, key="k2")
+    harness = _Harness(
+        [_playlist(10, 3), announced, announced, announced, _playlist(13, 1)], monkeypatch
+    )
+    harness.key_failures["k2"] = 99
+    harness.key_error = UnplayableMediaError("Apple refused the live radio license")
+
+    chunks = await _read(harness.radio, harness.details, 5)
+
+    assert chunks[-1] == b"s13:k1"
+    assert harness.key_attempts["k2"] == 1
+
+
+async def test_a_temporary_failure_of_the_next_key_is_tried_on_every_pass(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A network problem may pass, so the key is requested again."""
+    announced = _playlist(11, 2, key="k2")
+    harness = _Harness(
+        [_playlist(10, 3), announced, announced, announced, _playlist(13, 1)], monkeypatch
+    )
+    harness.key_failures["k2"] = 99
+
+    await _read(harness.radio, harness.details, 5)
+
+    assert harness.key_attempts["k2"] == 3

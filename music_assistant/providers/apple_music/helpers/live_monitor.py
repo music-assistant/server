@@ -23,7 +23,7 @@ class LiveSession:
     session: int
     station_id: str
     started_at: str
-    substream: str = ""
+    mirror: int = 0
     key_id: str = ""
     segments_sent: int = 0
     audio_seconds_sent: float = 0.0
