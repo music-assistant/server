@@ -122,9 +122,9 @@ class AuracastPlayer(Player):
         self._broadcaster = AuracastBroadcaster(
             BroadcastConfig(
                 name=self._attr_name,
-                transport_spec=(
-                    f"serial:{self._serial_port},"
-                    f"{provider.config.get_value(CONF_BAUDRATE, DEFAULT_BAUDRATE)}"
+                serial_port=self._serial_port,
+                baudrate=int(
+                    cast("int", provider.config.get_value(CONF_BAUDRATE, DEFAULT_BAUDRATE))
                 ),
                 manufacturer_data=parse_manufacturer_data(
                     cast(

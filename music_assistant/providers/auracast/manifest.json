@@ -8,6 +8,7 @@
   "tier": "community",
   "requirements": [
     "bumble==0.0.235",
+    "serialx==1.15.1",
     "lc3py @ git+https://github.com/google/liblc3.git@v1.1.3"
   ],
   "documentation": "https://music-assistant.io/player-support/auracast/",

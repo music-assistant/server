@@ -4,13 +4,10 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import os
-from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption
 from music_assistant_models.enums import ConfigEntryType
-from serial.tools import list_ports
 
 from music_assistant.models.setup_flow import SetupFlowError
 
@@ -24,8 +21,8 @@ from .constants import (
     DEFAULT_BROADCAST_NAME,
     MAX_BAUDRATE,
     MIN_BAUDRATE,
-    SUPPORTED_USB_IDS,
 )
+from .serial_hci import list_controller_ports
 from .validators import validate_baudrate, validate_broadcast_name, validate_manufacturer_data
 
 if TYPE_CHECKING:
@@ -35,7 +32,6 @@ if TYPE_CHECKING:
 
 LOGGER = logging.getLogger(__name__)
 PROBE_TIMEOUT = 15
-SERIAL_BY_ID_DIR = Path("/dev/serial/by-id")
 
 
 async def run_setup(session: SetupSession) -> None:
@@ -77,7 +73,7 @@ async def _configure_controller(session: SetupSession, released_players: list[Pl
 
     errors: dict[str, str | SetupFlowError] | None = None
     while True:
-        ports = await asyncio.to_thread(list_serial_ports, current_port)
+        ports = await asyncio.to_thread(list_controller_ports, current_port)
         if not ports:
             raise SetupFlowError("No supported Auracast controller was found on this host")
         selected_port = str(setup_data.get(CONF_SERIAL_PORT) or "")
@@ -151,36 +147,6 @@ async def _configure_controller(session: SetupSession, released_players: list[Pl
                     session.mass.config.set_raw_provider_config_value(
                         reconfigure_instance_id, key, value
                     )
-
-
-def list_serial_ports(current_port: str = "") -> dict[str, str]:
-    """
-    Return the supported controllers' serial ports, keyed by stable device path.
-
-    Only USB devices whose vendor and product ID are in SUPPORTED_USB_IDS are listed, so other
-    serial devices (e.g. Zigbee or Z-Wave sticks) are never offered. The `/dev/serial/by-id`
-    path is used where available, as it survives re-plugging and reboots.
-
-    :param current_port: The port of an already configured controller, always included.
-    """
-    ports = {
-        _stable_device_path(port.device): f"{port.description} ({port.device})"
-        for port in sorted(list_ports.comports(), key=lambda port: port.device)
-        if (port.vid, port.pid) in SUPPORTED_USB_IDS
-    }
-    if current_port and current_port not in ports:
-        ports[current_port] = current_port
-    return ports
-
-
-def _stable_device_path(device: str) -> str:
-    """Return the `/dev/serial/by-id` link of a serial device, or the device itself."""
-    if SERIAL_BY_ID_DIR.is_dir():
-        real_device = os.path.realpath(device)
-        for link in sorted(SERIAL_BY_ID_DIR.iterdir()):
-            if os.path.realpath(link) == real_device:
-                return str(link)
-    return device
 
 
 async def _verify_controller(

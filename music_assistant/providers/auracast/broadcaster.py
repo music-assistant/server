@@ -7,11 +7,14 @@ import logging
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
-from bumble import core, device, hci, transport
+import serialx
+from bumble import core, device, hci
 from bumble.core import AdvertisingData
 from bumble.profiles import bap, le_audio, pbp
 from lc3 import BaseError as LC3Error
 from lc3 import Encoder
+
+from .serial_hci import open_hci_transport
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable
@@ -21,8 +24,8 @@ LC3_BITRATE = 160_000
 CONTROLLER_STACK_SETUP_KEY = "_controller_stack"
 TEARDOWN_STEP_TIMEOUT = 2.0
 DRAIN_TIMEOUT = 2.0
-# Errors raised by Bumble, the serial transport (OSError, including timeouts) and liblc3
-BROADCAST_ERRORS = (core.BaseBumbleError, LC3Error, OSError)
+# Errors raised by Bumble, the serial transport (serialx and OSError, including timeouts) and liblc3
+BROADCAST_ERRORS = (core.BaseBumbleError, LC3Error, OSError, serialx.SerialException)
 REQUIRED_LE_FEATURES = {
     "LE Periodic Advertising": hci.LeFeatureMask.LE_PERIODIC_ADVERTISING,
     "LE Extended Advertising": hci.LeFeatureMask.LE_EXTENDED_ADVERTISING,
@@ -81,7 +84,7 @@ async def probe_controller(serial_port: str, baudrate: int) -> ControllerProbeRe
     controller_device: device.Device | None = None
     try:
         LOGGER.debug("Opening Auracast controller probe on %s at %d baud", serial_port, baudrate)
-        controller_transport = await transport.open_transport(f"serial:{serial_port},{baudrate}")
+        controller_transport = await open_hci_transport(serial_port, baudrate)
         hci_source, hci_sink = controller_transport
         controller_device = device.Device.from_config_with_hci(
             device.DeviceConfiguration(name="Auracast setup probe"), hci_source, hci_sink
@@ -164,7 +167,8 @@ class BroadcastConfig:
     """Settings used to create the Bluetooth LE Audio broadcast."""
 
     name: str
-    transport_spec: str
+    serial_port: str
+    baudrate: int
     manufacturer_data: dict[int, bytes] | None = None
     broadcast_id: int = 0
     device_address: str | None = None
@@ -219,17 +223,18 @@ class AuracastBroadcaster:
         started = False
         try:
             LOGGER.debug(
-                "Starting Auracast broadcast %r over %s: LC3 bitrate=%d, sample_rate=%d, "
+                "Starting Auracast broadcast %r over %s at %d baud: LC3 bitrate=%d, sample_rate=%d, "
                 "channels=%d, broadcast_id=0x%06X",
                 config.name,
-                config.transport_spec,
+                config.serial_port,
+                config.baudrate,
                 LC3_BITRATE,
                 config.sample_rate,
                 config.channels,
                 config.broadcast_id,
             )
-            self._transport = await transport.open_transport(config.transport_spec)
-            LOGGER.debug("Opened Auracast HCI transport: %s", config.transport_spec)
+            self._transport = await open_hci_transport(config.serial_port, config.baudrate)
+            LOGGER.debug("Opened Auracast HCI transport: %s", config.serial_port)
             hci_source, hci_sink = self._transport
             self._device = device.Device.from_config_with_hci(
                 device.DeviceConfiguration(

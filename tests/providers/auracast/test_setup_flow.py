@@ -3,12 +3,10 @@
 from __future__ import annotations
 
 import asyncio
-from pathlib import Path
 from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock, call
 
 import pytest
-from serial.tools import list_ports
 
 from music_assistant.models.setup_flow import SetupFlowError
 from music_assistant.providers.auracast import setup_flow
@@ -37,53 +35,7 @@ def create_session(
 
 def patch_ports(monkeypatch: pytest.MonkeyPatch, ports: dict[str, str]) -> None:
     """Replace serial port listing with the given device-to-label mapping."""
-    monkeypatch.setattr(setup_flow, "list_serial_ports", lambda _current="": ports)
-
-
-def test_list_serial_ports_only_offers_supported_controllers(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    """Offer only allowlisted USB controllers and keep the configured port selectable."""
-    monkeypatch.setattr(setup_flow, "SERIAL_BY_ID_DIR", tmp_path / "missing")
-    monkeypatch.setattr(setup_flow, "SUPPORTED_USB_IDS", frozenset({(0x1915, 0x521F)}))
-    monkeypatch.setattr(
-        list_ports,
-        "comports",
-        lambda: [
-            MagicMock(device="/dev/ttyUSB1", description="Controller", vid=0x1915, pid=0x521F),
-            MagicMock(device="/dev/ttyS0", description="n/a", vid=None, pid=None),
-            MagicMock(device="/dev/ttyACM0", description="Zigbee stick", vid=0x10C4, pid=0xEA60),
-            MagicMock(device="/dev/ttyACM1", description="Other Nordic", vid=0x1915, pid=0x0001),
-        ],
-    )
-
-    assert setup_flow.list_serial_ports("/dev/missing") == {
-        "/dev/ttyUSB1": "Controller (/dev/ttyUSB1)",
-        "/dev/missing": "/dev/missing",
-    }
-
-
-def test_list_serial_ports_returns_stable_by_id_path(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    """Store the /dev/serial/by-id link instead of the re-plug dependent tty name."""
-    real_device = tmp_path / "ttyACM0"
-    real_device.touch()
-    by_id_dir = tmp_path / "by-id"
-    by_id_dir.mkdir()
-    link = by_id_dir / "usb-Controller_1234-if00"
-    link.symlink_to(real_device)
-    monkeypatch.setattr(setup_flow, "SERIAL_BY_ID_DIR", by_id_dir)
-    monkeypatch.setattr(setup_flow, "SUPPORTED_USB_IDS", frozenset({(0x1915, 0x521F)}))
-    monkeypatch.setattr(
-        list_ports,
-        "comports",
-        lambda: [
-            MagicMock(device=str(real_device), description="Controller", vid=0x1915, pid=0x521F)
-        ],
-    )
-
-    assert setup_flow.list_serial_ports() == {str(link): f"Controller ({real_device})"}
+    monkeypatch.setattr(setup_flow, "list_controller_ports", lambda _current="": ports)
 
 
 @pytest.mark.asyncio
