@@ -8,6 +8,7 @@ radio/podcast stream details, and listen logging callbacks.
 from __future__ import annotations
 
 import hashlib
+import json
 import uuid
 from collections.abc import AsyncGenerator
 from datetime import UTC, datetime
@@ -16,20 +17,43 @@ from typing import TYPE_CHECKING, NoReturn
 
 from aiohttp import ClientTimeout
 from Crypto.Cipher import Blowfish
+from deezer_python_gql import GraphQLClientError
+from deezer_python_gql.generated.enums import MediaTypeInput
+from deezer_python_gql.generated.input_types import (
+    PushQueueContextInput,
+    PushQueueMediaInput,
+    PushQueueStateClientDetailsInput,
+    PushQueueStateInput,
+)
+from deezer_python_gql.generated.push_queue_state import (
+    PushQueueStatePushQueueStatePushQueueStateOutput,
+)
 from music_assistant_models.enums import ContentType, MediaType, StreamType
 from music_assistant_models.errors import AudioError, MediaNotFoundError
 from music_assistant_models.media_items import AudioFormat, MediaItemType
 from music_assistant_models.streamdetails import StreamDetails
 
 from music_assistant.helpers.app_vars import app_var
-from music_assistant.helpers.datetime import utc_timestamp
+from music_assistant.helpers.datetime import utc, utc_timestamp
 
-from .constants import DECRYPT_KEY_ERROR, DECRYPT_KEY_LENGTH, LISTEN_CONTEXT_TYPES
+from .constants import (
+    CONF_SYNC_QUEUE,
+    DECRYPT_KEY_ERROR,
+    DECRYPT_KEY_LENGTH,
+    LISTEN_CONTEXT_TYPES,
+    QUEUE_SYNC_CONFIGURATION,
+    QUEUE_SYNC_REPEAT_MODES,
+    QUEUE_SYNC_SIZE,
+)
 from .gw_client import DeezerGWError
 from .helpers import fetch_all_audiobook_chapter_edges, fetch_all_bookmarks
 from .parsers import parse_date
 
 if TYPE_CHECKING:
+    from music_assistant_models.media_items import ItemMapping
+    from music_assistant_models.player_queue import PlayerQueue
+    from music_assistant_models.queue_item import QueueItem
+
     from .provider import DeezerProvider
 
 
@@ -43,6 +67,9 @@ class DeezerStreamingManager:
         self.instance_id = provider.instance_id
         self.domain = provider.domain
         self.logger = provider.logger
+        # the Deezer queue state this account saved last, and the queue item it was saved for
+        self._queue_state_version: str | None = None
+        self._synced_queue_item: str | None = None
 
     # -- Resume position --
 
@@ -80,11 +107,13 @@ class DeezerStreamingManager:
         is_playing: bool = False,
     ) -> None:
         """
-        Handle callback when a podcast episode has been played or is playing.
+        Handle callback when a podcast episode or track has been played or is playing.
 
-        Syncs playback progress back to Deezer's bookmark/play-state system.
-        Only handles podcast episodes — Deezer's Pipe API has no track listen logging.
+        Syncs podcast progress back to Deezer's bookmark/play-state system, and a playing
+        track's queue to the queue the Deezer apps continue (when enabled).
         """
+        if media_type == MediaType.TRACK and self.provider.config.get_value(CONF_SYNC_QUEUE):
+            await self._sync_queue_state(prov_item_id, position, is_playing)
         if media_type != MediaType.PODCAST_EPISODE:
             return
         if fully_played:
@@ -395,11 +424,16 @@ class DeezerStreamingManager:
             ),
             None,
         )
-        if (
-            not queue_item
-            or not queue_item.origin
-            or not (container := queue_item.origin.container)
-        ):
+        if not queue_item or not queue_item.origin:
+            return None
+        if not (context := await self._deezer_context(queue_item.origin.container)):
+            return None
+        context_type, item_id = context
+        return {"t": context_type, "id": item_id, "c": item_id}
+
+    async def _deezer_context(self, container: ItemMapping | None) -> tuple[str, str] | None:
+        """Return the Deezer context type and id of the album, artist or playlist given."""
+        if not container:
             return None
         if (context_type := LISTEN_CONTEXT_TYPES.get(container.media_type)) is None:
             return None
@@ -423,7 +457,117 @@ class DeezerStreamingManager:
         # Flow and the other virtual playlists have no Deezer page to name
         if not item_id or not item_id.isdigit():
             return None
-        return {"t": context_type, "id": item_id, "c": item_id}
+        return context_type, item_id
+
+    async def _sync_queue_state(self, prov_item_id: str, position: int, is_playing: bool) -> None:
+        """Save the queue playing this track as the queue the Deezer apps continue."""
+        queue = next(
+            (
+                queue
+                for queue in self.mass.player_queues.all()
+                if queue.current_item
+                and (streamdetails := queue.current_item.streamdetails)
+                and streamdetails.provider == self.instance_id
+                and streamdetails.item_id == prov_item_id
+            ),
+            None,
+        )
+        if queue is None or queue.current_item is None:
+            return
+        queue_item_id = queue.current_item.queue_item_id
+        # a playing track reports every 30 seconds, its queue is saved once
+        if is_playing and queue_item_id == self._synced_queue_item:
+            return
+        self._synced_queue_item = queue_item_id if is_playing else None
+        try:
+            await self._push_queue_state(queue, position)
+        except GraphQLClientError as err:
+            self.logger.debug("Deezer did not take the queue state: %s", err)
+
+    async def _push_queue_state(self, queue: PlayerQueue, position: int) -> None:
+        """Push the queue from its current track on, the way a Deezer app saves its own."""
+        media: list[PushQueueMediaInput] = []
+        contexts: dict[str, PushQueueContextInput] = {}
+        resolved: dict[str | None, tuple[str, str] | None] = {}
+        for item in self.mass.player_queues.items(
+            queue.queue_id, QUEUE_SYNC_SIZE, queue.current_index or 0
+        ):
+            if (track_id := self._deezer_track_id(item)) is None:
+                continue
+            container = item.origin.container if item.origin else None
+            key = container.uri if container else None
+            if key not in resolved:
+                resolved[key] = await self._deezer_context(container)
+            context_id = None
+            if context := resolved[key]:
+                context_type, item_id = context
+                content = json.dumps(
+                    {
+                        "ctxId": item_id,
+                        "ctxT": context_type,
+                        "ctxC": item_id,
+                        "lt": "music_on_demand",
+                        "pipeTrackType": "full",
+                        "version": 2,
+                    },
+                    separators=(",", ":"),
+                )
+                if content not in contexts:
+                    contexts[content] = PushQueueContextInput(
+                        id=str(len(contexts)), content=content
+                    )
+                context_id = contexts[content].id
+            media.append(
+                PushQueueMediaInput(
+                    id=track_id,
+                    type=MediaTypeInput.TRACK,
+                    contextId=context_id,
+                    localQueueItemId=item.queue_item_id,
+                    unshuffledPosition=len(media),
+                )
+            )
+        if not media:
+            return
+        state = PushQueueStateInput(
+            clientDetails=PushQueueStateClientDetailsInput(
+                localQueueID=queue.queue_id,
+                locallyUpdatedAt=utc().isoformat(timespec="milliseconds"),
+            ),
+            mediaList=media,
+            position=0,
+            progressMS=position * 1000,
+            previousVersion=self._queue_state_version,
+            queueConfiguration=QUEUE_SYNC_CONFIGURATION,
+            repeatMode=QUEUE_SYNC_REPEAT_MODES[queue.repeat_mode],
+            contexts=list(contexts.values()),
+        )
+        # a Deezer app may have saved its queue since, then push on top of its version
+        for _ in range(2):
+            result = await self.provider.gql_client.push_queue_state(input=state)
+            if isinstance(result, PushQueueStatePushQueueStatePushQueueStateOutput):
+                self._queue_state_version = result.version
+                return
+            if not result.conflict or not result.conflict.current:
+                return
+            state = state.model_copy(update={"previous_version": result.conflict.current.version})
+
+    def _deezer_track_id(self, item: QueueItem) -> str | None:
+        """Return the Deezer id of a queue item this account can play, if it has one."""
+        if (streamdetails := item.streamdetails) and streamdetails.provider == self.instance_id:
+            track_id: str | None = streamdetails.item_id
+        elif item.media_type == MediaType.TRACK and item.media_item:
+            track_id = next(
+                (
+                    mapping.item_id
+                    for mapping in item.media_item.provider_mappings
+                    if mapping.provider_instance == self.instance_id and mapping.available
+                ),
+                None,
+            )
+        else:
+            return None
+        # personal uploads (negative ids) are left out
+        return track_id if track_id and track_id.isdigit() else None
 
     # -- Decryption helpers --
 
