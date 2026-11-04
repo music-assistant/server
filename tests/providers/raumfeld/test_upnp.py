@@ -61,3 +61,16 @@ async def test_tunein_and_tidal_are_listed_as_to_the_raumfeld_app(
         await upnp.browse(MagicMock(), _SERVER, object_id, children=children)
     headers = requester.call_args.kwargs["http_headers"]
     assert (headers is not None) == app_headers
+
+
+@pytest.mark.parametrize(
+    ("reply", "version"), [({"SoftwareVersion": "2.21.0"}, "2.21.0"), ({}, None)]
+)
+async def test_the_software_version_is_read_from_the_setup_service(
+    reply: dict[str, str], version: str | None
+) -> None:
+    """A speaker that gives no version reads as unknown."""
+    action = MagicMock()
+    action.async_call = AsyncMock(return_value=reply)
+    with patch.object(upnp, "UpnpFactory", _factory(action)):
+        assert await upnp.get_software_version(MagicMock(), _SERVER) == version

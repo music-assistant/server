@@ -348,6 +348,7 @@ def _host_room_player() -> RaumfeldPlayer:
     provider.room_model = MagicMock(  # type: ignore[attr-defined]
         return_value="Raumfeld Soundbar"
     )
+    provider.room_software_version = MagicMock(return_value="2.21.0")  # type: ignore[attr-defined]
     host = MagicMock()
     host.power_state.return_value = "MANUAL_STANDBY"
     provider.host = host  # type: ignore[attr-defined]
@@ -363,6 +364,18 @@ def test_room_on_the_host_gets_its_ip_identifier() -> None:
     player = _host_room_player()
     assert player.device_info.identifiers[IdentifierType.IP_ADDRESS] == "192.168.1.41"
     assert player.device_info.model == "Raumfeld Soundbar"
+    assert player.device_info.software_version == "2.21.0"
+
+
+def test_a_software_version_read_later_is_shown() -> None:
+    """A version read after the player was made replaces the one shown; an unread one does not."""
+    player = _host_room_player()
+    with patch.object(player, "update_state") as update_state:
+        player.set_software_version("2.22.0")
+        player.set_software_version(None)
+        player.set_software_version("2.22.0")
+    assert player.device_info.software_version == "2.22.0"
+    update_state.assert_called_once()
     assert player.powered is False
 
 
