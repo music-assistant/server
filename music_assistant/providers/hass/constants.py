@@ -45,6 +45,14 @@ class MediaPlayerEntityFeature(IntFlag):
     MEDIA_ENQUEUE = 2097152
 
 
+class AITaskEntityFeature(IntFlag):
+    """Supported features of the AI task entity."""
+
+    GENERATE_DATA = 1
+    SUPPORT_ATTACHMENTS = 2
+    GENERATE_IMAGE = 4
+
+
 StateMap = {
     "playing": PlaybackState.PLAYING,
     "paused": PlaybackState.PAUSED,

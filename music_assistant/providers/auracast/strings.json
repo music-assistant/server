@@ -1,0 +1,23 @@
+{
+  "manifest": {
+    "description": "Broadcast Music Assistant audio over Bluetooth LE Audio Auracast."
+  },
+  "config_entries": {
+    "serial_port": {
+      "label": "Serial port",
+      "description": "UART device used by the Bumble Bluetooth controller."
+    },
+    "baudrate": {
+      "label": "Serial baud rate",
+      "description": "UART baud rate used by the Bluetooth controller."
+    },
+    "broadcast_name": {
+      "label": "Broadcast name",
+      "description": "Name shown to nearby Auracast receivers."
+    },
+    "manufacturer_data": {
+      "label": "Manufacturer data",
+      "description": "Optional company ID and hex payload as ID:HEX. Separate multiple entries with semicolons."
+    }
+  }
+}

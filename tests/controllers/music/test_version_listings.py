@@ -76,7 +76,11 @@ async def test_versions_are_searched_for_once(
         return _names(await ctrl.versions("x", provider, **kwargs))
 
     with (
-        patch.object(mass, "get_provider", return_value=SimpleNamespace(instance_id="qobuz_1")),
+        patch.object(
+            mass,
+            "get_provider",
+            return_value=SimpleNamespace(instance_id="qobuz_1", available=True),
+        ),
         patch.object(ctrl, "_assemble_versions", assemble),
     ):
         # the order the providers list them in
@@ -102,7 +106,9 @@ async def test_versions_of_a_library_item_are_searched_for_once(
         for _ in range(2):
             assert _names(await ctrl.versions("1", "library")) == ["Zebra", "Apple", "Mango"]
         with patch.object(
-            mass, "get_provider", return_value=SimpleNamespace(instance_id="qobuz_1")
+            mass,
+            "get_provider",
+            return_value=SimpleNamespace(instance_id="qobuz_1", available=True),
         ):
             await ctrl.versions("1", "qobuz_1")
     assert [call.args for call in assemble.await_args_list] == [

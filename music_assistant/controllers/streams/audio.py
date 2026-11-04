@@ -2426,10 +2426,12 @@ class StreamsAudio:
                         first_part_written / pcm_format.pcm_sample_size,
                         crossfade_timing.post_crossfade_duration,
                     )
+                    # the tail play-out and the mix's pre-fade plus overlap are pulled at
+                    # playback pace inside this interval: it is mostly audio played, not work
                     crossfade_elapsed = asyncio.get_event_loop().time() - crossfade_start_time
                     self.logger.debug(
                         "Stored crossfade data for queue %s"
-                        " - next queue_item_id: %s (preparation took %.1fs)",
+                        " - next queue_item_id: %s (%.1fs after the outgoing source ended)",
                         queue.display_name,
                         next_queue_item.queue_item_id,
                         crossfade_elapsed,
