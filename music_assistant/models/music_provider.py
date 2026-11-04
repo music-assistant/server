@@ -186,9 +186,9 @@ class ProviderStreamHeldError(ProviderStreamLimitError, ProviderStreamHeldErrorB
     Raised when another player's playback holds the last source-stream slot of a provider.
 
     A realtime source keeps its slot until its item ends, so waiting for one is pointless:
-    the request is refused right away, naming the player to stop. A ProviderStreamLimitError
-    to every caller that handles capacity, with the error code and data of the shared model
-    on the wire so a client can act on it.
+    the request is refused right away, naming the player to stop. Callers handle it like any
+    ProviderStreamLimitError; API clients get its own error code and ``data`` naming the
+    holding player.
     """
 
     translation_key = "provider_stream_held"

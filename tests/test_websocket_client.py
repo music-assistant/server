@@ -236,7 +236,6 @@ async def test_impersonated_command_runs_as_the_target(
         assert _sent_result(client) == ran_as
 
 
-@pytest.mark.asyncio
 async def test_an_errors_structured_data_reaches_the_client() -> None:
     """Data a client acts on travels with the error result, next to the message."""
     handler = APICommandHandler.parse("test/held", _held_command)
@@ -250,6 +249,7 @@ async def test_an_errors_structured_data_reaches_the_client() -> None:
     assert message.data == {"queue_id": "k"}
 
 
+@pytest.mark.asyncio
 async def test_user_scoped_command_rejects_guest() -> None:
     """A guest must not be able to invoke commands gated on a user-only scope."""
     client = _create_client(UserRole.GUEST, _command_handler(required_scope=Scope.USERS_INVITE))

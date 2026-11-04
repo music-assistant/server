@@ -28,7 +28,11 @@ from music_assistant_models.streamdetails import StreamDetails
 
 from music_assistant.controllers.streams.audio import StreamsAudio
 from music_assistant.controllers.streams.audio_buffer import AudioBuffer
-from music_assistant.models.music_provider import MusicProvider, ProviderStreamLimitError
+from music_assistant.models.music_provider import (
+    MusicProvider,
+    ProviderStreamHeldError,
+    ProviderStreamLimitError,
+)
 from tests.common import set_music_source_access
 
 BUSY_INSTANCE = "service--busy"
@@ -85,6 +89,13 @@ def _limit_error(instance: str) -> ProviderStreamLimitError:
     provider.name = "Limited"
     provider.instance_id = instance
     return ProviderStreamLimitError(provider, 0)
+
+
+def _holder(queue_id: str) -> MagicMock:
+    """Build a queue double whose realtime playback holds a provider's slot."""
+    holder = MagicMock(queue_id=queue_id)
+    holder.display_name = queue_id
+    return holder
 
 
 def _music_provider(instance: str, has_slot: bool) -> MagicMock:
@@ -424,6 +435,67 @@ async def test_all_candidates_busy_ends_in_one_blocking_pass_on_the_best_one(
     # the single blocking wait is spent on the highest quality mapping, not the last tried
     probed = [call.kwargs["streamdetails"].provider for call in get_buffer.await_args_list]
     assert probed == [BUSY_INSTANCE, FALLBACK_INSTANCE, BUSY_INSTANCE]
+
+
+async def test_a_held_account_still_lets_another_account_play_the_item(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A realtime holder on one account refuses nothing while another account can serve."""
+    queue_item = _queue_item(
+        _mapping(BUSY_INSTANCE, ContentType.FLAC),
+        _mapping(FALLBACK_INSTANCE),
+    )
+    queue_item.streamdetails = _streamdetails(BUSY_INSTANCE)
+    providers = {
+        BUSY_INSTANCE: _music_provider(BUSY_INSTANCE, has_slot=False),
+        FALLBACK_INSTANCE: _music_provider(FALLBACK_INSTANCE, has_slot=True),
+    }
+    mass = _mass(providers)
+    mass.player_queues.playing_stream_slot_holder.side_effect = lambda instance, _queue_id: (
+        _holder("living_room") if instance == BUSY_INSTANCE else None
+    )
+    audio = StreamsAudio(mass)
+    expected_buffer = MagicMock(spec=AudioBuffer)
+    get_buffer = AsyncMock(side_effect=[_limit_error(BUSY_INSTANCE), expected_buffer])
+    monkeypatch.setattr(AudioBuffer, "get_buffer", get_buffer)
+
+    result = await audio.get_audio_buffer(queue_item, reason="streaming", capacity_wait_timeout=1)
+
+    assert result is expected_buffer
+    assert queue_item.streamdetails is not None
+    assert queue_item.streamdetails.provider == FALLBACK_INSTANCE
+
+
+async def test_every_account_held_is_refused_instead_of_the_blocking_pass(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """With a realtime holder on every account, the final pass refuses rather than waits."""
+    queue_item = _queue_item(
+        _mapping(BUSY_INSTANCE, ContentType.FLAC),
+        _mapping(FALLBACK_INSTANCE),
+    )
+    queue_item.streamdetails = _streamdetails(BUSY_INSTANCE)
+    providers = {
+        BUSY_INSTANCE: _music_provider(BUSY_INSTANCE, has_slot=False),
+        FALLBACK_INSTANCE: _music_provider(FALLBACK_INSTANCE, has_slot=False),
+    }
+    mass = _mass(providers)
+    mass.player_queues.playing_stream_slot_holder.return_value = _holder("living_room")
+    audio = StreamsAudio(mass)
+    get_buffer = AsyncMock(
+        side_effect=[_limit_error(BUSY_INSTANCE), _limit_error(FALLBACK_INSTANCE)]
+    )
+    monkeypatch.setattr(AudioBuffer, "get_buffer", get_buffer)
+
+    with pytest.raises(ProviderStreamHeldError) as exc_info:
+        await audio.get_audio_buffer(queue_item, reason="streaming", capacity_wait_timeout=1)
+
+    # both candidates were probed; the blocking wait on the best one was never spent
+    waits = [call.kwargs["source_wait_timeout"] for call in get_buffer.await_args_list]
+    assert waits == [0, 0]
+    assert exc_info.value.provider_instance == BUSY_INSTANCE
+    assert exc_info.value.data is not None
+    assert exc_info.value.data["queue_id"] == "living_room"
 
 
 async def test_exhausted_budget_raises_typed_error_and_keeps_the_item_playable(
