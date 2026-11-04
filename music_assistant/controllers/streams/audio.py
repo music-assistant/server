@@ -3929,6 +3929,7 @@ class StreamsAudio:
         deadline = loop.time() + capacity_wait_timeout
         busy_instances: set[str] = set()
         final_pass = False
+        fallback_used = False
         last_capacity_error: ProviderStreamLimitError | None = None
         last_failed_streamdetails: StreamDetails | None = None
         while True:
@@ -4020,6 +4021,21 @@ class StreamsAudio:
             except ProviderStreamLimitError as err:
                 last_capacity_error = err
                 last_failed_streamdetails = streamdetails
+                if (
+                    (fallback := err.fallback_streamdetails) is not None
+                    and not fallback_used
+                    # a speculative prebuffer must not downgrade the next track while
+                    # the current one still holds the primary source: let it give up
+                    # softly and decide again when the item actually starts
+                    and reason != "prepare_next"
+                ):
+                    # the same provider can serve this item from another internal source
+                    # (e.g. a fallback playback backend); try that before treating the
+                    # instance as saturated and looking elsewhere
+                    fallback_used = True
+                    last_failed_streamdetails = fallback
+                    queue_item.streamdetails = fallback
+                    continue
                 if paused_holder and await self._take_paused_stream_slot(
                     err.provider_instance, queue_item.queue_id, deadline
                 ):

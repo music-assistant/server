@@ -179,6 +179,71 @@ async def test_falls_back_to_a_compatible_instance_of_the_same_mapping(
     fallback.get_stream_details.assert_awaited_once_with(ITEM_ID, MediaType.SOUND_EFFECT)
 
 
+async def test_a_providers_own_fallback_backend_is_retried_before_other_sources(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A provider that can serve the item from another backend is not saturated."""
+    queue_item = _queue_item(_mapping(BUSY_INSTANCE))
+    provider = _music_provider(BUSY_INSTANCE, has_slot=True)
+    audio = StreamsAudio(_mass({BUSY_INSTANCE: provider}))
+    fallback_details = _streamdetails(BUSY_INSTANCE)
+    fallback_details.data = {"backend": "librespot"}
+    error = _limit_error(BUSY_INSTANCE)
+    error.fallback_streamdetails = fallback_details
+    expected_buffer = MagicMock(spec=AudioBuffer)
+    get_buffer = AsyncMock(side_effect=[error, expected_buffer])
+    monkeypatch.setattr(AudioBuffer, "get_buffer", get_buffer)
+
+    result = await audio.get_audio_buffer(queue_item, reason="streaming", capacity_wait_timeout=1)
+
+    assert result is expected_buffer
+    assert queue_item.streamdetails is fallback_details
+    assert get_buffer.await_args_list[1].kwargs["streamdetails"] is fallback_details
+    # the instance was not excluded, so its details were never re-resolved
+    provider.get_stream_details.assert_awaited_once_with(ITEM_ID, MediaType.SOUND_EFFECT)
+
+
+async def test_a_speculative_prepare_never_downgrades_the_next_track(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A prebuffer waiting on the primary source must not settle for the fallback."""
+    queue_item = _queue_item(_mapping(BUSY_INSTANCE))
+    provider = _music_provider(BUSY_INSTANCE, has_slot=True)
+    audio = StreamsAudio(_mass({BUSY_INSTANCE: provider}))
+    fallback_details = _streamdetails(BUSY_INSTANCE)
+    fallback_details.data = {"backend": "librespot"}
+    error = _limit_error(BUSY_INSTANCE)
+    error.fallback_streamdetails = fallback_details
+    get_buffer = AsyncMock(side_effect=[error])
+    monkeypatch.setattr(AudioBuffer, "get_buffer", get_buffer)
+
+    with pytest.raises(ProviderStreamLimitError):
+        await audio.get_audio_buffer(queue_item, reason="prepare_next", capacity_wait_timeout=0)
+    # the item was not resolved onto the fallback for a speculative prepare
+    assert queue_item.streamdetails is not fallback_details
+
+
+async def test_a_fallback_backend_is_tried_only_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A fallback that fails too must not turn into an endless retry loop."""
+    queue_item = _queue_item(_mapping(BUSY_INSTANCE))
+    provider = _music_provider(BUSY_INSTANCE, has_slot=True)
+    audio = StreamsAudio(_mass({BUSY_INSTANCE: provider}))
+    fallback_details = _streamdetails(BUSY_INSTANCE)
+    fallback_details.data = {"backend": "librespot"}
+    first = _limit_error(BUSY_INSTANCE)
+    first.fallback_streamdetails = fallback_details
+    second = _limit_error(BUSY_INSTANCE)
+    second.fallback_streamdetails = fallback_details
+    get_buffer = AsyncMock(side_effect=[first, second])
+    monkeypatch.setattr(AudioBuffer, "get_buffer", get_buffer)
+
+    with pytest.raises(ProviderStreamLimitError):
+        await audio.get_audio_buffer(queue_item, reason="streaming", capacity_wait_timeout=0)
+    assert get_buffer.await_count == 2
+
+
 async def test_a_free_slot_on_a_blocked_source_is_never_borrowed(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

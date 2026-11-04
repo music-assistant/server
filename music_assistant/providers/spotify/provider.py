@@ -10,7 +10,7 @@ import time
 from collections import OrderedDict
 from collections.abc import AsyncGenerator, Awaitable, Callable, Sequence
 from contextlib import aclosing, suppress
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime
 from pathlib import Path
 from typing import Any, cast
@@ -83,6 +83,7 @@ from .backends import (
     StreamSupersededError,
 )
 from .constants import (
+    BACKEND_LIBRESPOT,
     BACKEND_SOLOIST,
     CONF_ACCOUNT_COUNTRY,
     CONF_ACCOUNT_ID,
@@ -90,6 +91,8 @@ from .constants import (
     CONF_AUDIO_QUALITY,
     CONF_AUDIOBOOKS_SUPPORTED,
     CONF_CLIENT_ID,
+    CONF_LIBRESPOT_CREDENTIALS,
+    CONF_LIBRESPOT_FALLBACK,
     CONF_PLAYBACK_BACKEND,
     CONF_REFRESH_TOKEN_DEV,
     CONF_REFRESH_TOKEN_GLOBAL,
@@ -146,6 +149,8 @@ class SpotifyProvider(MusicProvider):
     # monotonic time until which the fallback to the global session is not logged again
     _dev_fallback_logged_until: float = 0.0
     backend: SpotifyPlaybackBackend
+    # optional second playback backend, used when the primary one cannot start
+    fallback_backend: SpotifyPlaybackBackend | None = None
 
     async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
         """
@@ -176,6 +181,16 @@ class SpotifyProvider(MusicProvider):
                 # librespot streams Spotify's own file untouched, so there is
                 # nothing to choose there
                 hidden=not self._soloist_configured,
+            ),
+            ConfigEntry(
+                key=CONF_LIBRESPOT_FALLBACK,
+                type=ConfigEntryType.BOOLEAN,
+                # the setup flow's opt-in is the initial value; a stored provider
+                # value overrides it when the user changes the setting later
+                default_value=bool(self.get_setup_value(CONF_LIBRESPOT_FALLBACK)),
+                required=False,
+                hidden=not self._soloist_configured,
+                requires_reload=True,
             ),
             ConfigEntry(
                 key=CONF_SYNC_PODCAST_PROGRESS,
@@ -219,6 +234,14 @@ class SpotifyProvider(MusicProvider):
         self.backend = self._create_backend()
         await self.backend.setup()
         try:
+            self.fallback_backend = await self._setup_fallback_backend()
+            if self._soloist_configured:
+                # the constructor sized the semaphore from the stored choice; a
+                # fallback that failed to set up must not leave Soloist with
+                # librespot's parallel budget
+                self._stream_semaphore = asyncio.BoundedSemaphore(
+                    3 if self.fallback_backend is not None else 1
+                )
             # try login which will raise if it fails (logs in global session)
             try:
                 await self.login()
@@ -265,6 +288,9 @@ class SpotifyProvider(MusicProvider):
             # capture server) before propagating
             with suppress(Exception):
                 await self.backend.unload()
+            if self.fallback_backend is not None:
+                with suppress(Exception):
+                    await self.fallback_backend.unload()
             raise
 
     async def unload(self, is_removed: bool = False) -> None:
@@ -272,6 +298,8 @@ class SpotifyProvider(MusicProvider):
         try:
             if (backend := getattr(self, "backend", None)) is not None:
                 await backend.unload()
+            if (fallback := getattr(self, "fallback_backend", None)) is not None:
+                await fallback.unload()
         finally:
             if is_removed:
                 for key in [key for key in _THROTTLERS if key[0] == self.instance_id]:
@@ -306,6 +334,9 @@ class SpotifyProvider(MusicProvider):
 
         :param streamdetails: Stream details of the item being asked about.
         """
+        if self._is_fallback_streamdetails(streamdetails):
+            # librespot hands the untouched file over: MA normalizes it itself
+            return False
         backend = self._soloist_backend
         if backend is not None and (live := backend.session_normalizes(streamdetails)) is not None:
             return live
@@ -317,11 +348,13 @@ class SpotifyProvider(MusicProvider):
         Return how many source streams Music Assistant may run against this provider.
 
         Three for librespot (two playing queues plus a prebuffer); one for
-        Soloist, whose engine serves a single run at a time.
+        Soloist, whose engine serves a single run at a time. Soloist with a
+        librespot fallback gets librespot's budget: the second and later streams
+        are served by the fallback.
         """
         # read from the stored setup choice: MusicProvider sizes the stream
         # semaphore from this in __init__, before the backend object exists
-        if self._soloist_configured:
+        if self._soloist_configured and not self._librespot_fallback_configured:
             return 1
         return 3
 
@@ -373,9 +406,17 @@ class SpotifyProvider(MusicProvider):
                 else None
             ),
             "dev_session_active": self.dev_session_active,
-            "playback_backend": str(self.get_setup_value(CONF_PLAYBACK_BACKEND) or "librespot"),
+            "playback_backend": str(
+                self.get_setup_value(CONF_PLAYBACK_BACKEND) or BACKEND_LIBRESPOT
+            ),
+            "fallback_backend": (BACKEND_LIBRESPOT if self.fallback_backend is not None else None),
             "audiobooks_supported": self._audiobooks_supported,
             **(await self.backend.get_diagnostics() if hasattr(self, "backend") else {}),
+            **(
+                await self.fallback_backend.get_diagnostics()
+                if self.fallback_backend is not None
+                else {}
+            ),
         }
 
     ## Library retrieval methods (generators)
@@ -984,6 +1025,9 @@ class SpotifyProvider(MusicProvider):
 
     async def get_stream_details(self, item_id: str, media_type: MediaType) -> StreamDetails:
         """Return content details for the given track/episode/audiobook when it will be streamed."""
+        # every new item starts on the configured backend; the fallback only
+        # takes over when that backend cannot start it
+        backend = self.backend
         if media_type == MediaType.AUDIOBOOK and self.audiobooks_supported:
             chapters_data = await self._get_audiobook_chapters_data(item_id)
             if not chapters_data:
@@ -1006,14 +1050,18 @@ class SpotifyProvider(MusicProvider):
                 media_type=MediaType.AUDIOBOOK,
                 # what Spotify serves, for display; the bytes that actually
                 # arrive are described by decoded_audio_format
-                audio_format=self.backend.source_audio_format(MediaType.AUDIOBOOK),
-                decoded_audio_format=self.backend.handoff_audio_format,
+                audio_format=backend.source_audio_format(MediaType.AUDIOBOOK),
+                decoded_audio_format=backend.handoff_audio_format,
                 stream_type=StreamType.CUSTOM,
-                is_realtime=self.backend.is_realtime,
+                is_realtime=backend.is_realtime,
                 allow_seek=True,
                 can_seek=True,
                 duration=duration_seconds,
-                data={"chapters": chapter_uris, "chapters_data": chapters_data},
+                data={
+                    "chapters": chapter_uris,
+                    "chapters_data": chapters_data,
+                    "backend": self._backend_id(backend),
+                },
             )
 
         # For all other media types (tracks, podcast episodes)
@@ -1021,90 +1069,34 @@ class SpotifyProvider(MusicProvider):
             item_id=item_id,
             provider=self.instance_id,
             media_type=media_type,
-            audio_format=self.backend.source_audio_format(media_type),
-            decoded_audio_format=self.backend.handoff_audio_format,
+            audio_format=backend.source_audio_format(media_type),
+            decoded_audio_format=backend.handoff_audio_format,
             stream_type=StreamType.CUSTOM,
-            is_realtime=self.backend.is_realtime,
+            is_realtime=backend.is_realtime,
             allow_seek=True,
             can_seek=True,
+            data={"backend": self._backend_id(backend)},
         )
 
     async def get_audio_stream(
         self, streamdetails: StreamDetails, seek_position: int = 0
     ) -> AsyncGenerator[bytes]:
-        """Get the audio stream for the given item from the configured playback backend."""
-        if streamdetails.media_type == MediaType.AUDIOBOOK and isinstance(streamdetails.data, dict):
-            chapter_uris = streamdetails.data.get("chapters", [])
-            chapters_data = streamdetails.data.get("chapters_data", [])
-
-            # Calculate which chapter to start from based on seek_position
-            seek_position_ms = seek_position * 1000
-            current_seek_ms = seek_position_ms
-            start_chapter = 0
-
-            if seek_position > 0 and chapters_data:
-                accumulated_duration_ms = 0
-
-                for i, chapter_data in enumerate(chapters_data):
-                    chapter_duration_ms = chapter_data.get("duration_ms", 0)
-
-                    if accumulated_duration_ms + chapter_duration_ms > seek_position_ms:
-                        start_chapter = i
-                        current_seek_ms = seek_position_ms - accumulated_duration_ms
-                        break
-                    accumulated_duration_ms += chapter_duration_ms
-                else:
-                    start_chapter = len(chapter_uris) - 1
-                    current_seek_ms = 0
-
-            # back to seconds: that is the unit the backend's seek_position takes
-            current_seek_seconds = int(current_seek_ms // 1000)
-
-            # Stream chapters starting from the calculated position
-            consecutive_failures = 0
-            for i in range(start_chapter, len(chapter_uris)):
-                chapter_uri = chapter_uris[i]
-                chapter_seek = current_seek_seconds if i == start_chapter else 0
-
-                try:
-                    chunk_count = 0
-                    async for chunk in self.backend.stream_spotify_uri(
-                        chapter_uri,
-                        chapter_seek,
-                        streamdetails=streamdetails,
-                        continuation=i > start_chapter,
-                    ):
-                        yield chunk
-                        chunk_count += 1
-                    if chunk_count > 0:
-                        consecutive_failures = 0
-                except StreamSupersededError:
-                    # a new stream of this audiobook took over (a seek): the
-                    # chapters from here on are its to deliver, not this one's
-                    return
-                except ProviderStreamLimitError:
-                    # capacity, not a broken chapter: skipping ahead would burn
-                    # chapters and end as a plain error, which costs the item its
-                    # availability and the caller its chance to wait or reselect
-                    raise
-                except Exception as e:
-                    self.logger.warning("Chapter %s streaming failed", i + 1)
-                    consecutive_failures += 1
-                    if consecutive_failures >= 3:
-                        raise AudioError("Audiobook streaming failed") from e
-                    continue
-        else:
-            # Handle normal tracks and podcast episodes
-            media_type = (
-                "episode" if streamdetails.media_type == MediaType.PODCAST_EPISODE else "track"
-            )
-            spotify_uri = f"spotify:{media_type}:{streamdetails.item_id}"
-            # a new stream of this item taking over (a seek) simply ends this one
-            with suppress(StreamSupersededError):
-                async for chunk in self.backend.stream_spotify_uri(
-                    spotify_uri, seek_position, streamdetails=streamdetails
-                ):
-                    yield chunk
+        """Get the audio stream for the given item from its playback backend."""
+        backend = self._backend_for(streamdetails)
+        delivered = False
+        try:
+            async for chunk in self._stream_from_backend(backend, streamdetails, seek_position):
+                delivered = True
+                yield chunk
+        except ProviderStreamLimitError as err:
+            # a conflict before any audio can move this item to the fallback backend:
+            # the stream has not reached the listener yet, so starting it there is
+            # not a repeat of something they already heard
+            fallback = None if delivered else self._fallback_streamdetails_for(streamdetails)
+            if fallback is None:
+                raise
+            err.fallback_streamdetails = fallback
+            raise
 
     @lock
     async def login(self, force_refresh: bool = False) -> dict[str, Any]:
@@ -1395,9 +1387,166 @@ class SpotifyProvider(MusicProvider):
             return SoloistBackend(self)
         return LibrespotBackend(self)
 
+    async def _setup_fallback_backend(self) -> SpotifyPlaybackBackend | None:
+        """
+        Prepare librespot as the fallback backend when this instance opted in.
+
+        A fallback that cannot be set up never fails the provider: Soloist keeps
+        working on its own, exactly as it did before the option existed.
+        """
+        if not self._soloist_configured or not self._librespot_fallback_enabled:
+            return None
+        if not self.get_setup_value(CONF_LIBRESPOT_CREDENTIALS):
+            self.logger.warning(
+                "Spotify librespot fallback is enabled but not authorized; "
+                "run the Spotify setup again to authorize it"
+            )
+            return None
+        backend = LibrespotBackend(self)
+        try:
+            await backend.setup()
+        except Exception as err:
+            self.logger.warning(
+                "Spotify librespot fallback is configured but could not be set up: %s", err
+            )
+            return None
+        self.logger.info("Spotify librespot fallback is available")
+        return backend
+
+    async def _stream_from_backend(
+        self,
+        backend: SpotifyPlaybackBackend,
+        streamdetails: StreamDetails,
+        seek_position: int,
+    ) -> AsyncGenerator[bytes]:
+        """
+        Yield one item's audio from the given backend.
+
+        :param backend: The playback backend that serves the item.
+        :param streamdetails: The item's stream details.
+        :param seek_position: Position to start from, in seconds.
+        """
+        if streamdetails.media_type == MediaType.AUDIOBOOK and isinstance(streamdetails.data, dict):
+            chapter_uris = streamdetails.data.get("chapters", [])
+            chapters_data = streamdetails.data.get("chapters_data", [])
+
+            # Calculate which chapter to start from based on seek_position
+            seek_position_ms = seek_position * 1000
+            current_seek_ms = seek_position_ms
+            start_chapter = 0
+
+            if seek_position > 0 and chapters_data:
+                accumulated_duration_ms = 0
+
+                for i, chapter_data in enumerate(chapters_data):
+                    chapter_duration_ms = chapter_data.get("duration_ms", 0)
+
+                    if accumulated_duration_ms + chapter_duration_ms > seek_position_ms:
+                        start_chapter = i
+                        current_seek_ms = seek_position_ms - accumulated_duration_ms
+                        break
+                    accumulated_duration_ms += chapter_duration_ms
+                else:
+                    start_chapter = len(chapter_uris) - 1
+                    current_seek_ms = 0
+
+            # back to seconds: that is the unit the backend's seek_position takes
+            current_seek_seconds = int(current_seek_ms // 1000)
+
+            # Stream chapters starting from the calculated position
+            consecutive_failures = 0
+            for i in range(start_chapter, len(chapter_uris)):
+                chapter_uri = chapter_uris[i]
+                chapter_seek = current_seek_seconds if i == start_chapter else 0
+
+                try:
+                    chunk_count = 0
+                    async for chunk in backend.stream_spotify_uri(
+                        chapter_uri,
+                        chapter_seek,
+                        streamdetails=streamdetails,
+                        continuation=i > start_chapter,
+                    ):
+                        yield chunk
+                        chunk_count += 1
+                    if chunk_count > 0:
+                        consecutive_failures = 0
+                except StreamSupersededError:
+                    # a new stream of this audiobook took over (a seek): the
+                    # chapters from here on are its to deliver, not this one's
+                    return
+                except ProviderStreamLimitError:
+                    # capacity, not a broken chapter: skipping ahead would burn
+                    # chapters and end as a plain error, which costs the item its
+                    # availability and the caller its chance to wait or reselect
+                    raise
+                except Exception as e:
+                    self.logger.warning("Chapter %s streaming failed", i + 1)
+                    consecutive_failures += 1
+                    if consecutive_failures >= 3:
+                        raise AudioError("Audiobook streaming failed") from e
+                    continue
+        else:
+            # Handle normal tracks and podcast episodes
+            media_type = (
+                "episode" if streamdetails.media_type == MediaType.PODCAST_EPISODE else "track"
+            )
+            spotify_uri = f"spotify:{media_type}:{streamdetails.item_id}"
+            # a new stream of this item taking over (a seek) simply ends this one
+            with suppress(StreamSupersededError):
+                async for chunk in backend.stream_spotify_uri(
+                    spotify_uri, seek_position, streamdetails=streamdetails
+                ):
+                    yield chunk
+
+    def _backend_for(self, streamdetails: StreamDetails) -> SpotifyPlaybackBackend:
+        """Return the backend the given stream details were resolved on."""
+        if self._is_fallback_streamdetails(streamdetails):
+            assert self.fallback_backend is not None
+            return self.fallback_backend
+        return self.backend
+
+    def _is_fallback_streamdetails(self, streamdetails: StreamDetails) -> bool:
+        """Return whether the details were resolved on this instance's fallback backend."""
+        return (
+            self.fallback_backend is not None
+            and isinstance(streamdetails.data, dict)
+            and streamdetails.data.get("backend") == BACKEND_LIBRESPOT
+        )
+
+    def _fallback_streamdetails_for(self, streamdetails: StreamDetails) -> StreamDetails | None:
+        """
+        Return the same item's details on the fallback backend, when one can serve it.
+
+        Nothing is carried over from the failed attempt: the buffer, the stream
+        error and the delivered byte count belong to the backend that failed.
+        """
+        fallback = self.fallback_backend
+        if fallback is None or self._is_fallback_streamdetails(streamdetails):
+            return None
+        data = streamdetails.data if isinstance(streamdetails.data, dict) else {}
+        return replace(
+            streamdetails,
+            audio_format=fallback.source_audio_format(streamdetails.media_type),
+            decoded_audio_format=fallback.handoff_audio_format,
+            is_realtime=fallback.is_realtime,
+            data={**data, "backend": BACKEND_LIBRESPOT},
+            buffer=None,
+            stream_error=None,
+            seconds_streamed=None,
+        )
+
+    @staticmethod
+    def _backend_id(backend: SpotifyPlaybackBackend) -> str:
+        """Return the stored backend identifier for a backend object."""
+        return BACKEND_SOLOIST if isinstance(backend, SoloistBackend) else BACKEND_LIBRESPOT
+
     def _remove_unused_playback_credentials(self) -> None:
         """Remove the login material the unselected playback backend left behind (blocking)."""
         if isinstance(self.backend, SoloistBackend):
+            if self.fallback_backend is not None:
+                # the librespot credential is the fallback's, not leftover material
+                return
             credentials_file = Path(self.cache_dir) / CREDENTIALS_FILE
             if credentials_file.is_file():
                 self.logger.debug("Removing leftover librespot credential %s", credentials_file)
@@ -1436,6 +1585,27 @@ class SpotifyProvider(MusicProvider):
         backend object exists.
         """
         return self.get_setup_value(CONF_PLAYBACK_BACKEND) == BACKEND_SOLOIST
+
+    @property
+    def _librespot_fallback_enabled(self) -> bool:
+        """Return whether this Soloist instance's fallback setting is switched on."""
+        if not self._soloist_configured:
+            return False
+        # the provider setting wins once it exists; the setup flow's choice is
+        # the initial value, so a fresh opt-in is live before the first edit
+        return bool(
+            self.config.get_value(
+                CONF_LIBRESPOT_FALLBACK,
+                bool(self.get_setup_value(CONF_LIBRESPOT_FALLBACK)),
+            )
+        )
+
+    @property
+    def _librespot_fallback_configured(self) -> bool:
+        """Return whether the instance opted into the librespot fallback and has its credential."""
+        return self._librespot_fallback_enabled and bool(
+            self.get_setup_value(CONF_LIBRESPOT_CREDENTIALS)
+        )
 
     @property
     def _soloist_backend(self) -> SoloistBackend | None:

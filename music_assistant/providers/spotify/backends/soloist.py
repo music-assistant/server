@@ -65,6 +65,7 @@ from music_assistant.providers.spotify_connect.soloist.runtime import (
     WS_PORT_FILE,
     SoloistAuthState,
     SoloistDeviceChanged,
+    SoloistErrorMessage,
     SoloistPlaybackState,
     SoloistPositionSync,
     SoloistTrackChanged,
@@ -166,6 +167,34 @@ _UNPAIRED_MARKER: Final[str] = "waiting for login"
 _LOGIN_FAILED_MARKER: Final[str] = "login failed"
 # how long the log reader is given to catch up on a daemon's parting words
 _LOG_DRAIN_TIMEOUT_S: Final[float] = 2.0
+
+
+class SoloistAccountBusyError(ProviderStreamLimitError):
+    """
+    Raised when Spotify refuses because the account is already streaming elsewhere.
+
+    A ProviderStreamLimitError so the provider can retry the item on its fallback
+    backend, and so a caller without one treats it as transient capacity rather
+    than an unplayable item.
+    """
+
+    def __init__(self, provider: MusicProvider) -> None:
+        """
+        Initialize the error.
+
+        :param provider: The provider whose Spotify account is already streaming.
+        """
+        # deliberately skips ProviderStreamLimitError.__init__, whose whole job is
+        # to phrase the message in terms of that source-stream budget
+        MusicAssistantError.__init__(
+            self,
+            f"{provider.name} cannot start: Spotify is already streaming somewhere else",
+            translation_key="soloist_account_busy",
+            translation_owner="provider.spotify",
+            translation_args=[provider.name],
+        )
+        self.provider_instance = provider.instance_id
+        self.limit = 1
 
 
 class SoloistSessionBusyError(ProviderStreamLimitError):
@@ -644,6 +673,8 @@ class _SingleTrackRun:
         self._error: str | None = None
         self._logged_in: bool | None = None
         self._data_dir_busy = False
+        # Spotify refused because the account is already streaming elsewhere
+        self._account_busy = False
         self._unpaired = False
         self._stopped = False
         self._item_over = False
@@ -744,7 +775,7 @@ class _SingleTrackRun:
             self._delivered += len(chunk)
             yield chunk
         if self._error is not None:
-            raise AudioError(self._error)
+            raise self._delivery_error()
         self._validate_delivery()
 
     async def stop(self) -> None:
@@ -805,6 +836,18 @@ class _SingleTrackRun:
         return self._stopped
 
     # ---- internals ----
+
+    def _delivery_error(self) -> AudioError:
+        """
+        Return the error that ended this run.
+
+        An account-wide stream conflict is typed as capacity only while no audio
+        reached the consumer: once part of the item played, retrying it elsewhere
+        would repeat what the listener already heard.
+        """
+        if self._account_busy and not self._delivered:
+            return SoloistAccountBusyError(self.backend.provider)
+        return AudioError(self._error or "Spotify playback failed")
 
     def _spawn_task(self, coro: object) -> asyncio.Task[None]:
         """Track a run-scoped task so stop() can cancel and join it."""
@@ -972,6 +1015,8 @@ class _SingleTrackRun:
                 "Another Spotify Soloist session is still running for this provider "
                 "and has to be stopped first (restarting Music Assistant clears it)"
             )
+        if self._account_busy:
+            raise SoloistAccountBusyError(self.backend.provider)
         if self._error:
             raise AudioError(self._error)
         raise AudioError(f"Spotify {detail}")
@@ -994,7 +1039,7 @@ class _SingleTrackRun:
                     await self._seek_confirmed.wait()
             if self._seek_confirmed.is_set():
                 if self._error:
-                    raise AudioError(f"Spotify Soloist failed: {self._error}")
+                    raise self._delivery_error()
                 return
             if asyncio.get_running_loop().time() >= deadline:
                 raise AudioError(f"Spotify Soloist did not confirm seeking to {target_ms}ms")
@@ -1217,6 +1262,11 @@ class _SingleTrackRun:
         if isinstance(data, SoloistDeviceChanged):
             self._observe_device_active(active=data.is_active)
             return
+        if isinstance(data, SoloistErrorMessage):
+            # the engine's own report is not classified here: the device/track
+            # events carry the account-wide conflicts this run reacts to
+            self.logger.warning("Spotify Soloist reported: %s", data.message)
+            return
         if isinstance(data, SoloistTrackChanged):
             if data.item is not None and data.item.uri:
                 self._observe_item(data.item.uri, _decorated_duration_ms(data.item))
@@ -1249,6 +1299,7 @@ class _SingleTrackRun:
             if not self._started.is_set():
                 # the engine started on something else entirely: whatever it is
                 # playing, it is not what was asked
+                self._account_busy = True
                 self._fail(
                     "Spotify is already streaming somewhere else - an account "
                     "can only play in one place at a time"
@@ -1275,6 +1326,7 @@ class _SingleTrackRun:
         # and playback states carry the same flag but report False during startup.
         if active or self._item_over or self._engine_exited or not self._started.is_set():
             return
+        self._account_busy = True
         self._fail(
             "Spotify is already streaming somewhere else - an account "
             "can only play in one place at a time"

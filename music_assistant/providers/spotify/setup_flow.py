@@ -39,6 +39,7 @@ from .constants import (
     CONF_ACCOUNT_ID,
     CONF_CLIENT_ID,
     CONF_LIBRESPOT_CREDENTIALS,
+    CONF_LIBRESPOT_FALLBACK,
     CONF_PLAYBACK_BACKEND,
     CONF_REFRESH_TOKEN_DEV,
     CONF_REFRESH_TOKEN_GLOBAL,
@@ -90,6 +91,13 @@ CONF_ENTRY_DEV_CLIENT_ID = ConfigEntry(
 CONF_USE_DEV_KEY = "use_developer_key"
 CONF_ENTRY_USE_DEV_KEY = ConfigEntry(
     key=CONF_USE_DEV_KEY,
+    type=ConfigEntryType.BOOLEAN,
+    default_value=False,
+    required=False,
+)
+
+CONF_ENTRY_USE_LIBRESPOT_FALLBACK = ConfigEntry(
+    key=CONF_LIBRESPOT_FALLBACK,
     type=ConfigEntryType.BOOLEAN,
     default_value=False,
     required=False,
@@ -349,10 +357,12 @@ async def _setup_playback(
                 preselect = BACKEND_SOLOIST
                 errors = {"base": "soloist_consent_required"}
                 continue
-            # the librespot credential is of no further use
-            setup_data[CONF_LIBRESPOT_CREDENTIALS] = None
+            # librespot can be kept as a fallback: it is the only backend that
+            # can stream more than one item at a time on the same account
+            await _setup_librespot_fallback(session, setup_data, account_id)
         else:
             setup_data[CONF_LIBRESPOT_CREDENTIALS] = await _authorize_playback(session, account_id)
+            setup_data[CONF_LIBRESPOT_FALLBACK] = False
             # switching away from soloist: overwrite the soloist secrets; they
             # only reach the stored setup_data when finish() succeeds, so an
             # aborted or failed switch keeps them intact
@@ -456,6 +466,42 @@ async def _authorize_soloist(
             errors = {"base": "soloist_account_mismatch"}
             continue
         return True
+
+
+async def _setup_librespot_fallback(
+    session: SetupSession, setup_data: dict[str, Any], account_id: str | None
+) -> None:
+    """
+    Offer librespot as the fallback for a Soloist instance.
+
+    Opting in authorizes librespot for the same account and keeps that credential;
+    opting out clears it. A credential already stored for the same account is
+    reused, so a reconfigure does not send the user through playback pairing again.
+
+    :param session: The setup session driving the flow.
+    :param setup_data: The setup data collected so far, updated in place.
+    :param account_id: The signed-in Spotify user id, to match the credential against.
+    """
+    enabled = bool(setup_data.get(CONF_LIBRESPOT_FALLBACK))
+    values = await session.form(
+        [replace(CONF_ENTRY_USE_LIBRESPOT_FALLBACK, value=enabled)],
+        step_id="librespot_fallback",
+    )
+    enabled = bool(values.get(CONF_LIBRESPOT_FALLBACK))
+    setup_data[CONF_LIBRESPOT_FALLBACK] = enabled
+    if (instance_id := session.context.instance_id) is not None:
+        # a reconfigure already has a stored provider value (possibly from the
+        # provider settings); make the flow's choice win before the reload
+        session.mass.config.set_raw_provider_config_value(
+            instance_id, CONF_LIBRESPOT_FALLBACK, enabled, immediate=True
+        )
+    if not enabled:
+        setup_data[CONF_LIBRESPOT_CREDENTIALS] = None
+        return
+    stored = setup_data.get(CONF_LIBRESPOT_CREDENTIALS)
+    if stored and not _credential_account_differs(str(stored), account_id):
+        return
+    setup_data[CONF_LIBRESPOT_CREDENTIALS] = await _authorize_playback(session, account_id)
 
 
 def _instance_data_dir(session: SetupSession) -> Path:

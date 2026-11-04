@@ -17,6 +17,17 @@ Source capacity is **3** on librespot (two playing queues plus a prebuffer) and 
 on Soloist: the account's single stream. The queue's prefetch takes the freed slot the
 moment an item has fully arrived.
 
+A Soloist instance may opt into a **librespot fallback** during setup, which keeps
+the librespot credential and authorizes it for the same account (both are required;
+either alone keeps Soloist-only behaviour). When active, the provider reports
+librespot's capacity of 3 and a stream that Soloist cannot start — its own run is
+already serving another item, or Spotify reports the account streaming elsewhere —
+is retried on librespot before any audio reached the listener. A speculative
+prebuffer never takes the fallback: that would downgrade the next track while the
+current one still holds Soloist. A conflict after audio started still ends the item
+and the queue moves on; resuming mid-track on another backend is not implemented.
+Fallback playback is 320 kbps, and a fallback stream is never declared normalized.
+
 The provider itself (`provider.py`) stays backend-agnostic: it owns the Web API,
 parsing, StreamDetails and the audiobook chapter logic, and hands canonical
 `spotify:<type>:<id>` URIs to the backend behind the `SpotifyPlaybackBackend` contract
