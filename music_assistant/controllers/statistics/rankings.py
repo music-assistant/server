@@ -30,7 +30,6 @@ from music_assistant.controllers.statistics.queries import (
     TRACK_ARTISTS_CTE,
     TRACK_HISTORY_CTE,
 )
-from music_assistant.controllers.webserver.helpers.auth_middleware import get_current_user
 from music_assistant.helpers.api import api_command
 from music_assistant.helpers.json import json_loads
 
@@ -45,6 +44,7 @@ class RankingsMixin(_StatisticsBase):
         period: str = "week",
         limit: int = 50,
         timezone: str = "UTC",
+        user_ids: list[str] | None = None,
     ) -> list[TopItemResult]:
         """
         Get most played items in a time period.
@@ -53,11 +53,9 @@ class RankingsMixin(_StatisticsBase):
         :param period: Time period - 'today', 'week', 'month', 'year', 'all_time'.
         :param limit: Maximum number of items to return (default 50).
         :param timezone: IANA timezone for calendar boundaries; defaults to UTC.
+        :param user_ids: Users whose plays are combined; defaults to the current user.
         """
-        user = get_current_user()
-        user_id = user.user_id if user else None
-
-        if not user_id:
+        if not (user_ids := self._get_statistics_user_ids(user_ids)):
             return []
         limit = validate_statistics_limit(limit)
         cutoff_timestamp = self._get_period_cutoff(period, timezone)
@@ -76,7 +74,7 @@ class RankingsMixin(_StatisticsBase):
                 GROUP BY item_id, provider
                 ORDER BY play_count DESC, provider, item_id
             """
-            params = {"user_id": user_id, "cutoff_timestamp": cutoff_timestamp}
+            params = {"user_ids": user_ids, "cutoff_timestamp": cutoff_timestamp}
         elif media_type == MediaType.ALBUM:
             query = f"""
                 WITH {TRACK_HISTORY_CTE}, {TRACK_ALBUMS_CTE}
@@ -92,7 +90,7 @@ class RankingsMixin(_StatisticsBase):
                 ORDER BY play_count DESC, item_id
             """
             params = {
-                "user_id": user_id,
+                "user_ids": user_ids,
                 "media_type": MediaType.TRACK.value,
                 "cutoff_timestamp": cutoff_timestamp,
             }
@@ -107,7 +105,7 @@ class RankingsMixin(_StatisticsBase):
                         MAX(name) AS name,
                         MAX(image) AS image
                     FROM {DB_TABLE_PLAY_HISTORY}
-                    WHERE userid = :user_id
+                    WHERE userid IN :user_ids
                         AND media_type = :media_type
                         AND timestamp >= :cutoff_timestamp
                     GROUP BY provider, item_id, media_type
@@ -151,7 +149,7 @@ class RankingsMixin(_StatisticsBase):
                 ORDER BY play_count DESC, provider, item_id
             """
             params = {
-                "user_id": user_id,
+                "user_ids": user_ids,
                 "media_type": media_type.value,
                 "cutoff_timestamp": cutoff_timestamp,
             }
@@ -186,6 +184,7 @@ class RankingsMixin(_StatisticsBase):
         period: str = "week",
         limit: int = 10,
         timezone: str = "UTC",
+        user_ids: list[str] | None = None,
     ) -> list[DistributionItem]:
         """
         Get genre distribution (play counts by genre).
@@ -195,9 +194,9 @@ class RankingsMixin(_StatisticsBase):
         :param period: Time period - 'today', 'week', 'month', 'year', 'all_time'.
         :param limit: Maximum number of genres to return (default 10).
         :param timezone: IANA timezone for calendar boundaries; defaults to UTC.
+        :param user_ids: Users whose plays are combined; defaults to the current user.
         """
-        user = get_current_user()
-        if not user:
+        if not (user_ids := self._get_statistics_user_ids(user_ids)):
             return []
 
         limit = validate_statistics_limit(limit)
@@ -215,7 +214,7 @@ class RankingsMixin(_StatisticsBase):
         """
 
         params = {
-            "user_id": user.user_id,
+            "user_ids": user_ids,
             "media_type": MediaType.TRACK.value,
             "cutoff_timestamp": self._get_period_cutoff(period, timezone),
         }
@@ -229,6 +228,7 @@ class RankingsMixin(_StatisticsBase):
         period: str = "all_time",
         limit: int = 10,
         timezone: str = "UTC",
+        user_ids: list[str] | None = None,
     ) -> list[DistributionItem]:
         """
         Get play counts grouped by decade for library tracks with known album years.
@@ -239,11 +239,9 @@ class RankingsMixin(_StatisticsBase):
         :param period: Time period - 'today', 'week', 'month', 'year', 'all_time'.
         :param limit: Maximum number of decades to return.
         :param timezone: IANA timezone for calendar boundaries; defaults to UTC.
+        :param user_ids: Users whose plays are combined; defaults to the current user.
         """
-        user = get_current_user()
-        user_id = user.user_id if user else None
-
-        if not user_id:
+        if not (user_ids := self._get_statistics_user_ids(user_ids)):
             return []
         limit = validate_statistics_limit(limit)
 
@@ -270,7 +268,7 @@ class RankingsMixin(_StatisticsBase):
         """
 
         params = {
-            "user_id": user_id,
+            "user_ids": user_ids,
             "media_type": MediaType.TRACK.value,
             "cutoff_timestamp": cutoff_timestamp,
         }
@@ -287,6 +285,7 @@ class RankingsMixin(_StatisticsBase):
         item_id: str,
         provider: str,
         media_type: MediaType,
+        user_ids: list[str] | None = None,
     ) -> int:
         """
         Get play count for an item, using track plays for albums and credits for artists.
@@ -294,11 +293,9 @@ class RankingsMixin(_StatisticsBase):
         :param item_id: The item ID to get play count for.
         :param provider: The provider ID.
         :param media_type: The media type.
+        :param user_ids: Users whose plays are combined; defaults to the current user.
         """
-        user = get_current_user()
-        user_id = user.user_id if user else None
-
-        if not user_id:
+        if not (user_ids := self._get_statistics_user_ids(user_ids)):
             return 0
 
         if media_type == MediaType.ALBUM:
@@ -348,7 +345,7 @@ class RankingsMixin(_StatisticsBase):
                     INNER JOIN {DB_TABLE_PLAY_HISTORY} AS play_history
                         ON play_history.provider = candidate_keys.provider
                         AND play_history.item_id = candidate_keys.item_id
-                    WHERE play_history.userid = :user_id
+                    WHERE play_history.userid IN :user_ids
                         AND play_history.media_type = :media_type
                     GROUP BY play_history.provider, play_history.item_id, play_history.media_type
                 ), normalized_history AS (
@@ -409,7 +406,7 @@ class RankingsMixin(_StatisticsBase):
         """
 
         params = {
-            "user_id": user_id,
+            "user_ids": user_ids,
             "item_id": item_id,
             "provider": provider,
             "requested_media_type": media_type.value,

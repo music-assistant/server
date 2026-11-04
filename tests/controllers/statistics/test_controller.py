@@ -6,9 +6,9 @@ from datetime import UTC, datetime
 from unittest.mock import AsyncMock, patch
 
 import pytest
-from music_assistant_models.auth import Scope, User
+from music_assistant_models.auth import Scope, User, UserRole
 from music_assistant_models.enums import ArtistType, MediaType
-from music_assistant_models.errors import InvalidDataError
+from music_assistant_models.errors import InsufficientPermissions, InvalidDataError
 from music_assistant_models.media_items import AudioFormat
 
 from music_assistant.constants import (
@@ -67,14 +67,14 @@ async def _insert_plays(mass: MusicAssistant, user: User, timestamps: tuple[str,
 async def test_statistics_api_registration_is_unchanged(mass: MusicAssistant) -> None:
     """All statistics mixins retain their registered commands, parameters and scopes."""
     expected_parameters = {
-        "statistics/top_items": ("media_type", "period", "limit", "timezone"),
-        "statistics/genre_distribution": ("period", "limit", "timezone"),
-        "statistics/plays_over_time": ("period", "granularity", "timezone"),
-        "statistics/listening_activity": ("period", "timezone"),
-        "statistics/listening_time": ("period", "group_by", "limit", "timezone"),
-        "statistics/decade_distribution": ("period", "limit", "timezone"),
+        "statistics/top_items": ("media_type", "period", "limit", "timezone", "user_ids"),
+        "statistics/genre_distribution": ("period", "limit", "timezone", "user_ids"),
+        "statistics/plays_over_time": ("period", "granularity", "timezone", "user_ids"),
+        "statistics/listening_activity": ("period", "timezone", "user_ids"),
+        "statistics/listening_time": ("period", "group_by", "limit", "timezone", "user_ids"),
+        "statistics/decade_distribution": ("period", "limit", "timezone", "user_ids"),
         "statistics/play_history": ("limit", "media_types", "played_after_timestamp", "offset"),
-        "statistics/play_count": ("item_id", "provider", "media_type"),
+        "statistics/play_count": ("item_id", "provider", "media_type", "user_ids"),
     }
     commands = {
         command: handler
@@ -121,6 +121,56 @@ async def test_top_items_counts_history_not_media_progress(mass: MusicAssistant)
     assert len(results) == 1
     assert results[0].item.item_id == "track-1"
     assert results[0].play_count == 1
+
+
+async def test_statistics_combine_requested_users(mass: MusicAssistant) -> None:
+    """An admin gets the summed plays of the requested users only."""
+    admin = await mass.webserver.auth.create_user("statistics-admin", role=UserRole.ADMIN)
+    alice = await mass.webserver.auth.create_user("statistics-alice")
+    bob = await mass.webserver.auth.create_user("statistics-bob")
+    await _insert_plays(mass, admin, ("2026-01-05T10:00:00",))
+    await _insert_plays(mass, alice, ("2026-01-05T10:00:00", "2026-01-05T11:00:00"))
+    await _insert_plays(mass, bob, ("2026-01-05T10:00:00",))
+
+    with _as_user(admin), _frozen_now("2026-01-31T12:00:00"):
+        own = await mass.statistics.get_top_items(MediaType.TRACK, period="all_time")
+        combined = await mass.statistics.get_top_items(
+            MediaType.TRACK, period="all_time", user_ids=[alice.user_id, bob.user_id]
+        )
+        combined_count = await mass.statistics.get_play_count(
+            "track-0", "test-provider", MediaType.TRACK, user_ids=[alice.user_id, bob.user_id]
+        )
+        series = await mass.statistics.get_plays_over_time(
+            period="all_time", granularity="month", user_ids=[alice.user_id, bob.user_id]
+        )
+
+    assert [(entry.item.item_id, entry.play_count) for entry in own] == [("track-0", 1)]
+    assert [(entry.item.item_id, entry.play_count) for entry in combined] == [
+        ("track-0", 2),
+        ("track-1", 1),
+    ]
+    assert combined_count == 2
+    assert [(point.timestamp, point.value) for point in series] == [("2026-01", 3)]
+
+
+async def test_statistics_of_other_users_require_impersonate_scope(
+    mass: MusicAssistant,
+) -> None:
+    """A member may request their own statistics by id, but not those of another user."""
+    alice = await mass.webserver.auth.create_user("statistics-member-alice")
+    bob = await mass.webserver.auth.create_user("statistics-member-bob")
+    await _insert_plays(mass, alice, ("2026-01-05T10:00:00",))
+
+    with _as_user(alice):
+        own = await mass.statistics.get_top_items(
+            MediaType.TRACK, period="all_time", user_ids=[alice.user_id]
+        )
+        with pytest.raises(InsufficientPermissions):
+            await mass.statistics.get_top_items(
+                MediaType.TRACK, period="all_time", user_ids=[alice.user_id, bob.user_id]
+            )
+
+    assert [entry.play_count for entry in own] == [1]
 
 
 @pytest.mark.parametrize("apple_provider", ["apple_music--account", "apple_music"])

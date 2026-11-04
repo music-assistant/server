@@ -7,11 +7,16 @@ from collections.abc import Mapping
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
+from music_assistant_models.auth import Scope
 from music_assistant_models.enums import MediaType
-from music_assistant_models.errors import InvalidDataError
+from music_assistant_models.errors import InsufficientPermissions, InvalidDataError
 from music_assistant_models.helpers import get_global_cache_value
 
 from music_assistant.constants import DB_TABLE_PROVIDER_MAPPINGS
+from music_assistant.controllers.webserver.helpers.auth_middleware import (
+    get_current_user,
+    has_scope,
+)
 from music_assistant.helpers.datetime import get_timezone
 from music_assistant.models.core_controller import CoreController
 
@@ -32,6 +37,20 @@ class _StatisticsBase(CoreController):
     """Shared state and helpers for statistics logic mixins."""
 
     domain: str = "statistics"
+
+    def _get_statistics_user_ids(self, user_ids: list[str] | None) -> list[str]:
+        user = get_current_user()
+        if user is None:
+            return []
+        if user_ids is None:
+            return [user.user_id]
+        if any(user_id != user.user_id for user_id in user_ids) and not has_scope(
+            user, Scope.USERS_IMPERSONATE
+        ):
+            raise InsufficientPermissions(
+                "The users.impersonate scope is required for statistics of other users."
+            )
+        return user_ids
 
     async def _set_library_item_availability(self, items: list[ItemMapping]) -> None:
         """Apply current library availability to historical item references."""
