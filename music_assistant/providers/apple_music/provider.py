@@ -145,8 +145,14 @@ class AppleMusicProvider(RecommendationPayloadMixin, MusicProvider):
         if path_parts[0] == "playlists":
             return await browse_playlists(self, path, path_parts)
         if path_parts[0] == "stations":
+            try:
+                live_stations = await self.live_radio_manager.get_stations()
+            except (ClientError, TimeoutError, MusicAssistantError) as err:
+                # the recommended stations still work without the live ones
+                self.logger.warning("Could not get the live stations: %s", type(err).__name__)
+                live_stations = []
             return [
-                *await self.live_radio_manager.get_stations(),
+                *live_stations,
                 *await self.recommendation_manager.browse_stations(),
             ]
         return await super().browse(path)
