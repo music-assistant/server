@@ -73,6 +73,7 @@ SORT_FIELD_ATTRIBUTES = {
     SortField.LAST_PLAYED: "last_played",
     SortField.DURATION: "duration",
     SortField.YEAR: "year",
+    SortField.RELEASE_DATE: "metadata",
     SortField.POSITION: "position",
     SortField.ARTIST_NAME: "artists",
     SortField.TRACK_NUMBER: "track_number",
@@ -157,6 +158,32 @@ def test_unseeded_random_still_uses_global_shuffle() -> None:
         shuffle.reset_mock()
         apply_listing(items, ListingType.LIBRARY_TRACKS, sort_field=SortField.RANDOM, random_seed=0)
         shuffle.assert_not_called()
+
+
+@pytest.mark.parametrize("direction", [SortDirection.ASC, SortDirection.DESC])
+def test_release_date_sort_fallback_and_ties(direction: SortDirection) -> None:
+    """Release dates use UTC, year fallback and stable name/identity ties before paging."""
+    missing = create_album("library", "missing", name="Missing")
+    year_only = create_album("library", "year", name="Year")
+    year_only.year = 1960
+    january = create_album("library", "january", name="January")
+    january.metadata.release_date = datetime(2025, 1, 1)  # noqa: DTZ001 - test naive provider dates
+    june_b = create_album("library", "b", name="June")
+    june_a = create_album("library", "a", name="June")
+    for album in (june_b, june_a):
+        album.metadata.release_date = datetime(2025, 6, 1, tzinfo=UTC)
+    items = [june_b, year_only, missing, june_a, january]
+    expected = (
+        [missing, year_only, january, june_a, june_b]
+        if direction == SortDirection.ASC
+        else [june_a, june_b, january, year_only, missing]
+    )
+    kwargs: dict[str, Any] = {"sort_field": SortField.RELEASE_DATE, "sort_direction": direction}
+    assert apply_listing(items, ListingType.ARTIST_ALBUMS, **kwargs) == expected
+    assert (
+        apply_listing(list(reversed(items)), ListingType.ARTIST_ALBUMS, limit=2, offset=1, **kwargs)
+        == expected[1:3]
+    )
 
 
 @pytest.fixture
