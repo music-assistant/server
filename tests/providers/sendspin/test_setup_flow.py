@@ -204,6 +204,7 @@ class _FakeProvider:
         self.clear_calls = 0
         self.trust_calls: list[bool] = []
         self.allow_input_calls: list[bool] = []
+        self.held_elsewhere = False
         self.held_unapproved = False
         self.held_unpaired = False
         self.refused_reason_value: GoodbyeReason | None = None
@@ -213,6 +214,9 @@ class _FakeProvider:
 
     def pairing_config_snapshot(self, client_id: str) -> ManagementResultData | None:
         return self._pairing_config
+
+    def is_held_elsewhere(self, client_id: str) -> bool:
+        return self.held_elsewhere
 
     def is_held_unapproved(self, client_id: str) -> bool:
         return self.held_unapproved

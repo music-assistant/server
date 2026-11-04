@@ -794,6 +794,10 @@ class SendspinProvider(PlayerProvider):
         """Return whether the given player_id belongs to a registered virtual player."""
         return player_id in self._virtual_players
 
+    def is_held_elsewhere(self, client_id: str) -> bool:
+        """Return whether another server holds this client."""
+        return client_id in self._held_elsewhere and client_id not in self._refused_here
+
     def is_held_unapproved(self, client_id: str) -> bool:
         """Return whether the client is held elsewhere or refused us, unpaired and unapproved."""
         return client_id in self._held_unapproved
