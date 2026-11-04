@@ -55,14 +55,23 @@ class _SingleStreamProvider(MusicProvider):
         return 1
 
 
-def _provider() -> _SingleStreamProvider:
-    """Construct a provider that lets one source stream run at a time."""
+class _TwoStreamProvider(MusicProvider):
+    """Streaming provider with two source slots."""
+
+    @property
+    def max_concurrent_streams(self) -> int:
+        """Return two source slots."""
+        return 2
+
+
+def _provider(provider_cls: type[MusicProvider] = _SingleStreamProvider) -> MusicProvider:
+    """Construct a provider of the given class under the shared instance id."""
     manifest = MagicMock(domain="spotify")
     manifest.name = "Spotify"
     config = MagicMock(instance_id=INSTANCE)
     config.name = "Spotify"
     config.get_value.return_value = "GLOBAL"
-    return _SingleStreamProvider(MagicMock(), manifest, config)
+    return provider_cls(MagicMock(), manifest, config)
 
 
 def _queue_item(queue_id: str, realtime: bool = False) -> QueueItem:
@@ -103,6 +112,12 @@ async def _endless_source(*_args: Any, **_kwargs: Any) -> AsyncGenerator[bytes]:
     for _ in range(3):
         yield b"\x00" * PCM_FORMAT.pcm_sample_size
     await asyncio.Event().wait()
+
+
+async def _finite_source(*_args: Any, **_kwargs: Any) -> AsyncGenerator[bytes]:
+    """Deliver a few seconds of audio and end, like a track whose audio has fully arrived."""
+    for _ in range(3):
+        yield b"\x00" * PCM_FORMAT.pcm_sample_size
 
 
 class _Rig:
@@ -369,14 +384,76 @@ async def test_a_paused_realtime_holder_is_taken_over_rather_than_refused(rig: _
     await buffer.clear()
 
 
+async def test_an_item_resuming_from_its_own_buffer_is_not_refused(rig: _Rig) -> None:
+    """Audio that already arrived needs no slot, so a held one is no reason to refuse it."""
+    rig.audio._get_media_stream = _finite_source  # type: ignore[method-assign]
+    resuming_item = rig.add_queue(STARTING_QUEUE, PlaybackState.PAUSED, realtime=True)
+    own_buffer = await rig.fill(resuming_item)
+    while own_buffer.is_buffering:
+        await asyncio.sleep(0.01)
+    assert rig.provider.has_available_stream_slot
+    rig.audio._get_media_stream = _endless_source  # type: ignore[method-assign]
+    playing_item = rig.add_queue(PAUSED_QUEUE, PlaybackState.PLAYING, realtime=True)
+    playing_buffer = await rig.fill(playing_item)
+
+    buffer = await rig.audio.get_audio_buffer(
+        resuming_item, reason="prepare", capacity_wait_timeout=15
+    )
+
+    assert buffer is own_buffer
+    await playing_buffer.clear()
+    await own_buffer.clear()
+
+
+async def test_a_provider_with_more_than_one_slot_keeps_the_wait(rig: _Rig) -> None:
+    """One realtime holder says nothing about the other slots, so the start waits as before."""
+    rig.provider = _provider(_TwoStreamProvider)
+    first_buffer = await rig.fill(rig.add_queue(PAUSED_QUEUE, PlaybackState.PLAYING, realtime=True))
+    second_buffer = await rig.fill(rig.add_queue("office", PlaybackState.PLAYING, realtime=True))
+    assert not rig.provider.has_available_stream_slot
+    starting_item = rig.add_queue(STARTING_QUEUE, PlaybackState.IDLE)
+
+    with pytest.raises(ProviderStreamLimitError) as exc_info:
+        await rig.audio.get_audio_buffer(starting_item, reason="prepare", capacity_wait_timeout=0.2)
+
+    assert not isinstance(exc_info.value, ProviderStreamHeldError)
+    await first_buffer.clear()
+    await second_buffer.clear()
+
+
 @pytest.mark.parametrize(
-    ("asking_queue", "state", "realtime", "has_session", "expected"),
+    ("player_filter", "named"),
+    [([STARTING_QUEUE], False), ([STARTING_QUEUE, PAUSED_QUEUE], True), ([], True)],
+    ids=["other-player-not-allowed", "other-player-allowed", "unrestricted"],
+)
+async def test_a_holder_is_named_only_to_a_user_who_may_control_it(
+    rig: _Rig, player_filter: list[str], named: bool
+) -> None:
+    """A user limited to some players is refused all the same, but learns nothing of others."""
+    playing_item = rig.add_queue(PAUSED_QUEUE, PlaybackState.PLAYING, realtime=True)
+    playing_buffer = await rig.fill(playing_item)
+    set_current_user(
+        User(user_id="kid", username="kid", role=UserRole.USER, player_filter=player_filter)
+    )
+    try:
+        with pytest.raises(ProviderStreamLimitError) as exc_info:
+            rig.queues.refuse_held_stream_slot(INSTANCE, STARTING_QUEUE)
+    finally:
+        set_current_user(None)
+
+    assert isinstance(exc_info.value, ProviderStreamHeldError) is named
+    assert (exc_info.value.data is not None) is named
+    await playing_buffer.clear()
+
+
+@pytest.mark.parametrize(
+    ("asking_queue", "state", "realtime", "has_session", "refused"),
     [
-        (STARTING_QUEUE, PlaybackState.PLAYING, True, True, PAUSED_QUEUE),
-        (PAUSED_QUEUE, PlaybackState.PLAYING, True, True, None),
-        (STARTING_QUEUE, PlaybackState.PLAYING, False, True, None),
-        (STARTING_QUEUE, PlaybackState.PAUSED, True, True, None),
-        (STARTING_QUEUE, PlaybackState.PLAYING, True, False, None),
+        (STARTING_QUEUE, PlaybackState.PLAYING, True, True, True),
+        (PAUSED_QUEUE, PlaybackState.PLAYING, True, True, False),
+        (STARTING_QUEUE, PlaybackState.PLAYING, False, True, False),
+        (STARTING_QUEUE, PlaybackState.PAUSED, True, True, False),
+        (STARTING_QUEUE, PlaybackState.PLAYING, True, False, False),
     ],
     ids=[
         "another-queue-playing-a-realtime-source",
@@ -392,7 +469,7 @@ async def test_only_another_queue_playing_a_realtime_source_holds_its_slot_for_g
     state: PlaybackState,
     realtime: bool,
     has_session: bool,
-    expected: str | None,
+    refused: bool,
 ) -> None:
     """Only a realtime source played by another queue holds its slot for the item's length."""
     item = rig.add_queue(PAUSED_QUEUE, state, realtime=realtime)
@@ -400,9 +477,8 @@ async def test_only_another_queue_playing_a_realtime_source_holds_its_slot_for_g
     if not has_session:
         rig.queues._queue_data[PAUSED_QUEUE].session_id = None
 
-    holder = rig.queues.playing_stream_slot_holder(INSTANCE, asking_queue)
-
-    assert (holder.queue_id if holder is not None else None) == expected
+    with pytest.raises(ProviderStreamHeldError) if refused else contextlib.nullcontext():
+        rig.queues.refuse_held_stream_slot(INSTANCE, asking_queue)
 
     await buffer.clear()
 

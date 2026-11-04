@@ -34,12 +34,15 @@ from music_assistant.controllers.webserver.helpers.auth_middleware import (
     get_current_user,
     has_player_access,
 )
-from music_assistant.models.music_provider import MusicProvider
+from music_assistant.models.music_provider import (
+    MusicProvider,
+    ProviderStreamHeldError,
+    ProviderStreamLimitError,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
 
-    from music_assistant_models.player_queue import PlayerQueue
     from music_assistant_models.queue_item import QueueItem
     from music_assistant_models.streamdetails import StreamDetails
 
@@ -190,24 +193,34 @@ class StreamFeederMixin(_PlayerQueuesBase):
         """
         return self._paused_stream_slot_holder(provider_instance, queue_id) is not None
 
-    def playing_stream_slot_holder(
-        self, provider_instance: str, queue_id: str
-    ) -> PlayerQueue | None:
+    def refuse_held_stream_slot(self, provider_instance: str, queue_id: str) -> None:
         """
-        Return the player whose playback holds a slot of a full provider until its item ends.
+        Raise when another queue's realtime playback holds the only slot of a provider.
 
         A realtime source hands its audio over at playback pace, so its slot stays taken for
         as long as its item plays: a queue starting on that provider has nothing to wait
-        for. A paused holder is left out, as it hands its slot over instead.
+        for. A paused holder is left alone, as it hands its slot over instead.
 
         :param provider_instance: The provider instance a slot is needed on.
         :param queue_id: The queue that needs the slot.
-        :return: The holding queue, or None when there is no such holder.
+        :raises ProviderStreamHeldError: Naming the holding player, when the caller may
+            control it.
+        :raises ProviderStreamLimitError: When the holding player is not one the caller may
+            control.
         """
-        for holder_id, details in self._held_stream_slots(provider_instance, queue_id):
-            if details.is_realtime and not self._is_paused(holder_id):
-                return self._queue_data[holder_id].queue
-        return None
+        provider = self._full_provider(provider_instance)
+        # one realtime holder says nothing about the other slots of a larger budget
+        if provider is None or provider.max_concurrent_streams != 1:
+            return
+        for holder_id, details in self._held_stream_slots(provider, queue_id):
+            if not details.is_realtime or self._is_paused(holder_id):
+                continue
+            # a player outside the caller's filter stays out of sight: the refusal then
+            # reads like any other capacity error
+            user = get_current_user()
+            if has_player_access(user, holder_id, self.mass.players.get_player(holder_id)):
+                raise ProviderStreamHeldError(provider, self._queue_data[holder_id].queue)
+            raise ProviderStreamLimitError(provider, None)
 
     async def release_paused_stream_slot(self, provider_instance: str, queue_id: str) -> bool:
         """
@@ -535,8 +548,10 @@ class StreamFeederMixin(_PlayerQueuesBase):
         :param provider_instance: The provider instance a slot is needed on.
         :param queue_id: The queue that needs the slot.
         """
+        if (provider := self._full_provider(provider_instance)) is None:
+            return None
         user = get_current_user()
-        for holder_id, _details in self._held_stream_slots(provider_instance, queue_id):
+        for holder_id, _details in self._held_stream_slots(provider, queue_id):
             if not self._is_paused(holder_id):
                 continue
             # the starting user only takes the slot of a player they may control
@@ -544,19 +559,27 @@ class StreamFeederMixin(_PlayerQueuesBase):
                 return holder_id
         return None
 
-    def _held_stream_slots(
-        self, provider_instance: str, queue_id: str
-    ) -> Iterator[tuple[str, StreamDetails]]:
+    def _full_provider(self, provider_instance: str) -> MusicProvider | None:
         """
-        Yield the queues other than the given one that hold a slot of a full provider.
+        Return the music provider instance, if it is one and has no free source-stream slot.
 
         :param provider_instance: The provider instance a slot is needed on.
-        :param queue_id: The queue that needs the slot.
-        :return: Pairs of the holding queue and the stream details whose buffer holds the slot.
         """
         provider = self.mass.get_provider(provider_instance, return_unavailable=True)
         if not isinstance(provider, MusicProvider) or provider.has_available_stream_slot:
-            return
+            return None
+        return provider
+
+    def _held_stream_slots(
+        self, provider: MusicProvider, queue_id: str
+    ) -> Iterator[tuple[str, StreamDetails]]:
+        """
+        Yield the queues other than the given one that hold a slot of the given provider.
+
+        :param provider: The provider instance whose slots are all taken.
+        :param queue_id: The queue that needs a slot.
+        :return: Pairs of the holding queue and the stream details whose buffer holds the slot.
+        """
         for holder_id, queue_data in self._queue_data.items():
             # a stop only releases the audio of a session, so a queue without one has
             # nothing to hand over
@@ -568,7 +591,7 @@ class StreamFeederMixin(_PlayerQueuesBase):
                 # slot itself
                 if (
                     (details := item.streamdetails) is not None
-                    and details.provider == provider_instance
+                    and details.provider == provider.instance_id
                     and details.buffer is not None
                     and details.buffer.is_buffering
                     and details.buffer.ready.is_set()

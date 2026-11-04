@@ -124,7 +124,7 @@ def _mass(
     mass.get_provider.side_effect = lambda instance, **_kwargs: providers.get(instance)
     mass.player_queues.queue_data_or_none.return_value = None
     mass.player_queues.has_paused_stream_slot_holder.return_value = False
-    mass.player_queues.playing_stream_slot_holder.return_value = None
+    mass.player_queues.refuse_held_stream_slot.return_value = None
     if access is not None:
         mass.player_queues.queue_data_or_none.return_value = MagicMock(userid=USER_ID)
         mass.webserver.auth.get_user = AsyncMock(
@@ -275,11 +275,15 @@ async def test_a_matchless_search_falls_back_to_the_blocking_wait(
     mass.cache.set.assert_not_awaited()
 
 
-def _realtime_holder() -> MagicMock:
-    """Build a queue double whose realtime playback holds the busy source's slot."""
+def _refuse_held(_instance: str, _queue_id: str) -> None:
+    """Stand in for the queues controller refusing the busy source's held slot."""
+    provider = MagicMock(spec=MusicProvider)
+    provider.max_concurrent_streams = 1
+    provider.name = "Spotify"
+    provider.instance_id = BUSY_INSTANCE
     holder = MagicMock(queue_id="living_room")
     holder.display_name = "Living Room"
-    return holder
+    raise ProviderStreamHeldError(provider, holder)
 
 
 async def test_a_cross_provider_match_still_rescues_a_held_source(
@@ -293,7 +297,7 @@ async def test_a_cross_provider_match_still_rescues_a_held_source(
         MATCH_INSTANCE: _music_provider(MATCH_INSTANCE),
     }
     mass = _mass(providers)
-    mass.player_queues.playing_stream_slot_holder.return_value = _realtime_holder()
+    mass.player_queues.refuse_held_stream_slot.side_effect = _refuse_held
     mass.music.tracks.match_provider = AsyncMock(
         return_value=[_mapping(MATCH_INSTANCE, item_id=MATCHED_ITEM_ID)]
     )
@@ -321,7 +325,7 @@ async def test_a_matchless_search_ends_in_a_refusal_when_a_realtime_holder_has_t
     }
     # match_provider finds nothing (the _mass default)
     mass = _mass(providers)
-    mass.player_queues.playing_stream_slot_holder.return_value = _realtime_holder()
+    mass.player_queues.refuse_held_stream_slot.side_effect = _refuse_held
     audio = StreamsAudio(mass)
     get_buffer = AsyncMock(side_effect=[_limit_error(BUSY_INSTANCE)])
     monkeypatch.setattr(AudioBuffer, "get_buffer", get_buffer)

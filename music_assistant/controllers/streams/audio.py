@@ -188,11 +188,7 @@ from music_assistant.helpers.util import (
     remove_file,
 )
 from music_assistant.models.media_capabilities import AudioStreamMixin
-from music_assistant.models.music_provider import (
-    MusicProvider,
-    ProviderStreamHeldError,
-    ProviderStreamLimitError,
-)
+from music_assistant.models.music_provider import MusicProvider, ProviderStreamLimitError
 
 if TYPE_CHECKING:
     from music_assistant_models.media_items import MediaItemType, ProviderMapping
@@ -733,8 +729,8 @@ class StreamsAudio:
             connected; once it reports False, no source is opened for it.
         :return: The buffer, or None when the consumer reported it left.
         :raises ProviderStreamLimitError: If no source slot becomes available within the budget.
-        :raises ProviderStreamHeldError: If another player's realtime playback holds the last
-            slot, which is refused without waiting.
+        :raises ProviderStreamHeldError: If another player's realtime playback holds the only
+            slot of the source and the item needs a new one, refused without waiting.
         """
         lock_key = (queue_item.queue_id, queue_item.queue_item_id)
         if (buffer_lock := self._audio_buffer_locks.get(lock_key)) is None:
@@ -3993,16 +3989,20 @@ class StreamsAudio:
             last_resort = final_pass or not (
                 alternatives_left or busy_instances or match_pending or paused_holder
             )
-            if last_resort and (
-                holder := self.mass.player_queues.playing_stream_slot_holder(
-                    streamdetails.provider, queue_item.queue_id
-                )
-            ):
+            # an item that resumes from its own buffer (the reuse check of get_buffer) opens
+            # no new source, so a held slot is nothing to refuse it over
+            own_buffer = streamdetails.buffer
+            resumes = (
+                own_buffer is not None
+                and not own_buffer.has_error
+                and own_buffer.is_valid(seek_position_ms)
+            )
+            if last_resort and not resumes:
                 # a realtime source keeps its slot until its item ends, so the budget would
                 # run out with nothing to show for it: refuse right away instead
-                provider = self.mass.get_provider(streamdetails.provider, return_unavailable=True)
-                assert isinstance(provider, MusicProvider)  # the holder lookup resolved it
-                raise ProviderStreamHeldError(provider, holder)
+                self.mass.player_queues.refuse_held_stream_slot(
+                    streamdetails.provider, queue_item.queue_id
+                )
             source_wait = remaining if last_resort else 0.0
             # record whose audio this is before it exists: a queue stop releases only the
             # buffers of the session it is tearing down, and details resolved by an earlier

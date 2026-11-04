@@ -91,11 +91,21 @@ def _limit_error(instance: str) -> ProviderStreamLimitError:
     return ProviderStreamLimitError(provider, 0)
 
 
-def _holder(queue_id: str) -> MagicMock:
-    """Build a queue double whose realtime playback holds a provider's slot."""
-    holder = MagicMock(queue_id=queue_id)
-    holder.display_name = queue_id
-    return holder
+def _held_error(instance: str) -> ProviderStreamHeldError:
+    """Build the refusal for a provider instance whose only slot a realtime playback holds."""
+    provider = MagicMock(spec=MusicProvider)
+    provider.max_concurrent_streams = 1
+    provider.name = "Limited"
+    provider.instance_id = instance
+    holder = MagicMock(queue_id="living_room")
+    holder.display_name = "Living Room"
+    return ProviderStreamHeldError(provider, holder)
+
+
+def _refuse_busy(instance: str, _queue_id: str) -> None:
+    """Stand in for the queues controller refusing the busy instance's held slot."""
+    if instance == BUSY_INSTANCE:
+        raise _held_error(instance)
 
 
 def _music_provider(instance: str, has_slot: bool) -> MagicMock:
@@ -130,7 +140,7 @@ def _mass(
         mass.get_provider.side_effect = lambda instance, **_kwargs: providers.get(instance)
     mass.player_queues.queue_data_or_none.return_value = None
     mass.player_queues.has_paused_stream_slot_holder.return_value = False
-    mass.player_queues.playing_stream_slot_holder.return_value = None
+    mass.player_queues.refuse_held_stream_slot.return_value = None
     if access is not None:
         mass.player_queues.queue_data_or_none.return_value = MagicMock(userid=USER_ID)
         mass.webserver.auth.get_user = AsyncMock(
@@ -451,9 +461,7 @@ async def test_a_held_account_still_lets_another_account_play_the_item(
         FALLBACK_INSTANCE: _music_provider(FALLBACK_INSTANCE, has_slot=True),
     }
     mass = _mass(providers)
-    mass.player_queues.playing_stream_slot_holder.side_effect = lambda instance, _queue_id: (
-        _holder("living_room") if instance == BUSY_INSTANCE else None
-    )
+    mass.player_queues.refuse_held_stream_slot.side_effect = _refuse_busy
     audio = StreamsAudio(mass)
     expected_buffer = MagicMock(spec=AudioBuffer)
     get_buffer = AsyncMock(side_effect=[_limit_error(BUSY_INSTANCE), expected_buffer])
@@ -480,7 +488,7 @@ async def test_every_account_held_is_refused_instead_of_the_blocking_pass(
         FALLBACK_INSTANCE: _music_provider(FALLBACK_INSTANCE, has_slot=False),
     }
     mass = _mass(providers)
-    mass.player_queues.playing_stream_slot_holder.return_value = _holder("living_room")
+    mass.player_queues.refuse_held_stream_slot.side_effect = _refuse_busy
     audio = StreamsAudio(mass)
     get_buffer = AsyncMock(
         side_effect=[_limit_error(BUSY_INSTANCE), _limit_error(FALLBACK_INSTANCE)]
