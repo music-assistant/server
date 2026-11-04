@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import time
+from collections.abc import Callable, Coroutine
 from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock, PropertyMock, patch
 
@@ -27,6 +28,7 @@ from music_assistant.providers.raumfeld.player import (
     _map_transport_state,
     _near_track_end,
 )
+from music_assistant.providers.raumfeld.upnp import SERVICE_AV_TRANSPORT, SERVICE_RENDERING_CONTROL
 from tests.common import MockProvider
 
 BASE_URL = "http://mass.local:8097"
@@ -42,7 +44,7 @@ def _flow_player() -> RaumfeldPlayer:
     player._external_source = None
     player._attr_supported_features = set()
     player._library_sources = {}
-    player._transport_actions = {}
+    player._upnp_actions = {}
     player._extra_data = {}
     # no sample rate setting: the room plays the safe default
     player._config = MagicMock(get_value=MagicMock(return_value=None))
@@ -262,8 +264,8 @@ def _follower(leader_state: PlaybackState) -> RaumfeldPlayer:
     player._attr_playback_state = PlaybackState.PLAYING
     player._attr_poll_interval = PLAYING_POLL_INTERVAL
     provider = MagicMock()
-    provider.host.get_room_power_state.return_value = "ACTIVE"
-    provider.host.room_is_spotify_single_room.return_value = False
+    provider.host.power_state.return_value = "ACTIVE"
+    provider.host.plays_spotify_connect.return_value = False
     provider.room_renderer_location.return_value = None
     player._provider = provider
     player._power_changed_at = 0.0
@@ -282,8 +284,11 @@ async def test_follower_mirrors_a_stopped_leader() -> None:
     with (
         patch.object(RaumfeldPlayer, "synced_to", new_callable=PropertyMock) as synced_to,
         patch.object(RaumfeldPlayer, "update_state"),
-        patch("music_assistant.providers.raumfeld.player.get_volume", AsyncMock(return_value=30)),
-        patch("music_assistant.providers.raumfeld.player.get_mute", AsyncMock(return_value=False)),
+        patch.object(
+            player,
+            "_call_action",
+            AsyncMock(side_effect=_rendering_control(volume=30, muted=False)),
+        ),
     ):
         synced_to.return_value = "raumfeld_leader"
         await player.poll()
@@ -344,7 +349,7 @@ def _host_room_player() -> RaumfeldPlayer:
         return_value="Raumfeld Soundbar"
     )
     host = MagicMock()
-    host.get_room_power_state.return_value = "MANUAL_STANDBY"
+    host.power_state.return_value = "MANUAL_STANDBY"
     provider.host = host  # type: ignore[attr-defined]
     return RaumfeldPlayer(
         provider,  # type: ignore[arg-type]
@@ -379,6 +384,20 @@ def _upnp_action(**call: Any) -> MagicMock:
     action = MagicMock()
     action.async_call = AsyncMock(**call)
     return action
+
+
+def _rendering_control(
+    volume: int | Exception, muted: bool | Exception
+) -> Callable[..., Coroutine[Any, Any, dict[str, Any]]]:
+    """Return a stand-in for the renderer's volume and mute reads, answering or raising."""
+
+    async def call(_location: str, _service: str, action_name: str, **_: Any) -> dict[str, Any]:
+        value = volume if action_name == "GetVolume" else muted
+        if isinstance(value, Exception):
+            raise value
+        return {"CurrentVolume" if action_name == "GetVolume" else "CurrentMute": value}
+
+    return call
 
 
 async def test_a_transport_action_is_built_once_per_renderer() -> None:
@@ -440,18 +459,23 @@ async def test_actions_of_a_renderer_that_moved_are_dropped() -> None:
         await player._transport_action(_ZONE, "Stop")
         player._provider.room_renderer_location.return_value = moved  # type: ignore[attr-defined]
         await player._transport_action(moved, "Stop")
-    assert set(player._transport_actions) == {(_ZONE, "Stop"), (moved, "Stop")}
+    assert set(player._upnp_actions) == {
+        (_ZONE, SERVICE_AV_TRANSPORT, "Stop"),
+        (moved, SERVICE_AV_TRANSPORT, "Stop"),
+    }
 
 
 async def test_mute_goes_to_the_rooms_own_renderer() -> None:
     """Muting addresses the room's renderer, so it works without a zone and for one room."""
     player = _room_player()
     with (
-        patch("music_assistant.providers.raumfeld.player.set_mute", AsyncMock()) as set_mute,
+        patch.object(player, "_call_action", AsyncMock(return_value={})) as call,
         patch.object(player, "update_state"),
     ):
         await player.volume_mute(True)
-    set_mute.assert_awaited_once_with(player.mass.http_session, _RENDERER, True)
+    call.assert_awaited_once_with(
+        _RENDERER, SERVICE_RENDERING_CONTROL, "SetMute", Channel="Master", DesiredMute=True
+    )
     assert player._attr_volume_muted is True
 
 
@@ -460,10 +484,7 @@ async def test_a_mute_the_renderer_did_not_take_fails() -> None:
     player = _room_player()
     player._attr_volume_muted = False
     with (
-        patch(
-            "music_assistant.providers.raumfeld.player.set_mute",
-            AsyncMock(side_effect=TimeoutError),
-        ),
+        patch.object(player, "_call_action", AsyncMock(side_effect=TimeoutError)),
         pytest.raises(PlayerCommandFailed),
     ):
         await player.volume_mute(True)
@@ -484,11 +505,13 @@ async def test_volume_goes_to_the_rooms_own_renderer() -> None:
     player = _room_player()
     player._attr_volume_level = 20
     with (
-        patch("music_assistant.providers.raumfeld.player.set_volume", AsyncMock()) as set_volume,
+        patch.object(player, "_call_action", AsyncMock(return_value={})) as call,
         patch.object(player, "update_state"),
     ):
         await player.volume_set(35)
-    set_volume.assert_awaited_once_with(player.mass.http_session, _RENDERER, 35)
+    call.assert_awaited_once_with(
+        _RENDERER, SERVICE_RENDERING_CONTROL, "SetVolume", Channel="Master", DesiredVolume=35
+    )
     assert player._attr_volume_level == 35
 
 
@@ -498,10 +521,7 @@ async def test_a_volume_the_renderer_did_not_take_fails(location: str | None) ->
     player = _room_player(location=location)
     player._attr_volume_level = 20
     with (
-        patch(
-            "music_assistant.providers.raumfeld.player.set_volume",
-            AsyncMock(side_effect=TimeoutError),
-        ),
+        patch.object(player, "_call_action", AsyncMock(side_effect=TimeoutError)),
         pytest.raises(PlayerCommandFailed),
     ):
         await player.volume_set(35)
@@ -513,26 +533,34 @@ async def test_volume_update_reads_mute_and_keeps_unread_values() -> None:
     player = _room_player()
     player._attr_volume_level = 30
     player._attr_volume_muted = False
-    get_volume = AsyncMock(return_value=42)
-    get_mute = AsyncMock(return_value=True)
-    with (
-        patch("music_assistant.providers.raumfeld.player.get_mute", get_mute),
-        patch("music_assistant.providers.raumfeld.player.get_volume", get_volume),
-    ):
+    call = AsyncMock(side_effect=_rendering_control(volume=42, muted=True))
+    with patch.object(player, "_call_action", call):
         await player._update_volume()
         assert (player._attr_volume_level, player._attr_volume_muted) == (42, True)
-        get_volume.side_effect = UpnpError
-        get_mute.side_effect = TimeoutError
+        call.side_effect = _rendering_control(volume=UpnpError(), muted=TimeoutError())
         with patch.object(RaumfeldPlayer, "logger", MagicMock(), create=True):
             await player._update_volume()
     assert (player._attr_volume_level, player._attr_volume_muted) == (42, True)
+
+
+async def test_a_polls_volume_and_mute_reads_are_built_once() -> None:
+    """Reading volume and mute each poll does not read the renderer's descriptions each time."""
+    player = _room_player()
+    action = _upnp_action(return_value={"CurrentVolume": 30, "CurrentMute": False})
+    with patch(
+        "music_assistant.providers.raumfeld.player.get_action", AsyncMock(return_value=action)
+    ) as get_action:
+        await player._update_volume()
+        await player._update_volume()
+    assert get_action.await_count == 2
+    assert action.async_call.await_count == 4
 
 
 async def test_no_zone_for_the_room_is_reported() -> None:
     """A room the host gives no zone raises a clear error instead of playing into nothing."""
     player = _room_player()
     host = MagicMock()
-    host.roomlst_to_zoneudn.return_value = None
+    host.zone_udn.return_value = None
     provider = MagicMock()
     provider.host = host
     provider.get_zone_for_room.return_value = None
@@ -585,7 +613,7 @@ def _powered_player(power_state: str | None) -> tuple[RaumfeldPlayer, MagicMock]
     """Build a RaumfeldPlayer whose host reports the given power state; return its provider."""
     player = _room_player()
     host = MagicMock()
-    host.get_room_power_state.return_value = power_state
+    host.power_state.return_value = power_state
     provider = MagicMock()
     provider.host = host
     provider.enter_standby = AsyncMock()
@@ -615,7 +643,7 @@ def test_unknown_power_state_keeps_the_last_value() -> None:
     player._attr_powered = True
     player._update_power()
     assert player._attr_powered is True
-    provider.host.get_room_power_state.side_effect = KeyError("Bar")
+    provider.host.power_state.side_effect = KeyError("Bar")
     player._update_power()
     assert player._attr_powered is True
 
@@ -626,7 +654,7 @@ def test_power_control_only_for_a_room_with_a_power_state() -> None:
     player._attr_supported_features = {PlayerFeature.PLAY_MEDIA, PlayerFeature.POWER}
     player._update_power()
     assert PlayerFeature.POWER not in player._attr_supported_features
-    provider.host.get_room_power_state.return_value = "ACTIVE"
+    provider.host.power_state.return_value = "ACTIVE"
     player._update_power()
     assert PlayerFeature.POWER in player._attr_supported_features
 
@@ -648,7 +676,7 @@ async def test_power_on_wakes_the_room() -> None:
     player, provider = _powered_player("MANUAL_STANDBY")
 
     async def leave_standby(_room: str) -> None:
-        provider.host.get_room_power_state.return_value = "ACTIVE"
+        provider.host.power_state.return_value = "ACTIVE"
 
     provider.leave_standby.side_effect = leave_standby
     with patch.object(player, "update_state"):
@@ -696,7 +724,7 @@ async def test_power_on_fails_when_the_room_vanishes_while_waking() -> None:
     player._attr_powered = False
 
     async def leave_standby(_room: str) -> None:
-        provider.host.get_room_power_state.return_value = None
+        provider.host.power_state.return_value = None
 
     provider.leave_standby.side_effect = leave_standby
     with (
@@ -1077,7 +1105,7 @@ async def test_a_leader_taken_by_spotify_connect_dissolves_its_group() -> None:
     player._player_id = "raumfeld_leader"
     player._attr_group_members = ["raumfeld_leader", "raumfeld_follower"]
     provider = MagicMock()
-    provider.host.room_is_spotify_single_room.return_value = True
+    provider.host.plays_spotify_connect.return_value = True
     provider.get_zone_for_room.return_value = None
     provider.room_renderer_location.return_value = None
     player._provider = provider
@@ -1265,7 +1293,7 @@ async def test_a_failed_stop_is_reported() -> None:
 def test_a_room_in_a_zone_does_not_play_spotify_connect() -> None:
     """A stale Spotify Connect flag does not take a grouped room out of its group."""
     player, host = _external_player()
-    host.room_is_spotify_single_room.return_value = True
+    host.plays_spotify_connect.return_value = True
     with patch.object(player, "_active_zone", return_value=["Bank", "Bar"]):
         assert player._plays_spotify_connect() is False
     with patch.object(player, "_active_zone", return_value=None):

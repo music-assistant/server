@@ -52,7 +52,7 @@ from .helpers import (
     play_mode_for,
     query_last_change,
 )
-from .upnp import SERVICE_AV_TRANSPORT, get_action, get_mute, get_volume, set_mute, set_volume
+from .upnp import SERVICE_AV_TRANSPORT, SERVICE_RENDERING_CONTROL, get_action
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Coroutine
@@ -274,8 +274,8 @@ class RaumfeldPlayer(Player):
         # source id -> (object id, container) of the station buttons offered as sources
         self._library_sources: dict[str, tuple[str, bool]] = {}
         self._external_via_room = False
-        # (device description URL, action name) -> the AVTransport action, see _transport_action
-        self._transport_actions: dict[tuple[str, str], UpnpAction] = {}
+        # (device description URL, service, action name) -> the action, see _call_action
+        self._upnp_actions: dict[tuple[str, str, str], UpnpAction] = {}
         # timestamp of the last power command, see POWER_SETTLE_TIME
         self._power_changed_at = 0.0
         self._advance_task_id = f"raumfeld_advance_{player_id}"
@@ -388,7 +388,7 @@ class RaumfeldPlayer(Player):
 
         :param room: The room's current name as reported by the host.
         """
-        # the player_id is tied to the hardware, but hassfeld is keyed by room name, so
+        # the player_id is tied to the hardware, but the host is addressed by room name, so
         # the stored name must track a rename or play/stop/volume would target a stale name
         if room == self.room:
             return
@@ -738,7 +738,13 @@ class RaumfeldPlayer(Player):
                 f"Failed to set volume on {self.room}: its renderer is unknown"
             )
         try:
-            await set_volume(self.mass.http_session, location, volume_level)
+            await self._call_action(
+                location,
+                SERVICE_RENDERING_CONTROL,
+                "SetVolume",
+                Channel="Master",
+                DesiredVolume=volume_level,
+            )
         except (*HOST_ERRORS, UpnpError) as err:
             raise PlayerCommandFailed(f"Failed to set volume on {self.room}: {err!r}") from err
         self._attr_volume_level = volume_level
@@ -751,7 +757,9 @@ class RaumfeldPlayer(Player):
         if (location := self.raumfeld.room_renderer_location(self.room)) is None:
             raise PlayerCommandFailed(f"Failed to mute {self.room}: its renderer is unknown")
         try:
-            await set_mute(self.mass.http_session, location, muted)
+            await self._call_action(
+                location, SERVICE_RENDERING_CONTROL, "SetMute", Channel="Master", DesiredMute=muted
+            )
         except (*HOST_ERRORS, UpnpError) as err:
             raise PlayerCommandFailed(f"Failed to mute {self.room}: {err!r}") from err
         self._attr_volume_muted = muted
@@ -1047,7 +1055,7 @@ class RaumfeldPlayer(Player):
         if time.time() - self._power_changed_at < POWER_SETTLE_TIME:
             return
         try:
-            state = self.raumfeld.host.get_room_power_state(self.room)
+            state = self.raumfeld.host.power_state(self.room)
         except HOST_ERRORS as err:
             self.logger.debug("Failed to read power state for %s: %r", self.room, err)
             return
@@ -1070,13 +1078,11 @@ class RaumfeldPlayer(Player):
     def _plays_spotify_connect(self) -> bool:
         """Return whether Spotify Connect is playing on this room's own renderer."""
         # Spotify Connect takes the room out of every zone, so a room in a zone does not play
-        # it. hassfeld keeps a room flagged once the host reported Spotify Connect on it, also
-        # after the session ended, so the flag alone would keep pulling the room out of any
-        # group it joins later.
+        # it, whatever the host still reports for the room's renderer
         if self._active_zone() is not None:
             return False
         try:
-            return bool(self.raumfeld.host.room_is_spotify_single_room(self.room))
+            return bool(self.raumfeld.host.plays_spotify_connect(self.room))
         except HOST_ERRORS:
             return False
 
@@ -1226,33 +1232,41 @@ class RaumfeldPlayer(Player):
         :param action_name: The AVTransport action to call.
         :param arguments: The action's arguments, besides the instance id.
         """
-        # not through hassfeld's own wrappers: those swallow every error, so a command
-        # the renderer rejected would be reported as done.
+        response = await self._call_action(location, SERVICE_AV_TRANSPORT, action_name, **arguments)
+        return cast("dict[str, str]", response)
+
+    async def _call_action(
+        self, location: str, service: str, action_name: str, **arguments: Any
+    ) -> dict[str, Any]:
+        """
+        Call an action of a renderer's service and return its response.
+
+        :param location: The device description URL of the renderer to call.
+        :param service: The service type that has the action.
+        :param action_name: The action to call.
+        :param arguments: The action's arguments, besides the instance id.
+        """
         # Building the action reads the device description and every service description,
-        # several requests each time, so it is kept: a station switch then costs one request
-        # per action. A renderer that reconnects comes back on another port, so another URL.
-        key = (location, action_name)
-        if (action := self._transport_actions.get(key)) is None:
-            action = await get_action(
-                self.mass.http_session, location, SERVICE_AV_TRANSPORT, action_name
-            )
+        # several requests each time, so it is kept: a station switch or a poll's volume
+        # read then costs one request per action. A renderer that reconnects comes back on
+        # another port, so another URL.
+        key = (location, service, action_name)
+        if (action := self._upnp_actions.get(key)) is None:
+            action = await get_action(self.mass.http_session, location, service, action_name)
             # a reconnected renderer or a new zone leaves its old URL behind, never called again
             in_use = self._renderer_locations() | {location}
-            self._transport_actions = {
-                cached: kept
-                for cached, kept in self._transport_actions.items()
-                if cached[0] in in_use
+            self._upnp_actions = {
+                cached: kept for cached, kept in self._upnp_actions.items() if cached[0] in in_use
             }
-            self._transport_actions[key] = action
-        call: dict[str, Any] = {"InstanceID": 0, **arguments}
+            self._upnp_actions[key] = action
         try:
-            response = await action.async_call(**call)
+            response = await action.async_call(InstanceID=0, **arguments)
         except UpnpActionError:
             raise  # the renderer answered, so the action still fits it
         except (*HOST_ERRORS, UpnpError):
-            self._transport_actions.pop(key, None)
+            self._upnp_actions.pop(key, None)
             raise
-        return cast("dict[str, str]", response)
+        return cast("dict[str, Any]", response)
 
     def _renderer_locations(self) -> set[str]:
         """Return the device description URLs of the room's renderer and of its zone."""
@@ -1675,8 +1689,11 @@ class RaumfeldPlayer(Player):
         """
         self._mark_play_started()
         self._clear_next()
-        host = self.raumfeld.host
-        uri = library_uri(host.media_server_udn, object_id, container)
+        if (media_server_udn := self.raumfeld.host.media_server_udn) is None:
+            raise PlayerCommandFailed(
+                f"Failed to start {object_id} on {self.room}: the host lists no media server"
+            )
+        uri = library_uri(media_server_udn, object_id, container)
         try:
             # the host wants the item's own description along with the reference
             metadata = await self.raumfeld.browse_library(object_id, children=False)
@@ -1704,8 +1721,6 @@ class RaumfeldPlayer(Player):
 
     async def _zone_command(self, zone: list[str], action_name: str, **arguments: str) -> None:
         """Send a transport command to the zone's renderer, raising when it is not carried out."""
-        # straight to the renderer rather than through hassfeld's zone calls, which swallow
-        # every error, so a command the host rejects fails here instead of passing silently
         if (location := self.raumfeld.zone_location(zone)) is None:
             raise PlayerCommandFailed(
                 f"{action_name} failed on {self.room}: the host has not published its zone"
@@ -2041,20 +2056,28 @@ class RaumfeldPlayer(Player):
         if (location := self.raumfeld.room_renderer_location(self.room)) is None:
             return None
         try:
-            return await get_volume(self.mass.http_session, location)
+            response = await self._call_action(
+                location, SERVICE_RENDERING_CONTROL, "GetVolume", Channel="Master"
+            )
         except (*HOST_ERRORS, UpnpError) as err:
             self.logger.debug("Failed to read volume for %s: %r", self.room, err)
             return None
+        volume = response.get("CurrentVolume")
+        return int(volume) if volume is not None else None
 
     async def _read_mute(self) -> bool | None:
         """Read this room's mute state, or ``None`` if it could not be read."""
         if (location := self.raumfeld.room_renderer_location(self.room)) is None:
             return None
         try:
-            return await get_mute(self.mass.http_session, location)
+            response = await self._call_action(
+                location, SERVICE_RENDERING_CONTROL, "GetMute", Channel="Master"
+            )
         except (*HOST_ERRORS, UpnpError) as err:
             self.logger.debug("Failed to read mute state for %s: %r", self.room, err)
             return None
+        muted = response.get("CurrentMute")
+        return bool(muted) if muted is not None else None
 
     async def _read_transport(self, zone: list[str]) -> dict[str, str] | None:
         """Read the zone's GetTransportInfo response, or ``None`` if it could not be read."""
@@ -2202,7 +2225,7 @@ class RaumfeldPlayer(Player):
             # rooms in MANUAL_STANDBY do not auto-power-on for playback (unlike
             # AUTOMATIC_STANDBY); leaving standby is a no-op for an already-awake room
             try:
-                state = host.get_room_power_state(room)
+                state = host.power_state(room)
                 if state is None and strict:
                     # the host does not know the room (renamed, or gone), so there is
                     # nothing to confirm it against
@@ -2223,7 +2246,7 @@ class RaumfeldPlayer(Player):
         deadline = time.time() + WAKE_TIMEOUT
         while time.time() < deadline:
             try:
-                states = [host.get_room_power_state(room) for room in zone]
+                states = [host.power_state(room) for room in zone]
                 # a room the host stops reporting counts as awake only when lenient
                 if all("STANDBY" not in state if state else not strict for state in states):
                     return
@@ -2236,9 +2259,9 @@ class RaumfeldPlayer(Player):
     def _active_zone(self) -> list[str] | None:
         """Return this room's zone if the host can address it, else ``None``."""
         # get_zone_for_room only lists active zones; double-check the host can still
-        # resolve it to a zone UDN, so callers never hand hassfeld an unknown zone
+        # resolve it to a zone UDN, so callers never address an unknown zone
         zone = self.raumfeld.get_zone_for_room(self.room)
-        if zone and self.raumfeld.host.roomlst_to_zoneudn(zone) is not None:
+        if zone and self.raumfeld.host.zone_udn(zone) is not None:
             return zone
         return None
 

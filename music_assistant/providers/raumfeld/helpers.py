@@ -187,9 +187,6 @@ async def host_is_valid(session: aiohttp.ClientSession, host: str, port: int) ->
     """
     Return whether a Raumfeld host answers ``getHostInfo`` at the given address.
 
-    Replaces hassfeld's ``async_host_is_valid``, which opens a session of its own and
-    gives the host 3 seconds.
-
     :param session: The HTTP session to use.
     :param host: Address of the Raumfeld host.
     :param port: Port of the host's webservice.

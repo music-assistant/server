@@ -9,6 +9,7 @@ from collections.abc import AsyncIterator, Callable, Coroutine, Iterator
 from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock, PropertyMock, patch
 
+import aiohttp
 import pytest
 from music_assistant_models.config_entries import MULTI_VALUE_SPLITTER
 from music_assistant_models.enums import MediaType, PlaybackState
@@ -20,6 +21,7 @@ from music_assistant.providers.raumfeld.constants import (
     GROUP_SETTLE_TIME,
     PLAYER_CONFIG_ENTRIES,
 )
+from music_assistant.providers.raumfeld.host import Devices, RaumfeldHost, Room, ZoneConfig
 from music_assistant.providers.raumfeld.player import RaumfeldPlayer
 from music_assistant.providers.raumfeld.provider import RaumfeldPlayerProvider
 
@@ -38,6 +40,37 @@ _DEVICE_DESCRIPTION = (
 )
 
 
+def _host(
+    rooms: dict[str, tuple[str, str]],
+    locations: dict[str, str] | None = None,
+    zones: dict[str, list[str]] | None = None,
+    media_server_udn: str | None = None,
+) -> RaumfeldHost:
+    """
+    Build a host model that reports the given rooms, devices and zones.
+
+    :param rooms: Room name -> (room UDN, renderer UDN).
+    :param locations: Device UDN -> description URL.
+    :param zones: Zone UDN -> its rooms.
+    :param media_server_udn: The UDN of the host's media server.
+    """
+    host = RaumfeldHost(MagicMock(), "http://192.168.1.41:47365")
+    host._zone_config = ZoneConfig(
+        rooms={
+            name: Room(name, udn, renderer_udn, "ACTIVE", spotify_active=False)
+            for name, (udn, renderer_udn) in rooms.items()
+        },
+        zones=zones or {},
+    )
+    host._devices = Devices(locations=locations or {}, media_server_udn=media_server_udn)
+    return host
+
+
+def _host_mock(provider: RaumfeldPlayerProvider) -> MagicMock:
+    """Return the provider's host, which a test built as a mock."""
+    return cast("MagicMock", provider.host)
+
+
 def _provider(description: str) -> tuple[RaumfeldPlayerProvider, MagicMock]:
     """Build a provider whose room renderer answers with the given device description."""
     provider = RaumfeldPlayerProvider.__new__(RaumfeldPlayerProvider)
@@ -45,12 +78,7 @@ def _provider(description: str) -> tuple[RaumfeldPlayerProvider, MagicMock]:
     provider._room_renderers = {}
     provider._room_models = {}
     provider._room_transport_paths = {}
-    provider.host = MagicMock()
-    provider.host.resolve = {
-        "room_to_udn": {"Bar": "uuid:room"},
-        "roomudn_to_rendudn": {"uuid:room": "uuid:renderer"},
-        "udn_to_devloc": {"uuid:renderer": _LOCATION},
-    }
+    provider.host = _host({"Bar": ("uuid:room", "uuid:renderer")}, {"uuid:renderer": _LOCATION})
     response = MagicMock()
     response.text = AsyncMock(return_value=description)
     request = MagicMock()
@@ -91,7 +119,10 @@ async def test_transport_url_follows_the_renderers_current_address() -> None:
     await provider._ensure_room_serial("Bar")
     assert provider.room_transport_url("Bar") == "http://192.168.1.42:54730/AVTransport/ctrl"
 
-    provider.host.resolve["udn_to_devloc"]["uuid:renderer"] = "http://192.168.1.42:41000/r.xml"
+    provider.host = _host(
+        {"Bar": ("uuid:room", "uuid:renderer")},
+        {"uuid:renderer": "http://192.168.1.42:41000/r.xml"},
+    )
 
     assert provider.room_transport_url("Bar") == "http://192.168.1.42:41000/AVTransport/ctrl"
 
@@ -132,12 +163,9 @@ def _moving_provider(rooms: dict[str, tuple[str, str]]) -> RaumfeldPlayerProvide
 
 def _place_speakers(provider: RaumfeldPlayerProvider, rooms: dict[str, tuple[str, str]]) -> None:
     """Have the host report the given rooms (see ``_moving_provider``)."""
-    provider.host.get_rooms.return_value = list(rooms)
-    provider.host.resolve = {
-        "room_to_udn": {room: room_udn for room, (room_udn, _) in rooms.items()},
-        "roomudn_to_rendudn": dict(rooms.values()),
-        "udn_to_devloc": {renderer: location for renderer, (location, _) in _SPEAKERS.items()},
-    }
+    provider.host = _host(
+        rooms, {renderer: location for renderer, (location, _) in _SPEAKERS.items()}
+    )
 
 
 async def _room_ids(provider: RaumfeldPlayerProvider) -> dict[str, str | None]:
@@ -233,9 +261,10 @@ def _zone_provider(
     by_id = {player.player_id: player for player in players.values()}
     provider._room_ids = {room: player.player_id for room, player in players.items()}
     provider.host = MagicMock()
-    provider.host.get_zones.return_value = zones
+    _host_mock(provider).get_zones.return_value = zones
     # the host lists a zone's rooms sorted; the first one given here is its coordinator
-    provider.host.resolve = {}
+    _host_mock(provider).zone_rooms.return_value = []
+    _host_mock(provider).location.return_value = None
     mass = MagicMock()
     mass.players.get_player.side_effect = by_id.get
     mass.players.all_players.return_value = list(by_id.values())
@@ -245,8 +274,8 @@ def _zone_provider(
     for player in players.values():
         player.mass = mass
         # a zone's renderer runs on the host: each test sets what the zones answer there
-        player._read_transport = lambda zone: provider.host.zone_transport(zone)  # type: ignore[method-assign]
-        player._read_position = lambda zone: provider.host.zone_position(zone)  # type: ignore[method-assign]
+        player._read_transport = lambda zone: _host_mock(provider).zone_transport(zone)  # type: ignore[method-assign]
+        player._read_position = lambda zone: _host_mock(provider).zone_position(zone)  # type: ignore[method-assign]
     provider.logger = MagicMock()
     return provider, players
 
@@ -350,7 +379,7 @@ async def test_a_changed_zone_layout_is_followed_once_it_held() -> None:
     """A new layout is taken over on the second look in a row, not on the first."""
     provider, players = _zone_provider([["Bar"], ["Sofa"]])
     _sync(provider, players)
-    provider.host.get_zones.return_value = [["Bar", "Sofa"]]
+    _host_mock(provider).get_zones.return_value = [["Bar", "Sofa"]]
     await _follow(provider, players)
     assert _groups(players) == {}
     await _follow(provider, players)
@@ -362,7 +391,7 @@ async def test_a_layout_that_keeps_changing_is_not_followed() -> None:
     provider, players = _zone_provider([["Bar"], ["Sofa"]])
     _sync(provider, players)
     for zones in ([["Bar", "Sofa"]], [["Bar", "Kitchen"]], [["Bar", "Sofa"]]):
-        provider.host.get_zones.return_value = zones
+        _host_mock(provider).get_zones.return_value = zones
         await _follow(provider, players)
     assert _groups(players) == {}
 
@@ -371,7 +400,7 @@ async def test_zones_are_left_alone_while_a_change_from_music_assistant_settles(
     """A group change MA just made is not overwritten by what the host shows meanwhile."""
     provider, players = _zone_provider([["Bar"], ["Sofa"]])
     _sync(provider, players)
-    provider.host.get_zones.return_value = [["Bar", "Sofa"]]
+    _host_mock(provider).get_zones.return_value = [["Bar", "Sofa"]]
     with patch("music_assistant.providers.raumfeld.provider.time.time", return_value=1000.0):
         with provider.changing_group():
             pass
@@ -390,7 +419,7 @@ async def test_zones_are_left_alone_while_a_change_from_music_assistant_runs() -
     """A group change that takes longer than the settle time is not overwritten meanwhile."""
     provider, players = _zone_provider([["Bar"], ["Sofa"]])
     _sync(provider, players)
-    provider.host.get_zones.return_value = [["Bar", "Sofa"]]
+    _host_mock(provider).get_zones.return_value = [["Bar", "Sofa"]]
     clock = "music_assistant.providers.raumfeld.provider.time.time"
     with provider.changing_group():
         with patch(clock, return_value=1000.0 + GROUP_SETTLE_TIME + 1):
@@ -451,8 +480,8 @@ def _playing_group(
             return {"TrackURI": ""}
         return {"TrackURI": f"{_BASE_URL}/flow/s1/{leader.player_id}/i1/{leader.player_id}.flac"}
 
-    provider.host.zone_transport = AsyncMock(side_effect=transport)
-    provider.host.zone_position = AsyncMock(side_effect=position)
+    _host_mock(provider).zone_transport = AsyncMock(side_effect=transport)
+    _host_mock(provider).zone_position = AsyncMock(side_effect=position)
     mass = cast("MagicMock", provider.mass)
     mass.streams.base_url = _BASE_URL
     queue = MagicMock(queue_id=leader.player_id, state=PlaybackState.PLAYING)
@@ -464,7 +493,7 @@ async def test_a_leader_taken_out_of_its_playing_group_hands_its_queue_over() ->
     """The rooms that play on get the leader's queue, as when MA takes the leader out."""
     provider, players = _zone_provider([["Bar", "Kitchen", "Sofa"]])
     mass = _playing_group(provider, players, ["Bar", "Sofa", "Kitchen"], [["Kitchen", "Sofa"]])
-    provider.host.get_zones.return_value = [["Bar"], ["Kitchen", "Sofa"]]
+    _host_mock(provider).get_zones.return_value = [["Bar"], ["Kitchen", "Sofa"]]
     with patch.object(RaumfeldPlayer, "synced_to", new_callable=PropertyMock, return_value=None):
         await _follow(provider, players)
         await _follow(provider, players)
@@ -480,7 +509,7 @@ async def test_a_partial_split_hands_the_queue_to_the_part_that_plays_on() -> No
     mass = _playing_group(
         provider, players, ["Bar", "Sofa", "Kitchen", "Office"], [["Kitchen", "Office"]]
     )
-    provider.host.get_zones.return_value = [["Bar", "Sofa"], ["Kitchen", "Office"]]
+    _host_mock(provider).get_zones.return_value = [["Bar", "Sofa"], ["Kitchen", "Office"]]
     with patch.object(RaumfeldPlayer, "synced_to", new_callable=PropertyMock, return_value=None):
         await _follow(provider, players)
         await _follow(provider, players)
@@ -492,7 +521,7 @@ async def test_rooms_taken_out_of_a_playing_group_are_mirrored() -> None:
     """A leader that plays on keeps its queue; only the group is mirrored from the zones."""
     provider, players = _zone_provider([["Bar", "Sofa"]])
     mass = _playing_group(provider, players, ["Bar", "Sofa"], [["Bar"]])
-    provider.host.get_zones.return_value = [["Bar"], ["Sofa"]]
+    _host_mock(provider).get_zones.return_value = [["Bar"], ["Sofa"]]
     await _follow(provider, players)
     await _follow(provider, players)
     mass.players.cmd_ungroup.assert_not_called()
@@ -505,12 +534,12 @@ async def test_a_leader_whose_rooms_left_its_zone_waits_for_the_watcher() -> Non
     _playing_group(provider, players, ["Bar", "Sofa"], [["Sofa"]])
     bar = players["Bar"]
     assert bar._zones_without_leader() == []
-    provider.host.get_zones.return_value = [["Bar"], ["Sofa"]]
+    _host_mock(provider).get_zones.return_value = [["Bar"], ["Sofa"]]
     # also while a group change MA made settles, when the watcher does not look yet
     with provider.changing_group(), patch.object(bar, "_update_power"):
         await bar.poll()
     assert bar._attr_playback_state == PlaybackState.PLAYING
-    provider.host.zone_transport.assert_not_awaited()
+    _host_mock(provider).zone_transport.assert_not_awaited()
 
 
 @pytest.mark.parametrize("failing", [["Kitchen", "Sofa"], ["Bar"]])
@@ -521,19 +550,19 @@ async def test_a_zone_that_does_not_tell_holds_the_decision(
     """A failed read, or a zone between states, tells nothing: the group waits, either zone."""
     provider, players = _zone_provider([["Bar", "Kitchen", "Sofa"]])
     mass = _playing_group(provider, players, ["Bar", "Sofa", "Kitchen"], [["Kitchen", "Sofa"]])
-    provider.host.get_zones.return_value = [["Bar"], ["Kitchen", "Sofa"]]
-    answering = provider.host.zone_transport.side_effect
+    _host_mock(provider).get_zones.return_value = [["Bar"], ["Kitchen", "Sofa"]]
+    answering = _host_mock(provider).zone_transport.side_effect
 
     async def inconclusive(zone: list[str]) -> dict[str, str] | None:
         return reply if zone == failing else cast("dict[str, str]", await answering(zone))
 
-    provider.host.zone_transport.side_effect = inconclusive
+    _host_mock(provider).zone_transport.side_effect = inconclusive
     with patch.object(RaumfeldPlayer, "synced_to", new_callable=PropertyMock, return_value=None):
         await _follow(provider, players)
         await _follow(provider, players)
         assert _groups(players) == {"Bar": ["Bar", "Sofa", "Kitchen"]}
         mass.players.cmd_ungroup.assert_not_called()
-        provider.host.zone_transport.side_effect = answering
+        _host_mock(provider).zone_transport.side_effect = answering
         await _follow(provider, players)
     mass.players.cmd_ungroup.assert_called_once_with(players["Bar"].player_id)
 
@@ -542,8 +571,8 @@ async def test_zones_that_never_answer_are_mirrored_in_the_end() -> None:
     """A zone that keeps not answering does not keep the groups as they were for good."""
     provider, players = _zone_provider([["Bar", "Kitchen", "Sofa"]])
     _playing_group(provider, players, ["Bar", "Sofa", "Kitchen"], [])
-    provider.host.get_zones.return_value = [["Bar"], ["Kitchen", "Sofa"]]
-    provider.host.zone_transport = AsyncMock(return_value=None)
+    _host_mock(provider).get_zones.return_value = [["Bar"], ["Kitchen", "Sofa"]]
+    _host_mock(provider).zone_transport = AsyncMock(return_value=None)
     clock = "music_assistant.providers.raumfeld.provider.time.time"
     with patch(clock, return_value=1000.0):
         await _follow(provider, players)
@@ -559,14 +588,14 @@ async def test_a_group_change_during_the_reads_is_left_alone(playing: list[list[
     """A change MA starts while the zones are read is not undone by what was read before."""
     provider, players = _zone_provider([["Bar", "Kitchen", "Sofa"]])
     mass = _playing_group(provider, players, ["Bar", "Sofa", "Kitchen"], playing)
-    provider.host.get_zones.return_value = [["Bar"], ["Kitchen", "Sofa"]]
-    answering = provider.host.zone_transport.side_effect
+    _host_mock(provider).get_zones.return_value = [["Bar"], ["Kitchen", "Sofa"]]
+    answering = _host_mock(provider).zone_transport.side_effect
 
     async def change_starts(zone: list[str]) -> dict[str, str]:
         provider._group_changes = 1
         return cast("dict[str, str]", await answering(zone))
 
-    provider.host.zone_transport.side_effect = change_starts
+    _host_mock(provider).zone_transport.side_effect = change_starts
     with patch.object(RaumfeldPlayer, "synced_to", new_callable=PropertyMock, return_value=None):
         await _follow(provider, players)
         await _follow(provider, players)
@@ -578,15 +607,15 @@ async def test_a_play_during_the_reads_is_not_handed_over() -> None:
     """A queue started on the leader while its zone is read stays with the leader."""
     provider, players = _zone_provider([["Bar", "Kitchen", "Sofa"]])
     mass = _playing_group(provider, players, ["Bar", "Sofa", "Kitchen"], [["Kitchen", "Sofa"]])
-    provider.host.get_zones.return_value = [["Bar"], ["Kitchen", "Sofa"]]
-    answering = provider.host.zone_transport.side_effect
+    _host_mock(provider).get_zones.return_value = [["Bar"], ["Kitchen", "Sofa"]]
+    answering = _host_mock(provider).zone_transport.side_effect
     bar = players["Bar"]
 
     async def play_starts(zone: list[str]) -> dict[str, str]:
         bar._playback_generation += 1
         return cast("dict[str, str]", await answering(zone))
 
-    provider.host.zone_transport.side_effect = play_starts
+    _host_mock(provider).zone_transport.side_effect = play_starts
     with patch.object(RaumfeldPlayer, "synced_to", new_callable=PropertyMock, return_value=None):
         await _follow(provider, players)
         await _follow(provider, players)
@@ -600,7 +629,7 @@ async def test_only_the_rooms_that_play_on_get_the_queue() -> None:
     mass = _playing_group(
         provider, players, ["Bar", "Sofa", "Kitchen", "Office"], [["Kitchen", "Office"]]
     )
-    provider.host.get_zones.return_value = [["Bar"], ["Sofa"], ["Kitchen", "Office"]]
+    _host_mock(provider).get_zones.return_value = [["Bar"], ["Sofa"], ["Kitchen", "Office"]]
     with patch.object(RaumfeldPlayer, "synced_to", new_callable=PropertyMock, return_value=None):
         await _follow(provider, players)
         await _follow(provider, players)
@@ -612,8 +641,8 @@ async def test_rooms_that_play_on_another_source_are_not_handed_the_queue() -> N
     """Rooms that switched to another source after the leader left keep playing that."""
     provider, players = _zone_provider([["Bar", "Sofa"]])
     mass = _playing_group(provider, players, ["Bar", "Sofa"], [["Sofa"]])
-    provider.host.get_zones.return_value = [["Bar"], ["Sofa"]]
-    provider.host.zone_position = AsyncMock(
+    _host_mock(provider).get_zones.return_value = [["Bar"], ["Sofa"]]
+    _host_mock(provider).zone_position = AsyncMock(
         return_value={"TrackURI": "http://opml.radiotime.com/Tune.ashx?id=s25777"}
     )
     await _follow(provider, players)
@@ -629,10 +658,10 @@ async def test_a_split_during_the_leaders_poll_leaves_its_queue_alone() -> None:
     bar = players["Bar"]
 
     async def split_while_read(_zone: list[str]) -> dict[str, str]:
-        provider.host.get_zones.return_value = [["Bar"], ["Sofa"]]
+        _host_mock(provider).get_zones.return_value = [["Bar"], ["Sofa"]]
         return {"CurrentTransportState": "STOPPED"}
 
-    provider.host.zone_transport = AsyncMock(side_effect=split_while_read)
+    _host_mock(provider).zone_transport = AsyncMock(side_effect=split_while_read)
     with (
         patch.object(bar, "_update_volume", AsyncMock()),
         patch.object(RaumfeldPlayer, "synced_to", new_callable=PropertyMock, return_value=None),
@@ -655,7 +684,7 @@ async def test_a_room_that_joined_a_group_during_its_poll_drops_its_next_item() 
         synced_to.return_value = sofa.player_id
         return {"CurrentTransportState": "STOPPED"}
 
-    provider.host.zone_transport = AsyncMock(side_effect=joined_while_read)
+    _host_mock(provider).zone_transport = AsyncMock(side_effect=joined_while_read)
     with (
         patch.object(bar, "_update_volume", AsyncMock()),
         patch.object(bar, "_advance_to_next") as advance,
@@ -670,12 +699,12 @@ async def test_a_leader_switched_off_while_playing_leaves_its_zone_to_the_others
     """The other rooms keep their zone, so handing them the queue needs no new one."""
     provider, players = _zone_provider([["Bar", "Kitchen", "Sofa"]])
     _playing_group(provider, players, ["Bar", "Sofa", "Kitchen"], [["Bar", "Kitchen", "Sofa"]])
-    provider.host.room_is_spotify_single_room.return_value = False
+    _host_mock(provider).plays_spotify_connect.return_value = False
     bar = players["Bar"]
     bar._attr_powered = True
 
     async def drop(_room: str) -> None:
-        provider.host.get_zones.return_value = [["Kitchen", "Sofa"]]
+        _host_mock(provider).get_zones.return_value = [["Kitchen", "Sofa"]]
 
     provider.drop_room = AsyncMock(side_effect=drop)  # type: ignore[method-assign]
     with (
@@ -696,7 +725,7 @@ async def test_a_room_switched_off_otherwise_stays_in_its_zone(case: str) -> Non
     """Only a leader of a playing group leaves its zone when it is switched off."""
     provider, players = _zone_provider([["Bar", "Kitchen", "Sofa"]])
     _playing_group(provider, players, ["Bar", "Sofa", "Kitchen"], [["Bar", "Kitchen", "Sofa"]])
-    provider.host.room_is_spotify_single_room.return_value = False
+    _host_mock(provider).plays_spotify_connect.return_value = False
     provider.drop_room = AsyncMock()  # type: ignore[method-assign]
     bar = players["Bar"]
     bar._attr_powered = case != "already off"
@@ -721,15 +750,15 @@ async def test_a_leader_that_switched_source_still_hands_its_queue_over() -> Non
     mass = _playing_group(
         provider, players, ["Bar", "Sofa", "Kitchen"], [["Kitchen", "Sofa"], ["Bar"]]
     )
-    provider.host.get_zones.return_value = [["Bar"], ["Kitchen", "Sofa"]]
-    queue_position = provider.host.zone_position.side_effect
+    _host_mock(provider).get_zones.return_value = [["Bar"], ["Kitchen", "Sofa"]]
+    queue_position = _host_mock(provider).zone_position.side_effect
 
     async def radio_on_bar(zone: list[str]) -> dict[str, str]:
         if zone == ["Bar"]:
             return {"TrackURI": "http://opml.radiotime.com/Tune.ashx?id=s25777"}
         return cast("dict[str, str]", await queue_position(zone))
 
-    provider.host.zone_position.side_effect = radio_on_bar
+    _host_mock(provider).zone_position.side_effect = radio_on_bar
     with patch.object(RaumfeldPlayer, "synced_to", new_callable=PropertyMock, return_value=None):
         await _follow(provider, players)
         await _follow(provider, players)
@@ -749,7 +778,7 @@ async def test_the_end_watch_leaves_a_split_group_to_the_watcher() -> None:
     ):
         await bar._watch_for_track_end(0)
     advance.assert_not_called()
-    provider.host.zone_transport.assert_not_awaited()
+    _host_mock(provider).zone_transport.assert_not_awaited()
 
 
 def _next_cleared(player: RaumfeldPlayer) -> bool:
@@ -771,7 +800,7 @@ async def test_a_room_that_joined_a_group_drops_its_own_next_item(joins: str) ->
         synced_to.return_value = sofa.player_id
         return {"CurrentTransportState": "STOPPED"}
 
-    provider.host.zone_transport = AsyncMock(side_effect=joined_while_read)
+    _host_mock(provider).zone_transport = AsyncMock(side_effect=joined_while_read)
     with (
         patch.object(bar, "_advance_to_next") as advance,
         patch.object(RaumfeldPlayer, "synced_to", synced_to),
@@ -789,10 +818,12 @@ async def test_a_merge_of_two_playing_groups_keeps_the_queue_that_plays_on() -> 
     kitchen._attr_group_members = [kitchen.player_id, players["Office"].player_id]
     kitchen._attr_active_source = kitchen.player_id
     kitchen._attr_playback_state = PlaybackState.PLAYING
-    provider.host.get_zones.return_value = [["Bar", "Kitchen", "Office", "Sofa"]]
-    provider.host.zone_transport = AsyncMock(return_value={"CurrentTransportState": "PLAYING"})
+    _host_mock(provider).get_zones.return_value = [["Bar", "Kitchen", "Office", "Sofa"]]
+    _host_mock(provider).zone_transport = AsyncMock(
+        return_value={"CurrentTransportState": "PLAYING"}
+    )
     kitchen_stream = f"{_BASE_URL}/flow/s1/{kitchen.player_id}/i1/{kitchen.player_id}.flac"
-    provider.host.zone_position = AsyncMock(return_value={"TrackURI": kitchen_stream})
+    _host_mock(provider).zone_position = AsyncMock(return_value={"TrackURI": kitchen_stream})
     with patch.object(RaumfeldPlayer, "synced_to", new_callable=PropertyMock, return_value=None):
         await _follow(provider, players)
         await _follow(provider, players)
@@ -809,8 +840,10 @@ def _merged_playing_groups() -> tuple[RaumfeldPlayerProvider, dict[str, Raumfeld
     kitchen._attr_group_members = [kitchen.player_id, players["Office"].player_id]
     kitchen._attr_active_source = kitchen.player_id
     kitchen._attr_playback_state = PlaybackState.PLAYING
-    provider.host.get_zones.return_value = [["Bar", "Kitchen", "Office", "Sofa"]]
-    provider.host.zone_transport = AsyncMock(return_value={"CurrentTransportState": "PLAYING"})
+    _host_mock(provider).get_zones.return_value = [["Bar", "Kitchen", "Office", "Sofa"]]
+    _host_mock(provider).zone_transport = AsyncMock(
+        return_value={"CurrentTransportState": "PLAYING"}
+    )
     return provider, players, f"{_BASE_URL}/flow/s1/{kitchen.player_id}/i1/{kitchen.player_id}.flac"
 
 
@@ -826,12 +859,12 @@ async def test_a_merge_waits_for_reads_that_tell_its_queue(disturbance: str) -> 
         kitchen._playback_generation += 1
         return {"TrackURI": kitchen_stream}
 
-    provider.host.zone_position = AsyncMock(side_effect=disturbed)
+    _host_mock(provider).zone_position = AsyncMock(side_effect=disturbed)
     with patch.object(RaumfeldPlayer, "synced_to", new_callable=PropertyMock, return_value=None):
         await _follow(provider, players)
         await _follow(provider, players)
         assert set(_groups(players)) == {"Bar", "Kitchen"}
-        provider.host.zone_position = AsyncMock(return_value={"TrackURI": kitchen_stream})
+        _host_mock(provider).zone_position = AsyncMock(return_value={"TrackURI": kitchen_stream})
         await _follow(provider, players)
     assert list(_groups(players)) == ["Kitchen"]
 
@@ -876,12 +909,12 @@ def test_a_room_that_follows_after_a_merge_drops_its_own_next_item() -> None:
     sofa = players["Sofa"]
     sofa._advance_armed = True
     sofa._next_media = MagicMock()
-    provider.host.get_zones.return_value = [["Bar", "Sofa"]]
+    _host_mock(provider).get_zones.return_value = [["Bar", "Sofa"]]
     _sync(provider, players)
     assert _groups(players) == {"Bar": ["Bar", "Sofa"]}
     assert _next_cleared(sofa)
     # split again: on its own, the room has nothing left for an end watch to start
-    provider.host.get_zones.return_value = [["Bar"], ["Sofa"]]
+    _host_mock(provider).get_zones.return_value = [["Bar"], ["Sofa"]]
     _sync(provider, players)
     assert _next_cleared(sofa)
 
@@ -894,11 +927,11 @@ async def test_a_reading_of_a_zone_the_room_left_is_dropped() -> None:
 
     async def regrouped_while_read(_zone: list[str]) -> dict[str, str]:
         # the watcher mirrored the split during the read: Bar leads nothing any more
-        provider.host.get_zones.return_value = [["Bar"], ["Sofa"]]
+        _host_mock(provider).get_zones.return_value = [["Bar"], ["Sofa"]]
         bar._attr_group_members = []
         return {"CurrentTransportState": "STOPPED"}
 
-    provider.host.zone_transport = AsyncMock(side_effect=regrouped_while_read)
+    _host_mock(provider).zone_transport = AsyncMock(side_effect=regrouped_while_read)
     with (
         patch.object(bar, "_update_volume", AsyncMock()),
         patch.object(RaumfeldPlayer, "synced_to", new_callable=PropertyMock, return_value=None),
@@ -926,9 +959,9 @@ class _Cache:
 def _button_provider() -> tuple[RaumfeldPlayerProvider, MagicMock]:
     """Build a provider whose host has a media server, and return the button action."""
     provider = RaumfeldPlayerProvider.__new__(RaumfeldPlayerProvider)
-    provider.host = MagicMock()
-    provider.host.media_server_udn = "uuid:media-server"
-    provider.host.resolve = {"udn_to_devloc": {"uuid:media-server": "http://host/ms.xml"}}
+    provider.host = _host(
+        {}, {"uuid:media-server": "http://host/ms.xml"}, media_server_udn="uuid:media-server"
+    )
     provider.config = MagicMock(instance_id="raumfeld_test")
     provider.mass = MagicMock()
     provider.mass.cache = _Cache()
@@ -1897,16 +1930,38 @@ async def test_a_host_that_misses_three_checks_in_a_row_is_dropped() -> None:
     """Three missed health checks in a row count as a lost host."""
     provider, check = _supervised([False, False, False])
     await _supervise_cycles(provider, check, 3)
-    provider._disconnect.assert_awaited_once_with("host connection lost")  # type: ignore[attr-defined]
+    provider._disconnect.assert_awaited_once_with(  # type: ignore[attr-defined]
+        "did not answer 3 health checks in a row"
+    )
 
 
 async def test_an_ended_update_loop_drops_the_connection_at_once() -> None:
-    """Hassfeld's update loop having ended is not a slow host: drop without waiting."""
+    """Following the host having ended is not a slow host: drop at once, and say why."""
     provider, check = _supervised([True])
-    provider._update_task = MagicMock(done=MagicMock(return_value=True))
+    ended: asyncio.Future[None] = asyncio.get_running_loop().create_future()
+    ended.set_exception(ExceptionGroup("reads", [aiohttp.ClientConnectionError("gone")]))
+    provider._update_task = cast("asyncio.Task[None]", ended)
     await _supervise_cycles(provider, check, 1)
-    provider._disconnect.assert_awaited_once_with("host connection lost")  # type: ignore[attr-defined]
+    provider._disconnect.assert_awaited_once_with(  # type: ignore[attr-defined]
+        "stopped answering (ClientConnectionError('gone'))"
+    )
     check.assert_not_called()
+
+
+@pytest.mark.parametrize("ending", ["none", "cancelled", "returned"])
+async def test_following_that_ended_without_an_error_gives_no_reason(ending: str) -> None:
+    """Without an error to show, the log says no reason was given rather than failing."""
+    provider, _ = _supervised([True])
+    if ending == "none":
+        provider._update_task = None
+    else:
+        task: asyncio.Future[None] = asyncio.get_running_loop().create_future()
+        if ending == "cancelled":
+            task.cancel()
+        else:
+            task.set_result(None)
+        provider._update_task = cast("asyncio.Task[None]", task)
+    assert provider._follow_error() == "no reason given"
 
 
 def _icy_provider(stored: dict[str, Any]) -> RaumfeldPlayerProvider:
@@ -1944,9 +1999,9 @@ def _commanding_provider() -> RaumfeldPlayerProvider:
     provider, _ = _zone_provider([["Bar", "Sofa"]])
     provider._host_address = "192.168.1.41"
     provider._host_port = 47365
-    provider.host.resolve = {"room_to_udn": {"Bar": "uuid:bar", "Sofa": "uuid:sofa"}}
-    provider.host.roomlst_to_zoneudn.side_effect = lambda zone: (
-        "uuid:zone" if sorted(zone) == ["Bar", "Sofa"] else None
+    provider.host = _host(
+        {"Bar": ("uuid:bar", "uuid:bar-renderer"), "Sofa": ("uuid:sofa", "uuid:sofa-renderer")},
+        zones={"uuid:zone": ["Bar", "Sofa"]},
     )
     return provider
 
@@ -2014,7 +2069,7 @@ async def test_only_a_room_in_the_leaders_zone_is_taken_out_of_it() -> None:
         player._provider = provider
     provider._group_changes = 0
     provider.drop_room = AsyncMock()  # type: ignore[method-assign]
-    provider.host.roomlst_to_zoneudn.return_value = "uuid:zone"
+    _host_mock(provider).zone_udn.return_value = "uuid:zone"
     with patch.object(bar, "update_state"):
         await bar.set_members(player_ids_to_remove=[sofa.player_id, kitchen.player_id])
     provider.drop_room.assert_awaited_once_with("Sofa")
