@@ -4,7 +4,8 @@
   "stage": "experimental",
   "name": "MCP Server",
   "description": "Exposes Music Assistant as a Model Context Protocol (MCP) server for Claude, Codex, and other MCP-aware LLM clients.",
-  "codeowners": ["@TrudenBoy"],
+  "codeowners": ["@trudenboy"],
+  "tier": "community",
   "credits": [
     "[FastMCP](https://github.com/jlowin/fastmcp)",
     "[Model Context Protocol](https://modelcontextprotocol.io/)"

@@ -5,6 +5,7 @@
   "name": "Sync Group Player",
   "description": "Create (permanent) sync groups to group speakers of compatible protocols/ecosystems to play audio in sync.",
   "codeowners": ["@music-assistant"],
+  "tier": "core",
   "requirements": [],
   "documentation": "https://music-assistant.io/faq/groups/",
   "multi_instance": false,

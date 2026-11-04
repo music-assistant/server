@@ -4,6 +4,7 @@
   "name": "iHeartRadio",
   "description": "Listen to thousands of live radio stations and podcasts, or start a personalised station around any artist.",
   "codeowners": ["@OzGav"],
+  "tier": "community",
   "requirements": [],
   "documentation": "https://music-assistant.io/music-providers/iheartradio/",
   "multi_instance": true,

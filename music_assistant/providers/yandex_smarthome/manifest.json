@@ -4,6 +4,7 @@
   "name": "Yandex Smart Home",
   "description": "Expose Music Assistant players to Yandex Alice via Yandex Smart Home API.",
   "codeowners": ["@trudenboy"],
+  "tier": "community",
   "credits": [
     "[dext0r/yandex_smart_home](https://github.com/dext0r/yandex_smart_home)"
   ],
