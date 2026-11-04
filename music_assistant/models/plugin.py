@@ -399,3 +399,14 @@ class PluginProvider(
         """
         msg = f"{self.name} can not generate images"
         raise UnsupportedFeaturedException(msg)
+
+    def engine_cooldown(self, engine_id: str) -> float:
+        """
+        Return the seconds an engine of this plugin turns requests away, 0 when it takes them.
+
+        An engine that could not be reached, or that rate limited us, is left alone for a while
+        (see ``EngineThrottlers``), so background work can wait for it rather than fail.
+
+        :param engine_id: The provider-scoped id of the engine (``PluginEngine.id``).
+        """
+        return 0.0
