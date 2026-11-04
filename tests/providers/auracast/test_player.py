@@ -452,6 +452,7 @@ async def test_volume_set_is_supported_and_scales_little_endian_pcm() -> None:
     assert _apply_volume(pcm, 100) == pcm
 
     # The web UI's volume command updates the attenuation applied to subsequent frames.
+    player.mass.config.set_raw_player_config_value.reset_mock()
     await player.volume_set(35)
     assert player.volume_level == 35
     player.mass.config.set_raw_player_config_value.assert_called_once_with(

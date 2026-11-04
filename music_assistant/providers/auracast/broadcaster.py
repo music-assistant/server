@@ -106,6 +106,26 @@ async def probe_controller(serial_port: str, baudrate: int) -> ControllerProbeRe
             await _teardown_step(controller_transport.close(), "closing probed transport")
 
 
+def generate_device_address() -> str:
+    """Return a new random static Bluetooth device address."""
+    return str(hci.Address.generate_static_address())
+
+
+def parse_device_address(value: object) -> str | None:
+    """
+    Return the canonical form of a stored static device address.
+
+    :param value: The stored value, which may be missing or malformed.
+    """
+    if not isinstance(value, str):
+        return None
+    try:
+        address = hci.Address(value)
+    except ValueError:
+        return None
+    return str(address) if address.is_static else None
+
+
 def parse_manufacturer_data(value: str | None) -> dict[int, bytes] | None:
     """
     Parse semicolon-separated company IDs and hexadecimal payloads.
@@ -147,6 +167,7 @@ class BroadcastConfig:
     transport_spec: str
     manufacturer_data: dict[int, bytes] | None = None
     broadcast_id: int = 0
+    device_address: str | None = None
     sample_rate: int = 48_000
     frame_duration_us: int = 10_000
     channels: int = 2
@@ -212,7 +233,8 @@ class AuracastBroadcaster:
             hci_source, hci_sink = self._transport
             self._device = device.Device.from_config_with_hci(
                 device.DeviceConfiguration(
-                    name=config.name, address=hci.Address.generate_static_address()
+                    name=config.name,
+                    address=hci.Address(config.device_address or generate_device_address()),
                 ),
                 hci_source,
                 hci_sink,
