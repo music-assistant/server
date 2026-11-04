@@ -18,12 +18,19 @@ from music_assistant_models.enums import ContentType, MediaType
 from music_assistant_models.media_items import AudioFormat
 from music_assistant_models.streamdetails import StreamDetails
 
+from music_assistant.models.music_provider import ProviderStreamLimitError
+from music_assistant.providers.spotify.backends.base import SpotifyPlaybackBackend
 from music_assistant.providers.spotify.backends.librespot import LibrespotBackend
-from music_assistant.providers.spotify.backends.soloist import SoloistBackend
+from music_assistant.providers.spotify.backends.soloist import (
+    SoloistBackend,
+    SoloistSessionBusyError,
+)
 from music_assistant.providers.spotify.constants import (
     BACKEND_LIBRESPOT,
     BACKEND_SOLOIST,
     CONF_AUDIO_QUALITY,
+    CONF_LIBRESPOT_CREDENTIALS,
+    CONF_LIBRESPOT_FALLBACK,
     CONF_PLAYBACK_BACKEND,
     CONF_SPOTIFY_NORMALIZATION,
 )
@@ -61,6 +68,165 @@ def test_max_concurrent_streams_follows_the_backend_choice() -> None:
     assert _make_provider({}).max_concurrent_streams == 3
     assert _make_provider({CONF_PLAYBACK_BACKEND: BACKEND_LIBRESPOT}).max_concurrent_streams == 3
     assert _make_provider({CONF_PLAYBACK_BACKEND: BACKEND_SOLOIST}).max_concurrent_streams == 1
+
+
+def test_librespot_fallback_raises_the_soloist_stream_budget() -> None:
+    """A Soloist instance with a fallback can run parallel librespot streams."""
+    enabled = _make_provider(
+        {
+            CONF_PLAYBACK_BACKEND: BACKEND_SOLOIST,
+            CONF_LIBRESPOT_FALLBACK: True,
+            CONF_LIBRESPOT_CREDENTIALS: "creds",
+        }
+    )
+    assert enabled.max_concurrent_streams == 3
+    # the setting alone is not enough: without the credential no fallback exists
+    missing = _make_provider(
+        {CONF_PLAYBACK_BACKEND: BACKEND_SOLOIST, CONF_LIBRESPOT_FALLBACK: True}
+    )
+    assert missing.max_concurrent_streams == 1
+    # and a librespot instance needs no fallback to run its three fetches
+    assert _make_provider({}).max_concurrent_streams == 3
+
+
+async def test_enabling_the_fallback_without_a_credential_stays_soloist_only() -> None:
+    """The setting alone cannot start a fallback; the setup flow has to authorize it."""
+    prov = _make_provider({CONF_PLAYBACK_BACKEND: BACKEND_SOLOIST, CONF_LIBRESPOT_FALLBACK: True})
+    assert await prov._setup_fallback_backend() is None
+    assert prov.max_concurrent_streams == 1
+    cast("MagicMock", prov.logger).warning.assert_called_once()
+
+
+async def test_the_librespot_fallback_option_is_soloist_only() -> None:
+    """The fallback only makes sense beside Soloist."""
+    soloist = await _make_provider({CONF_PLAYBACK_BACKEND: BACKEND_SOLOIST}).get_config_entries()
+    assert next(e for e in soloist if e.key == CONF_LIBRESPOT_FALLBACK).hidden is False
+    librespot = await _make_provider({}).get_config_entries()
+    assert next(e for e in librespot if e.key == CONF_LIBRESPOT_FALLBACK).hidden is True
+
+
+def test_a_fallback_streamdetails_is_the_same_item_on_librespot() -> None:
+    """The retry details describe librespot's bytes, not Soloist's capture PCM."""
+    prov = _make_provider(
+        {
+            CONF_PLAYBACK_BACKEND: BACKEND_SOLOIST,
+            CONF_LIBRESPOT_FALLBACK: True,
+            CONF_LIBRESPOT_CREDENTIALS: "creds",
+        }
+    )
+    prov.backend = SoloistBackend(prov)
+    prov.fallback_backend = LibrespotBackend(prov)
+    details = _streamdetails()
+    details.buffer = object()
+    fallback = prov._fallback_streamdetails_for(details)
+    assert fallback is not None
+    assert fallback.provider == details.provider
+    assert fallback.item_id == details.item_id
+    assert fallback.audio_format.codec_type == ContentType.VORBIS
+    assert fallback.audio_format.bit_rate == 320
+    assert fallback.decoded_audio_format is None
+    assert fallback.is_realtime is False
+    assert fallback.data == {"backend": BACKEND_LIBRESPOT}
+    # nothing from the failed Soloist attempt may follow it
+    assert fallback.buffer is None
+    assert fallback.stream_error is None
+    assert fallback.seconds_streamed is None
+
+
+async def test_a_pre_audio_soloist_conflict_offers_the_fallback() -> None:
+    """A run that never delivered audio can be retried on librespot without a repeat."""
+    prov = _make_provider(
+        {
+            CONF_PLAYBACK_BACKEND: BACKEND_SOLOIST,
+            CONF_LIBRESPOT_FALLBACK: True,
+            CONF_LIBRESPOT_CREDENTIALS: "creds",
+        }
+    )
+
+    async def _busy(*_args: Any, **_kwargs: Any) -> AsyncGenerator[bytes]:
+        raise SoloistSessionBusyError(prov)
+        yield b""  # type: ignore[unreachable]  # pragma: no cover
+
+    prov.backend = MagicMock(spec=SpotifyPlaybackBackend)
+    prov.backend.stream_spotify_uri = _busy
+    prov.fallback_backend = LibrespotBackend(prov)
+    details = _streamdetails()
+    details.data = {"backend": BACKEND_SOLOIST}
+
+    with pytest.raises(ProviderStreamLimitError) as err:
+        async for _ in prov.get_audio_stream(details):
+            pass
+    fallback = err.value.fallback_streamdetails
+    assert fallback is not None
+    assert fallback.data == {"backend": BACKEND_LIBRESPOT}
+    assert fallback.audio_format.codec_type == ContentType.VORBIS
+
+
+async def test_audio_already_heard_is_never_repeated_on_the_fallback() -> None:
+    """Once the item started playing, a conflict is a normal failure, not a retry."""
+    prov = _make_provider(
+        {
+            CONF_PLAYBACK_BACKEND: BACKEND_SOLOIST,
+            CONF_LIBRESPOT_FALLBACK: True,
+            CONF_LIBRESPOT_CREDENTIALS: "creds",
+        }
+    )
+
+    async def _busy_after_audio(*_args: Any, **_kwargs: Any) -> AsyncGenerator[bytes]:
+        yield b"pcm"
+        raise SoloistSessionBusyError(prov)
+
+    prov.backend = MagicMock(spec=SpotifyPlaybackBackend)
+    prov.backend.stream_spotify_uri = _busy_after_audio
+    prov.fallback_backend = LibrespotBackend(prov)
+    details = _streamdetails()
+    details.data = {"backend": BACKEND_SOLOIST}
+
+    chunks: list[bytes] = []
+
+    async def _consume() -> None:
+        async for chunk in prov.get_audio_stream(details):
+            chunks.append(chunk)
+
+    with pytest.raises(ProviderStreamLimitError) as err:
+        await _consume()
+    assert chunks == [b"pcm"]
+    assert err.value.fallback_streamdetails is None
+
+
+def test_stream_details_select_the_backend_that_served_them() -> None:
+    """The hint survives the core's buffer retry, so the right backend streams it."""
+    prov = _make_provider(
+        {
+            CONF_PLAYBACK_BACKEND: BACKEND_SOLOIST,
+            CONF_LIBRESPOT_FALLBACK: True,
+            CONF_LIBRESPOT_CREDENTIALS: "creds",
+        }
+    )
+    prov.backend = SoloistBackend(prov)
+    prov.fallback_backend = LibrespotBackend(prov)
+    details = _streamdetails()
+    details.data = {"backend": BACKEND_SOLOIST}
+    assert prov._backend_for(details) is prov.backend
+    details.data = {"backend": BACKEND_LIBRESPOT}
+    assert prov._backend_for(details) is prov.fallback_backend
+
+
+def test_a_librespot_stream_is_never_declared_normalized() -> None:
+    """The fallback hands over the raw master, so MA has to normalize it."""
+    prov = _make_provider(
+        {
+            CONF_PLAYBACK_BACKEND: BACKEND_SOLOIST,
+            CONF_LIBRESPOT_FALLBACK: True,
+            CONF_LIBRESPOT_CREDENTIALS: "creds",
+        }
+    )
+    prov.backend = SoloistBackend(prov)
+    prov.fallback_backend = LibrespotBackend(prov)
+    cast("MagicMock", prov.config).get_value = MagicMock(return_value=True)
+    fallback = _streamdetails()
+    fallback.data = {"backend": BACKEND_LIBRESPOT}
+    assert prov.delivers_normalized_audio(fallback) is False
 
 
 async def test_the_soloist_choice_sizes_the_stream_semaphore() -> None:
@@ -209,6 +375,43 @@ def test_the_backend_streams_at_the_configured_quality() -> None:
     assert backend._audio_quality == "very_high"
 
 
+async def test_a_broken_fallback_credential_does_not_unload_the_provider(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Losing the fallback authorization must leave the working Soloist setup alone."""
+    prov = _make_provider({CONF_PLAYBACK_BACKEND: BACKEND_SOLOIST})
+    prov.cache_dir = str(tmp_path / "cache")
+    prov.backend = SoloistBackend(prov)
+    prov.unload_with_error = MagicMock()  # type: ignore[method-assign]
+    backend = LibrespotBackend(prov)
+    backend._librespot_bin = "/bin/librespot"
+    prov.fallback_backend = backend
+    _install_fake_librespot_process(
+        monkeypatch, stderr_lines=("ERROR librespot: INVALID_CREDENTIALS",)
+    )
+
+    _ = [chunk async for chunk in backend.stream_spotify_uri("spotify:track:xyz", 0)]
+
+    prov.unload_with_error.assert_not_called()
+
+
+async def test_a_broken_primary_credential_still_unloads_the_provider(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The primary librespot backend keeps asking for re-authorization."""
+    backend = _make_librespot_backend(tmp_path)
+    provider = cast("MagicMock", backend.provider)
+    provider.backend = backend
+    provider.unload_with_error = MagicMock()
+    _install_fake_librespot_process(
+        monkeypatch, stderr_lines=("ERROR librespot: INVALID_CREDENTIALS",)
+    )
+
+    _ = [chunk async for chunk in backend.stream_spotify_uri("spotify:track:xyz", 0)]
+
+    provider.unload_with_error.assert_called_once()
+
+
 async def test_librespot_receives_the_translated_uri(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -257,7 +460,8 @@ def _make_provider(setup_data: dict[str, Any]) -> SpotifyProvider:
     """Return a SpotifyProvider (bypassing __init__) with the given setup_data."""
     prov = object.__new__(SpotifyProvider)
     config = MagicMock(instance_id="spotify--test")
-    config.get_value = MagicMock(return_value=None)
+    # a key that is not in the config holds no value, so callers get their default
+    config.get_value = MagicMock(side_effect=lambda _key, default=None: default)
     config.values = {}
     prov.config = config
     prov.manifest = MagicMock(domain="spotify")
@@ -281,7 +485,7 @@ def _construct_provider(setup_data: dict[str, Any]) -> SpotifyProvider:
     mass.config.decrypt_string = MagicMock(side_effect=lambda value: value)
     manifest = MagicMock(domain="spotify")
     config = MagicMock(instance_id="spotify--test")
-    config.get_value = MagicMock(return_value=None)
+    config.get_value = MagicMock(side_effect=lambda _key, default=None: default)
     config.values = {}
     return SpotifyProvider(mass, manifest, config)
 
@@ -295,7 +499,9 @@ def _make_librespot_backend(tmp_path: Path) -> LibrespotBackend:
     return backend
 
 
-def _install_fake_librespot_process(monkeypatch: pytest.MonkeyPatch) -> list[list[str]]:
+def _install_fake_librespot_process(
+    monkeypatch: pytest.MonkeyPatch, stderr_lines: tuple[str, ...] = ()
+) -> list[list[str]]:
     """Replace AsyncProcess in the librespot backend, returning the captured argv lists."""
     captured: list[list[str]] = []
 
@@ -320,8 +526,7 @@ def _install_fake_librespot_process(monkeypatch: pytest.MonkeyPatch) -> list[lis
             self._stderr_task = task
 
         async def iter_stderr(self) -> AsyncGenerator[str]:
-            lines: tuple[str, ...] = ()
-            for line in lines:
+            for line in stderr_lines:
                 yield line
 
         async def iter_chunked(self, _n: int = 64000) -> AsyncGenerator[bytes]:

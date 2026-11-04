@@ -2,10 +2,11 @@
 
 from .base import SpotifyPlaybackBackend, StreamSupersededError
 from .librespot import LibrespotBackend
-from .soloist import SoloistBackend
+from .soloist import SoloistAccountBusyError, SoloistBackend
 
 __all__ = [
     "LibrespotBackend",
+    "SoloistAccountBusyError",
     "SoloistBackend",
     "SpotifyPlaybackBackend",
     "StreamSupersededError",

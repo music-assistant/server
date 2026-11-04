@@ -157,6 +157,11 @@ class ProviderStreamLimitError(AudioError):
     """Raised when a music provider has no source-stream slot available."""
 
     translation_key = "provider_stream_limit"
+    # A provider that can serve the same item from another internal source (e.g. a
+    # fallback playback backend) attaches those details here. The streams core then
+    # retries that provider instance with them instead of treating the instance as
+    # saturated and looking for another provider.
+    fallback_streamdetails: StreamDetails | None = None
 
     def __init__(self, provider: MusicProvider, wait_timeout: float | None) -> None:
         """

@@ -26,6 +26,7 @@ from music_assistant.providers.spotify.constants import (
     BACKEND_LIBRESPOT,
     BACKEND_SOLOIST,
     CONF_LIBRESPOT_CREDENTIALS,
+    CONF_LIBRESPOT_FALLBACK,
     CONF_PLAYBACK_BACKEND,
     CONF_SOLOIST_API_KEY,
     CONF_SOLOIST_CONSENT,
@@ -62,10 +63,111 @@ async def test_soloist_branch_collects_consent_key_and_pairing(
     assert setup_data[CONF_SOLOIST_CONSENT] is True
     assert setup_data[CONF_SOLOIST_API_KEY] == "k" * 20
     assert setup_data[CONF_SOLOIST_SESSION_DIR] == "spotify/pairing/flow1"
-    # a leftover librespot credential is of no further use
+    # the fallback is opt-in, so a default answer leaves librespot out
     assert setup_data[CONF_LIBRESPOT_CREDENTIALS] is None
+    assert setup_data[CONF_LIBRESPOT_FALLBACK] is False
     assert paired_dirs == [tmp_path / "spotify" / "pairing" / "flow1"]
-    assert _step_ids(session) == ["playback_backend", "soloist_terms", "soloist_api_key"]
+    assert _step_ids(session) == [
+        "playback_backend",
+        "soloist_terms",
+        "soloist_api_key",
+        "librespot_fallback",
+    ]
+
+
+async def test_librespot_fallback_is_opt_in_and_authorized_alongside_soloist(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Opting in authorizes librespot for the same account and keeps its credential."""
+    monkeypatch.setattr(setup_flow, "verify_platform_supported", MagicMock())
+    _record_pairing(monkeypatch)
+    authorize = AsyncMock(return_value="creds")
+    monkeypatch.setattr(setup_flow, "_authorize_playback", authorize)
+    session = _make_session(
+        tmp_path,
+        [
+            {CONF_PLAYBACK_BACKEND: BACKEND_SOLOIST},
+            {CONF_SOLOIST_CONSENT: True},
+            {CONF_SOLOIST_API_KEY: "k" * 20},
+            {CONF_LIBRESPOT_FALLBACK: True},
+        ],
+    )
+    setup_data: dict[str, Any] = {}
+    await setup_flow._setup_playback(session, setup_data, "spotify-user")
+    assert setup_data[CONF_LIBRESPOT_FALLBACK] is True
+    assert setup_data[CONF_LIBRESPOT_CREDENTIALS] == "creds"
+    authorize.assert_awaited_once_with(session, "spotify-user")
+
+
+async def test_an_existing_fallback_credential_is_reused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A reconfigure keeps a credential already authorized for the same account."""
+    monkeypatch.setattr(setup_flow, "verify_platform_supported", MagicMock())
+    _record_pairing(monkeypatch)
+    authorize = AsyncMock(side_effect=AssertionError("must not re-authorize"))
+    monkeypatch.setattr(setup_flow, "_authorize_playback", authorize)
+    session = _make_session(
+        tmp_path,
+        [
+            {CONF_PLAYBACK_BACKEND: BACKEND_SOLOIST},
+            {CONF_SOLOIST_CONSENT: True},
+            {CONF_SOLOIST_API_KEY: "k" * 20},
+            {CONF_LIBRESPOT_FALLBACK: True},
+        ],
+    )
+    setup_data: dict[str, Any] = {CONF_LIBRESPOT_CREDENTIALS: "creds"}
+    await setup_flow._setup_playback(session, setup_data, "spotify-user")
+    assert setup_data[CONF_LIBRESPOT_CREDENTIALS] == "creds"
+    authorize.assert_not_awaited()
+
+
+async def test_declining_the_librespot_fallback_clears_its_credential(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Opting out leaves Soloist-only behaviour and removes the stored credential."""
+    monkeypatch.setattr(setup_flow, "verify_platform_supported", MagicMock())
+    _record_pairing(monkeypatch)
+    session = _make_session(
+        tmp_path,
+        [
+            {CONF_PLAYBACK_BACKEND: BACKEND_SOLOIST},
+            {CONF_SOLOIST_CONSENT: True},
+            {CONF_SOLOIST_API_KEY: "k" * 20},
+            {CONF_LIBRESPOT_FALLBACK: False},
+        ],
+    )
+    setup_data: dict[str, Any] = {
+        CONF_LIBRESPOT_FALLBACK: True,
+        CONF_LIBRESPOT_CREDENTIALS: "creds",
+    }
+    await setup_flow._setup_playback(session, setup_data, "spotify-user")
+    assert setup_data[CONF_LIBRESPOT_FALLBACK] is False
+    assert setup_data[CONF_LIBRESPOT_CREDENTIALS] is None
+
+
+async def test_a_reconfigure_persists_the_fallback_choice(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The flow's choice has to win over a value left in the provider settings."""
+    monkeypatch.setattr(setup_flow, "verify_platform_supported", MagicMock())
+    _record_pairing(monkeypatch)
+    session = _make_session(
+        tmp_path,
+        [
+            {CONF_PLAYBACK_BACKEND: BACKEND_SOLOIST},
+            {CONF_SOLOIST_CONSENT: True},
+            {CONF_SOLOIST_API_KEY: "k" * 20},
+            {CONF_LIBRESPOT_FALLBACK: False},
+        ],
+    )
+    session.context.instance_id = "spotify--test"
+    await setup_flow._setup_playback(
+        session, {CONF_PLAYBACK_BACKEND: BACKEND_SOLOIST}, "spotify-user"
+    )
+    session.mass.config.set_raw_provider_config_value.assert_called_once_with(
+        "spotify--test", CONF_LIBRESPOT_FALLBACK, False, immediate=True
+    )
 
 
 async def test_consent_refusal_returns_to_the_backend_choice(
@@ -215,6 +317,7 @@ async def test_reconfigure_keeps_the_existing_paired_session(
         "soloist_terms",
         "soloist_repair",
         "soloist_api_key",
+        "librespot_fallback",
     ]
     assert paired_dirs == []
     # the kept session stays where it is; no freshly paired dir is left to adopt
@@ -272,8 +375,10 @@ async def test_pairing_from_another_account_is_rejected(
     assert setup_data[CONF_PLAYBACK_BACKEND] == BACKEND_SOLOIST
     # the key step was shown again, with the mismatch reported
     assert _step_ids(session).count("soloist_api_key") == 2
-    errors = session.form.await_args_list[-1].kwargs["errors"]
-    assert errors == {"base": "soloist_account_mismatch"}
+    key_calls = [
+        call for call in session.form.await_args_list if call.kwargs["step_id"] == "soloist_api_key"
+    ]
+    assert key_calls[-1].kwargs["errors"] == {"base": "soloist_account_mismatch"}
 
 
 async def test_a_matching_pairing_is_accepted(
@@ -473,9 +578,21 @@ async def _run_awaitable(awaitable: Any, **_kwargs: Any) -> Any:
 
 
 def _make_session(tmp_path: Path, form_answers: list[dict[str, Any]]) -> MagicMock:
-    """Return a setup-session mock answering its forms from the given sequence."""
+    """
+    Return a setup-session mock answering its forms from the given sequence.
+
+    Once the sequence is exhausted, every remaining form answers with its
+    entries' defaults, so tests only list the answers they care about.
+    """
+    remaining = list(form_answers)
+
+    async def _form(entries: list[Any], **_kwargs: Any) -> dict[str, Any]:
+        if remaining:
+            return remaining.pop(0)
+        return {entry.key: entry.default_value for entry in entries}
+
     session = MagicMock()
-    session.form = AsyncMock(side_effect=form_answers)
+    session.form = AsyncMock(side_effect=_form)
     session.progress_until = AsyncMock(side_effect=_run_awaitable)
     session.mass.storage_path = str(tmp_path)
     session.context.instance_id = None

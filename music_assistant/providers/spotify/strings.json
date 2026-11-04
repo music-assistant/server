@@ -47,6 +47,10 @@
     "soloist_repair": {
       "label": "Pair again with the Spotify app (replaces the current pairing)"
     },
+    "librespot_fallback": {
+      "label": "Use librespot as a fallback",
+      "description": "Soloist can only stream one item at a time. When this is on and librespot has been authorized for this account in the Spotify setup, Music Assistant uses it automatically when Soloist is already busy or Spotify is playing elsewhere. Fallback playback is 320 kbps instead of lossless. Run the Spotify setup again to authorize librespot."
+    },
     "audio_quality": {
       "label": "Streaming quality",
       "description": "The highest quality Spotify is asked to stream. This is a ceiling, not a promise: Spotify still picks something lower when the connection is slow, when a track has no file at this quality, or when your account does not include it. Lossless needs a Spotify plan that offers it. Takes effect the next time playback starts.",
@@ -115,6 +119,10 @@
       "title": "Keep the current Spotify pairing?",
       "description": "This Spotify instance is already paired with a Spotify account. You can keep that pairing, or pair again — for example to switch to another Spotify account, or when playback stopped working.\n\nPair with the same Spotify account this provider signs in with, so your listening history and recommendations end up on the right account."
     },
+    "librespot_fallback": {
+      "title": "Use librespot as a fallback?",
+      "description": "Soloist can only stream one item at a time, so a second player on this account has to wait. librespot can stream several at once.\n\nIf you enable this, Music Assistant also authorizes librespot for this account and uses it automatically when Soloist is already busy or Spotify is playing elsewhere. Fallback playback is 320 kbps instead of lossless, and you can turn it off later in the provider settings."
+    },
     "soloist_pairing": {
       "title": "Pair with your Spotify account",
       "progress_text": "Music Assistant is downloading Spotify Soloist (first time only) and advertising \"Music Assistant Pairing\" to your Spotify app.\n\n1. Open the Spotify app on a phone, tablet or computer on the same network, signed in to the **same Spotify account** you connected in the first step.\n2. Start playing any song, so the player bar appears at the bottom.\n3. Tap the speaker icon in the player bar (Connect to a device).\n4. Choose \"Music Assistant Pairing\" from the list of devices.\n\nSoloist stores the pairing and this screen continues by itself. You can switch back to your usual speaker right after.\n\nNot seeing it? Make sure the device running Spotify is on the same network as Music Assistant."
@@ -161,6 +169,7 @@
     "soloist_build_expired": "Spotify's current Soloist app version has expired and no newer version is available yet. Try again later.",
     "soloist_account_mismatch": "Music Assistant was paired from a Spotify app signed in to a different account than the one you connected. Pair again from an app signed in to the same account, so your music library and the audio come from the same place.",
     "soloist_session_busy": "{0} is already playing something else. Spotify Soloist plays one thing at a time, so stop the other player first.",
+    "soloist_account_busy": "Spotify is already playing on another device or app for this account. Spotify only allows one active stream per account, so stop it there first.",
     "soloist_app_took_over": "The Spotify app took over playback, so {0} stopped playing here. Try again in a moment to bring it back.",
     "soloist_app_paused": "Playback was paused from the Spotify app, so {0} stopped playing here. Try again in a moment to continue."
   },

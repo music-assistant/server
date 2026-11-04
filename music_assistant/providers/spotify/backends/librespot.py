@@ -143,17 +143,25 @@ class LibrespotBackend(SpotifyPlaybackBackend):
                     if "ERROR" in line or "WARNING" in line:
                         logger.warning("[librespot] %s", line)
                         if "INVALID_CREDENTIALS" in line and provider.available:
-                            # Spotify refused the stored playback credential: surface this as an
-                            # auth failure so the provider asks for re-authorization instead of
-                            # reporting every track as unplayable. The availability check keeps
-                            # concurrent/queued streams from each scheduling their own unload.
-                            provider.unload_with_error(
-                                LoginFailed(
-                                    "Spotify playback authorization required",
-                                    translation_key="playback_auth_required",
-                                    translation_owner="provider.spotify",
+                            if self is provider.backend:
+                                # Spotify refused the stored playback credential: surface this as
+                                # an auth failure so the provider asks for re-authorization instead
+                                # of reporting every track as unplayable. The availability check
+                                # keeps concurrent/queued streams from each scheduling their own unload.
+                                provider.unload_with_error(
+                                    LoginFailed(
+                                        "Spotify playback authorization required",
+                                        translation_key="playback_auth_required",
+                                        translation_owner="provider.spotify",
+                                    )
                                 )
-                            )
+                            else:
+                                # a broken fallback must not take the working Soloist
+                                # setup out of service with it
+                                logger.warning(
+                                    "Spotify librespot fallback authorization is no longer "
+                                    "valid; run the Spotify setup again to restore it"
+                                )
                         if "unable to" in line.lower() or "skipping" in line.lower():
                             # if librespot reports a fatal error (e.g. unable to load
                             # or read audio), terminate the process to avoid hanging

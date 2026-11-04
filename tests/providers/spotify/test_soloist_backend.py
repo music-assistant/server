@@ -856,6 +856,29 @@ def test_the_engine_starting_on_the_wrong_item_fails_the_run(tmp_path: Path) -> 
     run.mass.create_task = MagicMock()  # type: ignore[method-assign]
     run._observe_item(TRACK_B, 100_000)
     assert run._error is not None
+    assert run._account_busy is True
+
+
+def test_a_pre_audio_account_conflict_is_a_capacity_error(tmp_path: Path) -> None:
+    """A conflict before any audio lets the provider retry the item elsewhere."""
+    run = _make_run(tmp_path)
+    run._account_busy = True
+    run._error = "Spotify is already streaming somewhere else"
+    with pytest.raises(soloist_backend.SoloistAccountBusyError):
+        run._raise_startup_error("did not start")
+    with pytest.raises(soloist_backend.SoloistAccountBusyError):
+        raise run._delivery_error()
+
+
+def test_audio_heard_before_an_account_conflict_is_not_repeated(tmp_path: Path) -> None:
+    """Once the item started playing, the conflict is a normal playback failure."""
+    run = _make_run(tmp_path)
+    run._account_busy = True
+    run._error = "Spotify is already streaming somewhere else"
+    run._delivered = 1
+    err = run._delivery_error()
+    assert isinstance(err, AudioError)
+    assert not isinstance(err, soloist_backend.SoloistAccountBusyError)
 
 
 async def test_a_failed_sign_in_fails_the_run_at_once(tmp_path: Path) -> None:
