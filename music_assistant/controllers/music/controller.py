@@ -1249,14 +1249,13 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             f"WHERE {media_type_clause} AND {provider_clause} "
         )
         if fully_played_only:
-            if include_in_progress_audiobooks:
-                query += (
-                    "AND (p.fully_played = 1 OR "
-                    "(p.media_type = 'audiobook' AND "
-                    "COALESCE(p.seconds_played, 0) > 0)) "
-                )
-            else:
-                query += "AND p.fully_played = 1 "
+            query += (
+                "AND (p.fully_played = 1 OR "
+                "(p.media_type = 'audiobook' AND "
+                "COALESCE(p.seconds_played, 0) > 0)) "
+                if include_in_progress_audiobooks
+                else "AND p.fully_played = 1 "
+            )
         if userid:
             query += "AND p.userid = :userid "
             params["userid"] = userid
