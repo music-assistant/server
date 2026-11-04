@@ -55,7 +55,10 @@ class MCPTool:
         if missing := set(self.input_schema["required"]) - set(arguments):
             raise ToolError(f"Missing argument(s): {', '.join(sorted(missing))}")
         for key, value in arguments.items():
-            if value is not None and not _matches_schema(value, properties[key]):
+            schema = properties[key]
+            # null is only valid for an optional argument that defaults to null
+            nullable = key not in self.input_schema["required"] and "default" not in schema
+            if not (value is None and nullable) and not _matches_schema(value, schema):
                 raise ToolError(f"Invalid value for argument {key}: {value!r}")
         return await self.handler(mass, **arguments)
 

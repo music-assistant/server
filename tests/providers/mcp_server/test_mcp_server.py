@@ -157,6 +157,13 @@ async def test_tool_errors(mass: MusicAssistant, admin_token: str) -> None:
         )
         assert _body(response)["result"]["isError"]
 
+        response = await _post(
+            mass, _call("control_player", {"player": "Kitchen", "command": None}), admin_token
+        )
+        assert (
+            "Invalid value for argument command" in _body(response)["result"]["content"][0]["text"]
+        )
+
     response = await _post(mass, _call("no_such_tool", {}), admin_token)
     assert _body(response)["error"]["code"] == -32602
 

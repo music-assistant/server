@@ -286,7 +286,8 @@ async def add_to_playlist(mass: MusicAssistant, playlist: str, uris: list[str]) 
     """
     target = await _resolve_playlist(mass, playlist)
     await mass.music.playlists.add_playlist_tracks(target.item_id, uris)
-    return {"playlist": target.name, "added": len(uris)}
+    # the items are added by a background task, which also expands albums and skips duplicates
+    return {"playlist": target.name, "requested": len(uris), "status": "adding in the background"}
 
 
 @mcp_tool("group_players", Scope.PLAYERS_CONTROL)
@@ -363,7 +364,7 @@ async def _resolve_playlist(mass: MusicAssistant, playlist: str) -> Playlist | I
             raise ToolError(f"{playlist!r} is not a playlist in the library")
         return item  # type: ignore[return-value]
     name = playlist.strip().lower()
-    for item in await mass.music.playlists.library_items(search=playlist, limit=25):
+    for item in await mass.music.playlists.library_items(search=playlist, limit=500):
         if item.name.strip().lower() == name:
             return item
     raise ToolError(f"No playlist named {playlist!r} in the library")
