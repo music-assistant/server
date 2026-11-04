@@ -26,6 +26,7 @@ from hass_client.exceptions import (
     BaseHassClientError,
     CannotConnect,
     ConnectionFailed,
+    FailedCommand,
     NotConnected,
     TransportError,
 )
@@ -87,6 +88,7 @@ if TYPE_CHECKING:
         Entity,
         EntityStateEvent,
         Event,
+        Message,
         State,
     )
     from music_assistant_models.config_entries import ProviderConfig
@@ -541,6 +543,45 @@ class HomeAssistantProvider(PluginProvider):
             )
             for mac, device in device_by_mac.items()
         }
+
+    async def subscribe_sendspin_clients(
+        self, callback: Callable[[list[str]], None]
+    ) -> Callable[[], None] | None:
+        """
+        Follow the Sendspin client ids Home Assistant can fetch a pairing token for.
+
+        :param callback: Called with the full list of client ids right away and again
+            whenever it changes.
+        :return: A function that ends the subscription, or None when this Home Assistant
+            hands out no Sendspin pairing tokens or could not be asked.
+        """
+
+        def _on_message(message: Message) -> None:
+            callback(list(message["event"]["client_ids"]))
+
+        try:
+            unsubscribe = await self.hass.subscribe(_on_message, "sendspin/subscribe_clients")
+        except FailedCommand as err:
+            self.logger.debug("Home Assistant hands out no Sendspin pairing tokens: %s", err)
+            return None
+        except BaseHassClientError as err:
+            self.logger.debug("Could not follow the Sendspin clients of Home Assistant: %s", err)
+            return None
+        return cast("Callable[[], None]", unsubscribe)
+
+    async def get_sendspin_pairing_token(self, client_id: str) -> str | None:
+        """
+        Return the Sendspin pairing token of the device with this Sendspin client id.
+
+        :return: The token, or None when Home Assistant has no connected device with the
+            client id or the device hands out no token right now (reason logged at debug level).
+        """
+        try:
+            result = await self.hass.send_command("sendspin/get_pairing_token", client_id=client_id)
+        except (FailedCommand, BaseHassClientError) as err:
+            self.logger.debug("No Sendspin pairing token for %s: %s", client_id, err)
+            return None
+        return cast("str", result["token"])
 
     async def get_user_details(self, ha_user_id: str) -> tuple[str | None, str | None, str | None]:
         """
