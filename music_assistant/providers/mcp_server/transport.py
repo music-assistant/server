@@ -62,14 +62,27 @@ class MCPTransport:
 
     async def handle_request(self, request: web.Request) -> web.Response:
         """
-        Handle a request to the MCP endpoint.
+        Handle a request to the public MCP endpoint, which needs a bearer token.
 
         :param request: The aiohttp request.
         """
+        return await self._handle(request, from_home_assistant=False)
+
+    async def handle_home_assistant_request(self, request: web.Request) -> web.Response:
+        """
+        Handle a request to the private MCP endpoint that only Home Assistant knows.
+
+        Home Assistant on the host reaches it without a token; any other caller needs one.
+
+        :param request: The aiohttp request.
+        """
+        return await self._handle(request, is_request_from_home_assistant(request))
+
+    async def _handle(self, request: web.Request, from_home_assistant: bool) -> web.Response:
+        """Handle a request to one of the MCP endpoints."""
         set_current_peer_address(request.remote)
         if request.method != "POST":
             return web.Response(status=405, headers={"Allow": "POST"})
-        from_home_assistant = is_request_from_home_assistant(request)
         if refusal := await self._refuse_request(request, from_home_assistant):
             return refusal
         protocol_version = request.headers.get("MCP-Protocol-Version", DEFAULT_PROTOCOL_VERSION)
