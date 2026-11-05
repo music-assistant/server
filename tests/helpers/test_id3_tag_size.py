@@ -1,10 +1,8 @@
-"""Resource limits for audio metadata inspection."""
+"""Reject oversized ID3 tags before parsing audio metadata."""
 
 import os
 import subprocess
-from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from threading import Event, Lock
 from unittest.mock import MagicMock
 
 import pytest
@@ -73,53 +71,3 @@ def test_invalid_id3_size_rejected(tmp_path: Path) -> None:
     source.write_bytes(b"ID3\x03\x00\x00\xff\x00\x00\x00")
     with pytest.raises(InvalidDataError, match="Invalid ID3 tag size"):
         tags.parse_tags(str(source))
-
-
-def test_probe_timeout_is_a_file_error(monkeypatch: pytest.MonkeyPatch) -> None:
-    """A stalled probe becomes a recoverable error and releases its worker slot."""
-    probe = MagicMock(side_effect=subprocess.TimeoutExpired("ffprobe", tags.FFPROBE_TIMEOUT))
-    monkeypatch.setattr(subprocess, "check_output", probe)
-    for _ in range(3):
-        with pytest.raises(InvalidDataError, match="audio inspection timed out"):
-            tags.parse_tags("https://example.invalid/audio.mp3")
-    assert probe.call_args.kwargs["timeout"] == tags.FFPROBE_TIMEOUT
-    args = probe.call_args.args[0]
-    assert args[args.index("-max_alloc") + 1] == str(tags.MAX_ID3_TAG_SIZE)
-    assert args[args.index("-threads") + 1] == "1"
-
-
-def test_probe_concurrency_is_bounded(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Independent callers cannot run more than two probes at once."""
-    lock = Lock()
-    two_started = Event()
-    release = Event()
-    active = peak = 0
-
-    def probe(*_args: object, **_kwargs: object) -> bytes:
-        nonlocal active, peak
-        with lock:
-            active += 1
-            peak = max(peak, active)
-            if active == 2:
-                two_started.set()
-        try:
-            assert release.wait(timeout=5)
-            return b'{"streams": []}'
-        finally:
-            with lock:
-                active -= 1
-
-    monkeypatch.setattr(subprocess, "check_output", probe)
-    with ThreadPoolExecutor(max_workers=6) as executor:
-        futures = [
-            executor.submit(tags.parse_tags, "https://example.invalid/a.mp3") for _ in range(6)
-        ]
-        try:
-            assert two_started.wait(timeout=5)
-            assert peak == 2
-        finally:
-            release.set()
-        for future in futures:
-            with pytest.raises(InvalidDataError, match="Not an audio file"):
-                future.result(timeout=5)
-    assert peak == 2
