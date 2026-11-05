@@ -5,6 +5,7 @@
   "name": "Spotify",
   "description": "Stream music, playlists, podcasts, and discover new songs via Spotify’s ecosystem.",
   "codeowners": ["@music-assistant"],
+  "tier": "core",
   "credits": [
     "[Spotify Soloist (by Spotify)](https://developer.spotify.com/documentation/soloist)",
     "[librespot (by librespot-org)](https://github.com/librespot-org/librespot)"
