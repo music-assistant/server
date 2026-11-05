@@ -44,7 +44,7 @@ class RankingsMixin(_StatisticsBase):
         period: str = "week",
         limit: int = 50,
         timezone: str = "UTC",
-        user_ids: list[str] | None = None,
+        users: list[str] | None = None,
     ) -> list[TopItemResult]:
         """
         Get most played items in a time period.
@@ -53,9 +53,9 @@ class RankingsMixin(_StatisticsBase):
         :param period: Time period - 'today', 'week', 'month', 'year', 'all_time'.
         :param limit: Maximum number of items to return (default 50).
         :param timezone: IANA timezone for calendar boundaries; defaults to UTC.
-        :param user_ids: Users whose plays are combined; defaults to the current user.
+        :param users: User ids or usernames whose plays are combined; defaults to the current user.
         """
-        if not (user_ids := self._get_statistics_user_ids(user_ids)):
+        if not (user_ids := await self._get_statistics_user_ids(users)):
             return []
         limit = validate_statistics_limit(limit)
         cutoff_timestamp = self._get_period_cutoff(period, timezone)
@@ -184,7 +184,7 @@ class RankingsMixin(_StatisticsBase):
         period: str = "week",
         limit: int = 10,
         timezone: str = "UTC",
-        user_ids: list[str] | None = None,
+        users: list[str] | None = None,
     ) -> list[DistributionItem]:
         """
         Get genre distribution (play counts by genre).
@@ -194,9 +194,9 @@ class RankingsMixin(_StatisticsBase):
         :param period: Time period - 'today', 'week', 'month', 'year', 'all_time'.
         :param limit: Maximum number of genres to return (default 10).
         :param timezone: IANA timezone for calendar boundaries; defaults to UTC.
-        :param user_ids: Users whose plays are combined; defaults to the current user.
+        :param users: User ids or usernames whose plays are combined; defaults to the current user.
         """
-        if not (user_ids := self._get_statistics_user_ids(user_ids)):
+        if not (user_ids := await self._get_statistics_user_ids(users)):
             return []
 
         limit = validate_statistics_limit(limit)
@@ -228,7 +228,7 @@ class RankingsMixin(_StatisticsBase):
         period: str = "all_time",
         limit: int = 10,
         timezone: str = "UTC",
-        user_ids: list[str] | None = None,
+        users: list[str] | None = None,
     ) -> list[DistributionItem]:
         """
         Get play counts grouped by decade for library tracks with known album years.
@@ -239,9 +239,9 @@ class RankingsMixin(_StatisticsBase):
         :param period: Time period - 'today', 'week', 'month', 'year', 'all_time'.
         :param limit: Maximum number of decades to return.
         :param timezone: IANA timezone for calendar boundaries; defaults to UTC.
-        :param user_ids: Users whose plays are combined; defaults to the current user.
+        :param users: User ids or usernames whose plays are combined; defaults to the current user.
         """
-        if not (user_ids := self._get_statistics_user_ids(user_ids)):
+        if not (user_ids := await self._get_statistics_user_ids(users)):
             return []
         limit = validate_statistics_limit(limit)
 
@@ -285,7 +285,7 @@ class RankingsMixin(_StatisticsBase):
         item_id: str,
         provider: str,
         media_type: MediaType,
-        user_ids: list[str] | None = None,
+        users: list[str] | None = None,
     ) -> int:
         """
         Get play count for an item, using track plays for albums and credits for artists.
@@ -293,9 +293,9 @@ class RankingsMixin(_StatisticsBase):
         :param item_id: The item ID to get play count for.
         :param provider: The provider ID.
         :param media_type: The media type.
-        :param user_ids: Users whose plays are combined; defaults to the current user.
+        :param users: User ids or usernames whose plays are combined; defaults to the current user.
         """
-        if not (user_ids := self._get_statistics_user_ids(user_ids)):
+        if not (user_ids := await self._get_statistics_user_ids(users)):
             return 0
 
         if media_type == MediaType.ALBUM:
