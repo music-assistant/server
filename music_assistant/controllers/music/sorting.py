@@ -151,7 +151,8 @@ _LIBRARY_LISTING_SORT_OPTIONS: Final[dict[ListingType, tuple[SortOptionInfo, ...
     ListingType.LIBRARY_GENRES: _library_sort_options(),
 }
 
-# the sort options each listing offers, the first one being the listing's default
+# the sort options each listing offers, the first one being the listing's default; the models
+# enum may hold listing types without a row, which the sort_options command rejects
 LISTING_SORT_OPTIONS: Final[dict[ListingType, tuple[SortOptionInfo, ...]]] = {
     **_LIBRARY_LISTING_SORT_OPTIONS,
     ListingType.ALBUM_TRACKS: _sort_options(

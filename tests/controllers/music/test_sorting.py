@@ -198,6 +198,12 @@ def test_sort_options_command_serves_every_library_listing(mass: MusicAssistant)
         assert [option.field for option in options] == list(MEDIA_TYPE_SORT_FIELDS[media_type])
 
 
+def test_sort_options_command_rejects_a_listing_without_a_row(mass: MusicAssistant) -> None:
+    """A listing type this server has no row for is rejected instead of crashing the command."""
+    with patch.dict(LISTING_SORT_OPTIONS, {}, clear=True), pytest.raises(InvalidDataError):
+        mass.music.sort_options(ListingType.BROWSE)
+
+
 def test_library_sort_options_hold_the_listing_specific_fields() -> None:
     """Albums, tracks and audiobooks add their own fields; the random options carry no direction."""
     fields = {
