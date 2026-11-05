@@ -2219,7 +2219,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
             raise InvalidDataError(msg)
         current = {
             item.position: item.uri
-            for item in await self.tracks(playlist.item_id, "library", limit=0)
+            for item in await self.tracks(playlist.item_id, "library", force_refresh=True, limit=0)
         }
         if any(current.get(pos) != uri for pos, uri in zip(positions, uris, strict=True)):
             # announce the playlist, so a client showing an older listing reads it again
