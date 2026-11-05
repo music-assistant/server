@@ -10,7 +10,7 @@ from music_assistant.providers.sendspin.constants import CONF_LOCAL_PAIRING
 from music_assistant.providers.sendspin.token_auto_pair import TokenAutoPairer
 
 # Provisional application-specific role a player lists when it serves its token locally.
-LOCAL_PAIRING_ROLE: Final = "_ma_local_pairing@v1"
+LOCAL_PAIRING_ROLE: Final = "_ohf_local_pairing@v1"
 LOCAL_PAIRING_SUPPORT_KEY: Final = f"{LOCAL_PAIRING_ROLE}_support"
 # Host side of the hassio network. Fixed here, never taken from the client, so a client
 # can only steer which port on this one address is asked.
