@@ -1036,10 +1036,10 @@ class SpotifyProvider(MusicProvider):
         :param playing: Stream details of the item being streamed.
         :param upcoming: Stream details of the item that follows it.
         """
-        if upcoming.media_type not in (MediaType.TRACK, MediaType.PODCAST_EPISODE):
+        # an audiobook's next chapter follows it, not the queue's next item
+        if MediaType.AUDIOBOOK in (playing.media_type, upcoming.media_type):
             return
-        media_type = "episode" if upcoming.media_type == MediaType.PODCAST_EPISODE else "track"
-        await self.backend.feed_next(playing.uri, f"spotify:{media_type}:{upcoming.item_id}")
+        await self.backend.feed_next(playing.uri, _spotify_uri(upcoming))
 
     async def get_audio_stream(
         self, streamdetails: StreamDetails, seek_position: int = 0
@@ -1107,10 +1107,7 @@ class SpotifyProvider(MusicProvider):
                     continue
         else:
             # Handle normal tracks and podcast episodes
-            media_type = (
-                "episode" if streamdetails.media_type == MediaType.PODCAST_EPISODE else "track"
-            )
-            spotify_uri = f"spotify:{media_type}:{streamdetails.item_id}"
+            spotify_uri = _spotify_uri(streamdetails)
             # a new stream of this item taking over (a seek) simply ends this one
             with suppress(StreamSupersededError):
                 async for chunk in self.backend.stream_spotify_uri(
@@ -2048,3 +2045,9 @@ class SpotifyProvider(MusicProvider):
         if not stored_token:
             return False
         return stored_token != used_token
+
+
+def _spotify_uri(streamdetails: StreamDetails) -> str:
+    """Return the canonical Spotify URI of a track or podcast episode."""
+    media_type = "episode" if streamdetails.media_type == MediaType.PODCAST_EPISODE else "track"
+    return f"spotify:{media_type}:{streamdetails.item_id}"

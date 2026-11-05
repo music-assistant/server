@@ -2068,3 +2068,61 @@ async def test_the_drain_waits_for_a_capture_busy_elsewhere(tmp_path: Path) -> N
     assert not drain.done()
     run._read_waiting = True
     await asyncio.wait_for(drain, 1)
+
+
+@pytest.mark.parametrize("paused", [True, False])
+async def test_a_move_in_place_wakes_an_engine_paused_past_its_last_item(
+    tmp_path: Path, paused: bool
+) -> None:
+    """Replaying the track the engine stopped on needs it playing again, not only seeked."""
+    run = _live_run(tmp_path)
+    await run._handle_event(_playback_event("playing", uri=TRACK_A, duration_ms=180_000))
+    if paused:
+        await run._handle_event(_playback_event("paused", uri=TRACK_A, position_ms=0))
+    _confirm_seeks(run)
+
+    await run.move_to(TRACK_A, 0, _streamdetails_for(uri=TRACK_A))
+    client = _client(run)
+    client.seek.assert_awaited_with(0)
+    if paused:
+        client.resume.assert_awaited_once()
+    else:
+        client.resume.assert_not_called()
+
+
+async def test_an_item_the_engine_did_not_queue_is_forgotten(tmp_path: Path) -> None:
+    """A refused item never blocks the end of the one playing."""
+    run = _live_run(tmp_path)
+    await run.feed_next(cast("str", run.current_item.media_key), TRACK_B)
+    assert run._fed is not None
+    # the queue report that follows the add does not list it
+    await run._handle_event(_queue_event())
+    assert run._fed is None
+
+
+async def test_a_rewound_pause_at_the_end_wins_over_a_queued_item(tmp_path: Path) -> None:
+    """The engine stopping instead of moving on ends the item, whatever was queued."""
+    run = _live_run(tmp_path)
+    await run._handle_event(_playback_event("playing", uri=TRACK_A, duration_ms=2_000))
+    await _feed(run)
+    await _capture(run, _audio(1.5))
+    await run._handle_event(_playback_event("paused", uri=TRACK_A, position_ms=0))
+    assert run.current_item.ended
+    assert run._fed is None
+    assert run._next is None
+
+
+async def test_an_ended_item_gets_its_tail_from_a_paused_engine(tmp_path: Path) -> None:
+    """A full cushion at the end of the last item still lets the tail out of the sink."""
+    run = _live_run(tmp_path)
+    item = run.current_item
+    item.end_at = 10 * _BYTES_PER_SECOND
+    run._engine_playing = False
+    while not item.chunks.full():
+        item.chunks.put_nowait(b"\x01")
+    blocked = asyncio.ensure_future(run._hand_over(item, b"\x02"))
+    await asyncio.sleep(0.01)
+    _sink(run).suspend.assert_awaited()
+    item.chunks.get_nowait()
+    assert await blocked is True
+    _sink(run).resume.assert_awaited()

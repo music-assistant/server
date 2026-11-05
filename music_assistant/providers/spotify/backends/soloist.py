@@ -943,13 +943,19 @@ class _EngineRun:
         :param spotify_uri: Canonical Spotify URI of the item that follows it.
         """
         client = self._client
+        if self._queue_uids and self._fed is None:
+            # the account's own queued items would play before it
+            self.logger.debug(
+                "Not queueing %s: the account's own Spotify queue holds %d item(s)",
+                spotify_uri,
+                len(self._queue_uids),
+            )
+            return
         if (
             self._fed is not None
             or self._next is not None
             # the engine does not take episodes into its queue
             or not spotify_uri.startswith("spotify:track:")
-            # the account's own queued items would play before it
-            or self._queue_uids
             or self._item.media_key != media_key
             or not self._item_live()
             or client is None
@@ -1017,6 +1023,9 @@ class _EngineRun:
                 item.started.set()
                 if in_place or seek_position_ms:
                     await self._seek(client, seek_position_ms)
+                if in_place and (self._engine_paused or previous.ended):
+                    # past the last item it was given the engine sits paused
+                    await client.resume()
         except (TimeoutError, SoloistError, OSError) as err:
             raise AudioError(f"Spotify did not move to {spotify_uri}: {err!r}") from err
         finally:
@@ -1624,6 +1633,9 @@ class _EngineRun:
             split = max(0, item.end_at - item.raw_read)
             if split and not await self._deliver(item, raw[:split]):
                 return False
+            if item is not self._item:
+                # a move took over while the capture waited on the cushion
+                return True
             raw = raw[split:]
             self._finish_delivery(item)
             if (upcoming := self._next) is None:
@@ -1705,7 +1717,8 @@ class _EngineRun:
                     break
         else:
             return False
-        await self._set_sink(running=self._engine_playing)
+        # an item whose end is known is owed its tail even from a paused engine
+        await self._set_sink(running=self._engine_playing or item.ended)
         return True
 
     def _finish_delivery(self, item: _Item) -> None:
@@ -1881,6 +1894,11 @@ class _EngineRun:
                     ),
                     None,
                 )
+                if fed.uid is None:
+                    # the report that follows the add does not list it: the
+                    # engine refused the item (unavailable for the account)
+                    self.logger.debug("Spotify did not queue %s", fed.spotify_uri)
+                    self._fed = None
             elif fed.uid not in uids:
                 # the only report when the queued item is the one already playing
                 self._consume_fed()
@@ -1923,13 +1941,16 @@ class _EngineRun:
     def _observe_rewound_pause(self) -> None:
         """End the current item when the engine has run past the last item it was given."""
         item = self._item
-        if self._moving or item.ended or self._fed is not None or not item.started.is_set():
+        if self._moving or item.ended or not item.started.is_set():
             return
         if (length_ms := item.length_ms) is None:
             return
         position_ms = item.seek_target_ms + item.raw_read * 1000 / _BYTES_PER_SECOND
         # anywhere but at its end, a pause at 0:00 is somebody else's
         if position_ms >= length_ms - _TAIL_PAD_ZONE_S * 1000:
+            # the engine stopped instead of moving on: whatever was queued on
+            # it never came to play
+            self._fed = None
             self._end_item()
 
     def _observe_device_active(self, *, active: bool) -> None:
