@@ -487,9 +487,13 @@ def test_legacy_sort_maps_a_deprecated_key_to_its_typed_sort() -> None:
 
 
 def test_every_listing_offers_sort_fields_its_items_carry() -> None:
-    """Every listing has a row, and a listing sorted in memory only offers what its items carry."""
-    for listing in ListingType:
-        options = LISTING_SORT_OPTIONS[listing]
+    """
+    Each served listing has a row, and an in-memory one offers only fields its items carry.
+
+    The models enum may hold listing types this server does not serve; those have no row.
+    """
+    assert LISTING_SORT_OPTIONS.keys() == LISTING_ITEM_TYPES.keys()
+    for listing, options in LISTING_SORT_OPTIONS.items():
         assert options, f"{listing} offers no sort options"
         item_attributes = {field.name for field in fields(LISTING_ITEM_TYPES[listing])}
         for option in options:
