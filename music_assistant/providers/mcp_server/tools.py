@@ -57,7 +57,7 @@ async def search_music(
     :param media_type: Only return this type of media.
     :param limit: The maximum number of results per media type, at most 50.
     """
-    results = await mass.music.search(query, _media_types(media_type), limit=min(limit, MAX_LIMIT))
+    results = await mass.music.search(query, _media_types(media_type), limit=_clamp_limit(limit))
     return {"items": [_compact_item(item) for item in _flatten_results(results)]}
 
 
@@ -200,7 +200,7 @@ async def get_queue(mass: MusicAssistant, player: str, limit: int = 20) -> dict[
     target = _resolve_player(mass, player)
     queue = _active_queue(mass, target)
     offset = queue.current_index + 1 if queue.current_index is not None else 0
-    upcoming = mass.player_queues.get_queue_items(queue.queue_id, min(limit, MAX_LIMIT), offset)
+    upcoming = mass.player_queues.get_queue_items(queue.queue_id, _clamp_limit(limit), offset)
     return {
         "player": target.state.name,
         "queue": queue.display_name,
@@ -219,7 +219,7 @@ async def get_recently_played(mass: MusicAssistant, limit: int = 20) -> dict[str
 
     :param limit: The maximum number of items to return, at most 50.
     """
-    items = await mass.music.recently_played(min(limit, MAX_LIMIT))
+    items = await mass.music.recently_played(_clamp_limit(limit))
     return {"items": [_compact_item(item) for item in items]}
 
 
@@ -236,7 +236,7 @@ async def get_favorites(
     favorites: list[dict[str, Any]] = []
     for item_type in _media_types(media_type):
         controller = mass.music.get_controller(item_type)
-        items = await controller.library_items(favorite=True, limit=min(limit, MAX_LIMIT))
+        items = await controller.library_items(favorite=True, limit=_clamp_limit(limit))
         favorites.extend(_compact_item(item) for item in items)
     return {"items": favorites}
 
@@ -368,6 +368,11 @@ async def _resolve_playlist(mass: MusicAssistant, playlist: str) -> Playlist | I
         if item.name.strip().lower() == name:
             return item
     raise ToolError(f"No playlist named {playlist!r} in the library")
+
+
+def _clamp_limit(limit: int) -> int:
+    """Return the limit a model asked for, bounded to 1 up to MAX_LIMIT."""
+    return max(1, min(limit, MAX_LIMIT))
 
 
 def _media_types(media_type: SearchMediaType) -> list[MediaType]:

@@ -10,7 +10,8 @@ import pytest
 from aiohttp import StreamReader, web
 from aiohttp.test_utils import make_mocked_request
 from music_assistant_models.auth import AuthProviderType, UserRole
-from music_assistant_models.enums import PlaybackState, PlayerType
+from music_assistant_models.enums import PlaybackState, PlayerType, QueueOption, RepeatMode
+from music_assistant_models.media_items import Playlist, SearchResults, Track
 
 from music_assistant.constants import HASSIO_SUPERVISOR_IP, INGRESS_SERVER_PORT
 from music_assistant.controllers.discovery import controller as discovery_module
@@ -151,6 +152,87 @@ async def test_control_player(mass: MusicAssistant, admin_token: str) -> None:
     cmd_pause.assert_awaited_once_with("kitchen_id")
     assert result["structuredContent"]["player_id"] == "kitchen_id"
     assert json_loads(result["content"][0]["text"]) == result["structuredContent"]
+
+
+@pytest.mark.parametrize(
+    ("arguments", "expected"),
+    [
+        ({"media": "Song"}, "track"),
+        ({"media": "library://track/2"}, "track"),
+        ({"media": "Song", "radio_mode": True}, "radio_playlist://playlist/library://track/2"),
+    ],
+)
+async def test_play(
+    mass: MusicAssistant, admin_token: str, arguments: dict[str, Any], expected: str
+) -> None:
+    """Play resolves a name or a uri and starts an endless mix from the item with radio_mode."""
+    track = _track("2", "Song")
+    search = AsyncMock(return_value=SearchResults(tracks=[_track("1", "Song (Live)"), track]))
+    with (
+        patch.object(mass.players, "all_players", return_value=[_fake_player("k_id", "Kitchen")]),
+        patch.object(mass.music, "search", search),
+        patch.object(mass.music, "get_item_by_uri", AsyncMock(return_value=track)) as by_uri,
+        patch.object(mass.player_queues, "play_media", AsyncMock()) as play_media,
+    ):
+        response = await _post(mass, _call("play", {"player": "Kitchen", **arguments}), admin_token)
+    assert not _body(response)["result"]["isError"]
+    to_play = track if expected == "track" else expected
+    play_media.assert_awaited_once_with("k_id", to_play, QueueOption.REPLACE)
+    if "://" in arguments["media"]:
+        by_uri.assert_awaited_once_with("library://track/2")
+        search.assert_not_awaited()
+    else:
+        by_uri.assert_not_awaited()
+
+
+async def test_add_to_playlist(mass: MusicAssistant, admin_token: str) -> None:
+    """add_to_playlist adds to a library playlist and refuses a playlist of a provider."""
+    library_playlist = Playlist(
+        item_id="5", provider="library", name="Mix", provider_mappings=set()
+    )
+    provider_playlist = Playlist(
+        item_id="abc", provider="spotify", name="Mix", provider_mappings=set()
+    )
+    uris = ["library://track/1"]
+    for playlist, refused in ((provider_playlist, True), (library_playlist, False)):
+        with (
+            patch.object(mass.music, "get_item_by_uri", AsyncMock(return_value=playlist)),
+            patch.object(mass.music.playlists, "add_playlist_tracks", AsyncMock()) as add_tracks,
+        ):
+            response = await _post(
+                mass,
+                _call("add_to_playlist", {"playlist": playlist.uri, "uris": uris}),
+                admin_token,
+            )
+        assert _body(response)["result"]["isError"] is refused
+        if refused:
+            add_tracks.assert_not_awaited()
+        else:
+            add_tracks.assert_awaited_once_with("5", uris)
+
+
+@pytest.mark.parametrize(("limit", "expected"), [(None, 20), (-1, 1), (1000, 50)])
+async def test_get_queue(
+    mass: MusicAssistant, admin_token: str, limit: int | None, expected: int
+) -> None:
+    """get_queue lists the items after the current one, with the limit kept within bounds."""
+    queue = MagicMock()
+    queue.queue_id = "k_id"
+    queue.current_index = 3
+    queue.current_item = None
+    queue.state = PlaybackState.PLAYING
+    queue.repeat_mode = RepeatMode.OFF
+    arguments: dict[str, Any] = {"player": "Kitchen"}
+    if limit is not None:
+        arguments["limit"] = limit
+    with (
+        patch.object(mass.players, "all_players", return_value=[_fake_player("k_id", "Kitchen")]),
+        patch.object(mass.player_queues, "get_player_active_queue", return_value=queue),
+        patch.object(mass.player_queues, "get_queue_items", return_value=[]) as get_queue_items,
+    ):
+        response = await _post(mass, _call("get_queue", arguments), admin_token)
+    assert not _body(response)["result"]["isError"]
+    get_queue_items.assert_called_once_with("k_id", expected, 4)
 
 
 async def test_tool_errors(mass: MusicAssistant, admin_token: str) -> None:
@@ -582,6 +664,11 @@ def _body(response: web.Response) -> dict[str, Any]:
     assert response.text is not None
     body: dict[str, Any] = json_loads(response.text)
     return body
+
+
+def _track(item_id: str, name: str) -> Track:
+    """Return a library track."""
+    return Track(item_id=item_id, provider="library", name=name, provider_mappings=set())
 
 
 def _fake_player(player_id: str, name: str) -> MagicMock:
