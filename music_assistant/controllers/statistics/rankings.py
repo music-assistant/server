@@ -45,6 +45,7 @@ class RankingsMixin(_StatisticsBase):
         limit: int = 50,
         timezone: str = "UTC",
         users: list[str] | None = None,
+        all_users: bool = False,
     ) -> list[TopItemResult]:
         """
         Get most played items in a time period.
@@ -54,8 +55,9 @@ class RankingsMixin(_StatisticsBase):
         :param limit: Maximum number of items to return (default 50).
         :param timezone: IANA timezone for calendar boundaries; defaults to UTC.
         :param users: User ids or usernames whose plays are combined; defaults to the current user.
+        :param all_users: Combine the plays of every user, instead of the given users.
         """
-        if not (user_ids := await self._get_statistics_user_ids(users)):
+        if not (user_ids := await self._get_statistics_user_ids(users, all_users)):
             return []
         limit = validate_statistics_limit(limit)
         cutoff_timestamp = self._get_period_cutoff(period, timezone)
@@ -185,6 +187,7 @@ class RankingsMixin(_StatisticsBase):
         limit: int = 10,
         timezone: str = "UTC",
         users: list[str] | None = None,
+        all_users: bool = False,
     ) -> list[DistributionItem]:
         """
         Get genre distribution (play counts by genre).
@@ -195,8 +198,9 @@ class RankingsMixin(_StatisticsBase):
         :param limit: Maximum number of genres to return (default 10).
         :param timezone: IANA timezone for calendar boundaries; defaults to UTC.
         :param users: User ids or usernames whose plays are combined; defaults to the current user.
+        :param all_users: Combine the plays of every user, instead of the given users.
         """
-        if not (user_ids := await self._get_statistics_user_ids(users)):
+        if not (user_ids := await self._get_statistics_user_ids(users, all_users)):
             return []
 
         limit = validate_statistics_limit(limit)
@@ -229,6 +233,7 @@ class RankingsMixin(_StatisticsBase):
         limit: int = 10,
         timezone: str = "UTC",
         users: list[str] | None = None,
+        all_users: bool = False,
     ) -> list[DistributionItem]:
         """
         Get play counts grouped by decade for library tracks with known album years.
@@ -240,8 +245,9 @@ class RankingsMixin(_StatisticsBase):
         :param limit: Maximum number of decades to return.
         :param timezone: IANA timezone for calendar boundaries; defaults to UTC.
         :param users: User ids or usernames whose plays are combined; defaults to the current user.
+        :param all_users: Combine the plays of every user, instead of the given users.
         """
-        if not (user_ids := await self._get_statistics_user_ids(users)):
+        if not (user_ids := await self._get_statistics_user_ids(users, all_users)):
             return []
         limit = validate_statistics_limit(limit)
 
@@ -286,6 +292,7 @@ class RankingsMixin(_StatisticsBase):
         provider: str,
         media_type: MediaType,
         users: list[str] | None = None,
+        all_users: bool = False,
     ) -> int:
         """
         Get play count for an item, using track plays for albums and credits for artists.
@@ -294,8 +301,9 @@ class RankingsMixin(_StatisticsBase):
         :param provider: The provider ID.
         :param media_type: The media type.
         :param users: User ids or usernames whose plays are combined; defaults to the current user.
+        :param all_users: Combine the plays of every user, instead of the given users.
         """
-        if not (user_ids := await self._get_statistics_user_ids(users)):
+        if not (user_ids := await self._get_statistics_user_ids(users, all_users)):
             return 0
 
         if media_type == MediaType.ALBUM:

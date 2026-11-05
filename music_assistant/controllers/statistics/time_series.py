@@ -64,6 +64,7 @@ class TimeSeriesMixin(_StatisticsBase):
         granularity: str = "day",
         timezone: str = "UTC",
         users: list[str] | None = None,
+        all_users: bool = False,
     ) -> list[TimeSeriesPoint]:
         """
         Get play counts over time (time series data).
@@ -77,8 +78,9 @@ class TimeSeriesMixin(_StatisticsBase):
         :param granularity: Time bucket size - 'hour', 'day', 'week', 'month'.
         :param timezone: IANA timezone for calendar buckets and boundaries; defaults to UTC.
         :param users: User ids or usernames whose plays are combined; defaults to the current user.
+        :param all_users: Combine the plays of every user, instead of the given users.
         """
-        if not (user_ids := await self._get_statistics_user_ids(users)):
+        if not (user_ids := await self._get_statistics_user_ids(users, all_users)):
             return []
 
         cutoff_timestamp = self._get_period_cutoff(period, timezone)
@@ -146,6 +148,7 @@ class TimeSeriesMixin(_StatisticsBase):
         period: str = "week",
         timezone: str = "UTC",
         users: list[str] | None = None,
+        all_users: bool = False,
     ) -> list[HeatmapPoint]:
         """
         Get listening activity heatmap (plays by hour of day and weekday).
@@ -153,8 +156,9 @@ class TimeSeriesMixin(_StatisticsBase):
         :param period: Time period - 'today', 'week', 'month', 'year', 'all_time'.
         :param timezone: IANA timezone for calendar buckets and boundaries; defaults to UTC.
         :param users: User ids or usernames whose plays are combined; defaults to the current user.
+        :param all_users: Combine the plays of every user, instead of the given users.
         """
-        if not (user_ids := await self._get_statistics_user_ids(users)):
+        if not (user_ids := await self._get_statistics_user_ids(users, all_users)):
             return []
 
         cutoff_timestamp = self._get_period_cutoff(period, timezone)
@@ -209,6 +213,7 @@ class TimeSeriesMixin(_StatisticsBase):
         limit: int = 10,
         timezone: str = "UTC",
         users: list[str] | None = None,
+        all_users: bool = False,
     ) -> list[ListeningTimeItem]:
         """
         Sum stored durations for completed plays resolvable to library tracks.
@@ -222,8 +227,9 @@ class TimeSeriesMixin(_StatisticsBase):
         :param limit: Maximum number of items to return (default 10).
         :param timezone: IANA timezone for calendar boundaries; defaults to UTC.
         :param users: User ids or usernames whose plays are combined; defaults to the current user.
+        :param all_users: Combine the plays of every user, instead of the given users.
         """
-        if not (user_ids := await self._get_statistics_user_ids(users)):
+        if not (user_ids := await self._get_statistics_user_ids(users, all_users)):
             return []
         limit = validate_statistics_limit(limit)
         if group_by not in ("artist", "genre"):

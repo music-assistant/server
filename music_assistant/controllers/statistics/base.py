@@ -43,15 +43,16 @@ class _StatisticsBase(CoreController):
 
     domain: str = "statistics"
 
-    async def _get_statistics_user_ids(self, users: list[str] | None) -> list[str]:
+    async def _get_statistics_user_ids(self, users: list[str] | None, all_users: bool) -> list[str]:
         current_user = get_current_user()
         if current_user is None:
             return []
-        if users is None:
+        if users is None and not all_users:
             return [current_user.user_id]
+        users = users or []
         # checked before any lookup, so a member can not probe which usernames exist
         if not has_scope(current_user, Scope.USERS_IMPERSONATE):
-            if any(
+            if all_users or any(
                 user != current_user.user_id and normalize_username(user) != current_user.username
                 for user in users
             ):
@@ -60,6 +61,8 @@ class _StatisticsBase(CoreController):
                 )
             return [current_user.user_id] if users else []
         auth = self.mass.webserver.auth
+        if all_users:
+            return [user.user_id for user in await auth.list_users()]
         user_ids = []
         for user in users:
             # disabled users keep their play history, and auth/users lists them too

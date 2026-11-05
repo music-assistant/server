@@ -71,14 +71,21 @@ async def _insert_plays(mass: MusicAssistant, user: User, timestamps: tuple[str,
 async def test_statistics_api_registration_is_unchanged(mass: MusicAssistant) -> None:
     """All statistics mixins retain their registered commands, parameters and scopes."""
     expected_parameters = {
-        "statistics/top_items": ("media_type", "period", "limit", "timezone", "users"),
-        "statistics/genre_distribution": ("period", "limit", "timezone", "users"),
-        "statistics/plays_over_time": ("period", "granularity", "timezone", "users"),
-        "statistics/listening_activity": ("period", "timezone", "users"),
-        "statistics/listening_time": ("period", "group_by", "limit", "timezone", "users"),
-        "statistics/decade_distribution": ("period", "limit", "timezone", "users"),
+        "statistics/top_items": ("media_type", "period", "limit", "timezone", "users", "all_users"),
+        "statistics/genre_distribution": ("period", "limit", "timezone", "users", "all_users"),
+        "statistics/plays_over_time": ("period", "granularity", "timezone", "users", "all_users"),
+        "statistics/listening_activity": ("period", "timezone", "users", "all_users"),
+        "statistics/listening_time": (
+            "period",
+            "group_by",
+            "limit",
+            "timezone",
+            "users",
+            "all_users",
+        ),
+        "statistics/decade_distribution": ("period", "limit", "timezone", "users", "all_users"),
         "statistics/play_history": ("limit", "media_types", "played_after_timestamp", "offset"),
-        "statistics/play_count": ("item_id", "provider", "media_type", "users"),
+        "statistics/play_count": ("item_id", "provider", "media_type", "users", "all_users"),
     }
     commands = {
         command: handler
@@ -128,7 +135,7 @@ async def test_top_items_counts_history_not_media_progress(mass: MusicAssistant)
 
 
 async def test_statistics_combine_requested_users(mass: MusicAssistant) -> None:
-    """An admin gets the summed plays of the requested users, by id or username."""
+    """An admin gets the summed plays of the requested users, by id or username, or of all."""
     admin = await mass.webserver.auth.create_user("statistics-admin", role=UserRole.ADMIN)
     alice = await mass.webserver.auth.create_user("statistics-alice")
     bob = await mass.webserver.auth.create_user("statistics-bob")
@@ -150,6 +157,9 @@ async def test_statistics_combine_requested_users(mass: MusicAssistant) -> None:
         series = await mass.statistics.get_plays_over_time(
             period="all_time", granularity="month", users=users
         )
+        everyone = await mass.statistics.get_top_items(
+            MediaType.TRACK, period="all_time", all_users=True
+        )
         with pytest.raises(UserNotFoundError):
             await mass.statistics.get_top_items(
                 MediaType.TRACK, period="all_time", users=["statistics-nobody"]
@@ -162,12 +172,16 @@ async def test_statistics_combine_requested_users(mass: MusicAssistant) -> None:
     ]
     assert combined_count == 2
     assert [(point.timestamp, point.value) for point in series] == [("2026-01", 3)]
+    assert [(entry.item.item_id, entry.play_count) for entry in everyone] == [
+        ("track-0", 3),
+        ("track-1", 1),
+    ]
 
 
 async def test_statistics_of_other_users_require_impersonate_scope(
     mass: MusicAssistant,
 ) -> None:
-    """A member may request their own statistics, but not those of another or unknown user."""
+    """A member may request their own statistics, but not those of other, unknown or all users."""
     alice = await mass.webserver.auth.create_user("statistics-member-alice")
     bob = await mass.webserver.auth.create_user("statistics-member-bob")
     await _insert_plays(mass, alice, ("2026-01-05T10:00:00",))
@@ -179,6 +193,8 @@ async def test_statistics_of_other_users_require_impersonate_scope(
         for users in ([alice.user_id, bob.user_id], ["statistics-nobody"]):
             with pytest.raises(InsufficientPermissions):
                 await mass.statistics.get_top_items(MediaType.TRACK, period="all_time", users=users)
+        with pytest.raises(InsufficientPermissions):
+            await mass.statistics.get_top_items(MediaType.TRACK, period="all_time", all_users=True)
 
     assert [entry.play_count for entry in own] == [1]
 
