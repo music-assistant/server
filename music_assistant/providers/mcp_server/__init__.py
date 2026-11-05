@@ -65,6 +65,12 @@ class MCPServerProvider(PluginProvider):
 
     async def handle_async_init(self) -> None:
         """Register the MCP endpoints."""
+        # The mcp integration of Home Assistant reads only the url from the Supervisor
+        # discovery and sends no Authorization header (its OAuth flow needs a client id and
+        # secret typed by the user), so the url is the only way to hand it a credential.
+        # The secret path plus the host check (auth.py) stand in for a bearer token until
+        # Home Assistant accepts a token in the discovery; then this server sends its Home
+        # Assistant system token and this path goes away (music-assistant/backlog#382).
         secret = self.get_config_value(CONF_HOME_ASSISTANT_SECRET, return_type=str)
         if not secret:
             secret = secrets.token_urlsafe(24)

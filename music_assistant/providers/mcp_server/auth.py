@@ -42,6 +42,7 @@ async def is_request_from_home_assistant(request: web.Request) -> bool:
 
     :param request: The aiohttp request.
     """
+    # stands in for a bearer token Home Assistant cannot send yet, see handle_async_init
     if not is_request_from_ingress(request) or request.transport is None:
         return False
     peername = request.transport.get_extra_info("peername")
