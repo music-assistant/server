@@ -1477,7 +1477,7 @@ async def test_the_same_track_twice_is_told_by_its_restart(tmp_path: Path) -> No
     _client(run).add_to_queue.assert_awaited_once_with(TRACK_A)
     await _capture(run, _audio(1))
     await run._handle_event(_track_event(TRACK_A))
-    await run._handle_event(_playback_event("playing", uri=TRACK_A))
+    await run._handle_event(_playback_event("playing", uri=TRACK_A, duration_ms=1_000))
     assert _upcoming(run) is None
     assert not first.ended
 
@@ -1488,7 +1488,6 @@ async def test_the_same_track_twice_is_told_by_its_restart(tmp_path: Path) -> No
     await run._handle_event(_playback_event("playing", uri=TRACK_A, position_ms=17))
     assert run._next is not None
     assert run._next.spotify_uri == TRACK_A
-    # no exact length known: the cut is where the report came in
     assert first.end_at == first.raw_read
     # the second occurrence asks with the same details and takes the next item
     _, second = await backend._acquire_item(
@@ -1581,6 +1580,28 @@ async def test_a_seek_keeps_the_fed_item(tmp_path: Path) -> None:
     assert run.current_item is item
     assert previous.abandoned
     assert item.engine_duration_ms == 180_000
+
+
+async def test_a_seek_keeps_the_same_track_fed_after_itself(tmp_path: Path) -> None:
+    """A seek announcing the current track leaves its queued repeat for the real boundary."""
+    run = _live_run(tmp_path)
+    await run._handle_event(_playback_event("playing", uri=TRACK_A, duration_ms=180_000))
+    await _feed(run, TRACK_A)
+
+    async def seek(position_ms: int, **_: Any) -> None:
+        await run._handle_event(_playback_event("playing", uri=TRACK_A, position_ms=position_ms))
+
+    _client(run).seek.side_effect = seek
+    item = await run.move_to(TRACK_A, 175_000, _streamdetails_for(uri=TRACK_A))
+    assert run._fed is not None
+    assert run._fed.uid == "q1"
+
+    await _capture(run, _audio(1))
+    await run._handle_event(_queue_event())
+    await run._handle_event(_playback_event("playing", uri=TRACK_A, position_ms=17))
+    assert item.ended
+    assert run._next is not None
+    assert run._next.spotify_uri == TRACK_A
 
 
 async def test_a_jump_elsewhere_consumes_the_fed_item_first(tmp_path: Path) -> None:
@@ -2200,3 +2221,15 @@ async def test_a_queued_item_removed_in_the_app_is_no_boundary(tmp_path: Path) -
     await run._handle_event(_playback_event("paused", uri=TRACK_A, position_ms=0))
     assert run.current_item.end_at is not None
     assert _fed(run) is None
+
+
+async def test_a_removed_repeat_of_the_current_track_is_no_boundary(tmp_path: Path) -> None:
+    """Early in the track, a playing report after its queued repeat was removed is no restart."""
+    run = _live_run(tmp_path)
+    await run._handle_event(_playback_event("playing", uri=TRACK_A, duration_ms=180_000))
+    await _feed(run, TRACK_A)
+    await _capture(run, _audio(1.5))
+    await run._handle_event(_queue_event())
+    await run._handle_event(_playback_event("playing", uri=TRACK_A, position_ms=1_500))
+    assert not run.current_item.ended
+    assert run._next is None

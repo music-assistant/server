@@ -746,6 +746,14 @@ class _Item:
         """Return whether the engine has finished this item."""
         return self.end_at is not None
 
+    @property
+    def in_tail(self) -> bool:
+        """Return whether the capture has reached the last seconds of the item."""
+        if (length_ms := self.length_ms) is None:
+            return False
+        position_ms = self.seek_target_ms + self.raw_read * 1000 / _BYTES_PER_SECOND
+        return position_ms >= length_ms - _TAIL_PAD_ZONE_S * 1000
+
     def bind(self, streamdetails: StreamDetails) -> None:
         """
         Claim the item for the stream of the given details.
@@ -851,6 +859,7 @@ class _EngineRun:
         self._move_target: str | None = None
         self._move_landed = asyncio.Event()
         self._fed_consumed = asyncio.Event()
+        self._skipping_to_fed = False
         self._seek_target_ms: int | None = None
         self._seek_landed = asyncio.Event()
         self._pace_reset = False
@@ -1443,8 +1452,12 @@ class _EngineRun:
         """Move the engine onto the item queued on it and return that item's URI."""
         landed_on = self._fed.spotify_uri if self._fed is not None else None
         self._fed_consumed.clear()
-        await client.skip_next()
-        await self._fed_consumed.wait()
+        self._skipping_to_fed = True
+        try:
+            await client.skip_next()
+            await self._fed_consumed.wait()
+        finally:
+            self._skipping_to_fed = False
         return landed_on
 
     async def _play(self, client: SoloistClient, spotify_uri: str) -> None:
@@ -1844,11 +1857,14 @@ class _EngineRun:
                     (fed := self._fed) is not None
                     and fed.left
                     and playing
+                    and not self._moving
                     and data.item.uri == fed.spotify_uri
                     and data.position is not None
                     and data.position.position_ms < _RESTART_POSITION_MS
+                    and self._item.in_tail
                 ):
-                    # the same track queued after itself: only its restart tells
+                    # the same track queued after itself: only its restart from
+                    # the end of the current occurrence tells
                     self._consume_fed()
             if data.position is not None:
                 self._observe_position(data.position.position_ms)
@@ -1889,7 +1905,14 @@ class _EngineRun:
         if self._moving:
             if announced and uri == self._move_target:
                 self._move_landed.set()
-            if self._fed is not None and uri == self._fed.spotify_uri and announced:
+            # an in-place seek announces the current item, which may be the
+            # queued one too: only a skip onto the queued item consumes it
+            if (
+                self._skipping_to_fed
+                and self._fed is not None
+                and uri == self._fed.spotify_uri
+                and announced
+            ):
                 self._consume_fed()
             return
         item = self._item
@@ -1984,11 +2007,8 @@ class _EngineRun:
         item = self._item
         if self._moving or item.ended or not item.started.is_set():
             return
-        if (length_ms := item.length_ms) is None:
-            return
-        position_ms = item.seek_target_ms + item.raw_read * 1000 / _BYTES_PER_SECOND
         # anywhere but at its end, a pause at 0:00 is somebody else's
-        if position_ms >= length_ms - _TAIL_PAD_ZONE_S * 1000:
+        if item.in_tail:
             # the engine stopped instead of moving on: whatever was queued on
             # it never came to play
             self._fed = None
