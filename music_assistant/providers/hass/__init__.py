@@ -56,6 +56,7 @@ from music_assistant.constants import CONF_VERIFY_SSL, VERBOSE_LOG_LEVEL
 from music_assistant.controllers.cache import use_cache
 from music_assistant.helpers.datetime import iso_from_utc_timestamp
 from music_assistant.helpers.json import SerializableType
+from music_assistant.helpers.plugin_engines import EngineThrottlers
 from music_assistant.helpers.tts import TTSLanguageNotSupportedError, match_tts_language
 from music_assistant.helpers.util import lock, try_parse_int
 from music_assistant.models.plugin import AIEngine, ImageEngine, PluginProvider, TTSEngine
@@ -126,6 +127,10 @@ IMAGE_PATH_PREFIXES: Final = (
 AI_TASK_IMAGE_PATH_PREFIX: Final = "/ai_task/image/"
 IMAGE_MAX_BYTES: Final = 10 * 1024 * 1024
 IMAGE_READ_CHUNK_SIZE: Final = 64 * 1024
+# the requests each AI Task entity takes per period, a flood guard that normal use stays
+# well within (a quiz asks one question at a time, AI Radio one section at a time)
+ENGINE_RATE_LIMIT: Final = 60
+ENGINE_RATE_PERIOD: Final = 60
 
 # Home Assistant entity domains that back the TTS and AI Task features.
 FEATURE_DOMAINS = ("tts", "ai_task")
@@ -196,6 +201,8 @@ class HomeAssistantProvider(PluginProvider):
     _ai_engines: list[AIEngine]
     _image_engines: list[ImageEngine]
     _tts_engines: list[TTSEngine]
+    # per AI Task entity, also holding an entity back for a while after it could not be reached
+    _engine_throttlers: EngineThrottlers
     # languages per TTS entity, as Home Assistant reports them; an entity whose list could
     # not be read is absent and gets the requested language passed through unchanged
     _tts_languages: dict[str, tuple[str, ...]]
@@ -279,6 +286,7 @@ class HomeAssistantProvider(PluginProvider):
         self._ai_engines = []
         self._image_engines = []
         self._tts_engines = []
+        self._engine_throttlers = EngineThrottlers(ENGINE_RATE_LIMIT, ENGINE_RATE_PERIOD)
         self._tts_languages = {}
         url = get_websocket_url(cast("str", self.get_setup_value(CONF_URL)))
         token = self.get_setup_value(CONF_AUTH_TOKEN)
@@ -709,17 +717,23 @@ class HomeAssistantProvider(PluginProvider):
         entity_id = engine_id or next((engine.id for engine in self._ai_engines), None)
         if entity_id is None:
             raise UnsupportedFeaturedException("AI Task entity is not available")
-        result = await self.hass.send_command(
-            "call_service",
-            domain="ai_task",
-            service="generate_data",
-            service_data={
-                "task_name": "music_assistant",
-                "instructions": query,
-                "entity_id": entity_id,
-            },
-            return_response=True,
-        )
+        async with self._engine_throttlers.request(entity_id):
+            try:
+                result = await self.hass.send_command(
+                    "call_service",
+                    domain="ai_task",
+                    service="generate_data",
+                    service_data={
+                        "task_name": "music_assistant",
+                        "instructions": query,
+                        "entity_id": entity_id,
+                    },
+                    return_response=True,
+                )
+            except (CannotConnect, ConnectionFailed, NotConnected, TransportError) as err:
+                # told apart from a failed answer, so the entity is left alone for a while
+                msg = f"Home Assistant is not reachable: {err}"
+                raise ProviderUnavailableError(msg) from err
         response = result.get("response", {}) if isinstance(result, dict) else {}
         data = response.get("data") if isinstance(response, dict) else None
         if not data:
@@ -732,52 +746,61 @@ class HomeAssistantProvider(PluginProvider):
         entity_id = engine_id or next((engine.id for engine in self._image_engines), None)
         if entity_id is None:
             raise UnsupportedFeaturedException("No AI Task entity that generates images")
-        try:
-            result = await self.hass.send_command(
-                "call_service",
-                domain="ai_task",
-                service="generate_image",
-                service_data={
-                    # Home Assistant names the stored image after the task and the current
-                    # second, so images generated at the same time need their own task name
-                    "task_name": f"music_assistant_{secrets.token_hex(4)}",
-                    "instructions": prompt,
-                    "entity_id": entity_id,
-                },
-                return_response=True,
-            )
-        except (CannotConnect, ConnectionFailed, NotConnected, TransportError) as err:
-            # told apart from a failed generation, so callers can retry once HA is back
-            msg = f"Home Assistant is not reachable: {err}"
-            raise ProviderUnavailableError(msg) from err
-        response = result.get("response", {}) if isinstance(result, dict) else {}
-        # a signed link to the image Home Assistant stored in its media source
-        url = response.get("url") if isinstance(response, dict) else None
-        if not isinstance(url, str) or not url:
-            msg = f"AI Task returned no image in response: {result}"
-            raise MusicAssistantError(msg)
-        # the link may be prefixed with a Home Assistant URL we can not reach, so only its
-        # (signed) path is fetched from the URL we are connected to
-        parts = urlsplit(url)
-        # the query carries the signature, so it is never put in an error message
-        if not parts.path.startswith(AI_TASK_IMAGE_PATH_PREFIX):
-            msg = f"AI Task returned an unexpected image link: {parts.path}"
-            raise MusicAssistantError(msg)
-        try:
-            return await self._fetch_image(
-                f"{parts.path}?{parts.query}" if parts.query else parts.path
-            )
-        except ClientResponseError as err:
-            # its message names the full (signed) URL
-            msg = f"Home Assistant answered the image request with {err.status}"
-            if err.status == 429:
-                retry_after = err.headers.get("Retry-After", "") if err.headers else ""
-                backoff_time = int(retry_after) if retry_after.isdigit() else 0
-                raise RateLimited(msg, backoff_time=backoff_time) from None
-            if err.status == 408 or err.status >= 500:
-                # Home Assistant is down or overloaded, rather than refusing this image
-                raise ProviderUnavailableError(msg) from None
-            raise MusicAssistantError(msg) from None
+        async with self._engine_throttlers.request(entity_id):
+            try:
+                result = await self.hass.send_command(
+                    "call_service",
+                    domain="ai_task",
+                    service="generate_image",
+                    service_data={
+                        # Home Assistant names the stored image after the task and the current
+                        # second, so images generated at the same time need their own task name
+                        "task_name": f"music_assistant_{secrets.token_hex(4)}",
+                        "instructions": prompt,
+                        "entity_id": entity_id,
+                    },
+                    return_response=True,
+                )
+            except (CannotConnect, ConnectionFailed, NotConnected, TransportError) as err:
+                # told apart from a failed generation, so callers can retry once HA is back
+                msg = f"Home Assistant is not reachable: {err}"
+                raise ProviderUnavailableError(msg) from err
+            response = result.get("response", {}) if isinstance(result, dict) else {}
+            # a signed link to the image Home Assistant stored in its media source
+            url = response.get("url") if isinstance(response, dict) else None
+            if not isinstance(url, str) or not url:
+                msg = f"AI Task returned no image in response: {result}"
+                raise MusicAssistantError(msg)
+            # the link may be prefixed with a Home Assistant URL we can not reach, so only its
+            # (signed) path is fetched from the URL we are connected to
+            parts = urlsplit(url)
+            # the query carries the signature, so it is never put in an error message
+            if not parts.path.startswith(AI_TASK_IMAGE_PATH_PREFIX):
+                msg = f"AI Task returned an unexpected image link: {parts.path}"
+                raise MusicAssistantError(msg)
+            try:
+                return await self._fetch_image(
+                    f"{parts.path}?{parts.query}" if parts.query else parts.path
+                )
+            except ClientResponseError as err:
+                # its message names the full (signed) URL
+                msg = f"Home Assistant answered the image request with {err.status}"
+                if err.status == 429:
+                    retry_after = err.headers.get("Retry-After", "") if err.headers else ""
+                    backoff_time = int(retry_after) if retry_after.isdigit() else 0
+                    raise RateLimited(msg, backoff_time=backoff_time) from None
+                if err.status == 408 or err.status >= 500:
+                    # Home Assistant is down or overloaded, rather than refusing this image
+                    raise ProviderUnavailableError(msg) from None
+                raise MusicAssistantError(msg) from None
+
+    def engine_cooldown(self, engine_id: str) -> float:
+        """Return the seconds an AI Task entity turns requests away, 0 when it takes them."""
+        return self._engine_throttlers.cooldown_remaining(engine_id)
+
+    def note_engine_outage(self, engine_id: str) -> None:
+        """Hold an AI Task entity back after a request to it timed out."""
+        self._engine_throttlers.note_outage(engine_id)
 
     async def play_announcement_on_entity(self, entity_id: str, announcement: PlayerMedia) -> None:
         """

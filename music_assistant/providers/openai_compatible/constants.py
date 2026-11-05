@@ -38,3 +38,7 @@ IMAGE_REQUEST_TIMEOUT: Final = 300
 # the model listing only fills a picker, so it gets a shorter deadline: a slow
 # endpoint must not hold up the settings page
 MODELS_REQUEST_TIMEOUT: Final = 15
+
+# the requests each model takes per period, a flood guard that normal use stays well within
+ENGINE_RATE_LIMIT: Final = 60
+ENGINE_RATE_PERIOD: Final = 60

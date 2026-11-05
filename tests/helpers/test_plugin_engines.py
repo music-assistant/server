@@ -3,15 +3,22 @@
 from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from music_assistant_models.config_entries import ProviderConfig
 from music_assistant_models.enums import ConfigEntryType, ProviderType
+from music_assistant_models.errors import (
+    InvalidDataError,
+    ProviderUnavailableError,
+    RateLimited,
+)
 from music_assistant_models.provider import ProviderManifest
 
 from music_assistant.constants import CONF_PROVIDERS
 from music_assistant.helpers.plugin_engines import (
+    ENGINE_OUTAGE_COOLDOWN,
+    EngineThrottlers,
     create_ai_engine_config_entries,
     create_tts_engine_config_entries,
     get_ai_engines,
@@ -358,3 +365,87 @@ async def test_select_core_selection_that_vanished_does_not_fall_back(
     mass_minimal.config.set_raw_core_config_value("players", "announce_tts_engine", "plugin_a/gone")
 
     assert await select_core_tts_engine(mass_minimal, "players", "announce_tts_engine") is None
+
+
+class _Clock:
+    """A monotonic clock the tests move forward themselves."""
+
+    def __init__(self) -> None:
+        """Initialize."""
+        self.now = 1000.0
+
+    def monotonic(self) -> float:
+        """Return the current time."""
+        return self.now
+
+
+async def _fail(throttlers: EngineThrottlers, engine_id: str, err: Exception) -> None:
+    """Run one request to the engine that fails with the given error."""
+    with pytest.raises(type(err)):
+        async with throttlers.request(engine_id):
+            raise err
+
+
+async def test_engine_throttlers_hold_back_an_unreachable_engine() -> None:
+    """An engine that could not be reached turns requests away, without asking it again."""
+    clock = _Clock()
+    throttlers = EngineThrottlers(rate_limit=10, period=60)
+    with patch("music_assistant.helpers.throttle_retry.time.monotonic", clock.monotonic):
+        await _fail(throttlers, "image", ProviderUnavailableError("down"))
+        assert throttlers.cooldown_remaining("image") == ENGINE_OUTAGE_COOLDOWN
+        called = AsyncMock()
+        with pytest.raises(RateLimited) as limited:
+            async with throttlers.request("image"):
+                await called()
+        called.assert_not_awaited()
+        assert limited.value.backoff_time == ENGINE_OUTAGE_COOLDOWN
+        # once the cooldown has passed, the engine is asked again
+        clock.now += ENGINE_OUTAGE_COOLDOWN
+        assert throttlers.cooldown_remaining("image") == 0
+        async with throttlers.request("image"):
+            await called()
+        called.assert_awaited_once()
+
+
+async def test_engine_throttlers_honour_the_wait_a_service_asks_for() -> None:
+    """A rate limited engine is left alone as long as the service asked for."""
+    clock = _Clock()
+    throttlers = EngineThrottlers(rate_limit=10, period=60)
+    with patch("music_assistant.helpers.throttle_retry.time.monotonic", clock.monotonic):
+        await _fail(throttlers, "image", RateLimited("slow down", backoff_time=3600))
+        assert throttlers.cooldown_remaining("image") == 3600
+
+
+async def test_engine_throttlers_hold_back_an_engine_that_did_not_answer() -> None:
+    """A caller that times an engine out reports it, and the engine turns requests away."""
+    clock = _Clock()
+    throttlers = EngineThrottlers(rate_limit=10, period=60)
+    with patch("music_assistant.helpers.throttle_retry.time.monotonic", clock.monotonic):
+        throttlers.note_outage("image")
+        assert throttlers.cooldown_remaining("image") == ENGINE_OUTAGE_COOLDOWN
+        with pytest.raises(RateLimited):
+            async with throttlers.request("image"):
+                pass
+        # only the engine that was reported, not the others of the plugin
+        assert throttlers.cooldown_remaining("text") == 0
+
+
+async def test_engine_throttlers_keep_engines_apart() -> None:
+    """One engine failing does not hold back another engine of the same plugin."""
+    throttlers = EngineThrottlers(rate_limit=10, period=60)
+    await _fail(throttlers, "image", ProviderUnavailableError("down"))
+    assert throttlers.cooldown_remaining("text") == 0
+    async with throttlers.request("text"):
+        pass
+
+
+async def test_engine_throttlers_do_not_hold_back_an_engine_that_refused() -> None:
+    """An engine that answered, but refused the request, takes the next request."""
+    throttlers = EngineThrottlers(rate_limit=10, period=60)
+    await _fail(throttlers, "image", InvalidDataError("bad prompt"))
+    assert throttlers.cooldown_remaining("image") == 0
+
+
+def test_plugin_engine_cooldown_defaults_to_none() -> None:
+    """A plugin without engine throttlers never turns requests away."""
+    assert PluginProvider.engine_cooldown(MagicMock(), "any") == 0

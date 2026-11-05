@@ -8,7 +8,7 @@ import random
 import time
 from bisect import insort
 from collections import deque
-from collections.abc import AsyncGenerator, Awaitable, Callable, Coroutine, Generator
+from collections.abc import AsyncGenerator, Awaitable, Callable, Coroutine, Generator, Iterable
 from contextlib import asynccontextmanager, contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, field
@@ -197,15 +197,76 @@ class Throttler:
     ) -> bool | None:
         """Nothing to do on exit."""
 
-    def _time_until_free(self, priority: RequestPriority, now: float) -> float:
-        """Return the seconds until a request of the given priority may take a slot."""
-        # a slot stops counting once a full period has passed since it was granted
+    def available(self, priority: RequestPriority | None = None) -> int:
+        """
+        Return how many slots a request of the given priority could take right now.
+
+        :param priority: Priority of the request, None for the priority of the current context.
+        """
+        if priority is None:
+            priority = current_priority()
+        if self._waiters:
+            return 0
+        self._prune(time.monotonic())
+        return max(0, self._limit(priority) - len(self._task_logs))
+
+    def grants(self) -> list[float]:
+        """Return the monotonic times slots were granted at, oldest first."""
+        return list(self._task_logs)
+
+    def seed(self, granted_at: Iterable[float]) -> None:
+        """
+        Count slots as granted at the given times, so a restored limit keeps its history.
+
+        :param granted_at: The monotonic times the slots were granted at.
+        """
+        self._task_logs = deque(sorted(granted_at))
+
+    def try_acquire(self, count: int = 1, priority: RequestPriority | None = None) -> float:
+        """
+        Take free slots without waiting for them, for callers that come back later themselves.
+
+        Returns 0 when the slots were taken, else the seconds until they may be free. Nothing
+        is taken then, and a caller never takes a slot ahead of the requests waiting in line.
+
+        :param count: The number of slots to take, all of them or none.
+        :param priority: Priority of the request, None for the priority of the current context.
+        """
+        if priority is None:
+            priority = current_priority()
+        now = time.monotonic()
+        delay = self._time_until_free(priority, now, count)
+        if self._waiters:
+            # the line is served first, by acquire
+            return max(delay, self.period / self.rate_limit)
+        if delay > _WAIT_EPSILON:
+            return delay
+        self._task_logs.extend([now] * count)
+        if priority is RequestPriority.LOW:
+            self._last_low_grant = now
+        return 0.0
+
+    def _limit(self, priority: RequestPriority) -> int:
+        """Return the number of slots per period requests of the given priority may use."""
+        if priority is RequestPriority.LOW:
+            return max(1, int(self.rate_limit * LOW_PRIORITY_SHARE))
+        return self.rate_limit
+
+    def _prune(self, now: float) -> None:
+        """Forget the slots granted a full period or longer ago, they no longer count."""
         while self._task_logs and self._task_logs[0] + self.period - now <= _WAIT_EPSILON:
             self._task_logs.popleft()
+
+    def _time_until_free(self, priority: RequestPriority, now: float, count: int = 1) -> float:
+        """Return the seconds until a request of the given priority may take count slots."""
+        self._prune(now)
         low_share = self.rate_limit * LOW_PRIORITY_SHARE
-        limit = max(1, int(low_share)) if priority is RequestPriority.LOW else self.rate_limit
+        limit = self._limit(priority)
+        if count > limit:
+            # more than a period ever allows
+            return float("inf")
         delay = 0.0
-        if (excess := len(self._task_logs) - limit) >= 0:
+        if (excess := len(self._task_logs) - limit + count - 1) >= 0:
             delay = self._task_logs[excess] + self.period - now
         if priority is RequestPriority.LOW and self._last_low_grant is not None:
             # the pacer spreads the low priority share evenly over the period

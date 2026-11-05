@@ -156,5 +156,8 @@
   "config_categories": {
     "ai_preview": "AI cover preview",
     "ai": "AI covers and descriptions"
+  },
+  "background_task": {
+    "generate_ai_artwork": "Generate AI playlist artwork"
   }
 }
