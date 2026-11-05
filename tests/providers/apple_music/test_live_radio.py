@@ -237,6 +237,42 @@ async def test_starts_at_the_live_edge_and_sends_each_segment_once(
     assert events[-1] == "session_end"
 
 
+def _record_sleeps(monkeypatch: pytest.MonkeyPatch) -> list[float]:
+    """Return the list that collects the waits of the segment loop."""
+    sleeps: list[float] = []
+    real_sleep = asyncio.sleep
+
+    async def sleep(delay: float) -> None:
+        sleeps.append(delay)
+        await real_sleep(0)
+
+    monkeypatch.setattr(f"{MODULE}.asyncio.sleep", sleep)
+    return sleeps
+
+
+async def test_the_stream_does_not_wait_while_new_segments_are_there(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A wait after sent audio can leave the paced consumer without input."""
+    sleeps = _record_sleeps(monkeypatch)
+    harness = _Harness([_playlist(10, 3), _playlist(13, 1), _playlist(14, 1)], monkeypatch)
+    chunks = await _read(harness.radio, harness.details, 6)
+    assert chunks[-1] == b"s14:k1"
+    assert sleeps == []
+
+
+async def test_the_stream_waits_when_the_playlist_has_nothing_new(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The live playlist is read at the paced interval when no segment is new."""
+    sleeps = _record_sleeps(monkeypatch)
+    same = _playlist(10, 3)
+    harness = _Harness([same, same, _playlist(13, 1)], monkeypatch)
+    chunks = await _read(harness.radio, harness.details, 5)
+    assert chunks[-1] == b"s13:k1"
+    assert sleeps == [same.target_duration / 2]
+
+
 async def test_a_gap_is_recorded_as_skipped_segments(monkeypatch: pytest.MonkeyPatch) -> None:
     """Segments that left the playlist before they were sent show up in the monitor."""
     harness = _Harness([_playlist(10, 3), _playlist(20, 3)], monkeypatch)

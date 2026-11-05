@@ -383,6 +383,7 @@ class AppleMusicLiveRadioManager:
                 self.monitor.event("playlist_stalled", level=logging.WARNING, seconds=int(stalled))
                 raise LiveStreamRestartError(f"no new segment for {int(stalled)} seconds")
 
+            sent_audio = False
             for segment in self._segments_to_send(playlist, next_sequence):
                 try:
                     await self._switch_key(segment, data, session)
@@ -426,6 +427,7 @@ class AppleMusicLiveRadioManager:
                         self.monitor.event(
                             "consumer_slow", level=logging.WARNING, waited=round(waited, 1)
                         )
+                sent_audio = True
                 session.segments_sent += 1
                 session.audio_seconds_sent += segment.duration
                 if segment.program_time:
@@ -449,7 +451,9 @@ class AppleMusicLiveRadioManager:
                     consumer_wait_max=session.max_consumer_wait_s,
                     stream_title=session.stream_title,
                 )
-            await asyncio.sleep(target / 2)
+            # sending is paced by the consumer, a wait after it could leave the consumer empty
+            if not sent_audio:
+                await asyncio.sleep(target / 2)
 
     def _segments_to_send(
         self, playlist: LivePlaylist | None, next_sequence: int | None
