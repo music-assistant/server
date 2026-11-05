@@ -5,6 +5,7 @@
   "name": "VBAN Receiver",
   "description": "VBAN protocol receiver - receive PCM-over-UDP streams from a VBAN protocol sender",
   "codeowners": ["@sprocket-9"],
+  "tier": "community",
   "documentation": "https://music-assistant.io/plugins/vban-receiver/",
   "multi_instance": true,
   "requirements": ["aiovban==1.1.0"]

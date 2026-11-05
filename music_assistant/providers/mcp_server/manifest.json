@@ -1,0 +1,15 @@
+{
+  "type": "plugin",
+  "domain": "mcp_server",
+  "stage": "stable",
+  "name": "Model Context Protocol Server (MCP)",
+  "description": "Lets AI assistants such as Home Assistant Assist, Claude and ChatGPT search music and control playback through the Model Context Protocol.",
+  "codeowners": ["@music-assistant"],
+  "tier": "core",
+  "requirements": [],
+  "documentation": "",
+  "multi_instance": false,
+  "builtin": true,
+  "allow_disable": true,
+  "icon": "robot"
+}
