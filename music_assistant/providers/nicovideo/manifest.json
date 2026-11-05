@@ -1,9 +1,12 @@
 {
   "type": "music",
   "domain": "nicovideo",
+  "stage": "stable",
   "name": "niconico video",
   "description": "Support for niconico video(nicovideo) in Music Assistant",
   "codeowners": ["@Shi-553"],
+  "tier": "community",
+  "documentation": "https://music-assistant.io/music-providers/niconico/",
   "credits": ["[niconico.py](https://github.com/Shi-553/niconico.py)"],
   "requirements": [
     "niconico.py-ma==3.0.0"

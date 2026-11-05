@@ -416,6 +416,32 @@ async def test_prepare_next_defers_while_the_streamed_item_holds_the_only_source
     mass.streams.audio.get_audio_buffer.assert_not_awaited()
 
 
+async def test_a_deferred_preload_hints_the_slot_holder_at_its_next_item() -> None:
+    """The source holding the only slot hears which item follows, to line it up itself."""
+    controller, next_item, mass = _controller_with_next_item()
+    next_item.streamdetails = SimpleNamespace(buffer=None, provider="limited--1")
+    playing = MagicMock()
+    playing.eof = False
+    streamed = _streamed_item(controller)
+    streamed.streamdetails = SimpleNamespace(
+        provider="limited--1", buffer=playing, is_realtime=True
+    )
+    cast("Any", controller.get("queue-1")).current_item = SimpleNamespace(streamdetails=None)
+    provider = MagicMock(spec=MusicProvider)
+    provider.max_concurrent_streams = 1
+    provider.has_available_stream_slot = False
+    mass.get_provider = MagicMock(return_value=provider)
+    mass.streams.audio.get_audio_buffer = AsyncMock()
+
+    controller.prepare_next_audio_buffer("queue-1", "current")
+    await mass.create_task.call_args.args[0]
+
+    provider.hint_next_item.assert_awaited_once_with(
+        streamed.streamdetails, next_item.streamdetails
+    )
+    mass.streams.audio.get_audio_buffer.assert_not_awaited()
+
+
 async def test_prepare_next_only_defers_for_a_realtime_source() -> None:
     """A source that fills ahead of playback frees its slot in time and gets no deferral."""
     controller, next_item, mass = _controller_with_next_item()
