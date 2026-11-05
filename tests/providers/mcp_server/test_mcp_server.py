@@ -532,10 +532,10 @@ async def test_player_filter_limits_players(mass: MusicAssistant) -> None:
     cmd_pause.assert_not_awaited()
 
 
-async def test_discovery_skipped_when_off_or_not_addon(
+async def test_discovery_skipped_when_not_addon(
     mass: MusicAssistant, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Nothing is offered to Home Assistant when not running as add-on or with the option off."""
+    """Nothing is offered to Home Assistant when not running as add-on."""
     monkeypatch.setenv("HOSTNAME", "abcd1234-music-assistant")
     supervisor_request = AsyncMock(return_value={"uuid": "discovery-uuid"})
     monkeypatch.setattr(discovery_module, "supervisor_request", supervisor_request)
@@ -544,10 +544,6 @@ async def test_discovery_skipped_when_off_or_not_addon(
 
     await provider.loaded_in_mass()
     await mass.discovery.announce_mcp_server("/mcp")
-
-    monkeypatch.setattr(mass, "running_as_hass_addon", True)
-    with patch.object(provider.config, "get_value", return_value=False):
-        await provider.loaded_in_mass()
     await asyncio.sleep(0)
     supervisor_request.assert_not_awaited()
 

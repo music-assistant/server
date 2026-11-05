@@ -27,7 +27,6 @@ if TYPE_CHECKING:
     from music_assistant.mass import MusicAssistant
     from music_assistant.models import ProviderInstanceType
 
-CONF_EXPOSE_TO_HOME_ASSISTANT: Final = "expose_to_home_assistant"
 # the secret in the path of the private endpoint that only Home Assistant learns,
 # through the Supervisor discovery
 CONF_HOME_ASSISTANT_SECRET: Final = "home_assistant_secret"  # noqa: S105 - config key
@@ -57,12 +56,6 @@ class MCPServerProvider(PluginProvider):
         """Return the config entries for this provider."""
         return (
             ConfigEntry(
-                key=CONF_EXPOSE_TO_HOME_ASSISTANT,
-                type=ConfigEntryType.BOOLEAN,
-                default_value=True,
-                hidden=not self.mass.running_as_hass_addon,
-            ),
-            ConfigEntry(
                 key=CONF_HOME_ASSISTANT_SECRET,
                 type=ConfigEntryType.SECURE_STRING,
                 required=False,
@@ -91,8 +84,8 @@ class MCPServerProvider(PluginProvider):
         )
 
     async def loaded_in_mass(self) -> None:
-        """Offer the MCP server to Home Assistant, when enabled."""
-        if self.mass.running_as_hass_addon and self.config.get_value(CONF_EXPOSE_TO_HOME_ASSISTANT):
+        """Offer the MCP server to Home Assistant, when running as add-on."""
+        if self.mass.running_as_hass_addon:
             self.mass.create_task(
                 self.mass.discovery.announce_mcp_server(self._home_assistant_path)
             )
