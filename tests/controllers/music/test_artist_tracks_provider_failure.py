@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -45,13 +45,13 @@ def _provider_without_artist_tracks() -> MagicMock:
 
 def _failing_album_tracks(
     failing: set[str],
-) -> Callable[..., Awaitable[list[Track]]]:
+) -> Callable[[Album], Awaitable[list[Track]]]:
     """Return a fake album tracklist fetch that fails for the given album ids only."""
 
-    async def _tracks(item_id: str, _provider: str, **_kwargs: Any) -> list[Track]:
-        if item_id in failing:
-            raise MediaNotFoundError(f"Failed to get album tracks for {item_id}")
-        return [_track(f"{item_id} track")]
+    async def _tracks(album: Album) -> list[Track]:
+        if album.item_id in failing:
+            raise MediaNotFoundError(f"Failed to get album tracks for {album.item_id}")
+        return [_track(f"{album.item_id} track")]
 
     return _tracks
 
@@ -69,7 +69,11 @@ async def test_provider_artist_tracks_skip_failing_album(
             "get_provider_artist_albums",
             return_value=[_album("Broken"), _album("Fine")],
         ),
-        patch.object(mass.music.albums, "tracks", side_effect=_failing_album_tracks({"Broken"})),
+        patch.object(
+            mass.music.albums,
+            "provider_album_tracks",
+            side_effect=_failing_album_tracks({"Broken"}),
+        ),
     ):
         listing = await mass.music.artists.get_provider_artist_tracks("artist1", _PROVIDER)
     assert [track.name for track in listing.items] == ["Fine track"]
@@ -89,7 +93,7 @@ async def test_provider_artist_tracks_raise_when_every_album_fails(mass: MusicAs
         ),
         patch.object(
             mass.music.albums,
-            "tracks",
+            "provider_album_tracks",
             side_effect=_failing_album_tracks({"Broken", "Also Broken"}),
         ),
         pytest.raises(MediaNotFoundError),
@@ -104,8 +108,8 @@ async def test_provider_artist_tracks_raise_when_remaining_tracks_unavailable(
     # the provider itself is available: it is the tracks it lists that are not
     await set_global_cache_values({"available_providers": {_PROVIDER}})
 
-    async def _album_tracks(item_id: str, _provider: str, **_kwargs: Any) -> list[Track]:
-        if item_id == "Broken":
+    async def _album_tracks(album: Album) -> list[Track]:
+        if album.item_id == "Broken":
             raise MediaNotFoundError("Failed to get album tracks for Broken")
         return [_track("Trashed track", available=False)]
 
@@ -116,7 +120,7 @@ async def test_provider_artist_tracks_raise_when_remaining_tracks_unavailable(
             "get_provider_artist_albums",
             return_value=[_album("Broken"), _album("Trashed")],
         ),
-        patch.object(mass.music.albums, "tracks", side_effect=_album_tracks),
+        patch.object(mass.music.albums, "provider_album_tracks", side_effect=_album_tracks),
         pytest.raises(MediaNotFoundError),
     ):
         await mass.music.artists.get_provider_artist_tracks("artist1", _PROVIDER)
