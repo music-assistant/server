@@ -92,7 +92,7 @@ def apply_listing[ItemT: ListingItem](
     Search, sort and page a listing assembled in memory.
 
     Items that sort the same keep the order the source lists them in, the tracks of one album
-    their disc and track order.
+    their disc and track order, and albums released on the same date their name order.
 
     :param items: The whole listing, in the order the source lists it.
     :param listing: The listing the items belong to, which decides the sort options.
@@ -214,6 +214,7 @@ _SORT_KEYS: Final[dict[SortField, Callable[[ListingItem], Any]]] = {
 
 # the order among the items a sort field ties, whichever the direction
 _TIE_KEYS: Final[dict[SortField, Callable[[ListingItem], Any]]] = {
+    # albums released on the same date stay apart in a fixed order across pages
     SortField.RELEASE_DATE: lambda item: (_normalize(_name(item)), item.uri or ""),
     # the tracks of one album keep their disc and track order
     SortField.ALBUM_NAME: _track_number,
