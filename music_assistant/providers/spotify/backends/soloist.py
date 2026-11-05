@@ -145,6 +145,9 @@ _MAX_LEAD_TRIM_S: Final[float] = 0.5
 # (measured 0.42-0.5 s). An item it switched to drops at most this much of it:
 # its exact end is counted from its first sample.
 _MAX_SWITCH_TRIM_S: Final[float] = 1.5
+# What of that trim counts towards the item's own end: a silent intro beyond the
+# switch silence is part of the track's length.
+_MAX_SWITCH_GAP_S: Final[float] = 0.6
 # below this much audio an item rendered nothing: the engine either refused it
 # or never got going, and anything above it played and was cut short
 _REFUSED_DELIVERY_MS: Final[int] = 1000
@@ -444,20 +447,25 @@ class SoloistBackend(SpotifyPlaybackBackend):
                 if (run := self._run) is None:
                     fresh = await self._start_run(spotify_uri, seek_ms, streamdetails)
                     return fresh, fresh.current_item
-                if streamdetails is not None and (
-                    item := await run.claim(spotify_uri, seek_ms, streamdetails)
-                ):
-                    return run, item
-                if not run.busy:
-                    try:
+                try:
+                    if streamdetails is not None and (
+                        item := await run.claim(spotify_uri, seek_ms, streamdetails)
+                    ):
+                        return run, item
+                    if not run.busy:
                         return run, await run.move_to(spotify_uri, seek_ms, streamdetails)
-                    except AudioError as err:
-                        # the engine would not go where it was asked: a fresh run
-                        # serves the item instead
-                        self.logger.debug("Spotify Soloist session could not move on: %s", err)
-                        await run.stop()
-                        self._run = None
-                        continue
+                except AudioError as err:
+                    # the engine would not go where it was asked: a fresh run
+                    # serves the item instead
+                    self.logger.debug("Spotify Soloist session could not move on: %s", err)
+                    await run.stop()
+                    self._run = None
+                    continue
+                except asyncio.CancelledError:
+                    # cut short half-way: no stream holds what was taken, so
+                    # nothing would ever let the run go
+                    self.mass.create_task(self.discard_run(run))
+                    raise
                 if run.media_key != media_key or media_key is None:
                     raise SoloistSessionBusyError(self.provider)
                 if continuation and run.spotify_uri != spotify_uri:
@@ -677,6 +685,7 @@ class _Item:
         streamdetails: StreamDetails | None,
         *,
         max_lead_trim_s: float,
+        max_counted_lead_s: float | None = None,
     ) -> None:
         """
         Initialize the state of one item.
@@ -686,6 +695,8 @@ class _Item:
         :param streamdetails: The StreamDetails claiming the item, None while
             nobody has asked for it yet.
         :param max_lead_trim_s: How much leading digital silence may be dropped.
+        :param max_counted_lead_s: How much of the dropped silence precedes the
+            item's first sample (all of it when not given).
         """
         self.spotify_uri = spotify_uri
         self.seek_target_ms = seek_target_ms
@@ -698,6 +709,10 @@ class _Item:
         cushion_chunks = max(2, int(_RUN_CUSHION_S * _BYTES_PER_SECOND / _READ_CHUNK_SIZE))
         self.chunks: asyncio.Queue[bytes | None] = asyncio.Queue(maxsize=cushion_chunks)
         self.shaper = _CaptureShaper(max_lead_trim_s)
+        self._max_counted_lead = int(
+            (max_lead_trim_s if max_counted_lead_s is None else max_counted_lead_s)
+            * _BYTES_PER_SECOND
+        )
         # capture bytes that belong to this item, and where (in those) it ends
         self.raw_read = 0
         # bytes at its start that finish the frame the capture was in
@@ -749,7 +764,8 @@ class _Item:
             frames = round(
                 (self.engine_duration_ms - self.seek_target_ms) * CAPTURE_SAMPLE_RATE / 1000
             )
-            exact = self.align_skip + self.shaper.lead_skipped + frames * _FRAME_BYTES
+            lead = min(self.shaper.lead_skipped, self._max_counted_lead)
+            exact = self.align_skip + lead + frames * _FRAME_BYTES
             if abs(exact - event_offset) <= _MAX_CUT_SKEW_S * _BYTES_PER_SECOND:
                 # what was read already cannot be taken back
                 offset = max(exact, self.raw_read)
@@ -835,6 +851,7 @@ class _EngineRun:
         self._last_read_at = 0.0
         # every capture byte read; items start on its frame grid
         self._raw_total = 0
+        self._read_waiting = False
         self._startup_logged = False
         # startup phase timings, for the one debug line per run
         self._spawned_at = 0.0
@@ -897,7 +914,12 @@ class _EngineRun:
         :param seek_position_ms: Position the request starts from.
         :param streamdetails: The StreamDetails the audio is requested for.
         """
-        if seek_position_ms or self._stopped or self._error is not None:
+        if (
+            seek_position_ms
+            or self._stopped
+            or self._error is not None
+            or not self._serves_queue(streamdetails.queue_id)
+        ):
             return None
         for item in (self._item, self._next):
             if item is None or item.media_key is not None or item.spotify_uri != spotify_uri:
@@ -966,15 +988,16 @@ class _EngineRun:
             or not client.connected
         ):
             raise AudioError("The Spotify session is no longer running")
-        if streamdetails is not None and streamdetails.queue_id != self.queue_id:
-            self.queue_id = streamdetails.queue_id
-            if self._engine_normalization_enabled() != self.engine_normalizes:
-                # the engine reads its normalization setting at startup only
-                raise AudioError("The Spotify session normalizes for another player")
+        if streamdetails is not None and not self._serves_queue(streamdetails.queue_id):
+            raise AudioError("The Spotify session normalizes for another player")
         self._cancel_idle_watch()
         previous = self._item
         in_place = spotify_uri == self._engine_uri
         self._moving = True
+        # nobody takes the previous item anymore: a capture waiting on its
+        # cushion has to move on to the drain
+        previous.abandoned = True
+        self._release_item_waiters(previous)
         try:
             await self._set_sink(running=False)
             await self._drain()
@@ -1000,9 +1023,6 @@ class _EngineRun:
             self._moving = False
         if streamdetails is not None:
             item.bind(streamdetails)
-        if previous is not self._item:
-            previous.abandoned = True
-            self._release_item_waiters(previous)
         self._pace_reset = True
         await self._set_sink(running=True)
         self.logger.debug("Spotify session moved to %s at %d ms", spotify_uri, seek_position_ms)
@@ -1024,7 +1044,7 @@ class _EngineRun:
                 await self._go_idle()
         elif current.media_key is None and current.unclaimed_since is None:
             # the queue asks for the next item once the one before it is done
-            current.unclaimed_since = asyncio.get_running_loop().time()
+            self._watch_unclaimed(current)
 
     async def start(self) -> None:
         """Spawn the engine, play this run's first item and get its audio flowing."""
@@ -1033,7 +1053,7 @@ class _EngineRun:
         assert server is not None
         assert backend._binary is not None
         loop = asyncio.get_running_loop()
-        self.engine_normalizes = self._engine_normalization_enabled()
+        self.engine_normalizes = self._engine_normalization_enabled(self.queue_id)
         await asyncio.to_thread(
             partial(backend._prepare_data_dir, normalize=self.engine_normalizes)
         )
@@ -1268,24 +1288,40 @@ class _EngineRun:
             )
         raise AudioError("Spotify stopped before it played any of this track")
 
-    def _engine_normalization_enabled(self) -> bool:
+    def _engine_normalization_enabled(self, queue_id: str | None) -> bool:
         """
         Return whether the engine should normalize the loudness it delivers.
 
         The player's own volume normalization switch decides first: turning it
         off means nobody normalizes, not that the job passes to Spotify.
+
+        :param queue_id: The queue the audio plays on.
         """
         if not self.backend.provider.spotify_normalization_configured:
             return False
-        if self.queue_id is None:
+        if queue_id is None:
             # nothing to read the switch from, so the provider option stands
             return True
         return (
             self.mass.config.get_effective_player_queue_config_value(
-                self.queue_id, CONF_VOLUME_NORMALIZATION, CONF_VALUE_ENABLED
+                queue_id, CONF_VOLUME_NORMALIZATION, CONF_VALUE_ENABLED
             )
             != CONF_VALUE_DISABLED
         )
+
+    def _serves_queue(self, queue_id: str | None) -> bool:
+        """
+        Return whether the engine's audio suits the given queue, adopting it when so.
+
+        :param queue_id: The queue the audio is requested for.
+        """
+        if queue_id == self.queue_id:
+            return True
+        # the engine reads its normalization setting at startup only
+        if self._engine_normalization_enabled(queue_id) != self.engine_normalizes:
+            return False
+        self.queue_id = queue_id
+        return True
 
     async def _await_playback_started(self, proc: AsyncProcess) -> None:
         """Wait until the engine reports it is playing this run's first item."""
@@ -1412,8 +1448,10 @@ class _EngineRun:
         loop = asyncio.get_running_loop()
         deadline = loop.time() + _JUMP_TIMEOUT_S
         while self._reader is not None and loop.time() < deadline:
+            # a capture waiting on the FIFO holds nothing read but not yet taken
             if (
-                _unread_fifo_bytes(self._transport) == 0
+                self._read_waiting
+                and _unread_fifo_bytes(self._transport) == 0
                 and loop.time() - self._last_read_at >= _DRAIN_QUIET_S
             ):
                 return
@@ -1436,6 +1474,20 @@ class _EngineRun:
         await asyncio.sleep(_IDLE_GRACE_S)
         if not self.busy:
             self.logger.debug("Nothing more to play, stopping the Spotify session")
+            self.mass.create_task(self.backend.discard_run(self, unless_busy=True))
+
+    def _watch_unclaimed(self, item: _Item) -> None:
+        """Stop the run when nobody takes up the item the engine moved on to in time."""
+        item.unclaimed_since = asyncio.get_running_loop().time()
+        self._spawn_task(self._stop_if_unclaimed(item))
+
+    async def _stop_if_unclaimed(self, item: _Item) -> None:
+        """Stop the run when the given item is still unclaimed after the grace period."""
+        await asyncio.sleep(_UNCLAIMED_ITEM_S)
+        if item.media_key is None and item in (self._item, self._next):
+            # the queue went elsewhere: the engine must not play on to nobody on
+            # the account's one stream
+            self.logger.debug("Nobody took up %s, stopping the Spotify session", item.spotify_uri)
             self.mass.create_task(self.backend.discard_run(self, unless_busy=True))
 
     def _cancel_idle_watch(self) -> None:
@@ -1503,6 +1555,7 @@ class _EngineRun:
             # once the engine is gone the FIFO only drains, so a short wait tells
             # an emptied pipe as well as the full slice would
             read_slice = _DRAIN_QUIET_S if self._engine_exited else _READ_SLICE_S
+            self._read_waiting = True
             try:
                 raw = await asyncio.wait_for(reader.read(_READ_CHUNK_SIZE), read_slice)
             except TimeoutError:
@@ -1525,6 +1578,8 @@ class _EngineRun:
                 # engine's fetch pipeline exactly when it is recovering.
                 pace_anchor = None
                 continue
+            finally:
+                self._read_waiting = False
             stalled_for = 0.0
             if not raw:
                 # writer end closed: the capture sink is gone (pulse restart)
@@ -1532,6 +1587,13 @@ class _EngineRun:
                 return
             self._last_read_at = loop.time()
             self._raw_total += len(raw)
+            if self._engine_exited and not raw.strip(b"\x00"):
+                # the engine is gone and the sink only pads: its audio has all arrived
+                await self._set_sink(running=False)
+                for item in (self._item, self._next):
+                    if item is not None:
+                        self._finish_delivery(item)
+                return
             if self._moving:
                 # rendered before a seek or jump: nobody's audio
                 continue
@@ -1574,7 +1636,7 @@ class _EngineRun:
                 await self._go_idle()
                 return True
             if upcoming.media_key is None and not item.streaming:
-                upcoming.unclaimed_since = asyncio.get_running_loop().time()
+                self._watch_unclaimed(upcoming)
             item = upcoming
             if not raw:
                 return True
@@ -1634,22 +1696,9 @@ class _EngineRun:
         # suspend the sink so the engine pauses instead of overflowing the
         # FIFO, and resume once there is room again
         await self._set_sink(running=False)
-        loop = asyncio.get_running_loop()
         while not self._stopped and self._error is None:
             if item.abandoned or self._moving:
                 return True
-            if (
-                item.unclaimed_since is not None
-                and item.media_key is None
-                and loop.time() - item.unclaimed_since > _UNCLAIMED_ITEM_S
-            ):
-                # the queue went elsewhere: the engine must not play on to
-                # nobody on the account's one stream
-                self.logger.debug(
-                    "Nobody took up %s, stopping the Spotify session", item.spotify_uri
-                )
-                self.mass.create_task(self.backend.discard_run(self, unless_busy=True))
-                return False
             with suppress(TimeoutError):
                 async with asyncio.timeout(_READ_SLICE_S):
                     await item.chunks.put(chunk)
@@ -1865,6 +1914,7 @@ class _EngineRun:
             seek_position_ms,
             None,
             max_lead_trim_s=_MAX_SWITCH_TRIM_S if switched else _MAX_LEAD_TRIM_S,
+            max_counted_lead_s=_MAX_SWITCH_GAP_S if switched else None,
         )
         if self._engine_length is not None and self._engine_length[0] == spotify_uri:
             item.engine_duration_ms = self._engine_length[1]

@@ -394,6 +394,8 @@ def _make_run(
     run._proc = MagicMock(returncode=None)
     run._logged_in = True
     run._sink_running = True
+    # a capture idling on the FIFO, as the running reader does between reads
+    run._read_waiting = True
     return run
 
 
@@ -1616,16 +1618,15 @@ async def test_an_unclaimed_next_item_stops_the_run(
     assert upcoming.media_key is None
     # the clock only runs once the item before it is done: the claim follows that
     assert upcoming.unclaimed_since is None
+    tasks = _run_tasks(run)
     await backend.release_item(run, outgoing)
     assert _unclaimed_since(upcoming) is not None
-    tasks = _run_tasks(run)
-    while not upcoming.chunks.full():
-        upcoming.chunks.put_nowait(b"\x01" * _FRAME_BYTES)
-    await asyncio.sleep(0.01)
-
-    assert await run._hand_over(upcoming, b"\x01" * _FRAME_BYTES) is False
-    _sink(run).suspend.assert_awaited()
-    await asyncio.gather(*tasks)
+    # the watch fires without waiting on a full cushion
+    for _ in range(50):
+        if run.stopped:
+            break
+        await asyncio.sleep(0.01)
+    await asyncio.gather(*tasks, return_exceptions=True)
     assert run.stopped
     assert backend._run is None
 
@@ -1904,7 +1905,7 @@ async def test_a_move_for_another_queue_adopts_it(tmp_path: Path) -> None:
     """The run serves the queue that asked last; its normalization agreed with the engine's."""
     run = _live_run(tmp_path)
     await run._handle_event(_playback_event("playing", uri=TRACK_A))
-    run.engine_normalizes = run._engine_normalization_enabled()
+    run.engine_normalizes = run._engine_normalization_enabled(run.queue_id)
     _confirm_seeks(run)
     await run.move_to(TRACK_A, 30_000, _streamdetails_for(uri=TRACK_A, queue_id="player2"))
     assert run.queue_id == "player2"
@@ -1914,7 +1915,7 @@ async def test_a_move_for_a_queue_normalizing_otherwise_is_refused(tmp_path: Pat
     """The engine reads its normalization at startup only, so a fresh run must serve that queue."""
     run = _live_run(tmp_path)
     await run._handle_event(_playback_event("playing", uri=TRACK_A))
-    run.engine_normalizes = not run._engine_normalization_enabled()
+    run.engine_normalizes = not run._engine_normalization_enabled(run.queue_id)
     with pytest.raises(AudioError, match="normalizes for another player"):
         await run.move_to(TRACK_A, 30_000, _streamdetails_for(uri=TRACK_A, queue_id="player2"))
     _client(run).seek.assert_not_called()
@@ -1987,3 +1988,83 @@ def test_only_a_switched_item_gets_the_switch_trim(
     run = _make_run(tmp_path)
     item = run._new_item(TRACK_A, 30_000, switched=switched)
     assert item.shaper._max_lead_trim == int(budget_s * _BYTES_PER_SECOND)
+
+
+async def test_engine_exit_padding_ends_the_streams_at_once(tmp_path: Path) -> None:
+    """Zeros the sink keeps rendering after the engine died never keep a consumer waiting."""
+    run = _live_run(tmp_path)
+    run._reader = reader = asyncio.StreamReader()
+    run._engine_exited = True
+    run._proc = MagicMock(returncode=1)
+    reader.feed_data(b"\x00" * 4 * _CHUNK)
+    async with asyncio.timeout(5):
+        await run._read_capture()
+    assert run.current_item.delivery_done
+    _sink(run).suspend.assert_awaited()
+    # it stopped on the first padding read, not once the pipe ran dry
+    assert await asyncio.wait_for(reader.read(1), 0.1)
+
+
+def test_only_the_switch_silence_counts_towards_a_switched_items_end() -> None:
+    """A silent intro trimmed along with the switch silence is part of the track's length."""
+    item = _Item(TRACK_B, 0, None, max_lead_trim_s=1.5, max_counted_lead_s=0.6)
+    item.engine_duration_ms = 2_000
+    # half a second of switch silence plus a second of silent intro
+    item.shaper._lead_skipped = int(1.5 * _BYTES_PER_SECOND) // _FRAME_BYTES * _FRAME_BYTES
+    expected = round(0.6 * 44_100) * _FRAME_BYTES + round(2.0 * 44_100) * _FRAME_BYTES
+    assert item.end_offset(expected) == expected
+
+
+@pytest.mark.parametrize("same_setting", [True, False])
+async def test_a_claim_for_another_queue_needs_its_normalization(
+    tmp_path: Path, same_setting: bool
+) -> None:
+    """Audio the engine normalizes for one player is not handed to a player that does not."""
+    run = _live_run(tmp_path)
+    run.queue_id = "player1"
+    run.engine_normalizes = True
+    run._engine_normalization_enabled = MagicMock(  # type: ignore[method-assign]
+        return_value=same_setting
+    )
+    await _cross_fed_boundary(run)
+    details = _streamdetails_for(uri=TRACK_B, queue_id="player2")
+    claimed = await run.claim(TRACK_B, 0, details)
+    if same_setting:
+        assert claimed is run.current_item
+        assert run.queue_id == "player2"
+    else:
+        assert claimed is None
+        assert run.current_item.media_key is None
+        assert run.queue_id == "player1"
+
+
+@pytest.mark.parametrize("step", ["claim", "move_to"])
+async def test_a_cancelled_take_up_lets_the_run_go(tmp_path: Path, step: str) -> None:
+    """An acquisition cut short half-way leaves nothing holding the engine."""
+    backend = _streamable_backend(tmp_path)
+    run = _live_run(tmp_path, backend=backend)
+    backend._run = run
+    await backend.release_item(run, run.current_item)
+    tasks = _run_tasks(run)
+    if step == "claim":
+        run.claim = AsyncMock(side_effect=asyncio.CancelledError)  # type: ignore[method-assign]
+    else:
+        run.claim = AsyncMock(return_value=None)  # type: ignore[method-assign]
+        run.move_to = AsyncMock(side_effect=asyncio.CancelledError)  # type: ignore[method-assign]
+    with pytest.raises(asyncio.CancelledError):
+        await backend._acquire_item(TRACK_B, 0, _streamdetails_for(uri=TRACK_B), continuation=False)
+    await asyncio.gather(*tasks, return_exceptions=True)
+    assert run.stopped
+    assert backend._run is None
+
+
+async def test_the_drain_waits_for_a_capture_busy_elsewhere(tmp_path: Path) -> None:
+    """Audio read but not yet taken by a capture blocked on a cushion is not yet drained."""
+    run = _live_run(tmp_path)
+    run._reader = asyncio.StreamReader()
+    run._read_waiting = False
+    drain = asyncio.ensure_future(run._drain())
+    await asyncio.sleep(0.15)
+    assert not drain.done()
+    run._read_waiting = True
+    await asyncio.wait_for(drain, 1)
