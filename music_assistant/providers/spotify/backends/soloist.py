@@ -467,8 +467,10 @@ class SoloistBackend(SpotifyPlaybackBackend):
                     continue
                 except asyncio.CancelledError:
                     # cut short half-way: no stream holds what was taken, so
-                    # nothing would ever let the run go
-                    self.mass.create_task(self.discard_run(run))
+                    # nothing would ever let the run go - unless a request
+                    # waiting on the lock takes it up first
+                    run.drop_holds()
+                    self.mass.create_task(self.discard_run(run, unless_busy=True))
                     raise
                 if run.media_key != media_key or media_key is None:
                     raise SoloistSessionBusyError(self.provider)
@@ -771,7 +773,7 @@ class _Item:
         Return the capture offset at which the item ends.
 
         :param event_offset: Where the capture stood when the engine reported
-            the item's end; it trails the real end by the capture pipeline.
+            the item's end, back-dated by how far the engine was into the next one.
         """
         offset = event_offset
         if self.engine_duration_ms is not None:
@@ -781,8 +783,9 @@ class _Item:
             lead = min(self.shaper.lead_skipped, self._max_counted_lead)
             exact = self.align_skip + lead + frames * _FRAME_BYTES
             if abs(exact - event_offset) <= _MAX_CUT_SKEW_S * _BYTES_PER_SECOND:
-                # what was read already cannot be taken back
-                offset = max(exact, self.raw_read)
+                offset = exact
+        # what was read already cannot be taken back
+        offset = max(offset, self.raw_read)
         # the next item starts on a whole frame
         return self.align_skip + -(-(offset - self.align_skip) // _FRAME_BYTES) * _FRAME_BYTES
 
@@ -1025,6 +1028,9 @@ class _EngineRun:
             async with asyncio.timeout(_JUMP_TIMEOUT_S):
                 if not in_place:
                     landed_on = None
+                    if self._fed is not None and self._fed.uid is None:
+                        # never confirmed queued: most likely refused
+                        self._fed = None
                     if self._fed is not None:
                         # a queued item survives a jump: left there, it would play
                         # after the item jumped to
@@ -1052,6 +1058,14 @@ class _EngineRun:
         await self._set_sink(running=True)
         self.logger.debug("Spotify session moved to %s at %d ms", spotify_uri, seek_position_ms)
         return item
+
+    def drop_holds(self) -> None:
+        """Let go of every item a stream holds, leaving the run to whoever takes it next."""
+        for item in (self._item, self._next):
+            if item is not None and item.streaming:
+                item.streaming = False
+                item.abandoned = True
+                self._release_item_waiters(item)
 
     async def release(self, item: _Item) -> None:
         """
@@ -1768,10 +1782,18 @@ class _EngineRun:
         with suppress(asyncio.QueueFull):
             item.chunks.put_nowait(None)
 
-    def _end_item(self) -> None:
-        """Have the capture end the current item where the engine left it."""
+    def _end_item(self, past_end_ms: int = 0) -> None:
+        """
+        Have the capture end the current item where the engine left it.
+
+        :param past_end_ms: How far the engine reported to be into what follows.
+        """
         item = self._item
-        reported_at = item.raw_read + _unread_fifo_bytes(self._transport)
+        reported_at = (
+            item.raw_read
+            + _unread_fifo_bytes(self._transport)
+            - round(past_end_ms * _BYTES_PER_SECOND / 1000)
+        )
         item.end_at = item.end_offset(reported_at)
         self.logger.debug(
             "%s ends %.3f s into its capture (reported at %.3f s)",
@@ -1865,7 +1887,7 @@ class _EngineRun:
                 ):
                     # the same track queued after itself: only its restart from
                     # the end of the current occurrence tells
-                    self._consume_fed()
+                    self._consume_fed(data.position.position_ms)
             if data.position is not None:
                 self._observe_position(data.position.position_ms)
             self._engine_playing = playing
@@ -1930,7 +1952,7 @@ class _EngineRun:
             return
         if item.ended:
             return
-        if self._fed is not None and not self._fed.left:
+        if self._fed is not None and self._fed.uid is not None and not self._fed.left:
             self._fail(
                 "Spotify is already streaming somewhere else - an account "
                 "can only play in one place at a time"
@@ -1948,6 +1970,8 @@ class _EngineRun:
         uids = {entry.uid for entry in entries}
         if (fed := self._fed) is not None:
             if fed.uid is None:
+                # the engine acknowledges neither the add nor a refusal of it:
+                # the entry stays unconfirmed until a report lists it
                 fed.uid = next(
                     (
                         entry.uid
@@ -1958,18 +1982,17 @@ class _EngineRun:
                     ),
                     None,
                 )
-                if fed.uid is None:
-                    # the report that follows the add does not list it: the
-                    # engine refused the item (unavailable for the account)
-                    self.logger.debug("Spotify did not queue %s", fed.spotify_uri)
-                    self._fed = None
             elif fed.uid not in uids:
                 # the engine reporting it plays the item confirms it was started
                 fed.left = True
         self._queue_uids = uids
 
-    def _consume_fed(self) -> None:
-        """Move on to the queued item the engine has reached."""
+    def _consume_fed(self, position_ms: int = 0) -> None:
+        """
+        Move on to the queued item the engine has reached.
+
+        :param position_ms: How far the engine reported to be into that item.
+        """
         if (fed := self._fed) is None:
             return
         self._fed = None
@@ -1981,7 +2004,7 @@ class _EngineRun:
         upcoming = self._new_item(fed.spotify_uri, 0, switched=True)
         upcoming.started.set()
         self._next = upcoming
-        self._end_item()
+        self._end_item(position_ms)
 
     def _new_item(self, spotify_uri: str, seek_position_ms: int, *, switched: bool) -> _Item:
         """
