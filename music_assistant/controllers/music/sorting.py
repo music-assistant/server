@@ -8,7 +8,8 @@ from typing import Final
 from music_assistant_models.api import SortOptionInfo
 from music_assistant_models.enums import ListingType, MediaType, SortDirection, SortField
 
-# what each sort field offers: whether it takes a direction and its default, and the label key
+# what each sort field offers: whether it takes a direction and its default, and the label key;
+# the models enum may hold fields no listing offers yet, and a request for one is rejected
 SORT_FIELD_DEFINITIONS: Final[dict[SortField, SortOptionInfo]] = {
     SortField.NAME: SortOptionInfo(
         field=SortField.NAME,
