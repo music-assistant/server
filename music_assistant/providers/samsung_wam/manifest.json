@@ -5,6 +5,7 @@
   "name": "Samsung WAM",
   "description": "Support for Samsung's Wireless Audio Multiroom (WAM) speakers.",
   "codeowners": ["@oliver-stevens"],
+  "tier": "community",
   "requirements": [
     "pywam==0.2.0"
   ],

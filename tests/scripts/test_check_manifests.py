@@ -11,6 +11,7 @@ def _valid_manifest() -> dict[str, object]:
         "name": "Demo",
         "description": "A demo provider.",
         "codeowners": ["@octocat"],
+        "tier": "community",
     }
 
 
@@ -82,6 +83,53 @@ def test_empty_text_fields_rejected() -> None:
     assert any(
         "'name' must be a non-empty string" in issue for issue in _validate(manifest, "demo")
     )
+
+
+def test_tier_required_for_public_provider() -> None:
+    """A public provider without a tier is reported; a demo provider may omit it."""
+    manifest = _valid_manifest()
+    del manifest["tier"]
+    assert any("missing mandatory key 'tier'" in issue for issue in _validate(manifest, "demo"))
+    manifest["domain"] = "_demo_music_provider"
+    assert _validate(manifest, "_demo_music_provider") == []
+
+
+def test_invalid_tier_rejected() -> None:
+    """A tier outside core/community is rejected."""
+    for bad_tier in ("official", ["core"], None):
+        manifest = _valid_manifest()
+        manifest["tier"] = bad_tier
+        assert any("is not one of" in issue for issue in _validate(manifest, "demo"))
+
+
+def test_core_tier_requires_org_codeowner() -> None:
+    """Tier core is only valid with @music-assistant in codeowners."""
+    manifest = _valid_manifest()
+    manifest["tier"] = "core"
+    assert any("requires '@music-assistant'" in issue for issue in _validate(manifest, "demo"))
+    manifest["codeowners"] = ["@music-assistant", "@octocat"]
+    assert _validate(manifest, "demo") == []
+
+
+def test_support_url_must_be_https() -> None:
+    """A support_url must be an https URL with a host when present."""
+    manifest = _valid_manifest()
+    manifest["support_url"] = "https://github.com/octocat/demo/issues"
+    assert _validate(manifest, "demo") == []
+    bad_urls = (
+        "http://example.com",
+        "https://",
+        "https:///issues",
+        "https://?report",
+        "https://#support",
+        "https://[::1",
+        "",
+        None,
+        ["https://example.com"],
+    )
+    for bad_url in bad_urls:
+        manifest["support_url"] = bad_url
+        assert any("'support_url' must be" in issue for issue in _validate(manifest, "demo"))
 
 
 def test_real_tree_is_clean() -> None:

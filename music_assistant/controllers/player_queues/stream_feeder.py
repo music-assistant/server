@@ -101,6 +101,11 @@ class StreamFeederMixin(_PlayerQueuesBase):
                         prepared_item.name,
                         holder.name,
                     )
+                    if streamed_item.streamdetails and prepared_item.streamdetails:
+                        # the source may line the item up itself instead
+                        await holder.hint_next_item(
+                            streamed_item.streamdetails, prepared_item.streamdetails
+                        )
                     return
                 self.logger.debug(
                     "Preparing audio buffer for next track %s on queue %s",

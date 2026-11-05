@@ -5,8 +5,9 @@
   "name": "Library Recommendations",
   "description": "Provides standard library-based recommendation rows.",
   "codeowners": ["@music-assistant"],
+  "tier": "core",
   "requirements": [],
-  "documentation": "",
+  "documentation": "https://music-assistant.io/plugins/library-recommendations/",
   "multi_instance": false,
   "builtin": true,
   "allow_disable": false

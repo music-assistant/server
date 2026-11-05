@@ -5,6 +5,7 @@
   "name": "gPodder",
   "description": "Subscribe to and fetch podcasts from gPodder.",
   "codeowners": ["@fmunkes"],
+  "tier": "community",
   "documentation": "https://music-assistant.io/music-providers/gpodder",
   "multi_instance": true
 }

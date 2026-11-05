@@ -59,6 +59,12 @@ SORT_FIELD_DEFINITIONS: Final[dict[SortField, SortOptionInfo]] = {
         default_direction=SortDirection.DESC,
         label_key="year",
     ),
+    SortField.RELEASE_DATE: SortOptionInfo(
+        field=SortField.RELEASE_DATE,
+        supports_direction=True,
+        default_direction=SortDirection.DESC,
+        label_key="release_date",
+    ),
     SortField.POSITION: SortOptionInfo(
         field=SortField.POSITION,
         supports_direction=True,
@@ -179,7 +185,9 @@ LISTING_SORT_OPTIONS: Final[dict[ListingType, tuple[SortOptionInfo, ...]]] = {
     ListingType.ARTIST_TRACKS: _sort_options(
         SortField.SORT_NAME, SortField.NAME, SortField.ALBUM_NAME, SortField.DURATION
     ),
-    ListingType.ARTIST_ALBUMS: _sort_options(SortField.SORT_NAME, SortField.NAME, SortField.YEAR),
+    ListingType.ARTIST_ALBUMS: _sort_options(
+        SortField.SORT_NAME, SortField.NAME, SortField.YEAR, SortField.RELEASE_DATE
+    ),
     # an audiobook carries no year
     ListingType.ARTIST_AUDIOBOOKS: _sort_options(
         SortField.SORT_NAME, SortField.NAME, SortField.DURATION
