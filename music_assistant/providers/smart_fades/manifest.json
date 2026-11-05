@@ -1,9 +1,11 @@
 {
   "type": "audio_analysis",
   "domain": "smart_fades",
+  "stage": "stable",
   "name": "Smart Fades",
   "description": "Smart fades analyzes beats, energy, musical key and vocal activity for smart crossfades.",
   "codeowners": ["@music-assistant"],
+  "tier": "core",
   "requirements": [
     "beat-this==1.1.0",
     "kaldi-native-fbank==1.22.3",
