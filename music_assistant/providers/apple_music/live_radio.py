@@ -321,7 +321,6 @@ class AppleMusicLiveRadioManager:
             "mirror": mirror,
             "key_server_url": asset["keyServerUrl"],
             "keys": {},
-            "refused_keys": set(),
             "key_id": newest.key_id,
             "widevine_uri": newest.widevine_uri,
             "init_url": newest.init_url,
@@ -376,8 +375,6 @@ class AppleMusicLiveRadioManager:
                     "playlist_error", level=logging.WARNING, error=_describe_error(err)
                 )
                 playlist = None
-            if playlist is not None:
-                await self._prepare_next_key(playlist, data, session)
             stalled = time.monotonic() - last_new_segment
             if stalled > max(3 * target, MIN_STALL_SECONDS):
                 # try the other mirror the next time this stream is started
@@ -462,31 +459,6 @@ class AppleMusicLiveRadioManager:
         if next_sequence is None:
             return playlist.segments[-START_SEGMENTS:]
         return [seg for seg in playlist.segments if seg.sequence >= next_sequence]
-
-    async def _prepare_next_key(
-        self, playlist: LivePlaylist, data: dict[str, Any], session: LiveSession
-    ) -> None:
-        """Get a key the playlist announces before the stream reaches it, if that works now."""
-        newest = playlist.segments[-1]
-        key_id = newest.key_id
-        if not key_id or key_id in data["keys"] or key_id in data["refused_keys"]:
-            return
-        try:
-            await self._load_key(newest, data)
-        except (ClientError, TimeoutError, MusicAssistantError) as err:
-            # the segments on the current key still play; only a network or server problem
-            # is worth another request before the stream needs this key
-            if isinstance(err, MusicAssistantError):
-                data["refused_keys"].add(key_id)
-            session.license_errors += 1
-            self.monitor.event(
-                "key_prepare_error",
-                level=logging.WARNING,
-                key=key_id[:8],
-                error=_describe_error(err),
-            )
-            return
-        self.monitor.event("key_prepared", key=key_id[:8])
 
     async def _switch_key(
         self, segment: LiveSegment, data: dict[str, Any], session: LiveSession

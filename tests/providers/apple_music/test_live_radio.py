@@ -168,7 +168,6 @@ class _Harness:
                 "media_url": "https://cdn.example/index_1.m3u8",
                 "key_server_url": "https://key.example",
                 "keys": {"k1": (b"k1", MagicMock(audio_config=b"config"))},
-                "refused_keys": set(),
                 "mirror": 0,
                 "key_id": "k1",
                 "init_url": "init",
@@ -272,8 +271,8 @@ async def test_a_license_failure_for_the_next_key_is_retried(
     chunks = await _read(harness.radio, harness.details, 6)
     assert chunks == [b"init", b"s10:k1", b"s11:k1", b"s12:k1", b"s13:k1", b"s14:k2"]
     events = harness.events()
-    assert events.index("key_prepare_error") < events.index("key_load_error")
-    assert events.index("key_load_error") < events.index("key_prepared")
+    assert events.count("key_load_error") == 2
+    assert events.index("key_load_error") < events.index("key_change")
     assert "playlist_error" not in events
     assert harness.radio.monitor.as_dict()["sessions"][0]["license_errors"] == 2  # type: ignore[index]
 
@@ -281,7 +280,7 @@ async def test_a_license_failure_for_the_next_key_is_retried(
 async def test_a_refused_key_ends_the_stream_when_it_is_needed(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The audio on the current key is played first, then the refusal stops the stream."""
+    """The audio on the current key is sent first, then the refusal stops the stream."""
     harness = _Harness([_playlist(10, 3), _rotating_playlist()], monkeypatch)
     harness.key_failures["k2"] = 99
     harness.key_error = UnplayableMediaError("Apple refused the live radio license")
@@ -294,6 +293,7 @@ async def test_a_refused_key_ends_the_stream_when_it_is_needed(
     with pytest.raises(UnplayableMediaError):
         await collect()
     assert chunks[-1] == b"s13:k1"
+    assert harness.key_attempts["k2"] == 1
     session = harness.radio.monitor.as_dict()["sessions"][0]  # type: ignore[index]
     assert session["end_reason"] == "Apple refused the live radio license"  # type: ignore[index]
 
@@ -825,10 +825,20 @@ async def test_an_answer_without_a_license_is_a_refusal(
     cdm.close.assert_called_once()
 
 
-async def test_a_refused_next_key_is_not_requested_on_every_pass(
+async def test_a_new_key_does_not_hold_back_the_audio_on_the_current_key(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """While the stream has not reached the key, a refusal costs one request."""
+    """A hanging key server can not delay segments that do not need the new key."""
+    harness = _Harness([_playlist(10, 3), _rotating_playlist()], monkeypatch)
+    chunks = await _read(harness.radio, harness.details, 5)
+    assert chunks[-1] == b"s13:k1"
+    assert "k2" not in harness.key_attempts
+
+
+async def test_a_key_is_only_requested_when_a_segment_needs_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A key the stream has not reached costs no request, even if it would be refused."""
     announced = _playlist(11, 2, key="k2")
     harness = _Harness(
         [_playlist(10, 3), announced, announced, announced, _playlist(13, 1)], monkeypatch
@@ -839,19 +849,26 @@ async def test_a_refused_next_key_is_not_requested_on_every_pass(
     chunks = await _read(harness.radio, harness.details, 5)
 
     assert chunks[-1] == b"s13:k1"
-    assert harness.key_attempts["k2"] == 1
+    assert "k2" not in harness.key_attempts
 
 
-async def test_a_temporary_failure_of_the_next_key_is_tried_on_every_pass(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """A network problem may pass, so the key is requested again."""
-    announced = _playlist(11, 2, key="k2")
-    harness = _Harness(
-        [_playlist(10, 3), announced, announced, announced, _playlist(13, 1)], monkeypatch
-    )
+async def test_a_key_that_stays_away_restarts_the_stream(monkeypatch: pytest.MonkeyPatch) -> None:
+    """After the audio on the current key, a lasting network problem ends as a stall."""
+    harness = _Harness([_rotating_playlist()], monkeypatch)
     harness.key_failures["k2"] = 99
+    monkeypatch.setattr(f"{MODULE}.MIN_STALL_SECONDS", 0.01)
+    real_sleep = asyncio.sleep
+    monkeypatch.setattr(f"{MODULE}.asyncio.sleep", lambda _seconds: real_sleep(0.02))
+    chunks: list[bytes] = []
 
-    await _read(harness.radio, harness.details, 5)
+    async def collect() -> None:
+        async for chunk in harness.radio.get_audio_stream(harness.details):
+            chunks.append(chunk)
 
-    assert harness.key_attempts["k2"] == 3
+    with pytest.raises(LiveStreamRestartError):
+        await collect()
+
+    assert chunks == [b"init", b"s13:k1"]
+    events = harness.events()
+    assert "key_load_error" in events
+    assert "playlist_stalled" in events
