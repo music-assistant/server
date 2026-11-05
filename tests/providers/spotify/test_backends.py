@@ -3,7 +3,7 @@ Tests for the Spotify provider's playback backend selection and wiring.
 
 The playback backend is an explicit per-instance choice stored in setup_data:
 configs predating the choice (key unset) must stay on librespot, "soloist"
-selects the single-track Soloist backend. The concurrency budget (three librespot
+selects the Soloist backend. The concurrency budget (three librespot
 fetches, one soloist run) and librespot's URI translation are locked down here
 as well.
 """
@@ -51,7 +51,7 @@ def test_backend_defaults_to_librespot() -> None:
 
 
 def test_backend_soloist_is_selected() -> None:
-    """A stored soloist choice selects the Soloist single-track backend."""
+    """A stored soloist choice selects the Soloist backend."""
     prov = _make_provider({CONF_PLAYBACK_BACKEND: BACKEND_SOLOIST})
     assert isinstance(prov._create_backend(), SoloistBackend)
 
@@ -250,6 +250,7 @@ def _session(*, queue_id: str, normalizes: bool = True) -> MagicMock:
     run = MagicMock()
     run.queue_id = queue_id
     run.engine_normalizes = normalizes
+    run.serves = lambda media_key: media_key == run.media_key
     return run
 
 

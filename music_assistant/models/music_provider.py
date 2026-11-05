@@ -826,6 +826,19 @@ class MusicProvider(MediaCatalogMixin, RecommendationsMixin, AudioStreamMixin, P
         A playback that triggers this callback is followed by at least one on_streamed.
         """
 
+    async def hint_next_item(self, playing: StreamDetails, upcoming: StreamDetails) -> None:
+        """
+        Handle a hint about the item that follows the one being streamed.
+
+        Called instead of preparing the upcoming item when the streamed item holds
+        this provider's only stream slot, so a provider that plays a queue itself
+        can line the upcoming item up. It may be called more than once for the same
+        pair; a call for a different upcoming item means the queue changed.
+
+        :param playing: Stream details of the item being streamed.
+        :param upcoming: Stream details of the item that follows it.
+        """
+
     async def on_streamed(
         self,
         streamdetails: StreamDetails,
