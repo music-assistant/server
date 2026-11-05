@@ -13,6 +13,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from json import JSONDecodeError
 from pathlib import Path
+from threading import BoundedSemaphore
 from typing import TYPE_CHECKING, Any
 from uuid import UUID
 
@@ -40,6 +41,10 @@ from music_assistant.helpers.security import has_control_chars
 from music_assistant.helpers.util import infer_album_type, try_parse_int
 
 LOGGER = logging.getLogger(f"{MASS_LOGGER_NAME}.tags")
+
+MAX_ID3_TAG_SIZE = 16 * 1024 * 1024
+FFPROBE_TIMEOUT = 30
+_FFPROBE_SEMAPHORE = BoundedSemaphore(2)
 
 
 # the only multi-item splitter we accept is the semicolon,
@@ -792,28 +797,10 @@ def parse_tags(
         raise InvalidDataError(f"Unable to retrieve info for {input_file}: {err}") from err
     source = input_file if fd is None else descriptor_path(fd)
     pass_fds = () if fd is None else (fd,)
-    args = (
-        "ffprobe",
-        "-hide_banner",
-        "-loglevel",
-        "error",
-        "-threads",
-        "0",
-        "-show_error",
-        "-show_format",
-        "-show_streams",
-        "-show_chapters",
-        "-print_format",
-        "json",
-        *tls_verify_args(source, verify_ssl),
-        *user_agent_args(source),
-        "-i",
-        source,
-    )
     try:
-        res = subprocess.check_output(  # noqa: S603
-            args, stderr=subprocess.PIPE, env=get_subprocess_env(), pass_fds=pass_fds
-        )
+        if not input_file.startswith(("http://", "https://")) and Path(source).is_file():
+            _validate_id3_tag_size(source)
+        res = _run_ffprobe(source, pass_fds, verify_ssl)
         data = json.loads(res)
         if error := data.get("error"):
             raise InvalidDataError(error["string"])  # noqa: TRY301 - message rebuilt below
@@ -861,6 +848,62 @@ def parse_tags(
     finally:
         if fd is not None:
             os.close(fd)
+
+
+def _run_ffprobe(source: str, pass_fds: tuple[int, ...], verify_ssl: bool) -> bytes:
+    """Inspect audio with bounded concurrency, allocations and running time."""
+    args = (
+        "ffprobe",
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-threads",
+        "1",
+        "-max_alloc",
+        str(MAX_ID3_TAG_SIZE),
+        "-show_error",
+        "-show_format",
+        "-show_streams",
+        "-show_chapters",
+        "-print_format",
+        "json",
+        *tls_verify_args(source, verify_ssl),
+        *user_agent_args(source),
+        "-i",
+        source,
+    )
+    try:
+        with _FFPROBE_SEMAPHORE:
+            return subprocess.check_output(  # noqa: S603
+                args,
+                stderr=subprocess.PIPE,
+                env=get_subprocess_env(),
+                pass_fds=pass_fds,
+                timeout=FFPROBE_TIMEOUT,
+            )
+    except subprocess.TimeoutExpired as err:
+        msg = "audio inspection timed out"
+        raise InvalidDataError(msg) from err
+
+
+def _validate_id3_tag_size(source: str) -> None:
+    """Reject oversized ID3 tags before FFprobe or Mutagen reads their payload."""
+    with open(source, "rb") as file:
+        header = file.read(10)
+    if len(header) != 10 or header[:3] != b"ID3":
+        return
+    if any(value & 0x80 for value in header[6:10]):
+        msg = "Invalid ID3 tag size"
+        raise InvalidDataError(msg)
+    tag_size = 0
+    for value in header[6:10]:
+        tag_size = (tag_size << 7) | value
+    if tag_size > MAX_ID3_TAG_SIZE:
+        msg = (
+            f"ID3 metadata is too large to inspect safely ({tag_size} bytes; "
+            f"limit {MAX_ID3_TAG_SIZE} bytes)"
+        )
+        raise InvalidDataError(msg)
 
 
 def get_file_duration(
