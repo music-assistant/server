@@ -62,6 +62,7 @@ from music_assistant.providers.spotify_connect.soloist.runtime import (
     SoloistQueueChanged,
     SoloistQueueEntry,
     SoloistTrackChanged,
+    SoloistVolumeChanged,
 )
 
 TRACK_A = "spotify:track:aaa"
@@ -446,6 +447,11 @@ async def _capture(run: _EngineRun, data: bytes) -> None:
         assert await run._route(data[offset : offset + _CHUNK])
 
 
+def _fed(run: _EngineRun) -> object:
+    """Return the item queued on the engine, read afresh."""
+    return run._fed
+
+
 def _upcoming(run: _EngineRun) -> _Item | None:
     """Return the item the capture moves on to, read afresh."""
     return run._next
@@ -560,6 +566,7 @@ async def _cross_fed_boundary(run: _EngineRun) -> tuple[_Item, _Item]:
     await _feed(run)
     await _capture(run, _audio(1.5))
     await run._handle_event(_queue_event())
+    await run._handle_event(_track_event(TRACK_B))
     assert run._next is not None
     upcoming = run._next
     # the capture runs on past the cut
@@ -873,6 +880,7 @@ async def test_session_normalizes_answers_only_for_the_items_own_run(tmp_path: P
     assert backend.session_normalizes(_streamdetails_for(uri=TRACK_B)) is None
     await _feed(run)
     await run._handle_event(_queue_event())
+    await run._handle_event(_track_event(TRACK_B))
     assert run._next is not None
     run._next.bind(_streamdetails_for(uri=TRACK_B))
     assert backend.session_normalizes(_streamdetails_for(uri=TRACK_B)) is True
@@ -1406,6 +1414,7 @@ async def test_a_fed_item_takes_over_at_the_exact_engine_length(tmp_path: Path) 
 
     # the queued entry leaving the queue is the engine moving on, reported late
     await run._handle_event(_queue_event())
+    await run._handle_event(_track_event(TRACK_B))
     assert run._fed is None
     assert run._next is not None
     assert run._next.spotify_uri == TRACK_B
@@ -1458,8 +1467,8 @@ def test_a_seeked_items_cut_counts_the_rest_of_it() -> None:
     assert item.end_offset(item.raw_read) == 2 * _BYTES_PER_SECOND
 
 
-async def test_the_same_track_twice_is_told_by_the_queue_report_alone(tmp_path: Path) -> None:
-    """The engine reports no change of track when it plays the same one again."""
+async def test_the_same_track_twice_is_told_by_its_restart(tmp_path: Path) -> None:
+    """The engine reports no change of track when it plays the same one again, only a restart."""
     backend = _streamable_backend(tmp_path)
     run = _live_run(tmp_path, backend=backend)
     backend._run = run
@@ -1473,6 +1482,10 @@ async def test_the_same_track_twice_is_told_by_the_queue_report_alone(tmp_path: 
     assert not first.ended
 
     await run._handle_event(_queue_event())
+    # the entry left the queue, but only the restart says the engine started it
+    assert run.current_item is first
+    assert not first.ended
+    await run._handle_event(_playback_event("playing", uri=TRACK_A, position_ms=17))
     assert run._next is not None
     assert run._next.spotify_uri == TRACK_A
     # no exact length known: the cut is where the report came in
@@ -1663,6 +1676,7 @@ async def test_a_claim_after_the_outgoing_item_was_let_go_runs_the_capture_on(
     )
     await _capture(run, _audio(1.5))
     await run._handle_event(_queue_event())
+    await run._handle_event(_track_event(TRACK_B))
 
     await backend.release_item(run, outgoing)
     assert outgoing.abandoned
@@ -1687,6 +1701,7 @@ async def test_a_switched_item_drops_at_most_the_switch_trim(tmp_path: Path) -> 
     await _feed(run)
     await _capture(run, _audio(1.5))
     await run._handle_event(_queue_event())
+    await run._handle_event(_track_event(TRACK_B))
     upcoming = run._next
     assert upcoming is not None
     assert upcoming.shaper._max_lead_trim == int(_MAX_SWITCH_TRIM_S * _BYTES_PER_SECOND)
@@ -1841,6 +1856,7 @@ async def test_the_unclaimed_clock_starts_at_the_cut_when_the_item_before_let_go
     await _feed(run)
     await _capture(run, _audio(1.5))
     await run._handle_event(_queue_event())
+    await run._handle_event(_track_event(TRACK_B))
     upcoming = run._next
     assert upcoming is not None
 
@@ -1960,6 +1976,7 @@ async def test_an_engine_exit_finishes_the_claimed_next_item_too(tmp_path: Path)
     )
     await _capture(run, _audio(1.5))
     await run._handle_event(_queue_event())
+    await run._handle_event(_track_event(TRACK_B))
     details_b = _streamdetails_for(uri=TRACK_B)
     details_b.duration = 180
     _, upcoming = await backend._acquire_item(TRACK_B, 0, details_b, continuation=False)
@@ -2126,3 +2143,60 @@ async def test_an_ended_item_gets_its_tail_from_a_paused_engine(tmp_path: Path) 
     item.chunks.get_nowait()
     assert await blocked is True
     _sink(run).resume.assert_awaited()
+
+
+async def test_a_claim_that_finds_nothing_keeps_the_queue(tmp_path: Path) -> None:
+    """Asking from another queue only takes the run over once an item is actually claimed."""
+    run = _live_run(tmp_path)
+    run.queue_id = "player1"
+    run.engine_normalizes = True
+    run._engine_normalization_enabled = MagicMock(return_value=True)  # type: ignore[method-assign]
+    details = _streamdetails_for(uri=TRACK_C, queue_id="player2")
+    assert await run.claim(TRACK_C, 0, details) is None
+    assert run.queue_id == "player1"
+
+
+async def test_room_made_by_a_release_does_not_wake_the_sink(tmp_path: Path) -> None:
+    """The release that emptied the cushion holds the engine; the woken write must not undo it."""
+    run = _live_run(tmp_path)
+    item = run.current_item
+    run._engine_playing = True
+    while not item.chunks.full():
+        item.chunks.put_nowait(b"\x01")
+    blocked = asyncio.ensure_future(run._hand_over(item, b"\x02"))
+    await asyncio.sleep(0.01)
+    sink = _sink(run)
+    sink.resume.reset_mock()
+    await run.release(item)
+    assert await asyncio.wait_for(blocked, 2) is True
+    sink.resume.assert_not_called()
+
+
+async def test_the_engine_is_kept_at_unity_volume(tmp_path: Path) -> None:
+    """A volume change from the Spotify app would scale the captured audio."""
+    run = _live_run(tmp_path)
+    await run._handle_event(
+        SoloistEvent(type="volume_changed", data=SoloistVolumeChanged(volume=40), raw={})
+    )
+    _client(run).set_volume.assert_awaited_once_with(100)
+    _client(run).set_volume.reset_mock()
+    await run._handle_event(
+        SoloistEvent(type="volume_changed", data=SoloistVolumeChanged(volume=100), raw={})
+    )
+    _client(run).set_volume.assert_not_called()
+
+
+async def test_a_queued_item_removed_in_the_app_is_no_boundary(tmp_path: Path) -> None:
+    """The entry leaving the queue without the engine moving on leaves the item playing."""
+    run = _live_run(tmp_path)
+    await run._handle_event(_playback_event("playing", uri=TRACK_A, duration_ms=2_000))
+    await _feed(run)
+    await _capture(run, _audio(1.5))
+    await run._handle_event(_queue_event())
+    await run._handle_event(_playback_event("playing", uri=TRACK_A, position_ms=1_500))
+    assert not run.current_item.ended
+    assert run._next is None
+    # the engine stopping at the item's end still ends it
+    await run._handle_event(_playback_event("paused", uri=TRACK_A, position_ms=0))
+    assert run.current_item.end_at is not None
+    assert _fed(run) is None

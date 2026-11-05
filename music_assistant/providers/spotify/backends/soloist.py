@@ -74,6 +74,7 @@ from music_assistant.providers.spotify_connect.soloist.runtime import (
     SoloistPositionSync,
     SoloistQueueChanged,
     SoloistTrackChanged,
+    SoloistVolumeChanged,
 )
 
 from .base import SpotifyPlaybackBackend, StreamSupersededError
@@ -186,6 +187,9 @@ _LOG_DRAIN_TIMEOUT_S: Final[float] = 2.0
 _IDLE_GRACE_S: Final[float] = 2.0
 # how long the item the engine moved on to may sit unclaimed with a full cushion
 _UNCLAIMED_ITEM_S: Final[float] = 10.0
+# a playing report this close to 0:00, after the queued entry left the queue, is
+# the engine starting the same track again
+_RESTART_POSITION_MS: Final[int] = 3000
 # a capture FIFO this long without new audio has drained
 _DRAIN_QUIET_S: Final[float] = 0.05
 # The engine's exact track length puts the cut where its audio ends; the
@@ -668,6 +672,8 @@ class _FedEntry:
     spotify_uri: str
     # the engine's id of the queue entry, known once a queue report lists it
     uid: str | None = None
+    # the entry left the queue: the engine started it, or somebody removed it
+    left: bool = False
 
 
 class _Item:
@@ -918,7 +924,7 @@ class _EngineRun:
             seek_position_ms
             or self._stopped
             or self._error is not None
-            or not self._serves_queue(streamdetails.queue_id)
+            or not self._suits_queue(streamdetails.queue_id)
         ):
             return None
         for item in (self._item, self._next):
@@ -994,7 +1000,7 @@ class _EngineRun:
             or not client.connected
         ):
             raise AudioError("The Spotify session is no longer running")
-        if streamdetails is not None and not self._serves_queue(streamdetails.queue_id):
+        if streamdetails is not None and not self._suits_queue(streamdetails.queue_id):
             raise AudioError("The Spotify session normalizes for another player")
         self._cancel_idle_watch()
         previous = self._item
@@ -1032,6 +1038,7 @@ class _EngineRun:
             self._moving = False
         if streamdetails is not None:
             item.bind(streamdetails)
+            self.queue_id = streamdetails.queue_id
         self._pace_reset = True
         await self._set_sink(running=True)
         self.logger.debug("Spotify session moved to %s at %d ms", spotify_uri, seek_position_ms)
@@ -1318,19 +1325,17 @@ class _EngineRun:
             != CONF_VALUE_DISABLED
         )
 
-    def _serves_queue(self, queue_id: str | None) -> bool:
+    def _suits_queue(self, queue_id: str | None) -> bool:
         """
-        Return whether the engine's audio suits the given queue, adopting it when so.
+        Return whether the engine's audio suits the given queue.
 
         :param queue_id: The queue the audio is requested for.
         """
-        if queue_id == self.queue_id:
-            return True
         # the engine reads its normalization setting at startup only
-        if self._engine_normalization_enabled(queue_id) != self.engine_normalizes:
-            return False
-        self.queue_id = queue_id
-        return True
+        return (
+            queue_id == self.queue_id
+            or self._engine_normalization_enabled(queue_id) == self.engine_normalizes
+        )
 
     async def _await_playback_started(self, proc: AsyncProcess) -> None:
         """Wait until the engine reports it is playing this run's first item."""
@@ -1484,6 +1489,19 @@ class _EngineRun:
         if not self.busy:
             self.logger.debug("Nothing more to play, stopping the Spotify session")
             self.mass.create_task(self.backend.discard_run(self, unless_busy=True))
+
+    async def _pin_volume(self, volume: int) -> None:
+        """
+        Keep the engine at unity volume: the capture has to carry its PCM unaltered.
+
+        :param volume: The volume the engine reports.
+        """
+        if volume == 100 or (client := self._client) is None or not client.connected:
+            return
+        # the device is controllable from the Spotify app, Music Assistant sets
+        # the player's volume itself
+        with suppress(SoloistError, OSError):
+            await client.set_volume(100)
 
     def _watch_unclaimed(self, item: _Item) -> None:
         """Stop the run when nobody takes up the item the engine moved on to in time."""
@@ -1709,7 +1727,7 @@ class _EngineRun:
         # FIFO, and resume once there is room again
         await self._set_sink(running=False)
         while not self._stopped and self._error is None:
-            if item.abandoned or self._moving:
+            if self._let_go(item):
                 return True
             with suppress(TimeoutError):
                 async with asyncio.timeout(_READ_SLICE_S):
@@ -1717,9 +1735,16 @@ class _EngineRun:
                     break
         else:
             return False
+        if self._let_go(item):
+            # the room came from a release or a move, which hold the sink themselves
+            return True
         # an item whose end is known is owed its tail even from a paused engine
         await self._set_sink(running=self._engine_playing or item.ended)
         return True
+
+    def _let_go(self, item: _Item) -> bool:
+        """Return whether the capture no longer owes the item its audio."""
+        return item.abandoned or self._moving
 
     def _finish_delivery(self, item: _Item) -> None:
         """Mark the item's audio as fully handed over."""
@@ -1799,6 +1824,9 @@ class _EngineRun:
         if isinstance(data, SoloistQueueChanged):
             self._observe_queue(data)
             return
+        if isinstance(data, SoloistVolumeChanged):
+            await self._pin_volume(data.volume)
+            return
         if isinstance(data, SoloistTrackChanged):
             if data.item is not None and data.item.uri:
                 self._observe_engine_item(data.item.uri, announced=True)
@@ -1807,9 +1835,21 @@ class _EngineRun:
             self._observe_position(data.position.position_ms)
             return
         if isinstance(data, SoloistPlaybackState):
+            if data.volume is not None:
+                await self._pin_volume(data.volume)
             playing = data.status == "playing"
             if data.item is not None and data.item.uri:
                 self._observe_engine_item(data.item.uri, announced=playing, details=data.item)
+                if (
+                    (fed := self._fed) is not None
+                    and fed.left
+                    and playing
+                    and data.item.uri == fed.spotify_uri
+                    and data.position is not None
+                    and data.position.position_ms < _RESTART_POSITION_MS
+                ):
+                    # the same track queued after itself: only its restart tells
+                    self._consume_fed()
             if data.position is not None:
                 self._observe_position(data.position.position_ms)
             self._engine_playing = playing
@@ -1867,12 +1907,13 @@ class _EngineRun:
             return
         if item.ended:
             return
-        if self._fed is not None:
+        if self._fed is not None and not self._fed.left:
             self._fail(
                 "Spotify is already streaming somewhere else - an account "
                 "can only play in one place at a time"
             )
             return
+        self._fed = None
         # past the last item it was given the engine wandered on by itself
         # (autoplay): this item is over, and what renders now is not its audio
         self.logger.debug("Engine wandered to %s; %s has ended", uri, item.spotify_uri)
@@ -1900,8 +1941,8 @@ class _EngineRun:
                     self.logger.debug("Spotify did not queue %s", fed.spotify_uri)
                     self._fed = None
             elif fed.uid not in uids:
-                # the only report when the queued item is the one already playing
-                self._consume_fed()
+                # the engine reporting it plays the item confirms it was started
+                fed.left = True
         self._queue_uids = uids
 
     def _consume_fed(self) -> None:
