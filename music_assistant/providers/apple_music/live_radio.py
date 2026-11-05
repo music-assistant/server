@@ -19,7 +19,7 @@ from music_assistant_models.enums import ContentType, MediaType, StreamType
 from music_assistant_models.errors import MusicAssistantError, UnplayableMediaError
 from music_assistant_models.media_items import AudioFormat, Radio
 from music_assistant_models.streamdetails import StreamDetails, StreamMetadata
-from pywidevine import PSSH, Cdm, Device, DeviceTypes
+from pywidevine import PSSH
 
 from music_assistant.controllers.cache import use_cache
 from music_assistant.helpers.datetime import utc
@@ -246,7 +246,7 @@ class AppleMusicLiveRadioManager:
     async def get_stations(self) -> list[Radio]:
         """Return the live stations of the account's storefront."""
         response = await self.provider.api_client.get_data(
-            f"catalog/{self.provider._storefront}/stations",
+            f"catalog/{self.provider.storefront}/stations",
             **{"filter[featured]": LIVE_RADIO_FILTER},
         )
         return [parse_station(self.provider, station) for station in response.get("data", [])]
@@ -298,6 +298,8 @@ class AppleMusicLiveRadioManager:
                 raise UnplayableMediaError(f"Live radio stream failed: {reason}") from None
             raise
         finally:
+            for task_id in streamdetails.data.get("metadata_timers", []):
+                self.mass.cancel_timer(task_id)
             self.monitor.end_session(reason)
 
     async def _get_stream_details(self, station_id: str) -> StreamDetails:
@@ -325,7 +327,7 @@ class AppleMusicLiveRadioManager:
             "widevine_uri": newest.widevine_uri,
             "init_url": newest.init_url,
             "audio_config": None,
-            "renew_after": 0,
+            "renew_at": None,
         }
         await self._load_key(newest, data)
         data["audio_config"] = data["keys"][newest.key_id][1].audio_config
@@ -358,7 +360,6 @@ class AppleMusicLiveRadioManager:
         started = time.monotonic()
         last_new_segment = started
         last_heartbeat = started
-        renew_at = started + float(data["renew_after"]) if data["renew_after"] else None
         last_metadata: StreamMetadata | None = None
         next_sequence = self._resume_sequence(station_id)
         target = DEFAULT_TARGET_DURATION
@@ -431,8 +432,8 @@ class AppleMusicLiveRadioManager:
                     session.behind_live_s = round((utc() - segment.program_time).total_seconds(), 1)
 
             now = time.monotonic()
-            if renew_at is not None and now >= renew_at:
-                renew_at = await self._renew_license(data, session, now)
+            if data["renew_at"] is not None and now >= data["renew_at"]:
+                data["renew_at"] = await self._renew_license(data, session, now)
             if now - last_heartbeat >= HEARTBEAT_INTERVAL:
                 last_heartbeat = now
                 self.monitor.event(
@@ -494,7 +495,7 @@ class AppleMusicLiveRadioManager:
                 init=encryption.key_id[:8],
             )
         data["keys"][segment.key_id] = (bytes.fromhex(key), encryption)
-        data["renew_after"] = renew_after
+        data["renew_at"] = time.monotonic() + renew_after if renew_after else None
 
     def _resume_sequence(self, station_id: str) -> int | None:
         """Return where a restarted stream continues, None when it starts at the live edge."""
@@ -520,12 +521,18 @@ class AppleMusicLiveRadioManager:
         ahead = max(0.0, session.audio_seconds_sent - (time.monotonic() - started))
         session.stream_title = f"{metadata.artist} - {metadata.title}"
         self.monitor.event("stream_metadata", title=session.stream_title, in_seconds=round(ahead))
+        timers: list[str] = streamdetails.data.setdefault("metadata_timers", [])
+        # a title that follows soon must not replace one that still waits for its audio
+        task_id = (
+            f"apple_music_live_metadata_{self.provider.instance_id}_{session.session}_{len(timers)}"
+        )
+        timers.append(task_id)
         self.mass.call_later(
             ahead,
             self._apply_stream_metadata,
             streamdetails,
             metadata,
-            task_id=f"apple_music_live_metadata_{self.provider.instance_id}",
+            task_id=task_id,
         )
 
     def _apply_stream_metadata(
@@ -540,7 +547,7 @@ class AppleMusicLiveRadioManager:
     async def _get_asset(self, station_id: str) -> dict[str, Any]:
         """Return the stream url and key server Apple hands this account for a station."""
         api = self.provider.api_client
-        station = await api.get_data(f"catalog/{self.provider._storefront}/stations/{station_id}")
+        station = await api.get_data(f"catalog/{self.provider.storefront}/stations/{station_id}")
         play_params = station["data"][0]["attributes"]["playParams"]
         params = {
             key: str(value).lower() if isinstance(value, bool) else value
@@ -624,18 +631,9 @@ class AppleMusicLiveRadioManager:
     ) -> tuple[str, float]:
         """Return the content key and renewal interval from the license of this account."""
         streaming = self.provider.streaming_manager
-        client_id = streaming._decrypt_client_id
-        private_key = streaming._decrypt_private_key
-        if not client_id or not private_key or not segment.widevine_uri:
+        if not streaming.cdm_available or not segment.widevine_uri:
             raise UnplayableMediaError("Widevine CDM files are not available for live radio")
-        device = Device(
-            client_id=client_id,
-            private_key=private_key,
-            type_=DeviceTypes.ANDROID,
-            security_level=3,
-            flags={},
-        )
-        cdm = Cdm.from_device(device)
+        cdm = streaming.create_cdm()
         session_id = cdm.open()
         try:
             pssh = PSSH(segment.widevine_uri.split("base64,", 1)[-1])
@@ -653,8 +651,8 @@ class AppleMusicLiveRadioManager:
                     key_server_url,
                     json=body,
                     headers={
-                        **streaming._decryption_headers,
-                        "x-apple-music-user-token": cast("str", self.provider._music_user_token),
+                        **streaming.decryption_headers,
+                        "x-apple-music-user-token": cast("str", self.provider.music_user_token),
                         "x-apple-renewal": "true",
                     },
                     timeout=_CDN_TIMEOUT,

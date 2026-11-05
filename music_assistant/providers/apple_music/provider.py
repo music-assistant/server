@@ -88,6 +88,16 @@ class AppleMusicProvider(RecommendationPayloadMixin, MusicProvider):
         self._last_library_listings: dict[str, dict[str, Any]] = {}
 
     @property
+    def storefront(self) -> str | None:
+        """Return the storefront of this account."""
+        return self._storefront
+
+    @property
+    def music_user_token(self) -> str | None:
+        """Return the music user token of this account."""
+        return self._music_user_token
+
+    @property
     def max_concurrent_streams(self) -> int:
         """Apple Music accounts allow a single active playback session."""
         return 1
