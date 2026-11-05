@@ -18,13 +18,18 @@ if TYPE_CHECKING:
     from music_assistant.providers.snapcast.snap_cntrl_proto import SnapclientProto
 
 
-def _make_player(queue: SimpleNamespace) -> tuple[SnapCastPlayer, MagicMock]:
+def _make_player(queue: SimpleNamespace | None) -> tuple[SnapCastPlayer, MagicMock]:
     player = SnapCastPlayer.__new__(SnapCastPlayer)
     player._extra_data = {}
     player._snap_ma_stream = None
     player._announcement_clip_playing = False
     player.poke_player_update = MagicMock()  # type: ignore[method-assign]
     group = MagicMock(stream="music", set_stream=AsyncMock())
+
+    async def set_stream(stream_id: str) -> None:
+        group.stream = stream_id
+
+    group.set_stream.side_effect = set_stream
     player.snap_client = cast(
         "SnapclientProto", SimpleNamespace(group=group, identifier="kitchen-client", group_id=None)
     )
@@ -105,3 +110,73 @@ async def test_announcement_rejoins_live_stream_when_item_left_queue() -> None:
 
     player.mass.player_queues.play_index.assert_not_awaited()  # type: ignore[attr-defined]
     assert group.set_stream.await_args_list[-1].args == ("music",)
+
+
+@pytest.mark.asyncio
+async def test_announcement_restores_external_source_without_default() -> None:
+    """An external source is restored even when there is no literal default stream."""
+    player, group = _make_player(None)
+    group.stream = "external-radio"
+    provider = cast("MagicMock", player.snap_provider)
+    provider.get_snap_ma_stream.return_value = None
+
+    def find_stream(stream_id: str) -> MagicMock:
+        if stream_id != "external-radio":
+            raise KeyError(stream_id)
+        return MagicMock(identifier=stream_id)
+
+    provider._snapserver.stream.side_effect = find_stream
+    await player.play_announcement(PlayerMedia(uri="announce.mp3"))
+    assert [call.args[0] for call in group.set_stream.await_args_list] == [
+        "announcement",
+        "external-radio",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_announcement_preserves_external_source_switch_during_clip() -> None:
+    """Finishing an announcement must not undo a deliberate change by another controller."""
+    player, group = _make_player(_queue())
+    clip = cast(
+        "MagicMock",
+        await player.snap_provider.get_snapcast_media_stream(PlayerMedia(uri="announce.mp3")),
+    )
+
+    async def switch_to_party() -> None:
+        group.stream = "party-radio"
+
+    clip.wait_for_stopped.side_effect = switch_to_party
+    await player.play_announcement(PlayerMedia(uri="announce.mp3"))
+    assert group.stream == "party-radio"
+    assert group.set_stream.await_count == 1
+    cast("MagicMock", player.mass).player_queues.play_index.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_announcement_does_not_select_removed_sources() -> None:
+    """Missing source IDs are never sent to Group.SetStream during restoration."""
+    player, group = _make_player(None)
+    provider = cast("MagicMock", player.snap_provider)
+    provider.get_snap_ma_stream.return_value = None
+    provider._snapserver.stream.side_effect = KeyError("gone")
+    await player.play_announcement(PlayerMedia(uri="announce.mp3"))
+    assert group.set_stream.await_count == 1
+    provider.logger.warning.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_announcement_falls_back_to_existing_default_if_previous_source_removed() -> None:
+    """The default remains a fallback only when it actually exists."""
+    player, group = _make_player(None)
+    group.stream = "external-radio"
+    provider = cast("MagicMock", player.snap_provider)
+    provider.get_snap_ma_stream.return_value = None
+
+    def find_stream(stream_id: str) -> MagicMock:
+        if stream_id != "default":
+            raise KeyError(stream_id)
+        return MagicMock(identifier=stream_id)
+
+    provider._snapserver.stream.side_effect = find_stream
+    await player.play_announcement(PlayerMedia(uri="announce.mp3"))
+    assert group.set_stream.await_args_list[-1].args == ("default",)

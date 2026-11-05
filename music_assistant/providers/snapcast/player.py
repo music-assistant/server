@@ -26,7 +26,11 @@ if TYPE_CHECKING:
     from music_assistant_models.config_entries import ConfigEntry
 
     from music_assistant.providers.snapcast.provider import SnapCastProvider
-    from music_assistant.providers.snapcast.snap_cntrl_proto import SnapclientProto, SnapstreamProto
+    from music_assistant.providers.snapcast.snap_cntrl_proto import (
+        SnapclientProto,
+        SnapgroupProto,
+        SnapstreamProto,
+    )
 
 
 class TrackedPlayerState(TypedDict, total=False):
@@ -346,6 +350,8 @@ class SnapCastPlayer(Player):
         orig_volume_level: int | None = self.volume_level
 
         prev_stream = self.active_snap_ma_stream
+        prev_snap_group = self.snap_client.group
+        prev_snap_stream_id = prev_snap_group.stream if prev_snap_group else None
         # the music keeps streaming unheard while the group plays the clip, so the queue
         # restarts where the clip began instead of rejoining the live stream
         resume_queue = None if was_synced_to else self.mass.player_queues.get(self.player_id)
@@ -388,6 +394,13 @@ class SnapCastPlayer(Player):
             await ma_stream.wait_for_stopped()
             self._announcement_clip_playing = False
 
+            current_group = self.snap_client.group
+            if current_group is None or current_group.stream != ma_stream.stream_id:
+                # Another controller may have moved this client to a different source
+                # during the clip. Restoring here would undo that deliberate change.
+                return
+            player_group = current_group
+
             if self.volume_level == volume_level and orig_volume_level is not None:
                 await self.volume_set(orig_volume_level)
 
@@ -411,11 +424,12 @@ class SnapCastPlayer(Player):
                     resume_queue.queue_id, resume_item.queue_item_id, resume_pos
                 )
             else:
-                await player_group.set_stream(
+                restore_stream_id = (
                     prev_stream.stream_id
                     if prev_stream and prev_stream.stream_id is not None
-                    else "default"
+                    else prev_snap_stream_id
                 )
+                await self._restore_announcement_source(player_group, restore_stream_id)
         finally:
             self._announcement_clip_playing = False
             if prev_stream:
@@ -428,6 +442,23 @@ class SnapCastPlayer(Player):
             # we don't use the http server for streaming
             CONF_ENTRY_HTTP_PROFILE_HIDDEN,
         ]
+
+    async def _restore_announcement_source(
+        self, group: SnapgroupProto, previous_stream_id: str | None
+    ) -> None:
+        """Restore a still-existing source after an announcement."""
+        for candidate in dict.fromkeys((previous_stream_id, "default")):
+            if candidate is None:
+                continue
+            try:
+                self.snap_provider._snapserver.stream(candidate)
+            except KeyError:
+                continue
+            await group.set_stream(candidate)
+            return
+        self.snap_provider.logger.warning(
+            "Cannot restore Snapcast announcement: previous and default streams are gone"
+        )
 
     def _handle_player_update(self, snap_client: SnapclientProto) -> None:
         """Forward snap_client updates."""
