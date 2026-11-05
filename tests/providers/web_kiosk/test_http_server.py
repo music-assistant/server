@@ -403,6 +403,7 @@ async def test_party_info_hides_the_join_url(
     assert resp.status == 200
     assert body == {
         "active": True,
+        "guest_access": True,
         "name": "Room",
         "qr_text": "Scan",
         "version": body["version"],

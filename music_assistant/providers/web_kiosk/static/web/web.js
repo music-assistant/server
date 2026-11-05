@@ -13,10 +13,20 @@
         } catch (e) { SENDSPIN = false; }
     }
     if (SENDSPIN) document.documentElement.classList.add('sendspin');
-    var FLAG = function (name) { return params.get(name) === '1'; };
+    var PROFILE = params.get('profile') || '';
+    var PROFILE_DEFAULTS = {
+        tv: { remote: 1, lite: 1, wake_lock: 1, fullscreen: 1, queue: 1, lyrics: 1 },
+        wall: { fullscreen: 1, queue: 1, lyrics: 1, wake_lock: 1, show_group: 1 }
+    };
+    var FLAG = function (name) {
+        if (params.has(name)) return params.get(name) === '1';
+        return !!(PROFILE_DEFAULTS[PROFILE] && PROFILE_DEFAULTS[PROFILE][name]);
+    };
     var REMOTE = FLAG('remote');
     var LITE = FLAG('lite');
     var KEEP_AWAKE = FLAG('wake_lock');
+    var FULLSCREEN = FLAG('fullscreen');
+    var LOCK = FLAG('lock');
     document.documentElement.classList.toggle('lite', LITE);
     var SHOW = { controls: FLAG('controls'), party: FLAG('party'), viz: FLAG('viz'), lyrics: FLAG('lyrics'), queue: FLAG('queue'), playerId: FLAG('show_player_id'), group: FLAG('show_group') };
     document.documentElement.classList.toggle('controls', SHOW.controls);
@@ -212,6 +222,7 @@
         var qs = 'device_id=' + encodeURIComponent(deviceId);
         qs += '&volume_control=' + (mediaVolumeWritable || sendspinStreaming ? '1' : '0');
         if (SHOW.lyrics) qs += '&lyrics=1';
+        if (SHOW.queue) qs += '&queue=1';
         if (sendspinClientId) qs += '&sendspin_client_id=' + encodeURIComponent(sendspinClientId);
         var socket = new WebSocket(proto + '://' + location.host + '/ws?' + qs);
         ws = socket;
@@ -256,7 +267,7 @@
         syncViz();
         refreshWakeLock();
         if (SHOW.party) fetchParty();
-        if (SHOW.queue && TOKEN) fetchQueue();
+        if (SHOW.queue && TOKEN && !queuePushed) fetchQueue();
     }
     window.addEventListener('online', function () { recoverPage(true); });
     window.addEventListener('pageshow', function (event) { recoverPage(!!event.persisted); });
@@ -356,6 +367,15 @@
                 if (SENDSPIN) initSendspin();
                 else if (pendingHtml5Fallback) sendWS({type:'sendspin_fallback'});
                 if (audio.ended) reportTrackEnded();
+                break;
+            case 'queue':
+                queuePushed = true;
+                queue = Array.isArray(msg.items) ? msg.items : [];
+                queueIndex = -1;
+                for (var qi = 0; qi < queue.length; qi++) {
+                    if (queue[qi] && queue[qi].is_current) { queueIndex = qi; break; }
+                }
+                renderQueue();
                 break;
             case 'player':
                 customName = typeof msg.custom_name === 'string' ? msg.custom_name : '';
@@ -1041,8 +1061,9 @@
         }).catch(hideParty);
     }
 
+    var queuePushed = false;
     function fetchQueue() {
-        if (!SHOW.queue || !playerId || !TOKEN) return;
+        if (queuePushed || !SHOW.queue || !playerId || !TOKEN) return;
         rpc('player_queues/get_active_queue', { player_id: playerId }).then(function (q) {
             if (!q || !q.queue_id) return;
             var index = q.current_index != null ? q.current_index : -1;
@@ -1065,8 +1086,8 @@
             var mi = qi.media_item || {};
             var row = document.createElement('div');
             row.classList.add('qrow');
-            if (i === queueIndex) row.classList.add('active');
-            var img = imageUrl(mi);
+            if (qi.is_current != null ? qi.is_current : i === queueIndex) row.classList.add('active');
+            var img = qi.image_url || imageUrl(mi);
             if (img) {
                 var artwork = document.createElement('img');
                 artwork.src = img;
@@ -1077,13 +1098,20 @@
             meta.classList.add('qmeta');
             var title = document.createElement('div');
             title.classList.add('qt');
-            title.textContent = mi.name || qi.name || '';
+            title.textContent = qi.title || mi.name || qi.name || '';
             var artist = document.createElement('div');
             artist.classList.add('qa');
-            artist.textContent = artistStr(mi) || '';
+            artist.textContent = qi.artist || artistStr(mi) || '';
             meta.appendChild(title);
             meta.appendChild(artist);
             row.appendChild(meta);
+            if (qi.party_boosted || qi.party_guest) {
+                var badge = document.createElement('span');
+                badge.classList.add('qbadge');
+                if (qi.party_boosted) badge.classList.add('boost');
+                badge.textContent = qi.party_boosted ? 'Boost' : 'Guest';
+                row.appendChild(badge);
+            }
             el.appendChild(row);
         });
     }
@@ -1312,14 +1340,14 @@
             ['msRequestFullscreen', 'msExitFullscreen', 'msFullscreenEnabled', 'msFullscreenElement', 'MSFullscreenChange']
         ];
         var api = null;
-        if (FLAG('fullscreen')) apis.some(function (candidate) {
+        if (FULLSCREEN || LOCK) apis.some(function (candidate) {
             if (typeof root[candidate[0]] !== 'function' || typeof document[candidate[1]] !== 'function'
                 || document[candidate[2]] === false) return false;
             api = candidate;
             return true;
         });
-        button.classList.toggle('hidden', !api);
-        root.classList.toggle('fullscreen-button', !!api);
+        button.classList.toggle('hidden', !api || LOCK);
+        root.classList.toggle('fullscreen-button', !!api && !LOCK);
         if (!api) return;
         function refresh() {
             var active = !!document[api[3]];
@@ -1336,6 +1364,18 @@
             } catch (e) { setStatus('Fullscreen unavailable'); refresh(); }
         };
         document.addEventListener(api[4], refresh);
+        if (LOCK) {
+            var entered = false;
+            var enter = function () {
+                if (entered || document[api[3]]) return;
+                entered = true;
+                try {
+                    Promise.resolve(root[api[0]]()).then(refresh, function () { entered = false; });
+                } catch (e) { entered = false; }
+            };
+            document.addEventListener('pointerdown', enter, { once: true });
+            document.addEventListener('keydown', enter, { once: true });
+        }
         refresh();
     }
 

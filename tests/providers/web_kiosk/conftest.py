@@ -133,6 +133,8 @@ def mass_mock(player_config_mock: Mock) -> Mock:
     mass.player_queues.play_media = _playback_command()
     mass.player_queues.items = Mock(return_value=[])
     mass.player_queues.get = Mock(return_value=None)
+    mass.player_queues.get_active_queue = Mock(return_value=None)
+    mass.player_queues.get_item = Mock(return_value=None)
     mass.player_queues.get_next_item = Mock(return_value=None)
     # MA playback commands take the playback lock; the mocks count as taking it.
     mass.player_queues.resume = _playback_command()
@@ -153,8 +155,12 @@ def mass_mock(player_config_mock: Mock) -> Mock:
     # Stream URL resolution
     mass.streams.resolve_stream_url = AsyncMock(return_value="http://ma.local:8095/stream/1")
 
-    # Image URLs
+    # Image URLs and lyrics
     mass.metadata.get_image_url = Mock(return_value=None)
+    mass.metadata.get_track_lyrics = AsyncMock(return_value=(None, None))
+
+    # Event subscriptions (provider lifecycle and queue display)
+    mass.subscribe = Mock(return_value=lambda: None)
 
     # Other providers (Sendspin, Party) are absent by default
     mass.get_provider = Mock(return_value=None)

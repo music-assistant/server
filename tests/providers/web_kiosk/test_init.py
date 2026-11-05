@@ -11,8 +11,10 @@ from music_assistant_models.enums import ProviderFeature
 import music_assistant.providers.web_kiosk as provider_package
 from music_assistant.providers.web_kiosk import setup
 from music_assistant.providers.web_kiosk.constants import (
+    CONF_ENABLE_DISPLAY_MODE,
     CONF_ENABLE_PARTY_QR,
     CONF_ENABLE_SENDSPIN_BRIDGE,
+    CONF_FRAME_ANCESTORS,
     CONF_HTTP_PORT,
     CONF_KIOSK_URL,
     CONF_SHOW_STOP_NOTIFICATION,
@@ -41,9 +43,20 @@ async def test_get_config_entries_exposes_expected_keys(provider: WebKioskProvid
         CONF_SHOW_STOP_NOTIFICATION,
         CONF_ENABLE_SENDSPIN_BRIDGE,
         CONF_ENABLE_PARTY_QR,
+        CONF_ENABLE_DISPLAY_MODE,
+        CONF_FRAME_ANCESTORS,
         CONF_KIOSK_URL,
         CONF_URL_BUILDER_REQUIRE_AUTH,
     }
+
+
+def test_manifest_declares_a_community_tier() -> None:
+    """Upstream requires every public provider manifest to declare its maintainer tier."""
+    manifest = json.loads(
+        (Path(provider_package.__file__).parent / "manifest.json").read_text(encoding="utf-8")
+    )
+
+    assert manifest["tier"] == "community"
 
 
 async def test_party_qr_is_an_opt_in(provider: WebKioskProvider) -> None:

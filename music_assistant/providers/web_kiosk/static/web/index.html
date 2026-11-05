@@ -4,6 +4,8 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>Web Kiosk</title>
+<link rel="icon" href="/web/icon.svg" type="image/svg+xml">
+<link rel="manifest" href="/web/manifest.webmanifest">
 <script>
 try {
   var q = new URLSearchParams(location.search);
@@ -38,6 +40,8 @@ html.controls #kiosk-center { bottom:calc(var(--kiosk-bar-height) + 16px); }
 #kiosk-queue .qmeta { flex:1; min-width:0; display:flex; flex-direction:column; }
 #kiosk-queue .qt { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 #kiosk-queue .qa { color:#9a9aa6; font-size:12px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+#kiosk-queue .qbadge { font-size:10px; text-transform:uppercase; letter-spacing:.5px; padding:1px 5px; border-radius:6px; background:rgba(255,255,255,.14); flex-shrink:0; }
+#kiosk-queue .qbadge.boost { background:#b55522; }
 #kiosk-sync { position:absolute; top:16px; left:50%; transform:translateX(-50%); z-index:6; font-size:12px; letter-spacing:1px; color:#9a9aa6; padding:6px 12px; border-radius:20px; background:rgba(10,10,14,.5); }
 #kiosk-sync.synced { color:#7ce38b; }
 #kiosk-sync.error { color:#ff8a8a; }

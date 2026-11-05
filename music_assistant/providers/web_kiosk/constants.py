@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from urllib.parse import urlsplit
 
 CONF_HTTP_PORT = "http_port"
 CONF_KIOSK_URL = "kiosk_url"
@@ -10,6 +11,8 @@ CONF_URL_BUILDER_REQUIRE_AUTH = "url_builder_require_auth"
 CONF_SHOW_STOP_NOTIFICATION = "show_stop_notification"
 CONF_ENABLE_SENDSPIN_BRIDGE = "enable_sendspin_bridge"
 CONF_ENABLE_PARTY_QR = "enable_party_qr"
+CONF_ENABLE_DISPLAY_MODE = "enable_display_mode"
+CONF_FRAME_ANCESTORS = "frame_ancestors"
 
 DEFAULT_URL_BUILDER_REQUIRE_AUTH = False
 DEFAULT_HTTP_PORT = 8098
@@ -19,6 +22,8 @@ DEFAULT_ENABLE_SENDSPIN_BRIDGE = True
 # The QR encodes a Party guest join code and the kiosk port has no
 # authentication, so serving it is an explicit choice for a trusted network.
 DEFAULT_ENABLE_PARTY_QR = False
+DEFAULT_ENABLE_DISPLAY_MODE = False
+DEFAULT_FRAME_ANCESTORS = ""
 
 # Player ID prefix for dynamically registered kiosk players
 WEB_KIOSK_PLAYER_ID_PREFIX = "wk_"
@@ -44,3 +49,41 @@ def normalize_sendspin_client_id(value: str | None) -> str | None:
     if value and SENDSPIN_CLIENT_ID_RE.fullmatch(value):
         return value
     return None
+
+
+def parse_frame_ancestors(value: object) -> tuple[str, ...]:
+    """
+    Return the exact origins that may embed a display page.
+
+    The provider setting is a comma-separated list. Only ordinary HTTP(S)
+    origins are accepted: no wildcards, paths, queries, fragments or user
+    info. An invalid value is ignored, so a typo never widens the policy.
+    """
+    if not isinstance(value, str):
+        return ()
+    origins: list[str] = []
+    for raw in value.split(","):
+        candidate = raw.strip()
+        if not candidate:
+            continue
+        try:
+            parts = urlsplit(candidate)
+            hostname = parts.hostname
+            parts.port  # noqa: B018 - raises ValueError on an invalid port
+        except ValueError:
+            continue
+        if (
+            parts.scheme not in ("http", "https")
+            or not hostname
+            or parts.username
+            or parts.password
+            or parts.path not in ("", "/")
+            or parts.query
+            or parts.fragment
+            or "*" in parts.netloc
+        ):
+            continue
+        origin = f"{parts.scheme.lower()}://{parts.netloc.lower()}"
+        if origin not in origins:
+            origins.append(origin)
+    return tuple(origins)

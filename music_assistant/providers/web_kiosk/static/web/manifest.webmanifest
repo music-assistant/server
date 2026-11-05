@@ -1,0 +1,19 @@
+{
+  "name": "Web Kiosk for Music Assistant",
+  "short_name": "Web Kiosk",
+  "description": "Fullscreen Music Assistant player and read-only display",
+  "start_url": "/kiosk",
+  "scope": "/",
+  "display": "fullscreen",
+  "orientation": "any",
+  "background_color": "#0c0c10",
+  "theme_color": "#0c0c10",
+  "icons": [
+    {
+      "src": "/web/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    }
+  ]
+}

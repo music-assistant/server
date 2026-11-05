@@ -25,20 +25,25 @@ from music_assistant.constants import ATTR_ENABLED
 from music_assistant.models.player_provider import PlayerProvider
 
 from .constants import (
+    CONF_ENABLE_DISPLAY_MODE,
     CONF_ENABLE_PARTY_QR,
     CONF_ENABLE_SENDSPIN_BRIDGE,
+    CONF_FRAME_ANCESTORS,
     CONF_HTTP_PORT,
     CONF_KIOSK_URL,
     CONF_SHOW_STOP_NOTIFICATION,
     CONF_URL_BUILDER_REQUIRE_AUTH,
+    DEFAULT_ENABLE_DISPLAY_MODE,
     DEFAULT_ENABLE_PARTY_QR,
     DEFAULT_ENABLE_SENDSPIN_BRIDGE,
+    DEFAULT_FRAME_ANCESTORS,
     DEFAULT_HTTP_PORT,
     DEFAULT_PLAYER_IDLE_TIMEOUT,
     DEFAULT_SHOW_STOP_NOTIFICATION,
     DEFAULT_URL_BUILDER_REQUIRE_AUTH,
     PLAYER_DISCONNECT_GRACE_SECONDS,
     WEB_KIOSK_PLAYER_ID_PREFIX,
+    parse_frame_ancestors,
 )
 from .http_server import WebKioskHTTPServer
 from .lyrics import parse_track_lyrics
@@ -60,6 +65,8 @@ class WebKioskProvider(PlayerProvider):
     http_server: WebKioskHTTPServer | None = None
     sendspin_bridge_enabled: bool = False
     party_qr_enabled: bool = False
+    display_mode_enabled: bool = False
+    frame_ancestors: tuple[str, ...] = ()
     bridge_manager: WebKioskSendspinBridgeManager | None = None
     _player_last_activity: dict[str, float]
     _disconnect_tasks: dict[str, asyncio.Task[None]]
@@ -108,6 +115,18 @@ class WebKioskProvider(PlayerProvider):
                 default_value=DEFAULT_ENABLE_PARTY_QR,
             ),
             ConfigEntry(
+                key=CONF_ENABLE_DISPLAY_MODE,
+                type=ConfigEntryType.BOOLEAN,
+                required=False,
+                default_value=DEFAULT_ENABLE_DISPLAY_MODE,
+            ),
+            ConfigEntry(
+                key=CONF_FRAME_ANCESTORS,
+                type=ConfigEntryType.STRING,
+                required=False,
+                default_value=DEFAULT_FRAME_ANCESTORS,
+            ),
+            ConfigEntry(
                 key=CONF_URL_BUILDER_REQUIRE_AUTH,
                 type=ConfigEntryType.BOOLEAN,
                 required=False,
@@ -131,6 +150,12 @@ class WebKioskProvider(PlayerProvider):
         )
         self.party_qr_enabled = bool(
             self.config.get_value(CONF_ENABLE_PARTY_QR, DEFAULT_ENABLE_PARTY_QR)
+        )
+        self.display_mode_enabled = bool(
+            self.config.get_value(CONF_ENABLE_DISPLAY_MODE, DEFAULT_ENABLE_DISPLAY_MODE)
+        )
+        self.frame_ancestors = parse_frame_ancestors(
+            self.config.get_value(CONF_FRAME_ANCESTORS, DEFAULT_FRAME_ANCESTORS)
         )
         try:
             self.bridge_manager = WebKioskSendspinBridgeManager(self)

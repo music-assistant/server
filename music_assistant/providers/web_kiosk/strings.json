@@ -16,6 +16,14 @@
       "label": "Show the Party guest QR",
       "description": "Show the Party join QR on the kiosk page. The QR contains a guest login, and anyone who can reach the kiosk port can scan it, so enable this only when that port is limited to a trusted network."
     },
+    "enable_display_mode": {
+      "label": "Enable read-only display screens",
+      "description": "Allow /view screens to show a player and its queue without a Music Assistant token or a new player. Anyone who can reach the kiosk port can view that data, so enable this only on a trusted network."
+    },
+    "frame_ancestors": {
+      "label": "Allow display pages in frames",
+      "description": "Comma-separated exact origins allowed to embed /view, for example https://homeassistant.local:8123. Leave empty to keep iframe embedding disabled."
+    },
     "kiosk_url": {
       "label": "Kiosk URL",
       "description": "Open this URL for a minimal Sendspin player. Use the URL builder at the server root to enable additions or select HTML5."

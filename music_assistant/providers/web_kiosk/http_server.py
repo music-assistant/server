@@ -14,7 +14,7 @@ from typing import TYPE_CHECKING, Any, TypeGuard, cast
 from urllib.parse import quote, urlsplit, urlunsplit
 
 from aiohttp import ClientError, WSCloseCode, WSMsgType, web
-from music_assistant_models.enums import PlaybackState
+from music_assistant_models.enums import EventType, MediaType, PlaybackState
 from music_assistant_models.errors import MusicAssistantError
 
 from music_assistant.constants import HOMEASSISTANT_SYSTEM_USER, SENDSPIN_SERVER_PORT
@@ -28,6 +28,7 @@ from .constants import (
     WEB_KIOSK_PLAYER_ID_PREFIX,
     normalize_sendspin_client_id,
 )
+from .lyrics import parse_track_lyrics
 from .ownership import (
     SendspinClaimChallenge,
     SendspinIdentityConflictError,
@@ -37,6 +38,9 @@ from .party import PartyAdapter
 from .player import END_MARGIN, WebKioskPlayer, media_timeline
 
 if TYPE_CHECKING:
+    from music_assistant_models.player_queue import PlayerQueue
+    from music_assistant_models.queue_item import QueueItem
+
     from music_assistant.models.player import Player, PlayerMedia
 
     from .provider import WebKioskProvider
@@ -109,7 +113,7 @@ class WebKioskHTTPServer:
         self.provider = provider
         self.port = port
         self.app = web.Application(middlewares=[self._cache_middleware])
-        self.app.on_response_prepare.append(self._deny_framing)
+        self.app.on_response_prepare.append(self._set_frame_policy)
         self.app.on_startup.append(self._subscribe_player_updates)
         self.app.on_cleanup.append(self._unsubscribe_player_updates)
         self._unsubscribe_state_updates: Callable[[], None] | None = None
@@ -128,6 +132,14 @@ class WebKioskHTTPServer:
         # The playback generation of the last play message each page was sent.
         self._ws_played: dict[web.WebSocketResponse, str] = {}
         self._ws_tasks: dict[web.WebSocketResponse, set[asyncio.Future[Any]]] = {}
+        self._display_clients: dict[str, set[web.WebSocketResponse]] = {}
+        # Player pages that asked for the queue over the socket. Display pages
+        # always receive it; a player page opts in with queue=1.
+        self._ws_queue_requested: set[web.WebSocketResponse] = set()
+        self._display_signatures: dict[str, tuple[Any, ...]] = {}
+        self._display_queue_signatures: dict[str, tuple[Any, ...]] = {}
+        self._display_lyrics: dict[str, tuple[str, ...]] = {}
+        self._unsubscribe_queue_updates: Callable[[], None] | None = None
         self._outbound_locks: dict[str, asyncio.Lock] = {}
         self.party = PartyAdapter(provider)
         self._setup_routes()
@@ -153,7 +165,12 @@ class WebKioskHTTPServer:
             for ws in list(clients):
                 if not ws.closed:
                     await ws.close()
+        for clients in list(self._display_clients.values()):
+            for ws in list(clients):
+                if not ws.closed:
+                    await ws.close()
         self._ws_clients.clear()
+        self._display_clients.clear()
         self._ws_volume_support.clear()
         self._ws_claims.clear()
         self._outbound_locks.clear()
@@ -346,6 +363,7 @@ class WebKioskHTTPServer:
         self.app.router.add_get("/", self._handle_root)
         self.app.router.add_get("/kiosk", self._handle_web_app)
         self.app.router.add_get("/web", self._handle_web_app)
+        self.app.router.add_get("/view", self._handle_view_app)
         self.app.router.add_post("/builder-auth", self._handle_builder_auth)
         self.app.router.add_static("/web/", STATIC_DIR / "web")
         self.app.router.add_get("/health", self._handle_health)
@@ -360,8 +378,22 @@ class WebKioskHTTPServer:
         self.app.router.add_post("/api", self._handle_ma_api)
         self.app.router.add_get("/imageproxy/{image_id:.*}", self._handle_imageproxy)
 
-    async def _deny_framing(self, request: web.Request, response: web.StreamResponse) -> None:
-        """Prevent embedding credential and playback pages in another document."""
+    async def _set_frame_policy(self, request: web.Request, response: web.StreamResponse) -> None:
+        """
+        Prevent framing everywhere except an explicitly allowed display page.
+
+        Only /view (and the legacy /kiosk?display=1 alias) may be embedded;
+        the builder, login and player pages keep the hard deny even when an
+        allowlist is configured, because they carry credentials and playback.
+        """
+        is_display = request.path == "/view" or (
+            request.path in ("/kiosk", "/web") and request.query.get("display") == "1"
+        )
+        if is_display and self.provider.frame_ancestors:
+            response.headers["Content-Security-Policy"] = "frame-ancestors " + " ".join(
+                self.provider.frame_ancestors
+            )
+            return
         response.headers["X-Frame-Options"] = "DENY"
         response.headers["Content-Security-Policy"] = "frame-ancestors 'none'"
 
@@ -370,12 +402,24 @@ class WebKioskHTTPServer:
         self._unsubscribe_state_updates = self.provider.mass.players.subscribe_player_state_update(
             self._on_player_state_updated
         )
+        self._unsubscribe_queue_updates = self.provider.mass.subscribe(
+            self._on_queue_updated,
+            (EventType.QUEUE_UPDATED, EventType.QUEUE_ITEMS_UPDATED),
+        )
 
     async def _unsubscribe_player_updates(self, app: web.Application) -> None:
         """Release state subscriptions and connection metadata."""
         if self._unsubscribe_state_updates:
             self._unsubscribe_state_updates()
             self._unsubscribe_state_updates = None
+        if self._unsubscribe_queue_updates:
+            self._unsubscribe_queue_updates()
+            self._unsubscribe_queue_updates = None
+        self._display_clients.clear()
+        self._ws_queue_requested.clear()
+        self._display_signatures.clear()
+        self._display_queue_signatures.clear()
+        self._display_lyrics.clear()
         self._media_signatures.clear()
         self._flow_items.clear()
         self._player_names.clear()
@@ -392,6 +436,14 @@ class WebKioskHTTPServer:
             kiosk = self.provider.mass.players.get_player(player_id)
             if kiosk is not None:
                 self._publish_group(kiosk)
+        if player.player_id in self._display_clients:
+            self._publish_display_state(player.player_id)
+            media = player.state.current_media
+            if media is not None and (
+                media.uri or "",
+                media.queue_item_id or "",
+            ) != self._display_lyrics.get(player.player_id):
+                self.provider._spawn(self._publish_display_lyrics(player.player_id))
 
     def _publish_group(self, player: Player, *, force: bool = False) -> None:
         """Publish actual MA group membership, including changes to the leader name."""
@@ -507,9 +559,13 @@ class WebKioskHTTPServer:
     async def _cache_middleware(self, request: web.Request, handler: Any) -> web.StreamResponse:
         """Keep kiosk pages fresh without exposing responses to other origins."""
         response: web.StreamResponse = await handler(request)
-        if request.path in ("/", "/kiosk", "/web", "/builder-auth") or request.path.startswith(
-            "/web/"
-        ):
+        if request.path in (
+            "/",
+            "/kiosk",
+            "/web",
+            "/view",
+            "/builder-auth",
+        ) or request.path.startswith("/web/"):
             response.headers["Cache-Control"] = "no-store"
         return response
 
@@ -567,6 +623,7 @@ small {{ color: #9a9aa6; display: block; margin-top: 4px; }}
 <div class="row">
 <label><input type="radio" name="mode" value="html5"> HTML5</label>
 <label><input type="radio" name="mode" value="sendspin" checked> Sendspin</label>
+<label><input type="checkbox" id="display"> Display only</label>
 <label><input type="checkbox" id="controls"> Controls</label>
 <label><input type="checkbox" id="party"> Party QR</label>
 <label><input type="checkbox" id="viz"> Visualizer</label>
@@ -578,6 +635,11 @@ small {{ color: #9a9aa6; display: block; margin-top: 4px; }}
 <label><input type="checkbox" id="lite"> Lightweight visuals</label>
 <label><input type="checkbox" id="wake_lock"> Keep screen awake when supported</label>
 <label><input type="checkbox" id="fullscreen"> Fullscreen button</label>
+<label><input type="checkbox" id="lock"> Lock fullscreen</label>
+<label>Profile <select id="profile"><option value="">None</option><option value="player">Player</option><option value="tv">TV</option><option value="wall">Wall panel</option><option value="guest">Guest display</option></select></label>
+</div>
+<div class="row">
+<input type="text" id="display_player" placeholder="Display player id (optional; empty = Party player)">
 </div>
 <div class="row">
 <input type="password" id="token" placeholder="MA auth token (optional)">
@@ -593,7 +655,7 @@ small {{ color: #9a9aa6; display: block; margin-top: 4px; }}
 <button class="btn" id="copy">Copy</button>
 <button class="btn" id="open" style="background:#2f6f3f;border-color:#2f6f3f">Open</button>
 </div>
-<small>Choose music in Music Assistant. This page only plays it. Transport and queue commands need an auth token. The party code is shown when guest access is on. The Sendspin server is assumed at {html_escape(sendspin_url)}.</small>
+<small>Choose music in Music Assistant. This page only plays it. Transport and queue commands need an auth token. A display-only page shows a player without registering one or needing a token; enable display mode in the provider first. The party code is shown when guest access is on. The Sendspin server is assumed at {html_escape(sendspin_url)}.</small>
 </div>
 
 <div class="info">
@@ -655,6 +717,14 @@ small {{ color: #9a9aa6; display: block; margin-top: 4px; }}
         response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
         return response
 
+    async def _handle_view_app(self, _request: web.Request) -> web.Response:
+        """Serve the read-only display SPA."""
+        if not self.provider.display_mode_enabled:
+            return web.Response(status=404, text="Display mode is disabled")
+        response = cast("web.Response", web.FileResponse(STATIC_DIR / "web" / "view.html"))
+        response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+        return response
+
     async def _handle_health(self, _request: web.Request) -> web.Response:
         """Health check endpoint."""
         return web.json_response(
@@ -703,6 +773,8 @@ small {{ color: #9a9aa6; display: block; margin-top: 4px; }}
         """
         if self._reject_cross_site(request):
             raise web.HTTPForbidden
+        if request.query.get("display") == "1":
+            return await self._handle_display_ws(request)
         ws = web.WebSocketResponse(heartbeat=30)
         await ws.prepare(request)
 
@@ -752,6 +824,8 @@ small {{ color: #9a9aa6; display: block; margin-top: 4px; }}
             )
             async with self._outbound_lock(player_id):
                 await self._ws_send(ws, welcome)
+            if ws in self._ws_queue_requested:
+                await self._send_queue_snapshot(ws, player_id)
             # A reconnecting/reloaded kiosk needs the current play state, otherwise it
             # stays silent until the next playback command. Preparing it can wait
             # for the playback lock, so it runs beside the receive loop: the page's
@@ -768,6 +842,339 @@ small {{ color: #9a9aa6; display: block; margin-top: 4px; }}
             logger.debug("WebSocket client disconnected for player %s", player_id)
 
         return ws
+
+    async def _handle_display_ws(self, request: web.Request) -> web.WebSocketResponse:
+        """Serve a read-only display socket for one existing Music Assistant player."""
+        if not self.provider.display_mode_enabled:
+            raise web.HTTPForbidden(text="Display mode is disabled")
+        player_id = await self._resolve_display_player(request)
+        if player_id is None:
+            raise web.HTTPNotFound(text="Unknown player")
+        ws = web.WebSocketResponse(heartbeat=30)
+        await ws.prepare(request)
+        self._display_clients.setdefault(player_id, set()).add(ws)
+        try:
+            await self._send_display_snapshot(ws, player_id)
+            async for msg in ws:
+                if msg.type == WSMsgType.TEXT:
+                    self._handle_display_message(player_id, msg.data)
+        finally:
+            self._forget_display_socket(player_id, ws)
+        return ws
+
+    async def _resolve_display_player(self, request: web.Request) -> str | None:
+        """Resolve the player a display socket subscribes to."""
+        player_id = request.query.get("player")
+        if not player_id and request.query.get("party") == "1":
+            player_id = await self.party.get_party_player_id()
+        if not player_id:
+            return None
+        player = self.provider.mass.players.get_player(player_id, raise_unavailable=False)
+        return player_id if player is not None else None
+
+    async def _send_display_snapshot(self, ws: web.WebSocketResponse, player_id: str) -> None:
+        """Send the welcome, current state, queue and lyrics to a display page."""
+        player = self.provider.mass.players.get_player(player_id, raise_unavailable=False)
+        if player is None:
+            return
+        welcome = json.dumps(
+            {
+                "type": "welcome",
+                "display": True,
+                "player_id": player_id,
+                "custom_name": self._display_name(player),
+                "server_version": self.provider.mass.version,
+                "end_margin": END_MARGIN,
+            }
+        )
+        state = self._display_state_payload(player)
+        queue = self._display_only_queue_snapshot(player_id)
+        lines = await self._display_lyrics_for(player_id)
+        async with self._outbound_lock(player_id):
+            await self._ws_send(ws, welcome, player_id)
+            if state is not None:
+                await self._ws_send(ws, json.dumps(state), player_id)
+            if queue is not None:
+                await self._ws_send(ws, json.dumps(queue), player_id)
+            await self._ws_send(ws, json.dumps({"type": "lyrics", "lines": lines}), player_id)
+        self._display_signatures[player_id] = self._display_state_signature(state)
+        self._display_queue_signatures[player_id] = self._display_queue_signature(queue)
+        media = player.state.current_media
+        if media is not None:
+            self._display_lyrics[player_id] = (
+                media.uri or "",
+                media.queue_item_id or "",
+            )
+
+    async def _send_queue_snapshot(self, ws: web.WebSocketResponse, player_id: str) -> None:
+        """Send the current compact queue to one player page that asked for it."""
+        payload = self._display_only_queue_snapshot(player_id)
+        if payload is None:
+            return
+        async with self._outbound_lock(player_id):
+            await self._ws_send(ws, json.dumps(payload), player_id)
+
+    def _handle_display_message(self, player_id: str, data: str) -> None:
+        """Ignore display input; only heartbeat and reconnect are expected."""
+        try:
+            message = json.loads(data)
+        except json.JSONDecodeError, TypeError:
+            return
+        if isinstance(message, dict) and message.get("type") == "refresh":
+            self.provider._spawn(self._refresh_display(player_id))
+
+    async def _refresh_display(self, player_id: str) -> None:
+        """Resend the current display snapshot to every socket of a player."""
+        for ws in list(self._display_clients.get(player_id, ())):
+            if not ws.closed:
+                await self._send_display_snapshot(ws, player_id)
+
+    def _forget_display_socket(self, player_id: str, ws: web.WebSocketResponse) -> None:
+        """Forget a closed display socket without touching the player."""
+        self._display_clients.get(player_id, set()).discard(ws)
+        if not self._display_clients.get(player_id):
+            self._display_clients.pop(player_id, None)
+            self._display_signatures.pop(player_id, None)
+            self._display_queue_signatures.pop(player_id, None)
+            self._display_lyrics.pop(player_id, None)
+        current = asyncio.current_task()
+        for task in self._ws_tasks.pop(ws, set()):
+            if task is not current:
+                task.cancel()
+
+    def _publish_display_state(self, player_id: str) -> None:
+        """Send a compact state message to display sockets when it changed."""
+        player = self.provider.mass.players.get_player(player_id, raise_unavailable=False)
+        if player is None:
+            return
+        payload = self._display_state_payload(player)
+        if payload is None:
+            return
+        signature = self._display_state_signature(payload)
+        if signature == self._display_signatures.get(player_id):
+            return
+        self._display_signatures[player_id] = signature
+        message = json.dumps(payload)
+        for ws in list(self._display_clients.get(player_id, ())):
+            if not ws.closed:
+                self._post(ws, message, player_id)
+
+    def _publish_display_queue(self, player_id: str) -> None:
+        """Send a compact queue snapshot to display and queue-enabled pages."""
+        payload = self._display_only_queue_snapshot(player_id)
+        if payload is None:
+            return
+        signature = self._display_queue_signature(payload)
+        if signature == self._display_queue_signatures.get(player_id):
+            return
+        self._display_queue_signatures[player_id] = signature
+        message = json.dumps(payload)
+        targets = set(self._display_clients.get(player_id, ()))
+        targets.update(self._ws_clients.get(player_id, ()))
+        for ws in targets:
+            if ws.closed or (
+                ws in self._ws_clients.get(player_id, ()) and ws not in self._ws_queue_requested
+            ):
+                continue
+            self._post(ws, message, player_id)
+
+    def _on_queue_updated(self, event: Any) -> None:
+        """Publish queue edits to every display and queue-enabled page."""
+        queue_id = getattr(event, "object_id", None)
+        player_ids = set(self._display_clients)
+        player_ids.update(
+            player_id
+            for player_id, clients in self._ws_clients.items()
+            if any(ws in self._ws_queue_requested for ws in clients)
+        )
+        for player_id in player_ids:
+            queue = self.provider.mass.player_queues.get_active_queue(player_id)
+            if queue is None:
+                continue
+            if queue_id is None or queue.queue_id == queue_id:
+                self._publish_display_queue(player_id)
+
+    def _display_state_payload(self, player: Player) -> dict[str, Any] | None:
+        """Build the compact display state message for any Music Assistant player."""
+        state = player.state
+        media = state.current_media
+        duration: float | None = None
+        elapsed = 0.0
+        speed = 1.0
+        queue: PlayerQueue | None = None
+        if media is not None:
+            duration, _start = media_timeline(media)
+        if isinstance(player, WebKioskPlayer) and player.serves_flow:
+            queue = self.provider.mass.player_queues.get_active_queue(player.player_id)
+            if queue is not None:
+                elapsed = queue.corrected_elapsed_time
+                speed = queue.playback_speed or 1.0
+                if duration is None and queue.current_item is not None:
+                    duration = queue.current_item.duration
+        else:
+            elapsed = state.corrected_elapsed_time or 0.0
+        if media is None:
+            elapsed = 0.0
+        media_payload: dict[str, Any] | None = None
+        if media is not None:
+            media_type = getattr(media, "media_type", None)
+            media_payload = {
+                "title": media.title or "",
+                "artist": media.artist or "",
+                "image_url": media.image_url,
+                "duration": duration,
+                "media_type": (media_type.value if isinstance(media_type, MediaType) else None),
+                "queue_item_id": media.queue_item_id,
+            }
+        return {
+            "type": "display_state",
+            "player_id": player.player_id,
+            "custom_name": self._display_name(player),
+            "group_name": self._display_group_name(player),
+            "playback_state": state.playback_state.value,
+            "elapsed": round(elapsed, 1),
+            "duration": duration,
+            "playback_speed": speed,
+            "volume_level": state.volume_level,
+            "volume_muted": state.volume_muted,
+            "media": media_payload,
+        }
+
+    def _display_only_queue_snapshot(self, player_id: str) -> dict[str, Any] | None:
+        """Build a bounded, compact queue snapshot for display pages."""
+        queue = self.provider.mass.player_queues.get_active_queue(player_id)
+        if queue is None:
+            queue = self.provider.mass.player_queues.get(player_id)
+        if queue is None:
+            return None
+        current_index = queue.current_index
+        offset = max(0, (current_index or 0) - 10)
+        items = self.provider.mass.player_queues.items(queue.queue_id, limit=50, offset=offset)
+        compact: list[dict[str, Any]] = []
+        for index, item in enumerate(items, start=offset):
+            media_item = getattr(item, "media_item", None)
+            image = getattr(item, "image", None)
+            image_url = (
+                self.provider.mass.metadata.get_image_url(image) if image is not None else None
+            )
+            extra = getattr(item, "extra_attributes", None) or {}
+            compact.append(
+                {
+                    "queue_item_id": item.queue_item_id,
+                    "title": (getattr(media_item, "name", None) or item.name or ""),
+                    "artist": getattr(media_item, "artist_str", "") or "",
+                    "duration": item.duration,
+                    "image_url": image_url,
+                    "is_current": (current_index is not None and index == current_index),
+                    "party_guest": bool(extra.get("party_guest")),
+                    "party_boosted": bool(extra.get("party_boosted")),
+                }
+            )
+        return {
+            "type": "queue",
+            "queue_id": queue.queue_id,
+            "current_index": current_index,
+            "items": compact,
+        }
+
+    async def _display_lyrics_for(self, player_id: str) -> list[dict[str, Any]]:
+        """Return timed lyric lines for the player's current queue item."""
+        player = self.provider.mass.players.get_player(player_id, raise_unavailable=False)
+        if player is None:
+            return []
+        media = player.state.current_media
+        if media is None:
+            return []
+        item: QueueItem | None = None
+        if media.source_id and media.queue_item_id:
+            item = self.provider.mass.player_queues.get_item(media.source_id, media.queue_item_id)
+        if item is None:
+            queue = self.provider.mass.player_queues.get_active_queue(player_id)
+            item = queue.current_item if queue is not None else None
+        media_item = getattr(item, "media_item", None)
+        if media_item is None or media_item.media_type != MediaType.TRACK:
+            return []
+        try:
+            plain, lrc = await self.provider.mass.metadata.get_track_lyrics(media_item)
+        except MusicAssistantError:
+            logger.debug("Lyrics lookup failed for display %s", player_id, exc_info=True)
+            return []
+        return parse_track_lyrics(plain, lrc)
+
+    async def _publish_display_lyrics(self, player_id: str) -> None:
+        """Send lyric lines to display sockets when the current item changed."""
+        player = self.provider.mass.players.get_player(player_id, raise_unavailable=False)
+        if player is None:
+            return
+        media = player.state.current_media
+        signature = (media.uri or "", media.queue_item_id or "") if media is not None else ("", "")
+        if signature == self._display_lyrics.get(player_id):
+            return
+        self._display_lyrics[player_id] = signature
+        lines = await self._display_lyrics_for(player_id)
+        message = json.dumps({"type": "lyrics", "lines": lines})
+        for ws in list(self._display_clients.get(player_id, ())):
+            if not ws.closed:
+                self._post(ws, message, player_id)
+
+    @staticmethod
+    def _display_name(player: Player) -> str:
+        """Return the user-facing player name for a display page."""
+        config = getattr(player, "config", None)
+        configured = getattr(config, "name", None)
+        if isinstance(configured, str) and configured:
+            return configured
+        return str(player.name)
+
+    def _display_group_name(self, player: Player) -> str | None:
+        """Return the active group name for a display page, if any."""
+        state = player.state
+        group_id = state.active_group or state.synced_to
+        if not group_id and len(state.group_members) > 1:
+            group_id = player.player_id
+        if not group_id:
+            return None
+        group = self.provider.mass.players.get_player(group_id, raise_unavailable=False)
+        return group.name if group is not None else None
+
+    @staticmethod
+    def _display_state_signature(payload: dict[str, Any] | None) -> tuple[Any, ...]:
+        """Return the fields that make a new display state message necessary."""
+        if payload is None:
+            return ()
+        media = payload.get("media") or {}
+        return (
+            payload["playback_state"],
+            media.get("queue_item_id"),
+            media.get("title"),
+            media.get("artist"),
+            media.get("image_url"),
+            payload.get("elapsed"),
+            payload.get("volume_level"),
+            payload.get("volume_muted"),
+            payload.get("group_name"),
+            payload.get("custom_name"),
+        )
+
+    @staticmethod
+    def _display_queue_signature(payload: dict[str, Any] | None) -> tuple[Any, ...]:
+        """Return the fields that make a new queue message necessary."""
+        if payload is None:
+            return ()
+        items = payload.get("items") or []
+        return (
+            payload.get("queue_id"),
+            payload.get("current_index"),
+            tuple(
+                (
+                    item.get("queue_item_id"),
+                    item.get("is_current"),
+                    item.get("party_guest"),
+                    item.get("party_boosted"),
+                )
+                for item in items
+            ),
+        )
 
     async def _close_socket(self, player_id: str, ws: web.WebSocketResponse) -> None:
         """Forget a closed page and settle what its player still needs."""
@@ -965,6 +1372,7 @@ small {{ color: #9a9aa6; display: block; margin-top: 4px; }}
         return web.json_response(
             {
                 "active": True,
+                "guest_access": party.guest_access,
                 "name": party.name,
                 "qr_text": party.qr_text,
                 "version": party.qr_version,
@@ -1089,6 +1497,7 @@ small {{ color: #9a9aa6; display: block; margin-top: 4px; }}
             logger.warning("WebSocket send failed (player=%s): %s", player_id, exc)
             if player_id:
                 self._ws_clients.get(player_id, set()).discard(ws)
+                self._display_clients.get(player_id, set()).discard(ws)
                 self._ws_volume_support.pop(ws, None)
                 self._update_volume_support(player_id)
 
@@ -1298,6 +1707,8 @@ small {{ color: #9a9aa6; display: block; margin-top: 4px; }}
         self._ws_peers[ws] = (request.remote, request.headers.get("User-Agent"))
         if request.query.get("lyrics") == "1":
             self._ws_lyrics.add(ws)
+        if request.query.get("queue") == "1":
+            self._ws_queue_requested.add(ws)
         self._ws_volume_support[ws] = request.query.get("volume_control") == "1"
 
     def _forget_socket(self, player_id: str, ws: web.WebSocketResponse) -> None:
@@ -1306,6 +1717,7 @@ small {{ color: #9a9aa6; display: block; margin-top: 4px; }}
         self._ws_claims.pop(ws, None)
         self._ws_peers.pop(ws, None)
         self._ws_lyrics.discard(ws)
+        self._ws_queue_requested.discard(ws)
         self._ws_volume_support.pop(ws, None)
         self._ws_played.pop(ws, None)
         # Work for a page ends with its socket. The handler awaits its own task.
