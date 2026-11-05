@@ -55,13 +55,24 @@ def _controller() -> PlayerQueuesController:
     return ctrl
 
 
-def _player(state: PlaybackState, stream_elapsed: float, announcing: bool = False) -> Any:
+def _player(
+    state: PlaybackState,
+    stream_elapsed: float,
+    announcing: bool = False,
+    reported_pause: bool = False,
+    playing_item: str | None = None,
+) -> Any:
     return SimpleNamespace(
         player_id=QUEUE_ID,
         type=PlayerType.PLAYER,
         extra_data={ATTR_ANNOUNCEMENT_IN_PROGRESS: True} if announcing else {},
+        paused_position_reliable=reported_pause,
         active_output_protocol=None,
-        current_media=None,
+        current_media=(
+            SimpleNamespace(source_id=QUEUE_ID, queue_item_id=playing_item, uri=None)
+            if playing_item
+            else None
+        ),
         state=SimpleNamespace(
             name="P",
             available=True,
@@ -166,3 +177,49 @@ def test_announcement_leaves_the_music_position_alone() -> None:
     prev_state = ctrl._queue_data[QUEUE_ID].prev_state
     assert prev_state is not None
     assert prev_state["last_playing_elapsed_time"] == 120
+
+
+def test_reported_pause_moves_the_queue_and_its_resume_position() -> None:
+    """A paused offset the player vouches for counts like a playing one, also across tracks."""
+    ctrl = _controller()
+    queue = _played_120_s_into_the_second_track(ctrl)
+    ctrl.on_player_elapsed_time_corrected(_player(PlaybackState.PAUSED, 90, reported_pause=True))
+    ctrl._update_queue_from_player(_player(PlaybackState.PAUSED, 90, reported_pause=True))
+    assert queue.current_item is not None
+    assert queue.current_item.queue_item_id == "a"
+    assert queue.elapsed_time == pytest.approx(90)
+    assert queue.resume_pos == 90
+    queue.resume_pos = 0
+    assert ctrl._last_played_position(queue) == pytest.approx(90)
+
+
+def _normal_player_queue() -> tuple[PlayerQueuesController, PlayerQueue]:
+    """Return a queue that is not in flow mode, 200 s into its second track."""
+    ctrl = _controller()
+    queue = _played_120_s_into_the_second_track(ctrl)
+    queue.flow_mode = False
+    queue.elapsed_time = 200
+    prev_state = ctrl._queue_data[QUEUE_ID].prev_state
+    assert prev_state is not None
+    prev_state["last_playing_elapsed_time"] = 200
+    return ctrl, queue
+
+
+def test_next_track_position_keeps_the_outgoing_tracks_progress() -> None:
+    """A normal player already at 0 s in the next track must not rewrite this track's progress."""
+    ctrl, queue = _normal_player_queue()
+    ctrl.on_player_elapsed_time_corrected(_player(PlaybackState.PLAYING, 0, playing_item="c"))
+    prev_state = ctrl._queue_data[QUEUE_ID].prev_state
+    assert prev_state is not None
+    assert prev_state["last_playing_elapsed_time"] == 200
+    assert queue.resume_pos == 120
+
+
+def test_seek_back_in_the_current_track_moves_its_resume_position() -> None:
+    """A normal player's correction within the queue's current item still counts."""
+    ctrl, queue = _normal_player_queue()
+    ctrl.on_player_elapsed_time_corrected(_player(PlaybackState.PLAYING, 60, playing_item="b"))
+    prev_state = ctrl._queue_data[QUEUE_ID].prev_state
+    assert prev_state is not None
+    assert prev_state["last_playing_elapsed_time"] == 60
+    assert queue.resume_pos == 60

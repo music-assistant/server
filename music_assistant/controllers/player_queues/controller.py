@@ -1461,10 +1461,17 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         queue.elapsed_time = elapsed_time
         queue.elapsed_time_last_updated = now
         queue.playback_speed = speed
-        if player.state.playback_state == PlaybackState.PLAYING:
-            # A playing player's corrected position is where the item really is, also
-            # when it is behind positions saved from the clock estimate; resuming from
-            # those would skip unheard audio. A paused position stays untrusted.
+        # In flow mode the position was mapped to its item above; a normal player can
+        # report the next track's position before the queue moved to that track.
+        position_in_current_item = queue.current_item is not None and (
+            queue.flow_mode
+            or self._parse_player_current_item_id(queue_id, player)
+            == queue.current_item.queue_item_id
+        )
+        if position_in_current_item and self._position_is_reliable(player):
+            # The corrected position is where the item really is, also when it is behind
+            # positions saved from the clock estimate; resuming from those would skip
+            # unheard audio. An unreliable paused position changes nothing here.
             prev_state = self._queue_data[queue_id].prev_state
             if (
                 prev_state

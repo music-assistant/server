@@ -414,11 +414,19 @@ class PlaybackTrackerMixin(_PlayerQueuesBase):
                 stream_pos_in_item = elapsed_time_queue_total - played_time
                 track_time = track_sec_skipped + stream_pos_in_item * entry_speed
                 break
-        if player.state.playback_state != PlaybackState.PLAYING:
+        if not self._position_is_reliable(player):
             # if the player is not playing, we can't be sure that the elapsed time is correct
             # so we just return the queue index and the elapsed time
             return queue.current_index, queue.elapsed_time
         return queue_index, track_time
+
+    @staticmethod
+    def _position_is_reliable(player: Player) -> bool:
+        """Return if the player's elapsed time is its real position."""
+        playback_state = player.state.playback_state
+        if playback_state == PlaybackState.PLAYING:
+            return True
+        return playback_state == PlaybackState.PAUSED and player.paused_position_reliable
 
     def _parse_player_current_item_id(self, queue_id: str, player: Player) -> str | None:
         """Parse QueueItem ID from Player's current url."""
