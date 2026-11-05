@@ -71,3 +71,50 @@ def test_invalid_id3_size_rejected(tmp_path: Path) -> None:
     source.write_bytes(b"ID3\x03\x00\x00\xff\x00\x00\x00")
     with pytest.raises(InvalidDataError, match="Invalid ID3 tag size"):
         tags.parse_tags(str(source))
+
+
+@pytest.mark.parametrize("header", [b"RIFF123456", _id3_header(0)])
+def test_header_check_preserves_shared_descriptor_position(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, header: bytes
+) -> None:
+    """Opening /dev/fd on macOS must leave FFprobe at the start of the file."""
+    source = tmp_path / "audio"
+    source.write_bytes(header)
+    descriptor = os.open(source, os.O_RDONLY)
+    # dup reproduces macOS /dev/fd's shared offset on Linux as well.
+    monkeypatch.setattr(
+        tags, "open", lambda *_args: os.fdopen(os.dup(descriptor), "rb"), raising=False
+    )
+
+    def probe(*_args: object, **_kwargs: object) -> bytes:
+        assert os.lseek(descriptor, 0, os.SEEK_CUR) == 0
+        assert os.read(descriptor, 10) == header
+        return b'{"streams": []}'
+
+    monkeypatch.setattr(subprocess, "check_output", probe)
+    with pytest.raises(InvalidDataError, match="Not an audio file"):
+        tags.parse_tags(str(source), opener=lambda _path, _flags: descriptor)
+
+
+@pytest.mark.parametrize("operation", ["open", "read"])
+def test_header_io_error_becomes_file_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, operation: str
+) -> None:
+    """Unreadable share files are skipped and their confined descriptor is closed."""
+    source = tmp_path / "audio"
+    source.write_bytes(_id3_header(0))
+    descriptor = os.open(source, os.O_RDONLY)
+    failing_io = MagicMock(side_effect=OSError("Input/output error"))
+    if operation == "open":
+        monkeypatch.setattr(tags, "open", failing_io, raising=False)
+    else:
+        monkeypatch.setattr(os, "pread", failing_io)
+    probe = MagicMock()
+    monkeypatch.setattr(subprocess, "check_output", probe)
+
+    with pytest.raises(InvalidDataError, match="Input/output error"):
+        tags.parse_tags(str(source), opener=lambda _path, _flags: descriptor)
+
+    probe.assert_not_called()
+    with pytest.raises(OSError, match="Bad file descriptor"):
+        os.fstat(descriptor)

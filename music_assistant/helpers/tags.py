@@ -855,7 +855,7 @@ def parse_tags(
     except subprocess.CalledProcessError as err:
         error_msg = f"Unable to retrieve info for {input_file} ({_get_ffprobe_error(err)})"
         raise InvalidDataError(error_msg) from err
-    except (KeyError, ValueError, JSONDecodeError, InvalidDataError) as err:
+    except (KeyError, ValueError, JSONDecodeError, InvalidDataError, OSError) as err:
         try:
             msg = f"Unable to retrieve info for {input_file}: {err!s}"
             msg.encode("utf-8")
@@ -870,7 +870,8 @@ def parse_tags(
 def _validate_id3_tag_size(source: str) -> None:
     """Reject oversized ID3 tags before FFprobe or Mutagen reads their payload."""
     with open(source, "rb") as file:
-        header = file.read(10)
+        # /dev/fd opens share the provider descriptor's position on macOS.
+        header = os.pread(file.fileno(), 10, 0)
     if len(header) != 10 or header[:3] != b"ID3":
         return
     if any(value & 0x80 for value in header[6:10]):
