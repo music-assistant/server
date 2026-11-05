@@ -49,7 +49,7 @@ from music_assistant.controllers.music.helpers import (
 )
 from music_assistant.controllers.webserver.helpers.auth_middleware import get_current_user
 from music_assistant.helpers.compare import compare_strings
-from music_assistant.helpers.external_ids import is_valid_barcode
+from music_assistant.helpers.external_ids import is_valid_barcode, is_valid_isrc
 from music_assistant.helpers.provider_access import visible_music_sources
 from music_assistant.models.music_provider import MusicProvider
 from music_assistant.providers.musicbrainz.provider import MusicbrainzProvider, relation_urls
@@ -422,6 +422,12 @@ class MetadataEnrichmentMixin:
 
         self.logger.debug("Updating metadata for Track %s", track.name)
 
+        prev_lyrics = (track.metadata.lyrics, track.metadata.lrc_lyrics)
+        if force_refresh:
+            # drop the stored lyrics so they are looked up again
+            track.metadata.lyrics = None
+            track.metadata.lrc_lyrics = None
+
         # collect metadata from all [music] providers
         # note that we sort the providers by priority so that we always
         # prefer local providers over online providers
@@ -442,6 +448,10 @@ class MetadataEnrichmentMixin:
                     prov_mapping.item_id, prov_mapping.provider_instance
                 )
                 track.metadata.update(prov_item.metadata)
+                # a provider's full track carries the ISRCs its album listing may leave out
+                for id_type, value in prov_item.external_ids:
+                    if id_type == ExternalID.ISRC and is_valid_isrc(value):
+                        track.add_external_id(ExternalID.ISRC, value)
 
         # identify the track on MusicBrainz before the metadata providers need its id
         retry_soon = await self._link_track_to_musicbrainz(track)
@@ -460,8 +470,13 @@ class MetadataEnrichmentMixin:
                 if ProviderFeature.TRACK_METADATA not in provider.supported_features:
                     continue
 
+                # a forced refresh looks the lyrics up again, rather than reading a cached result
+                bypass_cache = (
+                    force_refresh and ProviderFeature.LYRICS in provider.supported_features
+                )
                 try:
-                    metadata = await provider.get_track_metadata(track)
+                    async with self.mass.cache.handle_refresh(bypass_cache):
+                        metadata = await provider.get_track_metadata(track)
                 except _TEMPORARY_ERRORS as err:
                     retry_soon = True
                     self.logger.debug(
@@ -489,6 +504,15 @@ class MetadataEnrichmentMixin:
                         track.name,
                         provider.name,
                     )
+        if force_refresh and not (track.metadata.lyrics or track.metadata.lrc_lyrics):
+            # finding no lyrics says nothing about the stored ones, so they are kept
+            track.metadata.lyrics, track.metadata.lrc_lyrics = prev_lyrics
+        elif force_refresh:
+            # the library keeps stored lyrics on an update, so the refreshed ones are written over
+            await self.mass.music.tracks.replace_metadata(
+                track.item_id,
+                {"lyrics": track.metadata.lyrics, "lrc_lyrics": track.metadata.lrc_lyrics},
+            )
         # set timestamp, used to determine when this function was last called
         track.metadata.last_refresh = _refresh_timestamp(retry_soon)
         # update final item in library database

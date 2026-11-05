@@ -7,6 +7,10 @@ omits one of them — or whose ``domain`` does not match its folder, whose ``typ
 provider type, or whose ``codeowners`` are malformed — only fails once the server tries to load the
 provider. This pre-commit/CI guard scans every provider manifest up front and prints each problem.
 
+Every public provider (folder name not starting with ``_``) must also declare its maintainer ``tier``
+(``core`` or ``community``); ``core`` is only valid with ``@music-assistant`` in ``codeowners``. An
+optional ``support_url`` must be an ``https`` URL with a host.
+
 When invoked with file or folder arguments (as pre-commit does for the changed files) only the
 manifests in scope are validated; with no arguments every provider manifest is scanned.
 
@@ -20,6 +24,7 @@ import json
 import sys
 from collections.abc import Iterable, Sequence
 from pathlib import Path
+from urllib.parse import urlsplit
 
 # ruff: noqa: T201
 
@@ -34,6 +39,11 @@ MANDATORY_KEYS = ("type", "domain", "name", "description", "codeowners")
 # Valid provider types, mirroring music_assistant_models.enums.ProviderType (minus ``unknown``,
 # which is a runtime fallback and must never be authored into a manifest).
 VALID_TYPES = frozenset({"music", "player", "metadata", "plugin", "core", "audio_analysis"})
+
+# Maintainer tiers, mirroring music_assistant_models.enums.ProviderTier; ``core`` is reserved for
+# providers the organization maintains.
+VALID_TIERS = frozenset({"core", "community"})
+CORE_CODEOWNER = "@music-assistant"
 
 
 def find_violations(manifest_paths: Iterable[Path] | None = None) -> list[str]:
@@ -124,6 +134,9 @@ def _validate(data: dict[str, object], folder_name: str) -> list[str]:
             issues.append(f"'{text_key}' must be a non-empty string")
     if "codeowners" in data:
         issues.extend(_validate_codeowners(data["codeowners"]))
+    issues.extend(_validate_tier(data, folder_name))
+    if "support_url" in data and not _is_https_url(data["support_url"]):
+        issues.append("'support_url' must be an https URL with a host")
     return issues
 
 
@@ -136,6 +149,35 @@ def _validate_codeowners(codeowners: object) -> list[str]:
         for owner in codeowners
         if not (isinstance(owner, str) and owner.startswith("@"))
     ]
+
+
+def _validate_tier(data: dict[str, object], folder_name: str) -> list[str]:
+    """
+    Return problems with the ``tier`` field.
+
+    :param data: The parsed manifest contents.
+    :param folder_name: The provider folder name; demo providers (``_`` prefix) may omit ``tier``.
+    """
+    if "tier" not in data:
+        return [] if folder_name.startswith("_") else ["missing mandatory key 'tier'"]
+    tier = data["tier"]
+    if not isinstance(tier, str) or tier not in VALID_TIERS:
+        return [f"tier '{tier}' is not one of {sorted(VALID_TIERS)}"]
+    codeowners = data.get("codeowners")
+    if tier == "core" and not (isinstance(codeowners, list) and CORE_CODEOWNER in codeowners):
+        return [f"tier 'core' requires '{CORE_CODEOWNER}' in 'codeowners', use 'community'"]
+    return []
+
+
+def _is_https_url(value: object) -> bool:
+    """Return True when ``value`` is an ``https://`` URL with a host."""
+    if not isinstance(value, str):
+        return False
+    try:
+        url = urlsplit(value)
+    except ValueError:
+        return False
+    return url.scheme == "https" and bool(url.hostname)
 
 
 if __name__ == "__main__":

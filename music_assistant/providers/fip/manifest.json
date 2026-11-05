@@ -5,6 +5,7 @@
   "name": "FIP",
   "description": "Stream FIP, Radio France's eclectic music station, and its twelve webradios — from FIP Jazz to FIP Metal.",
   "codeowners": ["@culmat"],
+  "tier": "community",
   "requirements": [],
   "documentation": "https://music-assistant.io/music-providers/fip/",
   "multi_instance": false

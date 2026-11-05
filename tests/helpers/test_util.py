@@ -15,10 +15,12 @@ from unittest.mock import MagicMock, patch
 
 import ifaddr
 import pytest
+from music_assistant_models.auth import User, UserRole
 from music_assistant_models.enums import MediaType
 from music_assistant_models.errors import ProviderUnavailableError
 from music_assistant_models.media_items import Album, ItemMapping, ProviderMapping, Track
 
+from music_assistant.controllers.webserver.helpers.auth_middleware import set_current_user
 from music_assistant.helpers import util
 from music_assistant.helpers.util import (
     TaskManager,
@@ -812,6 +814,29 @@ class TestGuardSingleRequest:
         assert isinstance(results[0], asyncio.CancelledError)
         assert results[1:] == ["result-123", "result-123"]
         assert caller.calls == 1
+
+    @pytest.mark.asyncio
+    async def test_callers_of_different_identities_do_not_share_a_request(
+        self, mass_minimal: MusicAssistant
+    ) -> None:
+        """A request resolves per user and role, so only the same identity joins one flight."""
+        caller = _GuardedCaller(mass_minimal)
+        users = [
+            User(user_id=name, username=name, role=role)
+            for name, role in (("a", UserRole.USER), ("a", UserRole.USER), ("b", UserRole.USER))
+        ]
+        # the same account after a role change is a different identity as well
+        users.append(User(user_id="a", username="a", role=UserRole.GUEST))
+
+        async def fetch_as(user: User) -> str:
+            set_current_user(user)
+            return await caller.fetch("123")
+
+        calls = [asyncio.create_task(fetch_as(user)) for user in users]
+        await asyncio.sleep(0)
+        assert caller.calls == 3
+        caller.release.set()
+        assert await asyncio.gather(*calls) == ["result-123"] * 4
 
     @pytest.mark.asyncio
     async def test_failure_reaches_the_caller_without_being_logged(

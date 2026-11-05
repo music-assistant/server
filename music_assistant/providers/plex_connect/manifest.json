@@ -5,6 +5,7 @@
   "name": "Plex Connect Plugin",
   "description": "Makes a Music Assistant player appear as a device in the official Plex apps.",
   "codeowners": ["@anatosun"],
+  "tier": "community",
   "credits": ["[python-plexapi](https://github.com/pkkid/python-plexapi)"],
   "requirements": ["plexapi==4.18.2"],
   "icon": "mdi:plex",

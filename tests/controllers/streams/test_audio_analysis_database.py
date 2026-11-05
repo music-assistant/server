@@ -291,6 +291,48 @@ async def test_delete_audio_analysis_removes_only_that_provider_key(
 
 
 @pytest.mark.asyncio
+async def test_delete_measured_loudness_keeps_other_analysis(
+    ctrl: AudioAnalysisController,
+) -> None:
+    """Only the measured loudness of the track goes, under its domain and its instance id."""
+    await ctrl.setup_database()
+    for item_id, provider, domain in (
+        ("t1", "filesystem_local", "loudness_analysis"),
+        ("t1", "fs--a", "loudness_analysis"),
+        ("t1", "fs--a", "provider_loudness"),
+        ("t1", "fs--a", "smart_fades"),
+        ("t2", "fs--a", "loudness_analysis"),
+    ):
+        for table, values in (
+            (AA_TABLE_ANALYSIS, {"header": "{}", "payload": b"", "analysis_version": 1}),
+            (AA_TABLE_FAILURES, {"reason": "never retry", "next_retry": None}),
+        ):
+            await ctrl.database.insert(
+                table,
+                {
+                    "media_type": "track",
+                    "item_id": item_id,
+                    "provider": provider,
+                    "aa_provider_domain": domain,
+                    **values,
+                },
+            )
+    mapping = ProviderMapping(
+        item_id="t1", provider_domain="filesystem_local", provider_instance="fs--a"
+    )
+
+    await ctrl.delete_measured_loudness([mapping])
+
+    for table in (AA_TABLE_ANALYSIS, AA_TABLE_FAILURES):
+        rows = await ctrl.database.get_rows(table, limit=0)
+        assert sorted((r["item_id"], r["provider"], r["aa_provider_domain"]) for r in rows) == [
+            ("t1", "fs--a", "provider_loudness"),
+            ("t1", "fs--a", "smart_fades"),
+            ("t2", "fs--a", "loudness_analysis"),
+        ]
+
+
+@pytest.mark.asyncio
 async def test_candidate_queries_read_library_keys_through_temp_table(
     ctrl: AudioAnalysisController, library_db: DatabaseConnection
 ) -> None:

@@ -195,6 +195,8 @@ The manifest file contains metadata and configuration about a provider. The supp
 | name  | The full name of the provider, e.g. `Spotify` or `Youtube Music`  | string  |
 | description  | The full description of the provider  | string  |
 | codeowners  | List of Github names of the codeowners of the provider  | array[string]  |
+| tier | `core` or `community`: who builds and maintains the provider. `core` requires `@music-assistant` in `codeowners`; everything else is `community`. Required for every provider that ships. | string |
+| support_url | Optional https URL where the maintainer takes bug reports and questions, when not the project's support repository. | string |
 | stage | The development/stability stage: `alpha`, `beta`, `stable`, `experimental`, `unmaintained` or `deprecated`. Defaults to `stable`. | string |
 | requirements | Python packages the provider needs, in standard pip / [PEP 508](https://peps.python.org/pep-0508/) requirement syntax, e.g. `package==version`, a version range, an extras marker, or a `git+https://…` direct reference | array[string] |
 | documentation | URL to the provider's documentation page. | string |

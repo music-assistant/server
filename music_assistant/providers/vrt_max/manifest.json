@@ -7,5 +7,6 @@
   "documentation": "https://music-assistant.io/music-providers/vrt-max/",
   "requirements": [],
   "multi_instance": true,
-  "codeowners": ["@bollewolle"]
+  "codeowners": ["@bollewolle"],
+  "tier": "community"
 }
