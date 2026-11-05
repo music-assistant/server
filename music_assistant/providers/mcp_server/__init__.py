@@ -10,6 +10,7 @@ from __future__ import annotations
 import secrets
 from typing import TYPE_CHECKING, Final
 
+from aiohttp import web
 from music_assistant_models.config_entries import ConfigEntry
 from music_assistant_models.enums import ConfigEntryType
 
@@ -30,6 +31,14 @@ CONF_EXPOSE_TO_HOME_ASSISTANT: Final = "expose_to_home_assistant"
 # the secret in the path of the private endpoint that only Home Assistant learns,
 # through the Supervisor discovery
 CONF_HOME_ASSISTANT_SECRET: Final = "home_assistant_secret"  # noqa: S105 - config key
+# the paths an MCP client probes for OAuth metadata after a 401, which would otherwise end up
+# in the log of unhandled requests, the secret included
+WELL_KNOWN_PROBE_PATHS: Final = (
+    "/.well-known/oauth-protected-resource{path}",
+    "/.well-known/oauth-authorization-server{path}",
+    "/.well-known/openid-configuration{path}",
+    "{path}/.well-known/openid-configuration",
+)
 
 
 async def setup(
@@ -75,6 +84,10 @@ class MCPServerProvider(PluginProvider):
         self._unregister_routes = (
             register_route(MCP_PATH, transport.handle_request),
             register_route(self._home_assistant_path, transport.handle_home_assistant_request),
+            *(
+                register_route(probe_path.format(path=self._home_assistant_path), _not_found)
+                for probe_path in WELL_KNOWN_PROBE_PATHS
+            ),
         )
 
     async def loaded_in_mass(self) -> None:
@@ -92,3 +105,8 @@ class MCPServerProvider(PluginProvider):
         # a server that stops keeps its offer, it comes back with the same endpoint
         if not self.mass.closing:
             await self.mass.discovery.withdraw_mcp_server()
+
+
+async def _not_found(_request: web.Request) -> web.Response:
+    """Answer a request with a plain 404."""
+    return web.Response(status=404)

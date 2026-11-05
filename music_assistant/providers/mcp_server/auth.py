@@ -16,6 +16,7 @@ from music_assistant.controllers.webserver.helpers.auth_middleware import (
     set_current_user,
     set_impersonated_user,
 )
+from music_assistant.helpers.util import get_ip_addresses, normalize_ip_address
 
 from .registry import ToolError
 
@@ -32,12 +33,12 @@ META_HA_USER_ID: Final = "home-assistant.io/user_id"
 LOGGER = logging.getLogger(f"{MASS_LOGGER_NAME}.mcp_server")
 
 
-def is_request_from_home_assistant(request: web.Request) -> bool:
+async def is_request_from_home_assistant(request: web.Request) -> bool:
     """
     Return whether the request comes from Home Assistant on the internal (ingress) site.
 
-    Home Assistant runs on the host network and connects to the internal site from the
-    address that site is bound to, so such a request needs no token.
+    Home Assistant runs on the host network, as this server does, so it connects from one of
+    this server's own addresses and such a request needs no token.
 
     :param request: The aiohttp request.
     """
@@ -45,7 +46,12 @@ def is_request_from_home_assistant(request: web.Request) -> bool:
         return False
     peername = request.transport.get_extra_info("peername")
     sockname = request.transport.get_extra_info("sockname")
-    return bool(peername and sockname and peername[0] == sockname[0])
+    if not peername or not sockname:
+        return False
+    # the host may connect from its LAN address rather than the bridge address the
+    # internal site is bound to, so any address of this host counts
+    local_addresses = {sockname[0], "127.0.0.1", "::1", *await get_ip_addresses(include_ipv6=True)}
+    return normalize_ip_address(peername[0]) in local_addresses
 
 
 async def authenticate_request(
@@ -63,6 +69,12 @@ async def authenticate_request(
     token: str | None = None
     if from_home_assistant:
         user: User | None = await mass.webserver.auth.get_homeassistant_system_user()
+        if request.transport:
+            LOGGER.debug(
+                "Accepted Home Assistant request without a token from %s (local address %s)",
+                request.transport.get_extra_info("peername"),
+                request.transport.get_extra_info("sockname"),
+            )
     else:
         user = await get_authenticated_user(request)
         auth_header = request.headers.get("Authorization", "")

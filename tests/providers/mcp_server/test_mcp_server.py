@@ -32,8 +32,20 @@ if TYPE_CHECKING:
     from music_assistant.mass import MusicAssistant
 
 INGRESS_IP = "172.30.32.1"
+# the LAN address of the host this server runs on, which Home Assistant may connect from
+HOST_IP = "192.168.1.2"
 LAN_IP = "192.168.1.10"
 JSON_HEADERS = {"Content-Type": "application/json", "Accept": "application/json, text/event-stream"}
+
+
+@pytest.fixture(autouse=True)
+def host_addresses() -> Any:
+    """Give the host this server runs on a LAN and a bridge address."""
+    with patch(
+        "music_assistant.providers.mcp_server.auth.get_ip_addresses",
+        AsyncMock(return_value=(HOST_IP, INGRESS_IP)),
+    ):
+        yield
 
 
 @pytest.fixture
@@ -201,13 +213,14 @@ async def test_origin_check(mass: MusicAssistant, admin_token: str) -> None:
     assert response.status == 200
 
 
-async def test_home_assistant_needs_no_token(mass: MusicAssistant) -> None:
+@pytest.mark.parametrize("peer", [HOST_IP, INGRESS_IP, "127.0.0.1", f"::ffff:{HOST_IP}"])
+async def test_home_assistant_needs_no_token(mass: MusicAssistant, peer: str) -> None:
     """Home Assistant on the host reaches the internal site without a token, as its system user."""
     await _create_admin(mass)
     seen = _capture_user(mass)
     with seen.patch:
         response = await _post(
-            mass, _call("get_players", {}), None, peer=INGRESS_IP, ingress=True, home_assistant=True
+            mass, _call("get_players", {}), None, peer=peer, ingress=True, home_assistant=True
         )
     assert not _body(response)["result"]["isError"]
     system_user = await mass.webserver.auth.get_homeassistant_system_user()
@@ -223,6 +236,7 @@ async def test_home_assistant_needs_no_token(mass: MusicAssistant) -> None:
         (HASSIO_SUPERVISOR_IP, False),
         # the host itself on the public endpoint, without the secret
         (INGRESS_IP, False),
+        (HOST_IP, False),
     ],
 )
 async def test_other_requests_on_internal_site_need_token(
@@ -245,6 +259,23 @@ async def test_private_endpoint_routes(mass: MusicAssistant) -> None:
             f"{base_url}{path}", json=_rpc("ping"), headers=JSON_HEADERS
         ) as response:
             assert response.status == status, path
+
+
+async def test_well_known_probes_not_logged(
+    mass: MusicAssistant, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The OAuth metadata probes on the private endpoint answer 404 without logging the secret."""
+    secret = _secret(mass)
+    base_url = mass.webserver.internal_base_url
+    for path in (
+        f"/.well-known/oauth-protected-resource/mcp/{secret}",
+        f"/.well-known/oauth-authorization-server/mcp/{secret}",
+        f"/.well-known/openid-configuration/mcp/{secret}",
+        f"/mcp/{secret}/.well-known/openid-configuration",
+    ):
+        async with mass.http_session_no_ssl.get(f"{base_url}{path}") as response:
+            assert response.status == 404, path
+    assert secret not in caplog.text
 
 
 async def test_secret_survives_reload(mass: MusicAssistant) -> None:

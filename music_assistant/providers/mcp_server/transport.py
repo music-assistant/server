@@ -76,7 +76,7 @@ class MCPTransport:
 
         :param request: The aiohttp request.
         """
-        return await self._handle(request, is_request_from_home_assistant(request))
+        return await self._handle(request, await is_request_from_home_assistant(request))
 
     async def _handle(self, request: web.Request, from_home_assistant: bool) -> web.Response:
         """Handle a request to one of the MCP endpoints."""
