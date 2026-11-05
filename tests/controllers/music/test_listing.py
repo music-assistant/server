@@ -162,8 +162,10 @@ def test_unseeded_random_still_uses_global_shuffle() -> None:
 
 @pytest.mark.parametrize("direction", [SortDirection.ASC, SortDirection.DESC])
 def test_release_date_sort_fallback_and_ties(direction: SortDirection) -> None:
-    """Release dates use UTC, year fallback and stable name/identity ties before paging."""
+    """Release dates use UTC, year fallback, an out-of-range year as unknown, and stable ties."""
     missing = create_album("library", "missing", name="Missing")
+    out_of_range = create_album("library", "range", name="Range")
+    out_of_range.year = 10000
     year_only = create_album("library", "year", name="Year")
     year_only.year = 1960
     january = create_album("library", "january", name="January")
@@ -172,11 +174,11 @@ def test_release_date_sort_fallback_and_ties(direction: SortDirection) -> None:
     june_a = create_album("library", "a", name="June")
     for album in (june_b, june_a):
         album.metadata.release_date = datetime(2025, 6, 1, tzinfo=UTC)
-    items = [june_b, year_only, missing, june_a, january]
+    items = [june_b, year_only, out_of_range, missing, june_a, january]
     expected = (
-        [missing, year_only, january, june_a, june_b]
+        [missing, out_of_range, year_only, january, june_a, june_b]
         if direction == SortDirection.ASC
-        else [june_a, june_b, january, year_only, missing]
+        else [june_a, june_b, january, year_only, missing, out_of_range]
     )
     kwargs: dict[str, Any] = {"sort_field": SortField.RELEASE_DATE, "sort_direction": direction}
     assert apply_listing(items, ListingType.ARTIST_ALBUMS, **kwargs) == expected

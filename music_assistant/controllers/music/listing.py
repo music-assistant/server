@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import random
 from collections.abc import Callable, Sequence
-from datetime import UTC, datetime
+from datetime import MAXYEAR, MINYEAR, UTC, datetime
 from typing import Any, Final
 
 from music_assistant_models.enums import ListingType, SortDirection, SortField
@@ -168,7 +168,8 @@ def _release_date(item: ListingItem) -> float:
         return (
             released if released.tzinfo is not None else released.replace(tzinfo=UTC)
         ).timestamp()
-    if year := item.year:
+    # a stored year outside datetime's range (an unvalidated tag) counts as unknown
+    if (year := item.year) and MINYEAR <= year <= MAXYEAR:
         return datetime(year, 1, 1, tzinfo=UTC).timestamp()
     return float("-inf")
 
