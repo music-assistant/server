@@ -157,8 +157,10 @@ def _parse_trun(
         position += 4
     if flags & 0x4:
         position += 4
+    # duration, size, flags and composition offset are 4 bytes each, if the run lists them
+    row_size = 4 * (flags & 0xF00).bit_count()
     for _ in range(count):
-        if position > end:
+        if position + row_size > end:
             raise UnsupportedEncryptionError("Track run is shorter than its sample count")
         if flags & 0x100:
             position += 4
@@ -170,6 +172,8 @@ def _parse_trun(
             position += 4
         if flags & 0x800:
             position += 4
+        if offset < 0 or offset + size > len(segment):
+            raise UnsupportedEncryptionError("Sample is outside of the segment")
         sample_ranges.append((offset, size))
         offset += size
     return offset
@@ -207,6 +211,8 @@ def _encrypted_parts(
         position += clear
         parts.append((position, encrypted))
         position += encrypted
+    if position > offset + size:
+        raise UnsupportedEncryptionError("Subsample layout is larger than its sample")
     return parts
 
 
