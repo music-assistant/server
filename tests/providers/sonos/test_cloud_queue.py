@@ -328,8 +328,26 @@ async def test_announcement_is_served_as_a_single_item_queue() -> None:
     window = await player.build_cloud_queue_window("track0")
 
     assert [x.queue_item_id for x in window.items] == ["announcement"]
+    assert window.wire_ids == ["announcement@0"]
     assert window.includes_beginning is True
     assert window.includes_end is True
+
+
+async def test_an_announcement_window_is_served_through_the_endpoint() -> None:
+    """Test the itemWindow endpoint describes a playing announcement as its one item."""
+    player, _ = _make_player([_make_queue_item("track0")])
+    player._announcement_media = PlayerMedia(
+        uri="http://announcement", media_type=MediaType.ANNOUNCEMENT, queue_item_id="announcement"
+    )
+    cloud_queue = _make_cloud_queue()
+    request = MagicMock()
+    request.query = {"itemId": "track0@0", "previousWindowSize": "9", "upcomingWindowSize": "10"}
+
+    response = await cloud_queue._handle_sonos_queue_itemwindow(player, request)
+
+    body = json.loads(response.text or "{}")
+    assert [item["id"] for item in body["items"]] == ["announcement@0"]
+    assert body["includesEndOfQueue"] is True
 
 
 async def test_window_is_empty_without_a_queue() -> None:
@@ -606,6 +624,7 @@ async def test_a_track_repeating_itself_is_listed_once_more(
     window = await player.build_cloud_queue_window("track0")
 
     assert [x.queue_item_id for x in window.items] == ["track0", "track0"]
+    assert window.wire_ids == ["track0@0", "track0@0"]
     assert window.includes_end is False
 
 
@@ -630,6 +649,7 @@ async def test_a_short_queue_on_repeat_all_still_fills_the_window() -> None:
     window = await player.build_cloud_queue_window("track0")
 
     assert [x.queue_item_id for x in window.items] == [f"track{i % 3}" for i in range(11)]
+    assert window.wire_ids == [f"track{i % 3}@0" for i in range(11)]
 
 
 async def test_a_successful_load_releases_the_replaced_sessions_streams() -> None:

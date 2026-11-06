@@ -787,8 +787,12 @@ class SonosPlayer(Player):
         """
         if self._announcement_media is not None:
             # an announcement is a queue of exactly one item
+            media = self._announcement_media
             return SonosQueueWindow(
-                items=[self._announcement_media], includes_beginning=True, includes_end=True
+                items=[media],
+                wire_ids=[self.wire_item_id(media.queue_item_id, generation) or media.uri],
+                includes_beginning=True,
+                includes_end=True,
             )
         queue_id = self.cloud_queue_id
         if not queue_id or not (queue := self.mass.player_queues.get(queue_id)):
@@ -816,13 +820,15 @@ class SonosPlayer(Player):
             )
 
         items: list[PlayerMedia] = []
+        wire_ids: list[str] = []
         positions: dict[int, str] = {}
         offset = max(0, center_index - min(PREVIOUS_ITEMS, max_previous))
         for idx in range(offset, center_index + 1):
             queue_item = self.mass.player_queues.get_item(queue_id, idx)
             if queue_item and queue_item.available:
                 items.append(await self._player_media_for_speaker(queue_item, idx))
-                positions[idx] = self._wire_id_at(queue_item.queue_item_id, idx, generation)
+                wire_ids.append(self._wire_id_at(queue_item.queue_item_id, idx, generation))
+                positions[idx] = wire_ids[-1]
 
         # get_next_item accounts for repeat mode, so this is the item that will really
         # play next rather than whatever sits at the next index
@@ -835,9 +841,8 @@ class SonosPlayer(Player):
             if next_index is None:
                 break
             items.append(await self._player_media_for_speaker(next_item, next_index))
-            positions[next_index] = self._wire_id_at(
-                next_item.queue_item_id, next_index, generation
-            )
+            wire_ids.append(self._wire_id_at(next_item.queue_item_id, next_index, generation))
+            positions[next_index] = wire_ids[-1]
             if next_item.queue_item_id in (x.queue_item_id for x in items[-3:-1]):
                 # a track or a pair that repeats itself gets one more round, not a window
                 # full: the speaker is never refused the track it plays or the one before
@@ -847,7 +852,7 @@ class SonosPlayer(Player):
 
         window = SonosQueueWindow(
             items=items,
-            wire_ids=list(positions.values()),
+            wire_ids=wire_ids,
             includes_beginning=offset == 0,
             # check after the loop in case the window filled exactly up to the last item
             includes_end=self.mass.player_queues.get_next_item(queue_id, last_index) is None,
