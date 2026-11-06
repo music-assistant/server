@@ -245,6 +245,9 @@ def _zone_provider(
     provider.mass = mass
     for player in players.values():
         player.mass = mass
+        # a zone's renderer runs on the host: each test sets what the zones answer there
+        player._read_transport = lambda zone: provider.host.zone_transport(zone)  # type: ignore[method-assign]
+        player._read_position = lambda zone: provider.host.zone_position(zone)  # type: ignore[method-assign]
     provider.logger = MagicMock()
     return provider, players
 
@@ -449,8 +452,8 @@ def _playing_group(
             return {"TrackURI": ""}
         return {"TrackURI": f"{_BASE_URL}/flow/s1/{leader.player_id}/i1/{leader.player_id}.flac"}
 
-    provider.host.async_get_transport_info = AsyncMock(side_effect=transport)
-    provider.host.async_get_position_info = AsyncMock(side_effect=position)
+    provider.host.zone_transport = AsyncMock(side_effect=transport)
+    provider.host.zone_position = AsyncMock(side_effect=position)
     mass = cast("MagicMock", provider.mass)
     mass.streams.base_url = _BASE_URL
     queue = MagicMock(queue_id=leader.player_id, state=PlaybackState.PLAYING)
@@ -508,7 +511,7 @@ async def test_a_leader_whose_rooms_left_its_zone_waits_for_the_watcher() -> Non
     with provider.changing_group(), patch.object(bar, "_update_power"):
         await bar.poll()
     assert bar._attr_playback_state == PlaybackState.PLAYING
-    provider.host.async_get_transport_info.assert_not_awaited()
+    provider.host.zone_transport.assert_not_awaited()
 
 
 @pytest.mark.parametrize("failing", [["Kitchen", "Sofa"], ["Bar"]])
@@ -520,18 +523,18 @@ async def test_a_zone_that_does_not_tell_holds_the_decision(
     provider, players = _zone_provider([["Bar", "Kitchen", "Sofa"]])
     mass = _playing_group(provider, players, ["Bar", "Sofa", "Kitchen"], [["Kitchen", "Sofa"]])
     provider.host.get_zones.return_value = [["Bar"], ["Kitchen", "Sofa"]]
-    answering = provider.host.async_get_transport_info.side_effect
+    answering = provider.host.zone_transport.side_effect
 
     async def inconclusive(zone: list[str]) -> dict[str, str] | None:
         return reply if zone == failing else cast("dict[str, str]", await answering(zone))
 
-    provider.host.async_get_transport_info.side_effect = inconclusive
+    provider.host.zone_transport.side_effect = inconclusive
     with patch.object(RaumfeldPlayer, "synced_to", new_callable=PropertyMock, return_value=None):
         await _follow(provider, players)
         await _follow(provider, players)
         assert _groups(players) == {"Bar": ["Bar", "Sofa", "Kitchen"]}
         mass.players.cmd_ungroup.assert_not_called()
-        provider.host.async_get_transport_info.side_effect = answering
+        provider.host.zone_transport.side_effect = answering
         await _follow(provider, players)
     mass.players.cmd_ungroup.assert_called_once_with(players["Bar"].player_id)
 
@@ -541,7 +544,7 @@ async def test_zones_that_never_answer_are_mirrored_in_the_end() -> None:
     provider, players = _zone_provider([["Bar", "Kitchen", "Sofa"]])
     _playing_group(provider, players, ["Bar", "Sofa", "Kitchen"], [])
     provider.host.get_zones.return_value = [["Bar"], ["Kitchen", "Sofa"]]
-    provider.host.async_get_transport_info = AsyncMock(return_value=None)
+    provider.host.zone_transport = AsyncMock(return_value=None)
     clock = "music_assistant.providers.raumfeld.provider.time.time"
     with patch(clock, return_value=1000.0):
         await _follow(provider, players)
@@ -558,13 +561,13 @@ async def test_a_group_change_during_the_reads_is_left_alone(playing: list[list[
     provider, players = _zone_provider([["Bar", "Kitchen", "Sofa"]])
     mass = _playing_group(provider, players, ["Bar", "Sofa", "Kitchen"], playing)
     provider.host.get_zones.return_value = [["Bar"], ["Kitchen", "Sofa"]]
-    answering = provider.host.async_get_transport_info.side_effect
+    answering = provider.host.zone_transport.side_effect
 
     async def change_starts(zone: list[str]) -> dict[str, str]:
         provider._group_changes = 1
         return cast("dict[str, str]", await answering(zone))
 
-    provider.host.async_get_transport_info.side_effect = change_starts
+    provider.host.zone_transport.side_effect = change_starts
     with patch.object(RaumfeldPlayer, "synced_to", new_callable=PropertyMock, return_value=None):
         await _follow(provider, players)
         await _follow(provider, players)
@@ -577,14 +580,14 @@ async def test_a_play_during_the_reads_is_not_handed_over() -> None:
     provider, players = _zone_provider([["Bar", "Kitchen", "Sofa"]])
     mass = _playing_group(provider, players, ["Bar", "Sofa", "Kitchen"], [["Kitchen", "Sofa"]])
     provider.host.get_zones.return_value = [["Bar"], ["Kitchen", "Sofa"]]
-    answering = provider.host.async_get_transport_info.side_effect
+    answering = provider.host.zone_transport.side_effect
     bar = players["Bar"]
 
     async def play_starts(zone: list[str]) -> dict[str, str]:
         bar._playback_generation += 1
         return cast("dict[str, str]", await answering(zone))
 
-    provider.host.async_get_transport_info.side_effect = play_starts
+    provider.host.zone_transport.side_effect = play_starts
     with patch.object(RaumfeldPlayer, "synced_to", new_callable=PropertyMock, return_value=None):
         await _follow(provider, players)
         await _follow(provider, players)
@@ -611,7 +614,7 @@ async def test_rooms_that_play_on_another_source_are_not_handed_the_queue() -> N
     provider, players = _zone_provider([["Bar", "Sofa"]])
     mass = _playing_group(provider, players, ["Bar", "Sofa"], [["Sofa"]])
     provider.host.get_zones.return_value = [["Bar"], ["Sofa"]]
-    provider.host.async_get_position_info = AsyncMock(
+    provider.host.zone_position = AsyncMock(
         return_value={"TrackURI": "http://opml.radiotime.com/Tune.ashx?id=s25777"}
     )
     await _follow(provider, players)
@@ -630,12 +633,12 @@ async def test_a_split_during_the_leaders_poll_leaves_its_queue_alone() -> None:
         provider.host.get_zones.return_value = [["Bar"], ["Sofa"]]
         return {"CurrentTransportState": "STOPPED"}
 
-    provider.host.async_get_transport_info = AsyncMock(side_effect=split_while_read)
+    provider.host.zone_transport = AsyncMock(side_effect=split_while_read)
     with (
         patch.object(bar, "_update_volume", AsyncMock()),
         patch.object(RaumfeldPlayer, "synced_to", new_callable=PropertyMock, return_value=None),
     ):
-        await bar._poll_zone(provider.host, ["Bar", "Sofa"])
+        await bar._poll_zone(["Bar", "Sofa"])
     assert bar._attr_playback_state == PlaybackState.PLAYING
 
 
@@ -653,13 +656,13 @@ async def test_a_room_that_joined_a_group_during_its_poll_drops_its_next_item() 
         synced_to.return_value = sofa.player_id
         return {"CurrentTransportState": "STOPPED"}
 
-    provider.host.async_get_transport_info = AsyncMock(side_effect=joined_while_read)
+    provider.host.zone_transport = AsyncMock(side_effect=joined_while_read)
     with (
         patch.object(bar, "_update_volume", AsyncMock()),
         patch.object(bar, "_advance_to_next") as advance,
         patch.object(RaumfeldPlayer, "synced_to", synced_to),
     ):
-        await bar._poll_zone(provider.host, ["Bar"])
+        await bar._poll_zone(["Bar"])
     advance.assert_not_called()
     assert _next_cleared(bar)
 
@@ -675,7 +678,7 @@ async def test_a_leader_switched_off_while_playing_leaves_its_zone_to_the_others
     async def drop(_room: str) -> None:
         provider.host.get_zones.return_value = [["Kitchen", "Sofa"]]
 
-    provider.host.async_drop_room_from_zone = AsyncMock(side_effect=drop)
+    provider.drop_room = AsyncMock(side_effect=drop)  # type: ignore[method-assign]
     with (
         patch.object(
             bar, "_update_power", side_effect=lambda: setattr(bar, "_attr_powered", False)
@@ -684,7 +687,7 @@ async def test_a_leader_switched_off_while_playing_leaves_its_zone_to_the_others
         patch.object(bar, "_poll_zone", AsyncMock()),
     ):
         await bar.poll()
-    provider.host.async_drop_room_from_zone.assert_awaited_once_with("Bar")
+    provider.drop_room.assert_awaited_once_with("Bar")
     # until MA has handed the queue over, the leader keeps reporting it as playing
     assert bar._attr_playback_state == PlaybackState.PLAYING
 
@@ -695,7 +698,7 @@ async def test_a_room_switched_off_otherwise_stays_in_its_zone(case: str) -> Non
     provider, players = _zone_provider([["Bar", "Kitchen", "Sofa"]])
     _playing_group(provider, players, ["Bar", "Sofa", "Kitchen"], [["Bar", "Kitchen", "Sofa"]])
     provider.host.room_is_spotify_single_room.return_value = False
-    provider.host.async_drop_room_from_zone = AsyncMock()
+    provider.drop_room = AsyncMock()  # type: ignore[method-assign]
     bar = players["Bar"]
     bar._attr_powered = case != "already off"
     if case == "idle":
@@ -710,7 +713,7 @@ async def test_a_room_switched_off_otherwise_stays_in_its_zone(case: str) -> Non
         patch.object(bar, "_poll_zone", AsyncMock()),
     ):
         await bar.poll()
-    provider.host.async_drop_room_from_zone.assert_not_awaited()
+    provider.drop_room.assert_not_awaited()
 
 
 async def test_a_leader_that_switched_source_still_hands_its_queue_over() -> None:
@@ -720,14 +723,14 @@ async def test_a_leader_that_switched_source_still_hands_its_queue_over() -> Non
         provider, players, ["Bar", "Sofa", "Kitchen"], [["Kitchen", "Sofa"], ["Bar"]]
     )
     provider.host.get_zones.return_value = [["Bar"], ["Kitchen", "Sofa"]]
-    queue_position = provider.host.async_get_position_info.side_effect
+    queue_position = provider.host.zone_position.side_effect
 
     async def radio_on_bar(zone: list[str]) -> dict[str, str]:
         if zone == ["Bar"]:
             return {"TrackURI": "http://opml.radiotime.com/Tune.ashx?id=s25777"}
         return cast("dict[str, str]", await queue_position(zone))
 
-    provider.host.async_get_position_info.side_effect = radio_on_bar
+    provider.host.zone_position.side_effect = radio_on_bar
     with patch.object(RaumfeldPlayer, "synced_to", new_callable=PropertyMock, return_value=None):
         await _follow(provider, players)
         await _follow(provider, players)
@@ -747,7 +750,7 @@ async def test_the_end_watch_leaves_a_split_group_to_the_watcher() -> None:
     ):
         await bar._watch_for_track_end(0)
     advance.assert_not_called()
-    provider.host.async_get_transport_info.assert_not_awaited()
+    provider.host.zone_transport.assert_not_awaited()
 
 
 def _next_cleared(player: RaumfeldPlayer) -> bool:
@@ -769,7 +772,7 @@ async def test_a_room_that_joined_a_group_drops_its_own_next_item(joins: str) ->
         synced_to.return_value = sofa.player_id
         return {"CurrentTransportState": "STOPPED"}
 
-    provider.host.async_get_transport_info = AsyncMock(side_effect=joined_while_read)
+    provider.host.zone_transport = AsyncMock(side_effect=joined_while_read)
     with (
         patch.object(bar, "_advance_to_next") as advance,
         patch.object(RaumfeldPlayer, "synced_to", synced_to),
@@ -788,11 +791,9 @@ async def test_a_merge_of_two_playing_groups_keeps_the_queue_that_plays_on() -> 
     kitchen._attr_active_source = kitchen.player_id
     kitchen._attr_playback_state = PlaybackState.PLAYING
     provider.host.get_zones.return_value = [["Bar", "Kitchen", "Office", "Sofa"]]
-    provider.host.async_get_transport_info = AsyncMock(
-        return_value={"CurrentTransportState": "PLAYING"}
-    )
+    provider.host.zone_transport = AsyncMock(return_value={"CurrentTransportState": "PLAYING"})
     kitchen_stream = f"{_BASE_URL}/flow/s1/{kitchen.player_id}/i1/{kitchen.player_id}.flac"
-    provider.host.async_get_position_info = AsyncMock(return_value={"TrackURI": kitchen_stream})
+    provider.host.zone_position = AsyncMock(return_value={"TrackURI": kitchen_stream})
     with patch.object(RaumfeldPlayer, "synced_to", new_callable=PropertyMock, return_value=None):
         await _follow(provider, players)
         await _follow(provider, players)
@@ -810,9 +811,7 @@ def _merged_playing_groups() -> tuple[RaumfeldPlayerProvider, dict[str, Raumfeld
     kitchen._attr_active_source = kitchen.player_id
     kitchen._attr_playback_state = PlaybackState.PLAYING
     provider.host.get_zones.return_value = [["Bar", "Kitchen", "Office", "Sofa"]]
-    provider.host.async_get_transport_info = AsyncMock(
-        return_value={"CurrentTransportState": "PLAYING"}
-    )
+    provider.host.zone_transport = AsyncMock(return_value={"CurrentTransportState": "PLAYING"})
     return provider, players, f"{_BASE_URL}/flow/s1/{kitchen.player_id}/i1/{kitchen.player_id}.flac"
 
 
@@ -828,12 +827,12 @@ async def test_a_merge_waits_for_reads_that_tell_its_queue(disturbance: str) -> 
         kitchen._playback_generation += 1
         return {"TrackURI": kitchen_stream}
 
-    provider.host.async_get_position_info = AsyncMock(side_effect=disturbed)
+    provider.host.zone_position = AsyncMock(side_effect=disturbed)
     with patch.object(RaumfeldPlayer, "synced_to", new_callable=PropertyMock, return_value=None):
         await _follow(provider, players)
         await _follow(provider, players)
         assert set(_groups(players)) == {"Bar", "Kitchen"}
-        provider.host.async_get_position_info = AsyncMock(return_value={"TrackURI": kitchen_stream})
+        provider.host.zone_position = AsyncMock(return_value={"TrackURI": kitchen_stream})
         await _follow(provider, players)
     assert list(_groups(players)) == ["Kitchen"]
 
@@ -900,12 +899,12 @@ async def test_a_reading_of_a_zone_the_room_left_is_dropped() -> None:
         bar._attr_group_members = []
         return {"CurrentTransportState": "STOPPED"}
 
-    provider.host.async_get_transport_info = AsyncMock(side_effect=regrouped_while_read)
+    provider.host.zone_transport = AsyncMock(side_effect=regrouped_while_read)
     with (
         patch.object(bar, "_update_volume", AsyncMock()),
         patch.object(RaumfeldPlayer, "synced_to", new_callable=PropertyMock, return_value=None),
     ):
-        await bar._poll_zone(provider.host, ["Bar", "Sofa"])
+        await bar._poll_zone(["Bar", "Sofa"])
     assert bar._attr_playback_state == PlaybackState.PLAYING
 
 
@@ -955,11 +954,11 @@ async def test_station_buttons_are_read_with_their_titles() -> None:
         's-s25777"><dc:title>NPO Radio 2</dc:title></item></DIDL-Lite>',
         "0/My Music/Albums/42": None,
     }
-    provider.host.async_browse_media_server = AsyncMock(
-        side_effect=lambda object_id, _flag: listings[object_id]
+    provider.browse_library = AsyncMock(  # type: ignore[method-assign]
+        side_effect=lambda object_id, _children: listings[object_id]
     )
     with patch(
-        "music_assistant.providers.raumfeld.provider.hassfeld_upnp.get_dlna_action",
+        "music_assistant.providers.raumfeld.provider.get_action",
         AsyncMock(return_value=action),
     ):
         buttons = await provider._read_station_buttons("Bar")
@@ -984,19 +983,19 @@ async def test_a_button_item_is_only_described_when_it_is_new() -> None:
         "<dc:title>{1}</dc:title></item></DIDL-Lite>"
     )
     titles = {"0/RadioTime/Search/s-s25777": "NPO Radio 2", "0/StationButtons/432": "WYWH 50"}
-    provider.host.async_browse_media_server = AsyncMock(
-        side_effect=lambda object_id, _flag: listing.format(object_id, titles[object_id])
+    provider.browse_library = AsyncMock(  # type: ignore[method-assign]
+        side_effect=lambda object_id, _children: listing.format(object_id, titles[object_id])
     )
     with patch(
-        "music_assistant.providers.raumfeld.provider.hassfeld_upnp.get_dlna_action",
+        "music_assistant.providers.raumfeld.provider.get_action",
         AsyncMock(return_value=action),
     ):
         await provider._read_station_buttons("Bar")
         await provider._read_station_buttons("Bar")
-        assert provider.host.async_browse_media_server.await_count == 1
+        assert provider.browse_library.await_count == 1
         assigned[4] = "0/StationButtons/432"
         buttons = await provider._read_station_buttons("Bar")
-    assert provider.host.async_browse_media_server.await_count == 2
+    assert provider.browse_library.await_count == 2
     assert buttons == [
         (1, "0/RadioTime/Search/s-s25777", "NPO Radio 2", False),
         (4, "0/StationButtons/432", "WYWH 50", False),
@@ -1012,8 +1011,8 @@ async def test_a_renamed_button_item_gets_its_new_title_once_its_cache_expired()
         }
     )
     titles = iter(["NPO Radio 2", "NPO 2"])
-    provider.host.async_browse_media_server = AsyncMock(
-        side_effect=lambda object_id, _flag: (
+    provider.browse_library = AsyncMock(  # type: ignore[method-assign]
+        side_effect=lambda object_id, _children: (
             '<DIDL-Lite xmlns="urn:schemas-upnp-org:metadata-1-0/DIDL-Lite/"'
             ' xmlns:dc="http://purl.org/dc/elements/1.1/">'
             f'<item id="{object_id}"><dc:title>{next(titles)}</dc:title></item></DIDL-Lite>'
@@ -1021,7 +1020,7 @@ async def test_a_renamed_button_item_gets_its_new_title_once_its_cache_expired()
     )
     cache = cast("_Cache", provider.mass.cache)
     with patch(
-        "music_assistant.providers.raumfeld.provider.hassfeld_upnp.get_dlna_action",
+        "music_assistant.providers.raumfeld.provider.get_action",
         AsyncMock(return_value=action),
     ):
         assert (await provider._read_station_buttons("Bar") or [])[0][2] == "NPO Radio 2"
@@ -1051,7 +1050,7 @@ async def test_buttons_that_cannot_be_read_are_reported_as_unknown() -> None:
     """A media server that does not answer gives no buttons, not an empty list of them."""
     provider, _ = _button_provider()
     with patch(
-        "music_assistant.providers.raumfeld.provider.hassfeld_upnp.get_dlna_action",
+        "music_assistant.providers.raumfeld.provider.get_action",
         AsyncMock(side_effect=TimeoutError),
     ):
         assert await provider._read_station_buttons("Bar") is None
@@ -2033,3 +2032,84 @@ def test_a_room_without_an_icy_preference_gets_basic(stored: dict[str, Any], exp
     provider._ensure_icy_default("raumfeld_bar")
 
     assert stored["enable_icy_metadata"] == expected
+
+
+def _commanding_provider() -> RaumfeldPlayerProvider:
+    """Build a provider whose host knows the rooms Bar and Sofa, and the zone of both."""
+    provider, _ = _zone_provider([["Bar", "Sofa"]])
+    provider._host_address = "192.168.1.41"
+    provider._host_port = 47365
+    provider.host.resolve = {"room_to_udn": {"Bar": "uuid:bar", "Sofa": "uuid:sofa"}}
+    provider.host.roomlst_to_zoneudn.side_effect = lambda zone: (
+        "uuid:zone" if sorted(zone) == ["Bar", "Sofa"] else None
+    )
+    return provider
+
+
+async def test_host_commands_name_the_rooms_by_udn() -> None:
+    """Each command goes to the host's web service with the UDNs the host knows the rooms by."""
+    provider = _commanding_provider()
+    host_url = "http://192.168.1.41:47365"
+    session = provider.mass.http_session
+    with patch("music_assistant.providers.raumfeld.provider.webservice") as webservice:
+        for name in (
+            "connect_rooms_to_zone",
+            "connect_room_to_zone",
+            "drop_room",
+            "enter_manual_standby",
+            "leave_standby",
+        ):
+            setattr(webservice, name, AsyncMock())
+        await provider.create_zone(["Bar", "Sofa"])
+        await provider.add_room_to_zone("Sofa", ["Bar", "Sofa"])
+        await provider.drop_room("Bar")
+        await provider.enter_standby("Bar")
+        await provider.leave_standby("Sofa")
+    webservice.connect_rooms_to_zone.assert_awaited_once_with(
+        session, host_url, ["uuid:bar", "uuid:sofa"]
+    )
+    webservice.connect_room_to_zone.assert_awaited_once_with(
+        session, host_url, "uuid:sofa", "uuid:zone"
+    )
+    webservice.drop_room.assert_awaited_once_with(session, host_url, "uuid:bar")
+    webservice.enter_manual_standby.assert_awaited_once_with(session, host_url, "uuid:bar")
+    webservice.leave_standby.assert_awaited_once_with(session, host_url, "uuid:sofa")
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        lambda provider: provider.create_zone(["Bar", "Office"]),
+        lambda provider: provider.add_room_to_zone("Office", ["Bar", "Sofa"]),
+        lambda provider: provider.add_room_to_zone("Sofa", ["Bar"]),
+        lambda provider: provider.drop_room("Office"),
+        lambda provider: provider.enter_standby("Office"),
+        lambda provider: provider.leave_standby("Office"),
+    ],
+)
+async def test_a_room_or_zone_the_host_does_not_know_is_not_sent(
+    command: Callable[[RaumfeldPlayerProvider], Coroutine[Any, Any, None]],
+) -> None:
+    """A command for an unknown room or zone fails before reaching the host."""
+    provider = _commanding_provider()
+    with (
+        patch("music_assistant.providers.raumfeld.provider.webservice") as webservice,
+        pytest.raises(KeyError),
+    ):
+        await command(provider)
+    assert not webservice.mock_calls
+
+
+async def test_only_a_room_in_the_leaders_zone_is_taken_out_of_it() -> None:
+    """Ungrouping a room that already plays elsewhere leaves it where it plays."""
+    provider, players = _zone_provider([["Bar", "Sofa"], ["Kitchen"]])
+    bar, sofa, kitchen = players["Bar"], players["Sofa"], players["Kitchen"]
+    bar._attr_group_members = [bar.player_id, sofa.player_id, kitchen.player_id]
+    for player in players.values():
+        player._provider = provider
+    provider._group_changes = 0
+    provider.drop_room = AsyncMock()  # type: ignore[method-assign]
+    provider.host.roomlst_to_zoneudn.return_value = "uuid:zone"
+    with patch.object(bar, "update_state"):
+        await bar.set_members(player_ids_to_remove=[sofa.player_id, kitchen.player_id])
+    provider.drop_room.assert_awaited_once_with("Sofa")
