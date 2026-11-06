@@ -50,7 +50,6 @@ def _make_controller() -> MagicMock:
     pq_data = MagicMock()
     pq_data.session_id = SESSION_ID
     pq_data.last_served_item_id = None
-    pq_data.served_items_by_index = {}
     ctrl.mass.player_queues.queue_data.return_value = pq_data
 
     queue_item = MagicMock()
@@ -69,7 +68,7 @@ def _make_controller() -> MagicMock:
 
 
 async def test_a_position_request_is_served_the_item_sitting_there_now() -> None:
-    """A position resolves to the item the queue holds there now, which is then recorded."""
+    """A position resolves to the item the queue holds there now."""
     ctrl = _make_controller()
     request = _make_request(queue_index="2")
 
@@ -78,34 +77,19 @@ async def test_a_position_request_is_served_the_item_sitting_there_now() -> None
 
     assert "No streamdetails" in str(exc.value.reason)
     ctrl.mass.player_queues.get_item.assert_called_once_with(QUEUE_ID, 2)
-    pq_data = ctrl.mass.player_queues.queue_data.return_value
-    assert pq_data.served_items_by_index == {2: ITEM_ID}
     # the sweeps over open requests read the item from the request itself
     request.__setitem__.assert_called_once_with("queue_item_id", ITEM_ID)
 
 
 async def test_a_position_past_the_end_of_the_queue_is_refused() -> None:
-    """A position the queue no longer reaches gets a 404, with nothing recorded."""
+    """A position the queue no longer reaches gets a 404."""
     ctrl = _make_controller()
 
     with pytest.raises(web.HTTPNotFound) as exc:
         await StreamsController.serve_queue_item_stream(ctrl, _make_request(queue_index="7"))
 
     assert "No queue item at position 7" in str(exc.value.reason)
-    assert ctrl.mass.player_queues.queue_data.return_value.served_items_by_index == {}
     ctrl.audio.get_stream_details.assert_not_awaited()
-
-
-async def test_a_head_probe_does_not_record_the_served_position() -> None:
-    """A HEAD probe is speculative, so it is not what the player plays for the position."""
-    ctrl = _make_controller()
-
-    with pytest.raises(web.HTTPNotFound):
-        await StreamsController.serve_queue_item_stream(
-            ctrl, _make_request("HEAD", queue_index="2")
-        )
-
-    assert ctrl.mass.player_queues.queue_data.return_value.served_items_by_index == {}
 
 
 async def test_an_item_addressed_by_id_is_served_without_a_position_check() -> None:
@@ -116,7 +100,6 @@ async def test_an_item_addressed_by_id_is_served_without_a_position_check() -> N
         await StreamsController.serve_queue_item_stream(ctrl, _make_request(queue_item_id=ITEM_ID))
 
     assert "No streamdetails" in str(exc.value.reason)
-    assert ctrl.mass.player_queues.queue_data.return_value.served_items_by_index == {}
 
 
 async def test_an_unknown_item_id_is_refused() -> None:

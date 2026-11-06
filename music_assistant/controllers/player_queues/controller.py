@@ -1250,7 +1250,6 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
             queue.index_in_buffer = index
             # a new load owns nothing yet, so what the old one fetched says nothing about it
             queue_data.last_served_item_id = None
-            queue_data.served_items_by_index.clear()
             # a player still playing (or paused on) an item will report once more on it, so that
             # one stays served; the rest of the old load is never heard from again, and an idle
             # player has nothing left that could be
@@ -1792,21 +1791,6 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         """
         if (queue_data := self._queue_data.get(queue_id)) is not None:
             queue_data.served_item_ids.add(item_id)
-
-    def item_served_at(self, queue_id: str, index: int) -> str | None:
-        """
-        Return the queue item whose audio was last served for a queue position.
-
-        A player that fetches its items by position plays whatever the queue held at that
-        position when it fetched it, which after a queue edit is not the item it names for
-        the position.
-
-        :param queue_id: The queue the position belongs to.
-        :param index: The queue position the player fetched.
-        """
-        if (queue_data := self._queue_data.get(queue_id)) is None:
-            return None
-        return queue_data.served_items_by_index.get(index)
 
     async def release_failed_item_source(self, queue_id: str, queue_item_id: str) -> None:
         """

@@ -835,8 +835,6 @@ class StreamsController(CoreController):
             queue_item = self.mass.player_queues.get_item(queue_id, int(queue_index))
             if not queue_item:
                 raise web.HTTPNotFound(reason=f"No queue item at position {queue_index}")
-            if request.method == "GET":
-                pq_data.served_items_by_index[int(queue_index)] = queue_item.queue_item_id
         else:
             queue_item_id = request.match_info["queue_item_id"]
             queue_item = self.mass.player_queues.get_item(queue_id, queue_item_id)

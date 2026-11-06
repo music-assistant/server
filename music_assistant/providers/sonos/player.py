@@ -662,8 +662,8 @@ class SonosPlayer(Player):
         Return the queue item whose audio the speaker plays under an id it reports.
 
         The speaker names the item it cached for a queue position, while the audio it
-        fetched for that position is whatever the queue held there at the time; the two
-        differ after a queue edit the speaker has not re-read yet.
+        fetches for that position is whatever the queue holds there; the two differ after
+        a queue edit the speaker has not re-read yet.
 
         :param wire_item_id: The id as the speaker reports it.
         """
@@ -671,8 +671,10 @@ class SonosPlayer(Player):
         index = self.window_positions.get(queue_item_id)
         if self.cloud_queue_id is None or index is None:
             return queue_item_id
-        served = self.mass.player_queues.item_served_at(self.cloud_queue_id, index)
-        return served or queue_item_id
+        # positions up to the one the speaker fetched last never change under it (every queue
+        # edit works behind that one), so what sits there now is what plays
+        queue_item = self.mass.player_queues.get_item(self.cloud_queue_id, index)
+        return queue_item.queue_item_id if queue_item else queue_item_id
 
     def reports_current_item(self, wire_item_id: str) -> bool:
         """

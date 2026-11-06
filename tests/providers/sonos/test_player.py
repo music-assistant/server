@@ -687,14 +687,14 @@ async def test_a_failed_track_hands_its_source_to_the_track_the_speaker_moves_on
     mass.player_queues.release_failed_item_source.assert_awaited_once_with("queue1", "abc")
 
 
-async def test_a_failed_track_releases_the_track_served_at_its_position() -> None:
-    """Test the source released is that of the track the speaker fetched for the failed slot."""
+async def test_a_failed_track_releases_the_track_at_its_position() -> None:
+    """Test the source released is that of the track the queue holds at the failed slot."""
     player = _make_named_player("Kantoor")
     player.cloud_queue_id = "queue1"
     player.cloud_queue_item_generation = 3
     player.window_positions = {"abc": 4}
     mass = cast("MagicMock", player.mass)
-    mass.player_queues.item_served_at.return_value = "guest"
+    mass.player_queues.get_item.return_value = MagicMock(queue_item_id="guest")
     mass.player_queues.release_failed_item_source = AsyncMock()
     scheduled = _scheduled_tasks(mass)
 
@@ -702,7 +702,7 @@ async def test_a_failed_track_releases_the_track_served_at_its_position() -> Non
 
     assert len(scheduled) == 1
     await scheduled[0]
-    mass.player_queues.item_served_at.assert_called_once_with("queue1", 4)
+    mass.player_queues.get_item.assert_called_once_with("queue1", 4)
     mass.player_queues.release_failed_item_source.assert_awaited_once_with("queue1", "guest")
 
 
@@ -740,7 +740,7 @@ def test_the_playing_item_follows_the_audio_served_for_the_reported_position(
     player.cloud_queue_id = "queue1"
     player.cloud_queue_item_generation = 3
     player.window_positions = {"abc": 4}
-    mass.player_queues.item_served_at.return_value = "guest"
+    mass.player_queues.get_item.return_value = MagicMock(queue_item_id="guest")
     _report_playing_our_queue(client.player.group, "abc@3")
 
     with caplog.at_level(logging.DEBUG, logger="test.sonos.player"):
@@ -749,7 +749,7 @@ def test_the_playing_item_follows_the_audio_served_for_the_reported_position(
 
     assert player.current_media is not None
     assert player.current_media.queue_item_id == "guest"
-    mass.player_queues.item_served_at.assert_called_with("queue1", 4)
+    mass.player_queues.get_item.assert_called_with("queue1", 4)
     stale_reports = "Position 4 of queue queue1 now holds guest, speaker Kantoor expected abc"
     assert caplog.text.count(stale_reports) == 1
 

@@ -1,4 +1,4 @@
-"""Tests for the record of which queue item was served for a queue position."""
+"""Tests for what a new queue load drops of the previous one's fetch record."""
 
 from __future__ import annotations
 
@@ -52,22 +52,11 @@ def _controller(current_index: int = 0) -> Any:
     return ctrl
 
 
-def test_the_item_served_at_a_position_is_read_back() -> None:
-    """The item recorded for a position is returned; positions and queues without one give None."""
-    ctrl = _controller()
-    ctrl._queue_data["q1"].served_items_by_index[2] = "guest"
-
-    assert ctrl.item_served_at("q1", 2) == "guest"
-    assert ctrl.item_served_at("q1", 3) is None
-    assert ctrl.item_served_at("no_such_queue", 2) is None
-
-
 async def test_a_new_load_drops_what_the_old_one_fetched() -> None:
-    """Neither the item last fetched nor the positions served count across a restart."""
+    """The item the player last fetched does not count across a restart."""
     ctrl = _controller(current_index=1)
     data = ctrl._queue_data["q1"]
     data.last_served_item_id = data.items[2].queue_item_id
-    data.served_items_by_index[2] = data.items[2].queue_item_id
     ctrl._preload_next_item = Mock()
     ctrl._cleanup_stale_queue_buffers = Mock()
     ctrl._load_item = AsyncMock()
@@ -81,4 +70,3 @@ async def test_a_new_load_drops_what_the_old_one_fetched() -> None:
     await ctrl.play_index("q1", 0)
 
     assert data.last_served_item_id is None
-    assert data.served_items_by_index == {}

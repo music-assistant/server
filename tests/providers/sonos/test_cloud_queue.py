@@ -233,23 +233,22 @@ async def test_window_items_are_addressed_by_queue_position() -> None:
     assert player.window_positions == {f"track{i}": i for i in range(4, 16)}
 
 
-async def test_a_reported_id_resolves_to_the_item_served_at_its_position() -> None:
+async def test_a_reported_id_resolves_to_the_item_at_its_position() -> None:
     """
-    Test an id the speaker reports is read as the track whose audio it fetched for that slot.
+    Test an id the speaker reports is read as the track the queue holds at that slot now.
 
     A track added right behind the playing one takes the position the speaker cached the
-    next track at: the speaker plays the added track there, under the id it cached.
+    next track at, and every slot behind it shifts by one: the speaker plays what the
+    queue holds there, under the ids it cached.
     """
     player = _make_player_on_real_queues(4, RepeatMode.OFF)
     queue_data = player.mass.player_queues._queue_data[QUEUE_ID]
     await player.build_cloud_queue_window("track0")
     queue_data.items.insert(1, _make_queue_item("guest"))
-    # the stream server served the guest when the speaker fetched position 1
-    queue_data.served_items_by_index[1] = "guest"
 
     assert player.served_item_id("track1@0") == "guest"
-    # a position the speaker has not fetched yet names the item it cached there
-    assert player.served_item_id("track2@0") == "track2"
+    assert player.served_item_id("track2@0") == "track1"
+    # an id outside the window the speaker holds names the item itself
     assert player.served_item_id("unknown@0") == "unknown"
 
 
@@ -783,9 +782,8 @@ async def test_time_played_follows_the_audio_served_for_the_reported_position() 
     queue_data = player.mass.player_queues._queue_data[QUEUE_ID]
     await player.build_cloud_queue_window("track0")
     # a track added right behind the playing one takes the position the speaker cached
-    # track1 at, and the stream server served it when the speaker fetched that position
+    # track1 at, so that is what the speaker plays there
     queue_data.items.insert(1, _make_queue_item("guest"))
-    queue_data.served_items_by_index[1] = "guest"
     player._attr_current_media = PlayerMedia(uri="guest", queue_item_id="guest")
     player.update_elapsed_time = MagicMock()  # type: ignore[method-assign]
     cloud_queue = _make_cloud_queue()
