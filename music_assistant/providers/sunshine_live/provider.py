@@ -3,9 +3,15 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
+from typing import Any
 
-from music_assistant_models.enums import ContentType, ImageType, MediaType, StreamType
-from music_assistant_models.errors import MediaNotFoundError, UnplayableMediaError
+import aiohttp
+from music_assistant_models.enums import ImageType, MediaType, StreamType
+from music_assistant_models.errors import (
+    MediaNotFoundError,
+    ProviderUnavailableError,
+    UnplayableMediaError,
+)
 from music_assistant_models.media_items import (
     AudioFormat,
     BrowseFolder,
@@ -18,9 +24,11 @@ from music_assistant_models.media_items import (
 )
 from music_assistant_models.streamdetails import StreamDetails
 
+from music_assistant.controllers.cache import use_cache
 from music_assistant.models.music_provider import MusicProvider
 
-from .constants import CHANNELS, STREAM_BIT_RATE, STREAM_SAMPLE_RATE, STREAM_URL
+from .constants import API_TIMEOUT, CHANNELS_CACHE_SECONDS, CHANNELS_URL
+from .helpers import Channel, parse_channels
 
 
 class SunshineLiveProvider(MusicProvider):
@@ -44,9 +52,7 @@ class SunshineLiveProvider(MusicProvider):
 
         :param prov_radio_id: The id of the channel.
         """
-        if prov_radio_id not in CHANNELS:
-            raise MediaNotFoundError(f"Unknown channel: {prov_radio_id}")
-        return self._parse_radio(prov_radio_id)
+        return self._parse_radio(prov_radio_id, await self._get_channel(prov_radio_id))
 
     async def search(
         self,
@@ -65,8 +71,9 @@ class SunshineLiveProvider(MusicProvider):
         query = search_query.lower().strip()
         if MediaType.RADIO not in media_types or not query:
             return results
-        matches = [key for key, channel in CHANNELS.items() if query in channel["name"].lower()]
-        results.radio = [self._parse_radio(key) for key in matches[:limit]]
+        channels = await self._get_channels()
+        matches = [item for item in channels.items() if query in item[1].name.lower()]
+        results.radio = [self._parse_radio(*item) for item in matches[:limit]]
         return results
 
     async def get_stream_details(self, item_id: str, media_type: MediaType) -> StreamDetails:
@@ -78,21 +85,19 @@ class SunshineLiveProvider(MusicProvider):
         """
         if media_type != MediaType.RADIO:
             raise UnplayableMediaError(f"Unsupported media type: {media_type}")
-        if item_id not in CHANNELS:
-            raise MediaNotFoundError(f"Unknown channel: {item_id}")
+        channel = await self._get_channel(item_id)
         return StreamDetails(
             item_id=item_id,
             provider=self.instance_id,
             audio_format=AudioFormat(
-                content_type=ContentType.MP3,
-                sample_rate=STREAM_SAMPLE_RATE,
-                bit_rate=STREAM_BIT_RATE,
+                content_type=channel.content_type,
+                bit_rate=channel.bit_rate or 0,
                 channels=2,
             ),
             media_type=MediaType.RADIO,
             # the title of the song is in the stream, which the radio stream handling reads
             stream_type=StreamType.HTTP,
-            path=STREAM_URL.format(path=CHANNELS[item_id]["path"]),
+            path=channel.stream_url,
             allow_seek=False,
             can_seek=False,
             duration=0,
@@ -104,15 +109,41 @@ class SunshineLiveProvider(MusicProvider):
 
         :param path: The path to browse, the channels have no sub folders.
         """
-        return [self._parse_radio(key) for key in CHANNELS]
+        channels = await self._get_channels()
+        return [self._parse_radio(*item) for item in channels.items()]
 
-    def _parse_radio(self, channel_id: str) -> Radio:
-        """Return the radio item of a known channel."""
-        channel = CHANNELS[channel_id]
+    async def _get_channel(self, channel_id: str) -> Channel:
+        """Return one channel, or raise when the station doesn't offer it."""
+        channel = (await self._get_channels()).get(channel_id)
+        if channel is None:
+            raise MediaNotFoundError(f"Unknown channel: {channel_id}")
+        return channel
+
+    async def _get_channels(self) -> dict[str, Channel]:
+        """Return the channels the station offers now, or raise when there is no list."""
+        channels = parse_channels(await self._fetch_channels())
+        if not channels:
+            raise ProviderUnavailableError("Sunshine Live offers no channels")
+        return channels
+
+    # an expired list is still good while the station can't be reached
+    @use_cache(CHANNELS_CACHE_SECONDS, allow_expired_cache=True)
+    async def _fetch_channels(self) -> dict[str, Any]:
+        """Return the answer of the station with its list of channels."""
+        try:
+            async with self.mass.http_session.get(CHANNELS_URL, timeout=API_TIMEOUT) as response:
+                response.raise_for_status()
+                data: dict[str, Any] = await response.json(content_type=None)
+                return data
+        except (aiohttp.ClientError, TimeoutError, ValueError) as err:
+            raise ProviderUnavailableError(f"Sunshine Live is unavailable: {err}") from err
+
+    def _parse_radio(self, channel_id: str, channel: Channel) -> Radio:
+        """Return the radio item of a channel."""
         radio = Radio(
             provider=self.instance_id,
             item_id=channel_id,
-            name=channel["name"],
+            name=channel.name,
             provider_mappings={
                 ProviderMapping(
                     item_id=channel_id,
@@ -126,7 +157,7 @@ class SunshineLiveProvider(MusicProvider):
             MediaItemImage(
                 provider=self.instance_id,
                 type=ImageType.THUMB,
-                path=channel["image"],
+                path=channel.image,
                 remotely_accessible=True,
             )
         )

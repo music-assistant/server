@@ -1,13 +1,15 @@
 # Sunshine Live
 
 Plays the channels of [Sunshine Live](https://www.sunshine-live.de), a German electronic music
-station, as radio stations. Every channel uses the 192 kbit/s MP3 stream of the station. The song
+station, as radio stations. Every channel uses the best stream the station lists for it, now 192 kbit/s MP3. The song
 title comes from the stream itself.
 
 ## The channel list
 
-The station offers no public list of its channels, so they are listed by hand in `constants.py`.
-The id of a channel is stored in libraries, keep it when a name or a stream path changes.
+The channels, their streams and their images come from the public list behind the player on the
+website of the station (`https://www.sunshine-live.de/streams/api`), so new channels show up by
+themselves. The list is kept in the cache for an hour, and an older list is used while the station
+can't be reached. The id of a channel is the `station_id` of the station.
 
 ## Logo and channel images
 
