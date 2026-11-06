@@ -1794,7 +1794,7 @@ class MusicQuizPlugin(PluginProvider):
 
     def _is_venue_playback_target_id(self, player_id: str) -> bool:
         """
-        Return whether a player can (still) play a game out loud, hidden or not.
+        Return whether the given player is a real venue playback target, hidden or not.
 
         :param player_id: Player to validate.
         """
