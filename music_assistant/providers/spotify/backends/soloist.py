@@ -70,6 +70,7 @@ from music_assistant.providers.spotify_connect.soloist.runtime import (
     WS_PORT_FILE,
     SoloistAuthState,
     SoloistDeviceChanged,
+    SoloistOptionsChanged,
     SoloistPlaybackState,
     SoloistPositionSync,
     SoloistQueueChanged,
@@ -91,6 +92,7 @@ if TYPE_CHECKING:
     from music_assistant.providers.spotify_connect.soloist.runtime import (
         SoloistEntity,
         SoloistEvent,
+        SoloistPlaybackOptions,
     )
 
 # The capture sink delivers fixed s32le/44.1kHz/2ch PCM. Soloist decodes
@@ -852,6 +854,8 @@ class _EngineRun:
         self._teardown_done = False
         self._engine_playing = False
         self._engine_paused = False
+        # the engine last reported shuffle or repeat switched on
+        self._options_on = False
         self._pause_watch: asyncio.Task[None] | None = None
         self._idle_watch: asyncio.Task[None] | None = None
         self._sink_running = False
@@ -936,6 +940,7 @@ class _EngineRun:
             seek_position_ms
             or self._stopped
             or self._error is not None
+            or self._engine_exited
             or not self._suits_queue(streamdetails.queue_id)
         ):
             return None
@@ -1355,10 +1360,7 @@ class _EngineRun:
         :param queue_id: The queue the audio is requested for.
         """
         # the engine reads its normalization setting at startup only
-        return (
-            queue_id == self.queue_id
-            or self._engine_normalization_enabled(queue_id) == self.engine_normalizes
-        )
+        return self._engine_normalization_enabled(queue_id) == self.engine_normalizes
 
     async def _await_playback_started(self, proc: AsyncProcess) -> None:
         """Wait until the engine reports it is playing this run's first item."""
@@ -1530,6 +1532,29 @@ class _EngineRun:
         with suppress(SoloistError, OSError):
             await client.set_volume(100)
 
+    def _pin_options(self, options: SoloistPlaybackOptions) -> None:
+        """
+        Keep shuffle and repeat off: the engine has to play each item it is given once.
+
+        :param options: The playback options the engine reports.
+        """
+        switched_on = options.shuffle or options.repeat != "off"
+        if switched_on and not self._options_on:
+            # the engine's acks arrive through the event callback, so they are
+            # awaited from a task of their own
+            self._spawn_task(self._reset_options())
+        self._options_on = switched_on
+
+    async def _reset_options(self) -> None:
+        """Switch shuffle and repeat off again after the Spotify app switched one on."""
+        if (client := self._client) is None or not client.connected:
+            return
+        self.logger.debug("Shuffle or repeat switched on in Spotify, switching it off again")
+        with suppress(SoloistError, TimeoutError, OSError):
+            await client.set_repeat_track(False, await_result=True)
+            await client.set_repeat_context(False, await_result=True)
+            await client.set_shuffle(False, await_result=True)
+
     def _watch_unclaimed(self, item: _Item) -> None:
         """Stop the run when nobody takes up the item the engine moved on to in time."""
         item.unclaimed_since = asyncio.get_running_loop().time()
@@ -1621,12 +1646,15 @@ class _EngineRun:
                     return
                 # No data. Either the sink is suspended on purpose (the engine
                 # is paused, the cushion is at its cap, or nothing is being
-                # served) or the run has died; only the former is fine.
-                if self._sink_running and not self._moving:
+                # served) or the run has died or is stuck rebuffering; only the
+                # former is fine.
+                if not self._moving and (self._sink_running or self._rebuffering()):
                     stalled_for += _READ_SLICE_S
                     if stalled_for >= _STALL_TIMEOUT_S:
                         self._fail("Spotify stopped sending audio")
                         return
+                else:
+                    stalled_for = 0.0
                 # Restart the pacing clock rather than carry the gap: making up
                 # lost time would mean an unpaced burst, which over-demands the
                 # engine's fetch pipeline exactly when it is recovering.
@@ -1862,6 +1890,9 @@ class _EngineRun:
         if isinstance(data, SoloistVolumeChanged):
             await self._pin_volume(data.volume)
             return
+        if isinstance(data, SoloistOptionsChanged):
+            self._pin_options(data.options)
+            return
         if isinstance(data, SoloistTrackChanged):
             if data.item is not None and data.item.uri:
                 self._observe_engine_item(data.item.uri, announced=True)
@@ -1872,6 +1903,8 @@ class _EngineRun:
         if isinstance(data, SoloistPlaybackState):
             if data.volume is not None:
                 await self._pin_volume(data.volume)
+            if data.options is not None:
+                self._pin_options(data.options)
             playing = data.status == "playing"
             if data.item is not None and data.item.uri:
                 self._observe_engine_item(data.item.uri, announced=playing, details=data.item)
@@ -2095,6 +2128,10 @@ class _EngineRun:
             and not self._engine_exited
             and not self._item.delivery_done
         )
+
+    def _rebuffering(self) -> bool:
+        """Return whether the engine owes the item being streamed audio it is not sending."""
+        return self._item_live() and not self._engine_paused and not self._item.chunks.full()
 
     def _observe_position(self, position_ms: int) -> None:
         """Confirm an armed seek once the engine reports at its target."""
