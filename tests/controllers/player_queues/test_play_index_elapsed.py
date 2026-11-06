@@ -93,14 +93,36 @@ async def test_seek_publishes_target_before_restarting_stream() -> None:
 
     ctrl.signal_update = Mock(side_effect=_record_signal)  # type: ignore[method-assign]
     play_index = AsyncMock(side_effect=_record_restart)
-    ctrl.play_index = play_index  # type: ignore[method-assign]
+    ctrl._play_index = play_index  # type: ignore[method-assign]
 
     await ctrl.seek(QUEUE_ID, 30)
 
-    play_index.assert_awaited_once_with(QUEUE_ID, 0, seek_position=30)
-    assert events == [("signal", 30), ("restart", 30)]
+    play_index.assert_awaited_once_with(QUEUE_ID, 0, 30, fade_in=False)
+    # the play action's own bookkeeping updates around the seek carry whatever the queue
+    # holds at that moment; the seek target itself must go out before the stream restarts
+    assert events.index(("signal", 30)) < events.index(("restart", 30))
     assert queue.elapsed_time == 30
     assert queue.elapsed_time_last_updated >= before
+
+
+@pytest.mark.parametrize(
+    ("seek_to_start", "expected_position"),
+    [(True, 0), (False, 1680)],
+)
+async def test_seek_to_start_skips_resume_point(
+    seek_to_start: bool, expected_position: int
+) -> None:
+    """Seeking to 0 starts the item at 0, a plain start still picks up its resume point."""
+    ctrl, queue, _signals = _controller_with_stale_queue()
+    ctrl._get_resume_position = AsyncMock(return_value=1680)  # type: ignore[method-assign]
+
+    if seek_to_start:
+        await ctrl.seek(QUEUE_ID, 0)
+    else:
+        await ctrl.play_index(QUEUE_ID, 0)
+
+    assert ctrl._load_item.await_args.kwargs["seek_position"] == expected_position  # type: ignore[attr-defined]
+    assert queue.elapsed_time == expected_position
 
 
 async def test_play_index_retry_fallback_discards_failed_items_seek_position() -> None:
