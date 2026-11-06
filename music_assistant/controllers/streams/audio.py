@@ -760,8 +760,8 @@ class StreamsAudio:
 
         Lets a play be refused before the item is expanded into tracks, instead of once its
         first track is about to stream. Nothing is raised while any source could still serve
-        it, such as another account of the same service or a match on another streaming
-        provider.
+        it, such as another account of the same service, a match on another streaming
+        provider or, for anything but a library track, a library copy on a local source.
 
         :param media_item: The item about to be played, or the container its tracks come from.
         :param queue_id: The queue that is about to play it.
@@ -774,6 +774,19 @@ class StreamsAudio:
         allowed = visible_playback_sources(self.mass, user)
         # once every known source is held, the stream searches the other providers for a match
         if self._has_alternative_match_providers(media_item, allowed):
+            return
+        # Only a library track names every copy up front. Any other track, and the tracks of
+        # a container, play from their library item once loaded, whose copies may include
+        # one on a source like local files.
+        if not (
+            media_item.media_type == MediaType.TRACK and media_item.provider == "library"
+        ) and any(
+            provider.available
+            and not provider.is_streaming_provider
+            and MediaType.TRACK in provider.supported_media_types
+            and (allowed is None or provider.instance_id in allowed)
+            for provider in self.mass.music.providers
+        ):
             return
         refusal: ProviderStreamLimitError | None = None
         for mapping in rank_provider_mappings(media_item.provider_mappings):

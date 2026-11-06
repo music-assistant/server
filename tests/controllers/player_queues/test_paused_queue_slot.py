@@ -794,3 +794,51 @@ async def test_a_provider_with_more_than_one_slot_is_not_refused_early(rig: _Rig
 
     await first_buffer.clear()
     await second_buffer.clear()
+
+
+@pytest.mark.parametrize(
+    ("library_track", "refused"),
+    [(False, False), (True, True)],
+    ids=["provider-playlist", "library-track"],
+)
+async def test_a_local_source_keeps_a_play_from_being_refused_early_unless_its_copies_are_known(
+    rig: _Rig, library_track: bool, refused: bool
+) -> None:
+    """A listed track plays from its library item, which may hold a copy on the local source."""
+    holder_buffer = await _hold_the_slot(rig)
+    rig.mass.music.providers = [
+        MagicMock(
+            available=True,
+            is_streaming_provider=False,
+            domain="filesystem_local",
+            instance_id=LOCAL_INSTANCE,
+            supported_media_types={MediaType.TRACK},
+        )
+    ]
+    item = (
+        Track(item_id="7", provider="library", name="Seven", provider_mappings={_mapping(INSTANCE)})
+        if library_track
+        else _playlist()
+    )
+
+    with pytest.raises(ProviderStreamHeldError) if refused else contextlib.nullcontext():
+        rig.audio.refuse_held_sources(item, STARTING_QUEUE, None)
+
+    await holder_buffer.clear()
+
+
+async def test_a_start_from_the_queue_on_a_held_source_leaves_the_player_alone(
+    rig: _Rig,
+) -> None:
+    """Picking a queue item whose source is held elsewhere neither stops nor resets the queue."""
+    holder_buffer = await _hold_the_slot(rig)
+    rig.add_queue(STARTING_QUEUE, PlaybackState.PLAYING)
+    queue_data = rig.queues._queue_data[STARTING_QUEUE]
+
+    with pytest.raises(ProviderStreamHeldError):
+        await rig.queues.play_index(STARTING_QUEUE, 0)
+
+    rig.stop_device.assert_not_awaited()
+    assert queue_data.session_id == f"session-{STARTING_QUEUE}"
+    assert queue_data.queue.state == PlaybackState.PLAYING
+    await holder_buffer.clear()

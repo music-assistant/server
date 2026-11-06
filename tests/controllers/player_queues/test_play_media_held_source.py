@@ -165,3 +165,49 @@ async def test_only_the_first_item_of_a_batch_is_checked() -> None:
 
     ctrl.mass.streams.audio.refuse_held_sources.assert_called_once_with(first, "q1", LISTENER)
     assert [item.media_item for item in ctrl._queue_data["q1"].items] == [first, second]
+
+
+@pytest.mark.parametrize(
+    ("shuffle", "queue_shuffled"),
+    [(True, False), (None, True)],
+    ids=["shuffle-requested", "queue-shuffled"],
+)
+@patch(GET_CURRENT_USER, Mock(return_value=LISTENER))
+async def test_a_shuffled_batch_is_left_to_the_stream(
+    shuffle: bool | None, queue_shuffled: bool
+) -> None:
+    """A shuffled batch may start on any of its items, so its first item says nothing yet."""
+    ctrl = _controller()
+    ctrl._queue_data["q1"].queue.shuffle_enabled = queue_shuffled
+
+    await ctrl.play_media(
+        "q1", [_track("first"), _track("second")], QueueOption.REPLACE, shuffle=shuffle
+    )
+
+    ctrl.mass.streams.audio.refuse_held_sources.assert_not_called()
+    ctrl.play_index.assert_awaited_once()
+
+
+@patch(GET_CURRENT_USER, Mock(return_value=LISTENER))
+async def test_a_shuffled_single_item_is_still_refused_early() -> None:
+    """Whatever order its tracks are shuffled in, they all come from the one item."""
+    ctrl = _controller()
+
+    with pytest.raises(ProviderStreamHeldError):
+        await ctrl.play_media("q1", _track("new"), QueueOption.REPLACE, shuffle=True)
+
+    ctrl._media_resolver._resolve_media_items.assert_not_awaited()
+
+
+@patch(GET_CURRENT_USER, Mock(return_value=LISTENER))
+async def test_a_start_refused_once_the_items_are_loaded_stops_the_queue() -> None:
+    """The queue already holds the new items, so the player does not play on from the old ones."""
+    ctrl = _controller()
+    ctrl.mass.streams.audio.refuse_held_sources.side_effect = None
+    ctrl.play_index.side_effect = _held_error()
+    ctrl._handle_stop = AsyncMock()
+
+    with pytest.raises(ProviderStreamHeldError):
+        await ctrl.play_media("q1", _track("new"), QueueOption.REPLACE)
+
+    ctrl._handle_stop.assert_awaited_once_with("q1")

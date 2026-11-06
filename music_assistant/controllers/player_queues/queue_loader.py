@@ -168,7 +168,7 @@ class QueueLoaderMixin(_PlayerQueuesBase):
                     keep_played=False,
                     shuffle=shuffle,
                 )
-            await self.play_index(queue_id, 0)
+            await self._start_loaded_items(queue_id, 0)
             return
         # handle next: add item(s) in the index next to the playing/loaded/buffered index
         if option == QueueOption.NEXT:
@@ -217,7 +217,7 @@ class QueueLoaderMixin(_PlayerQueuesBase):
                     shuffle=shuffle,
                 )
             next_index = min(play_at_index, len(self._queue_data[queue_id].items) - 1)
-            await self.play_index(queue_id, next_index)
+            await self._start_loaded_items(queue_id, next_index)
             return
         # handle add: add/append item(s) to the remaining queue items
         if option == QueueOption.ADD:
@@ -942,10 +942,17 @@ class QueueLoaderMixin(_PlayerQueuesBase):
                 # like the shuffle state below, the first item that resolves decides for the batch
                 if not first_item_resolved:
                     first_item_resolved = True
-                    # a play that starts now is refused before its tracks are fetched when
-                    # every source of it is held by realtime playback on another player
-                    if option in (QueueOption.PLAY, QueueOption.REPLACE) and not isinstance(
-                        media_item, BrowseFolder
+                    # A play that starts now is refused before its tracks are fetched when
+                    # every source of it is held by realtime playback on another player. A
+                    # shuffled batch may start on any of its items, so that is left to the
+                    # stream.
+                    shuffled_batch = len(media_list) > 1 and (
+                        shuffle or (shuffle is None and queue.shuffle_enabled)
+                    )
+                    if (
+                        option in (QueueOption.PLAY, QueueOption.REPLACE)
+                        and not shuffled_batch
+                        and not isinstance(media_item, BrowseFolder)
                     ):
                         self.mass.streams.audio.refuse_held_sources(
                             media_item, queue_id, playback_user
@@ -1233,7 +1240,7 @@ class QueueLoaderMixin(_PlayerQueuesBase):
                 keep_played=option != QueueOption.REPLACE,
             )
             if start_playing:
-                await self.play_index(queue_id, insert_at)
+                await self._start_loaded_items(queue_id, insert_at)
             else:
                 # give an idle/empty queue a current item without starting playback
                 self._ensure_current_index(queue_id)
@@ -1394,6 +1401,20 @@ class QueueLoaderMixin(_PlayerQueuesBase):
         # the cancelled buffer stays attached: it marks the source as aborted for
         # the flow stream's accounting and fails is_valid() for any later reuse
         await audio_buffer.clear()
+
+    async def _start_loaded_items(self, queue_id: str, index: int) -> None:
+        """
+        Start playback at the given index of the items just loaded into the queue.
+
+        :param queue_id: The queue to start.
+        :param index: The index of the item to start from.
+        """
+        try:
+            await self.play_index(queue_id, index)
+        except ProviderStreamLimitError:
+            # the queue already holds the new items, so its player must not play on from the old
+            await self._handle_stop(queue_id)
+            raise
 
 
 def _track_keys(track: Track) -> set[tuple[str, str]]:
