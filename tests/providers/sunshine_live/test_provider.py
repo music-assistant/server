@@ -61,7 +61,7 @@ async def test_get_radio_returns_the_channel(provider: SunshineLiveProvider) -> 
     """A known channel has its own name, picture and mapping on this instance."""
     radio = await provider.get_radio("classics")
 
-    assert radio.name == "Sunshine Live Classics"
+    assert radio.name == "Sunshine Live - Classics"
     assert radio.provider == "sunshine_live_test"
     assert radio.metadata.images
     assert radio.metadata.images[0].path == CHANNELS["classics"]["image"]
