@@ -1146,7 +1146,7 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         queue.elapsed_time = position
         queue.elapsed_time_last_updated = time.time()
         self.signal_update(queue_id)
-        await self.play_index(queue_id, queue.current_index, seek_position=position)
+        await self._play_index(queue_id, queue.current_index, position, fade_in=False)
 
     @api_command(
         "player_queues/resume",
@@ -1219,7 +1219,7 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         allow_impersonation=True,
     )
     @handle_play_action
-    async def play_index(  # noqa: PLR0915
+    async def play_index(
         self,
         queue_id: str,
         index: int | str,
@@ -1228,175 +1228,7 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
     ) -> None:
         """Play item at index (or item_id) X in queue."""
         self._check_player_permission(queue_id)
-        # cancel any pending play_index calls for this queue to prevent conflicts
-        self.mass.cancel_timer(f"queue_play_index_{queue_id}")
-        # we set a flag to notify the update logic that we're transitioning to a new track
-        self._set_transitioning(queue_id, True)
-        try:
-            queue_data = self._queue_data[queue_id]
-            queue = queue_data.queue
-            queue.resume_pos = 0
-            # A queue picked up from its end plays its items over from the start, so a resume point
-            # left on an audiobook/episode must not pull it back to where it was left off. The flag
-            # itself is only cleared once an item actually loaded below, so a start that never got
-            # off the ground leaves the queue finished instead of stranding it without a position.
-            restarting_ended_queue = queue.ended
-            if isinstance(index, str):
-                temp_index = self.index_by_id(queue_id, index)
-                if temp_index is None:
-                    raise InvalidDataError(f"Item {index} not found in queue")
-                index = temp_index
-            # At this point index is guaranteed to be int
-            queue.index_in_buffer = index
-            # a new load owns nothing yet, so what the old one fetched says nothing about it
-            queue_data.last_served_item_id = None
-            # a player still playing (or paused on) an item will report once more on it, so that
-            # one stays served; the rest of the old load is never heard from again, and an idle
-            # player has nothing left that could be
-            prev_state = queue_data.prev_state
-            playing_item_id = (
-                prev_state["current_item_id"]
-                if prev_state is not None
-                and prev_state["state"] in (PlaybackState.PLAYING, PlaybackState.PAUSED)
-                else None
-            )
-            queue_data.served_item_ids.intersection_update(
-                {playing_item_id} if playing_item_id else ()
-            )
-            queue_data.flow_mode_stream_log = []
-            queue_data.flow_buffer_completed = None
-            queue_data.flow_queue_exhausted = None
-            target_player = self.mass.players.get_player(queue_id)
-            if target_player is None:
-                raise PlayerUnavailableError(f"Player {queue_id} is not available")
-            queue_data.next_item_id_enqueued = None
-            # a boundary the outgoing session mixed ahead of playback leads into an item
-            # this start leaves behind
-            self.mass.streams.audio.clear_crossfade_handover(queue_id)
-            # always update session id when we start a new playback session
-            queue_data.session_id = shortuuid.random(length=8)
-            self.mass.streams.audio_processing.start_session(
-                queue_id,
-                queue_data.session_id,
-            )
-            # handle resume point of audiobook(chapter) or podcast(episode)
-            if (
-                not seek_position
-                and not restarting_ended_queue
-                and (queue_item := self.get_item(queue_id, index))
-            ):
-                seek_position = await self._get_resume_position(queue_item)
-
-            # restore the persisted playback speed for a freshly queued audiobook/episode
-            # (an in-session item already carries its speed in extra_attributes)
-            if (
-                (queue_item := self.get_item(queue_id, index))
-                and queue_item.media_item is not None
-                and queue_item.media_type in (MediaType.AUDIOBOOK, MediaType.PODCAST_EPISODE)
-                and "playback_speed" not in queue_item.extra_attributes
-            ):
-                stored_speed = await self.mass.music.get_playback_speed(
-                    cast("Audiobook | PodcastEpisode", queue_item.media_item),
-                    userid=queue_data.userid,
-                )
-                if stored_speed != 1.0:
-                    queue_item.extra_attributes["playback_speed"] = stored_speed
-
-            # try to load the item, retry with next item if it fails
-            requested_index = index
-            attempts = 0
-            refilled = False
-            loaded_item: QueueItem | None = None
-            while attempts < _MAX_LOAD_ATTEMPTS:
-                queue_item = self.get_item(queue_id, index)
-                if not queue_item:
-                    break
-                err: MediaNotFoundError | AudioError | None = None
-                if queue_item.available:
-                    try:
-                        await self._load_item(
-                            queue_item,
-                            is_start=True,
-                            seek_position=seek_position if index == requested_index else 0,
-                            fade_in=fade_in if index == requested_index else False,
-                        )
-                        queue.current_index = index
-                        queue.current_item = queue_item
-                        # playback is under way, so the queue is no longer sitting at its end
-                        queue.ended = False
-                        # reset the elapsed clock together with the item switch (like
-                        # next/previous do), so queue updates signaled before the player
-                        # reports position don't carry the previous item's elapsed_time
-                        queue.elapsed_time = seek_position if index == requested_index else 0
-                        queue.elapsed_time_last_updated = time.time()
-                        if (prev_state := queue_data.prev_state) and prev_state[
-                            "current_item_id"
-                        ] == queue_item.queue_item_id:
-                            # a seek within the item must not keep its position from before
-                            prev_state["last_playing_elapsed_time"] = int(queue.elapsed_time)
-                        loaded_item = queue_item
-                        break
-                    except (MediaNotFoundError, AudioError) as load_err:
-                        if isinstance(load_err, ProviderStreamLimitError):
-                            # the requested item is playable, its provider is just at capacity:
-                            # report that instead of silently advancing to another item
-                            self.logger.error("%s", load_err)
-                            await self.stop(queue_id)
-                            raise
-                        err = load_err
-                        attempts += 1
-                        # Only MediaNotFoundError (item unreachable) is persistent;
-                        # keep AudioError items available so a retry can resurface
-                        # the same actionable error.
-                        if isinstance(err, MediaNotFoundError):
-                            queue_item.available = False
-                next_index = self._get_next_index(queue_id, index, allow_repeat=False)
-                if next_index is None and queue.is_dynamic and not refilled:
-                    refilled = True
-                    await self._fill_dynamic_tracks(queue_id)
-                    next_index = self._get_next_index(queue_id, index, allow_repeat=False)
-                    # the refilled items get their own budget
-                    attempts = 0
-                if next_index is None:
-                    # Surface an AudioError's own (actionable) message;
-                    # MediaNotFoundError gets the generic wording.
-                    if isinstance(err, AudioError) and str(err):
-                        msg = str(err)
-                    else:
-                        msg = f"Playback failed for {queue_item.name} - no more tracks available"
-                    self.logger.error(msg)
-                    await self.stop(queue_id)
-                    raise MediaNotFoundError(msg) from err
-                self.logger.warning(
-                    "Skipping unplayable item %s: %s",
-                    queue_item.name,
-                    err or "marked unavailable",
-                )
-                index = next_index
-            if loaded_item is None:
-                await self.stop(queue_id)
-                raise MediaNotFoundError("No playable item found to start playback")
-            queue_item = loaded_item
-
-            # Reset flow_mode - the streams controller will set it if flow mode is used.
-            queue.flow_mode = False
-            player_media = await self.player_media_from_queue_item(queue_item)
-            # Hold the play action until the player confirms playback so the UI keeps
-            # showing the command as in progress instead of falling back to a play button
-            # for the time the player still needs to connect and start. The queue update
-            # for the new item goes out first, so the item shows while it is starting.
-            async with self.mass.players.wait_for_player_update(
-                queue_id,
-                attribute_name="playback_state",
-                attribute_value=PlaybackState.PLAYING,
-                timeout=PLAYBACK_START_TIMEOUT,
-            ):
-                await self.mass.players.play_media(queue_id, player_media)
-                queue.current_index = index
-                queue.current_item = queue_item
-                self.signal_update(queue_id)
-        finally:
-            self._set_transitioning(queue_id, False)
+        await self._play_index(queue_id, index, seek_position or None, fade_in)
 
     @api_command(
         "player_queues/transfer",
@@ -2536,3 +2368,180 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         queue.elapsed_time = 0
         queue.elapsed_time_last_updated = time.time()
         queue.resume_pos = 0
+
+    async def _play_index(  # noqa: PLR0915
+        self,
+        queue_id: str,
+        index: int | str,
+        seek_position: int | None,
+        fade_in: bool,
+    ) -> None:
+        # cancel any pending play_index calls for this queue to prevent conflicts
+        self.mass.cancel_timer(f"queue_play_index_{queue_id}")
+        # we set a flag to notify the update logic that we're transitioning to a new track
+        self._set_transitioning(queue_id, True)
+        try:
+            queue_data = self._queue_data[queue_id]
+            queue = queue_data.queue
+            queue.resume_pos = 0
+            # A queue picked up from its end plays its items over from the start, so a resume point
+            # left on an audiobook/episode must not pull it back to where it was left off. The flag
+            # itself is only cleared once an item actually loaded below, so a start that never got
+            # off the ground leaves the queue finished instead of stranding it without a position.
+            restarting_ended_queue = queue.ended
+            if isinstance(index, str):
+                temp_index = self.index_by_id(queue_id, index)
+                if temp_index is None:
+                    raise InvalidDataError(f"Item {index} not found in queue")
+                index = temp_index
+            # At this point index is guaranteed to be int
+            queue.index_in_buffer = index
+            # a new load owns nothing yet, so what the old one fetched says nothing about it
+            queue_data.last_served_item_id = None
+            # a player still playing (or paused on) an item will report once more on it, so that
+            # one stays served; the rest of the old load is never heard from again, and an idle
+            # player has nothing left that could be
+            prev_state = queue_data.prev_state
+            playing_item_id = (
+                prev_state["current_item_id"]
+                if prev_state is not None
+                and prev_state["state"] in (PlaybackState.PLAYING, PlaybackState.PAUSED)
+                else None
+            )
+            queue_data.served_item_ids.intersection_update(
+                {playing_item_id} if playing_item_id else ()
+            )
+            queue_data.flow_mode_stream_log = []
+            queue_data.flow_buffer_completed = None
+            queue_data.flow_queue_exhausted = None
+            target_player = self.mass.players.get_player(queue_id)
+            if target_player is None:
+                raise PlayerUnavailableError(f"Player {queue_id} is not available")
+            queue_data.next_item_id_enqueued = None
+            # a boundary the outgoing session mixed ahead of playback leads into an item
+            # this start leaves behind
+            self.mass.streams.audio.clear_crossfade_handover(queue_id)
+            # always update session id when we start a new playback session
+            queue_data.session_id = shortuuid.random(length=8)
+            self.mass.streams.audio_processing.start_session(
+                queue_id,
+                queue_data.session_id,
+            )
+            # handle resume point of audiobook(chapter) or podcast(episode)
+            if seek_position is None:
+                seek_position = (
+                    await self._get_resume_position(queue_item)
+                    if not restarting_ended_queue and (queue_item := self.get_item(queue_id, index))
+                    else 0
+                )
+
+            # restore the persisted playback speed for a freshly queued audiobook/episode
+            # (an in-session item already carries its speed in extra_attributes)
+            if (
+                (queue_item := self.get_item(queue_id, index))
+                and queue_item.media_item is not None
+                and queue_item.media_type in (MediaType.AUDIOBOOK, MediaType.PODCAST_EPISODE)
+                and "playback_speed" not in queue_item.extra_attributes
+            ):
+                stored_speed = await self.mass.music.get_playback_speed(
+                    cast("Audiobook | PodcastEpisode", queue_item.media_item),
+                    userid=queue_data.userid,
+                )
+                if stored_speed != 1.0:
+                    queue_item.extra_attributes["playback_speed"] = stored_speed
+
+            # try to load the item, retry with next item if it fails
+            requested_index = index
+            attempts = 0
+            refilled = False
+            loaded_item: QueueItem | None = None
+            while attempts < _MAX_LOAD_ATTEMPTS:
+                queue_item = self.get_item(queue_id, index)
+                if not queue_item:
+                    break
+                err: MediaNotFoundError | AudioError | None = None
+                if queue_item.available:
+                    try:
+                        await self._load_item(
+                            queue_item,
+                            is_start=True,
+                            seek_position=seek_position if index == requested_index else 0,
+                            fade_in=fade_in if index == requested_index else False,
+                        )
+                        queue.current_index = index
+                        queue.current_item = queue_item
+                        # playback is under way, so the queue is no longer sitting at its end
+                        queue.ended = False
+                        # reset the elapsed clock together with the item switch (like
+                        # next/previous do), so queue updates signaled before the player
+                        # reports position don't carry the previous item's elapsed_time
+                        queue.elapsed_time = seek_position if index == requested_index else 0
+                        queue.elapsed_time_last_updated = time.time()
+                        if (prev_state := queue_data.prev_state) and prev_state[
+                            "current_item_id"
+                        ] == queue_item.queue_item_id:
+                            # a seek within the item must not keep its position from before
+                            prev_state["last_playing_elapsed_time"] = int(queue.elapsed_time)
+                        loaded_item = queue_item
+                        break
+                    except (MediaNotFoundError, AudioError) as load_err:
+                        if isinstance(load_err, ProviderStreamLimitError):
+                            # the requested item is playable, its provider is just at capacity:
+                            # report that instead of silently advancing to another item
+                            self.logger.error("%s", load_err)
+                            await self.stop(queue_id)
+                            raise
+                        err = load_err
+                        attempts += 1
+                        # Only MediaNotFoundError (item unreachable) is persistent;
+                        # keep AudioError items available so a retry can resurface
+                        # the same actionable error.
+                        if isinstance(err, MediaNotFoundError):
+                            queue_item.available = False
+                next_index = self._get_next_index(queue_id, index, allow_repeat=False)
+                if next_index is None and queue.is_dynamic and not refilled:
+                    refilled = True
+                    await self._fill_dynamic_tracks(queue_id)
+                    next_index = self._get_next_index(queue_id, index, allow_repeat=False)
+                    # the refilled items get their own budget
+                    attempts = 0
+                if next_index is None:
+                    # Surface an AudioError's own (actionable) message;
+                    # MediaNotFoundError gets the generic wording.
+                    if isinstance(err, AudioError) and str(err):
+                        msg = str(err)
+                    else:
+                        msg = f"Playback failed for {queue_item.name} - no more tracks available"
+                    self.logger.error(msg)
+                    await self.stop(queue_id)
+                    raise MediaNotFoundError(msg) from err
+                self.logger.warning(
+                    "Skipping unplayable item %s: %s",
+                    queue_item.name,
+                    err or "marked unavailable",
+                )
+                index = next_index
+            if loaded_item is None:
+                await self.stop(queue_id)
+                raise MediaNotFoundError("No playable item found to start playback")
+            queue_item = loaded_item
+
+            # Reset flow_mode - the streams controller will set it if flow mode is used.
+            queue.flow_mode = False
+            player_media = await self.player_media_from_queue_item(queue_item)
+            # Hold the play action until the player confirms playback so the UI keeps
+            # showing the command as in progress instead of falling back to a play button
+            # for the time the player still needs to connect and start. The queue update
+            # for the new item goes out first, so the item shows while it is starting.
+            async with self.mass.players.wait_for_player_update(
+                queue_id,
+                attribute_name="playback_state",
+                attribute_value=PlaybackState.PLAYING,
+                timeout=PLAYBACK_START_TIMEOUT,
+            ):
+                await self.mass.players.play_media(queue_id, player_media)
+                queue.current_index = index
+                queue.current_item = queue_item
+                self.signal_update(queue_id)
+        finally:
+            self._set_transitioning(queue_id, False)
