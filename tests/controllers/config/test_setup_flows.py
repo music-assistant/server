@@ -26,6 +26,7 @@ from music_assistant_models.enums import (
     ConfigEntryType,
     EventType,
     FlowStepType,
+    MediaType,
     PlayerType,
     ProviderFeature,
     ProviderSharing,
@@ -39,6 +40,10 @@ from music_assistant_models.errors import (
     PlayerUnavailableError,
     SetupFailedError,
 )
+from music_assistant_models.media_items import (
+    ProviderMapping,
+    RecommendationFolder,
+)
 from music_assistant_models.player import OutputProtocol
 from music_assistant_models.provider import ProviderManifest
 from music_assistant_models.translations import TRANSLATION_RESOLVER
@@ -46,12 +51,21 @@ from music_assistant_models.translations import TRANSLATION_RESOLVER
 from music_assistant.constants import CONF_PLAYERS, CONF_PROVIDERS, ENCRYPT_SUFFIX
 from music_assistant.controllers.config.flows import SetupFlowAccess
 from music_assistant.controllers.music import MusicController
+from music_assistant.controllers.music.constants import (
+    CACHE_CATEGORY_LISTINGS,
+    CACHE_CATEGORY_SEARCH_RESULTS,
+    CONF_CACHE_ACCOUNT_ID,
+)
 from music_assistant.controllers.storage import StorageController
 from music_assistant.controllers.translations import TranslationController
 from music_assistant.controllers.webserver.helpers.auth_middleware import set_current_user
 from music_assistant.mass import MusicAssistant
-from music_assistant.models.music_provider import MusicProvider
+from music_assistant.models.music_provider import CACHE_CATEGORY_PREV_LIBRARY_IDS, MusicProvider
 from music_assistant.models.player import LinkedOutputProtocol, Player, _state_fingerprint
+from music_assistant.models.recommendation_payload import (
+    RECOMMENDATION_PAYLOAD_CACHE_KEY,
+    RecommendationPayloadMixin,
+)
 from music_assistant.models.setup_flow import (
     AbortFlow,
     SetupFlowContext,
@@ -131,8 +145,19 @@ async def flow_mass(mass_minimal: MusicAssistant) -> AsyncGenerator[MusicAssista
     mass_minimal.music.library_supported = MethodType(
         MusicController.library_supported, mass_minimal.music
     )
+    # the real implementation, as a provider load clears the instance's cache through it
+    # when it signed in to another account
+    mass_minimal.music.mass = mass_minimal
+    mass_minimal.music.domain = "music"
+    for method in ("check_provider_account", "clear_provider_cache"):
+        setattr(
+            mass_minimal.music,
+            method,
+            MethodType(getattr(MusicController, method), mass_minimal.music),
+        )
     mass_minimal.players = MagicMock()
     mass_minimal.players.on_player_config_change = AsyncMock()
+    await mass_minimal.cache.setup(await mass_minimal.config.get_core_config("cache"))
     try:
         yield mass_minimal
     finally:
@@ -1458,6 +1483,235 @@ async def test_reconfigure_failure_restores_setup_data(flow_mass: MusicAssistant
     assert abort_step.reason == "still bad"
     raw_conf = flow_mass.config.get(f"{CONF_PROVIDERS}/{instance_id}")
     assert raw_conf["setup_data"] == original_setup_data
+
+
+class _AccountProvider(RecommendationPayloadMixin, _FlowlessProvider):
+    """A provider serving the data of the account whose token its config holds."""
+
+    account = ""
+
+    @property
+    def account_id(self) -> str | None:
+        """Return the account whose token the config holds, None without one."""
+        return self.account or None
+
+    async def _fetch_recommendation_payload(self) -> list[RecommendationFolder]:
+        return [RecommendationFolder(item_id=self.account, provider=self.instance_id, name="mixes")]
+
+
+def _use_account_provider(features: set[ProviderFeature] | None = None) -> Any:
+    """Patch the module loader so the fake domain loads an _AccountProvider."""
+
+    async def setup(
+        mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
+    ) -> _AccountProvider:
+        provider = _AccountProvider(mass, manifest, config, supported_features=features)
+        setup_data = mass.config.get(f"{CONF_PROVIDERS}/{config.instance_id}/setup_data")
+        provider.account = mass.config.decrypt_string(setup_data["token"])
+        return provider
+
+    return patch(
+        "music_assistant.mass.load_provider_module",
+        AsyncMock(return_value=SimpleNamespace(setup=setup)),
+    )
+
+
+async def _load_account_provider(flow_mass: MusicAssistant, account: str) -> str:
+    """Add and load an instance of the fake domain signed in to the given account."""
+    instance_id = f"{FAKE_DOMAIN}--a1b2c3d4"
+    flow_mass.config.set(
+        f"{CONF_PROVIDERS}/{instance_id}",
+        {
+            "type": "music",
+            "domain": FAKE_DOMAIN,
+            "instance_id": instance_id,
+            "enabled": True,
+            "values": {},
+            "setup_data": {"token": flow_mass.config.encrypt_string(account)},
+        },
+    )
+    # what the reconfigure's unload of the instance calls on
+    cast("Any", flow_mass.music).on_provider_unload = AsyncMock()
+    flow_mass.discovery = MagicMock(run_provider_discovery=AsyncMock())
+    await flow_mass.load_provider_config(await flow_mass.config.get_provider_config(instance_id))
+    return instance_id
+
+
+async def _reconfigure_account(
+    flow_mass: MusicAssistant,
+    instance_id: str,
+    account: str,
+    outcome: FlowStepType = FlowStepType.FINISH,
+) -> None:
+    """Switch the instance to another account through its reconfigure flow."""
+
+    async def run_setup(session: SetupSession) -> None:
+        values = await session.form([ConfigEntry(key="token", type=ConfigEntryType.STRING)])
+        await session.finish(values)
+
+    with _use_flow(flow_mass, run_setup):
+        step = await flow_mass.config.reconfigure_provider(instance_id)
+        step = await flow_mass.config.submit_setup_flow(step.flow_id, {"token": account})
+    assert step.type == outcome, step
+
+
+async def _seed_cache(
+    flow_mass: MusicAssistant, instance_id: str
+) -> dict[str, tuple[str, str, int]]:
+    """Fill the cache with entries of the instance and around it; return them by name."""
+    entries = {
+        # a provider method's own entry and a listing cached under one of its item uris
+        "own": ("get_playlist_tracks.LM.0", instance_id, 0),
+        "listing": ("playlist_tracks", f"{instance_id}://playlist/LM", CACHE_CATEGORY_LISTINGS),
+        # a library listing and a combined search, assembled from the instance's items too
+        "library_listing": ("album_tracks", "library://album/1", CACHE_CATEGORY_LISTINGS),
+        "search": ("search.liked.5", "music", CACHE_CATEGORY_SEARCH_RESULTS),
+        # the library snapshot of the last sync, and an account entry sharing its category
+        "snapshot": (MediaType.TRACK.value, instance_id, CACHE_CATEGORY_PREV_LIBRARY_IDS),
+        "same_category": ("get_mixes", instance_id, CACHE_CATEGORY_PREV_LIBRARY_IDS),
+        "other": ("get_playlist_tracks.LM.0", f"{FAKE_DOMAIN}--z9y8x7w6", 0),
+    }
+    for key, provider, category in entries.values():
+        await flow_mass.cache.set(key, [1], provider=provider, category=category)
+    # persistent entries: the recommendations belong to the account, other persistent data
+    # (e.g. feedback a provider keeps) does not
+    persistent_entries = {
+        "recommendations": (RECOMMENDATION_PAYLOAD_CACHE_KEY, instance_id, 0),
+        "persistent": ("track-1", instance_id, 99),
+    }
+    for key, provider, category in persistent_entries.values():
+        await flow_mass.cache.set(key, [], provider=provider, category=category, persistent=True)
+    return entries | persistent_entries
+
+
+async def _kept(flow_mass: MusicAssistant, entries: dict[str, tuple[str, str, int]]) -> set[str]:
+    """Return the names of the seeded entries still in the cache."""
+    return {
+        name
+        for name, (key, provider, category) in entries.items()
+        if await flow_mass.cache.get(key, provider=provider, category=category) is not None
+    }
+
+
+@pytest.mark.parametrize(
+    ("new_account", "cleared"),
+    [
+        ("new-account", True),
+        # signing in again to the same account, e.g. after a login expired
+        ("old-account", False),
+        # a provider that cannot tell its account
+        (None, False),
+    ],
+)
+async def test_reconfigure_clears_the_cache_only_for_another_account(
+    flow_mass: MusicAssistant, new_account: str | None, cleared: bool
+) -> None:
+    """A reconfigure to another account drops what the instance cached for the previous one."""
+    with _use_account_provider():
+        instance_id = await _load_account_provider(flow_mass, "old-account")
+        entries = await _seed_cache(flow_mass, instance_id)
+        await _reconfigure_account(flow_mass, instance_id, new_account or "")
+
+    kept = await _kept(flow_mass, entries)
+    assert kept == ({"other", "persistent", "snapshot"} if cleared else set(entries))
+
+
+async def test_first_load_stores_the_account_without_clearing(flow_mass: MusicAssistant) -> None:
+    """An instance set up before the account was stored keeps its cache."""
+    with _use_account_provider():
+        entries = await _seed_cache(flow_mass, f"{FAKE_DOMAIN}--a1b2c3d4")
+        instance_id = await _load_account_provider(flow_mass, "old-account")
+
+    assert await _kept(flow_mass, entries) == set(entries)
+    stored = flow_mass.config.get_provider_setup_value(instance_id, CONF_CACHE_ACCOUNT_ID)
+    assert stored == "old-account"
+
+
+async def test_reconfigure_then_sync_unmarks_the_previous_accounts_items(
+    flow_mass: MusicAssistant,
+) -> None:
+    """The first sync after an account switch takes the old account's items out of the library."""
+    library: dict[int, SimpleNamespace] = {}
+    controller = MagicMock()
+    controller.get_library_item = AsyncMock(side_effect=lambda db_id: library[db_id])
+    controller.set_provider_mappings = AsyncMock()
+    music = cast("Any", flow_mass.music)
+    music.get_controller = MagicMock(return_value=controller)
+    music.favorites.clear_likes = AsyncMock()
+
+    async def sync(instance_id: str, db_ids: set[int]) -> None:
+        provider = cast("_AccountProvider", flow_mass.get_provider(instance_id))
+        with patch.object(provider, "_sync_library_albums", AsyncMock(return_value=db_ids)):
+            # a task of its own, as each sync run keeps its state in its context
+            await asyncio.create_task(provider._run_library_sync(MediaType.ALBUM))
+
+    with _use_account_provider(features={ProviderFeature.LIBRARY_ALBUMS}):
+        instance_id = await _load_account_provider(flow_mass, "old-account")
+        for db_id in (1, 2, 3):
+            mapping = ProviderMapping(
+                item_id=str(db_id),
+                provider_domain=FAKE_DOMAIN,
+                provider_instance=instance_id,
+                in_library=True,
+            )
+            library[db_id] = SimpleNamespace(provider_mappings=[mapping])
+        await sync(instance_id, {1, 2})
+        await _reconfigure_account(flow_mass, instance_id, "new-account")
+        await sync(instance_id, {3})
+
+    unmarked = {call.args[0] for call in controller.set_provider_mappings.await_args_list}
+    assert unmarked == {1, 2}
+    assert not any(library[db_id].provider_mappings[0].in_library for db_id in (1, 2))
+    assert library[3].provider_mappings[0].in_library
+
+
+async def test_reconfigure_restores_the_credentials_on_a_failed_cache_clear(
+    flow_mass: MusicAssistant,
+) -> None:
+    """A cache clear that fails leaves the previous credentials in place."""
+    with _use_account_provider():
+        instance_id = await _load_account_provider(flow_mass, "old-account")
+        clear = AsyncMock(side_effect=OSError("disk I/O error"))
+        with patch.object(flow_mass.cache, "clear", clear):
+            await _reconfigure_account(flow_mass, instance_id, "new-account", FlowStepType.ABORT)
+
+    conf = flow_mass.config.get(f"{CONF_PROVIDERS}/{instance_id}")
+    assert flow_mass.config.decrypt_string(conf["setup_data"]["token"]) == "old-account"
+    # so the next load tries the clear again
+    stored = flow_mass.config.get_provider_setup_value(instance_id, CONF_CACHE_ACCOUNT_ID)
+    assert stored == "old-account"
+
+
+async def test_reconfigure_hides_the_previous_accounts_recommendations_from_the_reload(
+    flow_mass: MusicAssistant,
+) -> None:
+    """Recommendations asked for while the instance reloads are the new account's."""
+    with _use_account_provider():
+        instance_id = await _load_account_provider(flow_mass, "old-account")
+        old_provider = cast("_AccountProvider", flow_mass.get_provider(instance_id))
+        await old_provider._recommendation_payload()
+        # let the persistent payload write finish
+        for _ in range(5):
+            await asyncio.sleep(0.01)
+        assert await flow_mass.cache.get(RECOMMENDATION_PAYLOAD_CACHE_KEY, provider=instance_id)
+
+        during_reload: list[str] = []
+
+        async def ask_for_recommendations(provider: _AccountProvider) -> None:
+            # the instance is exposed from here on, so a client may ask it for them
+            during_reload.extend(
+                folder.item_id for folder in await provider._recommendation_payload()
+            )
+
+        cast("Any", flow_mass.music).on_provider_loaded = AsyncMock(
+            side_effect=ask_for_recommendations
+        )
+        await _reconfigure_account(flow_mass, instance_id, "new-account")
+        new_provider = cast("_AccountProvider", flow_mass.get_provider(instance_id))
+        after_reload = [folder.item_id for folder in await new_provider._recommendation_payload()]
+
+    assert during_reload == ["new-account"]
+    assert after_reload == ["new-account"]
 
 
 async def test_reconfigure_without_flow_module_aborts(flow_mass: MusicAssistant) -> None:
