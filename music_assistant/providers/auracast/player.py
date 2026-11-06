@@ -24,6 +24,8 @@ from .broadcaster import (
     CONTROLLER_STACK_SETUP_KEY,
     AuracastBroadcaster,
     BroadcastConfig,
+    generate_device_address,
+    parse_device_address,
     parse_manufacturer_data,
 )
 from .constants import (
@@ -52,6 +54,7 @@ PCM_FRAME_BYTES = PCM_FORMAT.channels * PCM_FORMAT.bit_depth // 8
 PCM_BYTES_PER_SECOND = PCM_FORMAT.sample_rate * PCM_FRAME_BYTES
 CONF_STORED_VOLUME = "auracast_stored_volume"
 CONF_STORED_BROADCAST_ID = "auracast_broadcast_id"
+CONF_STORED_DEVICE_ADDRESS = "auracast_device_address"
 CONTROLLER_POLL_INTERVAL = 5
 
 
@@ -108,6 +111,14 @@ class AuracastPlayer(Player):
             provider.mass.config.set_raw_player_config_value(
                 player_id, CONF_STORED_BROADCAST_ID, broadcast_id
             )
+        device_address = parse_device_address(
+            provider.mass.config.get_raw_player_config_value(player_id, CONF_STORED_DEVICE_ADDRESS)
+        )
+        if device_address is None:
+            device_address = generate_device_address()
+            provider.mass.config.set_raw_player_config_value(
+                player_id, CONF_STORED_DEVICE_ADDRESS, device_address
+            )
         self._broadcaster = AuracastBroadcaster(
             BroadcastConfig(
                 name=self._attr_name,
@@ -122,6 +133,7 @@ class AuracastPlayer(Player):
                     )
                 ),
                 broadcast_id=broadcast_id,
+                device_address=device_address,
             )
         )
         self._stream_task: asyncio.Task[None] | None = None
