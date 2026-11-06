@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import math
 import os
 import re
 import time
@@ -250,7 +249,8 @@ RADIO_MIRROR_FAILOVER_ERRORS = (
 # Signed radio urls expire, so a failing station restarts on fresh stream details. Runs
 # shorter than the minimum playtime count toward the limit so its provider is not hammered.
 HLS_RADIO_PLAYLIST_TIMEOUT = 10
-STREAMDETAILS_HLS_START_SEGMENTS_KEY = "hls_start_segments"
+STREAMDETAILS_HLS_START_SECONDS_KEY = "hls_start_seconds"
+_EXTINF_DURATION = re.compile(r"^#EXTINF:\s*(\d+(?:\.\d+)?)", re.MULTILINE)
 RADIO_MAX_FAILED_RESTARTS = 3
 RADIO_RESTART_MIN_PLAYTIME = 60
 RADIO_RESTART_DELAY = 1.0
@@ -618,6 +618,21 @@ class _IncomingFadePrefetcher:
                 yield chunks.popleft()
             async for chunk in stream:
                 yield chunk
+
+
+def _segments_for_seconds(durations: list[float], seconds: float) -> int:
+    """
+    Return how many segments from the end of a playlist cover the given seconds.
+
+    :param durations: The durations of the segments of the playlist, oldest first.
+    :param seconds: The seconds to cover, all segments are returned when they cover less.
+    """
+    covered = 0.0
+    for count, duration in enumerate(reversed(durations), start=1):
+        covered += duration
+        if covered >= seconds:
+            return count
+    return len(durations)
 
 
 class StreamsAudio:
@@ -5219,11 +5234,11 @@ class StreamsAudio:
                 # HLS streams (especially the BBC) struggle when they're played directly
                 # with ffmpeg, where they just stop after some minutes,
                 # so we tell ffmpeg to loop around in this case.
-                start_segments = await self._get_hls_radio_start_segments(substream.path)
+                start_segments, start_seconds = await self._get_hls_radio_start(substream.path)
                 if streamdetails.data is None:
                     streamdetails.data = {}
                 if isinstance(streamdetails.data, dict):
-                    streamdetails.data[STREAMDETAILS_HLS_START_SEGMENTS_KEY] = start_segments
+                    streamdetails.data[STREAMDETAILS_HLS_START_SECONDS_KEY] = start_seconds
                 extra_input_args += [
                     "-stream_loop",
                     "-1",
@@ -5782,9 +5797,11 @@ class StreamsAudio:
             ) as resp:
                 yield resp
 
-    async def _get_hls_radio_start_segments(self, media_playlist_url: str) -> int:
+    async def _get_hls_radio_start(self, media_playlist_url: str) -> tuple[int, float | None]:
         """
-        Return how many segments behind the live edge an HLS radio stream starts.
+        Return the segments behind the live edge an HLS radio stream starts and their seconds.
+
+        The seconds are None when the playlist gave no usable segment durations.
 
         :param media_playlist_url: The url of the media playlist of the stream.
         """
@@ -5798,12 +5815,14 @@ class StreamsAudio:
                 playlist = (await resp.read()).decode("utf-8", errors="replace")
         except (aiohttp.ClientError, TimeoutError) as err:
             self.logger.debug("Could not read the HLS radio playlist: %s", err)
-            return HLS_RADIO_MIN_START_SEGMENTS
-        match = re.search(r"^#EXT-X-TARGETDURATION:\s*(\d+(?:\.\d+)?)", playlist, re.MULTILINE)
-        if not match or not (target_duration := float(match.group(1))):
-            return HLS_RADIO_MIN_START_SEGMENTS
-        needed = math.ceil(HLS_RADIO_LIVE_START_SECONDS / target_duration)
-        return max(needed, HLS_RADIO_MIN_START_SEGMENTS)
+            return HLS_RADIO_MIN_START_SEGMENTS, None
+        durations = [float(value) for value in _EXTINF_DURATION.findall(playlist)]
+        if not any(durations):
+            return HLS_RADIO_MIN_START_SEGMENTS, None
+        needed = _segments_for_seconds(durations, HLS_RADIO_LIVE_START_SECONDS)
+        # ffmpeg starts at the first segment of a playlist that is shorter than this
+        segments = min(max(needed, HLS_RADIO_MIN_START_SEGMENTS), len(durations))
+        return segments, sum(durations[-segments:])
 
     async def _update_hls_radio_metadata(
         self,
@@ -5851,14 +5870,18 @@ class StreamsAudio:
                     streamdetails.data.pop("hls_media_playlist_url", None)
                 raise
 
-            # The audio stays as many segments behind the newest one as the stream started,
-            # so that is where the metadata of what plays now is
+            # The audio stays as far behind the live edge as the stream started, so the
+            # metadata of what plays now is that far back in the playlist
             lines = playlist_content.strip().split("\n")
             entries = [line for line in lines if line.startswith("#EXTINF:")]
             if not entries:
                 return
-            start_segments = streamdetails.data.get(STREAMDETAILS_HLS_START_SEGMENTS_KEY, 1)
-            line = entries[max(len(entries) - start_segments, 0)]
+            line = entries[-1]
+            start_seconds = streamdetails.data.get(STREAMDETAILS_HLS_START_SECONDS_KEY)
+            if start_seconds:
+                durations = [float(value) for value in _EXTINF_DURATION.findall("\n".join(entries))]
+                if len(durations) == len(entries):
+                    line = entries[-_segments_for_seconds(durations, start_seconds)]
 
             # Extract metadata from EXTINF line
             metadata = parse_extinf_metadata(line)

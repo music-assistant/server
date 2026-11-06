@@ -1340,11 +1340,11 @@ async def test_hls_radio_input_reads_ahead_of_realtime(monkeypatch: pytest.Monke
     async def _get_hls_substream(_url: str) -> SimpleNamespace:
         return SimpleNamespace(path="http://test.invalid/media.m3u8")
 
-    async def _get_start_segments(_url: str) -> int:
-        return 4
+    async def _get_start(_url: str) -> tuple[int, float | None]:
+        return 4, 20.0
 
     monkeypatch.setattr(audio, "get_hls_substream", _get_hls_substream)
-    monkeypatch.setattr(audio, "_get_hls_radio_start_segments", _get_start_segments)
+    monkeypatch.setattr(audio, "_get_hls_radio_start", _get_start)
     streamdetails = StreamDetails(
         provider="test_provider",
         item_id="station-1",
@@ -1356,7 +1356,7 @@ async def test_hls_radio_input_reads_ahead_of_realtime(monkeypatch: pytest.Monke
 
     _, _, extra_input_args = await audio._resolve_media_stream_source(streamdetails, 0, [])
 
-    assert streamdetails.data["hls_start_segments"] == 4
+    assert streamdetails.data["hls_start_seconds"] == 20.0
     assert extra_input_args == [
         "-stream_loop",
         "-1",
