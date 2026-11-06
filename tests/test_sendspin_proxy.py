@@ -348,7 +348,7 @@ class TestSendspinProxyAuth:
         self, proxy_server: _ProxyServer, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """An Ingress client that never sends an auth message is proxied once the wait is over."""
-        monkeypatch.setattr(sendspin_proxy, "INGRESS_AUTH_TIMEOUT", 0.01)
+        monkeypatch.setattr(sendspin_proxy, "AUTH_TIMEOUT", 0.01)
         async with proxy_server.session.ws_connect(
             proxy_server.url, headers=_INGRESS_COOKIE
         ) as client:

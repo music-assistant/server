@@ -586,8 +586,9 @@ class WebserverController(CoreController):
         Set the sendspin player_id on the websocket clients of the given Ingress session.
 
         The Home Assistant Ingress counterpart of set_sendspin_player_for_token: Ingress
-        connections hold no token, so the Ingress session (one per browser) decides which
-        sessions a web player belongs to.
+        connections hold no token, so the browser's Ingress session decides which
+        connections a web player belongs to. Home Assistant starts a new session whenever
+        an Ingress panel opens, so connections made before that are not matched.
 
         :param session: The Ingress session the sendspin proxy was relayed for.
         :param player_id: The sendspin player ID to set.

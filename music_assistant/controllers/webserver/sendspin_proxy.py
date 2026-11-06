@@ -31,8 +31,8 @@ if TYPE_CHECKING:
 
 LOGGER = logging.getLogger(f"{MASS_LOGGER_NAME}.sendspin_proxy")
 
-# How long an Ingress client gets to announce its web player before proxying starts
-INGRESS_AUTH_TIMEOUT: Final = 2.0
+# How long a client gets to send its auth message
+AUTH_TIMEOUT: Final = 10
 
 
 class SendspinProxyHandler:
@@ -53,12 +53,13 @@ class SendspinProxyHandler:
         Handle incoming WebSocket connection and proxy to internal Sendspin server.
 
         Authentication is required as the first message. The client must send:
-        {"type": "auth", "token": "<access_token>", "client_id": "<web player id>"}
+        {"type": "auth", "token": "<access_token>"}
+        and may add "client_id": "<web player id>" to announce its web player.
 
         Home Assistant Ingress authenticates the request itself, so an Ingress client
-        sends no token and may skip the auth message: {"type": "auth", "client_id": ...}
-        only announces its web player. Either auth message is answered with
-        {"type": "auth_ok"}.
+        sends no token and only needs the auth message to announce its web player:
+        {"type": "auth", "client_id": "<web player id>"}. Either auth message is answered
+        with {"type": "auth_ok"}.
 
         After successful authentication, all messages are proxied bidirectionally.
 
@@ -142,7 +143,7 @@ class SendspinProxyHandler:
         :param wsock: The client WebSocket connection.
         :return: The authenticated user, or None if authentication failed.
         """
-        async with asyncio.timeout(10):
+        async with asyncio.timeout(AUTH_TIMEOUT):
             msg = await wsock.receive()
 
         if msg.type != WSMsgType.TEXT:
@@ -189,10 +190,10 @@ class SendspinProxyHandler:
         self, wsock: web.WebSocketResponse, request: web.Request
     ) -> WSMessage | None:
         """
-        Wait briefly for the optional auth message of an Ingress client.
+        Wait for the optional auth message of an Ingress client.
 
-        Clients that do not announce their web player send nothing, or start with their
-        first Sendspin message right away.
+        A client that does not announce its web player starts with its first Sendspin
+        message instead.
 
         :param wsock: The client WebSocket connection.
         :param request: The incoming HTTP request.
@@ -200,7 +201,7 @@ class SendspinProxyHandler:
             still be forwarded, otherwise None.
         """
         try:
-            msg = await wsock.receive(timeout=INGRESS_AUTH_TIMEOUT)
+            msg = await wsock.receive(timeout=AUTH_TIMEOUT)
         except TimeoutError:
             return None
         if msg.type == WSMsgType.BINARY:

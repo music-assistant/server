@@ -81,11 +81,15 @@ def test_web_player_is_bound_to_the_ingress_session_that_announced_it(
 ) -> None:
     """Over Ingress the browser's session decides, not the Home Assistant user it signed in as."""
     browser_a = _create_ws_client(webserver, user=_HA_USER, request=_ingress_request("session-a"))
+    browser_a_again = _create_ws_client(
+        webserver, user=_HA_USER, request=_ingress_request("session-a")
+    )
     browser_b = _create_ws_client(webserver, user=_HA_USER, request=_ingress_request("session-b"))
 
     webserver.set_sendspin_player_for_ingress_session("session-a", "player-a")
 
     assert browser_a._sendspin_player_id == "player-a"
+    assert browser_a_again._sendspin_player_id == "player-a"
     assert browser_b._sendspin_player_id is None
 
 

@@ -34,7 +34,7 @@ if TYPE_CHECKING:
 
 # Context key for storing authenticated user in request
 USER_CONTEXT_KEY = "authenticated_user"
-# Cookie in which Home Assistant keeps the Ingress session of a browser
+# Cookie in which Home Assistant keeps the latest Ingress session of a browser
 INGRESS_SESSION_COOKIE: Final = "ingress_session"
 
 _GUEST_SCOPES: Final[frozenset[Scope]] = frozenset(
@@ -560,8 +560,9 @@ def get_ingress_session(request: web.Request) -> str | None:
     """
     Return the Home Assistant Ingress session a request was relayed for, if any.
 
-    Home Assistant starts a session for its signed-in user when an Ingress panel opens and
-    shares it between the tabs of that browser, so it tells the browsers of one user apart.
+    Home Assistant starts a new session for its signed-in user whenever an Ingress panel
+    opens, and the browser sends its latest one along with each Ingress request. Other
+    browsers, even of the same user, never share it.
 
     :param request: The aiohttp request.
     """

@@ -70,7 +70,8 @@ def _create_ws_client(
     :param current_token: Raw access token the session holds.
     :param webrtc_session_id: WebRTC gateway session id carried in the request query.
     :param with_handle_task: Attach a long-running handle task that teardown can cancel.
-    :param request: The request the client connected with, instead of a plain mocked one.
+    :param request: The request the client connected with, replacing the mocked one
+        (webrtc_session_id is ignored then).
     """
     if request is None:
         query = f"?webrtc_session_id={webrtc_session_id}" if webrtc_session_id else ""
