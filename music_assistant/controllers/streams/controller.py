@@ -158,6 +158,9 @@ if TYPE_CHECKING:
 
 isfile = wrap(os.path.isfile)
 
+# request-scoped key under which a per-item stream request records the queue item it resolved to
+_REQUEST_QUEUE_ITEM_ID = "queue_item_id"
+
 
 def _volume_normalization_preference_options() -> list[ConfigValueOption]:
     """Return the normalization modes that can be picked as a preference."""
@@ -645,6 +648,11 @@ class StreamsController(CoreController):
                 ),
                 (
                     "*",
+                    "/single/{session_id}/{queue_id}/pos/{queue_index:\\d+}/{player_id}.{fmt}",
+                    self.serve_queue_item_stream,
+                ),
+                (
+                    "*",
                     "/source/{session_id}/{source_player_id}/{player_id}.{fmt}",
                     self.serve_audio_source_stream,
                 ),
@@ -703,12 +711,17 @@ class StreamsController(CoreController):
         if changed_keys & {f"values/{CONF_SMART_FADES_LOG_LEVEL}", f"values/{CONF_LOG_LEVEL}"}:
             self._setup_derived_loggers(config)
 
-    async def resolve_stream_url(self, player_id: str, media: PlayerMedia) -> str:
+    async def resolve_stream_url(
+        self, player_id: str, media: PlayerMedia, queue_index: int | None = None
+    ) -> str:
         """
         Resolve the stream URL for the given PlayerMedia.
 
         :param player_id: The (protocol) player ID requesting the stream.
         :param media: The PlayerMedia object for which to resolve the stream URL.
+        :param queue_index: Address the queue item by this queue position instead of its id,
+            for a player that plays out of a cached copy of the queue: the URL then plays
+            whatever the queue holds at that position when the player fetches it.
         :return: The resolved stream URL as a string.
         """
         if media.media_type in (MediaType.ANNOUNCEMENT, MediaType.FLOW_STREAM):
@@ -775,6 +788,11 @@ class StreamsController(CoreController):
             )
             and media.media_type not in (MediaType.RADIO, MediaType.AUDIO_SOURCE)
         )
+        if queue_index is not None and not flow_mode:
+            return (
+                f"{self.base_url}/single/{session_id}/{queue_id}/pos/{queue_index}"
+                f"/{player_id}.{fmt}"
+            )
         base_path = "flow" if flow_mode else "single"
         return (
             f"{self.base_url}/{base_path}/{session_id}/{queue_id}/{queue_item_id}/{player_id}.{fmt}"
@@ -811,21 +829,22 @@ class StreamsController(CoreController):
             raise web.HTTPNotFound(reason=f"Unknown (or invalid) session: {session_id}")
         if not (player := self.mass.players.get_player(player_id)):
             raise web.HTTPNotFound(reason=f"Unknown Player: {player_id}")
-        queue_item_id = request.match_info["queue_item_id"]
-        queue_item = self.mass.player_queues.get_item(queue_id, queue_item_id)
-        if not queue_item:
-            raise web.HTTPNotFound(reason=f"Unknown Queue item: {queue_item_id}")
-        # the player may be asking for a track out of a stale cached copy of the queue
-        # (its refresh signal can get lost): refusing it makes the player re-read the
-        # queue, where serving it would silently play a track the user moved away
-        # both checks measure from what the player asked for before this request: once
-        # recorded below, this request no longer vouches for itself
-        requested_after = pq_data.last_requested_item_id
-        self._raise_if_stale_item_request(player, queue_id, queue_item, requested_after)
-        if request.method == "GET":
-            # recorded before any audio goes out: a player that gives up waiting on a slow
-            # item asks for the one after it, which must not be refused as stale
-            pq_data.last_requested_item_id = queue_item_id
+        if (queue_index := request.match_info.get("queue_index")) is not None:
+            # the player plays out of a cached copy of the queue and addresses its items by
+            # position, so it gets whatever the queue holds there now, not what it cached there
+            queue_item = self.mass.player_queues.get_item(queue_id, int(queue_index))
+            if not queue_item:
+                raise web.HTTPNotFound(reason=f"No queue item at position {queue_index}")
+            if request.method == "GET":
+                player.on_queue_position_served(int(queue_index), queue_item.queue_item_id)
+        else:
+            queue_item_id = request.match_info["queue_item_id"]
+            queue_item = self.mass.player_queues.get_item(queue_id, queue_item_id)
+            if not queue_item:
+                raise web.HTTPNotFound(reason=f"Unknown Queue item: {queue_item_id}")
+        queue_item_id = queue_item.queue_item_id
+        # the sweeps over open requests read the item from here, however the URL named it
+        request[_REQUEST_QUEUE_ITEM_ID] = queue_item_id
 
         is_audio_source = (
             queue_item.media_item is not None
@@ -1039,10 +1058,6 @@ class StreamsController(CoreController):
                 )
             elif http_profile == "chunked":
                 resp.enable_chunked_encoding()
-
-            # re-check right before audio is handed out: a queue edit landing during
-            # the awaited setup above must not hand the player a stale track after all
-            self._raise_if_stale_item_request(player, queue_id, queue_item, requested_after)
 
             await resp.prepare(request)
 
@@ -2510,34 +2525,6 @@ class StreamsController(CoreController):
         # Without this the player is left waiting on a stream that already ended.
         resp.force_close()
 
-    def _raise_if_stale_item_request(
-        self,
-        player: Player,
-        queue_id: str,
-        queue_item: QueueItem,
-        requested_after: str | None,
-    ) -> None:
-        """
-        Refuse (404) the request if the item fell out of the queue's playhead window.
-
-        :param player: The player that requested the item.
-        :param queue_id: The queue the item belongs to.
-        :param queue_item: The requested queue item.
-        :param requested_after: The queue item id the player asked for before this one.
-        """
-        if not player.strict_queue_item_requests:
-            return
-        if self.mass.player_queues.is_current_window_item(
-            queue_id, queue_item.queue_item_id, requested_after
-        ):
-            return
-        self.logger.debug(
-            "Denying stream request from %s for %s: the queue has moved on",
-            player.display_name,
-            queue_item.name,
-        )
-        raise web.HTTPNotFound(reason=f"Queue item is not up next: {queue_item.queue_item_id}")
-
     def _requested_item_ids(
         self,
         queue_id: str,
@@ -2557,7 +2544,7 @@ class StreamsController(CoreController):
         # a request whose player closed the connection no longer counts, even while its
         # handler has yet to notice that on its next write
         return {
-            request.match_info["queue_item_id"]
+            _request_queue_item_id(request)
             for entry_session_id, request in entries
             if entry_session_id == session_id
             and request.method == "GET"
@@ -2597,7 +2584,7 @@ class StreamsController(CoreController):
         # a player that hung up before its first audio left a request that has not ended
         # yet, while its source may already hold the slot
         candidate_ids.update(
-            request.match_info["queue_item_id"]
+            _request_queue_item_id(request)
             for entry_session_id, request in self._open_item_streams.get(queue_id) or []
             if entry_session_id == session_id
             and request.method == "GET"
@@ -2767,6 +2754,13 @@ def _is_valid_publish_ip(value: ConfigValueType) -> bool:
     except ValueError:
         return False
     return True
+
+
+def _request_queue_item_id(request: web.Request) -> str:
+    """Return the queue item a registered stream request plays, however its URL named it."""
+    # a request addressed by queue position resolved its item on the way in; the id and
+    # flow routes name it in the URL
+    return request.get(_REQUEST_QUEUE_ITEM_ID) or request.match_info["queue_item_id"]
 
 
 def _root_cause(err: BaseException) -> BaseException:

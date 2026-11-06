@@ -1248,9 +1248,8 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
                 index = temp_index
             # At this point index is guaranteed to be int
             queue.index_in_buffer = index
-            # a new load owns nothing yet, so the old item must not vouch for its successor
+            # a new load owns nothing yet, so what the old one fetched says nothing about it
             queue_data.last_served_item_id = None
-            queue_data.last_requested_item_id = None
             # a player still playing (or paused on) an item will report once more on it, so that
             # one stays served; the rest of the old load is never heard from again, and an idle
             # player has nothing left that could be
@@ -2139,51 +2138,6 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
                 continue
             return next_item
         return None
-
-    def is_current_window_item(
-        self, queue_id: str, queue_item_id: str, requested_after: str | None = None
-    ) -> bool:
-        """
-        Return whether the item sits at or right around the queue's playhead.
-
-        Players that play upcoming tracks from a cached copy of the queue use this to
-        verify a requested item is still the previous, current, buffered or expected
-        next track.
-
-        :param queue_id: The queue to check against.
-        :param queue_item_id: The queue item id the player asked for.
-        :param requested_after: The queue item id the player asked for before this one.
-        """
-        queue = self.get(queue_id)
-        if queue is None:
-            return False
-        item_index = self.index_by_id(queue_id, queue_item_id)
-        if item_index is None:
-            return False
-        for center in (queue.current_index, queue.index_in_buffer):
-            if center is None:
-                continue
-            if item_index in (center - 1, center):
-                return True
-        # get_next_item accounts for repeat mode and unavailable items. Measured from the
-        # item the player last fetched, since that is the one it asks to follow (a player
-        # reading ahead of our playhead is otherwise refused the track it needs next), and
-        # from the item it last asked for and the playhead itself: a player that gave up on
-        # a track before its stream delivered a byte asks for the one after it, which no
-        # fetch ever recorded. An item the queue no longer holds (a clear or a replace) has
-        # no next item
-        from_items = [self._queue_data[queue_id].last_served_item_id, queue.current_index]
-        # the item asked for before only vouches for its successor while it is itself still
-        # in the window: a queue edit may have moved it away while its request was set up
-        if requested_after is not None and self.is_current_window_item(queue_id, requested_after):
-            from_items.append(requested_after)
-        for from_item in from_items:
-            if from_item is None:
-                continue
-            next_item = self.get_next_item(queue_id, from_item)
-            if next_item is not None and next_item.queue_item_id == queue_item_id:
-                return True
-        return False
 
     def store_sources(self, queue: PlayerQueue, items: list[MediaItemType]) -> None:
         """
