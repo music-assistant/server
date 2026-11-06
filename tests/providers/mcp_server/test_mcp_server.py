@@ -384,7 +384,8 @@ async def test_meta_impersonates_linked_home_assistant_user(mass: MusicAssistant
         for ha_user_id in ("ha-member", "ha-unknown"):
             await _post(
                 mass,
-                _call("get_players", {}, meta={META_HA_USER_ID: ha_user_id}),
+                # the literal key Home Assistant sends, so a rename of the constant shows here
+                _call("get_players", {}, meta={"io.home-assistant/user_id": ha_user_id}),
                 None,
                 peer=INGRESS_IP,
                 ingress=True,

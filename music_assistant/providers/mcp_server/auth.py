@@ -27,8 +27,8 @@ if TYPE_CHECKING:
     from music_assistant.mass import MusicAssistant
 
 # The key in the _meta of a tools/call request that holds the id of the Home Assistant user
-# the call is made for, as Home Assistant sends it
-META_HA_USER_ID: Final = "home-assistant.io/user_id"
+# the call is made for, as Home Assistant sends it (reverse-DNS prefix, as the MCP spec asks)
+META_HA_USER_ID: Final = "io.home-assistant/user_id"
 
 LOGGER = logging.getLogger(f"{MASS_LOGGER_NAME}.mcp_server")
 
