@@ -1000,8 +1000,17 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         provider_instance_id_or_domain: str,
         force_refresh: bool = False,
         fallback: ItemMapping | ItemCls | None = None,
+        allow_fallback: bool = True,
     ) -> ItemCls:
-        """Return item details for the given provider item id."""
+        """
+        Return item details for the given provider item id.
+
+        :param item_id: Provider item ID.
+        :param provider_instance_id_or_domain: Provider instance ID or domain.
+        :param force_refresh: Force a fresh provider lookup.
+        :param fallback: Details to return if the provider no longer resolves the ID.
+        :param allow_fallback: Allow fallback details after a provider miss.
+        """
         if provider_instance_id_or_domain == "library":
             return await self.get_library_item(item_id)
         if not (provider := self.mass.get_provider(provider_instance_id_or_domain)):
@@ -1026,6 +1035,12 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
                     if self.media_type == MediaType.PODCAST:
                         return cast("ItemCls", await music_prov.get_podcast(item_id))
         # if we reach this point all possibilities failed and the item could not be found.
+        if not allow_fallback:
+            msg = (
+                f"{self.media_type.value}://{item_id} not "
+                f"found on provider {provider_instance_id_or_domain}"
+            )
+            raise MediaNotFoundError(msg)
         # There is a possibility that the (streaming) provider changed the id of the item
         # so we return the previous details (if we have any) marked as unavailable, so
         # at least we have the possibility to sort out the new id through matching logic.
