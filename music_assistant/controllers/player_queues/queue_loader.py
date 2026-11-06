@@ -81,7 +81,7 @@ from music_assistant.helpers.throttle_retry import (
     with_request_priority,
 )
 from music_assistant.helpers.uri import parse_uri
-from music_assistant.models.music_provider import MusicProvider
+from music_assistant.models.music_provider import MusicProvider, ProviderStreamLimitError
 
 if TYPE_CHECKING:
     from music_assistant_models.enums import SortDirection, SortField
@@ -867,11 +867,6 @@ class QueueLoaderMixin(_PlayerQueuesBase):
             ]
             radio_mode = False
 
-        # Forget the previous queue's enqueued items when a new queue is requested. A caller that
-        # left the option to the config gets this once the first item resolved it, below: it is the
-        # option that says whether this is a new queue or an addition to the current one.
-        if option is not None and option not in (QueueOption.ADD, QueueOption.NEXT):
-            self._reset_enqueued_media_items(queue_data)
         # An ADD/NEXT onto a queue that is already a managed pool (has a dynamic source): a finite
         # item is kept only as a source (the bounded pool materializes it) instead of being expanded
         # into the queue. Any other enqueue (PLAY/REPLACE, or onto a linear queue) expands finite
@@ -884,6 +879,7 @@ class QueueLoaderMixin(_PlayerQueuesBase):
         play_next_items: list[ResolvedItem] = []
         source_items: list[MediaItemType] = []
         shuffle_settled = False
+        first_item_resolved = False
         # reported to the caller when none of the requested items made it through
         last_item_error: MusicAssistantError | None = None
         # resolve all media items
@@ -937,13 +933,28 @@ class QueueLoaderMixin(_PlayerQueuesBase):
                         config_key = f"default_enqueue_option_{media_item.media_type.value}"
                     config_value = self.get_config_value(config_key, return_type=str)
                     option = QueueOption(config_value)
-                    if option not in (QueueOption.ADD, QueueOption.NEXT):
-                        self._reset_enqueued_media_items(queue_data)
-                    # settled from the resolved option for the same reason as the reset above
+                    # settled from the resolved option for the same reason as the reset below
                     already_dynamic = queue.is_dynamic and option in (
                         QueueOption.ADD,
                         QueueOption.NEXT,
                     )
+
+                # like the shuffle state below, the first item that resolves decides for the batch
+                if not first_item_resolved:
+                    first_item_resolved = True
+                    # a play that starts now is refused before its tracks are fetched when
+                    # every source of it is held by realtime playback on another player
+                    if option in (QueueOption.PLAY, QueueOption.REPLACE) and not isinstance(
+                        media_item, BrowseFolder
+                    ):
+                        self.mass.streams.audio.refuse_held_sources(
+                            media_item, queue_id, playback_user
+                        )
+                    # Forget the previous queue's enqueued items when a new queue is requested: it
+                    # is the option that says whether this is a new queue or an addition to the
+                    # current one. Done after the check above, so a refused play leaves them alone.
+                    if option not in (QueueOption.ADD, QueueOption.NEXT):
+                        self._reset_enqueued_media_items(queue_data)
 
                 # Save requested media item to play on the queue so we can use it as a seed
                 # for Autoplay's music refill (the podcast/audiobook continuations resolve
@@ -1066,6 +1077,9 @@ class QueueLoaderMixin(_PlayerQueuesBase):
                     if plays_next_track:
                         play_next_items += resolved_items
 
+            except ProviderStreamLimitError:
+                # the item is playable, its source is busy: the play is refused as a whole
+                raise
             except MusicAssistantError as err:
                 self.logger.warning("Skipping %s: %s", item, err)
                 last_item_error = err
