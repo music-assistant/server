@@ -693,7 +693,7 @@ async def test_a_failed_track_releases_the_track_at_its_position() -> None:
     player = _make_named_player("Kantoor")
     player.cloud_queue_id = "queue1"
     player.cloud_queue_item_generation = 3
-    player._window_item_ids = {4: "abc"}
+    player._window_item_ids = {4: "abc@3"}
     player.on_queue_position_served(4, "guest")
     mass = cast("MagicMock", player.mass)
     mass.player_queues.release_failed_item_source = AsyncMock()
@@ -739,7 +739,7 @@ def test_the_playing_item_follows_the_audio_served_for_the_reported_position(
     client.player.group_members = ["sonos_player"]
     player.cloud_queue_id = "queue1"
     player.cloud_queue_item_generation = 3
-    player._window_item_ids = {4: "abc"}
+    player._window_item_ids = {4: "abc@3"}
     player.on_queue_position_served(4, "guest")
     _report_playing_our_queue(client.player.group, "abc@3")
 

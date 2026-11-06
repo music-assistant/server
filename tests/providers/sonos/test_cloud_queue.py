@@ -231,7 +231,8 @@ async def test_window_items_are_addressed_by_queue_position() -> None:
     assert [call.kwargs["queue_index"] for call in resolve.await_args_list] == list(range(4, 16))
     # the ids stay those of the items, which is what the speaker reports back
     assert [x.queue_item_id for x in window.items] == [f"track{i}" for i in range(4, 16)]
-    assert player._window_item_ids == {i: f"track{i}" for i in range(4, 16)}
+    assert player._window_item_ids == {i: f"track{i}@0" for i in range(4, 16)}
+    assert window.wire_ids == [f"track{i}@0" for i in range(4, 16)]
 
 
 async def test_a_reported_id_resolves_to_the_item_served_at_its_position() -> None:
@@ -267,13 +268,16 @@ async def test_a_binding_survives_the_window_being_rebuilt() -> None:
     queue_data.items.insert(1, _make_queue_item("guest"))
     player.on_queue_position_served(1, "guest")
 
-    window = await player.build_cloud_queue_window("track0")
+    window = await player.build_cloud_queue_window("track0@0")
 
     assert [x.queue_item_id for x in window.items][:3] == ["track0", "guest", "track1"]
+    # the moved item gets an id of its own, as the speaker holds its old one for the guest
+    assert window.wire_ids[:3] == ["track0@0", "guest@0", "track1@0~2"]
     assert player.served_item_id("track1@0") == "guest"
-    # fetching the position the item moved to rebinds its id to its own audio
+    # fetching the moved item under its own id leaves the guest's binding alone
     player.on_queue_position_served(2, "track1")
-    assert player.served_item_id("track1@0") == "track1"
+    assert player.served_item_id("track1@0") == "guest"
+    assert player.served_item_id("track1@0~2") == "track1"
 
 
 async def test_a_window_is_centred_on_the_position_the_speaker_plays() -> None:
@@ -291,7 +295,7 @@ async def test_a_window_is_centred_on_the_position_the_speaker_plays() -> None:
     # the speaker fetched position 1 under the id it cached there, track1
     player.on_queue_position_served(1, "guest2")
 
-    window = await player.build_cloud_queue_window("track1")
+    window = await player.build_cloud_queue_window("track1@0")
 
     assert [x.queue_item_id for x in window.items] == [
         "track0",
@@ -435,7 +439,7 @@ async def test_itemwindow_passes_the_speakers_request_through() -> None:
     response = await cloud_queue._handle_sonos_queue_itemwindow(player, request)
 
     player.build_cloud_queue_window.assert_awaited_once_with(
-        "track7", max_previous=9, max_upcoming=10
+        "track7@4", max_previous=9, max_upcoming=10, generation=4
     )
     body = json.loads(response.text or "{}")
     assert body["queueVersion"] == "12.5"
@@ -474,6 +478,7 @@ async def test_itemwindow_logs_the_speakers_request_at_debug(
     player.build_cloud_queue_window = AsyncMock(
         return_value=SonosQueueWindow(
             items=[PlayerMedia(uri="track1.mp3"), PlayerMedia(uri="track2.mp3")],
+            wire_ids=["track1@4", "track2@4"],
             includes_beginning=True,
             includes_end=False,
         )

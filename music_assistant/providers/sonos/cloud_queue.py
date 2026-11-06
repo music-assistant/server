@@ -108,9 +108,10 @@ class SonosCloudQueue:
         unavailable: InvalidDataError | None = None
         try:
             window = await player.build_cloud_queue_window(
-                player.bare_item_id(wire_center) if wire_center else None,
+                wire_center or None,
                 max_previous=_requested_max(request.query.get("previousWindowSize")),
                 max_upcoming=_requested_max(request.query.get("upcomingWindowSize")),
+                generation=wire_generation,
             )
         except InvalidDataError as err:
             # the queue went away under us (a stop that never reached this speaker, so it keeps
@@ -150,7 +151,8 @@ class SonosCloudQueue:
             # label and Sonos never realises it changed.
             "queueVersion": str(queue_version),
             "items": [
-                self._parse_sonos_queue_item(player, x, wire_generation) for x in window.items
+                self._parse_sonos_queue_item(player, media, wire_id)
+                for media, wire_id in zip(window.items, window.wire_ids, strict=True)
             ],
         }
         return web.json_response(result)
@@ -246,14 +248,14 @@ class SonosCloudQueue:
         return web.Response(status=204)
 
     def _parse_sonos_queue_item(
-        self, player: SonosPlayer, media: PlayerMedia, wire_generation: int
+        self, player: SonosPlayer, media: PlayerMedia, wire_id: str
     ) -> dict[str, Any]:
         """Parse MusicAssistant PlayerMedia to a Sonos Media (queue) object."""
         # the speaker tracks its position within the audio we serve, which is
         # shorter than the media item when playback starts at a seek position
         duration = media.stream_duration or media.duration
         return {
-            "id": player.wire_item_id(media.queue_item_id, wire_generation) or media.uri,
+            "id": wire_id or media.uri,
             "track": {
                 "type": "track",
                 "mediaUrl": media.uri,
