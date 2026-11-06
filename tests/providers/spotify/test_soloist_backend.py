@@ -878,6 +878,7 @@ async def test_session_normalizes_answers_only_for_the_items_own_run(tmp_path: P
     backend = _make_backend(tmp_path)
     run = _live_run(tmp_path, backend=backend)
     run.engine_normalizes = True
+    run._engine_normalization_enabled = MagicMock(return_value=True)  # type: ignore[method-assign]
     backend._run = run
     assert backend.session_normalizes(_streamdetails_for(uri=TRACK_A)) is True
     assert backend.session_normalizes(_streamdetails_for(uri=TRACK_B)) is None
@@ -2544,3 +2545,14 @@ async def test_repeat_tapped_again_during_a_reset_gets_a_second_round(tmp_path: 
         round_of_resets * 2
     )
     assert run._options_reset is None
+
+
+async def test_session_normalizes_leaves_a_toggled_switch_to_the_fresh_run(tmp_path: Path) -> None:
+    """A seek after the switch changed gets a fresh run, so the old one must not answer for it."""
+    backend = _make_backend(tmp_path)
+    run = _live_run(tmp_path, backend=backend)
+    backend._run = run
+    run.engine_normalizes = False
+    # the player's switch was turned on while the run played
+    run._engine_normalization_enabled = MagicMock(return_value=True)  # type: ignore[method-assign]
+    assert backend.session_normalizes(_streamdetails_for(uri=TRACK_A)) is None

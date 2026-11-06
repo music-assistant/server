@@ -290,8 +290,9 @@ class SoloistBackend(SpotifyPlaybackBackend):
         """
         Return whether the session serving this item's queue is normalizing.
 
-        None when no session serves that queue, in which case the configuration is
-        the only thing to go on.
+        None when no session serves that queue, or the one serving it gives the
+        item up to a fresh session, in which case the configuration is the only
+        thing to go on.
 
         :param streamdetails: Stream details of the item being asked about.
         """
@@ -561,12 +562,17 @@ class SoloistBackend(SpotifyPlaybackBackend):
 
     def _run_for(self, streamdetails: StreamDetails) -> _EngineRun | None:
         """
-        Return the run serving this very item, if one is.
+        Return the run serving this very item, unless it gives the item up to a fresh run.
 
         :param streamdetails: Stream details of the item being asked about.
         """
         run = self._run
-        if run is None or not run.serves(streamdetails.uri):
+        if (
+            run is None
+            or not run.serves(streamdetails.uri)
+            # a seek or restart of the item moves on to a fresh run then
+            or not run._suits_queue(streamdetails.queue_id)
+        ):
             return None
         return run
 
