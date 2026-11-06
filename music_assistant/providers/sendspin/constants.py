@@ -13,6 +13,8 @@ DEFAULT_SENDSPIN_STATIC_DELAY = 0
 
 CONF_ALLOW_LEGACY_CLIENTS = "allow_legacy_clients"
 
+DEFAULT_SERVER_PORT = 8927
+
 # Pairing method the setup flow lets the user pick between.
 CONF_PAIRING_METHOD = "pairing_method"
 CONF_PAIRING_TOKEN = "pairing_token"  # noqa: S105 - config key

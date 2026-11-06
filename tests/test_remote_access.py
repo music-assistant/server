@@ -205,8 +205,9 @@ async def test_remote_access_skips_restart_after_mode_flap_settles() -> None:
 async def test_remote_access_gateway_uses_internal_sendspin_url(
     cert_pems: tuple[str, str],
 ) -> None:
-    """Bridge the Sendspin data channel to the locally reachable Sendspin server."""
+    """Bridge the Sendspin data channel to the Sendspin server's current local URL."""
     internal_url = "ws://127.0.0.1:8927/sendspin"
+    moved_url = "ws://127.0.0.1:9027/sendspin"
     manager = _create_remote_access_manager()
     manager._remote_id = "TEST-REMOTE-ID"
     cast("Mock", manager.webserver).internal_base_url = "http://127.0.0.1:8095"
@@ -224,7 +225,11 @@ async def test_remote_access_gateway_uses_internal_sendspin_url(
         await manager._start_gateway_locked()
 
     assert manager.gateway is not None
-    assert manager.gateway.sendspin_url == internal_url
+    assert manager.gateway._sendspin_url_callback is not None
+    assert manager.gateway._sendspin_url_callback() == internal_url
+    # a Sendspin port change after the gateway started still reaches new sessions
+    cast("Mock", manager.webserver).internal_sendspin_url = moved_url
+    assert manager.gateway._sendspin_url_callback() == moved_url
 
 
 @pytest.mark.parametrize(
@@ -1270,6 +1275,7 @@ def _routing_gateway(
     http_session: _FakeHttpSession,
     local_ws_url: str = LOCAL_WS_URL,
     set_sendspin_player_callback: Callable[[str, str], None] | None = None,
+    sendspin_url_callback: Callable[[], str | None] = lambda: SENDSPIN_URL,
 ) -> WebRTCGateway:
     """Create a gateway whose local WebSockets are all served by the fake HTTP session."""
     cert_pem, key_pem = cert_pems
@@ -1279,7 +1285,7 @@ def _routing_gateway(
         cert_pem=cert_pem,
         key_pem=key_pem,
         local_ws_url=local_ws_url,
-        sendspin_url=SENDSPIN_URL,
+        sendspin_url_callback=sendspin_url_callback,
         set_sendspin_player_callback=set_sendspin_player_callback,
     )
 
@@ -1317,6 +1323,24 @@ async def test_sendspin_channel_bridges_to_the_sendspin_server(cert_pems: tuple[
         await _wait_for(lambda: channel.sent == ['{"type":"hello"}', b"\x03\x04"])
     finally:
         await gateway._close_session("sendspin-session")
+
+
+async def test_sendspin_channel_dials_the_url_current_when_it_opens(
+    cert_pems: tuple[str, str],
+) -> None:
+    """A sendspin channel reaches the Sendspin server on the port it moved to after startup."""
+    moved_url = "ws://127.0.0.1:9027/sendspin"
+    http_session = _FakeHttpSession()
+    sendspin_url = SENDSPIN_URL
+    gateway = _routing_gateway(cert_pems, http_session, sendspin_url_callback=lambda: sendspin_url)
+    sendspin_url = moved_url
+    _session, pc = _register_routed_session(gateway, "moved-sendspin-session")
+    pc.offer_channel(_FakeBidiChannel(label="sendspin"))
+    try:
+        await _wait_for(lambda: moved_url in http_session.websockets)
+        assert SENDSPIN_URL not in http_session.websockets
+    finally:
+        await gateway._close_session("moved-sendspin-session")
 
 
 @pytest.mark.parametrize(
