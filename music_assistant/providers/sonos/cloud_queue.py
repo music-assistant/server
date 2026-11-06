@@ -237,13 +237,10 @@ class SonosCloudQueue:
                 continue
             if "positionMillis" not in item:
                 continue
-            # only the current load's wire id (or a legacy bare id) may update the
+            # only a report on the playing item from the current load may update the
             # position: a report from before a same-track reload carries the old
             # generation and its position, which the reload just seeked away from
-            if player.current_media and item["id"] in (
-                player.current_media.queue_item_id,
-                player.wire_item_id(player.current_media.queue_item_id),
-            ):
+            if player.reports_current_item(item["id"]):
                 player.update_elapsed_time(item["positionMillis"] / 1000)
             break
         return web.Response(status=204)
@@ -289,9 +286,10 @@ class SonosCloudQueue:
         :param error: The error object the speaker attached to it.
         """
         if error.get("type") == "http" and str(error.get("status")) == "404":
-            # our own stream server refused the item: a track the queue moved past or no
-            # longer holds, or one it failed to stream and logged there. The speaker tries
-            # each track it cached before reading the queue again, so these come in bursts
+            # our own stream server refused the item: a position past the end of the queue,
+            # a session the queue moved past or a track that failed to stream (logged there).
+            # The speaker tries each track it cached before reading the queue again, so
+            # these come in bursts
             self.logger.debug(
                 "Speaker %s was refused %s by the stream server",
                 player.display_name,
@@ -306,12 +304,7 @@ class SonosCloudQueue:
         wire_id = item.get("id", "")
         title = (
             player.current_media.title
-            if player.current_media
-            and wire_id
-            in (
-                player.current_media.queue_item_id,
-                player.wire_item_id(player.current_media.queue_item_id),
-            )
+            if player.current_media and player.reports_current_item(wire_id)
             else wire_id
         )
         # nothing else tells us. Playback stops while Music Assistant still believes

@@ -55,6 +55,7 @@ def _bind_player(mass: MusicAssistant | MagicMock) -> tuple[SonosPlayer, MagicMo
     player._woken_from_sleep = False
     player.cloud_queue_id = None
     player.cloud_queue_item_generation = 0
+    player.window_positions = {}
     player._evicted_cloud_queue = None
     player._flow_queue_id = None
     player._queue_session_id = None
@@ -684,6 +685,73 @@ async def test_a_failed_track_hands_its_source_to_the_track_the_speaker_moves_on
     assert len(scheduled) == 1
     await scheduled[0]
     mass.player_queues.release_failed_item_source.assert_awaited_once_with("queue1", "abc")
+
+
+async def test_a_failed_track_releases_the_track_served_at_its_position() -> None:
+    """Test the source released is that of the track the speaker fetched for the failed slot."""
+    player = _make_named_player("Kantoor")
+    player.cloud_queue_id = "queue1"
+    player.cloud_queue_item_generation = 3
+    player.window_positions = {"abc": 4}
+    mass = cast("MagicMock", player.mass)
+    mass.player_queues.item_served_at.return_value = "guest"
+    mass.player_queues.release_failed_item_source = AsyncMock()
+    scheduled = _scheduled_tasks(mass)
+
+    player._on_playback_error(_playback_error(reason="ERROR_BUFFERING", itemId="abc@3"))
+
+    assert len(scheduled) == 1
+    await scheduled[0]
+    mass.player_queues.item_served_at.assert_called_once_with("queue1", 4)
+    mass.player_queues.release_failed_item_source.assert_awaited_once_with("queue1", "guest")
+
+
+def _report_playing_our_queue(group: MagicMock, wire_item_id: str) -> None:
+    """Let the given group report it plays our cloud queue, on the given item."""
+    group.playback_state = SonosPlayBackState.PLAYBACK_STATE_PLAYING
+    group.position = 12.0
+    group.container_type = None
+    group.active_service = MusicService.MUSIC_ASSISTANT
+    group.playback_metadata = {
+        "container": {
+            "name": "Music Assistant",
+            "id": {"objectId": "mass:queue1"},
+            "service": {"name": "Music Assistant", "id": "mass"},
+        },
+        "currentItem": {"id": wire_item_id, "track": {"name": "Shout"}},
+    }
+    group.playback_actions.raw_data = {}
+    group.play_modes.shuffle = False
+    group.play_modes.repeat = False
+    group.play_modes.repeat_one = False
+
+
+def test_the_playing_item_follows_the_audio_served_for_the_reported_position(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Test a stale cached id the speaker reports reads as the track served for its slot, logged once."""
+    player, mass, client = _connected_player()
+    player._cache = {}
+    player._attr_name = "Kantoor"
+    player._config = MagicMock()
+    player._config.name = None
+    client.player.is_coordinator = True
+    client.player.group_members = ["sonos_player"]
+    player.cloud_queue_id = "queue1"
+    player.cloud_queue_item_generation = 3
+    player.window_positions = {"abc": 4}
+    mass.player_queues.item_served_at.return_value = "guest"
+    _report_playing_our_queue(client.player.group, "abc@3")
+
+    with caplog.at_level(logging.DEBUG, logger="test.sonos.player"):
+        player.on_player_event(None)
+        player.on_player_event(None)
+
+    assert player.current_media is not None
+    assert player.current_media.queue_item_id == "guest"
+    mass.player_queues.item_served_at.assert_called_with("queue1", 4)
+    stale_reports = "Position 4 of queue queue1 now holds guest, speaker Kantoor expected abc"
+    assert caplog.text.count(stale_reports) == 1
 
 
 def test_a_failure_of_an_earlier_load_of_a_track_leaves_its_fresh_source_alone(

@@ -86,7 +86,9 @@ def _make_player(items: list[QueueItem], current_index: int = 0) -> tuple[SonosP
     queues = _FakeQueues(items, current_index)
     mass = MagicMock()
     mass.player_queues = queues
-    mass.streams.resolve_stream_url = AsyncMock(side_effect=lambda _player_id, media: media.uri)
+    mass.streams.resolve_stream_url = AsyncMock(
+        side_effect=lambda _player_id, media, **_kwargs: media.uri
+    )
     player = SonosPlayer.__new__(SonosPlayer)
     player.mass = mass
     player.logger = logging.getLogger("test.sonos.cloud_queue")
@@ -95,6 +97,7 @@ def _make_player(items: list[QueueItem], current_index: int = 0) -> tuple[SonosP
     player.cloud_queue_id = QUEUE_ID
     player.cloud_queue_version = 1.0
     player.cloud_queue_item_generation = 0
+    player.window_positions = {}
     player._announcement_media = None
     player._woken_from_sleep = False
     player._flow_queue_id = None
@@ -214,6 +217,40 @@ async def test_window_serves_an_item_added_after_the_last_enqueue() -> None:
         "track2",
         "track3",
     ]
+
+
+async def test_window_items_are_addressed_by_queue_position() -> None:
+    """Test the speaker gets position URLs, so a cached slot plays whatever the queue holds there."""
+    items = [_make_queue_item(f"track{i}") for i in range(20)]
+    player, _ = _make_player(items)
+    resolve = cast("AsyncMock", player.mass.streams.resolve_stream_url)
+
+    window = await player.build_cloud_queue_window("track5")
+
+    assert [call.kwargs["queue_index"] for call in resolve.await_args_list] == list(range(4, 16))
+    # the ids stay those of the items, which is what the speaker reports back
+    assert [x.queue_item_id for x in window.items] == [f"track{i}" for i in range(4, 16)]
+    assert player.window_positions == {f"track{i}": i for i in range(4, 16)}
+
+
+async def test_a_reported_id_resolves_to_the_item_served_at_its_position() -> None:
+    """
+    Test an id the speaker reports is read as the track whose audio it fetched for that slot.
+
+    A track added right behind the playing one takes the position the speaker cached the
+    next track at: the speaker plays the added track there, under the id it cached.
+    """
+    player = _make_player_on_real_queues(4, RepeatMode.OFF)
+    queue_data = player.mass.player_queues._queue_data[QUEUE_ID]
+    await player.build_cloud_queue_window("track0")
+    queue_data.items.insert(1, _make_queue_item("guest"))
+    # the stream server served the guest when the speaker fetched position 1
+    queue_data.served_items_by_index[1] = "guest"
+
+    assert player.served_item_id("track1@0") == "guest"
+    # a position the speaker has not fetched yet names the item it cached there
+    assert player.served_item_id("track2@0") == "track2"
+    assert player.served_item_id("unknown@0") == "unknown"
 
 
 async def test_unavailable_items_are_left_out() -> None:
@@ -698,7 +735,7 @@ async def test_window_ids_stay_on_the_generation_the_request_started_with() -> N
     request = MagicMock()
     request.query = {"itemId": player.wire_item_id("track0")}
 
-    async def _bump_mid_build(_player_id: str, media: PlayerMedia) -> str:
+    async def _bump_mid_build(_player_id: str, media: PlayerMedia, **_kwargs: object) -> str:
         player.cloud_queue_item_generation = 8
         return media.uri
 
@@ -714,13 +751,10 @@ async def test_window_ids_stay_on_the_generation_the_request_started_with() -> N
 
 async def test_time_played_matches_the_playing_item_through_its_wire_id() -> None:
     """Only the current load's wire id (or a legacy bare id) may update the position."""
-    player = MagicMock(spec=SonosPlayer)
+    player, _ = _make_player([_make_queue_item("track0")])
     player.cloud_queue_item_generation = 3
-    player.wire_item_id = lambda item_id, generation=None: SonosPlayer.wire_item_id(
-        player, item_id, generation
-    )
-    player.current_media = MagicMock()
-    player.current_media.queue_item_id = "track0"
+    player._attr_current_media = PlayerMedia(uri="track0", queue_item_id="track0")
+    player.update_elapsed_time = MagicMock()  # type: ignore[method-assign]
     cloud_queue = _make_cloud_queue()
     request = MagicMock()
     request.json = AsyncMock(
@@ -741,6 +775,28 @@ async def test_time_played_matches_the_playing_item_through_its_wire_id() -> Non
     await cloud_queue._handle_sonos_queue_time_played(player, request)
 
     player.update_elapsed_time.assert_not_called()
+
+
+async def test_time_played_follows_the_audio_served_for_the_reported_position() -> None:
+    """Test a position report under a stale cached id lands on the track that really plays."""
+    player = _make_player_on_real_queues(4, RepeatMode.OFF)
+    queue_data = player.mass.player_queues._queue_data[QUEUE_ID]
+    await player.build_cloud_queue_window("track0")
+    # a track added right behind the playing one takes the position the speaker cached
+    # track1 at, and the stream server served it when the speaker fetched that position
+    queue_data.items.insert(1, _make_queue_item("guest"))
+    queue_data.served_items_by_index[1] = "guest"
+    player._attr_current_media = PlayerMedia(uri="guest", queue_item_id="guest")
+    player.update_elapsed_time = MagicMock()  # type: ignore[method-assign]
+    cloud_queue = _make_cloud_queue()
+    request = MagicMock()
+    request.json = AsyncMock(
+        return_value={"items": [{"type": "update", "id": "track1@0", "positionMillis": 5000}]}
+    )
+
+    await cloud_queue._handle_sonos_queue_time_played(player, request)
+
+    player.update_elapsed_time.assert_called_once_with(5.0)
 
 
 async def test_play_media_keeps_describing_the_queue_until_the_new_one_is_loaded() -> None:

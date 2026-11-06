@@ -131,10 +131,6 @@ class SonosPlayer(Player):
     _attr_external_pause_idle_timeout = EXTERNAL_PAUSE_IDLE_TIMEOUT
     # the speaker names the service it plays itself, so its source list is trusted
     _attr_trusts_reported_source = True
-    # the speaker plays out of a cached copy of our cloud queue that it refreshes on its
-    # own schedule; when it fetches a track the queue has since moved away from the
-    # playhead, the server must refuse it so the speaker re-reads the queue
-    _attr_strict_queue_item_requests = True
 
     def __init__(
         self,
@@ -164,6 +160,10 @@ class SonosPlayer(Player):
         # Clock-seeded (nanoseconds), so a recreated player never reuses a
         # generation the speaker may still hold items under
         self.cloud_queue_item_generation = time.time_ns()
+        # queue position of every item in the window last served to the speaker, by queue
+        # item id: the speaker names the item it cached for a position, while the audio it
+        # fetches there is whatever the queue holds at that position by then
+        self.window_positions: dict[str, int] = {}
         # failures already logged, so the speaker's resends are not logged again
         self.reported_playback_errors: deque[str] = deque(maxlen=REPORTED_ERROR_HISTORY)
         self._announcement_media: PlayerMedia | None = None
@@ -645,20 +645,59 @@ class SonosPlayer(Player):
         """
         return item_id.rsplit("@", 1)[0]
 
+    def from_current_load(self, wire_item_id: str) -> bool:
+        """
+        Return whether an id the speaker reports belongs to the current load of the queue.
+
+        A report from before a same-track reload carries the generation of the load the
+        reload replaced; a bare id without a generation is accepted.
+
+        :param wire_item_id: The id as the speaker reports it.
+        """
+        queue_item_id = self.bare_item_id(wire_item_id)
+        return wire_item_id in (queue_item_id, self.wire_item_id(queue_item_id))
+
+    def served_item_id(self, wire_item_id: str) -> str:
+        """
+        Return the queue item whose audio the speaker plays under an id it reports.
+
+        The speaker names the item it cached for a queue position, while the audio it
+        fetched for that position is whatever the queue held there at the time; the two
+        differ after a queue edit the speaker has not re-read yet.
+
+        :param wire_item_id: The id as the speaker reports it.
+        """
+        queue_item_id = self.bare_item_id(wire_item_id)
+        index = self.window_positions.get(queue_item_id)
+        if self.cloud_queue_id is None or index is None:
+            return queue_item_id
+        served = self.mass.player_queues.item_served_at(self.cloud_queue_id, index)
+        return served or queue_item_id
+
+    def reports_current_item(self, wire_item_id: str) -> bool:
+        """
+        Return whether an id the speaker reports is the item it plays now, from the current load.
+
+        :param wire_item_id: The id as the speaker reports it.
+        """
+        return (
+            self.current_media is not None
+            and self.from_current_load(wire_item_id)
+            and self.served_item_id(wire_item_id) == self.current_media.queue_item_id
+        )
+
     def release_failed_item(self, wire_item_id: str) -> None:
         """
         Hand the source of a queue item the speaker failed to play over to the next track.
 
-        :param wire_item_id: The failed item's id as the speaker reports it, which is the
-            id it was served under.
+        :param wire_item_id: The failed item's id as the speaker reports it.
         """
         if not (queue_id := self.cloud_queue_id):
             return
-        queue_item_id = self.bare_item_id(wire_item_id)
         # only the current load's wire id (or a legacy bare id) names the source the item
         # holds now: a report from before a same-track reload is about the load that the
         # reload replaced, and must not take the fresh source down with it
-        if wire_item_id not in (queue_item_id, self.wire_item_id(queue_item_id)):
+        if not self.from_current_load(wire_item_id):
             self.logger.debug(
                 "Ignoring the failure of %s: the item has been reloaded since", wire_item_id
             )
@@ -667,7 +706,9 @@ class SonosPlayer(Player):
         # source may still be filling its buffer and holding the stream slot that
         # next track needs on a music service that allows a single stream
         self.mass.create_task(
-            self.mass.player_queues.release_failed_item_source(queue_id, queue_item_id),
+            self.mass.player_queues.release_failed_item_source(
+                queue_id, self.served_item_id(wire_item_id)
+            ),
             task_name=f"sonos_release_failed_item_{self.player_id}",
         )
 
@@ -689,8 +730,8 @@ class SonosPlayer(Player):
         group = self.client.player.group
         if group is None or not group.active_session_id:
             # the session id lives in aiosonos and does not survive a reconnect or regroup,
-            # while the speaker's session (and its cached queue window) plays on - from here
-            # the stream request gate is what keeps a stale cached track off the speaker
+            # while the speaker's session (and its cached queue window) plays on - its items
+            # are addressed by position, so it follows the live queue regardless
             self.logger.debug("Not refreshing the cloud queue: no active playback session known")
             return
         try:
@@ -710,6 +751,9 @@ class SonosPlayer(Player):
     ) -> SonosQueueWindow:
         """
         Return the requested item, the one before it and the items after it, as the queue is now.
+
+        The items are addressed by queue position, and the positions served are remembered
+        to resolve the item ids the speaker reports back.
 
         :param item_id: queue_item_id the speaker asked about; an omitted or empty one asks
             for the start of the queue.
@@ -742,11 +786,13 @@ class SonosPlayer(Player):
             )
 
         items: list[PlayerMedia] = []
+        positions: dict[str, int] = {}
         offset = max(0, center_index - min(PREVIOUS_ITEMS, max_previous))
         for idx in range(offset, center_index + 1):
             queue_item = self.mass.player_queues.get_item(queue_id, idx)
             if queue_item and queue_item.available:
-                items.append(await self._player_media_for_speaker(queue_item))
+                items.append(await self._player_media_for_speaker(queue_item, idx))
+                positions[queue_item.queue_item_id] = idx
 
         # get_next_item accounts for repeat mode, so this is the item that will really
         # play next rather than whatever sits at the next index
@@ -755,7 +801,11 @@ class SonosPlayer(Player):
             next_item = self.mass.player_queues.get_next_item(queue_id, last_index)
             if next_item is None:
                 break
-            items.append(await self._player_media_for_speaker(next_item))
+            next_index = self.mass.player_queues.index_by_id(queue_id, next_item.queue_item_id)
+            if next_index is None:
+                break
+            items.append(await self._player_media_for_speaker(next_item, next_index))
+            positions[next_item.queue_item_id] = next_index
             if next_item.queue_item_id in (x.queue_item_id for x in items[-3:-1]):
                 # a track or a pair that repeats itself gets one more round, not a window
                 # full: the speaker is never refused the track it plays or the one before
@@ -769,6 +819,7 @@ class SonosPlayer(Player):
             # check after the loop in case the window filled exactly up to the last item
             includes_end=self.mass.player_queues.get_next_item(queue_id, last_index) is None,
         )
+        self.window_positions = positions
         self.logger.log(
             VERBOSE_LOG_LEVEL,
             "Serving Sonos queue window for %s on player %s: %s",
@@ -1046,7 +1097,7 @@ class SonosPlayer(Player):
             )
             if active_service == MusicService.MUSIC_ASSISTANT:
                 current_media.source_id = self._attr_active_source
-                current_media.queue_item_id = self.bare_item_id(current_item["id"])
+                current_media.queue_item_id = self._playing_item_id(current_item["id"])
         # radio stream info
         if container and container.get("name") and active_group.playback_metadata.get("streamInfo"):
             images = container.get("images", [])
@@ -1302,9 +1353,10 @@ class SonosPlayer(Player):
         error = cast("PlaybackError", event.data)
         stream_server = urlparse(self.mass.streams.base_url).netloc
         if error.get("httpStatus") == 404 and error.get("serviceName") == stream_server:
-            # our own stream server refused the item: a track the queue moved past or no
-            # longer holds. The speaker tries each track it cached before reading the
-            # queue again, so these come in bursts
+            # our own stream server refused the item: a position past the end of the queue,
+            # a session the queue moved past or a track that failed to stream (logged there).
+            # The speaker tries each track it cached before reading the queue again, so
+            # these come in bursts
             self.logger.debug(
                 "Speaker %s was refused %s by the stream server",
                 self.display_name,
@@ -1514,6 +1566,26 @@ class SonosPlayer(Player):
         """Return the MA queue the speaker plays, as a cloud queue or as one stream."""
         return self.cloud_queue_id or self._flow_queue_id
 
+    def _playing_item_id(self, wire_item_id: str) -> str:
+        """Return the queue item the speaker plays under a reported id, logging a stale one once."""
+        queue_item_id = self.served_item_id(wire_item_id)
+        cached_item_id = self.bare_item_id(wire_item_id)
+        previous = self._attr_current_media
+        if queue_item_id != cached_item_id and (
+            previous is None or previous.queue_item_id != queue_item_id
+        ):
+            # the speaker has not re-read a queue edit yet: its metadata lags behind the
+            # audio until it does, while the queue follows the audio
+            self.logger.debug(
+                "Position %s of queue %s now holds %s, speaker %s expected %s",
+                self.window_positions.get(cached_item_id),
+                self.cloud_queue_id,
+                queue_item_id,
+                self.display_name,
+                cached_item_id,
+            )
+        return queue_item_id
+
     def _forget_queue(self) -> None:
         """Forget the MA queue the speaker played, on either path."""
         self.cloud_queue_id = None
@@ -1640,10 +1712,14 @@ class SonosPlayer(Player):
         if media.source_id and media.queue_session_id:
             self.mass.streams.close_superseded_item_streams(media.source_id, media.queue_session_id)
 
-    async def _player_media_for_speaker(self, queue_item: QueueItem) -> PlayerMedia:
-        """Return the media for a queue item, with its stream URL resolved for this player."""
+    async def _player_media_for_speaker(
+        self, queue_item: QueueItem, queue_index: int
+    ) -> PlayerMedia:
+        """Return the media for a queue item, with a position-based stream URL for this player."""
         media = await self.mass.player_queues.player_media_from_queue_item(queue_item)
-        media.uri = await self.mass.streams.resolve_stream_url(self.player_id, media)
+        media.uri = await self.mass.streams.resolve_stream_url(
+            self.player_id, media, queue_index=queue_index
+        )
         return media
 
     def _streams_over_airplay(self, output_protocol: OutputProtocol) -> bool:
