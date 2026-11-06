@@ -46,6 +46,7 @@ from music_assistant.helpers.provider_access import access_allows, with_derived_
 from music_assistant.helpers.throttle_retry import RequestPriority, set_request_priority
 
 from .helpers.auth_middleware import (
+    get_ingress_session,
     has_scope,
     is_request_from_ingress,
     is_request_from_ingress_proxy,
@@ -91,6 +92,7 @@ class WebsocketClientHandler:
         self._locale: str | None = None  # UI locale declared by the client (auth arg / set_locale)
         self._is_ingress = is_request_from_ingress(request)
         self._is_ingress_proxy = is_request_from_ingress_proxy(request)
+        self._ingress_session = get_ingress_session(request)
         self._events_unsub_callback: Any = None  # Will be set after authentication
         # uris of the personal playlists this client was told are gone
         self._hidden_playlists: set[str] = set()
@@ -143,6 +145,14 @@ class WebsocketClientHandler:
         :param token: The access token to compare against.
         """
         return self._current_token == token
+
+    def matches_ingress_session(self, session: str) -> bool:
+        """
+        Return True if this client was relayed by Home Assistant Ingress for the given session.
+
+        :param session: The Ingress session to compare against.
+        """
+        return self._ingress_session == session
 
     def bind_sendspin_player(self, player_id: str) -> None:
         """

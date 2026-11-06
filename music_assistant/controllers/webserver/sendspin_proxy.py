@@ -12,14 +12,15 @@ import asyncio
 import contextlib
 import json
 import logging
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Final
 
 import aiohttp
-from aiohttp import ClientConnectorError, WSMsgType, web
+from aiohttp import ClientConnectorError, WSMessage, WSMsgType, web
 
 from music_assistant.constants import MASS_LOGGER_NAME
 from music_assistant.controllers.webserver.helpers.auth_middleware import (
     get_authenticated_user,
+    get_ingress_session,
     is_request_from_ingress_proxy,
 )
 
@@ -29,6 +30,9 @@ if TYPE_CHECKING:
     from music_assistant.controllers.webserver import WebserverController
 
 LOGGER = logging.getLogger(f"{MASS_LOGGER_NAME}.sendspin_proxy")
+
+# How long an Ingress client gets to announce its web player before proxying starts
+INGRESS_AUTH_TIMEOUT: Final = 2.0
 
 
 class SendspinProxyHandler:
@@ -49,7 +53,12 @@ class SendspinProxyHandler:
         Handle incoming WebSocket connection and proxy to internal Sendspin server.
 
         Authentication is required as the first message. The client must send:
-        {"type": "auth", "token": "<access_token>"}
+        {"type": "auth", "token": "<access_token>", "client_id": "<web player id>"}
+
+        Home Assistant Ingress authenticates the request itself, so an Ingress client
+        sends no token and may skip the auth message: {"type": "auth", "client_id": ...}
+        only announces its web player. Either auth message is answered with
+        {"type": "auth_ok"}.
 
         After successful authentication, all messages are proxied bidirectionally.
 
@@ -61,6 +70,7 @@ class SendspinProxyHandler:
 
         self.logger.debug("Sendspin proxy connection from %s", request.remote)
 
+        pending_msg: WSMessage | None = None
         # Check for ingress authentication (HA handles auth via headers)
         if is_request_from_ingress_proxy(request):
             user = await get_authenticated_user(request)
@@ -71,6 +81,9 @@ class SendspinProxyHandler:
                 await wsock.close(code=4001, message=b"Ingress authentication failed")
                 return wsock
             self.logger.debug("Sendspin proxy authenticated via ingress: %s", user.username)
+            pending_msg = await self._receive_ingress_auth(wsock, request)
+            if wsock.closed:
+                return wsock
         else:
             # Regular auth via first message
             try:
@@ -113,7 +126,7 @@ class SendspinProxyHandler:
         self.logger.debug("Sendspin proxy authenticated and connected for %s", request.remote)
 
         try:
-            await self._proxy_messages(wsock, internal_ws)
+            await self._proxy_messages(wsock, internal_ws, pending_msg)
         finally:
             if not internal_ws.closed:
                 await internal_ws.close()
@@ -172,19 +185,58 @@ class SendspinProxyHandler:
         await wsock.send_str('{"type": "auth_ok"}')
         return user
 
+    async def _receive_ingress_auth(
+        self, wsock: web.WebSocketResponse, request: web.Request
+    ) -> WSMessage | None:
+        """
+        Wait briefly for the optional auth message of an Ingress client.
+
+        Clients that do not announce their web player send nothing, or start with their
+        first Sendspin message right away.
+
+        :param wsock: The client WebSocket connection.
+        :param request: The incoming HTTP request.
+        :return: The first message of the client when it is not an auth message, so it can
+            still be forwarded, otherwise None.
+        """
+        try:
+            msg = await wsock.receive(timeout=INGRESS_AUTH_TIMEOUT)
+        except TimeoutError:
+            return None
+        if msg.type == WSMsgType.BINARY:
+            return msg
+        if msg.type != WSMsgType.TEXT:
+            return None
+        try:
+            auth_data = json.loads(msg.data)
+        except json.JSONDecodeError:
+            return msg
+        if not isinstance(auth_data, dict) or auth_data.get("type") != "auth":
+            return msg
+
+        if client_id := auth_data.get("client_id"):
+            if session := get_ingress_session(request):
+                self.webserver.set_sendspin_player_for_ingress_session(session, client_id)
+            else:
+                self.logger.debug("No Ingress session to bind sendspin player %s to", client_id)
+        await wsock.send_str('{"type": "auth_ok"}')
+        return None
+
     async def _proxy_messages(
         self,
         client_ws: web.WebSocketResponse,
         internal_ws: aiohttp.ClientWebSocketResponse,
+        pending_msg: WSMessage | None = None,
     ) -> None:
         """
         Proxy messages bidirectionally between client and internal Sendspin server.
 
         :param client_ws: The client WebSocket connection.
         :param internal_ws: The internal Sendspin server WebSocket connection.
+        :param pending_msg: A client message received before proxying started, sent first.
         """
         client_to_internal = asyncio.create_task(
-            self._forward_client_to_internal(client_ws, internal_ws)
+            self._forward_client_to_internal(client_ws, internal_ws, pending_msg)
         )
         internal_to_client = asyncio.create_task(
             self._forward_internal_to_client(client_ws, internal_ws)
@@ -237,18 +289,20 @@ class SendspinProxyHandler:
         self,
         client_ws: web.WebSocketResponse,
         internal_ws: aiohttp.ClientWebSocketResponse,
+        pending_msg: WSMessage | None,
     ) -> None:
         """
         Forward messages from client to internal Sendspin server.
 
         :param client_ws: The client WebSocket connection.
         :param internal_ws: The internal Sendspin server WebSocket connection.
+        :param pending_msg: A client message received before proxying started, sent first.
         """
+        if pending_msg is not None:
+            await self._forward_message(pending_msg, internal_ws)
         async for msg in client_ws:
-            if msg.type == WSMsgType.TEXT:
-                await internal_ws.send_str(msg.data)
-            elif msg.type == WSMsgType.BINARY:
-                await internal_ws.send_bytes(msg.data)
+            if msg.type in (WSMsgType.TEXT, WSMsgType.BINARY):
+                await self._forward_message(msg, internal_ws)
             elif msg.type in (WSMsgType.CLOSE, WSMsgType.CLOSED, WSMsgType.ERROR):
                 if msg.type == WSMsgType.ERROR:
                     self.logger.debug("Sendspin proxy client transport error: %s", msg.data)
@@ -274,3 +328,17 @@ class SendspinProxyHandler:
                 if msg.type == WSMsgType.ERROR:
                     self.logger.debug("Sendspin proxy internal transport error: %s", msg.data)
                 break
+
+    async def _forward_message(
+        self, msg: WSMessage, internal_ws: aiohttp.ClientWebSocketResponse
+    ) -> None:
+        """
+        Forward a text or binary client message to the internal Sendspin server.
+
+        :param msg: The client message.
+        :param internal_ws: The internal Sendspin server WebSocket connection.
+        """
+        if msg.type == WSMsgType.TEXT:
+            await internal_ws.send_str(msg.data)
+        else:
+            await internal_ws.send_bytes(msg.data)
