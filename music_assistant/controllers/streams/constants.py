@@ -72,8 +72,18 @@ DSD_BUFFER_MAX_BYTES: Final[dict[str, int]] = {
 RADIO_BUFFER_SIZE: Final[int] = 15
 
 # Seconds an HLS radio input may read ahead of playback, so a slow playlist reload and
-# segment fetch at each boundary does not starve the player. Must stay below RADIO_BUFFER_SIZE.
-HLS_RADIO_INPUT_BURST: Final[int] = 5
+# segment fetch at each boundary does not starve the player. A CDN can stall a segment for
+# about 9 seconds before it answers with an error. Must stay below RADIO_BUFFER_SIZE.
+HLS_RADIO_INPUT_BURST: Final[int] = 12
+
+# Segments behind the live edge where an HLS radio input starts. The burst can only read
+# segments that are already published, and with the default of 3 short segments it would
+# wait at the live edge instead of building its head start.
+HLS_RADIO_LIVE_START_SEGMENTS: Final[int] = 6
+
+# Times an HLS radio input fetches a segment again after an error. ffmpeg skips the segment
+# by default, which loses that audio.
+HLS_RADIO_SEGMENT_RETRIES: Final[int] = 3
 
 # Generic artwork some radio platforms send in the ICY 'StreamUrl' field when a track has
 # no cover of its own; treated as no image so the artwork lookup and station image apply.

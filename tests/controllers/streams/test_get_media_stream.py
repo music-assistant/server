@@ -18,7 +18,12 @@ from music_assistant_models.streamdetails import MultiPartPath, StreamDetails
 import music_assistant.controllers.streams.audio as audio_mod
 from music_assistant.controllers.streams.audio import StreamsAudio
 from music_assistant.controllers.streams.audio_buffer import AudioBuffer
-from music_assistant.controllers.streams.constants import HLS_RADIO_INPUT_BURST, RADIO_BUFFER_SIZE
+from music_assistant.controllers.streams.constants import (
+    HLS_RADIO_INPUT_BURST,
+    HLS_RADIO_LIVE_START_SEGMENTS,
+    HLS_RADIO_SEGMENT_RETRIES,
+    RADIO_BUFFER_SIZE,
+)
 from music_assistant.helpers.audio import HTTP_HEADERS
 from music_assistant.helpers.mp3 import NO_SEEK_HINTS, Mp3SeekHints
 from music_assistant.models.music_provider import MusicProvider, ProviderStreamLimitError
@@ -1351,6 +1356,10 @@ async def test_hls_radio_input_reads_ahead_of_realtime(monkeypatch: pytest.Monke
     assert extra_input_args == [
         "-stream_loop",
         "-1",
+        "-live_start_index",
+        str(-HLS_RADIO_LIVE_START_SEGMENTS),
+        "-seg_max_retry",
+        str(HLS_RADIO_SEGMENT_RETRIES),
         "-readrate",
         "1",
         "-readrate_initial_burst",
