@@ -11728,6 +11728,49 @@ class TestDerivedProtocolLinking:
 
         assert derived.protocol_parent_id is None
 
+    @pytest.mark.parametrize("removal", ["config_deleted_while_unregistered", "unregistered"])
+    async def test_refused_derived_links_once_its_domain_is_freed(
+        self, mock_mass: MagicMock, removal: str
+    ) -> None:
+        """
+        A derived player refused for a taken domain links once the player holding it is removed.
+
+        A device's bridges register in no fixed order, so a bridge that is removed right after
+        start can hold the domain while the bridge that stays registers.
+        """
+        controller = PlayerController(mock_mass)
+        mock_mass.players = controller
+        mock_mass.config.get = MagicMock(return_value=[])
+
+        native = MockPlayer(
+            MockProvider("wiim", mass=mock_mass), "native_1", "WiiM", player_type=PlayerType.PLAYER
+        )
+        native.set_initialized()
+        controller._players = {"native_1": native}
+        for player_id, domain in (("ap_1", "airplay"), ("cast_1", "chromecast")):
+            base = MockPlayer(
+                MockProvider(domain, mass=mock_mass),
+                player_id,
+                f"WiiM {domain}",
+                player_type=PlayerType.PROTOCOL,
+            )
+            base.set_initialized()
+            controller._players[player_id] = base
+            controller._add_protocol_link(native, base, domain)
+        for player_id, underlying_id in (("spb_cast", "cast_1"), ("spb_ap", "ap_1")):
+            bridge = self._make_derived_player(mock_mass, player_id, underlying_id)
+            controller._players[player_id] = bridge
+            controller._try_link_protocol_to_native(bridge)
+        assert controller._players["spb_ap"].protocol_parent_id is None
+
+        if removal == "unregistered":
+            await controller.unregister("spb_cast", permanent=True)
+        else:
+            del controller._players["spb_cast"]
+            controller.delete_player_config("spb_cast")
+
+        assert controller._players["spb_ap"].protocol_parent_id == "native_1"
+
     def test_derived_joins_universal_parent(self, mock_mass: MagicMock) -> None:
         """Test a derived player joins the universal player of its underlying player."""
         controller = PlayerController(mock_mass)
