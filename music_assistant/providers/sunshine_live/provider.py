@@ -25,14 +25,27 @@ from music_assistant_models.media_items import (
 from music_assistant_models.streamdetails import StreamDetails
 
 from music_assistant.controllers.cache import use_cache
+from music_assistant.helpers.throttle_retry import Throttler
 from music_assistant.models.music_provider import MusicProvider
 
-from .constants import API_TIMEOUT, CHANNELS_CACHE_SECONDS, CHANNELS_URL
+from .constants import (
+    API_RATE_LIMIT,
+    API_RATE_PERIOD,
+    API_TIMEOUT,
+    CHANNELS_CACHE_SECONDS,
+    CHANNELS_URL,
+)
 from .helpers import Channel, parse_channels
 
 
 class SunshineLiveProvider(MusicProvider):
     """Sunshine Live music provider for Music Assistant."""
+
+    _throttler: Throttler
+
+    async def handle_async_init(self) -> None:
+        """Handle async initialization of the provider."""
+        self._throttler = Throttler(rate_limit=API_RATE_LIMIT, period=API_RATE_PERIOD)
 
     @property
     def max_concurrent_streams(self) -> None:
@@ -121,22 +134,25 @@ class SunshineLiveProvider(MusicProvider):
 
     async def _get_channels(self) -> dict[str, Channel]:
         """Return the channels the station offers now, or raise when there is no list."""
-        channels = parse_channels(await self._fetch_channels())
-        if not channels:
-            raise ProviderUnavailableError("Sunshine Live offers no channels")
-        return channels
+        return parse_channels(await self._fetch_channels())
 
     # an expired list is still good while the station can't be reached
     @use_cache(CHANNELS_CACHE_SECONDS, allow_expired_cache=True)
     async def _fetch_channels(self) -> dict[str, Any]:
         """Return the answer of the station with its list of channels."""
         try:
-            async with self.mass.http_session.get(CHANNELS_URL, timeout=API_TIMEOUT) as response:
+            async with (
+                self._throttler,
+                self.mass.http_session.get(CHANNELS_URL, timeout=API_TIMEOUT) as response,
+            ):
                 response.raise_for_status()
                 data: dict[str, Any] = await response.json(content_type=None)
-                return data
         except (aiohttp.ClientError, TimeoutError, ValueError) as err:
             raise ProviderUnavailableError(f"Sunshine Live is unavailable: {err}") from err
+        # raising keeps a bad answer out of the cache, where it would replace a working list
+        if not parse_channels(data):
+            raise ProviderUnavailableError("Sunshine Live offers no channels")
+        return data
 
     def _parse_radio(self, channel_id: str, channel: Channel) -> Radio:
         """Return the radio item of a channel."""

@@ -18,8 +18,14 @@ from music_assistant_models.errors import (
 )
 from music_assistant_models.media_items import Radio
 
+from music_assistant.helpers.throttle_retry import Throttler
 from music_assistant.providers.sunshine_live import SUPPORTED_FEATURES
-from music_assistant.providers.sunshine_live.constants import CHANNELS_URL, FALLBACK_IMAGE_URL
+from music_assistant.providers.sunshine_live.constants import (
+    API_RATE_LIMIT,
+    API_RATE_PERIOD,
+    CHANNELS_URL,
+    FALLBACK_IMAGE_URL,
+)
 from music_assistant.providers.sunshine_live.helpers import parse_channels
 from music_assistant.providers.sunshine_live.provider import SunshineLiveProvider
 
@@ -98,7 +104,9 @@ def _provider(answer: Any = ANSWER) -> SunshineLiveProvider:
         return asyncio.create_task(coro)
 
     mass.create_task = _create_task
-    return SunshineLiveProvider(mass, manifest, config, SUPPORTED_FEATURES)
+    provider = SunshineLiveProvider(mass, manifest, config, SUPPORTED_FEATURES)
+    provider._throttler = Throttler(rate_limit=1000, period=1)
+    return provider
 
 
 @pytest.fixture
@@ -345,3 +353,57 @@ async def test_an_empty_list_is_reported() -> None:
     """A station without channels is a problem, not an empty provider."""
     with pytest.raises(ProviderUnavailableError):
         await _provider({}).browse("sunshine_live://")
+
+
+@pytest.mark.parametrize("answer", [{}, {"1": {"stream": "BROKEN"}}], ids=["empty", "unusable"])
+async def test_a_bad_answer_does_not_replace_a_working_list(answer: dict[str, Any]) -> None:
+    """A refresh that brings no channels keeps the old list, also for the next hour."""
+    provider = _provider(answer)
+    cache: Any = provider.mass.cache
+    cache.get_with_freshness = AsyncMock(return_value=(ANSWER, False, True))
+
+    channels = await provider.browse("sunshine_live://")
+    for _ in range(3):
+        await asyncio.sleep(0)
+
+    assert len(channels) == len(ANSWER)
+    cache.set.assert_not_awaited()
+
+
+async def test_a_good_answer_is_kept() -> None:
+    """A refresh that brings channels replaces the old list."""
+    provider = _provider()
+    cache: Any = provider.mass.cache
+    cache.get_with_freshness = AsyncMock(return_value=(ANSWER, False, True))
+
+    await provider.browse("sunshine_live://")
+    for _ in range(3):
+        await asyncio.sleep(0)
+
+    cache.set.assert_awaited_once()
+
+
+async def test_the_throttler_starts_with_the_provider(provider: SunshineLiveProvider) -> None:
+    """The requests of a running provider share one limit."""
+    await provider.handle_async_init()
+
+    assert provider._throttler.rate_limit == API_RATE_LIMIT
+    assert provider._throttler.period == API_RATE_PERIOD
+
+
+async def test_a_request_to_the_station_is_throttled(provider: SunshineLiveProvider) -> None:
+    """Failed requests aren't cached, so the throttler limits how often they come."""
+    entered: list[bool] = []
+
+    class _Throttler:
+        async def __aenter__(self) -> None:
+            entered.append(True)
+
+        async def __aexit__(self, *_args: object) -> None:
+            return None
+
+    provider._throttler = _Throttler()  # type: ignore[assignment]
+
+    await provider.browse("sunshine_live://")
+
+    assert entered == [True]
