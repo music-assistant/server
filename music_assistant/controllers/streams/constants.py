@@ -76,10 +76,14 @@ RADIO_BUFFER_SIZE: Final[int] = 15
 # about 9 seconds before it answers with an error. Must stay below RADIO_BUFFER_SIZE.
 HLS_RADIO_INPUT_BURST: Final[int] = 12
 
-# Segments behind the live edge where an HLS radio input starts. The burst can only read
-# segments that are already published, and with the default of 3 short segments it would
-# wait at the live edge instead of building its head start.
-HLS_RADIO_LIVE_START_SEGMENTS: Final[int] = 6
+# Seconds behind the live edge where an HLS radio input starts. The burst can only read
+# segments that are already published, so this leaves room for it. It counts in time as a
+# start further back only adds listening delay, and a title from a live source runs that
+# much further ahead of the audio.
+HLS_RADIO_LIVE_START_SECONDS: Final[int] = 24
+
+# The least segments behind the live edge, which is the default of ffmpeg.
+HLS_RADIO_MIN_START_SEGMENTS: Final[int] = 3
 
 # Times an HLS radio input fetches a segment again after an error. ffmpeg skips the segment
 # by default, which loses that audio.

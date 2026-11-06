@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 from types import TracebackType
-from typing import Self
+from typing import Any, Self, cast
 from unittest.mock import MagicMock
 
+import aiohttp
 import pytest
 from yarl import URL
 
@@ -129,3 +130,92 @@ class TestGetHlsSubstream:
         )
         substream = await controller.get_hls_substream("https://radio.example.com/master.m3u8")
         assert substream.path == "https://forwarded.example.com/high.m3u8"
+
+
+class TestHlsRadioStart:
+    """An HLS radio stream starts behind live by time, not by a fixed number of segments."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("target_duration", "segments"),
+        [("4", 6), ("6", 4), ("10", 3), ("16", 3), ("2.5", 10)],
+    )
+    async def test_start_follows_the_segment_length(
+        self, target_duration: str, segments: int
+    ) -> None:
+        """Short segments start further back, long ones stay at the default of ffmpeg."""
+        playlist = f"#EXTM3U\n#EXT-X-TARGETDURATION:{target_duration}\n#EXTINF:4,\nseg.aac\n"
+        controller = _streams_audio(playlist.encode(), None, "https://radio.example.com/a.m3u8")
+
+        assert await controller._get_hls_radio_start_segments("https://radio.example.com/a") == (
+            segments
+        )
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "playlist", ["#EXTM3U\n#EXTINF:4,\nseg.aac\n", "#EXTM3U\n#EXT-X-TARGETDURATION:0\n"]
+    )
+    async def test_an_unusable_playlist_keeps_the_default_start(self, playlist: str) -> None:
+        """Without a usable segment length the start stays where it always was."""
+        controller = _streams_audio(playlist.encode(), None, "https://radio.example.com/a.m3u8")
+
+        assert await controller._get_hls_radio_start_segments("https://radio.example.com/a") == 3
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("error", [aiohttp.ClientError(), TimeoutError()])
+    async def test_a_failed_request_does_not_stop_the_stream(self, error: Exception) -> None:
+        """The playlist is only a hint, the stream starts without it."""
+        controller = _streams_audio(b"", None, "https://radio.example.com/a.m3u8")
+        http_session: Any = controller.mass.http_session_no_ssl
+        http_session.get = MagicMock(side_effect=error)
+
+        assert await controller._get_hls_radio_start_segments("https://radio.example.com/a") == 3
+
+
+def _titled_playlist(titles: list[str]) -> str:
+    """Return a media playlist with one titled segment for each title."""
+    entries = "".join(f'#EXTINF:4,title="{title}"\nseg.aac\n' for title in titles)
+    return f"#EXTM3U\n#EXT-X-TARGETDURATION:4\n{entries}"
+
+
+class _FakeTextResponse(_FakeResponse):
+    """A response that also answers the text of the playlist."""
+
+    async def text(self) -> str:
+        return self._raw_data.decode()
+
+
+class TestHlsRadioTitle:
+    """The title comes from the segment that plays now, not from the newest one."""
+
+    @staticmethod
+    async def _title(titles: list[str], data: dict[str, Any]) -> str | None:
+        controller = StreamsAudio(MagicMock())
+        response = _FakeTextResponse(_titled_playlist(titles).encode(), None, "https://a.example")
+        http_session: Any = controller.mass.http_session_no_ssl
+        http_session.get = MagicMock(return_value=response)
+        controller._update_radio_stream_metadata = MagicMock()  # type: ignore[method-assign]
+        details = MagicMock(
+            data={"hls_media_playlist_url": "https://a.example", **data}, stream_title=None
+        )
+        await controller._update_hls_radio_metadata(details, 0)
+        return cast("str | None", details.stream_title)
+
+    @pytest.mark.asyncio
+    async def test_title_matches_how_far_the_stream_started_behind_live(self) -> None:
+        """A stream that started 3 segments back plays the third newest segment."""
+        title = await self._title(["A", "B", "C", "D", "E"], {"hls_start_segments": 3})
+
+        assert title == "C"
+
+    @pytest.mark.asyncio
+    async def test_a_short_playlist_uses_its_oldest_title(self) -> None:
+        """Ffmpeg starts at the first segment when the playlist is shorter than the offset."""
+        title = await self._title(["A", "B"], {"hls_start_segments": 6})
+
+        assert title == "A"
+
+    @pytest.mark.asyncio
+    async def test_title_before_the_stream_started_is_the_newest(self) -> None:
+        """Before a start offset is known, the newest title is the only one to go by."""
+        assert await self._title(["A", "B"], {}) == "B"

@@ -20,7 +20,6 @@ from music_assistant.controllers.streams.audio import StreamsAudio
 from music_assistant.controllers.streams.audio_buffer import AudioBuffer
 from music_assistant.controllers.streams.constants import (
     HLS_RADIO_INPUT_BURST,
-    HLS_RADIO_LIVE_START_SEGMENTS,
     HLS_RADIO_SEGMENT_RETRIES,
     RADIO_BUFFER_SIZE,
 )
@@ -1341,7 +1340,11 @@ async def test_hls_radio_input_reads_ahead_of_realtime(monkeypatch: pytest.Monke
     async def _get_hls_substream(_url: str) -> SimpleNamespace:
         return SimpleNamespace(path="http://test.invalid/media.m3u8")
 
+    async def _get_start_segments(_url: str) -> int:
+        return 4
+
     monkeypatch.setattr(audio, "get_hls_substream", _get_hls_substream)
+    monkeypatch.setattr(audio, "_get_hls_radio_start_segments", _get_start_segments)
     streamdetails = StreamDetails(
         provider="test_provider",
         item_id="station-1",
@@ -1353,11 +1356,12 @@ async def test_hls_radio_input_reads_ahead_of_realtime(monkeypatch: pytest.Monke
 
     _, _, extra_input_args = await audio._resolve_media_stream_source(streamdetails, 0, [])
 
+    assert streamdetails.data["hls_start_segments"] == 4
     assert extra_input_args == [
         "-stream_loop",
         "-1",
         "-live_start_index",
-        str(-HLS_RADIO_LIVE_START_SEGMENTS),
+        "-4",
         "-seg_max_retry",
         str(HLS_RADIO_SEGMENT_RETRIES),
         "-readrate",
