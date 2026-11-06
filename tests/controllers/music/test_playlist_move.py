@@ -27,6 +27,7 @@ from music_assistant_models.media_items import Playlist, ProviderMapping
 
 from music_assistant.controllers.cache import BYPASS_CACHE
 from music_assistant.models.music_provider import MusicProvider
+from tests.controllers.music.helpers import media_item_events
 
 if TYPE_CHECKING:
     from music_assistant.controllers.music.media.playlists import PlaylistController
@@ -139,8 +140,7 @@ async def test_move_reaches_the_provider_and_announces_the_new_order(
         2,
     ]
     assert provider.bypass_seen == [True, True, True]
-    signal_event.assert_called_once()
-    assert signal_event.call_args.args[0] == EventType.MEDIA_ITEM_UPDATED
+    assert media_item_events(signal_event) == [EventType.MEDIA_ITEM_UPDATED]
     assert (await playlists.get_library_item(added.item_id)).metadata.last_refresh is None
 
 
@@ -212,7 +212,7 @@ async def test_move_to_the_same_position_changes_nothing(
 
     provider.move_playlist_track.assert_not_awaited()
     provider.get_playlist_tracks.assert_not_awaited()
-    signal_event.assert_not_called()
+    assert media_item_events(signal_event) == []
 
 
 @pytest.mark.parametrize(("from_position", "to_position"), [(0, 1), (1, 0)])
@@ -253,7 +253,7 @@ async def test_move_tracks_reaches_the_provider_in_playlist_order(
 
     provider.move_playlist_tracks.assert_awaited_once_with(prov_item_id, [2, 5], 1)
     assert provider.bypass_seen == [True, True, True]
-    signal_event.assert_called_once()
+    assert media_item_events(signal_event) == [EventType.MEDIA_ITEM_UPDATED]
 
 
 async def test_move_tracks_that_fail_part_way_still_read_the_playlist_back(
@@ -273,7 +273,7 @@ async def test_move_tracks_that_fail_part_way_still_read_the_playlist_back(
         await playlists.move_playlist_tracks(added.item_id, [5, 2], 1)
 
     assert provider.bypass_seen == [True, True, True]
-    signal_event.assert_called_once()
+    assert media_item_events(signal_event) == [EventType.MEDIA_ITEM_UPDATED]
 
 
 async def test_move_tracks_already_in_place_changes_nothing(
@@ -291,7 +291,7 @@ async def test_move_tracks_already_in_place_changes_nothing(
         await playlists.move_playlist_tracks(added.item_id, [3, 2], 2)
 
     provider.move_playlist_tracks.assert_not_awaited()
-    signal_event.assert_not_called()
+    assert media_item_events(signal_event) == []
 
 
 async def test_move_tracks_without_a_target_moves_them_to_the_end(
@@ -310,7 +310,7 @@ async def test_move_tracks_without_a_target_moves_them_to_the_end(
         await playlists.move_playlist_tracks(added.item_id, [1])
 
     provider.move_playlist_tracks.assert_awaited_once_with(prov_item_id, [1], None)
-    signal_event.assert_called_once()
+    assert media_item_events(signal_event) == [EventType.MEDIA_ITEM_UPDATED]
 
 
 @pytest.mark.parametrize(
