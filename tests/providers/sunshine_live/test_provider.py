@@ -16,8 +16,13 @@ from music_assistant_models.errors import (
     ProviderUnavailableError,
     UnplayableMediaError,
 )
-from music_assistant_models.media_items import Radio
+from music_assistant_models.media_items import AudioFormat, Radio
+from music_assistant_models.streamdetails import StreamDetails, StreamMetadata
 
+from music_assistant.controllers.streams.constants import (
+    STREAMDETAILS_INBAND_TITLE_HANDOFF_KEY,
+    STREAMDETAILS_INBAND_TITLE_KEY,
+)
 from music_assistant.helpers.throttle_retry import Throttler
 from music_assistant.providers.sunshine_live import SUPPORTED_FEATURES
 from music_assistant.providers.sunshine_live.constants import (
@@ -26,7 +31,7 @@ from music_assistant.providers.sunshine_live.constants import (
     CHANNELS_URL,
     FALLBACK_IMAGE_URL,
 )
-from music_assistant.providers.sunshine_live.helpers import parse_channels
+from music_assistant.providers.sunshine_live.helpers import is_same_song, parse_channels
 from music_assistant.providers.sunshine_live.provider import SunshineLiveProvider
 
 LOGO = "https://images.sunshine-live.de/files/2023-05/classics.jpg?width=360&height=360"
@@ -99,6 +104,8 @@ def _provider(answer: Any = ANSWER) -> SunshineLiveProvider:
     mass.cache.get_with_freshness = AsyncMock(return_value=(None, False, False))
     mass.cache.set = AsyncMock()
     mass.http_session.get = MagicMock(return_value=_FakeResponse(answer))
+    mass.metadata.update_radio_stream_artwork = AsyncMock()
+    mass.metadata.normalize_radio_artist_name = MagicMock(side_effect=lambda name: name)
 
     def _create_task(coro: Coroutine[Any, Any, Any], **_kwargs: Any) -> asyncio.Task[Any]:
         return asyncio.create_task(coro)
@@ -407,3 +414,247 @@ async def test_a_request_to_the_station_is_throttled(provider: SunshineLiveProvi
     await provider.browse("sunshine_live://")
 
     assert entered == [True]
+
+
+COVER = "https://is1-ssl.mzstatic.com/image/cover.jpg"
+
+
+def _details(stream_title: str | None = None, channel_id: str = "6") -> StreamDetails:
+    """Return stream details of a playing channel, whose stream gave the title."""
+    data: dict[str, Any] = {STREAMDETAILS_INBAND_TITLE_HANDOFF_KEY: True}
+    if stream_title is not None:
+        data[STREAMDETAILS_INBAND_TITLE_KEY] = stream_title
+    return StreamDetails(
+        provider="sunshine_live_test",
+        item_id=channel_id,
+        media_type=MediaType.RADIO,
+        audio_format=AudioFormat(content_type=ContentType.MP3),
+        data=data,
+    )
+
+
+def _plays(artist: str, title: str, cover: str = "") -> dict[str, Any]:
+    """Return the answer of the station, whose channel 6 plays the given song."""
+    entry = _entry(6, "CLASSICS", "//stream.sunshine-live.de/classics/mp3-192/homepage/")
+    entry |= {"artist_name": artist, "song_title": title}
+    entry["covers"] = {"cover_art_url_xxl": cover}
+    return {"1": entry}
+
+
+async def test_stream_details_take_over_the_title_of_the_stream(
+    provider: SunshineLiveProvider,
+) -> None:
+    """The provider decides what shows, so the placeholder of the stream never does."""
+    details = await provider.get_stream_details("6", MediaType.RADIO)
+
+    assert details.stream_metadata_update_callback == provider._update_stream_metadata
+    assert details.data[STREAMDETAILS_INBAND_TITLE_HANDOFF_KEY] is True
+
+
+async def test_a_song_shows_the_title_of_the_stream() -> None:
+    """The stream follows the audio, so it wins over the list of the station."""
+    provider = _provider(_plays("Other", "Song"))
+    details = _details("Bingo Boys - How to Dance")
+
+    await provider._update_stream_metadata(details, 0)
+
+    assert details.stream_metadata is not None
+    assert details.stream_metadata.artist == "Bingo Boys"
+    assert details.stream_metadata.title == "How to Dance"
+    assert details.stream_metadata.image_url is None
+    metadata: Any = provider.mass.metadata
+    metadata.update_radio_stream_artwork.assert_awaited_once_with(details)
+
+
+async def test_a_title_with_more_dashes_splits_at_the_first() -> None:
+    """Like other radio stations, the artist ends at the first separator."""
+    details = _details("Artist - Song - Part Two")
+
+    await _provider(_plays("", ""))._update_stream_metadata(details, 0)
+
+    assert details.stream_metadata is not None
+    assert details.stream_metadata.artist == "Artist"
+    assert details.stream_metadata.title == "Song - Part Two"
+
+
+async def test_a_title_without_an_artist_shows_as_it_is() -> None:
+    """A title that names no artist is not split."""
+    details = _details("Just a title")
+
+    await _provider(_plays("", ""))._update_stream_metadata(details, 0)
+
+    assert details.stream_metadata is not None
+    assert details.stream_metadata.artist is None
+    assert details.stream_metadata.title == "Just a title"
+
+
+async def test_a_song_uses_the_cover_of_the_station_when_it_is_the_same_song() -> None:
+    """A matching cover needs no lookup, also with other capitals."""
+    provider = _provider(_plays("Bingo Boys", "HOW TO DANCE", COVER))
+    details = _details("Bingo Boys - How to Dance")
+
+    await provider._update_stream_metadata(details, 0)
+
+    assert details.stream_metadata is not None
+    assert details.stream_metadata.image_url == COVER
+    metadata: Any = provider.mass.metadata
+    metadata.update_radio_stream_artwork.assert_not_awaited()
+
+
+async def test_a_song_ignores_the_cover_of_another_song() -> None:
+    """The list and the audio can be apart, this keeps a wrong cover away."""
+    provider = _provider(_plays("Other", "Song", COVER))
+    details = _details("Bingo Boys - How to Dance")
+
+    await provider._update_stream_metadata(details, 0)
+
+    assert details.stream_metadata is not None
+    assert details.stream_metadata.image_url is None
+
+
+async def test_a_cover_that_comes_later_is_added() -> None:
+    """The song stays and needs no second lookup when the list catches up."""
+    provider = _provider(_plays("Other", "Song"))
+    details = _details("Bingo Boys - How to Dance")
+    await provider._update_stream_metadata(details, 0)
+    session: Any = provider.mass.http_session
+    session.get = MagicMock(return_value=_FakeResponse(_plays("Bingo Boys", "How to Dance", COVER)))
+
+    await provider._update_stream_metadata(details, 30)
+
+    assert details.stream_metadata is not None
+    assert details.stream_metadata.image_url == COVER
+    metadata: Any = provider.mass.metadata
+    metadata.update_radio_stream_artwork.assert_awaited_once()
+
+
+async def test_the_same_song_is_not_looked_up_again() -> None:
+    """A found artwork stays, and the lookup service isn't asked every time."""
+    provider = _provider(_plays("Other", "Song"))
+    details = _details("Bingo Boys - How to Dance")
+    await provider._update_stream_metadata(details, 0)
+    assert details.stream_metadata is not None
+    details.stream_metadata.image_url = "https://found.example/art.jpg"
+
+    await provider._update_stream_metadata(details, 30)
+
+    assert details.stream_metadata.image_url == "https://found.example/art.jpg"
+    metadata: Any = provider.mass.metadata
+    metadata.update_radio_stream_artwork.assert_awaited_once()
+
+
+@pytest.mark.parametrize(
+    "stream_title",
+    ["SUNSHINE LIVE - Simulcast", "sunshine live - Classics", "", None],
+    ids=["placeholder", "lower-case", "empty", "none-yet"],
+)
+async def test_a_show_uses_the_list_of_the_station(stream_title: str | None) -> None:
+    """During a show the stream only names the station, the list knows the show."""
+    provider = _provider(_plays("DJ Falk", "DJs after Work - Club Legends"))
+    details = _details(stream_title)
+
+    await provider._update_stream_metadata(details, 0)
+
+    assert details.stream_metadata is not None
+    assert details.stream_metadata.artist == "DJ Falk"
+    assert details.stream_metadata.title == "DJs after Work - Club Legends"
+
+
+async def test_a_show_uses_its_cover() -> None:
+    """A show has no song the cover could differ from."""
+    details = _details("SUNSHINE LIVE - Simulcast")
+
+    await _provider(_plays("DJ Falk", "Show", COVER))._update_stream_metadata(details, 0)
+
+    assert details.stream_metadata is not None
+    assert details.stream_metadata.image_url == COVER
+
+
+async def test_nothing_known_shows_the_channel() -> None:
+    """Without any information no made up title shows, the player falls back to the channel."""
+    details = _details("SUNSHINE LIVE - Simulcast")
+
+    await _provider(_plays("", ""))._update_stream_metadata(details, 0)
+
+    assert details.stream_metadata is None
+
+
+async def test_a_song_after_a_show_is_shown_again() -> None:
+    """The same song can come back after a show."""
+    provider = _provider(_plays("DJ Falk", "Show"))
+    details = _details("Bingo Boys - How to Dance")
+    await provider._update_stream_metadata(details, 0)
+    details.data[STREAMDETAILS_INBAND_TITLE_KEY] = "SUNSHINE LIVE - Simulcast"
+    await provider._update_stream_metadata(details, 30)
+    details.data[STREAMDETAILS_INBAND_TITLE_KEY] = "Bingo Boys - How to Dance"
+
+    await provider._update_stream_metadata(details, 60)
+
+    assert details.stream_metadata is not None
+    assert details.stream_metadata.artist == "Bingo Boys"
+
+
+async def test_a_failed_request_keeps_what_shows() -> None:
+    """A failed request says nothing about what plays."""
+    provider = _provider()
+    session: Any = provider.mass.http_session
+    session.get = MagicMock(side_effect=aiohttp.ClientError())
+    details = _details("SUNSHINE LIVE - Simulcast")
+    details.stream_metadata = StreamMetadata(title="Show", artist="DJ Falk")
+
+    await provider._update_stream_metadata(details, 0)
+
+    assert details.stream_metadata.title == "Show"
+
+
+def test_covers_in_another_format_are_ignored() -> None:
+    """Some channels answer their covers in another format than the others."""
+    entry = _entry(6, "CLASSICS", "//stream.sunshine-live.de/classics/mp3-192/") | {"covers": ""}
+
+    assert parse_channels({"1": entry})["6"].cover is None
+
+
+@pytest.mark.parametrize(
+    ("stream_title", "artist", "title"),
+    [
+        (
+            "Timmo, Stoked - Back to the Oldschool (Extended Mix)",
+            "Timmo & Stoked",
+            "Back to the Oldschool",
+        ),
+        ("Maite Dedecker - Cosmic Pulse (Extended Mix)", "Maite Dedecker", "Cosmic Pulse"),
+        ("Pan-Pot - Kaltstrom  (Extended Mix)", "Pan-Pot", "Kaltstrom"),
+        (
+            "Double Vision - Knockin (Original Version)",
+            "Double Vision",
+            "Knockin (Original Version)",
+        ),
+    ],
+    ids=["other-artist-separator", "version-only-in-stream", "double-space", "same"],
+)
+def test_the_same_song_is_found_in_both_spellings(
+    stream_title: str, artist: str, title: str
+) -> None:
+    """These pairs were seen on the stream and in the list of the station at the same time."""
+    answer = {"1": _entry(6, "X", "//stream.sunshine-live.de/x/mp3-192/")}
+    answer["1"] |= {"artist_name": artist, "song_title": title}
+
+    assert is_same_song(stream_title, parse_channels(answer)["6"])
+
+
+@pytest.mark.parametrize(
+    ("stream_title", "artist", "title"),
+    [
+        ("Pan-Pot - Kaltstrom", "Pan-Pot", "Other Song"),
+        ("Pan-Pot - Kaltstrom", "Other Artist", "Kaltstrom"),
+        ("Kaltstrom", "Pan-Pot", "Kaltstrom"),
+        ("Pan-Pot - Kaltstrom", "", ""),
+    ],
+    ids=["other-title", "other-artist", "no-artist", "nothing-listed"],
+)
+def test_another_song_is_not_the_same(stream_title: str, artist: str, title: str) -> None:
+    """A cover of another song must not show."""
+    answer = {"1": _entry(6, "X", "//stream.sunshine-live.de/x/mp3-192/")}
+    answer["1"] |= {"artist_name": artist, "song_title": title}
+
+    assert not is_same_song(stream_title, parse_channels(answer)["6"])

@@ -9,6 +9,7 @@ import aiohttp
 from music_assistant_models.enums import ImageType, MediaType, StreamType
 from music_assistant_models.errors import (
     MediaNotFoundError,
+    MusicAssistantError,
     ProviderUnavailableError,
     UnplayableMediaError,
 )
@@ -22,10 +23,15 @@ from music_assistant_models.media_items import (
     Radio,
     SearchResults,
 )
-from music_assistant_models.streamdetails import StreamDetails
+from music_assistant_models.streamdetails import StreamDetails, StreamMetadata
 
 from music_assistant.controllers.cache import use_cache
+from music_assistant.controllers.streams.constants import (
+    STREAMDETAILS_INBAND_TITLE_HANDOFF_KEY,
+    STREAMDETAILS_INBAND_TITLE_KEY,
+)
 from music_assistant.helpers.throttle_retry import Throttler
+from music_assistant.helpers.util import parse_title_and_version
 from music_assistant.models.music_provider import MusicProvider
 
 from .constants import (
@@ -34,8 +40,12 @@ from .constants import (
     API_TIMEOUT,
     CHANNELS_CACHE_SECONDS,
     CHANNELS_URL,
+    STREAM_METADATA_UPDATE_INTERVAL,
 )
-from .helpers import Channel, parse_channels
+from .helpers import Channel, is_same_song, is_station_title, parse_channels
+
+# Key in StreamDetails.data for the title from the stream that is shown now.
+_SHOWN_TITLE_KEY = "sunshine_live_shown_title"
 
 
 class SunshineLiveProvider(MusicProvider):
@@ -114,6 +124,9 @@ class SunshineLiveProvider(MusicProvider):
             allow_seek=False,
             can_seek=False,
             duration=0,
+            stream_metadata_update_callback=self._update_stream_metadata,
+            stream_metadata_update_interval=STREAM_METADATA_UPDATE_INTERVAL,
+            data={STREAMDETAILS_INBAND_TITLE_HANDOFF_KEY: True},
         )
 
     async def browse(self, path: str) -> Sequence[MediaItemType | ItemMapping | BrowseFolder]:
@@ -124,6 +137,67 @@ class SunshineLiveProvider(MusicProvider):
         """
         channels = await self._get_channels()
         return [self._parse_radio(*item) for item in channels.items()]
+
+    async def _update_stream_metadata(
+        self, streamdetails: StreamDetails, elapsed_time: int
+    ) -> None:
+        """
+        Show what plays on a channel.
+
+        The title in the stream follows the audio, so it decides for a song. During a show the
+        stream only names the station, and the list of the station has the name of the show.
+
+        :param streamdetails: The stream details of the channel.
+        :param elapsed_time: Elapsed playback time in seconds, not used for a live channel.
+        """
+        try:
+            channel = await self._get_channel(streamdetails.item_id)
+        except MusicAssistantError as err:
+            # says nothing about what plays, so the last known metadata stays
+            self.logger.debug("Could not update what plays on a channel: %s", err)
+            return
+        data = streamdetails.data
+        stream_title = str(data.get(STREAMDETAILS_INBAND_TITLE_KEY) or "").strip()
+        if stream_title and not is_station_title(stream_title):
+            await self._show_song(streamdetails, stream_title, channel)
+            return
+        data.pop(_SHOWN_TITLE_KEY, None)
+        if channel.title or channel.artist:
+            streamdetails.stream_metadata = self._metadata(
+                channel.artist, channel.title, channel.cover
+            )
+        else:
+            streamdetails.stream_metadata = None
+
+    async def _show_song(
+        self, streamdetails: StreamDetails, stream_title: str, channel: Channel
+    ) -> None:
+        """Show the song the stream names, with the cover of the station if it is that song."""
+        artist, separator, title = stream_title.partition(" - ")
+        if not separator:
+            artist, title = "", stream_title
+        # the list can be some seconds ahead of the audio or behind it
+        cover = channel.cover if is_same_song(stream_title, channel) else None
+        data = streamdetails.data
+        current = streamdetails.stream_metadata
+        if data.get(_SHOWN_TITLE_KEY) == stream_title:
+            # the list of the station can follow later than the stream
+            if cover and current and current.image_url != cover:
+                current.image_url = cover
+            return
+        data[_SHOWN_TITLE_KEY] = stream_title
+        streamdetails.stream_metadata = self._metadata(artist, title, cover)
+        if not cover:
+            await self.mass.metadata.update_radio_stream_artwork(streamdetails)
+
+    def _metadata(self, artist: str, title: str, image_url: str | None) -> StreamMetadata:
+        """Return the metadata to show, cleaned up like other radio stations."""
+        display_title, _ = parse_title_and_version(title or artist, strip_for_display=True)
+        return StreamMetadata(
+            title=display_title,
+            artist=self.mass.metadata.normalize_radio_artist_name(artist) if artist else None,
+            image_url=image_url,
+        )
 
     async def _get_channel(self, channel_id: str) -> Channel:
         """Return one channel, or raise when the station doesn't offer it."""
