@@ -87,12 +87,12 @@ audio prefs, wire models) is shared infrastructure owned by the Spotify Connect 
 - **One engine run per playback session**: a run is one ordinary-mode daemon, started
   with shuffle, repeat-context and repeat-track off, that plays a queue's items one after
   another. While an item streams, the track that follows it is fed into the engine's own
-  queue (`add_to_queue`). Where the engine moves on to it, the capture is cut at the
+  queue (`add_to_queue`). When the engine moves on to it, the capture is cut at the
   engine's exact track length counted from the item's first sample, and the rest goes to
   the next item, which the queue then claims from the running engine. Every item has its
   own cushion and its own stream, so the outgoing one drains while the next one renders.
-  Seeks, skips and jumps (episodes, which the engine will not take into its queue) move
-  the same engine: sink suspended, FIFO drained, command confirmed, sink resumed. A fed
+  Seeks, skips and jumps to an item that was not fed (an episode, which the engine will
+  not take into its queue) move the same engine: sink suspended, FIFO drained, command confirmed, sink resumed. A fed
   item nobody claims within 10 s, or a run left serving nobody for 2 s, stops the
   daemon; a request the running engine cannot serve (the player's normalization switch
   changed, the engine died, a move that did not land) gets a fresh run.
@@ -137,8 +137,8 @@ audio prefs, wire models) is shared infrastructure owned by the Spotify Connect 
   sink, which pauses the engine; space resumes it. The engine's pause silence is kept
   out of the delivered PCM the same way, and leading infrastructure silence and the
   sink's tail padding are trimmed per run.
-- **Delimiting**: an item ends at its cut, where the engine stops at the end of the last
-  item it was given, or where it wanders on to something it was not given. A daemon exit
+- **Delimiting**: an item ends at its cut, when the engine stops at the end of the last
+  item it was given, or when it wanders on to something it was not given. A daemon exit
   fails the item it was on; whatever the sink renders after it is padding and is dropped. The
   delivered length is validated against the item's duration, so an engine that refuses
   an item (unavailable to the account or region) surfaces as an incomplete delivery
