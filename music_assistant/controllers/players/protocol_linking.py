@@ -427,6 +427,15 @@ class ProtocolLinkingMixin:
                 continue
             self._try_link_derived_protocol(candidate)
 
+    def _link_derived_protocols_riding_on(self, parent: Player) -> None:
+        """Link waiting derived protocol players that ride on the parent or one of its outputs."""
+        for underlying_id in (
+            parent.player_id,
+            *(link.output_protocol_id for link in parent.linked_output_protocols),
+        ):
+            if underlying := self.get_player(underlying_id):
+                self._link_derived_protocols_of(underlying)
+
     def _schedule_protocol_evaluation(self, protocol_player: Player) -> None:
         """
         Schedule a delayed protocol evaluation.
@@ -1747,6 +1756,8 @@ class ProtocolLinkingMixin:
                     )
                     self.mass.create_task(self.mass.players.unregister(parent_id, permanent=False))
                 else:
+                    # the removed protocol may have held the domain a waiting derived one needs
+                    self._link_derived_protocols_riding_on(parent_player)
                     parent_player.refresh_state()
             else:
                 # Parent not registered yet — still purge the cached id
@@ -1776,6 +1787,8 @@ class ProtocolLinkingMixin:
                     self.mass.players.unregister(parent.player_id, permanent=False)
                 )
             else:
+                # the removed protocol may have held the domain a waiting derived one needs
+                self._link_derived_protocols_riding_on(parent)
                 parent.refresh_state()
         # parents that are not registered only hold the link in their stored config
         for parent_id in list(self.mass.config.get(CONF_PLAYERS, {})):
