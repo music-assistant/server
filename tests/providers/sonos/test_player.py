@@ -55,7 +55,8 @@ def _bind_player(mass: MusicAssistant | MagicMock) -> tuple[SonosPlayer, MagicMo
     player._woken_from_sleep = False
     player.cloud_queue_id = None
     player.cloud_queue_item_generation = 0
-    player.window_positions = {}
+    player._window_item_ids = {}
+    player._served_bindings = {}
     player._evicted_cloud_queue = None
     player._flow_queue_id = None
     player._queue_session_id = None
@@ -692,9 +693,9 @@ async def test_a_failed_track_releases_the_track_at_its_position() -> None:
     player = _make_named_player("Kantoor")
     player.cloud_queue_id = "queue1"
     player.cloud_queue_item_generation = 3
-    player.window_positions = {"abc": 4}
+    player._window_item_ids = {4: "abc"}
+    player.on_queue_position_served(4, "guest")
     mass = cast("MagicMock", player.mass)
-    mass.player_queues.get_item.return_value = MagicMock(queue_item_id="guest")
     mass.player_queues.release_failed_item_source = AsyncMock()
     scheduled = _scheduled_tasks(mass)
 
@@ -702,7 +703,6 @@ async def test_a_failed_track_releases_the_track_at_its_position() -> None:
 
     assert len(scheduled) == 1
     await scheduled[0]
-    mass.player_queues.get_item.assert_called_once_with("queue1", 4)
     mass.player_queues.release_failed_item_source.assert_awaited_once_with("queue1", "guest")
 
 
@@ -730,7 +730,7 @@ def test_the_playing_item_follows_the_audio_served_for_the_reported_position(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     """Test a stale cached id the speaker reports reads as the track served for its slot, logged once."""
-    player, mass, client = _connected_player()
+    player, _mass, client = _connected_player()
     player._cache = {}
     player._attr_name = "Kantoor"
     player._config = MagicMock()
@@ -739,8 +739,8 @@ def test_the_playing_item_follows_the_audio_served_for_the_reported_position(
     client.player.group_members = ["sonos_player"]
     player.cloud_queue_id = "queue1"
     player.cloud_queue_item_generation = 3
-    player.window_positions = {"abc": 4}
-    mass.player_queues.get_item.return_value = MagicMock(queue_item_id="guest")
+    player._window_item_ids = {4: "abc"}
+    player.on_queue_position_served(4, "guest")
     _report_playing_our_queue(client.player.group, "abc@3")
 
     with caplog.at_level(logging.DEBUG, logger="test.sonos.player"):
@@ -749,7 +749,6 @@ def test_the_playing_item_follows_the_audio_served_for_the_reported_position(
 
     assert player.current_media is not None
     assert player.current_media.queue_item_id == "guest"
-    mass.player_queues.get_item.assert_called_with("queue1", 4)
     stale_reports = "Position 4 of queue queue1 now holds guest, speaker Kantoor expected abc"
     assert caplog.text.count(stale_reports) == 1
 

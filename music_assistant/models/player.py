@@ -1393,6 +1393,15 @@ class Player(ABC):
         # default implementation will simply trigger an update for the state of the player
         self.mass.players.trigger_player_update(self.player_id)
 
+    def on_queue_position_served(self, queue_index: int, queue_item_id: str) -> None:  # noqa: B027
+        """
+        Handle callback when a stream request addressed by queue position was served.
+
+        :param queue_index: The queue position the player fetched.
+        :param queue_item_id: The queue item whose audio went out for that position.
+        """
+        # optional callback, for a player that fetches its queue items by position
+
     def on_sync_parent_updated(
         self, sync_parent: Player, changed_values: dict[str, tuple[Any, Any]]
     ) -> None:

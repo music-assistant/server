@@ -835,6 +835,8 @@ class StreamsController(CoreController):
             queue_item = self.mass.player_queues.get_item(queue_id, int(queue_index))
             if not queue_item:
                 raise web.HTTPNotFound(reason=f"No queue item at position {queue_index}")
+            if request.method == "GET":
+                player.on_queue_position_served(int(queue_index), queue_item.queue_item_id)
         else:
             queue_item_id = request.match_info["queue_item_id"]
             queue_item = self.mass.player_queues.get_item(queue_id, queue_item_id)
@@ -2542,7 +2544,7 @@ class StreamsController(CoreController):
         # a request whose player closed the connection no longer counts, even while its
         # handler has yet to notice that on its next write
         return {
-            request[_REQUEST_QUEUE_ITEM_ID]
+            _request_queue_item_id(request)
             for entry_session_id, request in entries
             if entry_session_id == session_id
             and request.method == "GET"
@@ -2582,7 +2584,7 @@ class StreamsController(CoreController):
         # a player that hung up before its first audio left a request that has not ended
         # yet, while its source may already hold the slot
         candidate_ids.update(
-            request[_REQUEST_QUEUE_ITEM_ID]
+            _request_queue_item_id(request)
             for entry_session_id, request in self._open_item_streams.get(queue_id) or []
             if entry_session_id == session_id
             and request.method == "GET"
@@ -2752,6 +2754,13 @@ def _is_valid_publish_ip(value: ConfigValueType) -> bool:
     except ValueError:
         return False
     return True
+
+
+def _request_queue_item_id(request: web.Request) -> str:
+    """Return the queue item a registered stream request plays, however its URL named it."""
+    # a request addressed by queue position resolved its item on the way in; the id and
+    # flow routes name it in the URL
+    return request.get(_REQUEST_QUEUE_ITEM_ID) or request.match_info["queue_item_id"]
 
 
 def _root_cause(err: BaseException) -> BaseException:

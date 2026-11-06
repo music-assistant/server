@@ -160,10 +160,13 @@ class SonosPlayer(Player):
         # Clock-seeded (nanoseconds), so a recreated player never reuses a
         # generation the speaker may still hold items under
         self.cloud_queue_item_generation = time.time_ns()
-        # queue position of every item in the window last served to the speaker, by queue
-        # item id: the speaker names the item it cached for a position, while the audio it
-        # fetches there is whatever the queue holds at that position by then
-        self.window_positions: dict[str, int] = {}
+        # the item the window last served to the speaker named at each queue position: the
+        # speaker names that item when it fetches the position, while the audio it gets
+        # there is whatever the queue holds at that position by then
+        self._window_item_ids: dict[int, str] = {}
+        # (position, queue item served) by the id the speaker held for that position when it
+        # fetched it: kept across window rebuilds, which move the ids to other positions
+        self._served_bindings: dict[str, tuple[int, str]] = {}
         # failures already logged, so the speaker's resends are not logged again
         self.reported_playback_errors: deque[str] = deque(maxlen=REPORTED_ERROR_HISTORY)
         self._announcement_media: PlayerMedia | None = None
@@ -525,6 +528,8 @@ class SonosPlayer(Player):
         self._announcement_media = None
         self.cloud_queue_item_generation += 1
         self.bump_cloud_queue_version()
+        # a new load serves fresh positions; what the old one fetched says nothing about it
+        self._served_bindings.clear()
 
         if media.media_type == MediaType.ANNOUNCEMENT:
             # We cannot use play_stream_url for announcements because Sonos treats those
@@ -662,19 +667,14 @@ class SonosPlayer(Player):
         Return the queue item whose audio the speaker plays under an id it reports.
 
         The speaker names the item it cached for a queue position, while the audio it
-        fetches for that position is whatever the queue holds there; the two differ after
-        a queue edit the speaker has not re-read yet.
+        fetched for that position is whatever the queue held there at the time; the two
+        differ after a queue edit the speaker has not re-read yet.
 
         :param wire_item_id: The id as the speaker reports it.
         """
         queue_item_id = self.bare_item_id(wire_item_id)
-        index = self.window_positions.get(queue_item_id)
-        if self.cloud_queue_id is None or index is None:
-            return queue_item_id
-        # positions up to the one the speaker fetched last never change under it (every queue
-        # edit works behind that one), so what sits there now is what plays
-        queue_item = self.mass.player_queues.get_item(self.cloud_queue_id, index)
-        return queue_item.queue_item_id if queue_item else queue_item_id
+        binding = self._served_bindings.get(queue_item_id)
+        return binding[1] if binding else queue_item_id
 
     def reports_current_item(self, wire_item_id: str) -> bool:
         """
@@ -687,6 +687,18 @@ class SonosPlayer(Player):
             and self.from_current_load(wire_item_id)
             and self.served_item_id(wire_item_id) == self.current_media.queue_item_id
         )
+
+    def on_queue_position_served(self, queue_index: int, queue_item_id: str) -> None:
+        """
+        Bind the audio served for a queue position to the id the speaker holds for it.
+
+        :param queue_index: The queue position the speaker fetched.
+        :param queue_item_id: The queue item whose audio went out for that position.
+        """
+        # a position outside the window last served is one the speaker learnt of some other
+        # way (a load that named its first item): it holds the served item's own id there
+        cached_item_id = self._window_item_ids.get(queue_index, queue_item_id)
+        self._served_bindings[cached_item_id] = (queue_index, queue_item_id)
 
     def release_failed_item(self, wire_item_id: str) -> None:
         """
@@ -754,8 +766,8 @@ class SonosPlayer(Player):
         """
         Return the requested item, the one before it and the items after it, as the queue is now.
 
-        The items are addressed by queue position, and the positions served are remembered
-        to resolve the item ids the speaker reports back.
+        The items are addressed by queue position; which item each position named is kept
+        to read the item ids the speaker reports back.
 
         :param item_id: queue_item_id the speaker asked about; an omitted or empty one asks
             for the start of the queue.
@@ -776,6 +788,10 @@ class SonosPlayer(Player):
         if not item_id:
             # an omitted or empty itemId asks for the start of the queue
             center_index = 0
+        elif (binding := self._served_bindings.get(item_id)) is not None:
+            # the speaker names the item it cached for the position it plays, which a queue
+            # edit may have moved: centre on that position, whatever sits there now
+            center_index = binding[0]
         elif (found := self.mass.player_queues.index_by_id(queue_id, item_id)) is not None:
             center_index = found
         else:
@@ -788,13 +804,13 @@ class SonosPlayer(Player):
             )
 
         items: list[PlayerMedia] = []
-        positions: dict[str, int] = {}
+        positions: dict[int, str] = {}
         offset = max(0, center_index - min(PREVIOUS_ITEMS, max_previous))
         for idx in range(offset, center_index + 1):
             queue_item = self.mass.player_queues.get_item(queue_id, idx)
             if queue_item and queue_item.available:
                 items.append(await self._player_media_for_speaker(queue_item, idx))
-                positions[queue_item.queue_item_id] = idx
+                positions[idx] = queue_item.queue_item_id
 
         # get_next_item accounts for repeat mode, so this is the item that will really
         # play next rather than whatever sits at the next index
@@ -807,7 +823,7 @@ class SonosPlayer(Player):
             if next_index is None:
                 break
             items.append(await self._player_media_for_speaker(next_item, next_index))
-            positions[next_item.queue_item_id] = next_index
+            positions[next_index] = next_item.queue_item_id
             if next_item.queue_item_id in (x.queue_item_id for x in items[-3:-1]):
                 # a track or a pair that repeats itself gets one more round, not a window
                 # full: the speaker is never refused the track it plays or the one before
@@ -821,7 +837,7 @@ class SonosPlayer(Player):
             # check after the loop in case the window filled exactly up to the last item
             includes_end=self.mass.player_queues.get_next_item(queue_id, last_index) is None,
         )
-        self.window_positions = positions
+        self._window_item_ids = positions
         self.logger.log(
             VERBOSE_LOG_LEVEL,
             "Serving Sonos queue window for %s on player %s: %s",
@@ -1580,7 +1596,7 @@ class SonosPlayer(Player):
             # audio until it does, while the queue follows the audio
             self.logger.debug(
                 "Position %s of queue %s now holds %s, speaker %s expected %s",
-                self.window_positions.get(cached_item_id),
+                self._served_bindings[cached_item_id][0],
                 self.cloud_queue_id,
                 queue_item_id,
                 self.display_name,

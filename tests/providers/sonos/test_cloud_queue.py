@@ -97,7 +97,8 @@ def _make_player(items: list[QueueItem], current_index: int = 0) -> tuple[SonosP
     player.cloud_queue_id = QUEUE_ID
     player.cloud_queue_version = 1.0
     player.cloud_queue_item_generation = 0
-    player.window_positions = {}
+    player._window_item_ids = {}
+    player._served_bindings = {}
     player._announcement_media = None
     player._woken_from_sleep = False
     player._flow_queue_id = None
@@ -230,26 +231,76 @@ async def test_window_items_are_addressed_by_queue_position() -> None:
     assert [call.kwargs["queue_index"] for call in resolve.await_args_list] == list(range(4, 16))
     # the ids stay those of the items, which is what the speaker reports back
     assert [x.queue_item_id for x in window.items] == [f"track{i}" for i in range(4, 16)]
-    assert player.window_positions == {f"track{i}": i for i in range(4, 16)}
+    assert player._window_item_ids == {i: f"track{i}" for i in range(4, 16)}
 
 
-async def test_a_reported_id_resolves_to_the_item_at_its_position() -> None:
+async def test_a_reported_id_resolves_to_the_item_served_at_its_position() -> None:
     """
-    Test an id the speaker reports is read as the track the queue holds at that slot now.
+    Test an id the speaker reports is read as the track whose audio it fetched for that slot.
 
     A track added right behind the playing one takes the position the speaker cached the
-    next track at, and every slot behind it shifts by one: the speaker plays what the
-    queue holds there, under the ids it cached.
+    next track at: the speaker plays the added track there, under the id it cached.
     """
     player = _make_player_on_real_queues(4, RepeatMode.OFF)
     queue_data = player.mass.player_queues._queue_data[QUEUE_ID]
     await player.build_cloud_queue_window("track0")
     queue_data.items.insert(1, _make_queue_item("guest"))
+    # the stream server served the guest when the speaker fetched position 1
+    player.on_queue_position_served(1, "guest")
 
     assert player.served_item_id("track1@0") == "guest"
-    assert player.served_item_id("track2@0") == "track1"
-    # an id outside the window the speaker holds names the item itself
+    # a position the speaker has not fetched yet names the item it cached there
+    assert player.served_item_id("track2@0") == "track2"
     assert player.served_item_id("unknown@0") == "unknown"
+
+
+async def test_a_binding_survives_the_window_being_rebuilt() -> None:
+    """
+    Test a report on fetched audio keeps resolving to it after the speaker re-reads the queue.
+
+    The re-read moves the cached id to the position the item now holds, while the audio
+    fetched under that id keeps playing.
+    """
+    player = _make_player_on_real_queues(4, RepeatMode.OFF)
+    queue_data = player.mass.player_queues._queue_data[QUEUE_ID]
+    await player.build_cloud_queue_window("track0")
+    queue_data.items.insert(1, _make_queue_item("guest"))
+    player.on_queue_position_served(1, "guest")
+
+    window = await player.build_cloud_queue_window("track0")
+
+    assert [x.queue_item_id for x in window.items][:3] == ["track0", "guest", "track1"]
+    assert player.served_item_id("track1@0") == "guest"
+    # fetching the position the item moved to rebinds its id to its own audio
+    player.on_queue_position_served(2, "track1")
+    assert player.served_item_id("track1@0") == "track1"
+
+
+async def test_a_window_is_centred_on_the_position_the_speaker_plays() -> None:
+    """
+    Test a window asked around a cached id centres on the position fetched under that id.
+
+    The speaker names what it cached for the position it plays; tracks added before that
+    position move the item it names, but not the speaker.
+    """
+    player = _make_player_on_real_queues(4, RepeatMode.OFF)
+    queue_data = player.mass.player_queues._queue_data[QUEUE_ID]
+    await player.build_cloud_queue_window("track0")
+    for guest in ("guest1", "guest2"):
+        queue_data.items.insert(1, _make_queue_item(guest))
+    # the speaker fetched position 1 under the id it cached there, track1
+    player.on_queue_position_served(1, "guest2")
+
+    window = await player.build_cloud_queue_window("track1")
+
+    assert [x.queue_item_id for x in window.items] == [
+        "track0",
+        "guest2",
+        "guest1",
+        "track1",
+        "track2",
+        "track3",
+    ]
 
 
 async def test_unavailable_items_are_left_out() -> None:
@@ -784,6 +835,7 @@ async def test_time_played_follows_the_audio_served_for_the_reported_position() 
     # a track added right behind the playing one takes the position the speaker cached
     # track1 at, so that is what the speaker plays there
     queue_data.items.insert(1, _make_queue_item("guest"))
+    player.on_queue_position_served(1, "guest")
     player._attr_current_media = PlayerMedia(uri="guest", queue_item_id="guest")
     player.update_elapsed_time = MagicMock()  # type: ignore[method-assign]
     cloud_queue = _make_cloud_queue()

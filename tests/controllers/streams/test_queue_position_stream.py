@@ -77,6 +77,8 @@ async def test_a_position_request_is_served_the_item_sitting_there_now() -> None
 
     assert "No streamdetails" in str(exc.value.reason)
     ctrl.mass.player_queues.get_item.assert_called_once_with(QUEUE_ID, 2)
+    player = ctrl.mass.players.get_player.return_value
+    player.on_queue_position_served.assert_called_once_with(2, ITEM_ID)
     # the sweeps over open requests read the item from the request itself
     request.__setitem__.assert_called_once_with("queue_item_id", ITEM_ID)
 
@@ -90,6 +92,7 @@ async def test_a_position_past_the_end_of_the_queue_is_refused() -> None:
 
     assert "No queue item at position 7" in str(exc.value.reason)
     ctrl.audio.get_stream_details.assert_not_awaited()
+    ctrl.mass.players.get_player.return_value.on_queue_position_served.assert_not_called()
 
 
 async def test_an_item_addressed_by_id_is_served_without_a_position_check() -> None:
@@ -161,3 +164,27 @@ async def test_a_flow_mode_queue_ignores_the_queue_position() -> None:
     url = await controller.resolve_stream_url("player-1", _media(), queue_index=3)
 
     assert url == "http://mass:8097/flow/session-1/queue-1/item-1/player-1.flac"
+
+
+async def test_a_head_probe_does_not_bind_the_position() -> None:
+    """A HEAD probe is speculative, so it does not bind the position to what the player plays."""
+    ctrl = _make_controller()
+
+    with pytest.raises(web.HTTPNotFound):
+        await StreamsController.serve_queue_item_stream(
+            ctrl, _make_request("HEAD", queue_index="2")
+        )
+
+    ctrl.mass.players.get_player.return_value.on_queue_position_served.assert_not_called()
+
+
+def test_the_sweeps_read_a_flow_request_by_the_item_its_url_names() -> None:
+    """A flow request, registered without a resolved item, counts by the item in its URL."""
+    ctrl = _make_controller()
+    request = MagicMock()
+    request.get.return_value = None
+    request.method = "GET"
+    request.match_info = {"queue_item_id": ITEM_ID}
+    ctrl._open_item_streams[QUEUE_ID] = [(SESSION_ID, request)]
+
+    assert ctrl._requested_item_ids(QUEUE_ID, SESSION_ID) == {ITEM_ID}
