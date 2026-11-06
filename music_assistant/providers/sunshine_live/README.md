@@ -16,7 +16,7 @@ the [brand assets page of Sunshine Live](https://mamapapacola.com/brand-assets/s
 monochrome icon is made from the white and black version of the logo. The channel images are loaded
 from the image server of the station and are not part of this repository.
 
-© sunshine live
+[© sunshine live](https://mamapapacola.com/brand-assets/sunshine-live)
 
 The logo and the channel images belong to sunshine live GmbH & Co. KG. Music Assistant is not
 connected with the station.
