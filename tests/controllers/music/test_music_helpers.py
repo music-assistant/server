@@ -4,11 +4,12 @@ from __future__ import annotations
 
 from typing import Any
 
-from music_assistant_models.enums import MediaType
+from music_assistant_models.enums import ImageType, MediaType
 from music_assistant_models.helpers import set_global_cache_values
 from music_assistant_models.media_items import (
     Artist,
     ItemMapping,
+    MediaItemImage,
     MediaItemMetadata,
     ProviderMapping,
     Track,
@@ -194,3 +195,49 @@ def test_metadata_for_update_completes_a_partial_life_span() -> None:
     update = MediaItemMetadata(life_span=LifeSpan(end="2009-06-25", ended=True))
     result = metadata_for_update(stored, update, overwrite=False)
     assert result.life_span == LifeSpan(begin="1958", end="2009-06-25", ended=True)
+
+
+def _source_image(path: str, provider: str) -> MediaItemImage:
+    """Build a thumb image of the given music source."""
+    return MediaItemImage(type=ImageType.THUMB, path=path, provider=provider)
+
+
+def _source(instance: str, domain: str = "opensubsonic") -> ProviderMapping:
+    """Build a provider mapping for the given music source instance."""
+    return ProviderMapping(item_id="1", provider_domain=domain, provider_instance=instance)
+
+
+def test_metadata_for_update_keeps_other_sources_images() -> None:
+    """An overwrite from one user's source keeps the artwork of the other user's source."""
+    stored = MediaItemMetadata(
+        images=UniqueList(
+            [_source_image("a.jpg", "subsonic_a"), _source_image("old_b.jpg", "subsonic_b")]
+        )
+    )
+    update = MediaItemMetadata(images=UniqueList([_source_image("new_b.jpg", "subsonic_b")]))
+    result = metadata_for_update(
+        stored,
+        update,
+        overwrite=True,
+        stored_mappings=[_source("subsonic_a"), _source("subsonic_b")],
+        update_mappings=[_source("subsonic_b")],
+    )
+    assert [image.path for image in result.images or ()] == ["new_b.jpg", "a.jpg"]
+
+
+def test_metadata_for_update_drops_unlinked_sources_images() -> None:
+    """An overwrite drops images of sources the item is not linked to, and metadata images."""
+    stored = MediaItemMetadata(
+        images=UniqueList(
+            [_source_image("stale.jpg", "gone"), _source_image("fanart.jpg", "fanarttv")]
+        )
+    )
+    update = MediaItemMetadata(images=UniqueList([_source_image("b.jpg", "subsonic_b")]))
+    result = metadata_for_update(
+        stored,
+        update,
+        overwrite=True,
+        stored_mappings=[_source("subsonic_b")],
+        update_mappings=[_source("subsonic_b")],
+    )
+    assert [image.path for image in result.images or ()] == ["b.jpg"]

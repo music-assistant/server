@@ -370,6 +370,7 @@ class TestStreamMetadataPosition:
         queue_elapsed_time: float,
         queue_last_updated: float,
         media_type: MediaType = MediaType.RADIO,
+        metadata_duration: int | None = None,
     ) -> MockPlayer:
         """Build a playing player whose active queue item carries live stream metadata."""
         queue = PlayerQueue(
@@ -392,6 +393,7 @@ class TestStreamMetadataPosition:
                     media_type=media_type,
                     stream_metadata=StreamMetadata(
                         title="Live Track",
+                        duration=metadata_duration,
                         elapsed_time=metadata_elapsed_time,
                         elapsed_time_last_updated=metadata_last_updated,
                     ),
@@ -436,6 +438,25 @@ class TestStreamMetadataPosition:
         assert player.state.current_media.title == "Live Track"
         assert player.state.current_media.elapsed_time == 300
         assert player.state.current_media.elapsed_time_last_updated == queue_anchor
+
+    def test_a_song_duration_without_its_position_reports_no_position(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """A stream's song duration is not paired with how long the stream has played."""
+        queue_anchor = time.time()
+        player = self._playing_player(
+            mock_mass,
+            metadata_elapsed_time=None,
+            metadata_last_updated=None,
+            queue_elapsed_time=1289.0,
+            queue_last_updated=queue_anchor,
+            metadata_duration=430,
+        )
+
+        assert player.state.current_media is not None
+        assert player.state.current_media.duration == 430
+        assert player.state.current_media.elapsed_time is None
+        assert player.state.current_media.elapsed_time_last_updated is None
 
     def test_a_radio_station_keeps_its_own_position(self, mock_mass: MagicMock) -> None:
         """

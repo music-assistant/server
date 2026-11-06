@@ -6,6 +6,7 @@ import time
 from collections.abc import Sequence
 from typing import TYPE_CHECKING, Any, cast
 
+import jwt
 from aiohttp import ClientError
 from music_assistant_models.enums import MediaType
 from music_assistant_models.errors import MediaNotFoundError, MusicAssistantError
@@ -112,10 +113,8 @@ class AppleMusicProvider(RecommendationPayloadMixin, MusicProvider):
             self.get_setup_value(CONF_MUSIC_USER_MANUAL_TOKEN)
             or self.get_setup_value(CONF_MUSIC_USER_TOKEN),
         )
-        # a stored/manual app token only exists because the setup flow found the
-        # bundled one empty or invalid, so it takes precedence over the bundled token
-        self._music_app_token = (
-            cast("str | None", self.get_setup_value(CONF_MUSIC_APP_TOKEN)) or MUSIC_APP_TOKEN
+        self._music_app_token = _pick_app_token(
+            cast("str | None", self.get_setup_value(CONF_MUSIC_APP_TOKEN)), MUSIC_APP_TOKEN
         )
         self._storefront = await self.api_client.get_user_storefront()
         await self.streaming_manager.initialize()
@@ -462,3 +461,17 @@ def _require_apple_id(item_id: str) -> None:
     """
     if not is_apple_id(item_id):
         raise MediaNotFoundError(f"{item_id} is not an Apple Music id")
+
+
+def _pick_app_token(stored: str | None, bundled: str) -> str | None:
+    """Return whichever of the stored and bundled app tokens expires last."""
+    # installs set up before 2.10 store the token bundled back then, while a token typed
+    # into the setup flow (because the bundled one was rejected) is newer than the bundle
+    if not stored or not bundled:
+        return stored or bundled
+    return stored if _token_expiry(stored) > _token_expiry(bundled) else bundled
+
+
+def _token_expiry(token: str) -> int:
+    """Return the expiry (unix timestamp) of an app token."""
+    return int(jwt.decode(token, options={"verify_signature": False})["exp"])

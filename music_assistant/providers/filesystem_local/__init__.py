@@ -90,6 +90,7 @@ from music_assistant.helpers import lyrics
 from music_assistant.helpers.compare import compare_strings
 from music_assistant.helpers.cue_sheet import CueSheet
 from music_assistant.helpers.json import SerializableType, json_loads
+from music_assistant.helpers.nfo import parse_artist_nfo, parse_nfo_root
 from music_assistant.helpers.playlists import (
     parse_m3u,
     parse_pls,
@@ -173,11 +174,10 @@ from .helpers import (
     is_image_file,
     is_metadata_file,
     open_real_path,
-    parse_nfo_root,
     recursive_iter,
     sorted_scandir,
 )
-from .parsers import nfo_album_artist, parse_album_nfo, parse_artist_nfo
+from .parsers import nfo_album_artist, parse_album_nfo
 
 if TYPE_CHECKING:
     from music_assistant_models.config_entries import ConfigEntry, ProviderConfig

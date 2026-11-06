@@ -21,7 +21,7 @@ from uuid import uuid4
 from music_assistant_models.enums import PlaybackState
 from music_assistant_models.errors import PlayerCommandFailed
 
-from music_assistant.constants import VERBOSE_LOG_LEVEL
+from music_assistant.constants import CONF_PASSWORD, VERBOSE_LOG_LEVEL
 from music_assistant.helpers.images import _extract_imageproxy_id, get_image_thumb_path
 from music_assistant.helpers.named_pipe import AsyncNamedPipeWriter
 from music_assistant.helpers.process import AsyncProcess
@@ -37,7 +37,6 @@ from music_assistant.providers.airplay.constants import (
     CONF_AIRPLAY_CREDENTIALS,
     CONF_BUFFER_DEPTH,
     CONF_ENCRYPTION,
-    CONF_PASSWORD,
     CONF_RAOP_CREDENTIALS,
     RAOP_DEFAULT_PORT,
     STREAMING_MODE_AP2_COMPAT,
@@ -1090,9 +1089,16 @@ class AirPlayStream:
         # mDNS properties from the RAOP service (needed by the RAOP-based flows)
         if raop_info:
             args += ["--udn", raop_info.name]
-            for prop in ("et", "md", "am", "pk", "pw", "cn"):
+            for prop in ("et", "am", "pk", "pw", "cn"):
                 if prop_value := raop_info.decoded_properties.get(prop):
                     args += [f"--{prop}", prop_value]
+            # A legacy RAOP receiver without an md TXT key accepts no metadata at all
+            # (some answer a metadata push with a 500 and drop the connection), but the
+            # binary assumes full metadata support when --md is omitted. AirPlay 2 flows
+            # keep that default: some receivers need metadata before they render audio.
+            metadata_caps = raop_info.decoded_properties.get("md")
+            if metadata_caps or target_protocol == StreamingProtocol.RAOP:
+                args += ["--md", metadata_caps or ""]
         if target_protocol == StreamingProtocol.RAOP and self.player.config.get_value(
             CONF_ENCRYPTION, True
         ):

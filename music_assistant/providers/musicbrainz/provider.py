@@ -1125,13 +1125,16 @@ class MusicbrainzProvider(MetadataProvider):
 
     async def _recording_by_isrc(self, isrc: str, track: Track) -> MusicBrainzRecording | None:
         """Return the recording carrying an ISRC that is the given track, if any."""
+        recordings = await self.get_recordings_by_isrc(isrc)
         # an ISRC is occasionally reused, so the recording must also match the track's
-        # title and length
+        # length and title; the title may differ when the ISRC names a single recording,
+        # as the credited artist is still checked below
+        sole_recording = len(recordings) == 1 and bool(track.artists)
         candidates = [
             recording
-            for recording in await self.get_recordings_by_isrc(isrc)
-            if compare_strings(recording.title, track.name, strict=False)
-            and _length_matches(recording, track)
+            for recording in recordings
+            if _length_matches(recording, track)
+            and (sole_recording or compare_strings(recording.title, track.name, strict=False))
         ]
         if not candidates:
             return None

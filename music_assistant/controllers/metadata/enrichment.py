@@ -23,6 +23,7 @@ from music_assistant_models.enums import (
     ProviderType,
 )
 from music_assistant_models.errors import (
+    InvalidDataError,
     MediaNotFoundError,
     MusicAssistantError,
     ProviderUnavailableError,
@@ -30,7 +31,15 @@ from music_assistant_models.errors import (
     RetriesExhausted,
 )
 from music_assistant_models.helpers import get_global_cache_value
-from music_assistant_models.media_items import Album, Artist, MediaItemImage, Track
+from music_assistant_models.media_items import (
+    Album,
+    Artist,
+    MediaItemImage,
+    MediaItemMetadata,
+    Track,
+)
+from music_assistant_models.media_items.metadata import LifeSpan
+from music_assistant_models.unique_list import UniqueList
 
 from music_assistant.constants import VARIOUS_ARTISTS_MBID, VARIOUS_ARTISTS_NAME
 from music_assistant.controllers.music.helpers import (
@@ -40,7 +49,7 @@ from music_assistant.controllers.music.helpers import (
 )
 from music_assistant.controllers.webserver.helpers.auth_middleware import get_current_user
 from music_assistant.helpers.compare import compare_strings
-from music_assistant.helpers.external_ids import is_valid_barcode
+from music_assistant.helpers.external_ids import is_valid_barcode, is_valid_isrc
 from music_assistant.helpers.provider_access import visible_music_sources
 from music_assistant.models.music_provider import MusicProvider
 from music_assistant.providers.musicbrainz.provider import MusicbrainzProvider, relation_urls
@@ -58,7 +67,6 @@ if TYPE_CHECKING:
 
     from music_assistant_models.config_entries import CoreConfig
     from music_assistant_models.media_items import Audiobook, MediaItemType, Playlist, Podcast
-    from music_assistant_models.unique_list import UniqueList
 
     from music_assistant import MusicAssistant
     from music_assistant.models.media_capabilities import MusicDiscoveryMixin
@@ -83,6 +91,8 @@ _TEMPORARY_ERRORS = (
     RetriesExhausted,
     TimeoutError,
 )
+# the artist values of a local metadata provider that replace those of the other sources
+_LOCAL_ARTIST_FIELDS = ("style", "mood", "artist_entity_type")
 
 
 class MetadataEnrichmentMixin:
@@ -108,7 +118,7 @@ class MetadataEnrichmentMixin:
         @property
         def link_providers_via_musicbrainz(self) -> bool: ...  # noqa: D102
 
-    async def _update_artist_metadata(  # noqa: PLR0915
+    async def _update_artist_metadata(  # noqa: C901, PLR0915
         self, artist: Artist, force_refresh: bool = False
     ) -> None:
         """Get/update rich metadata for an artist."""
@@ -124,7 +134,8 @@ class MetadataEnrichmentMixin:
         # The bio is re-derived from the providers on every refresh. Each provider's
         # description is collected as a (language, text) candidate and excluded from the
         # field merge; _select_description picks the winner below. Candidates are appended
-        # in priority order: music providers first, then metadata providers (TADB, Wikipedia).
+        # in priority order: local metadata providers first, then music providers, then the
+        # other metadata providers (TADB, Wikipedia).
         prev_description = artist.metadata.description
         prev_description_language = artist.metadata.description_language
         description_candidates: list[tuple[str | None, str]] = []
@@ -165,11 +176,30 @@ class MetadataEnrichmentMixin:
 
         # The musicbrainz ID is mandatory for all metadata lookups
         merge_mbid: str | None = None
+        reliable = bool(artist.mbid)
+        retry_soon = False
         if not artist.mbid:
-            if found := await self._get_artist_mbid(artist):
+            try:
+                found = await self._get_artist_mbid(artist)
+            except _TEMPORARY_ERRORS as err:
+                found = None
+                retry_soon = True
+                self.logger.debug(
+                    "Artist %s could not be identified on MusicBrainz right now: %s",
+                    artist.name,
+                    err,
+                )
+            if found:
                 artist.mbid, by_name = found
                 merge_mbid = None if by_name else artist.mbid
-        retry_soon = await self._link_artist_to_musicbrainz(artist)
+                reliable = not by_name
+        # a failed identification leaves the MusicBrainz lookup marker unset for a later retry
+        if not retry_soon:
+            own_mbid = artist.mbid
+            retry_soon = await self._link_artist_to_musicbrainz(artist, follow_merged=reliable)
+            if own_mbid and artist.mbid != own_mbid:
+                # the id an artist merged on MusicBrainz led to is as reliable as the old one
+                merge_mbid = artist.mbid
 
         # don't merge online genres on top of source-supplied ones; propagation-derived
         # genres also count as a local source so they survive metadata refreshes
@@ -180,51 +210,76 @@ class MetadataEnrichmentMixin:
             )
         )
 
-        # collect metadata from all (online)[metadata] providers
+        # collect metadata from all [metadata] providers, the online ones only when enabled
         # TODO: Utilize a global (cloud) cache for metadata lookups to save on API calls
-        if self.config.get_value(CONF_ENABLE_ONLINE_METADATA) and artist.mbid:
-            for provider in self.providers:
-                if ProviderFeature.ARTIST_METADATA not in provider.supported_features:
-                    continue
-                try:
-                    metadata = await provider.get_artist_metadata(artist)
-                except _TEMPORARY_ERRORS as err:
-                    retry_soon = True
-                    self.logger.debug(
-                        "Metadata for Artist %s is not available from provider %s right now: %s",
-                        artist.name,
-                        provider.name,
-                        err,
-                    )
-                    continue
-                except Exception as err:
-                    self.logger.warning(
-                        "Error fetching metadata for Artist %s from provider %s: %s",
-                        artist.name,
-                        provider.name,
-                        err,
-                        exc_info=err if self.logger.isEnabledFor(10) else None,
-                    )
-                    continue
-                if metadata:
-                    if prefer_local_genres:
-                        metadata = replace(metadata, genres=None)
-                    if metadata.description:
-                        description_candidates.append(
-                            (metadata.description_language, metadata.description)
-                        )
-                        metadata = replace(metadata, description=None, description_language=None)
-                    merge_metadata(artist.metadata, metadata)
-                    self.logger.debug(
-                        "Fetched metadata for Artist %s on provider %s",
-                        artist.name,
-                        provider.name,
-                    )
-        artist.metadata.description, artist.metadata.description_language = (
-            self._select_description(
-                description_candidates, prev_description, prev_description_language
-            )
+        online_enabled = bool(self.config.get_value(CONF_ENABLE_ONLINE_METADATA) and artist.mbid)
+        local_candidates: list[tuple[str | None, str]] = []
+        # a local provider's values and images replace the stored ones instead of filling gaps
+        local_fields: set[str] = set()
+        local_images: dict[str, list[MediaItemImage]] = {}
+        for provider in self.providers:
+            if ProviderFeature.ARTIST_METADATA not in provider.supported_features:
+                continue
+            if not (online_enabled or provider.is_local):
+                continue
+            try:
+                metadata = await provider.get_artist_metadata(artist)
+            except _TEMPORARY_ERRORS as err:
+                retry_soon = True
+                self.logger.debug(
+                    "Metadata for Artist %s is not available from provider %s right now: %s",
+                    artist.name,
+                    provider.name,
+                    err,
+                )
+                continue
+            except Exception as err:
+                self.logger.warning(
+                    "Error fetching metadata for Artist %s from provider %s: %s",
+                    artist.name,
+                    provider.name,
+                    err,
+                    exc_info=err if self.logger.isEnabledFor(10) else None,
+                )
+                continue
+            if provider.is_local:
+                _drop_provider_images(artist.metadata, provider.instance_id)
+                local_images[provider.instance_id] = list(metadata.images or []) if metadata else []
+            if metadata:
+                if provider.is_local:
+                    local_fields |= _apply_local_values(artist.metadata, metadata)
+                    if metadata.genres and self.config.get_value(CONF_PREFER_LOCAL_GENRES):
+                        prefer_local_genres = True
+                if prefer_local_genres and not provider.is_local:
+                    metadata = replace(metadata, genres=None)
+                if metadata.description:
+                    candidates = local_candidates if provider.is_local else description_candidates
+                    candidates.append((metadata.description_language, metadata.description))
+                    metadata = replace(metadata, description=None, description_language=None)
+                merge_metadata(artist.metadata, metadata)
+                self.logger.debug(
+                    "Fetched metadata for Artist %s on provider %s",
+                    artist.name,
+                    provider.name,
+                )
+        description, description_language = self._select_description(
+            [*local_candidates, *description_candidates],
+            prev_description,
+            prev_description_language,
         )
+        artist.metadata.description = description
+        artist.metadata.description_language = description_language
+        replacements = {name: getattr(artist.metadata, name) for name in local_fields}
+        # the library keeps a stored bio in the same language, so a local bio is written over it
+        if description and (description_language, description) in local_candidates:
+            replacements |= {
+                "description": description,
+                "description_language": description_language,
+            }
+        if replacements or local_images:
+            await self.mass.music.artists.replace_metadata(
+                artist.item_id, replacements, local_images
+            )
 
         # update final item in library database
         # set timestamp, used to determine when this function was last called
@@ -246,7 +301,7 @@ class MetadataEnrichmentMixin:
         Return the chosen ``(description, language)`` for the artist this refresh.
 
         :param candidates: ``(language, text)`` tuples in provider-priority order
-            (music providers first, then TADB, then Wikipedia).
+            (local metadata providers first, then music providers, then TADB, then Wikipedia).
         :param prev_description: Bio stored before this refresh.
         :param prev_description_language: Language of the bio stored before this refresh.
         """
@@ -367,6 +422,12 @@ class MetadataEnrichmentMixin:
 
         self.logger.debug("Updating metadata for Track %s", track.name)
 
+        prev_lyrics = (track.metadata.lyrics, track.metadata.lrc_lyrics)
+        if force_refresh:
+            # drop the stored lyrics so they are looked up again
+            track.metadata.lyrics = None
+            track.metadata.lrc_lyrics = None
+
         # collect metadata from all [music] providers
         # note that we sort the providers by priority so that we always
         # prefer local providers over online providers
@@ -387,6 +448,10 @@ class MetadataEnrichmentMixin:
                     prov_mapping.item_id, prov_mapping.provider_instance
                 )
                 track.metadata.update(prov_item.metadata)
+                # a provider's full track carries the ISRCs its album listing may leave out
+                for id_type, value in prov_item.external_ids:
+                    if id_type == ExternalID.ISRC and is_valid_isrc(value):
+                        track.add_external_id(ExternalID.ISRC, value)
 
         # identify the track on MusicBrainz before the metadata providers need its id
         retry_soon = await self._link_track_to_musicbrainz(track)
@@ -405,8 +470,13 @@ class MetadataEnrichmentMixin:
                 if ProviderFeature.TRACK_METADATA not in provider.supported_features:
                     continue
 
+                # a forced refresh looks the lyrics up again, rather than reading a cached result
+                bypass_cache = (
+                    force_refresh and ProviderFeature.LYRICS in provider.supported_features
+                )
                 try:
-                    metadata = await provider.get_track_metadata(track)
+                    async with self.mass.cache.handle_refresh(bypass_cache):
+                        metadata = await provider.get_track_metadata(track)
                 except _TEMPORARY_ERRORS as err:
                     retry_soon = True
                     self.logger.debug(
@@ -434,6 +504,15 @@ class MetadataEnrichmentMixin:
                         track.name,
                         provider.name,
                     )
+        if force_refresh and not (track.metadata.lyrics or track.metadata.lrc_lyrics):
+            # finding no lyrics says nothing about the stored ones, so they are kept
+            track.metadata.lyrics, track.metadata.lrc_lyrics = prev_lyrics
+        elif force_refresh:
+            # the library keeps stored lyrics on an update, so the refreshed ones are written over
+            await self.mass.music.tracks.replace_metadata(
+                track.item_id,
+                {"lyrics": track.metadata.lyrics, "lrc_lyrics": track.metadata.lrc_lyrics},
+            )
         # set timestamp, used to determine when this function was last called
         track.metadata.last_refresh = _refresh_timestamp(retry_soon)
         # update final item in library database
@@ -610,11 +689,13 @@ class MetadataEnrichmentMixin:
         podcast.metadata.last_refresh = int(time())
         await self.mass.music.podcasts.update_item_in_library(podcast.item_id, podcast)
 
-    async def _link_artist_to_musicbrainz(self, artist: Artist) -> bool:
+    async def _link_artist_to_musicbrainz(self, artist: Artist, follow_merged: bool = True) -> bool:
         """
         Fill in an artist's Discogs id and link it to the music providers MusicBrainz knows.
 
         :param artist: The library artist to link.
+        :param follow_merged: Give an artist MusicBrainz merged into another the other's id; not
+            for an id only a name search found, which may belong to a namesake.
         :return: Whether the lookup failed temporarily, which makes the item due for a refresh
             again soon.
         """
@@ -624,6 +705,9 @@ class MetadataEnrichmentMixin:
         if artist.mbid and artist.mbid != VARIOUS_ARTISTS_MBID:
             try:
                 details = await musicbrainz.get_artist_details(artist.mbid)
+                if follow_merged:
+                    # MusicBrainz answers a merged artist's old id with the artist it was merged into
+                    await self._follow_merged_id(artist, details.id)
                 urls = relation_urls(details.relations)
                 if not artist.get_external_id(ExternalID.DISCOGS) and (
                     discogs := discogs_external_id(urls, MediaType.ARTIST)
@@ -670,6 +754,8 @@ class MetadataEnrichmentMixin:
             if release is None:
                 self.logger.debug("Album %s was not found on MusicBrainz", album.name)
             else:
+                if album.mbid and album.mbid.casefold() != release.id.casefold():
+                    await self._follow_merged_release(musicbrainz, album, release.id)
                 urls = relation_urls(release.relations)
                 _fill_album_from_release(album, release, urls)
                 link_providers = self.link_providers_via_musicbrainz
@@ -736,6 +822,59 @@ class MetadataEnrichmentMixin:
             return False
         track.metadata.last_musicbrainz_lookup = int(time())
         return False
+
+    async def _follow_merged_release(
+        self, musicbrainz: MusicbrainzProvider, album: Album, release_id: str
+    ) -> None:
+        """
+        Give an album the release its stored release was merged into on MusicBrainz.
+
+        A stored release MusicBrainz does not answer for is kept, as the MusicBrainz mirror may
+        not have it yet.
+
+        :param musicbrainz: The MusicBrainz provider.
+        :param album: The library album, stored with the new id.
+        :param release_id: The id of the release the album was identified as.
+        """
+        try:
+            # the identify step looked the stored release up first, so this reads its answer again
+            stored = await musicbrainz.get_release_details(album.mbid or "")
+        except InvalidDataError:
+            return
+        await self._follow_merged_id(album, stored.id)
+
+    async def _follow_merged_id(self, item: Album | Artist, mbid: str) -> None:
+        """
+        Give a library item the MusicBrainz id its own MusicBrainz id now leads to.
+
+        MusicBrainz answers the id of an item merged into another with that other item.
+
+        :param item: The library item, stored with the new id.
+        :param mbid: The id of the item MusicBrainz answered with.
+        """
+        if not item.mbid or item.mbid.casefold() == mbid.casefold():
+            return
+        self.logger.debug(
+            '%s "%s" was merged on MusicBrainz, %s now leads to %s',
+            item.media_type.value,
+            item.name,
+            item.mbid,
+            mbid,
+        )
+        await self._store_musicbrainz_id(item, mbid)
+
+    async def _store_musicbrainz_id(self, item: Album | Artist, mbid: str) -> None:
+        """Store a library item with a MusicBrainz id in place of the one it has."""
+        previous = set(item.external_ids)
+        item.mbid = mbid
+        # a library update would add the new id next to the old one, so the ids stored now are
+        # written with only the MusicBrainz id swapped, keeping any added meanwhile
+        controller = self.mass.music.get_controller(item.media_type)
+        stored = (await controller.get_library_item(item.item_id)).external_ids
+        await controller.set_external_ids(
+            item.item_id,
+            (set(stored) - (previous - item.external_ids)) | (item.external_ids - previous),
+        )
 
     async def _in_library(self, item: MediaItemType) -> bool:
         """Return whether the given library item still exists in the library."""
@@ -937,6 +1076,32 @@ def _tracks_named(
                 named.append(track)
                 seen.add(track.uri)
     return named
+
+
+def _apply_local_values(target: MediaItemMetadata, local: MediaItemMetadata) -> set[str]:
+    """Overwrite target with the artist values a local provider supplies, returning their names."""
+    replaced = {name for name in _LOCAL_ARTIST_FIELDS if getattr(local, name) is not None}
+    for name in replaced:
+        setattr(target, name, getattr(local, name))
+    if span := local.life_span:
+        # dates the local provider leaves out are still completed from the other sources
+        current = target.life_span or LifeSpan()
+        target.life_span = LifeSpan(
+            begin=span.begin or current.begin,
+            end=span.end or current.end,
+            ended=span.ended or current.ended,
+        )
+        replaced.add("life_span")
+    return replaced
+
+
+def _drop_provider_images(metadata: MediaItemMetadata, provider_instance_id: str) -> None:
+    """Remove the images of a provider from metadata (in-place)."""
+    if metadata.images:
+        metadata.images = (
+            UniqueList(img for img in metadata.images if img.provider != provider_instance_id)
+            or None
+        )
 
 
 def _refresh_timestamp(retry_soon: bool) -> int:

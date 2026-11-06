@@ -4,6 +4,7 @@
   "name": "Media Assistant (Roku)",
   "description": "Support for Roku's running Media Assistant.",
   "codeowners": ["@medievalapple"],
+  "tier": "community",
   "credits": ["[python-rokuecp](https://github.com/ctalkington/python-rokuecp)"],
   "requirements": ["async-upnp-client==0.49.0","rokuecp==0.19.5"],
   "upnp_discovery": ["roku:ecp"],

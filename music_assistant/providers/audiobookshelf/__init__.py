@@ -33,6 +33,10 @@ from aioaudiobookshelf.exceptions import (
 from aioaudiobookshelf.exceptions import (
     SessionSyncNotFoundError as AbsSessionSyncNotFoundError,
 )
+from aioaudiobookshelf.exceptions import (
+    UnsupportedServerVersionError as AbsUnsupportedServerVersionError,
+)
+from aioaudiobookshelf.helpers import MIN_ABS_VERSION
 from aioaudiobookshelf.schema.author import AuthorExpanded
 from aioaudiobookshelf.schema.calls_items import (
     PlaybackSessionParameters as AbsPlaybackSessionParameters,
@@ -95,6 +99,7 @@ from music_assistant_models.errors import (
     MediaNotFoundError,
     MusicAssistantError,
     ProviderUnavailableError,
+    SetupFailedError,
 )
 from music_assistant_models.media_items import (
     Artist,
@@ -103,6 +108,7 @@ from music_assistant_models.media_items import (
     BrowseFolder,
     ItemMapping,
     MediaCollection,
+    MediaItemBookmark,
     MediaItemType,
     Playlist,
     Podcast,
@@ -112,7 +118,13 @@ from music_assistant_models.media_items import (
 from music_assistant_models.media_items.media_item import RecommendationFolder
 from music_assistant_models.streamdetails import MultiPartPath, StreamDetails
 
-from music_assistant.constants import PLAYBACK_REPORT_INTERVAL_SECONDS, PlaylistPlayableItem
+from music_assistant.constants import (
+    CONF_PASSWORD,
+    CONF_USERNAME,
+    CONF_VERIFY_SSL,
+    PLAYBACK_REPORT_INTERVAL_SECONDS,
+    PlaylistPlayableItem,
+)
 from music_assistant.controllers.cache import use_cache
 from music_assistant.helpers.datetime import from_utc_timestamp
 from music_assistant.models.music_provider import MusicProvider
@@ -137,10 +149,7 @@ from .constants import (
     CONF_API_TOKEN,
     CONF_HIDE_EMPTY_PODCASTS,
     CONF_OLD_TOKEN,
-    CONF_PASSWORD,
     CONF_URL,
-    CONF_USERNAME,
-    CONF_VERIFY_SSL,
     PART_STREAM_CHUNK_SIZE,
     PART_STREAM_HEADERS,
     PART_STREAM_TIMEOUT,
@@ -168,6 +177,8 @@ SUPPORTED_FEATURES = {
     ProviderFeature.LIBRARY_ARTISTS,  # authors/ narrators
     ProviderFeature.BROWSE,
     ProviderFeature.RECOMMENDATIONS,
+    ProviderFeature.AUDIOBOOK_BOOKMARKS,
+    ProviderFeature.AUDIOBOOK_BOOKMARKS_EDIT,
 }
 
 
@@ -300,6 +311,13 @@ class Audiobookshelf(RecommendationPayloadMixin, MusicProvider):
                 translation_key="login_failed",
                 translation_owner=self.translation_owner,
                 translation_args=[base_url],
+            ) from exc
+        except AbsUnsupportedServerVersionError as exc:
+            raise SetupFailedError(
+                str(exc),
+                translation_key="unsupported_server_version",
+                translation_owner=self.translation_owner,
+                translation_args=[base_url, ".".join(str(part) for part in MIN_ABS_VERSION)],
             ) from exc
         except (AbsServiceUnavailableError, socketio.exceptions.ConnectionError) as exc:
             # lets mass retry the load once the server is reachable again
@@ -813,6 +831,36 @@ for more details.
         if item_id == "browse":
             return self._browse_recommendation_items()
         return await self._recommendation_items_from_payload(item_id)
+
+    @handle_refresh_token
+    async def get_bookmarks(
+        self, media_type: MediaType, prov_item_id: str
+    ) -> list[MediaItemBookmark]:
+        """Get the user's bookmarks of the given audiobook."""
+        # the user payload carries the bookmarks of every abs version, /me/bookmarks/:id not
+        user = await self._client.get_my_user()
+        return [
+            MediaItemBookmark(
+                name=bookmark.title,
+                start=bookmark.time,
+                provider_instance=self.instance_id,
+                item_id=prov_item_id,
+            )
+            for bookmark in user.bookmarks
+            if bookmark.library_item_id == prov_item_id
+        ]
+
+    @handle_refresh_token
+    async def set_bookmark(
+        self, media_type: MediaType, prov_item_id: str, start: float, name: str
+    ) -> None:
+        """Add a bookmark to the given audiobook, or rename the one at the same start."""
+        await self._client.create_my_bookmark(item_id=prov_item_id, time=start, title=name)
+
+    @handle_refresh_token
+    async def remove_bookmark(self, media_type: MediaType, prov_item_id: str, start: float) -> None:
+        """Remove the bookmark at the given start of the given audiobook."""
+        await self._client.remove_my_bookmark(item_id=prov_item_id, time=start)
 
     @handle_refresh_token
     async def _get_abs_expanded_podcast(
@@ -2022,6 +2070,8 @@ for more details.
             self.logger.debug("Discarded item %s ", discarded_progress_id)
 
     async def _update_playlog_book(self, progress: MediaProgress) -> None:
+        if progress.library_item_id is None:
+            return
         # helper progress also ensures no useless progress updates,
         # see comment above
         self.progress_guard.add_progress(progress.library_item_id)
@@ -2048,6 +2098,8 @@ for more details.
             )
 
     async def _update_playlog_episode(self, progress: MediaProgress) -> None:
+        if progress.library_item_id is None:
+            return
         # helper progress also ensures no useless progress updates,
         # see comment above
         self.progress_guard.add_progress(progress.library_item_id, progress.episode_id)

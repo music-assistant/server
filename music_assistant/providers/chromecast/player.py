@@ -48,7 +48,13 @@ from .constants import (
     MASS_APP_ID,
     SENDSPIN_CAST_APP_ID,
 )
-from .helpers import CastStatusListener, ChromecastInfo, disconnect_cast
+from .helpers import (
+    CastStatusListener,
+    ChromecastInfo,
+    disconnect_cast,
+    http_profile_entry,
+    is_google_device,
+)
 from .receiver_commands import MassCastCommandController
 
 if TYPE_CHECKING:
@@ -83,7 +89,7 @@ class ChromecastPlayer(Player):
             player_type = PlayerType.STEREO_PAIR
         elif cast_info.is_audio_group:
             player_type = PlayerType.GROUP
-        elif self._is_google_device(cast_info):
+        elif is_google_device(cast_info):
             # Google devices (Chromecast, Nest, Google Home) have native Cast support
             player_type = PlayerType.PLAYER
         else:
@@ -160,11 +166,13 @@ class ChromecastPlayer(Player):
         if self.type == PlayerType.GROUP:
             return [
                 *CAST_PLAYER_CONFIG_ENTRIES,
+                http_profile_entry(self.cast_info),
                 CONF_ENTRY_SAMPLE_RATES_CAST_GROUP,
             ]
 
         return [
             *CAST_PLAYER_CONFIG_ENTRIES,
+            http_profile_entry(self.cast_info),
             CONF_ENTRY_SAMPLE_RATES_CAST,
             CONF_ENTRY_DEFER_IDLE_VOLUME,
         ]
@@ -451,21 +459,6 @@ class ChromecastPlayer(Player):
         self.mass.create_task(
             update_flow_metadata(), task_name=f"cast_flow_metadata_{self.player_id}"
         )
-
-    @staticmethod
-    def _is_google_device(cast_info: ChromecastInfo) -> bool:
-        """
-        Check if a device is a Google device with native Cast support.
-
-        Google devices (Chromecast, Nest, Google Home) have native Cast support
-        and should be exposed as PlayerType.PLAYER. Non-Google devices with Cast
-        support should be exposed as PlayerType.PROTOCOL.
-        """
-        if not cast_info.manufacturer:
-            # If no manufacturer, check model name for Google devices
-            model = cast_info.model_name.lower() if cast_info.model_name else ""
-            return any(google in model for google in ("chromecast", "google", "nest", "home"))
-        return cast_info.manufacturer.lower() in ("google", "google inc.")
 
     async def _launch_app(self) -> None:
         """Launch the configured Media Receiver App on a Chromecast."""
@@ -801,18 +794,35 @@ class ChromecastPlayer(Player):
             app_name = self.cc.app_display_name or "Unknown App"
             app_id = app_name.lower().replace(" ", "_")
             self._attr_active_source = app_id
-            has_controls = app_name in ("Spotify", "Qobuz", "YouTube Music", "Deezer", "Tidal")
-            if not any(source.id == app_id for source in self._attr_source_list):
-                self._attr_source_list.append(
-                    PlayerSource(
-                        id=app_id,
-                        name=app_name,
-                        passive=True,
-                        can_play_pause=has_controls,
-                        can_seek=has_controls,
-                        can_next_previous=has_controls,
-                    )
-                )
+            # apps name themselves in their own spelling ("TIDAL")
+            known_app = app_name.lower() in (
+                "spotify",
+                "qobuz",
+                "youtube music",
+                "deezer",
+                "tidal",
+            )
+            # any other app announces the commands it takes in its media status,
+            # which only means something once it has loaded media
+            reports_commands = status.media_session_id is not None
+            source = PlayerSource(
+                id=app_id,
+                name=app_name,
+                passive=True,
+                can_play_pause=known_app or (reports_commands and bool(status.supports_pause)),
+                can_seek=known_app or (reports_commands and bool(status.supports_seek)),
+                can_next_previous=known_app
+                or (
+                    reports_commands
+                    and bool(status.supports_queue_next)
+                    and bool(status.supports_queue_prev)
+                ),
+            )
+            current = next((s for s in self._attr_source_list if s.id == app_id), None)
+            if current is None:
+                self._attr_source_list.append(source)
+            elif reports_commands and current != source:
+                self._attr_source_list[self._attr_source_list.index(current)] = source
 
     def _update_current_media(self, status: MediaStatus, is_idle: bool) -> None:
         """

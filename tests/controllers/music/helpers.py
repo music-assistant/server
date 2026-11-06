@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
-from music_assistant_models.enums import ExternalID
+from unittest.mock import MagicMock
+
+from music_assistant_models.enums import EventType, ExternalID
 from music_assistant_models.media_items import (
     Album,
     Artist,
@@ -120,3 +122,12 @@ def create_album(
         artists=artists,
         external_ids=external_ids or set(),
     )
+
+
+def media_item_events(signal_event: MagicMock) -> list[EventType]:
+    """Return the events a patched signal_event sent, without the debounced task list updates."""
+    return [
+        call.args[0]
+        for call in signal_event.call_args_list
+        if call.args[0] != EventType.TASKS_UPDATED
+    ]

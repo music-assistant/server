@@ -71,6 +71,16 @@ DSD_BUFFER_MAX_BYTES: Final[dict[str, int]] = {
 # Buffer size for radio streams (short rolling buffer)
 RADIO_BUFFER_SIZE: Final[int] = 15
 
+# Seconds an HLS radio input may read ahead of playback, so a slow playlist reload and
+# segment fetch at each boundary does not starve the player. Must stay below RADIO_BUFFER_SIZE.
+HLS_RADIO_INPUT_BURST: Final[int] = 5
+
+# Generic artwork some radio platforms send in the ICY 'StreamUrl' field when a track has
+# no cover of its own; treated as no image so the artwork lookup and station image apply.
+ICY_PLACEHOLDER_IMAGE_URLS: Final[frozenset[str]] = frozenset(
+    {"https://broadcaster.live365.com/static/assets/img/blankart.jpg"}
+)
+
 
 # Ceiling on how fast stream output is handed to a player, once it has had its opening
 # burst. Music Assistant serves audio for listening, not for collecting: barely above
@@ -89,6 +99,9 @@ class PacingProfile(StrEnum):
     # ~1.1x at best, and what it banks ahead is all its end-of-track crossfade has.
     # A pace close to playback speed leaves most of that on the server. The burst is
     # the least a player holds at a session start, before a slow source earned it a lead.
+    # A player that fetches each track only once the previous download completes (Sonos)
+    # holds at a boundary just that burst plus what the pace banked over the track it played,
+    # and grouped speakers need a few seconds there at the first boundaries after a start.
     NEAR_REALTIME = "near_realtime"
     # live AudioSource streams, where whatever the burst hands over sits in the
     # player's buffer as listening delay
@@ -97,7 +110,7 @@ class PacingProfile(StrEnum):
 
 _PACING: Final[dict[PacingProfile, tuple[str, str]]] = {
     PacingProfile.DEFAULT: ("1.1", "60"),
-    PacingProfile.NEAR_REALTIME: ("1.01", "3"),
+    PacingProfile.NEAR_REALTIME: ("1.02", "3"),
     PacingProfile.LOW_LATENCY: ("1.02", "0.5"),
 }
 

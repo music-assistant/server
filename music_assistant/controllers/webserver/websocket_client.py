@@ -372,6 +372,7 @@ class WebsocketClientHandler:
                     translation_key=err.translation_key,
                     translation_args=err.translation_args,
                     translation_owner=err.translation_owner,
+                    data=err.data,
                 )
             )
         except Exception as err:
@@ -647,6 +648,12 @@ class WebsocketClientHandler:
                 or event.data.user_id != self._authenticated_user.user_id
             ):
                 # a like or dislike is the business of its own user only
+                return
+
+            if event.event == EventType.BOOKMARKS_UPDATED and (
+                self._authenticated_user is None or event.data != self._authenticated_user.user_id
+            ):
+                # as are bookmarks; the data is the id of the user they belong to
                 return
 
             if isinstance(event.data, MediaItem) and event.data.favorite is not None:

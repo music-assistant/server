@@ -107,6 +107,7 @@ from music_assistant.controllers.webserver.helpers.auth_middleware import (
     get_current_user,
     has_player_access,
     set_current_user,
+    system_auth_context,
 )
 from music_assistant.helpers.api import api_command
 from music_assistant.helpers.colors import get_palette_for_url
@@ -1476,7 +1477,11 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
 
         if player.state.synced_to:
             # player is a sync member
-            await self.cmd_set_members(player.state.synced_to, player_ids_to_remove=[player_id])
+            parent = self.get_player(player.state.synced_to)
+            if parent and parent.state.available:
+                await self.cmd_set_members(parent.player_id, player_ids_to_remove=[player_id])
+            else:
+                await self._detach_member(player)
             return
 
         if player.state.group_members:
@@ -2066,6 +2071,10 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
 
         # register() publishes the player itself once its config is loaded
         if not player.initialized.is_set():
+            return
+
+        # a debounced update can still run on a player that was unregistered meanwhile
+        if self._players.get(player_id) is not player:
             return
 
         # The current_media position anchor only changes on discrete events
@@ -2779,8 +2788,11 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
             # (hidden) bridge client with nothing playing on it, or is already serving its
             # parent, where a stop would cut that parent's stream short. A protocol player
             # has no active group of its own either, so there is nothing to detach here.
+            # the queue goes first, so its final update cannot re-add it after the removal
+            self.mass.player_queues.on_player_remove(
+                player.player_id, permanent=False, release_audio=False
+            )
             self.mass.signal_event(EventType.PLAYER_REMOVED, player.player_id)
-            self.mass.player_queues.on_player_remove(player.player_id, permanent=False)
             return
         # the player surfaces on its own, which leaves it unusable without a queue
         self.mass.signal_event(EventType.PLAYER_ADDED, object_id=player.player_id, data=player)
@@ -3234,12 +3246,16 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         """Ensure a player is detached from any groups or syncgroups."""
         if not (player := self.get_player(player_id)):
             return
-        with suppress(UnsupportedFeaturedException, PlayerCommandFailed, PlayerUnavailableError):
+        try:
             if parent_id := (player.state.active_group or player.state.synced_to):
                 # the player is part of a (permanent) groupplayer and the user tries to ungroup
                 if parent_player := self.get_player(parent_id):
                     await self._handle_set_members(parent_player, player_ids_to_remove=[player_id])
                 return
+        except (UnsupportedFeaturedException, PlayerCommandFailed, PlayerUnavailableError) as err:
+            self.logger.debug(
+                "Could not detach player %s from its group: %s", player.display_name, err
+            )
 
     def _get_player_with_redirect(self, player_id: str) -> Player:
         """Get player with check if playback related command should be redirected."""
@@ -3650,10 +3666,16 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         # Use internal _handle_set_members to avoid deadlocking on the play lock
         # (we're already inside a cmd_set_members chain that holds a play lock).
         synced_to = player.state.synced_to or player.state.active_group
-        if synced_to and (parent := self.get_player(synced_to)):
+        parent = self.get_player(synced_to) if synced_to else None
+        if parent or player.state.synced_to:
             try:
                 async with self.wait_for_player_update(player.player_id, timeout=5):
-                    await self._handle_set_members(parent, player_ids_to_remove=[player.player_id])
+                    if player.state.synced_to:
+                        await self._detach_member(player)
+                    elif parent:
+                        await self._handle_set_members(
+                            parent, player_ids_to_remove=[player.player_id]
+                        )
             except asyncio.CancelledError:
                 raise
             except Exception:
@@ -3662,6 +3684,46 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
                     player.name,
                     synced_to,
                 )
+
+    async def _detach_member(self, member: Player) -> None:
+        """
+        Remove a sync member from the player it is synced to.
+
+        Skips permission checks and locking (internal use only).
+
+        :param member: The sync member to detach.
+        """
+        parent = self.get_player(member.state.synced_to) if member.state.synced_to else None
+        if parent and parent.state.available:
+            self.logger.debug("Removing %s from its sync leader %s", member.name, parent.name)
+            await self._handle_set_members(parent, player_ids_to_remove=[member.player_id])
+            return
+        # a sync leader that is gone (or offline) can't release its members, so the
+        # member has to leave the group from its own side: natively, or through the
+        # linked protocol player that holds the membership (e.g. an AirPlay group)
+        target = member
+        if not member.synced_to:
+            for linked in member.linked_output_protocols:
+                protocol_player = self.get_player(linked.output_protocol_id)
+                if protocol_player and protocol_player.synced_to:
+                    target = protocol_player
+                    break
+        self.logger.debug(
+            "Sync leader %s of %s is unavailable, letting %s leave the group on its own",
+            member.state.synced_to,
+            member.name,
+            target.name,
+        )
+        try:
+            await target.ungroup()
+        except asyncio.CancelledError:
+            raise
+        except Exception as err:
+            msg = (
+                f"{member.name} is synced to the unavailable player {member.state.synced_to} "
+                "and could not leave the group on its own"
+            )
+            raise PlayerUnavailableError(msg) from err
 
     async def _dissolve_own_group(self, player: Player, target_name: str) -> bool:
         """
@@ -4043,15 +4105,18 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         # Move the queue to the new leader. transfer_queue frees the new leader from
         # the old leader's group and stops the old leader; the playback position
         # survives because stop() stores it in resume_pos.
-        await self.mass.player_queues.transfer_queue(
-            leader.player_id, new_leader_id, auto_play=False
-        )
-        # regroup the other remaining members under the new leader
-        other_members = [m for m in remaining_members if m != new_leader_id]
-        if other_members:
-            await self.cmd_set_members(new_leader_id, player_ids_to_add=other_members)
-        if was_playing:
-            await self.mass.player_queues.resume(new_leader_id)
+        # The user's permission was checked on the player they acted on; the new leader
+        # is the server's choice, so these steps run as the server.
+        with system_auth_context():
+            await self.mass.player_queues.transfer_queue(
+                leader.player_id, new_leader_id, auto_play=False
+            )
+            # regroup the other remaining members under the new leader
+            other_members = [m for m in remaining_members if m != new_leader_id]
+            if other_members:
+                await self.cmd_set_members(new_leader_id, player_ids_to_add=other_members)
+            if was_playing:
+                await self.mass.player_queues.resume(new_leader_id)
 
     def _select_ad_hoc_leader(self, leader: Player, remaining_members: list[str]) -> str:
         """

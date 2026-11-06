@@ -43,7 +43,9 @@ from .constants import (
     DEFAULT_PORT,
     DEVICE_INFO_TIMEOUT,
     GROUP_SETTLE_TIME,
+    HOST_CHECK_FAILURES,
     HOST_ERRORS,
+    HOST_SEARCH_INTERVAL,
     INITIAL_UPDATE_TIMEOUT,
     LIBRARY_REFRESH_INTERVAL,
     LINE_IN_OBJECT_ID,
@@ -53,6 +55,8 @@ from .constants import (
     ZONE_WATCH_INTERVAL,
 )
 from .helpers import (
+    discover_hosts,
+    host_is_valid,
     parse_control_url,
     parse_library_items,
     parse_line_in,
@@ -86,6 +90,10 @@ class RaumfeldPlayerProvider(PlayerProvider):
     _group_changes: int = 0
     _group_changed_at: float = 0.0
     _connected: bool = False
+    # health checks the host has missed in a row while connected
+    _host_check_failures: int = 0
+    # when the network was last searched for a host that stopped answering
+    _host_searched_at: float = 0.0
     # renderer UUID -> (Line-In stream url, title) for rooms that expose an analog input
     _line_in: dict[str, tuple[str, str]]
     # when the station buttons were last read
@@ -93,6 +101,8 @@ class RaumfeldPlayerProvider(PlayerProvider):
     # room name -> renderer hardware serial, the basis for the player_id. Read from the
     # device once and kept, so a resync does not refetch a description per room.
     _room_serials: dict[str, str]
+    # room name -> UDN of the renderer the room's serial, model and control URL were read from
+    _room_renderers: dict[str, str]
     # room name -> renderer model name, read from the same device description
     _room_models: dict[str, str]
     # room name -> AVTransport control URL of its renderer as the description gives it,
@@ -170,6 +180,7 @@ class RaumfeldPlayerProvider(PlayerProvider):
         self._host_port = cast("int", self.get_setup_value(CONF_PORT) or DEFAULT_PORT)
         self._line_in = {}
         self._room_serials = {}
+        self._room_renderers = {}
         self._room_models = {}
         self._room_transport_paths = {}
         self._room_ids = {}
@@ -253,16 +264,19 @@ class RaumfeldPlayerProvider(PlayerProvider):
             try:
                 if not self._connected:
                     await self._try_connect()
-                elif (
-                    self._update_task is None
-                    or self._update_task.done()
-                    or not await self.host.async_host_is_valid()
-                ):
-                    # the host is gone, or hassfeld's update loop exited (it swallows a
-                    # disconnect and returns, freezing state) - drop so the next cycle
-                    # reconnects and recreates the update task
+                elif self._update_task is None or self._update_task.done():
+                    # hassfeld's update loop exited (it swallows a disconnect and returns,
+                    # freezing state) - drop so the next cycle reconnects and recreates it
                     await self._disconnect("host connection lost")
+                elif not await host_is_valid(
+                    self.mass.http_session, self._host_address, self._host_port
+                ):
+                    # one missed answer is a slow host; only a run of them is a lost one
+                    self._host_check_failures += 1
+                    if self._host_check_failures >= HOST_CHECK_FAILURES:
+                        await self._disconnect("host connection lost")
                 else:
+                    self._host_check_failures = 0
                     # host still healthy: re-sync so a room that (re)appeared or vanished
                     # (e.g. a speaker returning from deep standby) is registered / marked
                     # available again without needing a full reconnect
@@ -282,13 +296,16 @@ class RaumfeldPlayerProvider(PlayerProvider):
         if not self._host_address:
             self.logger.debug("No Raumfeld host configured yet; will retry")
             return
+        if (
+            not await host_is_valid(self.mass.http_session, self._host_address, self._host_port)
+            and not await self._follow_moved_host()
+        ):
+            self.logger.debug("Raumfeld host %s not reachable yet; will retry", self._host_address)
+            return
         # a fresh host object avoids stale state left by a previous failed attempt
         self.host = hassfeld.RaumfeldHost(
             self._host_address, self._host_port, session=self.mass.http_session
         )
-        if not await self.host.async_host_is_valid():
-            self.logger.debug("Raumfeld host %s not reachable yet; will retry", self._host_address)
-            return
         self._update_task = self.mass.create_task(
             self.host.async_update_all(self.mass.http_session)
         )
@@ -317,11 +334,43 @@ class RaumfeldPlayerProvider(PlayerProvider):
         self._connected = True
         self.logger.info("Connected to Raumfeld host %s", self._host_address)
 
+    async def _follow_moved_host(self) -> bool:
+        """
+        Look for the host on the network, and take its new address when it moved.
+
+        Returns whether a host answers at the address the provider now uses.
+        """
+        if time.time() - self._host_searched_at < HOST_SEARCH_INTERVAL:
+            return False
+        self._host_searched_at = time.time()
+        try:
+            found = [host for host in await discover_hosts() if host != self._host_address]
+        except OSError as err:
+            self.logger.debug("Searching the network for the Raumfeld host failed: %r", err)
+            return False
+        if len(found) > 1:
+            # another Raumfeld system on the same network: which one is ours cannot be told
+            self.logger.debug(
+                "Found more than one other Raumfeld host (%s), keeping %s",
+                found,
+                self._host_address,
+            )
+            return False
+        if not found or not await host_is_valid(self.mass.http_session, found[0], self._host_port):
+            return False
+        self.logger.info(
+            "Raumfeld host moved from %s to %s, using the new address", self._host_address, found[0]
+        )
+        self._host_address = found[0]
+        self._update_setup_data(CONF_IP_ADDRESS, found[0])
+        return True
+
     async def _disconnect(self, reason: str) -> None:
         """Stop the update loop and mark players unavailable until the host returns."""
         if self._connected:
             self.logger.warning("Raumfeld host %s %s - pausing", self._host_address, reason)
         self._connected = False
+        self._host_check_failures = 0
         for task in (self._update_task, self._zone_watch_task):
             if task and not task.done():
                 task.cancel()
@@ -441,6 +490,7 @@ class RaumfeldPlayerProvider(PlayerProvider):
         """Register (or re-activate) a Music Assistant player for every Raumfeld room."""
         # ``get_rooms`` returns the list of room names currently known to the host.
         rooms = self.host.get_rooms()
+        self._forget_moved_renderers(rooms)
         # the id comes from the renderer's hardware serial, which has to be read from the
         # device once; a room whose serial we cannot read yet is skipped for now rather than
         # registered under an id that would have to change once the serial comes in
@@ -713,14 +763,53 @@ class RaumfeldPlayerProvider(PlayerProvider):
             return None
         return udn
 
+    def _room_renderer_udn(self, room: str) -> str | None:
+        """Return the UDN of a room's own renderer as the host reports it, or ``None``."""
+        if (room_udn := self._room_udn(room)) is None:
+            return None
+        try:
+            renderer_udn: str | None = self.host.resolve["roomudn_to_rendudn"].get(room_udn)
+        except KeyError, AttributeError:
+            return None
+        return renderer_udn
+
+    def _forget_moved_renderers(self, rooms: list[str]) -> None:
+        """
+        Drop what was read for a room whose renderer now sits in another room.
+
+        :param rooms: The rooms the host reports now.
+        """
+        # A speaker moved to another room (or a room set up again under a new UDN) still
+        # holds its serial under the room it left. Kept, it would claim that serial first
+        # and push the speaker in its new room onto a room-UDN id, a new player each move.
+        owners = {
+            renderer_udn: room
+            for room in rooms
+            if (renderer_udn := self._room_renderer_udn(room)) is not None
+        }
+        for room, renderer_udn in list(self._room_renderers.items()):
+            if owners.get(renderer_udn, room) != room:
+                self._forget_room(room)
+
+    def _forget_room(self, room: str) -> None:
+        """Drop the serial, model and control URL read for a room."""
+        self._room_serials.pop(room, None)
+        self._room_renderers.pop(room, None)
+        self._room_models.pop(room, None)
+        self._room_transport_paths.pop(room, None)
+
     def _room_sort_key(self, room: str) -> str:
         """Return a stable sort key for a room: its UDN, or its name if that is unknown."""
         return self._room_udn(room) or room
 
     async def _ensure_room_serial(self, room: str) -> str | None:
         """Read (and remember) the hardware serial of a room's renderer."""
+        renderer_udn = self._room_renderer_udn(room)
         if (cached := self._room_serials.get(room)) is not None:
-            return cached
+            if renderer_udn is None or self._room_renderers.get(room) == renderer_udn:
+                return cached
+            # another speaker took the room's place: what was read belongs to the one it had
+            self._forget_room(room)
         location = self.room_renderer_location(room)
         if location is None:
             return None
@@ -735,6 +824,8 @@ class RaumfeldPlayerProvider(PlayerProvider):
             self.logger.debug("Renderer of room %s reports no serial number", room)
             return None
         self._room_serials[room] = serial
+        if renderer_udn is not None:
+            self._room_renderers[room] = renderer_udn
         if (model := parse_model_name(description)) is not None:
             self._room_models[room] = model
         if (control_url := parse_control_url(description, "AVTransport")) is not None:
@@ -749,7 +840,7 @@ class RaumfeldPlayerProvider(PlayerProvider):
         """
         # Flow mode and the chunked profile come from the player and its config entries.
         # The ICY preference, however, is read straight from stored config with the base
-        # entry's own default ("disabled"), so the "full" default this provider's entry
+        # entry's own default ("disabled"), so the "basic" default this provider's entry
         # declares would only take effect once the user saves the player's settings. Store
         # it once - only while nothing is stored, so a value the user picks later stays.
         if (
@@ -757,7 +848,7 @@ class RaumfeldPlayerProvider(PlayerProvider):
             is None
         ):
             self.mass.config.set_raw_player_config_value(
-                player_id, CONF_ENABLE_ICY_METADATA, "full"
+                player_id, CONF_ENABLE_ICY_METADATA, "basic"
             )
 
     def _zone_rooms_leader_first(self, zone_rooms: list[str]) -> list[str]:
