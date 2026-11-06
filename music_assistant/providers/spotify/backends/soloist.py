@@ -806,6 +806,9 @@ class _EngineRun:
     when the consumer stops taking audio.
     """
 
+    # switches shuffle and repeat off while the engine reports one on
+    _options_reset: asyncio.Task[None] | None = None
+
     def __init__(
         self,
         backend: SoloistBackend,
@@ -1538,28 +1541,29 @@ class _EngineRun:
 
         :param options: The playback options the engine reports.
         """
-        switched_on = options.shuffle or options.repeat != "off"
-        if switched_on and not self._options_on:
+        self._options_on = options.shuffle or options.repeat != "off"
+        if self._options_on and self._options_reset is None:
             # the engine's acks arrive through the event callback, so they are
             # awaited from a task of their own
-            self._spawn_task(self._reset_options())
-        self._options_on = switched_on
+            self._options_reset = self._spawn_task(self._reset_options())
 
     async def _reset_options(self) -> None:
-        """Switch shuffle and repeat off again after the Spotify app switched one on."""
-        if (client := self._client) is None:
-            return
-        self.logger.debug("Shuffle or repeat switched on in Spotify, switching it off again")
+        """Switch shuffle and repeat off again for as long as the engine reports one on."""
         try:
-            await client.set_repeat_track(False, await_result=True)
-            await client.set_repeat_context(False, await_result=True)
-            await client.set_shuffle(False, await_result=True)
+            if (client := self._client) is None:
+                return
+            self.logger.debug("Shuffle or repeat switched on in Spotify, switching it off again")
+            while self._options_on:
+                # a report during the commands that still shows one on runs them again
+                self._options_on = False
+                await client.set_repeat_track(False, await_result=True)
+                await client.set_repeat_context(False, await_result=True)
+                await client.set_shuffle(False, await_result=True)
         except (SoloistError, TimeoutError, OSError) as err:
+            # the next report that still shows one on starts over
             self.logger.debug("Could not switch shuffle and repeat off: %r", err)
         finally:
-            # the next report that still shows one on, also one switched on
-            # while this ran, tries again
-            self._options_on = False
+            self._options_reset = None
 
     def _watch_unclaimed(self, item: _Item) -> None:
         """Stop the run when nobody takes up the item the engine moved on to in time."""

@@ -2519,8 +2519,8 @@ async def test_a_move_between_two_read_slices_starts_the_stall_clock_over(
     await asyncio.wait_for(reading, 1)
 
 
-async def test_repeat_switched_on_during_a_reset_is_switched_off_too(tmp_path: Path) -> None:
-    """A switch the reset under way already went past is reset again once it is done."""
+async def test_repeat_tapped_again_during_a_reset_gets_a_second_round(tmp_path: Path) -> None:
+    """Repeat-one is two taps in the Spotify app, the second while the first reset still runs."""
     run = _live_run(tmp_path)
     client = _client(run)
     acked = asyncio.Event()
@@ -2529,13 +2529,18 @@ async def test_repeat_switched_on_during_a_reset_is_switched_off_too(tmp_path: P
         await acked.wait()
 
     client.set_repeat_context.side_effect = _await_ack
-    await run._handle_event(_options_event("options_changed", shuffle=True))
+    await run._handle_event(_options_event("options_changed", repeat="context"))
     while not client.set_repeat_context.await_count:
         await asyncio.sleep(0)
-    await run._handle_event(_options_event("options_changed", repeat="track", shuffle=True))
+    await run._handle_event(_options_event("options_changed", repeat="track"))
     acked.set()
     await asyncio.gather(*run._tasks)
-    # the shuffle is off now, the repeat switched on meanwhile is not
-    await run._handle_event(_options_event("options_changed", repeat="track"))
-    await asyncio.gather(*run._tasks)
-    assert client.set_repeat_track.await_count == 2
+    round_of_resets = [
+        call.set_repeat_track(False, await_result=True),
+        call.set_repeat_context(False, await_result=True),
+        call.set_shuffle(False, await_result=True),
+    ]
+    assert [entry for entry in client.mock_calls if entry in round_of_resets] == (
+        round_of_resets * 2
+    )
+    assert run._options_reset is None
