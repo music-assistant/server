@@ -48,6 +48,8 @@ Hardware devices and local clients can connect directly to the Sendspin server:
 ws://<ma-server-ip>:8927/sendspin
 ```
 
+8927 is the default port, which can be changed in the provider's advanced settings.
+
 This is suitable for:
 - Hardware players on the local network
 - Native apps with direct network access

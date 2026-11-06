@@ -64,11 +64,11 @@ from music_assistant_models.enums import (
 from music_assistant_models.errors import InvalidCommand, SetupFailedError
 
 from music_assistant.constants import (
+    CONF_BIND_PORT,
     CONF_ENTRY_MANUAL_DISCOVERY_IPS,
     CONF_LOG_LEVEL,
     CONF_PROVIDERS,
     CONF_UNDERLYING_PLAYER_ID,
-    SENDSPIN_SERVER_PORT,
     VERBOSE_LOG_LEVEL,
 )
 from music_assistant.controllers.webserver.helpers.auth_middleware import get_current_user
@@ -100,6 +100,7 @@ from music_assistant.providers.sendspin.constants import (
     CONF_ALLOW_LEGACY_CLIENTS,
     CONF_SENDSPIN_STATIC_DELAY,
     CONF_VIRTUAL_PLAYER_OWNER,
+    DEFAULT_SERVER_PORT,
     VIRTUAL_PLAYER_ID_PREFIX,
 )
 from music_assistant.providers.sendspin.hass_auto_pair import HassAutoPairer
@@ -433,10 +434,22 @@ class SendspinProvider(PlayerProvider):
         self._hass_auto_pairer = HassAutoPairer(self)
         self.unregister_cbs = []
 
+    @property
+    def server_port(self) -> int:
+        """Return the TCP port the Sendspin server listens on."""
+        return cast("int", self.config.get_value(CONF_BIND_PORT, DEFAULT_SERVER_PORT))
+
     async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
         """Return Config entries to configure this provider."""
         return (
             CONF_ENTRY_MANUAL_DISCOVERY_IPS,
+            ConfigEntry(
+                key=CONF_BIND_PORT,
+                type=ConfigEntryType.INTEGER,
+                default_value=DEFAULT_SERVER_PORT,
+                advanced=True,
+                requires_reload=True,
+            ),
             ConfigEntry(
                 key=CONF_ALLOW_LEGACY_CLIENTS,
                 type=ConfigEntryType.BOOLEAN,
@@ -1215,7 +1228,7 @@ class SendspinProvider(PlayerProvider):
         # and mDNS discovery of new clients
         try:
             await self.server_api.start_server(
-                port=SENDSPIN_SERVER_PORT,
+                port=self.server_port,
                 host=self.mass.streams.bind_ip,
                 advertise_addresses=[self.mass.streams.publish_ip],
             )
@@ -1225,7 +1238,7 @@ class SendspinProvider(PlayerProvider):
             # so surface this as a provider error the user can see
             self.unload_with_error(
                 SetupFailedError(
-                    f"Could not start the Sendspin server on port {SENDSPIN_SERVER_PORT}: {err}"
+                    f"Could not start the Sendspin server on port {self.server_port}: {err}"
                 )
             )
             return

@@ -9,7 +9,8 @@ from unittest.mock import AsyncMock, MagicMock
 
 from music_assistant_models.errors import SetupFailedError
 
-from music_assistant.constants import CONF_ENTRY_MANUAL_DISCOVERY_IPS, SENDSPIN_SERVER_PORT
+from music_assistant.constants import CONF_BIND_PORT, CONF_ENTRY_MANUAL_DISCOVERY_IPS
+from music_assistant.providers.sendspin.constants import DEFAULT_SERVER_PORT
 from music_assistant.providers.sendspin.provider import SendspinProvider
 from music_assistant.testing import bound_sendspin_port, full_mass_context
 
@@ -21,9 +22,8 @@ def _make_provider(start_server: AsyncMock) -> tuple[SendspinProvider, MagicMock
     manifest.name = "Sendspin"
     config = MagicMock(instance_id="sendspin")
     config.name = "Sendspin"
-    config.get_value.side_effect = lambda key, default=None: (
-        ["192.168.1.50"] if key == CONF_ENTRY_MANUAL_DISCOVERY_IPS.key else default
-    )
+    config_values = {CONF_ENTRY_MANUAL_DISCOVERY_IPS.key: ["192.168.1.50"], CONF_BIND_PORT: 9027}
+    config.get_value.side_effect = lambda key, default=None: config_values.get(key, default)
     provider = SendspinProvider(mass, manifest, config)
     server_api = MagicMock(start_server=start_server, close=AsyncMock())
     provider.server_api = server_api
@@ -32,7 +32,7 @@ def _make_provider(start_server: AsyncMock) -> tuple[SendspinProvider, MagicMock
 
 
 async def test_server_start_failure_unloads_with_error() -> None:
-    """A port conflict unloads the provider with an error naming the port."""
+    """A port conflict unloads the provider with an error naming the configured port."""
     start_server = AsyncMock(side_effect=OSError(errno.EADDRINUSE, "Address already in use"))
     provider, mass, server_api = _make_provider(start_server)
 
@@ -43,7 +43,8 @@ async def test_server_start_failure_unloads_with_error() -> None:
     assert target is mass.unload_provider_with_error
     assert instance_id == "sendspin"
     assert isinstance(error, SetupFailedError)
-    assert str(SENDSPIN_SERVER_PORT) in str(error)
+    assert start_server.call_args.kwargs["port"] == 9027
+    assert "9027" in str(error)
     server_api.connect_to_client.assert_not_called()
 
 
@@ -84,7 +85,7 @@ async def test_full_boot_does_not_depend_on_the_default_sendspin_port(
     blocker = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     try:
         try:
-            blocker.bind(("127.0.0.1", SENDSPIN_SERVER_PORT))
+            blocker.bind(("127.0.0.1", DEFAULT_SERVER_PORT))
             blocker.listen()
         except OSError as err:
             # a port already held by something else is the very condition under test;
@@ -99,7 +100,7 @@ async def test_full_boot_does_not_depend_on_the_default_sendspin_port(
             # the listener took a kernel-picked port, and the URL the server hands its own
             # Sendspin clients names that port rather than the default
             bound_port = bound_sendspin_port(mass)
-            assert bound_port not in (None, 0, SENDSPIN_SERVER_PORT)
-            assert mass.webserver.internal_sendspin_url.endswith(f":{bound_port}/sendspin")
+            assert bound_port not in (None, 0, DEFAULT_SERVER_PORT)
+            assert mass.webserver.internal_sendspin_url == f"ws://127.0.0.1:{bound_port}/sendspin"
     finally:
         blocker.close()
