@@ -1241,7 +1241,7 @@
     "playlist_follows_source": "This playlist follows the sharing of its music source.",
     "playlist_owner_must_be_member": "Only a member can own a playlist",
     "source_available_to_everyone": "{0} is always available to everyone",
-    "provider_can_not_be_disabled": "{0} can not be disabled",
+    "provider_can_not_be_disabled": "{0} cannot be disabled",
     "source_sharing_owner_only": "Only the owner of a music source may share it",
     "source_owner_change_admin_only": "Only an administrator can change who owns a music source",
     "source_no_owner_admin_only": "Only an administrator can manage a music source that has no owner",

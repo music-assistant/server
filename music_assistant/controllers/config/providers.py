@@ -719,7 +719,7 @@ class ProviderConfigMixin:
             prov_manifest = self.mass.get_provider_manifest(config.domain)
             if not prov_manifest.allow_disable:
                 raise InvalidDataError(
-                    f"{prov_manifest.name} can not be disabled",
+                    f"{prov_manifest.name} cannot be disabled",
                     translation_key="provider_can_not_be_disabled",
                     translation_args=[prov_manifest.name],
                 )
