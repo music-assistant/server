@@ -46,7 +46,7 @@ from music_assistant.helpers.provider_access import access_allows, with_derived_
 from music_assistant.helpers.throttle_retry import RequestPriority, set_request_priority
 
 from .helpers.auth_middleware import (
-    get_ingress_session,
+    INGRESS_CLIENT_KEY,
     has_scope,
     is_request_from_ingress,
     is_request_from_ingress_proxy,
@@ -92,7 +92,12 @@ class WebsocketClientHandler:
         self._locale: str | None = None  # UI locale declared by the client (auth arg / set_locale)
         self._is_ingress = is_request_from_ingress(request)
         self._is_ingress_proxy = is_request_from_ingress_proxy(request)
-        self._ingress_session = get_ingress_session(request)
+        # Home Assistant user and browser key an Ingress connection came in with
+        self._ingress_user_id: str | None = None
+        self._ingress_client_key: str | None = None
+        if self._is_ingress_proxy:
+            self._ingress_user_id = request.headers.get("X-Remote-User-ID") or None
+            self._ingress_client_key = request.query.get(INGRESS_CLIENT_KEY) or None
         self._events_unsub_callback: Any = None  # Will be set after authentication
         # uris of the personal playlists this client was told are gone
         self._hidden_playlists: set[str] = set()
@@ -146,13 +151,14 @@ class WebsocketClientHandler:
         """
         return self._current_token == token
 
-    def matches_ingress_session(self, session: str) -> bool:
+    def matches_ingress_client(self, ha_user_id: str, client_key: str) -> bool:
         """
-        Return True if this client was relayed by Home Assistant Ingress for the given session.
+        Return True if this client came in through Home Assistant Ingress from the given browser.
 
-        :param session: The Ingress session to compare against.
+        :param ha_user_id: Id of the Home Assistant user the browser is signed in as.
+        :param client_key: The key the browser identifies itself with.
         """
-        return self._ingress_session == session
+        return self._ingress_user_id == ha_user_id and self._ingress_client_key == client_key
 
     def bind_sendspin_player(self, player_id: str) -> None:
         """

@@ -19,8 +19,8 @@ from aiohttp import ClientConnectorError, WSMessage, WSMsgType, web
 
 from music_assistant.constants import MASS_LOGGER_NAME
 from music_assistant.controllers.webserver.helpers.auth_middleware import (
+    INGRESS_CLIENT_KEY,
     get_authenticated_user,
-    get_ingress_session,
     is_request_from_ingress_proxy,
 )
 
@@ -58,8 +58,9 @@ class SendspinProxyHandler:
 
         Home Assistant Ingress authenticates the request itself, so an Ingress client
         sends no token and only needs the auth message to announce its web player:
-        {"type": "auth", "client_id": "<web player id>"}. Either auth message is answered
-        with {"type": "auth_ok"}.
+        {"type": "auth", "client_id": "<web player id>", "ingress_client_key": "<key>"},
+        with the same key it passes as ingress_client_key query parameter on its API
+        websocket. Either auth message is answered with {"type": "auth_ok"}.
 
         After successful authentication, all messages are proxied bidirectionally.
 
@@ -215,11 +216,11 @@ class SendspinProxyHandler:
         if not isinstance(auth_data, dict) or auth_data.get("type") != "auth":
             return msg
 
-        if client_id := auth_data.get("client_id"):
-            if session := get_ingress_session(request):
-                self.webserver.set_sendspin_player_for_ingress_session(session, client_id)
-            else:
-                self.logger.debug("No Ingress session to bind sendspin player %s to", client_id)
+        client_id = auth_data.get("client_id")
+        client_key = auth_data.get(INGRESS_CLIENT_KEY)
+        ha_user_id = request.headers.get("X-Remote-User-ID")
+        if client_id and client_key and ha_user_id:
+            self.webserver.set_sendspin_player_for_ingress_client(ha_user_id, client_key, client_id)
         await wsock.send_str('{"type": "auth_ok"}')
         return None
 

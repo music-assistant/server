@@ -34,8 +34,9 @@ if TYPE_CHECKING:
 
 # Context key for storing authenticated user in request
 USER_CONTEXT_KEY = "authenticated_user"
-# Cookie in which Home Assistant keeps the latest Ingress session of a browser
-INGRESS_SESSION_COOKIE: Final = "ingress_session"
+# API websocket query parameter and Sendspin auth message field with which a browser
+# identifies itself over Home Assistant Ingress
+INGRESS_CLIENT_KEY: Final = "ingress_client_key"
 
 _GUEST_SCOPES: Final[frozenset[Scope]] = frozenset(
     {
@@ -554,21 +555,6 @@ def is_request_from_ingress_proxy(request: web.Request) -> bool:
         return False
     peername = request.transport.get_extra_info("peername") if request.transport else None
     return bool(peername and peername[0] == HASSIO_SUPERVISOR_IP)
-
-
-def get_ingress_session(request: web.Request) -> str | None:
-    """
-    Return the Home Assistant Ingress session a request was relayed for, if any.
-
-    Home Assistant starts a new session for its signed-in user whenever an Ingress panel
-    opens, and the browser sends its latest one along with each Ingress request. Other
-    browsers, even of the same user, never share it.
-
-    :param request: The aiohttp request.
-    """
-    if not is_request_from_ingress_proxy(request):
-        return None
-    return request.cookies.get(INGRESS_SESSION_COOKIE) or None
 
 
 def is_request_from_ingress(request: web.Request) -> bool:

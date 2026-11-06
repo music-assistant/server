@@ -10,7 +10,6 @@ from music_assistant_models.auth import User, UserRole
 
 from music_assistant.constants import HASSIO_SUPERVISOR_IP, INGRESS_SERVER_PORT
 from music_assistant.controllers.webserver.controller import WebserverController
-from music_assistant.controllers.webserver.helpers.auth_middleware import INGRESS_SESSION_COOKIE
 
 from .conftest import _create_ws_client
 
@@ -76,43 +75,55 @@ def test_web_player_is_bound_to_the_webrtc_session_that_announced_it(
     assert other_gateway._sendspin_player_id is None
 
 
-def test_web_player_is_bound_to_the_ingress_session_that_announced_it(
+def test_web_player_is_bound_to_the_ingress_browser_that_announced_it(
     webserver: WebserverController,
 ) -> None:
-    """Over Ingress the browser's session decides, not the Home Assistant user it signed in as."""
-    browser_a = _create_ws_client(webserver, user=_HA_USER, request=_ingress_request("session-a"))
-    browser_a_again = _create_ws_client(
-        webserver, user=_HA_USER, request=_ingress_request("session-a")
-    )
-    browser_b = _create_ws_client(webserver, user=_HA_USER, request=_ingress_request("session-b"))
+    """Over Ingress the browser's key decides, not the Home Assistant user it signed in as."""
+    browser_a = _create_ws_client(webserver, user=_HA_USER, request=_ingress_request("key-a"))
+    browser_a_again = _create_ws_client(webserver, user=_HA_USER, request=_ingress_request("key-a"))
+    browser_b = _create_ws_client(webserver, user=_HA_USER, request=_ingress_request("key-b"))
 
-    webserver.set_sendspin_player_for_ingress_session("session-a", "player-a")
+    webserver.set_sendspin_player_for_ingress_client("ha-user", "key-a", "player-a")
 
     assert browser_a._sendspin_player_id == "player-a"
     assert browser_a_again._sendspin_player_id == "player-a"
     assert browser_b._sendspin_player_id is None
 
 
-def test_ingress_session_cookie_is_ignored_outside_ingress(webserver: WebserverController) -> None:
-    """A connection that did not come through Ingress cannot claim a web player by its cookie."""
+def test_ingress_client_key_of_another_user_is_not_matched(
+    webserver: WebserverController,
+) -> None:
+    """Another Home Assistant user can not claim a web player by presenting the same key."""
+    other_user = _create_ws_client(
+        webserver, user=_HA_USER, request=_ingress_request("key-a", ha_user_id="other-user")
+    )
+
+    webserver.set_sendspin_player_for_ingress_client("ha-user", "key-a", "player-a")
+
+    assert other_user._sendspin_player_id is None
+
+
+def test_ingress_client_key_is_ignored_outside_ingress(webserver: WebserverController) -> None:
+    """A connection that did not come through Ingress can not claim a web player by its key."""
     request = make_mocked_request(
         "GET",
-        "/ws",
-        headers={"Cookie": f"{INGRESS_SESSION_COOKIE}=session-a"},
+        "/ws?ingress_client_key=key-a",
+        headers={"X-Remote-User-ID": "ha-user"},
         app=web.Application(),
     )
     direct = _create_ws_client(webserver, user=_HA_USER, request=request)
 
-    webserver.set_sendspin_player_for_ingress_session("session-a", "player-a")
+    webserver.set_sendspin_player_for_ingress_client("ha-user", "key-a", "player-a")
 
     assert direct._sendspin_player_id is None
 
 
-def _ingress_request(session: str) -> web.Request:
+def _ingress_request(client_key: str, ha_user_id: str = "ha-user") -> web.Request:
     """
-    Build an API websocket request relayed by Home Assistant Ingress for the given session.
+    Build an API websocket request relayed by Home Assistant Ingress for a browser.
 
-    :param session: The Ingress session the browser holds.
+    :param client_key: The key the browser identifies itself with.
+    :param ha_user_id: Id of the Home Assistant user the browser is signed in as.
     """
     app = web.Application()
     app["ingress_site"] = (_INGRESS_IP, INGRESS_SERVER_PORT)
@@ -124,8 +135,8 @@ def _ingress_request(session: str) -> web.Request:
     transport.get_extra_info.side_effect = extra_info.get
     return make_mocked_request(
         "GET",
-        "/ws",
-        headers={"Cookie": f"{INGRESS_SESSION_COOKIE}={session}"},
+        f"/ws?ingress_client_key={client_key}",
+        headers={"X-Remote-User-ID": ha_user_id},
         app=app,
         transport=transport,
     )

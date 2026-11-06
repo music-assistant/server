@@ -12,12 +12,11 @@ from aiohttp.test_utils import TestServer, make_mocked_request
 from music_assistant_models.auth import User, UserRole
 
 from music_assistant.controllers.webserver import sendspin_proxy
-from music_assistant.controllers.webserver.helpers import auth_middleware
 from music_assistant.controllers.webserver.sendspin_proxy import SendspinProxyHandler
 
 _USER = User(user_id="user", username="user", role=UserRole.USER)
-_INGRESS_SESSION = "session-a"
-_INGRESS_COOKIE = {"Cookie": f"{auth_middleware.INGRESS_SESSION_COOKIE}={_INGRESS_SESSION}"}
+# the Home Assistant user header the Ingress proxy sets on every request it relays
+_INGRESS_HEADERS = {"X-Remote-User-ID": "ha-user"}
 _HELLO = '{"type": "client/hello", "payload": {"client_id": "web-1"}}'
 # sent by the fake internal Sendspin server as soon as the proxy connects to it
 _INTERNAL_GREETING = '{"type": "internal/connected"}'
@@ -64,7 +63,6 @@ async def proxy_server() -> AsyncGenerator[_ProxyServer]:
 def ingress(monkeypatch: pytest.MonkeyPatch) -> None:
     """Treat every proxy request as relayed by Home Assistant Ingress for a signed-in user."""
     monkeypatch.setattr(sendspin_proxy, "is_request_from_ingress_proxy", lambda _request: True)
-    monkeypatch.setattr(auth_middleware, "is_request_from_ingress_proxy", lambda _request: True)
     monkeypatch.setattr(sendspin_proxy, "get_authenticated_user", AsyncMock(return_value=_USER))
 
 
@@ -310,38 +308,42 @@ class TestSendspinProxyAuth:
         assert forwarded.data == _HELLO
         webserver = proxy_server.webserver
         webserver.set_sendspin_player_for_token.assert_called_once_with("token-a", "web-1")
-        webserver.set_sendspin_player_for_ingress_session.assert_not_called()
+        webserver.set_sendspin_player_for_ingress_client.assert_not_called()
 
     @pytest.mark.usefixtures("ingress")
-    async def test_ingress_auth_binds_the_web_player_to_the_ingress_session(
+    async def test_ingress_auth_binds_the_web_player_to_the_browser(
         self, proxy_server: _ProxyServer
     ) -> None:
         """An Ingress client announces its web player without a token, and is not forwarded."""
         async with proxy_server.session.ws_connect(
-            proxy_server.url, headers=_INGRESS_COOKIE
+            proxy_server.url, headers=_INGRESS_HEADERS
         ) as client:
-            await client.send_json({"type": "auth", "client_id": "web-1"})
+            await client.send_json(
+                {"type": "auth", "client_id": "web-1", "ingress_client_key": "key-a"}
+            )
             assert await client.receive_json(timeout=5) == {"type": "auth_ok"}
             assert await client.receive_str(timeout=5) == _INTERNAL_GREETING
             await client.send_str(_HELLO)
             forwarded = await asyncio.wait_for(proxy_server.received.get(), 5)
 
         assert forwarded.data == _HELLO
-        proxy_server.webserver.set_sendspin_player_for_ingress_session.assert_called_once_with(
-            _INGRESS_SESSION, "web-1"
+        proxy_server.webserver.set_sendspin_player_for_ingress_client.assert_called_once_with(
+            "ha-user", "key-a", "web-1"
         )
 
     @pytest.mark.usefixtures("ingress")
-    async def test_ingress_auth_without_a_session_binds_nothing(
+    async def test_ingress_auth_without_a_client_key_binds_nothing(
         self, proxy_server: _ProxyServer
     ) -> None:
-        """Without an Ingress session there is no browser to bind the web player to."""
-        async with proxy_server.session.ws_connect(proxy_server.url) as client:
+        """Without the key of its browser a web player can not be linked to that browser."""
+        async with proxy_server.session.ws_connect(
+            proxy_server.url, headers=_INGRESS_HEADERS
+        ) as client:
             await client.send_json({"type": "auth", "client_id": "web-1"})
             assert await client.receive_json(timeout=5) == {"type": "auth_ok"}
             assert await client.receive_str(timeout=5) == _INTERNAL_GREETING
 
-        proxy_server.webserver.set_sendspin_player_for_ingress_session.assert_not_called()
+        proxy_server.webserver.set_sendspin_player_for_ingress_client.assert_not_called()
 
     @pytest.mark.usefixtures("ingress")
     async def test_silent_ingress_client_is_still_proxied(
@@ -350,14 +352,14 @@ class TestSendspinProxyAuth:
         """An Ingress client that never sends an auth message is proxied once the wait is over."""
         monkeypatch.setattr(sendspin_proxy, "AUTH_TIMEOUT", 0.01)
         async with proxy_server.session.ws_connect(
-            proxy_server.url, headers=_INGRESS_COOKIE
+            proxy_server.url, headers=_INGRESS_HEADERS
         ) as client:
             assert await client.receive_str(timeout=5) == _INTERNAL_GREETING
             await client.send_str(_HELLO)
             forwarded = await asyncio.wait_for(proxy_server.received.get(), 5)
 
         assert forwarded.data == _HELLO
-        proxy_server.webserver.set_sendspin_player_for_ingress_session.assert_not_called()
+        proxy_server.webserver.set_sendspin_player_for_ingress_client.assert_not_called()
 
     @pytest.mark.usefixtures("ingress")
     @pytest.mark.parametrize("first_msg", [_HELLO, "not json", b"\x00\x01"])
@@ -366,7 +368,7 @@ class TestSendspinProxyAuth:
     ) -> None:
         """A client that starts with a Sendspin message right away does not lose it."""
         async with proxy_server.session.ws_connect(
-            proxy_server.url, headers=_INGRESS_COOKIE
+            proxy_server.url, headers=_INGRESS_HEADERS
         ) as client:
             if isinstance(first_msg, bytes):
                 await client.send_bytes(first_msg)
@@ -377,4 +379,4 @@ class TestSendspinProxyAuth:
             assert await client.receive_str(timeout=5) == _INTERNAL_GREETING
 
         assert forwarded.data == first_msg
-        proxy_server.webserver.set_sendspin_player_for_ingress_session.assert_not_called()
+        proxy_server.webserver.set_sendspin_player_for_ingress_client.assert_not_called()
