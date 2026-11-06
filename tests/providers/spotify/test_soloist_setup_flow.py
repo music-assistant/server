@@ -400,6 +400,7 @@ async def test_a_stored_choice_is_preselected(
             {CONF_SOLOIST_API_KEY: "k" * 20},
         ],
     )
+    session.context.kind = "reconfigure"
     await setup_flow._setup_playback(
         session, {CONF_PLAYBACK_BACKEND: BACKEND_SOLOIST}, "spotify-user"
     )
