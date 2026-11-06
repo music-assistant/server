@@ -1159,8 +1159,11 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         Return the sort options a listing offers, the listing's default first.
 
         :param listing: The listing to get the sort options of.
+        :raises InvalidDataError: When this server does not serve the listing.
         """
-        return list(LISTING_SORT_OPTIONS[listing])
+        if (options := LISTING_SORT_OPTIONS.get(listing)) is None:
+            raise InvalidDataError(f"Listing {listing.value} is not supported")
+        return list(options)
 
     @api_command("music/recently_played_items", required_scope=Scope.LIBRARY_READ)
     async def recently_played(

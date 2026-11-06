@@ -105,6 +105,8 @@ def _player_loading_our_queue(
     player._woken_from_sleep = False
     player._announcement_media = None
     player.cloud_queue_item_generation = 0
+    player._window_item_ids = {}
+    player._served_bindings = {}
     player.cloud_queue_version = 1.0
     cast("MagicMock", player.mass).streams.base_url = "http://192.168.1.10:8097"
     client.player.is_passive = False

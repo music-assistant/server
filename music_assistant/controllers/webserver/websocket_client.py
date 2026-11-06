@@ -372,6 +372,7 @@ class WebsocketClientHandler:
                     translation_key=err.translation_key,
                     translation_args=err.translation_args,
                     translation_owner=err.translation_owner,
+                    data=err.data,
                 )
             )
         except Exception as err:

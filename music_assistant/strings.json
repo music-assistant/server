@@ -1252,6 +1252,7 @@
     "login_failed": "Login failed. Please check your credentials and try again.",
     "audio_error": "An error occurred while processing audio.",
     "provider_stream_limit": "{0} has reached its limit of {1} simultaneous streams. Stop playback on another player and try again.",
+    "provider_stream_held": "{0} is already playing on {1}. Stop playback there first.",
     "queue_empty": "The queue is empty.",
     "unsupported_feature": "This feature is not supported.",
     "unsupported_system": "This is not supported on this system.",
