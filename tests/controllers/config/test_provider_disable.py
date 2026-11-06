@@ -37,7 +37,7 @@ def _setup_provider(mass: MusicAssistant, allow_disable: bool) -> ProviderConfig
 
 
 async def test_disable_rejected_when_not_allowed(mass_minimal: MusicAssistant) -> None:
-    """A provider that can not be disabled rejects the request and keeps its stored config."""
+    """A provider that cannot be disabled rejects the request and keeps its stored config."""
     config = mass_minimal.config
     prov_conf = _setup_provider(mass_minimal, allow_disable=False)
     with (
