@@ -2497,3 +2497,45 @@ async def test_a_failed_option_reset_is_tried_again(tmp_path: Path, error: Excep
         await asyncio.gather(*run._tasks)
     assert client.set_repeat_track.await_count == 2
     client.set_shuffle.assert_awaited_once_with(False, await_result=True)
+
+
+async def test_a_move_between_two_read_slices_starts_the_stall_clock_over(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A seek that lands within one read slice still leaves its item the full stall timeout."""
+    monkeypatch.setattr(soloist_backend, "_READ_SLICE_S", 0.05)
+    monkeypatch.setattr(soloist_backend, "_STALL_TIMEOUT_S", 0.2)
+    run = _live_run(tmp_path)
+    run._reader = asyncio.StreamReader()
+    _confirm_seeks(run)
+    await run._handle_event(_playback_event("playing", uri=TRACK_A))
+    await run._handle_event(_playback_event("buffering", uri=TRACK_A))
+    reading = asyncio.ensure_future(run._read_capture())
+    await asyncio.sleep(0.17)
+    await run.move_to(TRACK_A, 30_000, _streamdetails_for(uri=TRACK_A))
+    await asyncio.sleep(0.12)
+    assert run._error is None
+    run._stopped = True
+    await asyncio.wait_for(reading, 1)
+
+
+async def test_repeat_switched_on_during_a_reset_is_switched_off_too(tmp_path: Path) -> None:
+    """A switch the reset under way already went past is reset again once it is done."""
+    run = _live_run(tmp_path)
+    client = _client(run)
+    acked = asyncio.Event()
+
+    async def _await_ack(*_args: Any, **_kwargs: Any) -> None:
+        await acked.wait()
+
+    client.set_repeat_context.side_effect = _await_ack
+    await run._handle_event(_options_event("options_changed", shuffle=True))
+    while not client.set_repeat_context.await_count:
+        await asyncio.sleep(0)
+    await run._handle_event(_options_event("options_changed", repeat="track", shuffle=True))
+    acked.set()
+    await asyncio.gather(*run._tasks)
+    # the shuffle is off now, the repeat switched on meanwhile is not
+    await run._handle_event(_options_event("options_changed", repeat="track"))
+    await asyncio.gather(*run._tasks)
+    assert client.set_repeat_track.await_count == 2

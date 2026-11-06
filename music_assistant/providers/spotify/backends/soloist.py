@@ -806,7 +806,7 @@ class _EngineRun:
     when the consumer stops taking audio.
     """
 
-    def __init__(
+    def __init__(  # noqa: PLR0915
         self,
         backend: SoloistBackend,
         spotify_uri: str,
@@ -870,6 +870,8 @@ class _EngineRun:
         self._seek_target_ms: int | None = None
         self._seek_landed = asyncio.Event()
         self._pace_reset = False
+        # how long the capture has been owed audio the engine did not send
+        self._stalled_for = 0.0
         self._last_read_at = 0.0
         # every capture byte read; items start on its frame grid
         self._raw_total = 0
@@ -1060,6 +1062,7 @@ class _EngineRun:
             item.bind(streamdetails)
             self.queue_id = streamdetails.queue_id
         self._pace_reset = True
+        self._stalled_for = 0.0
         await self._set_sink(running=True)
         self.logger.debug("Spotify session moved to %s at %d ms", spotify_uri, seek_position_ms)
         return item
@@ -1556,7 +1559,9 @@ class _EngineRun:
             await client.set_shuffle(False, await_result=True)
         except (SoloistError, TimeoutError, OSError) as err:
             self.logger.debug("Could not switch shuffle and repeat off: %r", err)
-            # the next report that still shows one on tries again
+        finally:
+            # the next report that still shows one on, also one switched on
+            # while this ran, tries again
             self._options_on = False
 
     def _watch_unclaimed(self, item: _Item) -> None:
@@ -1633,7 +1638,6 @@ class _EngineRun:
         loop = asyncio.get_running_loop()
         pace_anchor: float | None = None
         paced_bytes = 0
-        stalled_for = 0.0
         while not self._stopped:
             # once the engine is gone the FIFO only drains, so a short wait tells
             # an emptied pipe as well as the full slice would
@@ -1653,12 +1657,12 @@ class _EngineRun:
                 # served) or the run has died or is stuck rebuffering; only the
                 # former is fine.
                 if not self._moving and (self._sink_running or self._rebuffering()):
-                    stalled_for += _READ_SLICE_S
-                    if stalled_for >= _STALL_TIMEOUT_S:
+                    self._stalled_for += _READ_SLICE_S
+                    if self._stalled_for >= _STALL_TIMEOUT_S:
                         self._fail("Spotify stopped sending audio")
                         return
                 else:
-                    stalled_for = 0.0
+                    self._stalled_for = 0.0
                 # Restart the pacing clock rather than carry the gap: making up
                 # lost time would mean an unpaced burst, which over-demands the
                 # engine's fetch pipeline exactly when it is recovering.
@@ -1666,7 +1670,7 @@ class _EngineRun:
                 continue
             finally:
                 self._read_waiting = False
-            stalled_for = 0.0
+            self._stalled_for = 0.0
             if not raw:
                 # writer end closed: the capture sink is gone (pulse restart)
                 self._fail("Spotify playback was interrupted")
