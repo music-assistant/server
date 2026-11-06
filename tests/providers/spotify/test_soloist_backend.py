@@ -2481,3 +2481,15 @@ async def test_a_hold_between_two_rebuffers_starts_the_stall_clock_over(
     assert run._error is None
     run._stopped = True
     await asyncio.wait_for(reading, 1)
+
+
+async def test_a_failed_option_reset_is_tried_again(tmp_path: Path) -> None:
+    """A reset lost to a dropped connection is retried on the next report that still shows repeat."""
+    run = _live_run(tmp_path)
+    client = _client(run)
+    client.set_repeat_track.side_effect = [TimeoutError, None]
+    for _ in range(2):
+        await run._handle_event(_options_event("options_changed", repeat="track"))
+        await asyncio.gather(*run._tasks)
+    assert client.set_repeat_track.await_count == 2
+    client.set_shuffle.assert_awaited_once_with(False, await_result=True)

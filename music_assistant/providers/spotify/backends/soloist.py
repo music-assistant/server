@@ -1550,10 +1550,14 @@ class _EngineRun:
         if (client := self._client) is None or not client.connected:
             return
         self.logger.debug("Shuffle or repeat switched on in Spotify, switching it off again")
-        with suppress(SoloistError, TimeoutError, OSError):
+        try:
             await client.set_repeat_track(False, await_result=True)
             await client.set_repeat_context(False, await_result=True)
             await client.set_shuffle(False, await_result=True)
+        except (SoloistError, TimeoutError, OSError) as err:
+            self.logger.debug("Could not switch shuffle and repeat off: %r", err)
+            # the next report that still shows one on tries again
+            self._options_on = False
 
     def _watch_unclaimed(self, item: _Item) -> None:
         """Stop the run when nobody takes up the item the engine moved on to in time."""
