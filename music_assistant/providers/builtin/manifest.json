@@ -5,6 +5,7 @@
   "name": "Music Assistant",
   "description": "Built-in/generic provider that handles generic URLs and playlists.",
   "codeowners": ["@music-assistant"],
+  "tier": "core",
   "requirements": [],
   "documentation": "https://music-assistant.io/music-providers/builtin/",
   "multi_instance": false,

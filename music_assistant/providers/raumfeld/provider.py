@@ -27,8 +27,6 @@ from urllib.parse import urljoin, urlparse
 import aiohttp
 import hassfeld
 from async_upnp_client.exceptions import UpnpError
-from hassfeld import upnp as hassfeld_upnp
-from hassfeld.constants import SERVICE_CONTENT_DIRECTORY
 from music_assistant_models.enums import IdentifierType
 
 from music_assistant.constants import (
@@ -39,6 +37,7 @@ from music_assistant.constants import (
 )
 from music_assistant.models.player_provider import PlayerProvider
 
+from . import webservice
 from .constants import (
     BUTTON_ITEM_CACHE_TTL,
     CACHE_CATEGORY_BUTTON_ITEMS,
@@ -75,6 +74,7 @@ from .helpers import (
 )
 from .player import RaumfeldPlayer
 from .speaker import RaumfeldSpeaker
+from .upnp import SERVICE_CONTENT_DIRECTORY, browse, get_action
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -263,6 +263,74 @@ class RaumfeldPlayerProvider(PlayerProvider):
         ip_address = urlparse(devloc).hostname if devloc else None
         return uuid, ip_address
 
+    async def browse_library(self, object_id: str, children: bool) -> str | None:
+        """
+        Browse the host's own library, returning its DIDL-Lite, or ``None`` if it gave none.
+
+        :param object_id: The library object to browse.
+        :param children: Whether to list its children rather than describe it.
+        :raises UpnpError: When the host's media server rejects the request.
+        """
+        location = self.host.resolve["udn_to_devloc"][self.host.media_server_udn]
+        return await browse(self.mass.http_session, location, object_id, children)
+
+    async def create_zone(self, rooms: list[str]) -> None:
+        """
+        Have the host put rooms in a zone of their own.
+
+        :param rooms: The rooms of the new zone.
+        :raises KeyError: When the host does not know one of the rooms.
+        """
+        room_udns = [self._known_room_udn(room) for room in rooms]
+        await webservice.connect_rooms_to_zone(self.mass.http_session, self._host_url, room_udns)
+
+    async def add_room_to_zone(self, room: str, zone: list[str]) -> None:
+        """
+        Have the host add a room to an existing zone.
+
+        :param room: The room to add.
+        :param zone: The rooms of the zone to add it to.
+        :raises KeyError: When the host does not know the room or the zone.
+        """
+        if (zone_udn := self.host.roomlst_to_zoneudn(zone)) is None:
+            raise KeyError(f"No zone of {', '.join(zone)}")
+        await webservice.connect_room_to_zone(
+            self.mass.http_session, self._host_url, self._known_room_udn(room), zone_udn
+        )
+
+    async def drop_room(self, room: str) -> None:
+        """
+        Have the host take a room out of its zone.
+
+        :param room: The room to take out.
+        :raises KeyError: When the host does not know the room.
+        """
+        await webservice.drop_room(
+            self.mass.http_session, self._host_url, self._known_room_udn(room)
+        )
+
+    async def enter_standby(self, room: str) -> None:
+        """
+        Switch a room off (manual standby).
+
+        :param room: The room to switch off.
+        :raises KeyError: When the host does not know the room.
+        """
+        await webservice.enter_manual_standby(
+            self.mass.http_session, self._host_url, self._known_room_udn(room)
+        )
+
+    async def leave_standby(self, room: str) -> None:
+        """
+        Wake a room from standby.
+
+        :param room: The room to wake.
+        :raises KeyError: When the host does not know the room.
+        """
+        await webservice.leave_standby(
+            self.mass.http_session, self._host_url, self._known_room_udn(room)
+        )
+
     async def refresh_station_buttons(self, player: RaumfeldPlayer) -> None:
         """
         Read a room's station buttons again, as they can be reassigned at any time.
@@ -422,11 +490,11 @@ class RaumfeldPlayerProvider(PlayerProvider):
             return None
         try:
             location = self.host.resolve["udn_to_devloc"][self.host.media_server_udn]
-            action = await hassfeld_upnp.get_dlna_action(
+            action = await get_action(
+                self.mass.http_session,
                 location,
                 SERVICE_CONTENT_DIRECTORY,
                 "GetStationButtonAssignment",
-                session=self.mass.http_session,
             )
             assigned = [
                 (button, response.get("ObjectID") or "")
@@ -483,21 +551,17 @@ class RaumfeldPlayerProvider(PlayerProvider):
         :param object_id: The library object to browse.
         :param children: Whether to list its children rather than describe it.
         """
-        flag = "BrowseDirectChildren" if children else "BrowseMetadata"
         try:
-            didl: str | None = await self.host.async_browse_media_server(object_id, flag)
-        except HOST_ERRORS as err:
+            return await self.browse_library(object_id, children)
+        except (*HOST_ERRORS, UpnpError) as err:
             self.logger.debug("Failed to browse %s on the Raumfeld host: %r", object_id, err)
             return None
-        return didl
 
     async def _load_line_in(self) -> None:
         """Fetch the host's Line-In inputs, keyed by renderer UUID."""
         try:
-            didl = await self.host.async_browse_media_server(
-                LINE_IN_OBJECT_ID, "BrowseDirectChildren"
-            )
-        except HOST_ERRORS as err:
+            didl = await self.browse_library(LINE_IN_OBJECT_ID, children=True)
+        except (*HOST_ERRORS, UpnpError) as err:
             self.logger.debug("Failed to browse Raumfeld Line-In inputs: %r", err)
             return
         self._line_in = parse_line_in(didl)
@@ -851,6 +915,17 @@ class RaumfeldPlayerProvider(PlayerProvider):
         except KeyError, AttributeError:
             return None
         return udn
+
+    def _known_room_udn(self, room: str) -> str:
+        """Return the room UDN the host reports for a room, raising ``KeyError`` if none."""
+        if (udn := self._room_udn(room)) is None:
+            raise KeyError(f"Unknown room {room}")
+        return udn
+
+    @property
+    def _host_url(self) -> str:
+        """Return the base URL of the host's web service."""
+        return f"http://{self._host_address}:{self._host_port}"
 
     def _forget_moved_renderers(self, rooms: list[str]) -> None:
         """

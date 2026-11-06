@@ -8,6 +8,7 @@
     "@music-assistant",
     "@TimoPtr"
   ],
+  "tier": "core",
   "requirements": [],
   "documentation": "https://music-assistant.io/plugins/music-quiz",
   "multi_instance": false,
