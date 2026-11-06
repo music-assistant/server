@@ -89,5 +89,5 @@ async def test_reconciliation_after_upgrade_avoids_quadratic_album_scan(
             limit=25,
         )
     finally:
-        await database._db.set_progress_handler(None, 0)
+        await database._db.set_progress_handler(progress, 0)
     assert rows == []
