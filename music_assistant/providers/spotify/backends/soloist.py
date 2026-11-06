@@ -1547,7 +1547,7 @@ class _EngineRun:
 
     async def _reset_options(self) -> None:
         """Switch shuffle and repeat off again after the Spotify app switched one on."""
-        if (client := self._client) is None or not client.connected:
+        if (client := self._client) is None:
             return
         self.logger.debug("Shuffle or repeat switched on in Spotify, switching it off again")
         try:

@@ -56,6 +56,7 @@ from music_assistant.providers.spotify_connect.soloist.runtime import (
     WS_PORT_FILE,
     SoloistAuthState,
     SoloistEntity,
+    SoloistError,
     SoloistEvent,
     SoloistOptionsChanged,
     SoloistPlaybackOptions,
@@ -2483,11 +2484,14 @@ async def test_a_hold_between_two_rebuffers_starts_the_stall_clock_over(
     await asyncio.wait_for(reading, 1)
 
 
-async def test_a_failed_option_reset_is_tried_again(tmp_path: Path) -> None:
+@pytest.mark.parametrize("error", [TimeoutError(), SoloistError("not connected")])
+async def test_a_failed_option_reset_is_tried_again(tmp_path: Path, error: Exception) -> None:
     """A reset lost to a dropped connection is retried on the next report that still shows repeat."""
     run = _live_run(tmp_path)
     client = _client(run)
-    client.set_repeat_track.side_effect = [TimeoutError, None]
+    client.set_repeat_track.side_effect = [error, None]
+    # a closed socket fails the command, which the reset sees like a timeout
+    client.connected = not isinstance(error, SoloistError)
     for _ in range(2):
         await run._handle_event(_options_event("options_changed", repeat="track"))
         await asyncio.gather(*run._tasks)
