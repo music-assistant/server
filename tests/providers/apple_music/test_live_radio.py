@@ -15,6 +15,7 @@ from music_assistant_models.errors import ResourceTemporarilyUnavailable, Unplay
 from music_assistant_models.streamdetails import StreamDetails, StreamMetadata
 
 from music_assistant.providers.apple_music.live_radio import (
+    REFUSED_LICENSE_SECONDS,
     RENEW_RETRY_SECONDS,
     SEGMENT_RETRIES,
     AppleMusicLiveRadioManager,
@@ -599,6 +600,7 @@ async def test_stream_details_hold_the_stream_and_the_license_of_this_account(
     assert details.data["key_id"] == "k1"
     assert details.data["audio_config"] == b"config"
     assert details.data["key_server_url"] == "https://key.example"
+    assert details.stream_metadata_update_callback == harness.radio._update_stream_metadata
     assert api.get_data.await_args_list[0].args == ("catalog/de/stations/ra.1",)
     assert api.get_data.await_args_list[1].args == ("play/assets",)
     assert api.get_data.await_args_list[1].kwargs == {
@@ -711,10 +713,10 @@ async def test_the_provider_stream_closes_the_whole_chain(monkeypatch: pytest.Mo
     assert session["end_reason"] == "consumer_closed"  # type: ignore[index]
 
 
-async def test_a_new_track_is_scheduled_once_for_when_its_audio_plays(
+async def test_a_new_track_is_noted_once_with_the_audio_it_starts_at(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The same track in later segments is not scheduled again."""
+    """The same track in later segments is not noted again, and nothing shows it yet."""
     harness = _Harness([_media_playlist()], monkeypatch)
     track = _segment_with_track()
 
@@ -724,38 +726,19 @@ async def test_a_new_track_is_scheduled_once_for_when_its_audio_plays(
     harness.radio._fetch_bytes = fetch_bytes  # type: ignore[method-assign]
     await _read(harness.radio, harness.details, 3)
 
-    call_later = cast("MagicMock", harness.radio.mass.call_later)
-    call_later.assert_called_once()
-    assert call_later.call_args.kwargs == {"task_id": "apple_music_live_metadata_am_1_0"}
-    delay, apply, details, metadata = call_later.call_args.args
-    assert delay == 0
-    assert apply == harness.radio._apply_stream_metadata
-    assert details is harness.details
-    assert (metadata.title, metadata.artist) == ("Song", "Artist")
+    pending = harness.details.data["pending_metadata"]
+    assert [(start, meta.title, meta.artist) for start, meta in pending] == [
+        (0.0, "Song", "Artist")
+    ]
+    assert harness.details.stream_metadata is None
     session = harness.radio.monitor.as_dict()["sessions"][0]  # type: ignore[index]
     assert session["stream_title"] == "Artist - Song"  # type: ignore[index]
 
 
-async def test_metadata_waits_for_the_audio_sent_ahead_of_it(
+async def test_a_later_title_starts_at_the_audio_sent_before_it(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Audio the player still has to play delays the new title by that long."""
-    harness = _Harness([_media_playlist()], monkeypatch)
-    session = harness.radio.monitor.start_session("ra.1")
-    session.audio_seconds_sent = 40.0
-    monkeypatch.setattr(f"{MODULE}.time.monotonic", lambda: 110.0)
-
-    harness.radio._schedule_stream_metadata(
-        harness.details, StreamMetadata(title="Song", artist="Artist"), session, 100.0
-    )
-
-    assert cast("MagicMock", harness.radio.mass.call_later).call_args.args[0] == 30.0
-
-
-async def test_a_new_title_does_not_replace_one_that_still_waits(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Each title gets its own timer, and the stream end cancels those that did not fire."""
+    """Each title keeps the position of its own segment in the stream."""
     harness = _Harness([_media_playlist()], monkeypatch)
     titles = iter([StreamMetadata(title="Song"), StreamMetadata(title="News")])
 
@@ -765,25 +748,111 @@ async def test_a_new_title_does_not_replace_one_that_still_waits(
     monkeypatch.setattr(f"{MODULE}.parse_stream_metadata", next_title)
     await _read(harness.radio, harness.details, 4)
 
-    mass: Any = harness.radio.mass
-    task_ids = [call.kwargs["task_id"] for call in mass.call_later.call_args_list]
-    assert len(set(task_ids)) == 2
-    assert [call.args[0] for call in mass.cancel_timer.call_args_list] == task_ids
+    pending = harness.details.data["pending_metadata"]
+    assert [(start, meta.title) for start, meta in pending] == [(0.0, "Song"), (16.0, "News")]
 
 
-def test_applied_metadata_updates_the_queue(monkeypatch: pytest.MonkeyPatch) -> None:
-    """The title is published on the stream details and the queue is told."""
+async def test_a_title_shows_when_its_audio_plays(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The elapsed playback time decides the title, the newest one that has started wins."""
     harness = _Harness([_media_playlist()], monkeypatch)
-    harness.details.queue_id = "queue"
-    metadata = StreamMetadata(title="Song")
-
-    harness.radio._apply_stream_metadata(harness.details, metadata)
-
-    assert harness.details.stream_metadata == metadata
-    assert harness.details.stream_metadata_last_updated is not None
-    cast("MagicMock", harness.radio.mass.player_queues.signal_update).assert_called_once_with(
-        "queue"
+    song, news, next_song = (
+        StreamMetadata(title="Song"),
+        StreamMetadata(title="News"),
+        StreamMetadata(title="Next"),
     )
+    harness.details.data["pending_metadata"] = [(0.0, song), (16.0, news), (32.0, next_song)]
+
+    await harness.radio._update_stream_metadata(harness.details, 15)
+    assert harness.details.stream_metadata == song
+
+    await harness.radio._update_stream_metadata(harness.details, 40)
+    assert harness.details.stream_metadata == next_song
+    assert harness.details.data["pending_metadata"] == []
+
+    await harness.radio._update_stream_metadata(harness.details, 41)
+    assert harness.details.stream_metadata == next_song
+
+
+async def test_a_restart_does_not_hold_back_its_titles(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The audio counts from 0 again while playback time goes on, titles of the old run go."""
+    harness = _Harness([_media_playlist()], monkeypatch)
+    harness.details.data["pending_metadata"] = [(500.0, StreamMetadata(title="Old"))]
+    new_title = StreamMetadata(title="New")
+    monkeypatch.setattr(f"{MODULE}.parse_stream_metadata", lambda _content: new_title)
+
+    await _read(harness.radio, harness.details, 2)
+    await harness.radio._update_stream_metadata(harness.details, 300)
+
+    assert harness.details.stream_metadata == new_title
+
+
+async def _refused_license_stream(harness: _Harness) -> None:
+    """Read the stream until the refusal of Apple ends it."""
+    with pytest.raises(UnplayableMediaError):
+        async for _ in harness.radio.get_audio_stream(harness.details):
+            pass
+
+
+async def test_a_refused_renewal_keeps_the_station_from_a_new_license(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A restart must not take the stream back, so nothing is asked of Apple for a while."""
+    harness = _Harness([_playlist(10, 3)], monkeypatch)
+    harness.details.data["renew_at"] = 0.0
+    harness.radio._get_license = AsyncMock(  # type: ignore[method-assign]
+        side_effect=UnplayableMediaError("Apple refused the live radio license (HTTP 403)")
+    )
+    await _refused_license_stream(harness)
+    api = _StreamDetailsApi(harness, [ASSET], MASTER)
+
+    with pytest.raises(UnplayableMediaError):
+        await harness.radio.get_stream_details("ra.1")
+
+    api.get_data.assert_not_awaited()
+    assert harness.radio._get_license.await_count == 1
+
+
+async def test_a_refused_key_keeps_the_station_from_a_new_license(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The key of a rotation is refused like a renewal, and nothing is asked of Apple either."""
+    harness = _Harness([_playlist(10, 3), _rotating_playlist()], monkeypatch)
+    harness.key_failures["k2"] = 99
+    harness.key_error = UnplayableMediaError("Apple refused the live radio license")
+    await _refused_license_stream(harness)
+    api = _StreamDetailsApi(harness, [ASSET], MASTER)
+
+    with pytest.raises(UnplayableMediaError):
+        await harness.radio.get_stream_details("ra.1")
+
+    api.get_data.assert_not_awaited()
+
+
+async def test_a_network_error_on_a_key_does_not_refuse_the_station(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Only the answer of Apple counts as a refusal."""
+    harness = _Harness([_playlist(10, 3), _rotating_playlist()], monkeypatch)
+    harness.key_failures["k2"] = 1
+    await _read(harness.radio, harness.details, 6)
+
+    assert harness.radio._refused is None
+
+
+async def test_a_refused_station_plays_again_after_the_wait(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A later start on purpose asks Apple again, and other stations never had to wait."""
+    harness = _Harness([_media_playlist()], monkeypatch)
+
+    _StreamDetailsApi(harness, [ASSET], MASTER)
+    harness.radio._refused = ("ra.2", time.monotonic())
+    assert (await harness.radio.get_stream_details("ra.1")).item_id == "ra.1"
+
+    _StreamDetailsApi(harness, [ASSET], MASTER)
+    harness.radio._refused = ("ra.1", time.monotonic() - REFUSED_LICENSE_SECONDS)
+    assert (await harness.radio.get_stream_details("ra.1")).item_id == "ra.1"
+    assert harness.radio._refused is None
 
 
 async def test_a_failing_segment_is_retried(monkeypatch: pytest.MonkeyPatch) -> None:

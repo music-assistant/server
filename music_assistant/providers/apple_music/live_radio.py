@@ -45,6 +45,9 @@ DEFAULT_TARGET_DURATION = 16.0
 SEGMENT_RETRIES = 3
 RENEW_RETRY_SECONDS = 60
 RESUME_WINDOW_SECONDS = 120
+# long enough for every restart of the stream to give up, short enough to play again on purpose
+REFUSED_LICENSE_SECONDS = 60
+METADATA_UPDATE_SECONDS = 5
 STATIONS_CACHE_SECONDS = 3600 * 24
 SLOW_CONSUMER_SECONDS = 30
 INPUT_BURST_SECONDS = "5"
@@ -237,6 +240,7 @@ class AppleMusicLiveRadioManager:
         self.monitor = LiveRadioMonitor(provider.logger)
         self._mirror_choice = 0
         self._resume: tuple[str, int, float] | None = None
+        self._refused: tuple[str, float] | None = None
 
     @use_cache(
         STATIONS_CACHE_SECONDS,
@@ -298,12 +302,17 @@ class AppleMusicLiveRadioManager:
                 raise UnplayableMediaError(f"Live radio stream failed: {reason}") from None
             raise
         finally:
-            for task_id in streamdetails.data.get("metadata_timers", []):
-                self.mass.cancel_timer(task_id)
             self.monitor.end_session(reason)
 
     async def _get_stream_details(self, station_id: str) -> StreamDetails:
         """Return the stream details of a live station, as get_stream_details describes."""
+        # a new license could take the stream back from a device that Apple moved it to
+        if self._refused and self._refused[0] == station_id:
+            if time.monotonic() - self._refused[1] < REFUSED_LICENSE_SECONDS:
+                raise UnplayableMediaError(
+                    f"Apple recently refused the license of live station {station_id}"
+                )
+            self._refused = None
         asset = await self._get_asset(station_id)
         async with self.mass.http_session.get(
             asset["url"], headers=_CDN_HEADERS, timeout=_CDN_TIMEOUT
@@ -328,6 +337,7 @@ class AppleMusicLiveRadioManager:
             "init_url": newest.init_url,
             "audio_config": None,
             "renew_at": None,
+            "pending_metadata": [],
         }
         await self._load_key(newest, data)
         data["audio_config"] = data["keys"][newest.key_id][1].audio_config
@@ -347,6 +357,8 @@ class AppleMusicLiveRadioManager:
             can_seek=False,
             allow_seek=False,
             data=data,
+            stream_metadata_update_callback=self._update_stream_metadata,
+            stream_metadata_update_interval=METADATA_UPDATE_SECONDS,
         )
 
     async def _stream_segments(  # noqa: PLR0915
@@ -363,6 +375,7 @@ class AppleMusicLiveRadioManager:
         last_metadata: StreamMetadata | None = None
         next_sequence = self._resume_sequence(station_id)
         target = DEFAULT_TARGET_DURATION
+        data["pending_metadata"] = []
 
         yield await self._fetch_bytes(data["init_url"])
 
@@ -413,7 +426,13 @@ class AppleMusicLiveRadioManager:
                 metadata = parse_stream_metadata(content)
                 if metadata and metadata != last_metadata:
                     last_metadata = metadata
-                    self._schedule_stream_metadata(streamdetails, metadata, session, started)
+                    session.stream_title = f"{metadata.artist} - {metadata.title}"
+                    self.monitor.event(
+                        "stream_metadata",
+                        title=session.stream_title,
+                        at_audio_second=round(session.audio_seconds_sent),
+                    )
+                    data["pending_metadata"].append((session.audio_seconds_sent, metadata))
 
                 key, encryption = data["keys"][segment.key_id]
                 content = await asyncio.to_thread(decrypt_segment, content, key, encryption)
@@ -470,7 +489,11 @@ class AppleMusicLiveRadioManager:
     ) -> None:
         """Move on to the key of a segment, without interrupting the stream."""
         if segment.key_id not in data["keys"]:
-            await self._load_key(segment, data)
+            try:
+                await self._load_key(segment, data)
+            except UnplayableMediaError:
+                self._refused = (session.station_id, time.monotonic())
+                raise
         if segment.key_id == data["key_id"]:
             return
         encryption: TrackEncryption = data["keys"][segment.key_id][1]
@@ -514,39 +537,22 @@ class AppleMusicLiveRadioManager:
         """Remember the next segment, so a restart continues without replaying audio."""
         self._resume = (station_id, sequence, time.monotonic())
 
-    def _schedule_stream_metadata(
-        self,
-        streamdetails: StreamDetails,
-        metadata: StreamMetadata,
-        session: LiveSession,
-        started: float,
+    async def _update_stream_metadata(
+        self, streamdetails: StreamDetails, elapsed_time: int
     ) -> None:
-        """Show the metadata once the audio already sent ahead of it has played."""
-        ahead = max(0.0, session.audio_seconds_sent - (time.monotonic() - started))
-        session.stream_title = f"{metadata.artist} - {metadata.title}"
-        self.monitor.event("stream_metadata", title=session.stream_title, in_seconds=round(ahead))
-        timers: list[str] = streamdetails.data.setdefault("metadata_timers", [])
-        # a title that follows soon must not replace one that still waits for its audio
-        task_id = (
-            f"apple_music_live_metadata_{self.provider.instance_id}_{session.session}_{len(timers)}"
-        )
-        timers.append(task_id)
-        self.mass.call_later(
-            ahead,
-            self._apply_stream_metadata,
-            streamdetails,
-            metadata,
-            task_id=task_id,
-        )
+        """
+        Show the newest title whose audio has started to play.
 
-    def _apply_stream_metadata(
-        self, streamdetails: StreamDetails, metadata: StreamMetadata
-    ) -> None:
-        """Publish the metadata of the live broadcast on the stream details."""
-        streamdetails.stream_metadata = metadata
-        streamdetails.stream_metadata_last_updated = time.time()
-        if streamdetails.queue_id:
-            self.mass.player_queues.signal_update(streamdetails.queue_id)
+        :param streamdetails: The stream details of the live station.
+        :param elapsed_time: Elapsed playback time in seconds.
+        """
+        # a restart counts the audio from 0 again while the playback time goes on, so its
+        # titles show when they are sent, a few seconds early, which a listener can accept
+        pending: list[tuple[float, StreamMetadata]] = cast(
+            "dict[str, Any]", streamdetails.data
+        ).get("pending_metadata", [])
+        while pending and pending[0][0] <= elapsed_time:
+            _, streamdetails.stream_metadata = pending.pop(0)
 
     async def _get_asset(self, station_id: str) -> dict[str, Any]:
         """Return the stream url and key server Apple hands this account for a station."""
@@ -621,6 +627,9 @@ class AppleMusicLiveRadioManager:
         segment = LiveSegment(0, "", 0, None, data["key_id"], data["widevine_uri"], None)
         try:
             _, renew_after = await self._get_license(data["key_server_url"], segment, renewal=True)
+        except UnplayableMediaError:
+            self._refused = (session.station_id, time.monotonic())
+            raise
         except (ClientError, TimeoutError) as err:
             session.license_errors += 1
             self.monitor.event(
