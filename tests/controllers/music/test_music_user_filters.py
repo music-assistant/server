@@ -638,6 +638,7 @@ async def test_refresh_item_skips_a_mapping_served_by_a_hidden_account(mock_get_
         {"tidal--mine": _private(USER_A), "spotify--theirs": _private(USER_B)}, [theirs]
     )
     controller.mass.metadata = AsyncMock()
+    controller.mass.streams.audio_analysis.delete_measured_loudness = AsyncMock()  # type: ignore[method-assign]
     substitute = Track(
         item_id="sub",
         provider="tidal--mine",
@@ -676,6 +677,7 @@ async def test_refresh_item_fetches_from_the_users_own_account_of_the_service(
         {"spotify--mine": _private(USER_A), "spotify--theirs": _private(USER_B)}, [mine, theirs]
     )
     controller.mass.metadata = AsyncMock()
+    controller.mass.streams.audio_analysis.delete_measured_loudness = AsyncMock()  # type: ignore[method-assign]
     library_track = _library_track("spotify--gone")
     mapping = next(iter(library_track.provider_mappings))
     fresh = Track(
@@ -710,6 +712,7 @@ async def test_refresh_item_fetches_from_the_account_serving_the_mapping(
         {"spotify--mine": _private(USER_A), "spotify--theirs": _private(USER_B)}, [mine]
     )
     controller.mass.metadata = AsyncMock()
+    controller.mass.streams.audio_analysis.delete_measured_loudness = AsyncMock()  # type: ignore[method-assign]
     library_track = _library_track("spotify--gone")
     mapping = next(iter(library_track.provider_mappings))
     fresh = Track(

@@ -510,6 +510,38 @@ async def test_refresh_item_non_library_item_skips_update() -> None:
     ctrl_mock.update_item_in_library.assert_not_called()
 
 
+@pytest.mark.parametrize(
+    ("media_type", "cleared"), [(MediaType.TRACK, True), (MediaType.ALBUM, False)]
+)
+async def test_refresh_item_clears_the_measured_loudness_of_a_track(
+    media_type: MediaType, cleared: bool
+) -> None:
+    """Refreshing a track clears its measured loudness, refreshing an album does not."""
+    mapping = create_provider_mapping(provider_instance="spotify_1", item_id="abc")
+    item = create_mock_album(item_id="abc", provider="spotify", provider_mappings=[mapping])
+    item.media_type = media_type
+
+    ctrl_mock = AsyncMock()
+    ctrl_mock.get_provider_item = AsyncMock(return_value=item)
+
+    mass = Mock()
+    mass.get_provider.return_value = Mock()
+    mass.cache.delete = AsyncMock()
+    mass.streams.audio_analysis.delete_measured_loudness = AsyncMock()
+
+    music_ctrl = MusicController.__new__(MusicController)
+    music_ctrl.mass = mass
+
+    with patch.object(music_ctrl, "get_controller", return_value=ctrl_mock):
+        await music_ctrl.refresh_item(item)
+
+    delete = mass.streams.audio_analysis.delete_measured_loudness
+    if cleared:
+        delete.assert_awaited_once_with(item.provider_mappings)
+    else:
+        delete.assert_not_awaited()
+
+
 # --- Group 3: Sync deletions ---
 
 

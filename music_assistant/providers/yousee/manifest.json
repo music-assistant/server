@@ -5,6 +5,7 @@
   "stage": "stable",
   "description": "YouSee Musik, a Danish music streaming service.",
   "codeowners": ["@math625f"],
+  "tier": "community",
   "requirements": [],
   "documentation": "https://music-assistant.io/music-providers/yousee/",
   "multi_instance": true

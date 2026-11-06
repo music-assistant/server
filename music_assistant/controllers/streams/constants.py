@@ -99,6 +99,9 @@ class PacingProfile(StrEnum):
     # ~1.1x at best, and what it banks ahead is all its end-of-track crossfade has.
     # A pace close to playback speed leaves most of that on the server. The burst is
     # the least a player holds at a session start, before a slow source earned it a lead.
+    # A player that fetches each track only once the previous download completes (Sonos)
+    # holds at a boundary just that burst plus what the pace banked over the track it played,
+    # and grouped speakers need a few seconds there at the first boundaries after a start.
     NEAR_REALTIME = "near_realtime"
     # live AudioSource streams, where whatever the burst hands over sits in the
     # player's buffer as listening delay
@@ -107,7 +110,7 @@ class PacingProfile(StrEnum):
 
 _PACING: Final[dict[PacingProfile, tuple[str, str]]] = {
     PacingProfile.DEFAULT: ("1.1", "60"),
-    PacingProfile.NEAR_REALTIME: ("1.01", "3"),
+    PacingProfile.NEAR_REALTIME: ("1.02", "3"),
     PacingProfile.LOW_LATENCY: ("1.02", "0.5"),
 }
 

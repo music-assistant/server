@@ -16,6 +16,8 @@ from lc3 import Encoder
 from music_assistant.providers.auracast.broadcaster import (
     AuracastBroadcaster,
     BroadcastConfig,
+    generate_device_address,
+    parse_device_address,
     parse_manufacturer_data,
     probe_controller,
 )
@@ -377,3 +379,83 @@ async def test_manufacturer_data_is_added_to_extended_advertising() -> None:
     data = bluetooth_device.create_advertising_set.await_args.kwargs["advertising_data"]
     manufacturer_structure = bytes([3 + len(payload), 0xFF, 0x57, 0x00]) + payload
     assert manufacturer_structure in data
+
+
+@pytest.mark.asyncio
+async def test_broadcast_name_is_also_advertised_as_local_name() -> None:
+    """Advertise the name as both the Complete Local Name and the Broadcast Name."""
+    name = "Living room"
+    broadcaster = AuracastBroadcaster(
+        BroadcastConfig(name=name, transport_spec="serial:/dev/test,1000000")
+    )
+    advertising_set = MagicMock()
+    advertising_set.start_periodic = AsyncMock()
+    big = MagicMock()
+    big.bis_links = []
+    bluetooth_device = MagicMock()
+    bluetooth_device.create_advertising_set = AsyncMock(return_value=advertising_set)
+    bluetooth_device.create_big = AsyncMock(return_value=big)
+    broadcaster._device = bluetooth_device
+    broadcaster._bytes_per_bis = 100
+
+    await broadcaster._create_broadcast()
+
+    data = bluetooth_device.create_advertising_set.await_args.kwargs["advertising_data"]
+    name_bytes = name.encode()
+    assert bytes([1 + len(name_bytes), 0x09]) + name_bytes in data
+    assert bytes([1 + len(name_bytes), 0x30]) + name_bytes in data
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        ("F0:F1:F2:F3:F4:F5", "F0:F1:F2:F3:F4:F5"),
+        ("f0:f1:f2:f3:f4:f5", "F0:F1:F2:F3:F4:F5"),
+        ("00:11:22:33:44:55", None),
+        ("nonsense", None),
+        (None, None),
+        (100, None),
+    ],
+)
+def test_parse_device_address_only_accepts_static_addresses(
+    value: object, expected: str | None
+) -> None:
+    """Accept a stored static address and reject anything else."""
+    assert parse_device_address(value) == expected
+
+
+def test_generated_device_address_is_a_valid_static_address() -> None:
+    """Generate addresses that pass the check applied to stored values."""
+    address = generate_device_address()
+
+    assert parse_device_address(address) == address
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("configured", ["F0:F1:F2:F3:F4:F5", None])
+async def test_start_uses_the_configured_device_address(
+    monkeypatch: pytest.MonkeyPatch, configured: str | None
+) -> None:
+    """Use the stored address, and fall back to a static one when none is given."""
+    hci_transport = MagicMock()
+    hci_transport.__iter__.return_value = (object(), object())
+    hci_transport.close = AsyncMock()
+    from_config = MagicMock(return_value=create_bluetooth_device())
+    monkeypatch.setattr(bumble_transport, "open_transport", AsyncMock(return_value=hci_transport))
+    monkeypatch.setattr(bumble_device.Device, "from_config_with_hci", from_config)
+    monkeypatch.setattr(AuracastBroadcaster, "_create_broadcast", AsyncMock())
+    broadcaster = AuracastBroadcaster(
+        BroadcastConfig(
+            name="Test",
+            transport_spec="serial:/dev/test,1000000",
+            device_address=configured,
+        )
+    )
+
+    await broadcaster.start()
+    await broadcaster.stop()
+
+    address = from_config.call_args.args[0].address
+    assert address.is_static
+    if configured is not None:
+        assert address == bumble_hci.Address(configured)

@@ -45,6 +45,7 @@ from .constants import (
     GROUP_SETTLE_TIME,
     HOST_CHECK_FAILURES,
     HOST_ERRORS,
+    HOST_SEARCH_INTERVAL,
     INITIAL_UPDATE_TIMEOUT,
     LIBRARY_REFRESH_INTERVAL,
     LINE_IN_OBJECT_ID,
@@ -54,6 +55,7 @@ from .constants import (
     ZONE_WATCH_INTERVAL,
 )
 from .helpers import (
+    discover_hosts,
     host_is_valid,
     parse_control_url,
     parse_library_items,
@@ -90,6 +92,8 @@ class RaumfeldPlayerProvider(PlayerProvider):
     _connected: bool = False
     # health checks the host has missed in a row while connected
     _host_check_failures: int = 0
+    # when the network was last searched for a host that stopped answering
+    _host_searched_at: float = 0.0
     # renderer UUID -> (Line-In stream url, title) for rooms that expose an analog input
     _line_in: dict[str, tuple[str, str]]
     # when the station buttons were last read
@@ -292,13 +296,16 @@ class RaumfeldPlayerProvider(PlayerProvider):
         if not self._host_address:
             self.logger.debug("No Raumfeld host configured yet; will retry")
             return
+        if (
+            not await host_is_valid(self.mass.http_session, self._host_address, self._host_port)
+            and not await self._follow_moved_host()
+        ):
+            self.logger.debug("Raumfeld host %s not reachable yet; will retry", self._host_address)
+            return
         # a fresh host object avoids stale state left by a previous failed attempt
         self.host = hassfeld.RaumfeldHost(
             self._host_address, self._host_port, session=self.mass.http_session
         )
-        if not await host_is_valid(self.mass.http_session, self._host_address, self._host_port):
-            self.logger.debug("Raumfeld host %s not reachable yet; will retry", self._host_address)
-            return
         self._update_task = self.mass.create_task(
             self.host.async_update_all(self.mass.http_session)
         )
@@ -326,6 +333,37 @@ class RaumfeldPlayerProvider(PlayerProvider):
         self._zone_watch_task = self.mass.create_task(self._watch_zones())
         self._connected = True
         self.logger.info("Connected to Raumfeld host %s", self._host_address)
+
+    async def _follow_moved_host(self) -> bool:
+        """
+        Look for the host on the network, and take its new address when it moved.
+
+        Returns whether a host answers at the address the provider now uses.
+        """
+        if time.time() - self._host_searched_at < HOST_SEARCH_INTERVAL:
+            return False
+        self._host_searched_at = time.time()
+        try:
+            found = [host for host in await discover_hosts() if host != self._host_address]
+        except OSError as err:
+            self.logger.debug("Searching the network for the Raumfeld host failed: %r", err)
+            return False
+        if len(found) > 1:
+            # another Raumfeld system on the same network: which one is ours cannot be told
+            self.logger.debug(
+                "Found more than one other Raumfeld host (%s), keeping %s",
+                found,
+                self._host_address,
+            )
+            return False
+        if not found or not await host_is_valid(self.mass.http_session, found[0], self._host_port):
+            return False
+        self.logger.info(
+            "Raumfeld host moved from %s to %s, using the new address", self._host_address, found[0]
+        )
+        self._host_address = found[0]
+        self._update_setup_data(CONF_IP_ADDRESS, found[0])
+        return True
 
     async def _disconnect(self, reason: str) -> None:
         """Stop the update loop and mark players unavailable until the host returns."""
