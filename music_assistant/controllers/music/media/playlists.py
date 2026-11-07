@@ -478,42 +478,54 @@ class PlaylistController(MediaControllerBase[Playlist]):
         )
 
     async def remove_playlist_tracks(
-        self, db_playlist_id: str | int, positions_to_remove: tuple[int, ...]
+        self,
+        db_playlist_id: str | int,
+        positions_to_remove: tuple[int, ...],
+        uris: list[str] | None = None,
     ) -> BackgroundTask:
         """
         Queue removing items from a playlist.
 
         :param db_playlist_id: Library playlist id.
         :param positions_to_remove: Provider playlist positions to remove.
+        :param uris: The uri of the item the caller sees at each position, to refuse the
+            removal when the playlist changed since it was listed.
         :return: Managed background task for the requested playlist update.
         :raises ResourceBusyError: A move or removal of the playlist is still in progress.
+        :raises InvalidDataError: An item at the positions is not the one given in uris.
         """
         playlist = await self._get_editable_library_item(db_playlist_id)
         playlist_name = playlist.name
-        # positions only hold while nothing else changes the order, so nothing waits its turn
-        self._ensure_order_idle(playlist)
-        user = get_current_user()
-        user_id = user.user_id if user else None
-        return self.mass.tasks.run_background_task(
-            name=f"Remove items from playlist {playlist_name}",
-            handler=lambda: self._handle_remove_playlist_tracks(
-                db_playlist_id, positions_to_remove, user_id
-            ),
-            translation_key="remove_playlist_tracks",
-            translation_owner=self.translation_owner,
-            translation_args=[playlist_name],
-            user_id=user.user_id if user else None,
-            metadata={
-                "task_domain": _PLAYLIST_REMOVE_TASK_DOMAIN,
-                "playlist_id": playlist.item_id,
-                "playlist_name": playlist_name,
-                "item_count": len(positions_to_remove),
-            },
-            priority=True,
-        )
+        # positions only hold while nothing else changes the order, so nothing waits its turn;
+        # the queued task keeps refusing other edits until it is done
+        with self._moving_order(playlist):
+            await self._ensure_positions_hold(playlist, positions_to_remove, uris)
+            user = get_current_user()
+            user_id = user.user_id if user else None
+            return self.mass.tasks.run_background_task(
+                name=f"Remove items from playlist {playlist_name}",
+                handler=lambda: self._handle_remove_playlist_tracks(
+                    db_playlist_id, positions_to_remove, user_id
+                ),
+                translation_key="remove_playlist_tracks",
+                translation_owner=self.translation_owner,
+                translation_args=[playlist_name],
+                user_id=user.user_id if user else None,
+                metadata={
+                    "task_domain": _PLAYLIST_REMOVE_TASK_DOMAIN,
+                    "playlist_id": playlist.item_id,
+                    "playlist_name": playlist_name,
+                    "item_count": len(positions_to_remove),
+                },
+                priority=True,
+            )
 
     async def move_playlist_track(
-        self, db_playlist_id: str | int, from_position: int, to_position: int
+        self,
+        db_playlist_id: str | int,
+        from_position: int,
+        to_position: int,
+        uri: str | None = None,
     ) -> None:
         """
         Move one item of a playlist to another position.
@@ -523,7 +535,10 @@ class PlaylistController(MediaControllerBase[Playlist]):
         :param db_playlist_id: Library playlist id.
         :param from_position: The current position of the item, 1-based.
         :param to_position: The position the item ends up at after the move, 1-based.
+        :param uri: The uri of the item the caller sees at from_position, to refuse the move
+            when the playlist changed since it was listed.
         :raises ResourceBusyError: A move or removal of the playlist is still in progress.
+        :raises InvalidDataError: The item at from_position is not the one given in uri.
         """
         playlist, provider, playlist_prov_item_id = await self._get_reorderable_playlist(
             db_playlist_id
@@ -534,6 +549,9 @@ class PlaylistController(MediaControllerBase[Playlist]):
         if from_position == to_position:
             return
         with self._moving_order(playlist):
+            await self._ensure_positions_hold(
+                playlist, (from_position,), None if uri is None else [uri]
+            )
             await provider.move_playlist_track(playlist_prov_item_id, from_position, to_position)
             await self._refresh_provider_playlist_tracks(
                 playlist_prov_item_id, provider.instance_id
@@ -541,7 +559,11 @@ class PlaylistController(MediaControllerBase[Playlist]):
             await self._request_metadata_refresh(playlist)
 
     async def move_playlist_tracks(
-        self, db_playlist_id: str | int, positions: list[int], to_position: int | None = None
+        self,
+        db_playlist_id: str | int,
+        positions: list[int],
+        to_position: int | None = None,
+        uris: list[str] | None = None,
     ) -> None:
         """
         Move items of a playlist as one block to another position.
@@ -554,7 +576,10 @@ class PlaylistController(MediaControllerBase[Playlist]):
         :param positions: The current positions of the items, 1-based.
         :param to_position: The position the block's first item ends up at, 1-based. Omit it
             to move the items to the end of the playlist.
+        :param uris: The uri of the item the caller sees at each position, to refuse the move
+            when the playlist changed since it was listed.
         :raises ResourceBusyError: A move or removal of the playlist is still in progress.
+        :raises InvalidDataError: An item at the positions is not the one given in uris.
         """
         playlist, provider, playlist_prov_item_id = await self._get_reorderable_playlist(
             db_playlist_id
@@ -574,6 +599,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
         ):
             return
         with self._moving_order(playlist):
+            await self._ensure_positions_hold(playlist, positions, uris)
             try:
                 await provider.move_playlist_tracks(playlist_prov_item_id, selected, to_position)
             finally:
@@ -2173,6 +2199,33 @@ class PlaylistController(MediaControllerBase[Playlist]):
                     "try again once it is done"
                 )
                 raise ResourceBusyError(msg)
+
+    async def _ensure_positions_hold(
+        self, playlist: Playlist, positions: Sequence[int], uris: Sequence[str] | None
+    ) -> None:
+        """
+        Refuse an edit by position when the playlist no longer holds the given items there.
+
+        :param playlist: Library playlist about to be edited.
+        :param positions: The positions to edit, 1-based.
+        :param uris: The uri the caller expects at each position; None skips the check.
+        :raises InvalidDataError: The number of uris does not match the positions, or an item
+            at the positions is not the one expected.
+        """
+        if uris is None:
+            return
+        if len(uris) != len(positions):
+            msg = "Pass one uri for each playlist position"
+            raise InvalidDataError(msg)
+        current = {
+            item.position: item.uri
+            for item in await self.tracks(playlist.item_id, "library", force_refresh=True, limit=0)
+        }
+        if any(current.get(pos) != uri for pos, uri in zip(positions, uris, strict=True)):
+            # announce the playlist, so a client showing an older listing reads it again
+            self.mass.signal_event(EventType.MEDIA_ITEM_UPDATED, playlist.uri, playlist)
+            msg = f"Playlist {playlist.name} changed since it was listed"
+            raise InvalidDataError(msg, translation_key="playlist_changed")
 
     @contextmanager
     def _moving_order(self, playlist: Playlist) -> Iterator[None]:
