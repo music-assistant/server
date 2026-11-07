@@ -1598,9 +1598,10 @@ jobs:
           import re
           import tomllib
 
+          # Sources from before the frontend left PyPI pin it by version instead of URL
           pin = re.compile(
-              r"music-assistant-frontend @ "
-              r"https://github\.com/music-assistant/frontend/releases/download/([^/]+)/"
+              r"music-assistant-frontend(?:==| @ "
+              r"https://github\.com/music-assistant/frontend/releases/download/)([^/\s]+)"
           )
           with open("pyproject.toml", "rb") as file_handle:
               dependencies = tomllib.load(file_handle)["project"]["dependencies"]
