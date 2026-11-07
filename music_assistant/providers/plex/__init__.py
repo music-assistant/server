@@ -139,6 +139,7 @@ from music_assistant.providers.plex.helpers import (
     parse_plex_lyrics_payload,
     resolve_server_auth_token,
 )
+from music_assistant.providers.plex.playback_reporter import PlexPlaybackReporter
 
 # Public surface of the provider package. With mypy's no_implicit_reexport,
 # names imported into this module (e.g. CONF_LIBRARY_ID from .constants) are
@@ -207,6 +208,24 @@ class PlexProvider(RecommendationPayloadMixin, MusicProvider):
     _content_changed_at: str | None = None
     _recheck_after_sync: bool = False
     _verify_ssl: bool = True
+
+    def __init__(
+        self,
+        mass: MusicAssistant,
+        manifest: ProviderManifest,
+        config: ProviderConfig,
+        supported_features: set[ProviderFeature] | None = None,
+    ) -> None:
+        """
+        Initialize the Plex provider.
+
+        :param mass: The MusicAssistant instance.
+        :param manifest: The provider manifest.
+        :param config: The provider configuration.
+        :param supported_features: The features the provider supports.
+        """
+        super().__init__(mass, manifest, config, supported_features)
+        self.playback_reporter = PlexPlaybackReporter(self)
 
     @property
     def instance_name_postfix(self) -> str | None:
@@ -411,6 +430,8 @@ class PlexProvider(RecommendationPayloadMixin, MusicProvider):
     async def loaded_in_mass(self) -> None:
         """Call after the provider has been loaded."""
         await super().loaded_in_mass()
+        if self._get_library_type() == LIBRARY_TYPE_MUSIC:
+            self.playback_reporter.start()
         if self.config.get_value(CONF_SYNC_ON_LIBRARY_CHANGE):
             self._content_changed_at = await self._get_content_changed_at()
             self._notification_task = self.mass.create_task(self._watch_library_changes())
@@ -420,6 +441,7 @@ class PlexProvider(RecommendationPayloadMixin, MusicProvider):
 
     async def unload(self, is_removed: bool = False) -> None:
         """Handle unload/close of the provider."""
+        self.playback_reporter.stop()
         if self._notification_task:
             self._notification_task.cancel()
         if self._unsubscribe_sync_completed:
