@@ -170,7 +170,9 @@ subscribers. Once the lock is acquired, the outermost queue play action has a 60
 (`PLAY_ACTION_TIMEOUT`), including any nested actions. Expiry cancels the action and its awaited
 provider work, clears the in-progress flag, releases the lock, and reports a playback-command error.
 This bounds the complete operation, including catalogue pagination and retry waits, rather than
-only individual HTTP requests or the commands waiting for the lock.
+only individual HTTP requests or the commands waiting for the lock. An aborted buffer preparation
+detaches its newly created buffer and schedules cleanup. Buffer teardown continues independently
+when source cleanup is slow, so it cannot swallow the deadline or retain the playback lock.
 
 A per-queue transitioning flag guards the window during track changes, so concurrent
 player-update callbacks are skipped while a queue is mid-transition. A load that shuffles prepares

@@ -682,6 +682,57 @@ async def test_get_buffer_skips_analysis_for_non_analyzed_types(media_type: Medi
     await buffer.clear()
 
 
+@pytest.mark.parametrize("reuse", [False, True])
+async def test_cancelled_buffer_preparation_only_releases_its_own_producer(reuse: bool) -> None:
+    """An aborted start releases its source without waiting on slow teardown or shared buffers."""
+    mass, _start_analysis, scheduled_tasks = _make_mass_for_get_buffer()
+    details = _make_stream_details(MediaType.TRACK, duration=180, allow_seek=True)
+    started = asyncio.Event()
+    cleanup_started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def source(*_args: Any, **_kwargs: Any) -> AsyncGenerator[bytes]:
+        started.set()
+        try:
+            await asyncio.Event().wait()
+            yield ONE_SECOND_CHUNK
+        finally:
+            cleanup_started.set()
+            await release.wait()
+
+    mass.streams.audio.get_media_stream = source
+    buffer = None
+    if reuse:
+        buffer = await AudioBuffer.get_buffer(mass, details)
+    request = asyncio.create_task(AudioBuffer.get_buffer(mass, details, wait_ready=True))
+    try:
+        async with asyncio.timeout(2):
+            await started.wait()
+            buffer = details.buffer
+            assert isinstance(buffer, AudioBuffer)
+            request.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await request
+            if reuse:
+                assert details.buffer is buffer
+                assert buffer.is_buffering
+                assert not cleanup_started.is_set()
+            else:
+                assert details.buffer is None
+                await cleanup_started.wait()
+                assert buffer._producer_task is not None
+                assert buffer._producer_task.cancelling()
+            # Even a source still finalizing must not keep the cancelled request waiting.
+            assert not release.is_set()
+    finally:
+        release.set()
+        request.cancel()
+        await asyncio.gather(request, return_exceptions=True)
+        await asyncio.gather(*scheduled_tasks)
+        if buffer is not None:
+            await buffer.clear()
+
+
 @pytest.mark.asyncio
 async def test_get_buffer_signals_when_the_fill_completes() -> None:
     """The completion callback runs once the source has delivered all of its audio."""

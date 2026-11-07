@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import AsyncGenerator
 from unittest.mock import MagicMock, Mock
 
 import pytest
+from music_assistant_models.enums import ContentType
 from music_assistant_models.errors import PlayerCommandFailed
+from music_assistant_models.media_items import AudioFormat
 from music_assistant_models.player_queue import PlayerQueue
 
 from music_assistant.constants import ATTR_PLAY_ACTION_IN_PROGRESS
@@ -14,6 +17,7 @@ from music_assistant.controllers.player_queues import PlayerQueuesController
 from music_assistant.controllers.player_queues import helpers as queue_helpers
 from music_assistant.controllers.player_queues.helpers import handle_play_action
 from music_assistant.controllers.player_queues.state import PlayerQueueData
+from music_assistant.controllers.streams.audio_buffer import AudioBuffer
 from tests.common import bare_player_controller
 
 
@@ -147,3 +151,49 @@ async def test_external_cancellation_is_preserved(controller: PlayerQueuesContro
             await task
 
     _assert_released(controller)
+
+
+async def test_timeout_during_buffer_teardown_releases_playback_lock(
+    controller: PlayerQueuesController,
+) -> None:
+    """A source finalizing slowly cannot swallow the deadline or allow replacement to continue."""
+    started = asyncio.Event()
+    cleanup_started = asyncio.Event()
+    release = asyncio.Event()
+    cleanup_done = asyncio.Event()
+    replaced = False
+
+    async def source() -> AsyncGenerator[bytes]:
+        started.set()
+        try:
+            await asyncio.Event().wait()
+            yield b""
+        finally:
+            cleanup_started.set()
+            await release.wait()
+
+    buffer = AudioBuffer(AudioFormat(content_type=ContentType.PCM_S16LE))
+    buffer.register_cancel_callback(cleanup_done.set)
+    buffer.fill(source())
+    await started.wait()
+
+    @handle_play_action
+    async def replace(self: PlayerQueuesController, queue_id: str) -> None:
+        nonlocal replaced
+        assert queue_id in self._queue_data
+        await buffer.clear()
+        replaced = True
+
+    try:
+        async with asyncio.timeout(2):
+            with pytest.raises(PlayerCommandFailed, match=r"replace.*timed out"):
+                await replace(controller, "q1")
+            assert cleanup_started.is_set()
+            assert not cleanup_done.is_set()
+            assert not replaced
+            _assert_released(controller)
+    finally:
+        release.set()
+        async with asyncio.timeout(2):
+            await cleanup_done.wait()
+    assert buffer.cancelled
