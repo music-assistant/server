@@ -864,6 +864,42 @@ class TestStateForwarding:
 
         on_group_member_updated.assert_not_called()
 
+    def test_native_leader_updates_reach_its_protocol_members(self, mock_mass: MagicMock) -> None:
+        """
+        A native leader must notify the protocol players synced to it, not only their parents.
+
+        Regression test for support#6907: a HomePod leading a Sonos via the Sonos's AirPlay
+        protocol player left that protocol player's state stale, so the Sonos showed idle.
+        """
+        controller = PlayerController(mock_mass)
+        airplay = MockProvider("airplay", instance_id="airplay", mass=mock_mass)
+        sonos_provider = MockProvider("sonos", instance_id="sonos", mass=mock_mass)
+
+        leader = MockPlayer(airplay, "homepod", "HomePod")
+        sonos = MockPlayer(sonos_provider, "sonos", "Sonos")
+        sonos_airplay = MockPlayer(
+            airplay, "sonos_airplay", "Sonos (AirPlay)", player_type=PlayerType.PROTOCOL
+        )
+        sonos_airplay.set_protocol_parent_id("sonos")
+
+        controller._players = {"homepod": leader, "sonos": sonos, "sonos_airplay": sonos_airplay}
+        mock_mass.players = controller
+
+        leader._attr_group_members = ["homepod", "sonos_airplay"]
+        for player in (leader, sonos, sonos_airplay):
+            player.update_state(signal_event=False)
+        assert leader.state.group_members == ["homepod", "sonos"]
+
+        with (
+            patch.object(sonos, "on_sync_parent_updated") as sonos_updated,
+            patch.object(sonos_airplay, "on_sync_parent_updated") as protocol_updated,
+        ):
+            changed_values = {"playback_state": (PlaybackState.IDLE, PlaybackState.PLAYING)}
+            controller._forward_state_update(leader, changed_values)
+
+        sonos_updated.assert_called_once_with(leader, changed_values)
+        protocol_updated.assert_called_once_with(leader, changed_values)
+
 
 class TestUnscopedPlayerLookups:
     """Derived player state must not depend on who triggered the recalculation."""
