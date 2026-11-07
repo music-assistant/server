@@ -17,6 +17,7 @@ from music_assistant_models.enums import (
     ContentType,
     ImageType,
     MediaType,
+    PlayerType,
     ProviderFeature,
     SourceControl,
     StreamType,
@@ -514,7 +515,7 @@ class AriaCastReceiver(PluginProvider):
 
     def _get_current_volume(self) -> int | None:
         """Return the current volume (0-100) of the active MA player, if known."""
-        player_id = self._active_player_id or self._get_target_player_id()
+        player_id = self._get_target_player_id()
         if not player_id:
             return None
         player = self.mass.players.get_player(player_id)
@@ -526,7 +527,7 @@ class AriaCastReceiver(PluginProvider):
         self, ws: web.WebSocketResponse, command: str, payload: dict[str, Any]
     ) -> None:
         """Handle a volume/volume_set command per control.md."""
-        player_id = self._active_player_id or self._get_target_player_id()
+        player_id = self._get_target_player_id()
         if not player_id:
             with suppress(Exception):
                 await ws.send_json({"command": "volume", "level": -1, "success": False})
@@ -763,7 +764,7 @@ class AriaCastReceiver(PluginProvider):
         self._is_playing = is_playing
 
         if is_playing and not self._in_use_by_player:
-            target = self._active_player_id or self._get_target_player_id()
+            target = self._get_target_player_id()
             if target:
                 # remember the resolved target so a later session reuses it
                 # without re-resolving _get_target_player_id()
@@ -853,8 +854,11 @@ class AriaCastReceiver(PluginProvider):
         # get_stream_details passes on an immediate resume.
         self._is_playing = True
         await self._forward_action("play")
-        if not self._in_use_by_player and self._active_player_id:
-            target = self._active_player_id
+        if (
+            not self._in_use_by_player
+            and self._active_player_id
+            and (target := self._get_target_player_id())
+        ):
             self._in_use_by_player = target
             self.mass.create_task(self._safe_play_media(target))
 
@@ -1006,19 +1010,35 @@ class AriaCastReceiver(PluginProvider):
         return DEFAULT_ARIACAST_NAME
 
     def _get_target_player_id(self) -> str | None:
+        """Return the player to play AriaCast audio on, preferring the stored one."""
         if self._active_player_id:
-            if self.mass.players.get_player(self._active_player_id):
-                return self._active_player_id
+            if target := self._resolve_queue_player(self._active_player_id):
+                self._active_player_id = target
+                return target
             self.logger.debug("Stored player %s no longer available", self._active_player_id)
             self._active_player_id = None
 
-        if self.mass.players.get_player(self._default_player_id):
-            self.logger.debug("Using configured player: %s", self._default_player_id)
-            return self._default_player_id
+        if target := self._resolve_queue_player(self._default_player_id):
+            self.logger.debug("Using configured player: %s", target)
+            return target
         self.logger.warning(
             "Configured player '%s' is currently not available", self._default_player_id
         )
         return None
+
+    def _resolve_queue_player(self, player_id: str) -> str | None:
+        """
+        Return the player that owns the queue for the given player, or None if unavailable.
+
+        :param player_id: The configured or remembered player id.
+        """
+        if not player_id or not (player := self.mass.players.get_player(player_id)):
+            return None
+        if player.type == PlayerType.PROTOCOL and player.protocol_parent_id:
+            if self.mass.players.get_player(player.protocol_parent_id):
+                return player.protocol_parent_id
+            return None
+        return player_id
 
 
 # ---------------------------------------------------------------------------
