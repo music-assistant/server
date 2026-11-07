@@ -418,8 +418,11 @@ mechanism) that configure default enqueue behaviour, in three groups:
   playlist (plus the hidden audiobook, podcast, podcast-episode, and folder types), each defaulting
   to *play* or *replace*.
 - **Selection modes** — how artists and albums expand into tracks (e.g. top tracks, library tracks,
-  prefer library, all tracks), and the order an artist plays in: shuffled tracks, or its albums
-  in random or release order. The artist selection picks the artist's own albums, and each album
+  prefer library, all tracks). Artists default to provider top tracks, falling back to library
+  tracks when no top tracks are available. Saved selection preferences, including all tracks,
+  remain in effect; library-only selections use top tracks for artists outside the library.
+  The order an artist plays in can be shuffled tracks, or its albums in random or release order.
+  The artist selection picks the artist's own albums, and each album
   plays as it does on its own, following the album selection. The album orders leave out singles,
   and the compilations found only on a provider. They fall back to shuffled tracks for the top
   tracks selection or an artist without albums.

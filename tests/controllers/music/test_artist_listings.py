@@ -570,6 +570,39 @@ async def test_provider_artist_tracks_follow_the_calling_users_music_sources(
         assert await _tracks_as("guest") == ["Shared"]
 
 
+@pytest.mark.parametrize("playable_result", [False, True])
+async def test_playback_does_not_treat_failed_library_ranking_as_empty(
+    mass: MusicAssistant, playable_result: bool
+) -> None:
+    """Playback sees aggregation failures, while browsing and partial playable rankings work."""
+    artist = await mass.music.artists.add_item_to_library(_artist())
+    mappings = [_mapping("artist1"), _mapping("artist2")]
+    result = [_track("t1", "One")] if playable_result else []
+    fetch = AsyncMock(side_effect=[RuntimeError("rate limited"), result] * 3)
+    with (
+        patch.object(
+            mass.music.artists, "_provider_mappings_for_feature", return_value=(mappings, False)
+        ),
+        patch.object(mass.music.artists, "get_provider_artist_toptracks", fetch),
+    ):
+        # Browsing can still show partial results, but must not cache them as complete.
+        assert await mass.music.artists.top_tracks(artist.item_id, "library") == result
+        for _ in range(2):
+            if playable_result:
+                assert (
+                    await mass.music.artists.top_tracks(
+                        artist.item_id, "library", raise_on_unavailable=True
+                    )
+                    == result
+                )
+            else:
+                with pytest.raises(ProviderUnavailableError, match="playable artist top tracks"):
+                    await mass.music.artists.top_tracks(
+                        artist.item_id, "library", raise_on_unavailable=True
+                    )
+    assert fetch.await_count == 6
+
+
 async def test_library_artist_listing_missing_a_provider_is_assembled_again(
     mass: MusicAssistant,
 ) -> None:

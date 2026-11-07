@@ -190,26 +190,27 @@ class MediaResolver:
         """
         Return the tracks to play for the given artist, and whether they are its albums.
 
-        An artist in the library follows the user preference, any other artist plays all of
-        its tracks across the providers. With an album order, these are the artist's albums one
-        after the other, each as it plays on its own. An artist with no albums gets the selected
-        tracks shuffled. One whose albums can't be listed or loaded plays nothing.
+        Artists follow the selection preference, defaulting to top tracks. Library-only
+        selections use top tracks for artists outside the library. With an album order,
+        these are the artist's albums one after the other, each as it plays on its own.
+        An artist with no albums gets the selected tracks shuffled. One whose albums can't
+        be listed or loaded plays nothing.
 
         :param artist: The artist to play.
         """
-        library_artist = await self._resolve_library_artist(artist)
-        if library_artist is None or not any(
-            mapping.in_library for mapping in library_artist.provider_mappings
-        ):
-            artist_items_conf = "all_tracks"
-        else:
-            artist_items_conf = str(
-                self.mass.config.get_raw_core_config_value(
-                    self.queues.domain,
-                    CONF_DEFAULT_ENQUEUE_SELECT_ARTIST,
-                    ENQUEUE_SELECT_ARTIST_DEFAULT_VALUE,
-                )
+        artist_items_conf = str(
+            self.mass.config.get_raw_core_config_value(
+                self.queues.domain,
+                CONF_DEFAULT_ENQUEUE_SELECT_ARTIST,
+                ENQUEUE_SELECT_ARTIST_DEFAULT_VALUE,
             )
+        )
+        if artist_items_conf in ("library_tracks", "library_album_tracks", "prefer_library"):
+            library_artist = await self._resolve_library_artist(artist)
+            if library_artist is None or not any(
+                mapping.in_library for mapping in library_artist.provider_mappings
+            ):
+                artist_items_conf = "top_tracks"
         order = self.get_artist_order()
         self.logger.info(
             "Fetching tracks to play for artist %s (selection: %s, order: %s)",
@@ -868,8 +869,11 @@ class MediaResolver:
         """
         if artist_items_conf == "top_tracks":
             tracks = await self.mass.music.artists.top_tracks(
-                artist.item_id, artist.provider, limit=None
+                artist.item_id, artist.provider, limit=None, raise_on_unavailable=True
             )
+            tracks = [track for track in tracks if track.available]
+            if not tracks:
+                tracks = await self._library_artist_tracks(artist)
             random.shuffle(tracks)
             return tracks
         # legacy "library_album_tracks" also resolves to the in-library tracks

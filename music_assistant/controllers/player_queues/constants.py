@@ -9,7 +9,7 @@ from music_assistant_models.enums import AlbumType, MediaType
 CONF_DEFAULT_ENQUEUE_SELECT_ARTIST = "default_enqueue_select_artist"
 CONF_DEFAULT_ENQUEUE_SELECT_ALBUM = "default_enqueue_select_album"
 
-ENQUEUE_SELECT_ARTIST_DEFAULT_VALUE = "all_tracks"
+ENQUEUE_SELECT_ARTIST_DEFAULT_VALUE = "top_tracks"
 ENQUEUE_SELECT_ALBUM_DEFAULT_VALUE = "all_tracks"
 
 CONF_DEFAULT_ENQUEUE_ORDER_ARTIST = "default_enqueue_order_artist"

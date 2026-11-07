@@ -712,6 +712,8 @@ class ArtistsController(MediaControllerBase[Artist]):
         limit: int | None = 500,
         offset: int = 0,
         random_seed: int | None = None,
+        *,
+        raise_on_unavailable: bool = False,
     ) -> list[Track]:
         """
         Return the top/featured tracks of an artist, searched, sorted and paged.
@@ -732,17 +734,30 @@ class ArtistsController(MediaControllerBase[Artist]):
         :param limit: Maximum number of tracks to return; 0 returns them all.
         :param offset: Number of tracks to skip.
         :param random_seed: Keep random ordering stable across pages with the same seed.
+        :param raise_on_unavailable: Raise when a failed library ranking has no playable tracks.
+        :raises ProviderUnavailableError: The ranking failed and has no playable tracks.
         :raises InvalidDataError: When the sort field is not offered for top tracks.
         """
         sort_field, sort_direction = resolve_listing_sort(
             ListingType.ARTIST_TOP_TRACKS, sort_field, sort_direction
         )
+
+        async def _library_top_tracks(_library: str) -> Listing[Track]:
+            listing = await self.get_library_artist_toptracks(item_id, provider_filter)
+            if (
+                raise_on_unavailable
+                and not listing.complete
+                and not has_available_item(listing.items)
+            ):
+                raise ProviderUnavailableError("Unable to fetch playable artist top tracks")
+            return listing
+
         if provider_instance_id_or_domain == "library":
             tracks = await self._cached_item_listing(
                 ListingType.ARTIST_TOP_TRACKS,
                 item_id,
                 provider_instance_id_or_domain,
-                lambda _library: self.get_library_artist_toptracks(item_id, provider_filter),
+                _library_top_tracks,
                 item_type=Track,
                 narrowed_to=self._ensure_provider_filter(provider_filter),
             )
