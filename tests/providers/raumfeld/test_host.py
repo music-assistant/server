@@ -252,3 +252,44 @@ async def test_a_request_held_past_the_limit_is_asked_again(
             finally:
                 task.cancel()
     assert host.get_zones() == [["Bar", "Sofa"]]
+
+
+class _FlakyHost(_Host):
+    """A host whose reads after the first fail and are held past the limit in turn."""
+
+    def __init__(self) -> None:
+        """Answer the first read; after that, fail every other one."""
+        super().__init__()
+        self.reads = 0
+
+    async def handle(self, request: web.Request) -> web.StreamResponse:
+        """Fail every other read of the zones once they were read."""
+        if request.path.startswith("/session") and request.path.endswith("/getZones"):
+            self.reads += 1
+            if self.reads > 1 and self.reads % 2 == 0:
+                self.seen_update_ids.append("failed")
+                return web.Response(status=500)
+        return await super().handle(request)
+
+
+async def test_failures_apart_from_each_other_do_not_end_the_run(
+    served: Callable[[_FlakyHost], Awaitable[str]],
+) -> None:
+    """A failed read now and then, with quiet reads in between, is not a host that is gone."""
+    fake = _FlakyHost()
+    url = await served(fake)
+    async with aiohttp.ClientSession() as session:
+        host = RaumfeldHost(session, url)
+        with (
+            patch.object(host_module, "LONG_POLL_TIMEOUT", 0.1),
+            patch.object(host_module, "LONG_POLL_RETRY_DELAY", 0),
+        ):
+            task = asyncio.create_task(host.run())
+            try:
+                await asyncio.wait_for(host.wait_ready(), 5)
+                async with asyncio.timeout(5):
+                    while fake.seen_update_ids.count("failed") < LONG_POLL_FAILURES + 1:
+                        await asyncio.sleep(0.01)
+                assert not task.done()
+            finally:
+                task.cancel()

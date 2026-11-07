@@ -92,6 +92,7 @@ def _enrichment(musicbrainz: MagicMock | None = None) -> MetadataEnrichmentMixin
     enrichment.config = MagicMock()
     enrichment.config.get_value = _online_metadata_only
     enrichment.preferred_language = "en"  # type: ignore[misc]
+    enrichment.language_changed = 0  # type: ignore[misc]
     enrichment.providers = []  # type: ignore[misc]
     enrichment.link_providers_via_musicbrainz = True  # type: ignore[misc]
     # every music provider resolves to a stub, MusicBrainz only when it is loaded
@@ -305,7 +306,7 @@ async def test_forced_track_refresh_takes_the_lyrics_of_the_local_file_first() -
         "tidal": _track_with_lyrics("tidal plain", None),
     }
     _mass(enrichment).music.tracks.get_provider_item = AsyncMock(
-        side_effect=lambda item_id, _instance: prov_items[item_id]
+        side_effect=lambda item_id, _instance, **_kwargs: prov_items[item_id]
     )
     lyrics_provider = _lyrics_provider(MediaItemMetadata(lyrics="lrclib"))
     enrichment.providers = [lyrics_provider]  # type: ignore[misc]
@@ -471,7 +472,7 @@ async def test_local_artist_bio_is_picked_first_and_replaces_the_stored_bio() ->
 
 @pytest.mark.asyncio
 async def test_local_artist_bio_follows_the_language_rules() -> None:
-    """A local bio outside the preferred language loses to one in it and is not written."""
+    """A local bio outside the preferred language loses to one in it."""
     enrichment = _enrichment()
     online = _bio_provider("online", "Online bio", "en", is_local=False)
     local = _bio_provider("local", "Eigen bio", "nl", is_local=True)
@@ -482,13 +483,13 @@ async def test_local_artist_bio_follows_the_language_rules() -> None:
 
     assert artist.metadata.description == "Online bio"
     _mass(enrichment).music.artists.replace_metadata.assert_awaited_once_with(
-        "1", {}, {local.instance_id: []}
+        "1", {"description": "Online bio", "description_language": "en"}, {local.instance_id: []}
     )
 
 
 @pytest.mark.asyncio
-async def test_online_artist_bio_never_replaces_a_stored_bio() -> None:
-    """With only online bios the stored bio is left to the regular library update."""
+async def test_online_artist_bio_replaces_a_stored_bio_on_a_forced_update() -> None:
+    """A forced update writes a new online bio over the stored one."""
     enrichment = _enrichment()
     enrichment.providers = [  # type: ignore[misc]
         _bio_provider("online", "New Wikipedia bio", "en", is_local=False)
@@ -497,6 +498,92 @@ async def test_online_artist_bio_never_replaces_a_stored_bio() -> None:
 
     await enrichment._update_artist_metadata(artist, force_refresh=True)
 
+    _mass(enrichment).music.artists.replace_metadata.assert_awaited_once_with(
+        "1", {"description": "New Wikipedia bio", "description_language": "en"}, {}
+    )
+
+
+@pytest.mark.asyncio
+async def test_forced_update_with_an_unreachable_source_replaces_nothing() -> None:
+    """A forced update while the local folder is unreachable keeps the stored bio and style."""
+    enrichment = _enrichment()
+    online = _metadata_provider("online", ProviderFeature.ARTIST_METADATA)
+    online.get_artist_metadata = AsyncMock(
+        return_value=MediaItemMetadata(
+            description="Online bio", description_language="en", style="Online style"
+        )
+    )
+    local = _metadata_provider("local", ProviderFeature.ARTIST_METADATA)
+    local.is_local = True
+    local.get_artist_metadata = AsyncMock(side_effect=ProviderUnavailableError("NAS off"))
+    enrichment.providers = [local, online]  # type: ignore[misc]
+    artist = _artist_with_bio("Own bio", "en")
+    artist.metadata.style = "Own style"
+
+    await enrichment._update_artist_metadata(artist, force_refresh=True)
+
+    # the library update that follows only fills empty fields
+    assert artist.metadata.style == "Own style"
+    _mass(enrichment).music.artists.replace_metadata.assert_not_awaited()
+    _logger(enrichment).info.assert_called_once()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("enabled", "replaced"), [(True, False), (False, True)])
+async def test_forced_update_with_a_music_source_that_is_not_loaded(
+    enabled: bool, replaced: bool
+) -> None:
+    """An unreachable music source keeps the stored bio, a switched off one does not."""
+    enrichment = _enrichment()
+    enrichment.providers = [  # type: ignore[misc]
+        _bio_provider("online", "Online bio", "en", is_local=False)
+    ]
+    # the music folder is not loaded, as when its storage was offline at startup
+    _mass(enrichment).get_provider = MagicMock(return_value=None)
+    _mass(enrichment).config.get_raw_provider_config_value = MagicMock(return_value=enabled)
+    artist = _artist_with_bio("Own bio", "en")
+    artist.provider_mappings = {
+        ProviderMapping(
+            item_id="Artist", provider_domain="filesystem_local", provider_instance="local_files"
+        )
+    }
+
+    await enrichment._update_artist_metadata(artist, force_refresh=True)
+
+    assert _mass(enrichment).music.artists.replace_metadata.await_count == int(replaced)
+
+
+@pytest.mark.asyncio
+async def test_forced_update_ignores_the_stored_copy_a_provider_miss_returns() -> None:
+    """The stored item a music source hands back after a miss does not count as fresh."""
+    enrichment = _enrichment()
+    mappings = _sources(enrichment, MediaType.ALBUM, online=MediaItemMetadata(label="New label"))
+    album = _item(MediaType.ALBUM, MediaItemMetadata(label="Old label"), *mappings, _FOLDER)
+    # the music folder no longer finds the album and hands back the stored copy
+    _mass(enrichment).music.albums.get_provider_item = AsyncMock(return_value=album)
+
+    written = await _update(enrichment, album, force_refresh=True)
+
+    assert written == {"label": "New label"}
+
+
+@pytest.mark.asyncio
+async def test_a_run_that_only_fills_gaps_keeps_a_stored_description() -> None:
+    """A forced update with an unreachable source keeps a stored text in another language."""
+    enrichment = _enrichment()
+    enrichment.preferred_language = "nl"  # type: ignore[misc]
+    online = _bio_provider("online", "Nederlandse bio", "nl", is_local=False)
+    failing = _metadata_provider("failing", ProviderFeature.ARTIST_METADATA)
+    failing.get_artist_metadata = AsyncMock(side_effect=ProviderUnavailableError("offline"))
+    enrichment.providers = [failing, online]  # type: ignore[misc]
+    artist = _artist_with_bio("English bio", "en")
+
+    await enrichment._update_artist_metadata(artist, force_refresh=True)
+
+    assert (artist.metadata.description, artist.metadata.description_language) == (
+        "English bio",
+        "en",
+    )
     _mass(enrichment).music.artists.replace_metadata.assert_not_awaited()
 
 
@@ -752,6 +839,355 @@ async def test_enrichment_without_provider_errors_is_due_after_the_refresh_inter
 
     getattr(good, method).assert_awaited_once()
     assert item.metadata.last_refresh == NOW
+
+
+_ITEM_TYPES: dict[MediaType, type[Artist | Album | Track]] = {
+    MediaType.ARTIST: Artist,
+    MediaType.ALBUM: Album,
+    MediaType.TRACK: Track,
+}
+# the music folder and a music service, the item's music sources
+_FOLDER = ProviderMapping(
+    item_id="folder", provider_domain="filesystem_local", provider_instance="folder_1"
+)
+_SERVICE = ProviderMapping(item_id="service", provider_domain="tidal", provider_instance="tidal_1")
+
+
+def _item(
+    media_type: MediaType, metadata: MediaItemMetadata, *mappings: ProviderMapping
+) -> Artist | Album | Track:
+    """Return a library item of the given media type with the given stored metadata."""
+    return _ITEM_TYPES[media_type](
+        item_id="1",
+        provider="library",
+        name="Test Item",
+        provider_mappings=set(mappings),
+        # the metadata providers are only asked about an artist with a MusicBrainz id
+        external_ids=(
+            {(ExternalID.MB_ARTIST, "11111111-1111-1111-1111-111111111111")}
+            if media_type == MediaType.ARTIST
+            else set()
+        ),
+        metadata=metadata,
+    )
+
+
+def _provider_item(
+    media_type: MediaType, metadata: MediaItemMetadata, provider_instance: str
+) -> Artist | Album | Track:
+    """Return an item as a music source supplies it."""
+    item = _item(media_type, metadata)
+    item.provider = provider_instance
+    return item
+
+
+def _sources(
+    enrichment: MetadataEnrichmentMixin,
+    media_type: MediaType,
+    folder: MediaItemMetadata | None = None,
+    service: MediaItemMetadata | None = None,
+    online: MediaItemMetadata | None = None,
+) -> list[ProviderMapping]:
+    """
+    Let the music folder, a music service and an online metadata provider supply metadata.
+
+    :param enrichment: The enrichment mixin to set the sources up on.
+    :param media_type: Artist, album or track.
+    :param folder: What the music folder supplies, None for an item not in it.
+    :param service: What the music service supplies, None for an item not on it.
+    :param online: What the online metadata provider supplies.
+    :return: The provider mappings of the item on its music sources.
+    """
+    mass = _mass(enrichment)
+    mass.get_provider = MagicMock(
+        side_effect=lambda instance_id, **_kwargs: (
+            None
+            if instance_id == "musicbrainz"
+            else MagicMock(domain=instance_id, is_streaming_provider=instance_id == "tidal_1")
+        )
+    )
+    supplied = {"folder": folder, "service": service}
+    getattr(mass.music, f"{media_type.value}s").get_provider_item = AsyncMock(
+        side_effect=lambda item_id, instance, **_kwargs: _provider_item(
+            media_type, supplied[item_id] or MediaItemMetadata(), instance
+        )
+    )
+    feature, method = _REFRESHES[media_type]
+    provider = _metadata_provider("online", feature)
+    setattr(provider, method, AsyncMock(return_value=online))
+    enrichment.providers = [provider]  # type: ignore[misc]
+    return [
+        mapping
+        for mapping, metadata in ((_FOLDER, folder), (_SERVICE, service))
+        if metadata is not None
+    ]
+
+
+async def _update(
+    enrichment: MetadataEnrichmentMixin, item: Artist | Album | Track, force_refresh: bool
+) -> dict[str, Any]:
+    """
+    Refresh the metadata of a library item and return the values written over the stored ones.
+
+    :param enrichment: The enrichment mixin to refresh the item with.
+    :param item: The library item, due for a refresh.
+    :param force_refresh: Whether the refresh is forced, as by the Update metadata button.
+    """
+    if isinstance(item, Artist):
+        await enrichment._update_artist_metadata(item, force_refresh=force_refresh)
+    elif isinstance(item, Album):
+        await enrichment._update_album_metadata(item, force_refresh=force_refresh)
+    else:
+        await enrichment._update_track_metadata(item, force_refresh=force_refresh)
+    replace_metadata = getattr(
+        _mass(enrichment).music, f"{item.media_type.value}s"
+    ).replace_metadata
+    return {
+        name: value
+        for call in replace_metadata.await_args_list
+        for name, value in call.args[1].items()
+    }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("media_type", list(_ITEM_TYPES))
+async def test_forced_update_replaces_stale_values(media_type: MediaType) -> None:
+    """A forced update writes the values the sources supply over the stored ones."""
+    enrichment = _enrichment()
+    mappings = _sources(
+        enrichment,
+        media_type,
+        service=MediaItemMetadata(style="New style"),
+        online=MediaItemMetadata(mood="New mood"),
+    )
+    item = _item(media_type, MediaItemMetadata(style="Old style", mood="Old mood"), *mappings)
+
+    written = await _update(enrichment, item, force_refresh=True)
+
+    assert written == {"style": "New style", "mood": "New mood"}
+    assert (item.metadata.style, item.metadata.mood) == ("New style", "New mood")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("media_type", list(_ITEM_TYPES))
+async def test_automatic_refresh_keeps_stored_values(media_type: MediaType) -> None:
+    """A refresh that is not forced only fills in what is missing."""
+    enrichment = _enrichment()
+    mappings = _sources(
+        enrichment,
+        media_type,
+        service=MediaItemMetadata(style="New style", description="New text"),
+        online=MediaItemMetadata(mood="New mood"),
+    )
+    item = _item(
+        media_type,
+        MediaItemMetadata(style="Old style", description="Old text", description_language="en"),
+        *mappings,
+    )
+
+    written = await _update(enrichment, item, force_refresh=False)
+
+    assert written == {}
+    assert (item.metadata.style, item.metadata.mood) == ("Old style", "New mood")
+    assert item.metadata.description == "Old text"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("media_type", list(_ITEM_TYPES))
+async def test_forced_update_keeps_values_no_source_supplies(media_type: MediaType) -> None:
+    """A field no source has a value for keeps its stored value."""
+    enrichment = _enrichment()
+    mappings = _sources(enrichment, media_type, service=MediaItemMetadata(style="New style"))
+    stored = MediaItemMetadata(
+        style="Old style",
+        mood="Stored mood",
+        label="Stored label",
+        description="Stored text",
+        description_language="en",
+    )
+    item = _item(media_type, stored, *mappings)
+
+    written = await _update(enrichment, item, force_refresh=True)
+
+    assert written == {"style": "New style"}
+    assert (item.metadata.mood, item.metadata.label) == ("Stored mood", "Stored label")
+    assert item.metadata.description == "Stored text"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("media_type", list(_ITEM_TYPES))
+async def test_forced_update_takes_the_music_folder_value_first(media_type: MediaType) -> None:
+    """The music folder wins over a music service, and a music service over online sources."""
+    enrichment = _enrichment()
+    mappings = _sources(
+        enrichment,
+        media_type,
+        folder=MediaItemMetadata(style="Folder style"),
+        service=MediaItemMetadata(style="Service style", mood="Service mood"),
+        online=MediaItemMetadata(style="Online style", mood="Online mood"),
+    )
+    item = _item(media_type, MediaItemMetadata(style="Old style", mood="Old mood"), *mappings)
+
+    written = await _update(enrichment, item, force_refresh=True)
+
+    assert written == {"style": "Folder style", "mood": "Service mood"}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("media_type", list(_ITEM_TYPES))
+async def test_forced_update_skips_an_empty_text(media_type: MediaType) -> None:
+    """An empty text from a source neither clears the stored value nor blocks a later source."""
+    enrichment = _enrichment()
+    mappings = _sources(
+        enrichment,
+        media_type,
+        service=MediaItemMetadata(style="", mood=""),
+        online=MediaItemMetadata(style="Online style"),
+    )
+    item = _item(media_type, MediaItemMetadata(style="Old style", mood="Old mood"), *mappings)
+
+    written = await _update(enrichment, item, force_refresh=True)
+
+    assert written == {"style": "Online style"}
+    assert item.metadata.mood == "Old mood"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("media_type", list(_ITEM_TYPES))
+@pytest.mark.parametrize("force_refresh", [True, False])
+async def test_only_a_forced_update_asks_every_source_again(
+    media_type: MediaType, force_refresh: bool
+) -> None:
+    """A forced update looks past cached results of the music sources and metadata providers."""
+    enrichment = _enrichment()
+    mappings = _sources(
+        enrichment,
+        media_type,
+        service=MediaItemMetadata(style="New style"),
+        online=MediaItemMetadata(mood="New mood"),
+    )
+    item = _item(media_type, MediaItemMetadata(), *mappings)
+
+    await _update(enrichment, item, force_refresh=force_refresh)
+
+    get_provider_item = getattr(_mass(enrichment).music, f"{media_type.value}s").get_provider_item
+    get_provider_item.assert_awaited_once_with(
+        "service", _SERVICE.provider_instance, force_refresh=force_refresh
+    )
+    _mass(enrichment).cache.handle_refresh.assert_called_once_with(force_refresh)
+
+
+@pytest.mark.asyncio
+async def test_forced_artist_update_takes_values_in_source_order() -> None:
+    """Local metadata, the music folder, a music service, then online sources; dates complete."""
+    enrichment = _enrichment()
+    mappings = _sources(
+        enrichment,
+        MediaType.ARTIST,
+        folder=MediaItemMetadata(
+            style="Folder style", mood="Folder mood", life_span=LifeSpan(begin="1958-08-29")
+        ),
+        service=MediaItemMetadata(mood="Service mood", label="Service label"),
+        online=MediaItemMetadata(
+            label="Online label",
+            artist_entity_type=ArtistEntityType.PERSON,
+            life_span=LifeSpan(begin="1958", end="2009-06-25", ended=True),
+        ),
+    )
+    # the Local metadata provider is asked after the online provider, yet wins
+    enrichment.providers.append(_local_provider(MediaItemMetadata(style="Own style")))
+    item = _item(
+        MediaType.ARTIST,
+        MediaItemMetadata(
+            style="Old style",
+            mood="Old mood",
+            label="Old label",
+            artist_entity_type=ArtistEntityType.GROUP,
+            life_span=LifeSpan(begin="1958", end="2009", ended=True),
+        ),
+        *mappings,
+    )
+
+    written = await _update(enrichment, item, force_refresh=True)
+
+    assert written == {
+        "style": "Own style",
+        "mood": "Folder mood",
+        "label": "Service label",
+        "artist_entity_type": ArtistEntityType.PERSON,
+        "life_span": LifeSpan(begin="1958-08-29", end="2009-06-25", ended=True),
+    }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("media_type", list(_ITEM_TYPES))
+async def test_forced_update_only_adds_genres(media_type: MediaType) -> None:
+    """Genres are added to the stored ones, never written over them."""
+    enrichment = _enrichment()
+    mappings = _sources(enrichment, media_type, online=MediaItemMetadata(genres={"Pop"}))
+    item = _item(media_type, MediaItemMetadata(genres={"Jazz"}), *mappings)
+
+    written = await _update(enrichment, item, force_refresh=True)
+
+    assert "genres" not in written
+    assert item.metadata.genres == {"Jazz", "Pop"}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("media_type", list(_ITEM_TYPES))
+async def test_forced_update_prefers_local_text_without_language(media_type: MediaType) -> None:
+    """Music folder text without a language counts as the preferred language and wins."""
+    enrichment = _enrichment()
+    mappings = _sources(
+        enrichment,
+        media_type,
+        folder=MediaItemMetadata(description="Folder text"),
+        online=MediaItemMetadata(description="Online text", description_language="en"),
+    )
+    item = _item(
+        media_type,
+        MediaItemMetadata(description="Old text", description_language="en"),
+        *mappings,
+    )
+
+    written = await _update(enrichment, item, force_refresh=True)
+
+    assert written == {"description": "Folder text", "description_language": "en"}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("media_type", list(_ITEM_TYPES))
+@pytest.mark.parametrize(
+    ("stored", "expected"),
+    [
+        # a text in the preferred language wins over one higher in the source order
+        (("Stored text", "de"), {"description": "Online nl", "description_language": "nl"}),
+        # a stored text in the preferred language is kept over a fresh one in English
+        (("Opgeslagen", "nl"), {}),
+    ],
+    ids=["preferred_language_wins", "stored_preferred_language_kept"],
+)
+async def test_forced_update_follows_the_description_language_rule(
+    media_type: MediaType, stored: tuple[str, str], expected: dict[str, str]
+) -> None:
+    """The description follows the language rules of the artist bio for every media type."""
+    enrichment = _enrichment()
+    enrichment.preferred_language = "nl"  # type: ignore[misc]
+    service = MediaItemMetadata(description="Service en", description_language="en")
+    online = MediaItemMetadata(
+        description="Online nl" if stored[1] == "de" else "Online de",
+        description_language="nl" if stored[1] == "de" else "de",
+    )
+    mappings = _sources(enrichment, media_type, service=service, online=online)
+    item = _item(
+        media_type,
+        MediaItemMetadata(description=stored[0], description_language=stored[1]),
+        *mappings,
+    )
+
+    written = await _update(enrichment, item, force_refresh=True)
+
+    assert written == expected
 
 
 MBID = "a74b1b7f-71a5-4011-9441-d0b5e4122711"
@@ -1511,7 +1947,9 @@ async def test_track_refresh_keeps_the_provider_tracks_isrcs() -> None:
         "GBSTK0700001",
         "USRC17607839",
     }
-    _mass(enrichment).music.tracks.get_provider_item.assert_awaited_once_with("sp-1", "spotify_1")
+    _mass(enrichment).music.tracks.get_provider_item.assert_awaited_once_with(
+        "sp-1", "spotify_1", force_refresh=True
+    )
     _mass(enrichment).music.tracks.update_item_in_library.assert_awaited_once_with("1", track)
 
 
