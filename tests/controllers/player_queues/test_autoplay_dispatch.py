@@ -742,6 +742,7 @@ async def test_the_end_of_queue_refill_skips_a_disliked_track() -> None:
     tracker.mass.music.favorites.disliked_track_keys = AsyncMock(
         return_value=(set(), {(MediaType.TRACK, "spotify--1", "disliked")})
     )
+    tracker.mass.music.favorites.in_disliked_genres = AsyncMock(return_value=set())
 
     loaded = await _refill_from_dynamic_source(
         tracker, _dynamic_playlist(), [_prov_track("disliked"), _prov_track("allowed")]
