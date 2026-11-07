@@ -169,6 +169,16 @@ class DeezerStreamingManager:
             streaminfo := await self._get_flac_streaminfo(url, track_id, size)
         ):
             audio_format.sample_rate, audio_format.bit_depth, audio_format.channels = streaminfo
+        # GAIN is the loudness of the track in LUFS, personal uploads have none
+        loudness = float(gain) if (gain := song_data.get("GAIN")) else None
+        if loudness is not None:
+            self.mass.create_task(
+                self.mass.streams.audio_analysis.set_track_loudness(
+                    item_id=item_id,
+                    provider_instance_id_or_domain=self.instance_id,
+                    loudness=loudness,
+                )
+            )
         return StreamDetails(
             item_id=item_id,
             provider=self.instance_id,
@@ -183,6 +193,7 @@ class DeezerStreamingManager:
             size=size,
             can_seek=True,
             allow_seek=True,
+            loudness=loudness,
         )
 
     async def _get_flac_streaminfo(
