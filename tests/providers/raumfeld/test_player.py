@@ -1264,6 +1264,10 @@ async def test_a_zone_whose_events_come_in_is_read_seldom() -> None:
     """Its changes are read on its events, so a regular read only keeps the position right."""
     player, _ = _external_player()
     player.set_zone_events(_ZONE)
+    # the room's own volume and mute do not come in as events: read them as before
+    await _poll_zone_reading(player, "PLAYING")
+    assert player._attr_poll_interval == PLAYING_POLL_INTERVAL
+    player.set_rendering_events(True)
     await _poll_zone_reading(player, "PLAYING")
     assert player._attr_poll_interval == PLAYING_EVENTS_POLL_INTERVAL
     await _poll_zone_reading(player, "STOPPED")

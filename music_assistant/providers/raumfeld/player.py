@@ -1107,7 +1107,9 @@ class RaumfeldPlayer(Player):
         # rate while it plays on, the slow rate when idle
         recently_started = (time.time() - self._play_started_at) < STARTUP_POLL_WINDOW
         evented = (
-            self._zone_events is not None and self._zone_events == self.raumfeld.zone_location(zone)
+            self._rendering_events
+            and self._zone_events is not None
+            and self._zone_events == self.raumfeld.zone_location(zone)
         )
         if recently_started or (self._advance_armed and playing and self._near_end):
             self._attr_poll_interval = FAST_POLL_INTERVAL

@@ -129,9 +129,11 @@ class RendererEvents(UpnpNotifyServer):
             )
 
     async def close(self) -> None:
-        """Drop every subscription and stop receiving events."""
-        await self.clear()
+        """Stop receiving events and drop every subscription."""
+        # first: a renderer that does not answer its unsubscribe can outlast the unload,
+        # and a route left behind keeps the provider from loading again
         self._unregister()
+        await self.clear()
 
     async def _subscribe(self, location: str) -> None:
         """Subscribe to a renderer's service; a renderer that does not take it stays unfollowed."""

@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+import asyncio
 import time
 from collections.abc import AsyncIterator, Awaitable, Callable
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import aiohttp
 import pytest
@@ -207,6 +208,30 @@ async def test_close_ends_the_subscriptions_and_the_route(
         await events.refresh([location])
         await events.close()
     assert renderer.requests[-1][0] == "UNSUBSCRIBE"
+    mass.streams.register_dynamic_route.return_value.assert_called_once_with()
+
+
+async def test_the_route_is_removed_even_when_an_unsubscribe_hangs(
+    served: Callable[[_Renderer], Awaitable[str]],
+) -> None:
+    """A renderer that no longer answers cannot keep the event route on the stream server."""
+    renderer = _Renderer()
+    location = await served(renderer)
+    async with aiohttp.ClientSession() as session:
+        mass = _mass(session)
+        events = RendererEvents(mass, ROOM_EVENTS_PATH, SERVICE_RENDERING_CONTROL, MagicMock())
+        await events.refresh([location])
+        hung = asyncio.Event()
+
+        async def hang(*_: object, **__: object) -> None:
+            await hung.wait()
+
+        with (
+            patch.object(events._handler, "async_unsubscribe", hang),
+            pytest.raises(TimeoutError),
+        ):
+            # the unload's time limit runs out while the renderer does not answer
+            await asyncio.wait_for(events.close(), 0.1)
     mass.streams.register_dynamic_route.return_value.assert_called_once_with()
 
 
