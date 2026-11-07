@@ -4636,6 +4636,32 @@ class TestGroupVolumeReference:
         assert commands["member_1"] == [64, 68]
         assert commands["member_2"] == [64, 20, 28]
 
+    async def test_the_maximum_raises_every_member_to_the_maximum(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """A group at the maximum through one member brings the others up to it as well."""
+        controller, _, commands = self._make_group(mock_mass, first_volume=100, second_volume=49)
+        await controller.cmd_group_volume("group", 100)
+
+        assert commands["member_1"] == [100]
+        assert commands["member_2"] == [100]
+
+    async def test_a_nudge_up_at_the_maximum_raises_every_member_to_the_maximum(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """A nudge up on a group at the maximum may not leave its quieter members behind."""
+        controller, players, commands = self._make_group(
+            mock_mass, first_volume=100, second_volume=49
+        )
+        await controller.cmd_group_volume_up("group")
+        self._report(players["member_1"], 100)
+        self._report(players["member_2"], 100)
+        await controller.cmd_group_volume_down("group")
+
+        # below the maximum the members keep the balance they had before
+        assert commands["member_1"] == [100, 95]
+        assert commands["member_2"] == [100, 47]
+
 
 class TestFakeMuteInGroup:
     """A fake muted player in a group follows the mute lock, just like a native mute."""

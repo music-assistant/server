@@ -2341,7 +2341,7 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
             if volume_level >= base_group:
                 # scaling up: interpolate each child from snapshot toward 100
                 if base_group >= 100:
-                    new_child_volume = child_base
+                    new_child_volume = 100
                 else:
                     progress = (volume_level - base_group) / (100 - base_group)
                     new_child_volume = round(child_base + (100 - child_base) * progress)
