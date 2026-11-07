@@ -43,6 +43,8 @@ _DEVICES = """<?xml version='1.0' encoding='UTF-8'?>
   location='http://192.168.1.41:56766/zone-1.xml'>Bar,Sofa</device>
  <device udn='uuid:bar-renderer' type='urn:schemas-upnp-org:device:MediaRenderer:1'
   location='http://192.168.1.42:60778/bar.xml'>Speaker Bar</device>
+ <device udn='uuid:bar-device' type='urn:schemas-raumfeld-com:device:RaumfeldDevice:1'
+  location='http://192.168.1.42:57793/bar-device.xml'>Teufel Raumfeld Device</device>
  <device udn='uuid:media-server' type='urn:schemas-upnp-org:device:MediaServer:1'
   location='http://192.168.1.41:57132/ms.xml'>Raumfeld MediaServer</device>
 </devices>"""
@@ -101,6 +103,10 @@ def test_devices_are_read_with_the_media_server() -> None:
     assert host.location("uuid:bar-renderer") == "http://192.168.1.42:60778/bar.xml"
     assert host.location("uuid:unknown") is None
     assert host.media_server_udn == "uuid:media-server"
+    assert (
+        host.raumfeld_device_location("192.168.1.42") == "http://192.168.1.42:57793/bar-device.xml"
+    )
+    assert host.raumfeld_device_location("192.168.1.41") is None
 
 
 def test_spotify_connect_ends_with_the_session() -> None:
