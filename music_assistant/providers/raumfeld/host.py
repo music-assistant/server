@@ -214,7 +214,9 @@ class RaumfeldHost:
             except TimeoutError:
                 # nothing changed: the host can hold a request past the wait it was asked
                 # for (measured), so it is asked again; a host that is gone is caught by
-                # the supervisor's health check
+                # the supervisor's health check. It answered as usual, so a failure before
+                # this one no longer counts toward giving up.
+                failures = 0
                 continue
             except (aiohttp.ClientError, OSError, DefusedET.ParseError) as err:
                 failures += 1
