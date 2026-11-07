@@ -1342,7 +1342,7 @@
   "provider.chromecast.errors.show_dashboard_failed": "Failed to show the dashboard on {0}.",
   "provider.chromecast.manifest.description": "Cast music and podcasts to Chromecast or Google Cast devices.",
   "provider.coverartarchive.manifest.description": "Provides album artwork from the Cover Art Archive, the official artwork repository for MusicBrainz.",
-  "provider.deezer.config_entries.arl_token.description": "Your Deezer ARL cookie token. When changing these settings later, leave it empty to keep the token you already saved. See https://www.dumpmedia.com/deezplus/deezer-arl.html",
+  "provider.deezer.config_entries.arl_token.description": "Your Deezer ARL cookie token. When changing these settings later, leave it empty to keep the token you already saved.",
   "provider.deezer.config_entries.arl_token.label": "ARL token",
   "provider.deezer.config_entries.family_profile.description": "The profile of your Deezer Family whose library this source uses.",
   "provider.deezer.config_entries.family_profile.label": "Deezer profile",
