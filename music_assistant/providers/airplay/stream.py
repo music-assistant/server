@@ -226,6 +226,8 @@ class AirPlayStream:
         # tied to it would re-render and re-send the same art on every update
         # until the churn stops.
         self._metadata_artwork_checksum = ""
+        # Queue item of the last delivered metadata identity.
+        self._metadata_item_id = ""
         self._pending_metadata_checksum = ""
         self._metadata_generation = 0
         self._metadata_lock = asyncio.Lock()
@@ -369,6 +371,7 @@ class AirPlayStream:
         async with self._metadata_lock:
             self._metadata_text_checksum = ""
             self._metadata_artwork_checksum = ""
+            self._metadata_item_id = ""
             self._pending_metadata_checksum = ""
             self._metadata_generation += 1
         # Push track metadata before START. Some receivers (notably Sonos) hold
@@ -820,6 +823,9 @@ class AirPlayStream:
                     self._pending_metadata_checksum = metadata_checksum
                     self._metadata_generation += 1
                 metadata_generation = self._metadata_generation
+            if metadata and item_id != self._metadata_item_id:
+                # the binary drops artwork on a new item, so re-send a cover shared with the last track
+                self._metadata_artwork_checksum = ""
             needs_artwork = artwork_checksum != self._metadata_artwork_checksum
             if (
                 metadata
@@ -864,6 +870,7 @@ class AirPlayStream:
                             self._artwork_render_generations.discard(metadata_generation)
                         return
                     self._metadata_text_checksum = text_checksum
+                    self._metadata_item_id = item_id
                     # every identity push is followed by one explicit progress
                     # anchor, even at position zero: some receivers (WiiM Amp)
                     # mute a flushed-and-restarted session mid-track when no
