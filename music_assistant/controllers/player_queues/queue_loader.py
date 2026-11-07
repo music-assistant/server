@@ -20,6 +20,7 @@ from music_assistant_models.enums import (
     PlaybackState,
     QueueOption,
     RepeatMode,
+    SleepTimerMode,
 )
 from music_assistant_models.errors import (
     InvalidDataError,
@@ -518,6 +519,18 @@ class QueueLoaderMixin(_PlayerQueuesBase):
         if details.metadata.chapters:
             media_item.metadata.chapters = details.metadata.chapters
             self.signal_update(queue_item.queue_id, items_changed=True)
+            queue_data = self._queue_data.get(queue_item.queue_id)
+            target = queue_data.sleep_timer_target if queue_data else None
+            current_item = queue_data.queue.current_item if queue_data else None
+            if (
+                target is not None
+                and target.mode == SleepTimerMode.END_OF_CHAPTER
+                and target.queue_item_id == queue_item.queue_item_id
+                and current_item is not None
+                and current_item.queue_item_id == queue_item.queue_item_id
+            ):
+                # a chapter timer pinned before the chapters were known stops at the item end
+                self._repin_sleep_timer(queue_item.queue_id)
 
     def _set_missing_duration(self, queue_item: QueueItem, duration: int) -> bool:
         """

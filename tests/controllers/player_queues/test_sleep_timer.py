@@ -10,11 +10,18 @@ from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock, Mock
 
 import pytest
-from music_assistant_models.enums import PlaybackState, PlayerType, RepeatMode, SleepTimerMode
+from music_assistant_models.enums import (
+    MediaType,
+    PlaybackState,
+    PlayerType,
+    RepeatMode,
+    SleepTimerMode,
+)
 from music_assistant_models.errors import InvalidDataError
-from music_assistant_models.media_items import Audiobook, MediaItemChapter
+from music_assistant_models.media_items import Audiobook, AudioFormat, MediaItemChapter
 from music_assistant_models.player_queue import PlayerQueue, PlayLogEntry
 from music_assistant_models.queue_item import QueueItem
+from music_assistant_models.streamdetails import StreamDetails
 
 from music_assistant.constants import ATTR_ANNOUNCEMENT_IN_PROGRESS
 from music_assistant.controllers.player_queues import PlayerQueuesController
@@ -236,6 +243,37 @@ def test_dropping_the_sleep_timer_target_lets_the_queue_advance_again() -> None:
     assert queue.next_item is not None
     assert queue.next_item.queue_item_id == "item_2"
     ctrl.update_next_item_on_player.assert_called_once_with("q1")
+
+
+@pytest.mark.parametrize(
+    ("mode", "stop_position"),
+    [(SleepTimerMode.END_OF_CHAPTER, 100), (SleepTimerMode.END_OF_ITEM, 600)],
+)
+async def test_chapters_that_arrive_late_move_a_chapter_timer(
+    mode: SleepTimerMode, stop_position: float
+) -> None:
+    """A chapter timer set before the item's chapters were looked up moves to the chapter end."""
+    ctrl, _, mass = _controller()
+    queue_item = ctrl._queue_data["q1"].items[0]
+    assert queue_item.media_item is not None
+    # queued from a listing, which leaves out the chapters
+    queue_item.media_item.metadata.chapters = None
+    queue_item.streamdetails = StreamDetails(
+        provider="library",
+        item_id="book_1",
+        audio_format=AudioFormat(),
+        media_type=MediaType.AUDIOBOOK,
+    )
+    ctrl.set_sleep_timer_target("q1", mode)
+    assert ctrl._queue_data["q1"].sleep_timer_target == SleepTimerTarget(mode, "item_1", 600)
+    mass.music.audiobooks.get_provider_item = AsyncMock(return_value=_book_item().media_item)
+
+    await ctrl._load_chapters(queue_item)
+
+    assert ctrl._queue_data["q1"].sleep_timer_target == SleepTimerTarget(
+        mode, "item_1", stop_position
+    )
+    assert mass.players.update_sleep_timer.call_args.args[:2] == ("q1", mode)
 
 
 def test_queue_stops_once_it_reaches_the_sleep_timer_position() -> None:
