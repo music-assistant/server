@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 from urllib.parse import parse_qs, quote, unquote, urlparse, urlsplit
 
 import aiohttp
@@ -237,9 +237,6 @@ async def host_is_valid(session: aiohttp.ClientSession, host: str, port: int) ->
     """
     Return whether a Raumfeld host answers ``getHostInfo`` at the given address.
 
-    Replaces hassfeld's ``async_host_is_valid``, which opens a session of its own and
-    gives the host 3 seconds.
-
     :param session: The HTTP session to use.
     :param host: Address of the Raumfeld host.
     :param port: Port of the host's webservice.
@@ -449,20 +446,3 @@ _PLAY_MODES: dict[str, tuple[bool | None, RepeatMode]] = {
     "RANDOM": (True, RepeatMode.ALL),
     "REPEAT_ONE": (False, RepeatMode.ONE),
 }
-
-
-def room_renderer_udns(zone_config: dict[str, Any] | None) -> dict[str, list[str]]:
-    """
-    Return the renderer UDNs of every room, in the order the host lists them, by room UDN.
-
-    :param zone_config: The host's zone configuration as hassfeld parses it.
-    """
-    rooms: list[dict[str, Any]] = []
-    for zone in ((zone_config or {}).get("zones") or {}).get("zone") or []:
-        rooms.extend(zone.get("room") or [])
-    rooms.extend(((zone_config or {}).get("unassignedRooms") or {}).get("room") or [])
-    return {
-        room["@udn"]: [renderer["@udn"] for renderer in room.get("renderer") or []]
-        for room in rooms
-        if room.get("@udn")
-    }

@@ -9,12 +9,13 @@ from __future__ import annotations
 
 import hashlib
 import uuid
+from asyncio import IncompleteReadError
 from collections.abc import AsyncGenerator
 from datetime import UTC, datetime
 from math import ceil
 from typing import TYPE_CHECKING, NoReturn
 
-from aiohttp import ClientTimeout
+from aiohttp import ClientError, ClientTimeout
 from Crypto.Cipher import Blowfish
 from music_assistant_models.enums import ContentType, MediaType, StreamType
 from music_assistant_models.errors import AudioError, MediaNotFoundError
@@ -26,7 +27,11 @@ from music_assistant.helpers.datetime import utc_timestamp
 
 from .constants import DECRYPT_KEY_ERROR, DECRYPT_KEY_LENGTH
 from .gw_client import DeezerGWError
-from .helpers import fetch_all_audiobook_chapter_edges, fetch_all_bookmarks
+from .helpers import (
+    fetch_all_audiobook_chapter_edges,
+    fetch_all_bookmarks,
+    parse_flac_streaminfo,
+)
 from .parsers import parse_date
 
 if TYPE_CHECKING:
@@ -117,25 +122,77 @@ class DeezerStreamingManager:
         except DeezerGWError as err:
             _raise_stream_error(err, item_id, "Track")
         url = url_details["sources"][0]["url"]
+        track_id = str(song_data["SNG_ID"])
         size_key = f"FILESIZE_{url_details['format']}"
         size = int(song_data.get(size_key) or song_data.get("FILESIZE_MP3_MISC") or 0)
+        audio_format = AudioFormat(
+            content_type=ContentType.try_parse(url_details["format"].split("_")[0])
+        )
+        if audio_format.content_type == ContentType.FLAC and (
+            streaminfo := await self._get_flac_streaminfo(url, track_id, size)
+        ):
+            audio_format.sample_rate, audio_format.bit_depth, audio_format.channels = streaminfo
         return StreamDetails(
             item_id=item_id,
             provider=self.instance_id,
-            audio_format=AudioFormat(
-                content_type=ContentType.try_parse(url_details["format"].split("_")[0])
-            ),
+            audio_format=audio_format,
             stream_type=StreamType.CUSTOM,
             duration=int(song_data["DURATION"]),
             data={
                 "url": url,
                 "format": url_details["format"],
-                "track_id": str(song_data["SNG_ID"]),
+                "track_id": track_id,
             },
             size=size,
             can_seek=True,
             allow_seek=True,
         )
+
+    async def _get_flac_streaminfo(
+        self, url: str, track_id: str, size: int
+    ) -> tuple[int, int, int] | None:
+        """
+        Read sample rate, bit depth and channels from the FLAC header of a track.
+
+        :param url: The stream URL of the track.
+        :param track_id: The Deezer track ID, used for the decryption key.
+        :param size: The file size reported by Deezer, so a replaced file is read again.
+        :returns: Tuple of (sample_rate, bit_depth, channels), or None on any failure.
+        """
+        cache_key = f"_get_flac_streaminfo.{track_id}"
+        if cached := await self.mass.cache.get(
+            cache_key, provider=self.instance_id, checksum=str(size)
+        ):
+            sample_rate, bit_depth, channels = cached
+            return sample_rate, bit_depth, channels
+        # Deezer serves CD and hi-res FLAC under the same format name, so the first
+        # (encrypted) chunk of the file is fetched and decrypted to read STREAMINFO
+        try:
+            blowfish_key = self._get_blowfish_key(track_id)
+            async with self.mass.http_session.get(
+                url, headers={"Range": "bytes=0-2047"}, timeout=ClientTimeout(total=10)
+            ) as resp:
+                if resp.status not in (200, 206):
+                    self.logger.debug(
+                        "Could not probe FLAC format of track %s: HTTP %s", track_id, resp.status
+                    )
+                    return None
+                first_chunk = await resp.content.readexactly(2048)
+            header = self._decrypt_chunk(first_chunk, blowfish_key)
+        except (ClientError, TimeoutError, IncompleteReadError, AudioError) as err:
+            self.logger.debug("Could not probe FLAC format of track %s: %s", track_id, err)
+            return None
+        if (streaminfo := parse_flac_streaminfo(header)) is None:
+            self.logger.debug("No FLAC STREAMINFO found at the start of track %s", track_id)
+            return None
+        await self.mass.cache.set(
+            cache_key,
+            list(streaminfo),
+            expiration=86400 * 7,
+            provider=self.instance_id,
+            checksum=str(size),
+        )
+        return streaminfo
 
     async def _get_audiobook_stream_details(self, item_id: str) -> StreamDetails:
         """
