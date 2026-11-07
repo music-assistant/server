@@ -46,6 +46,7 @@ from music_assistant.models.plugin import AIEngine, PluginProvider
 from music_assistant.providers.music_quiz import (
     ASSUMED_AUDIO_START_LATENCY,
     CONF_AI_ENGINE,
+    MIN_REVEAL_SECONDS,
     MUSIC_QUIZ_GUEST_USER,
     PLAYBACK_PREFERENCE_CACHE_EXPIRATION,
     PLAYBACK_PREFERENCE_CACHE_KEY,
@@ -6114,9 +6115,10 @@ async def test_warm_next_track_prepares_the_next_audio_buffer() -> None:
 
     await plugin._warm_next_track(task)
 
-    # the preparation may wait for a source slot for the rest of the answer window
+    # the preparation may wait for a source slot until the next round can start at the
+    # earliest: the answer window plus the shortest reveal
     prepare_next_audio_buffer.assert_called_once_with(
-        "venue_player", "item-current", capacity_wait_timeout=20.0
+        "venue_player", "item-current", capacity_wait_timeout=20.0 + MIN_REVEAL_SECONDS
     )
 
 

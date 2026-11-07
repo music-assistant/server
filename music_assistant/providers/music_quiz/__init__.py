@@ -1517,13 +1517,15 @@ class MusicQuizPlugin(PluginProvider):
             # the next round start from audio that is already in hand, instead of a cold
             # source start while the player has no lead yet. The running round's track is
             # usually still being fetched, and a source that allows a single stream only
-            # frees its slot once that fetch is done, so the preparation may wait for the
-            # rest of the answer window. Best effort: a miss is resolved on demand when the
-            # round starts.
+            # frees its slot once that fetch is done, so the preparation may wait for it
+            # until the next round can start at the earliest. Best effort: a miss is
+            # resolved on demand when the round starts.
             self.mass.player_queues.prepare_next_audio_buffer(
                 session.queue_id,
                 queue.current_item.queue_item_id,
-                capacity_wait_timeout=_answer_window(game, get_current_round(game)),
+                capacity_wait_timeout=(
+                    _answer_window(game, get_current_round(game)) + MIN_REVEAL_SECONDS
+                ),
             )
 
     async def _advance_to_queued_track(self, track_uri: str) -> bool:
