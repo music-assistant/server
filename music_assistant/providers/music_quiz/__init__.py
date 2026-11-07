@@ -1252,12 +1252,13 @@ class MusicQuizPlugin(PluginProvider):
         """
         try:
             game_round = await quiz_type.prepare_round(round_index, previous_rounds)
-        except BaseException as err:
+        except asyncio.CancelledError:
             if track_known is not None and not track_known.done():
-                if isinstance(err, Exception):
-                    track_known.set_exception(err)
-                else:
-                    track_known.cancel()
+                track_known.cancel()
+            raise
+        except Exception as err:
+            if track_known is not None and not track_known.done():
+                track_known.set_exception(err)
             raise
         if track_known is not None and not track_known.done():
             track_known.set_result(game_round)
@@ -1498,18 +1499,31 @@ class MusicQuizPlugin(PluginProvider):
             return
         with _system_auth_context():
             session = self._playback_session
-            if session is None:
+            game = self._game
+            if session is None or game is None:
                 return
             queue = self.mass.player_queues.get(session.queue_id)
             if queue is None or queue.current_item is None:
                 return
+            next_item = self.mass.player_queues.get_next_item(
+                session.queue_id, queue.current_item.queue_item_id
+            )
+            if next_item is None or next_item.uri != game_round.track_uri:
+                # other items sit behind the playing one (autoplay, an earlier game): the
+                # queue's next item is not this round's track, so there is nothing to prepare
+                return
             # A round ends long before its track does, so the queue never reaches the point
             # where it prepares the next item itself. Resolving and buffering it here lets
             # the next round start from audio that is already in hand, instead of a cold
-            # source start while the player has no lead yet. Best effort: a miss is
-            # resolved on demand when the round starts.
+            # source start while the player has no lead yet. The running round's track is
+            # usually still being fetched, and a source that allows a single stream only
+            # frees its slot once that fetch is done, so the preparation may wait for the
+            # rest of the answer window. Best effort: a miss is resolved on demand when the
+            # round starts.
             self.mass.player_queues.prepare_next_audio_buffer(
-                session.queue_id, queue.current_item.queue_item_id
+                session.queue_id,
+                queue.current_item.queue_item_id,
+                capacity_wait_timeout=_answer_window(game, get_current_round(game)),
             )
 
     async def _advance_to_queued_track(self, track_uri: str) -> bool:
