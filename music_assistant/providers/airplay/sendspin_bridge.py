@@ -348,6 +348,13 @@ class SendspinAirPlayBridge:
         )
 
     @property
+    def is_streaming(self) -> bool:
+        """Return whether this bridge is feeding the AirPlay player, or starting to."""
+        # the start task handle is kept after it finished, so only a pending one counts
+        start_task = self._airplay_stream_start_task
+        return self._is_streaming or (start_task is not None and not start_task.done())
+
+    @property
     def sendspin_group(self) -> SendspinGroup | None:
         """Return the Sendspin group this bridge belongs to, or None when unregistered."""
         return self._sendspin_client.group if self._sendspin_client else None
@@ -1778,6 +1785,16 @@ class SendspinBridgeManager(SendspinBridgeManagerBase[SendspinAirPlayBridge]):
         if bridge := self._bridges.get(airplay_player_id):
             bridge.stop_streaming()
             return True
+        return False
+
+    def is_streaming(self, airplay_player_id: str) -> bool:
+        """
+        Return whether a Sendspin bridge is streaming to an AirPlay player, or starting to.
+
+        :param airplay_player_id: The AirPlay player ID.
+        """
+        if bridge := self._bridges.get(airplay_player_id):
+            return bridge.is_streaming
         return False
 
     def _bridge_client_id(self, player: Player) -> str | None:

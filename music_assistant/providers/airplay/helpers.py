@@ -170,6 +170,17 @@ def is_macos_device(manufacturer: str, model: str) -> bool:
     return manufacturer.lower().startswith("apple") and model.lower().startswith(("mac", "imac"))
 
 
+def is_shairport_sync(model: str | None) -> bool:
+    """
+    Return whether an advertised AirPlay model identifies a shairport-sync receiver.
+
+    Matches both ``ShairportSync`` and the ``Shairport Sync`` some versions advertise.
+
+    :param model: The model name from the device's mDNS records.
+    """
+    return model is not None and model.replace(" ", "").lower() == "shairportsync"
+
+
 def is_apple_tv(manufacturer: str, model: str) -> bool:
     """
     Check if a device identifies as an Apple TV (and not a HomePod).

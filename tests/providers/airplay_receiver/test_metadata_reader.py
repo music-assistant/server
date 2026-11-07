@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import logging
 import os
 import pathlib
@@ -23,8 +24,8 @@ def pipe_path(tmp_path: pathlib.Path) -> str:
     return path
 
 
-async def _write_marker(pipe_path: str, marker: str, timeout: float = 5.0) -> None:
-    """Write a marker using a short-lived FIFO writer, like a sessioncontrol hook does."""
+async def _write_to_pipe(pipe_path: str, text: str, timeout: float = 5.0) -> None:
+    """Write text to the FIFO through a short-lived writer."""
     # O_NONBLOCK so a regression leaving the FIFO readerless fails the test instead of
     # hanging it: opening for write raises ENXIO while no reader is attached.
     async with asyncio.timeout(timeout):
@@ -35,16 +36,32 @@ async def _write_marker(pipe_path: str, marker: str, timeout: float = 5.0) -> No
                 await asyncio.sleep(0.05)
                 continue
             try:
-                os.write(fd, f"{marker}\n".encode())
+                os.write(fd, text.encode())
             finally:
                 os.close(fd)
             return
+
+
+async def _write_marker(pipe_path: str, marker: str, timeout: float = 5.0) -> None:
+    """Write a marker using a short-lived FIFO writer, like a sessioncontrol hook does."""
+    await _write_to_pipe(pipe_path, f"{marker}\n", timeout)
 
 
 async def _wait_for(condition: Callable[[], bool], timeout: float = 2.0) -> None:
     async with asyncio.timeout(timeout):
         while not condition():
             await asyncio.sleep(0.01)
+
+
+def _xml_item(item_type: str, code: str, data: bytes = b"") -> str:
+    """Return a metadata item framed the way shairport-sync writes it to the pipe."""
+    item = (
+        f"<item><type>{item_type.encode().hex()}</type><code>{code.encode().hex()}</code>"
+        f"<length>{len(data)}</length>"
+    )
+    if data:
+        item += f'\n<data encoding="base64">\n{base64.b64encode(data).decode()}</data>'
+    return item + "</item>\n"
 
 
 async def test_pipe_is_open_when_start_returns(pipe_path: str) -> None:
@@ -131,5 +148,51 @@ async def test_reader_keeps_pipe_attached_across_restart(
         os.close(os.open(pipe_path, os.O_WRONLY | os.O_NONBLOCK))
         await _write_marker(pipe_path, "MA_PLAY_END")
         await _wait_for(lambda: updates[-1:] == [{"play_state": "stopped"}], timeout=5.0)
+    finally:
+        await reader.stop()
+
+
+async def test_xml_item_payload_reaches_decoder_as_bytes(pipe_path: str) -> None:
+    """A non-ASCII UTF-8 title survives the XML path and is batched until mden."""
+    updates: list[dict[str, Any]] = []
+    reader = MetadataReader(pipe_path, logging.getLogger("test"), updates.append)
+    await reader.start()
+    try:
+        await _write_to_pipe(
+            pipe_path,
+            _xml_item("ssnc", "mdst", b"1234")
+            + _xml_item("core", "minm", "Ångström 東京".encode())
+            + _xml_item("ssnc", "mden", b"1234"),
+        )
+        await _wait_for(lambda: len(updates) == 2)
+        assert updates == [{"metadata_start": True}, {"title": "Ångström 東京"}]
+    finally:
+        await reader.stop()
+
+
+async def test_session_event_forwarded_without_block(pipe_path: str) -> None:
+    """A payloadless paus reaches on_metadata right away, without an mdst/mden block."""
+    updates: list[dict[str, Any]] = []
+    reader = MetadataReader(pipe_path, logging.getLogger("test"), updates.append)
+    await reader.start()
+    try:
+        await _write_to_pipe(pipe_path, _xml_item("ssnc", "paus"))
+        await _wait_for(lambda: bool(updates))
+        assert updates == [{"paused": True}]
+    finally:
+        await reader.stop()
+
+
+async def test_cover_art_kept_on_reader(pipe_path: str, monkeypatch: pytest.MonkeyPatch) -> None:
+    """PICT bytes are kept on the reader and announced with a cover art timestamp."""
+    monkeypatch.setattr(time, "time", lambda: 1_700_000_000.5)
+    updates: list[dict[str, Any]] = []
+    reader = MetadataReader(pipe_path, logging.getLogger("test"), updates.append)
+    await reader.start()
+    try:
+        await _write_to_pipe(pipe_path, _xml_item("ssnc", "PICT", b"\xff\xd8\xff\xe0"))
+        await _wait_for(lambda: bool(updates))
+        assert reader.cover_art_bytes == b"\xff\xd8\xff\xe0"
+        assert updates == [{"cover_art_timestamp": "1700000000500"}]
     finally:
         await reader.stop()

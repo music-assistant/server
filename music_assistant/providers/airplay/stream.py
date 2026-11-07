@@ -286,6 +286,16 @@ class AirPlayStream:
         )
 
     @property
+    def stopping(self) -> bool:
+        """Return True once a stop of this stream has begun."""
+        return self._stopping
+
+    @property
+    def cleanup_complete(self) -> bool:
+        """Return True once this stream has fully released the receiver."""
+        return self._cleanup_complete
+
+    @property
     def accepts_audio(self) -> bool:
         """
         Return boolean if this stream can still be fed audio.
@@ -430,6 +440,7 @@ class AirPlayStream:
                                 if self._cli_proc and not self._cli_proc.closed:
                                     await self._cli_proc.close()
                         finally:
+                            self.player.record_stream_end()
                             self.player.set_state_from_stream(
                                 state=PlaybackState.IDLE,
                                 elapsed_time=0,
@@ -1447,6 +1458,7 @@ class AirPlayStream:
         self._process_ended.set()
         if not self._stopped and not self._stopping:
             self._stopped = True
+            player.record_stream_end()
             try:
                 if not self.ended_cleanly:
                     if self.superseded or player.stream is not self:
@@ -1784,6 +1796,7 @@ class AirPlayStream:
                 pass
             except Exception as err:
                 self.player.logger.debug("cliairplay stdout reader cleanup failed: %s", err)
+        self.player.record_stream_end()
         try:
             if self._cli_proc and not self._cli_proc.closed:
                 await self._cli_proc.kill()
