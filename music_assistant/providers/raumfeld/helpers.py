@@ -153,7 +153,7 @@ def external_source(section: str | None) -> tuple[str, str]:
 
 def parse_last_change(last_change_xml: str | None) -> dict[str, str]:
     """
-    Parse an AVTransport ``LastChange`` event into ``{state variable: value}``.
+    Parse a renderer's ``LastChange`` event into ``{state variable: value}``.
 
     Malformed or empty XML yields an empty dict (never raises).
 

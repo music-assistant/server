@@ -27,6 +27,7 @@ from music_assistant.providers.raumfeld.player import RaumfeldPlayer
 from music_assistant.providers.raumfeld.provider import RaumfeldPlayerProvider
 
 _LOCATION = "http://192.168.1.42:54730/renderer.xml"
+_ZONE_LOCATION = "http://192.168.1.41:56766/zone-1.xml"
 _DEVICE_DESCRIPTION = (
     '<?xml version="1.0"?>'
     '<root xmlns="urn:schemas-upnp-org:device-1-0"><device>'
@@ -1507,6 +1508,83 @@ async def test_a_room_grouped_in_the_raumfeld_app_has_the_rate_checked(
     assert check.await_count == (1 if checked else 0)
 
 
+def test_a_room_event_reaches_that_rooms_player() -> None:
+    """An event of a room's own renderer goes to that room's player only."""
+    provider = RaumfeldPlayerProvider.__new__(RaumfeldPlayerProvider)
+    provider.host = _host(
+        {"Bar": ("uuid:bar", "uuid:bar-renderer"), "Bank": ("uuid:bank", "uuid:bank-renderer")},
+        {"uuid:bar-renderer": "http://192.168.1.42/bar.xml", "uuid:bank-renderer": _LOCATION},
+    )
+    bar = MagicMock(spec=RaumfeldPlayer, room="Bar")
+    bank = MagicMock(spec=RaumfeldPlayer, room="Bank")
+    with patch.object(
+        RaumfeldPlayerProvider, "players", new_callable=PropertyMock, return_value=[bar, bank]
+    ):
+        provider._handle_room_event("http://192.168.1.42/bar.xml", {"Volume": "44"})
+    bar.set_rendering_events.assert_called_once_with(True)
+    bar.apply_rendering_event.assert_called_once_with({"Volume": "44"})
+    bank.apply_rendering_event.assert_not_called()
+
+
+async def test_a_resync_tells_each_room_whether_its_events_come_in() -> None:
+    """Every room's renderer is subscribed to, and a room whose events stopped is read again."""
+    provider = RaumfeldPlayerProvider.__new__(RaumfeldPlayerProvider)
+    provider.host = _host(
+        {"Bar": ("uuid:bar", "uuid:bar-renderer"), "Bank": ("uuid:bank", "uuid:bank-renderer")},
+        {
+            "uuid:bar-renderer": "http://192.168.1.42/bar.xml",
+            "uuid:bank-renderer": _LOCATION,
+            "uuid:zone-1": _ZONE_LOCATION,
+        },
+        zones={"uuid:zone-1": ["Bar"]},
+    )
+    provider._library_read_at = time.time()
+    provider._sync_rooms = AsyncMock()  # type: ignore[method-assign]
+    provider.room_events = MagicMock(refresh=AsyncMock())
+    provider.room_events.follows.side_effect = lambda location: location == _LOCATION
+    provider.zone_events = MagicMock(refresh=AsyncMock())
+    provider.zone_events.follows.return_value = True
+    bar = MagicMock(spec=RaumfeldPlayer, room="Bar")
+    bank = MagicMock(spec=RaumfeldPlayer, room="Bank")
+    with patch.object(
+        RaumfeldPlayerProvider, "players", new_callable=PropertyMock, return_value=[bar, bank]
+    ):
+        await provider._resync()
+    assert set(provider.room_events.refresh.await_args.args[0]) == {
+        "http://192.168.1.42/bar.xml",
+        _LOCATION,
+    }
+    bar.set_rendering_events.assert_called_once_with(False)
+    bank.set_rendering_events.assert_called_once_with(True)
+    # the zone renderers are followed too, each room told about its own zone
+    provider.zone_events.refresh.assert_awaited_once_with({_ZONE_LOCATION})
+    bar.set_zone_events.assert_called_once_with(_ZONE_LOCATION)
+    bank.set_zone_events.assert_called_once_with(None)
+
+
+def test_a_zone_event_has_the_rooms_of_that_zone_read() -> None:
+    """A zone's event reaches the players of its rooms, not those of another zone."""
+    provider = RaumfeldPlayerProvider.__new__(RaumfeldPlayerProvider)
+    provider.logger = MagicMock()
+    provider.host = _host(
+        {
+            "Bar": ("uuid:bar", "uuid:bar-renderer"),
+            "Sofa": ("uuid:sofa", "uuid:sofa-renderer"),
+            "Bank": ("uuid:bank", "uuid:bank-renderer"),
+        },
+        {"uuid:zone-1": _ZONE_LOCATION, "uuid:zone-2": "http://192.168.1.41:1/zone-2.xml"},
+        zones={"uuid:zone-1": ["Bar", "Sofa"], "uuid:zone-2": ["Bank"]},
+    )
+    players = [MagicMock(spec=RaumfeldPlayer, room=room) for room in ("Bar", "Sofa", "Bank")]
+    with patch.object(
+        RaumfeldPlayerProvider, "players", new_callable=PropertyMock, return_value=players
+    ):
+        provider._handle_zone_event(_ZONE_LOCATION, {"TransportState": "PLAYING"})
+    players[0].zone_event.assert_called_once_with(_ZONE_LOCATION)
+    players[1].zone_event.assert_called_once_with(_ZONE_LOCATION)
+    players[2].zone_event.assert_not_called()
+
+
 async def test_unload_waits_for_its_tasks_to_end() -> None:
     """The supervisor, the update loop and the zone watcher have ended once unload returns."""
     provider = RaumfeldPlayerProvider.__new__(RaumfeldPlayerProvider)
@@ -1524,8 +1602,13 @@ async def test_unload_waits_for_its_tasks_to_end() -> None:
     provider._supervisor_task = asyncio.create_task(runs_until_cancelled("supervisor"))
     provider._update_task = asyncio.create_task(runs_until_cancelled("update"))
     provider._zone_watch_task = asyncio.create_task(runs_until_cancelled("zones"))
+    events = MagicMock(close=AsyncMock())
+    provider.room_events = events
+    provider.zone_events = events
     await asyncio.sleep(0)
     await provider.unload()
+    # the renderers are told to stop sending events
+    assert events.close.await_count == 2
     assert sorted(ended) == ["supervisor", "update", "zones"]
     assert provider._supervisor_task is None
 

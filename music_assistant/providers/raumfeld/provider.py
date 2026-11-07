@@ -52,6 +52,7 @@ from .constants import (
     UNLOAD_TIMEOUT,
     ZONE_WATCH_INTERVAL,
 )
+from .events import ROOM_EVENTS_PATH, ZONE_EVENTS_PATH, RendererEvents
 from .helpers import (
     discover_hosts,
     host_is_valid,
@@ -65,7 +66,13 @@ from .helpers import (
 )
 from .host import RaumfeldHost
 from .player import RaumfeldPlayer
-from .upnp import SERVICE_CONTENT_DIRECTORY, browse, get_action
+from .upnp import (
+    SERVICE_AV_TRANSPORT,
+    SERVICE_CONTENT_DIRECTORY,
+    SERVICE_RENDERING_CONTROL,
+    browse,
+    get_action,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -77,6 +84,11 @@ class RaumfeldPlayerProvider(PlayerProvider):
     """Player provider for Teufel Raumfeld multiroom devices."""
 
     host: RaumfeldHost
+    # the volume and mute events of the rooms' own renderers
+    room_events: RendererEvents
+    # the transport events of the zone renderers, and the zones last subscribed to
+    zone_events: RendererEvents
+    _zone_event_locations: set[str]
     _host_address: str
     _host_port: int
     _supervisor_task: asyncio.Task[None] | None = None
@@ -184,6 +196,13 @@ class RaumfeldPlayerProvider(PlayerProvider):
         self._shared_serial_warned = set()
         # empty until connected; replaced by a fresh one on every connect
         self.host = RaumfeldHost(self.mass.http_session, self._host_url)
+        self.room_events = RendererEvents(
+            self.mass, ROOM_EVENTS_PATH, SERVICE_RENDERING_CONTROL, self._handle_room_event
+        )
+        self.zone_events = RendererEvents(
+            self.mass, ZONE_EVENTS_PATH, SERVICE_AV_TRANSPORT, self._handle_zone_event
+        )
+        self._zone_event_locations = set()
         # a background supervisor owns the connection so a missing or (temporarily)
         # unreachable host never leaves the provider permanently unavailable
         self._supervisor_task = self.mass.create_task(self._supervise())
@@ -203,6 +222,11 @@ class RaumfeldPlayerProvider(PlayerProvider):
         self._supervisor_task = None
         self._update_task = None
         self._zone_watch_task = None
+        try:
+            async with asyncio.timeout(UNLOAD_TIMEOUT):
+                await asyncio.gather(self.room_events.close(), self.zone_events.close())
+        except TimeoutError:
+            self.logger.debug("Ending the Raumfeld renderer events took too long")
 
     def get_zone_for_room(self, room: str) -> list[str] | None:
         """
@@ -441,6 +465,8 @@ class RaumfeldPlayerProvider(PlayerProvider):
     async def _resync(self) -> None:
         """Periodic re-sync: register rooms that (re)appeared and mark vanished ones gone."""
         await self._sync_rooms()
+        await self._refresh_room_events()
+        await self._refresh_zone_events()
         if time.time() - self._library_read_at >= LIBRARY_REFRESH_INTERVAL:
             self._library_read_at = time.time()
             await self._load_library_sources()
@@ -576,12 +602,72 @@ class RaumfeldPlayerProvider(PlayerProvider):
             if isinstance(known, RaumfeldPlayer) and known.player_id not in present:
                 known.set_available(False)
 
+    async def _refresh_room_events(self) -> None:
+        """Follow the events of every room's own renderer, and tell each room which come in."""
+        await self.room_events.refresh(
+            [
+                location
+                for room in self.host.get_rooms()
+                if (location := self.room_renderer_location(room)) is not None
+            ]
+        )
+        for player in self.players:
+            if isinstance(player, RaumfeldPlayer):
+                location = self.room_renderer_location(player.room)
+                player.set_rendering_events(
+                    location is not None and self.room_events.follows(location)
+                )
+
+    async def _refresh_zone_events(self) -> None:
+        """Follow the events of every zone renderer, and tell each room whether its zone's come in."""
+        self._zone_event_locations = self._zone_locations()
+        await self.zone_events.refresh(self._zone_event_locations)
+        for player in self.players:
+            if not isinstance(player, RaumfeldPlayer):
+                continue
+            zone = self.get_zone_for_room(player.room)
+            location = self.zone_location(zone) if zone else None
+            followed = location is not None and self.zone_events.follows(location)
+            player.set_zone_events(location if followed else None)
+
+    def _zone_locations(self) -> set[str]:
+        """Return the description URLs of the zone renderers the host lists."""
+        return {
+            location
+            for zone in self.host.get_zones()
+            if (location := self.zone_location(zone)) is not None
+        }
+
+    def _handle_zone_event(self, location: str, changes: dict[str, str]) -> None:
+        """Have the rooms of a zone read it, after it reported a change."""
+        rooms = next(
+            (zone for zone in self.host.get_zones() if self.zone_location(zone) == location), []
+        )
+        if state := changes.get("TransportState"):
+            self.logger.debug("Zone %s reports %s", rooms, state)
+        for player in self.players:
+            if isinstance(player, RaumfeldPlayer) and player.room in rooms:
+                player.zone_event(location)
+
+    def _handle_room_event(self, location: str, changes: dict[str, str]) -> None:
+        """Pass a room renderer's volume and mute event on to the room's player."""
+        for player in self.players:
+            if (
+                isinstance(player, RaumfeldPlayer)
+                and self.room_renderer_location(player.room) == location
+            ):
+                player.set_rendering_events(True)
+                player.apply_rendering_event(changes)
+
     async def _watch_zones(self) -> None:
         """Follow zone changes made outside Music Assistant (e.g. in the Raumfeld app)."""
         while True:
             await asyncio.sleep(ZONE_WATCH_INTERVAL)
             try:
                 await self._follow_zones()
+                if self._zone_locations() != self._zone_event_locations:
+                    # a zone was made or ended: follow its events right away
+                    await self._refresh_zone_events()
             except asyncio.CancelledError:
                 raise
             except HOST_ERRORS as err:

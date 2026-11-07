@@ -20,9 +20,12 @@ from music_assistant.providers.raumfeld.constants import PLAYER_CONFIG_ENTRIES
 from music_assistant.providers.raumfeld.helpers import library_uri, play_mode_for
 from music_assistant.providers.raumfeld.player import (
     ADVANCE_WATCH_ATTEMPTS,
+    IDLE_EVENTS_POLL_INTERVAL,
     IDLE_POLL_INTERVAL,
+    PLAYING_EVENTS_POLL_INTERVAL,
     PLAYING_POLL_INTERVAL,
     ZONE_CREATE_ATTEMPTS,
+    ZONE_EVENT_POLL_DELAY,
     RaumfeldPlayer,
     _changes_playback,
     _map_transport_state,
@@ -333,6 +336,7 @@ async def test_unload_cancels_its_timers() -> None:
         "raumfeld_advance_test",
         "external_pause_raumfeld_test",
         "raumfeld_announce_next_raumfeld_test",
+        "raumfeld_event_poll_raumfeld_test",
     }
     assert player._advance_armed is False
     assert player._next_media is None
@@ -541,6 +545,36 @@ async def test_volume_update_reads_mute_and_keeps_unread_values() -> None:
         with patch.object(RaumfeldPlayer, "logger", MagicMock(), create=True):
             await player._update_volume()
     assert (player._attr_volume_level, player._attr_volume_muted) == (42, True)
+
+
+async def test_volume_and_mute_are_not_read_while_their_events_come_in() -> None:
+    """A room whose renderer sends its volume and mute is not asked for them on a poll."""
+    player = _room_player()
+    player.set_rendering_events(True)
+    call = AsyncMock(side_effect=_rendering_control(volume=42, muted=True))
+    with patch.object(player, "_call_action", call):
+        await player._update_volume()
+        call.assert_not_called()
+        # the events stopped: read again
+        player.set_rendering_events(False)
+        await player._update_volume()
+    assert (player._attr_volume_level, player._attr_volume_muted) == (42, True)
+
+
+def test_a_renderer_event_sets_volume_and_mute() -> None:
+    """A volume or mute changed at the speaker or in the Raumfeld app shows at once."""
+    player = _room_player()
+    player._attr_volume_level = 30
+    player._attr_volume_muted = False
+    with patch.object(RaumfeldPlayer, "update_state") as update_state:
+        player.apply_rendering_event({"InstanceID": "0", "Volume": "44", "Mute": "1"})
+        assert (player._attr_volume_level, player._attr_volume_muted) == (44, True)
+        player.apply_rendering_event({"Mute": "0"})
+        assert (player._attr_volume_level, player._attr_volume_muted) == (44, False)
+        assert update_state.call_count == 2
+        # an event about something else (the tone settings, say) changes nothing
+        player.apply_rendering_event({"LowDB": "3.000000"})
+    assert update_state.call_count == 2
 
 
 async def test_a_polls_volume_and_mute_reads_are_built_once() -> None:
@@ -1209,6 +1243,81 @@ async def test_a_play_command_during_the_source_read_drops_the_whole_reading() -
     ):
         await player._poll_zone(["Bar"])
     apply_position.assert_not_called()
+
+
+async def _poll_zone_reading(player: RaumfeldPlayer, state: str) -> None:
+    """Have the player read its zone, which reports the given transport state."""
+    with (
+        patch.object(player, "update_state"),
+        patch.object(player, "_update_volume", AsyncMock()),
+        patch.object(
+            player, "_read_transport", AsyncMock(return_value={"CurrentTransportState": state})
+        ),
+        patch.object(player, "_read_position", AsyncMock(return_value={"RelTime": "0:01:00"})),
+        patch.object(player, "_update_zone_source", AsyncMock()),
+        patch.object(player, "_maybe_announce_flow_item"),
+    ):
+        await player._poll_zone(["Bar"])
+
+
+async def test_a_zone_whose_events_come_in_is_read_seldom() -> None:
+    """Its changes are read on its events, so a regular read only keeps the position right."""
+    player, _ = _external_player()
+    player.set_zone_events(_ZONE)
+    await _poll_zone_reading(player, "PLAYING")
+    assert player._attr_poll_interval == PLAYING_EVENTS_POLL_INTERVAL
+    await _poll_zone_reading(player, "STOPPED")
+    assert player._attr_poll_interval == IDLE_EVENTS_POLL_INTERVAL
+    # the events are those of another zone than the room is in now
+    player.set_zone_events("http://192.168.1.41:1/zone-2.xml")
+    await _poll_zone_reading(player, "PLAYING")
+    assert player._attr_poll_interval == PLAYING_POLL_INTERVAL
+
+
+def test_a_zone_event_reads_the_room_soon() -> None:
+    """Events that come in together are read once, a moment after the first."""
+    player, _ = _external_player()
+    mass = MagicMock()
+    player.mass = mass
+    player._player_id = "raumfeld_bar"
+    player.zone_event(_ZONE)
+    assert player._zone_events == _ZONE
+    delay, target = mass.call_later.call_args.args
+    assert delay == ZONE_EVENT_POLL_DELAY
+    assert target == player._start_event_poll
+    assert mass.call_later.call_args.kwargs["task_id"] == "raumfeld_event_poll_raumfeld_bar"
+
+
+async def test_an_event_during_its_read_reads_the_room_again() -> None:
+    """A change that came in while the room was read is read once more."""
+    player, _ = _external_player()
+    player.mass = MagicMock()
+    player._attr_available = True
+    reads = 0
+
+    async def read() -> None:
+        nonlocal reads
+        reads += 1
+        if reads == 1:
+            # another event, while this read runs
+            player._start_event_poll()
+
+    with patch.object(player, "_poll_state", side_effect=read):
+        await player._event_poll()
+    assert reads == 2
+    player.mass.create_task.assert_not_called()
+    assert not player._event_poll_running
+
+
+async def test_a_regular_poll_gives_way_to_a_read_an_event_asked_for() -> None:
+    """While an event's read runs, the regular poll does not read the zone alongside it."""
+    player, _ = _external_player()
+    with patch.object(player, "_poll_state", AsyncMock()) as read:
+        async with player._poll_guard():
+            await player.poll()
+        read.assert_not_awaited()
+        await player.poll()
+    read.assert_awaited_once()
 
 
 def _flow_mode_on() -> Any:

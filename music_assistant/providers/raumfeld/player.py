@@ -72,6 +72,14 @@ FAST_POLL_INTERVAL = 1
 # request rate on the Raumfeld host low.
 PLAYING_POLL_INTERVAL = 5
 IDLE_POLL_INTERVAL = 15
+# The same, for a zone whose events come in: every change of what it plays or whether it
+# plays is read at once (see zone_event), and the position, which it sends no event for,
+# runs on in Music Assistant between reads.
+PLAYING_EVENTS_POLL_INTERVAL = 15
+IDLE_EVENTS_POLL_INTERVAL = 60
+# How long (seconds) after a zone's event to read its state: a change comes in as a few
+# events within a fraction of a second (measured), which one read takes in.
+ZONE_EVENT_POLL_DELAY = 0.3
 # How long (seconds) after a play/resume command to keep polling fast, so MA catches
 # the device actually starting playback (Raumfeld renderers buffer before they start).
 STARTUP_POLL_WINDOW = 20
@@ -238,6 +246,15 @@ class RaumfeldPlayer(Player):
     # what a zone source was playing when it was stopped, to start it again later:
     # (current media uri, transport uri, its metadata, track number, position)
     _resume_context: tuple[str, str, str, int, str | None] | None = None
+    # whether the volume and mute of the room's own renderer come in as events
+    _rendering_events: bool = False
+    # the description URL of the zone whose events come in, if the room is in one
+    _zone_events: str | None = None
+    # held by a poll, so a poll an event asked for does not run alongside the regular one
+    _poll_lock: asyncio.Lock | None = None
+    # a poll an event asked for runs, and another event came in during it
+    _event_poll_running = False
+    _event_poll_again = False
     # the source that was active when the resume context was read
     _resume_source: str | None = None
     # the (sample_rate, bit_depth) pairs offered when the running stream started: MA picks
@@ -353,6 +370,7 @@ class RaumfeldPlayer(Player):
         await super().on_unload()
         self.mass.cancel_timer(self._announce_timer_id)
         self.mass.cancel_task(self._announce_task_id)
+        self.mass.cancel_timer(self._event_poll_timer_id)
         # the timer is held by mass, not by this player, so it would otherwise fire after
         # it is gone, against a dropped player
         self._clear_next()
@@ -765,6 +783,49 @@ class RaumfeldPlayer(Player):
         self._attr_volume_muted = muted
         self.update_state()
 
+    def set_zone_events(self, location: str | None) -> None:
+        """
+        Set the zone whose events come in, so it is read on its events and seldom otherwise.
+
+        :param location: The description URL of the room's zone renderer, or ``None``.
+        """
+        self._zone_events = location
+
+    def zone_event(self, location: str) -> None:
+        """
+        Read the room's zone soon, after it reported a change.
+
+        :param location: The description URL of the zone renderer that sent the event.
+        """
+        self._zone_events = location
+        self.mass.call_later(
+            ZONE_EVENT_POLL_DELAY, self._start_event_poll, task_id=self._event_poll_timer_id
+        )
+
+    def set_rendering_events(self, followed: bool) -> None:
+        """
+        Set whether the volume and mute of the room's own renderer come in as events.
+
+        :param followed: Whether they do; if not, they are read on every poll.
+        """
+        self._rendering_events = followed
+
+    def apply_rendering_event(self, changes: dict[str, str]) -> None:
+        """
+        Take over a volume or mute change the room's own renderer reported.
+
+        :param changes: The state variables the renderer's event changed.
+        """
+        updated = False
+        if (volume := changes.get("Volume")) is not None and volume.isdigit():
+            self._attr_volume_level = int(volume)
+            updated = True
+        if (muted := changes.get("Mute")) is not None:
+            self._attr_volume_muted = muted.lower() in ("1", "true")
+            updated = True
+        if updated:
+            self.update_state()
+
     # grouping -----------------------------------------------------------------
 
     async def set_members(
@@ -890,6 +951,14 @@ class RaumfeldPlayer(Player):
 
     async def poll(self) -> None:
         """Poll the Raumfeld host for this room's current state."""
+        if self._poll_guard().locked():
+            # a poll an event asked for reads the state right now
+            return
+        async with self._poll_guard():
+            await self._poll_state()
+
+    async def _poll_state(self) -> None:
+        """Read this room's current state and apply it."""
         was_powered = self._attr_powered
         self._update_power()
         if (
@@ -1014,12 +1083,17 @@ class RaumfeldPlayer(Player):
         # the final seconds of a track when this room advances the queue itself; a relaxed
         # rate while it plays on, the slow rate when idle
         recently_started = (time.time() - self._play_started_at) < STARTUP_POLL_WINDOW
+        evented = (
+            self._zone_events is not None and self._zone_events == self.raumfeld.zone_location(zone)
+        )
         if recently_started or (self._advance_armed and playing and self._near_end):
             self._attr_poll_interval = FAST_POLL_INTERVAL
         elif playing:
-            self._attr_poll_interval = PLAYING_POLL_INTERVAL
+            self._attr_poll_interval = (
+                PLAYING_EVENTS_POLL_INTERVAL if evented else PLAYING_POLL_INTERVAL
+            )
         else:
-            self._attr_poll_interval = IDLE_POLL_INTERVAL
+            self._attr_poll_interval = IDLE_EVENTS_POLL_INTERVAL if evented else IDLE_POLL_INTERVAL
 
         self.update_state()
         if playing:
@@ -1069,6 +1143,9 @@ class RaumfeldPlayer(Player):
 
     async def _update_volume(self) -> None:
         """Read this room's volume and mute state, keeping the last value of one not read."""
+        if self._rendering_events:
+            # they come in as events, see apply_rendering_event
+            return
         volume, muted = await asyncio.gather(self._read_volume(), self._read_mute())
         if volume is not None:
             self._attr_volume_level = volume
@@ -2028,6 +2105,39 @@ class RaumfeldPlayer(Player):
         if (source := self._external_source) is not None:
             source.shuffle_enabled, source.repeat_mode = shuffle, repeat
         self.update_state()
+
+    def _poll_guard(self) -> asyncio.Lock:
+        """Return the lock a poll holds while it reads and applies the room's state."""
+        if self._poll_lock is None:
+            self._poll_lock = asyncio.Lock()
+        return self._poll_lock
+
+    @property
+    def _event_poll_timer_id(self) -> str:
+        """Return the id of the timer that reads the zone after its event."""
+        return f"raumfeld_event_poll_{self.player_id}"
+
+    def _start_event_poll(self) -> None:
+        """Read the room's state now, or again once a read that is running is done."""
+        if self._event_poll_running:
+            # that read may have been made before this change
+            self._event_poll_again = True
+            return
+        self.mass.create_task(self._event_poll())
+
+    async def _event_poll(self) -> None:
+        """Read the room's state, as often as events came in meanwhile."""
+        self._event_poll_running = True
+        try:
+            while True:
+                self._event_poll_again = False
+                if self._attr_available:
+                    async with self._poll_guard():
+                        await self._poll_state()
+                if not self._event_poll_again:
+                    return
+        finally:
+            self._event_poll_running = False
 
     def _play_mode_guard(self) -> asyncio.Lock:
         """Return the lock a shuffle or repeat change holds while it combines the two."""
