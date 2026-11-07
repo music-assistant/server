@@ -12,7 +12,7 @@ CONF_SYNC_INTERVAL = "sync_interval"
 CONF_DELETED_PROVIDERS = "deleted_providers"
 CONF_KEEP_REMASTERS_APART: Final[str] = "keep_remasters_apart"
 
-DB_SCHEMA_VERSION: Final[int] = 71
+DB_SCHEMA_VERSION: Final[int] = 72
 # headroom kept free on top of what moving the audio analysis out of library.db writes
 DB_FREE_SPACE_MARGIN: Final[int] = 100 * 1024 * 1024
 
