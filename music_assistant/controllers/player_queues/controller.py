@@ -431,15 +431,19 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         allow_impersonation=True,
     )
     async def set_shuffle(self, queue_id: str, shuffle_enabled: bool) -> None:
-        """Configure shuffle setting on the queue."""
+        """Configure shuffle setting on the queue; a dynamic queue applies it once its mix ends."""
         self._check_player_permission(queue_id)
-        queue = self._queue_data[queue_id].queue
-        if queue.shuffle_enabled == shuffle_enabled:
-            return  # no change; asking for the state it is already in is never a failure
+        queue_data = self._queue_data[queue_id]
+        queue = queue_data.queue
         if queue.is_dynamic:
             # a dynamic queue is an always-on, recency-orchestrated smart mix; manual shuffle
-            # (and plain linear order) have no meaning here so the toggle is locked
-            raise InvalidCommand("Cannot change shuffle while the queue is in dynamic mode")
+            # (and plain linear order) have no meaning while it plays, so the request is parked
+            # as the user's own setting for when the dynamic source goes away
+            queue_data.parked_shuffle = shuffle_enabled
+            self.signal_update(queue_id)
+            return
+        if queue.shuffle_enabled == shuffle_enabled:
+            return  # no change; asking for the state it is already in is never a failure
         await self._apply_local_shuffle(queue_id, shuffle_enabled)
 
     def is_smart_shuffle_active(self, queue: PlayerQueue) -> bool:
@@ -1308,6 +1312,9 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
 
         target_queue.repeat_mode = source_queue.repeat_mode
         target_queue.shuffle_enabled = source_queue.shuffle_enabled
+        self._queue_data[target_queue_id].parked_shuffle = self._queue_data[
+            source_queue_id
+        ].parked_shuffle
         # so playback keeps ordering Smart Fades batches behind the same item there
         self._queue_data[target_queue_id].fade_ordered_until = self._queue_data[
             source_queue_id
@@ -2207,12 +2214,13 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
 
     def _clear(self, queue_id: str, skip_stop: bool = False) -> None:
         """Drop the queue's items and playback position, leaving user settings untouched."""
-        queue = self._queue_data[queue_id].queue
+        queue_data = self._queue_data[queue_id]
+        queue = queue_data.queue
         self.mass.streams.audio_processing.clear(queue_id)
         self.store_sources(queue, [])
         if queue.is_dynamic:
-            # Dynamic sources impose shuffle, so clearing the source clears that shuffle too.
-            queue.shuffle_enabled = False
+            # the dynamic source goes with the items, and with it the shuffle it borrowed
+            self._restore_parked_shuffle(queue_data)
         queue.is_dynamic = False
         # dropping the dynamic source changes what smart shuffle resolves to, so the derived
         # flag has to follow or clients keep showing a smart mix on a plain queue
@@ -2248,24 +2256,24 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         :param option: The enqueue option this command resolved to.
         :param shuffle: The state to put the queue's shuffle in; None to leave it as it is.
         """
-        queue = self._queue_data[queue_id].queue
+        queue_data = self._queue_data[queue_id]
+        queue = queue_data.queue
         if queue.is_dynamic and option in (
             QueueOption.PLAY,
             QueueOption.REPLACE,
             QueueOption.REPLACE_NEXT,
         ):
             # These are the options that replace the queue's sources, so the smart mix may be on
-            # its way out - and its shuffle is never the user's own (a dynamic queue's toggle is
-            # locked), so it must not outlive the source that imposed it. Recorded directly
-            # because set_shuffle refuses a queue that is still a smart mix, and the items are
-            # resolved against this flag. The state is provisional until the sources are known:
-            # `_enter_dynamic_mode` forces shuffle back on if the queue stays dynamic.
-            if option == QueueOption.REPLACE_NEXT:
-                # staging leaves the shuffle the user chose alone, so it never carries a request
-                # of its own to honour here
-                queue.shuffle_enabled = False
-            else:
-                queue.shuffle_enabled = bool(shuffle)
+            # its way out - and its shuffle is only borrowed, so the user's own (parked) setting
+            # takes over. An explicit request becomes that setting. Recorded directly because
+            # set_shuffle only parks a request while the queue is still a smart mix, and the
+            # items are resolved against this flag. The state is provisional until the sources
+            # are known: `_enter_dynamic_mode` forces shuffle back on if the queue stays dynamic.
+            if shuffle is not None and option != QueueOption.REPLACE_NEXT:
+                # staging leaves the shuffle the user chose alone, so only a play or replace
+                # carries a request of its own to honour here
+                queue_data.parked_shuffle = shuffle
+            queue.shuffle_enabled = bool(queue_data.parked_shuffle)
             return
         if shuffle is None or option not in (QueueOption.PLAY, QueueOption.REPLACE):
             # nothing to settle: the media brings no order of its own to protect, or the option

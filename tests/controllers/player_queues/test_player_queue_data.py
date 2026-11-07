@@ -208,6 +208,27 @@ def test_from_cache_legacy_without_toggle_overrides_yields_none() -> None:
     assert restored.crossfade_override is None
 
 
+def test_cache_round_trip_restores_parked_shuffle() -> None:
+    """The user's own shuffle setting, parked while a dynamic mix plays, survives a restart."""
+    data = _data_with_dynamic_source()
+    data.parked_shuffle = False
+
+    restored = PlayerQueueData.from_cache(data.to_cache(), data.items_to_cache())
+
+    assert restored.parked_shuffle is False
+
+
+def test_from_cache_legacy_without_parked_shuffle_yields_none() -> None:
+    """A legacy cache with no parked shuffle restores as None, i.e. nothing parked."""
+    data = _data_with_dynamic_source()
+    state = data.to_cache()
+    del state["parked_shuffle"]
+
+    restored = PlayerQueueData.from_cache(state, data.items_to_cache())
+
+    assert restored.parked_shuffle is None
+
+
 def test_from_cache_keeps_settings_when_item_unreadable() -> None:
     """One unreadable queue item is skipped without losing the other items or the settings."""
     queue = _queue(shuffle_enabled=True, crossfade_enabled=True)

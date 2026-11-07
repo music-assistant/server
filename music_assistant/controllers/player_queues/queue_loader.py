@@ -1084,7 +1084,10 @@ class QueueLoaderMixin(_PlayerQueuesBase):
         else:
             self.store_sources(queue, self._queue_data[queue_id].source_items + source_items)
         source_items = self._queue_data[queue_id].source_items
+        was_dynamic = queue.is_dynamic
         queue.is_dynamic = has_dynamic_source(source_items)
+        if was_dynamic and not queue.is_dynamic:
+            self._restore_parked_shuffle(queue_data)
         # a queue that just gained or lost its dynamic source resolves smart shuffle differently
         queue.smart_shuffle_active = self.is_smart_shuffle_active(queue)
 
@@ -1171,7 +1174,10 @@ class QueueLoaderMixin(_PlayerQueuesBase):
         """
         queue_data = self._queue_data[queue_id]
         queue = queue_data.queue
-        # a dynamic queue is an always-on smart mix; reflect that in the (now locked) shuffle state
+        # a dynamic queue is an always-on smart mix, so it borrows the shuffle flag; the user's own
+        # setting is parked until the dynamic source goes away (a queue already dynamic keeps it)
+        if queue_data.parked_shuffle is None:
+            queue_data.parked_shuffle = queue.shuffle_enabled
         queue.shuffle_enabled = True
         queue.smart_shuffle_active = self.is_smart_shuffle_active(queue)
         # rebuild from the buffered position so the already-prepared next track is kept and the
@@ -1228,6 +1234,15 @@ class QueueLoaderMixin(_PlayerQueuesBase):
         # the rebuild published its items while the queue was still transitioning, so the player
         # was not told about the upcoming track it replaced
         self.update_next_item_on_player(queue_id)
+
+    def _restore_parked_shuffle(self, queue_data: PlayerQueueData) -> None:
+        """
+        Give a queue that lost its dynamic source back the user's own shuffle setting.
+
+        :param queue_data: The record of the queue that is no longer dynamic.
+        """
+        queue_data.queue.shuffle_enabled = bool(queue_data.parked_shuffle)
+        queue_data.parked_shuffle = None
 
     async def _get_similar_tracks(
         self,

@@ -125,10 +125,12 @@ analogous to how the Player Controller pairs runtime state with the wire `Player
   are restored to their original order rather than left shuffled behind a queue that now reads
   unshuffled. The options that only stage items for later (*add* / *next* / *replace next*) leave
   the shuffle state alone, and clearing the queue switches shuffle off with it. A dynamic queue is
-  exempt: it is an always-on smart mix and forces shuffle on. *Replace next* is the only staging
-  option that can take that dynamic source away, so it is the one exception: it switches the
-  imposed shuffle back off, which `_enter_dynamic_mode` restores if the new media leaves the queue
-  dynamic.
+  exempt: it is an always-on smart mix and only borrows the shuffle flag. `_enter_dynamic_mode`
+  parks the user's own setting (`PlayerQueueData.parked_shuffle`) and forces shuffle on; media that
+  takes the dynamic source away (*play*, *replace* or *replace next*) gets the parked setting back,
+  and an explicit `shuffle` argument on *play* / *replace* replaces it. A `set_shuffle` call while
+  the mix plays never fails: the mix stays shuffled and the request is parked as the user's
+  setting for when the mix ends.
 
 ## State and Persistence
 

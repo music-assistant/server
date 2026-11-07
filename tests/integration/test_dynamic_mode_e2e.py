@@ -4,8 +4,8 @@ End-to-end tests for a queue entering "dynamic mode" through the real queue cont
 Boots a hermetic MusicAssistant (fake `test` provider + demo players) and exercises the
 source-recording and finite->dynamic transition: playing a finite source records it as a source
 even while the queue stays linear, and introducing a dynamic source rebuilds the upcoming tail
-into a bounded, smart-shuffled managed pool over ALL the queue's sources. Shuffle and repeat are
-locked (implicit) while the queue is dynamic.
+into a bounded, smart-shuffled managed pool over ALL the queue's sources. Repeat is locked and
+shuffle is implicit while the queue is dynamic; a shuffle change is kept for after the mix.
 """
 
 from __future__ import annotations
@@ -175,25 +175,29 @@ async def test_replace_next_dynamic_keeps_current_track_playing(e2e_mass: MusicA
 
 @pytest.mark.asyncio
 async def test_shuffle_and_repeat_locked_while_dynamic(e2e_mass: MusicAssistant) -> None:
-    """A genuine shuffle/repeat change is rejected while dynamic, but a redundant set is a no-op."""
+    """
+    A genuine repeat change is rejected while dynamic, a shuffle change is kept for after the mix.
+
+    The mix itself stays shuffle-on, and asking for the repeat mode it already has is a no-op.
+    """
     queue_id = demo_players(e2e_mass)[0].player_id
     await _play_finite_album(e2e_mass, queue_id)
     await _add_dynamic_playlist(e2e_mass, queue_id)
     queue = e2e_mass.player_queues.get(queue_id)
     assert queue is not None
     assert queue.is_dynamic is True
+    queue_data = e2e_mass.player_queues._queue_data[queue_id]
 
     # a genuine change to a locked setting is refused
     with pytest.raises(InvalidCommand):
-        await e2e_mass.player_queues.set_shuffle(queue_id, False)
-    with pytest.raises(InvalidCommand):
         await e2e_mass.player_queues.set_repeat(queue_id, RepeatMode.ALL)
-
-    # asking for the state the queue is already in must not fail: an external caller (an HA
-    # automation, a voice assistant) does not know the toggle is locked, and a dynamic queue
-    # is always shuffle-on, so `shuffle_set: true` is a request the queue already satisfies
-    assert queue.shuffle_enabled is True
-    await e2e_mass.player_queues.set_shuffle(queue_id, True)
     await e2e_mass.player_queues.set_repeat(queue_id, queue.repeat_mode)
-    assert queue.shuffle_enabled is True
-    assert queue.is_dynamic is True
+
+    # a shuffle change never fails: an external caller (an HA automation, a voice assistant) does
+    # not know the queue is a smart mix, so the mix plays on and the request becomes the user's
+    # own setting for whatever replaces the mix
+    for shuffle_enabled in (False, True):
+        await e2e_mass.player_queues.set_shuffle(queue_id, shuffle_enabled)
+        assert queue.shuffle_enabled is True
+        assert queue.is_dynamic is True
+        assert queue_data.parked_shuffle is shuffle_enabled

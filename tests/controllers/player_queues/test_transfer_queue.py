@@ -192,6 +192,9 @@ def _shuffle_controller(
     fake._resolve_default_toggles = lambda queue_data: (
         PlayerQueuesController._resolve_default_toggles(fake, queue_data)
     )
+    fake._restore_parked_shuffle = lambda queue_data: (
+        PlayerQueuesController._restore_parked_shuffle(fake, queue_data)
+    )
     target_player = MagicMock()
     target_player.state.type = PlayerType.PLAYER
     target_player.state.synced_to = None
@@ -284,6 +287,24 @@ async def test_transfer_queue_drops_dynamic_shuffle_from_source() -> None:
     assert fake.get("src").is_dynamic is False
     assert fake.get("src").shuffle_enabled is False
     assert fake.get("src").smart_shuffle_active is False
+
+
+async def test_transfer_queue_carries_the_parked_shuffle() -> None:
+    """The user's own shuffle setting, parked while a dynamic mix plays, moves with the mix."""
+    fake = _shuffle_controller(source_shuffle_enabled=True, source_is_dynamic=True)
+    fake._queue_data["src"].parked_shuffle = True
+    # the real clear, which gives the source its parked setting back
+    fake._clear.side_effect = lambda queue_id, skip_stop=False: PlayerQueuesController._clear(
+        cast("PlayerQueuesController", fake), queue_id, skip_stop
+    )
+
+    await PlayerQueuesController.transfer_queue(
+        cast("PlayerQueuesController", fake), "src", "tgt", auto_play=False
+    )
+
+    assert fake.get("tgt").is_dynamic is True
+    assert fake._queue_data["tgt"].parked_shuffle is True
+    assert fake._queue_data["src"].parked_shuffle is None
 
 
 async def test_transfer_queue_carries_pinned_toggle_overrides() -> None:

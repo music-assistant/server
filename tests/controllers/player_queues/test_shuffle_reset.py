@@ -569,8 +569,8 @@ async def test_playing_over_a_dynamic_queue_honours_an_explicit_play_in_order() 
     An album played over a dynamic queue takes over from it, so it plays in the order asked for.
 
     Play does not clear the queue up front, so the queue is still dynamic when the shuffle state is
-    settled - and a dynamic queue's toggle is locked, so the request cannot be routed through
-    set_shuffle. The requested state still has to reach the items, which are resolved against it.
+    settled - and set_shuffle only parks a request while the queue is still a smart mix. The
+    requested state still has to reach the items, which are resolved against it.
     """
     ctrl = _controller(shuffle_enabled=True, smart_shuffle_active=True, is_dynamic=True)
 
@@ -590,7 +590,7 @@ async def test_taking_over_a_dynamic_queue_drops_the_imposed_shuffle(option: Que
     Media started over a dynamic queue does not inherit the shuffle that queue was forced into.
 
     A dynamic queue is an always-on smart mix, so its shuffle is imposed by the source rather than
-    chosen by the user - its toggle is locked. Now that shuffle survives from one play to the next,
+    chosen by the user. Now that shuffle survives from one play to the next,
     a shuffle left latched on here would keep reordering everything the user plays afterwards.
     """
     ctrl = _controller(shuffle_enabled=True, smart_shuffle_active=True, is_dynamic=True)
@@ -627,7 +627,7 @@ async def test_replace_next_over_a_dynamic_queue_drops_the_imposed_shuffle() -> 
     An album staged over a dynamic queue takes its source away, so the smart mix's shuffle goes too.
 
     Staging normally leaves the shuffle state alone, but the shuffle a dynamic queue runs on is not
-    the user's own choice - its toggle is locked - so it must not silently reorder the album that
+    the user's own choice, so it must not silently reorder the album that
     replaces it. Replace next is the only staging option that replaces the queue's sources.
     """
     ctrl = _controller(shuffle_enabled=True, smart_shuffle_active=True, is_dynamic=True)
@@ -656,6 +656,87 @@ async def test_replace_next_that_leaves_the_queue_dynamic_keeps_the_smart_mix() 
     assert _queue(ctrl).is_dynamic is True
     assert _queue(ctrl).shuffle_enabled is True
     assert _queue(ctrl).smart_shuffle_active is True
+
+
+@pytest.mark.parametrize("shuffle_enabled", [True, False])
+@pytest.mark.parametrize("option", START_OPTIONS)
+async def test_a_dynamic_mix_gives_the_users_shuffle_back(
+    option: QueueOption, shuffle_enabled: bool
+) -> None:
+    """
+    A dynamic mix only borrows the shuffle flag, so the user's own setting returns after it.
+
+    The playlist that replaces the mix plays the way the user had the queue set before the mix.
+    """
+    ctrl = _controller(shuffle_enabled=shuffle_enabled)
+    ctrl._managed_pool.fill = AsyncMock(
+        side_effect=lambda *_args, **_kwargs: [_track(item_id) for item_id in POOL_TRACKS]
+    )
+
+    await ctrl.play_media("q1", _dynamic_playlist(), QueueOption.REPLACE)
+
+    assert _queue(ctrl).is_dynamic is True
+    assert _queue(ctrl).shuffle_enabled is True
+
+    await ctrl.play_media("q1", _playlist(), option)
+
+    assert _queue(ctrl).is_dynamic is False
+    assert _queue(ctrl).shuffle_enabled is shuffle_enabled
+    assert ctrl._queue_data["q1"].parked_shuffle is None
+    # a play keeps the mix's tail, so only the playlist's own tracks prove the order
+    playlist_order = [item_id for item_id in _played_order(ctrl) if item_id in ALBUM_TRACKS]
+    assert playlist_order == (ALBUM_TRACKS[::-1] if shuffle_enabled else ALBUM_TRACKS)
+
+
+@pytest.mark.parametrize("shuffle_enabled", [True, False])
+async def test_a_shuffle_request_during_a_mix_applies_once_it_ends(shuffle_enabled: bool) -> None:
+    """
+    A shuffle toggle sent while a dynamic mix plays is kept for whatever replaces the mix.
+
+    This is how a Home Assistant automation starts a playlist: it sets shuffle first and then plays
+    the playlist without a shuffle argument, while the queue may still be playing a mix.
+    """
+    ctrl = _controller(shuffle_enabled=True, smart_shuffle_active=True, is_dynamic=True)
+    _load_dynamic_pool(ctrl)
+
+    await ctrl.set_shuffle("q1", shuffle_enabled)
+
+    # the mix plays on as a smart mix, and the request is persisted for after it
+    assert _queue(ctrl).is_dynamic is True
+    assert _queue(ctrl).shuffle_enabled is True
+    ctrl.signal_update.assert_called_once_with("q1")
+
+    await ctrl.play_media("q1", _playlist())
+
+    assert _queue(ctrl).is_dynamic is False
+    assert _queue(ctrl).shuffle_enabled is shuffle_enabled
+    assert _played_order(ctrl) == (ALBUM_TRACKS[::-1] if shuffle_enabled else ALBUM_TRACKS)
+
+
+async def test_an_explicit_shuffle_for_a_mix_becomes_the_users_setting() -> None:
+    """Asking for a shuffled mix is a shuffle request like any other, so it outlives the mix."""
+    ctrl = _controller(shuffle_enabled=False)
+
+    await ctrl.play_media("q1", _dynamic_playlist(), QueueOption.REPLACE, shuffle=True)
+    await ctrl.play_media("q1", _playlist(), QueueOption.REPLACE)
+
+    assert _queue(ctrl).shuffle_enabled is True
+    assert _played_order(ctrl) == ALBUM_TRACKS[::-1]
+
+
+async def test_replace_next_over_a_dynamic_queue_restores_the_users_shuffle() -> None:
+    """Staging media over a mix takes its source away, so the user's own shuffle takes over."""
+    ctrl = _controller(shuffle_enabled=True, smart_shuffle_active=True, is_dynamic=True)
+    _load_dynamic_pool(ctrl)
+    ctrl._queue_data["q1"].parked_shuffle = True
+
+    await ctrl.play_media("q1", _playlist(), QueueOption.REPLACE_NEXT)
+
+    assert _queue(ctrl).is_dynamic is False
+    assert _queue(ctrl).shuffle_enabled is True
+    assert ctrl._queue_data["q1"].parked_shuffle is None
+    # the item playing, then the playlist in the (reversed) shuffle order
+    assert _played_order(ctrl) == ["p1", *ALBUM_TRACKS[::-1]]
 
 
 async def test_playing_an_album_on_an_ended_queue_switches_shuffle_off() -> None:
@@ -742,6 +823,19 @@ def test_clear_command_resets_shuffle() -> None:
 
     assert _queue(ctrl).shuffle_enabled is False
     assert _queue(ctrl).smart_shuffle_active is False
+
+
+def test_clear_command_on_a_dynamic_queue_resets_shuffle() -> None:
+    """Clearing a mix is a "start over" too, so the user's parked shuffle does not come back."""
+    ctrl = _controller(shuffle_enabled=True, smart_shuffle_active=True, is_dynamic=True)
+    _load_dynamic_pool(ctrl)
+    ctrl._queue_data["q1"].parked_shuffle = True
+
+    ctrl.clear("q1")
+
+    assert _queue(ctrl).is_dynamic is False
+    assert _queue(ctrl).shuffle_enabled is False
+    assert ctrl._queue_data["q1"].parked_shuffle is None
 
 
 def test_empty_queue_reaching_its_end_keeps_shuffle() -> None:

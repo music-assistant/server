@@ -61,6 +61,9 @@ class PlayerQueueData:
     # pinned autoplay/crossfade toggle overrides; None = follow the global default. Persisted.
     autoplay_override: bool | None = None
     crossfade_override: bool | None = None
+    # the user's own shuffle setting, parked while a dynamic source forces shuffle on; None on a
+    # linear queue, where `queue.shuffle_enabled` itself is that setting. Persisted.
+    parked_shuffle: bool | None = None
 
     # runtime-only fields below; not persisted, reset to these defaults on restart
     prev_state: CompareState | None = None
@@ -131,6 +134,7 @@ class PlayerQueueData:
             "userid": self.userid,
             "autoplay_override": self.autoplay_override,
             "crossfade_override": self.crossfade_override,
+            "parked_shuffle": self.parked_shuffle,
         }
 
     @staticmethod
@@ -214,6 +218,7 @@ class PlayerQueueData:
             userid=state_data.get("userid"),
             autoplay_override=state_data.get("autoplay_override"),
             crossfade_override=state_data.get("crossfade_override"),
+            parked_shuffle=state_data.get("parked_shuffle"),
         )
 
     @staticmethod
