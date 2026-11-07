@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import time
-from collections.abc import AsyncGenerator, Coroutine
+from collections.abc import AsyncGenerator, Coroutine, Iterator
+from contextlib import contextmanager
 from types import SimpleNamespace
 from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock, call, patch
@@ -34,6 +35,7 @@ from music_assistant.controllers.music.recency import RecencySnapshot
 from music_assistant.controllers.webserver.helpers.auth_middleware import (
     current_user,
     impersonated_user,
+    sendspin_player_id,
 )
 from music_assistant.controllers.webserver.helpers.auth_middleware import (
     get_current_user as get_auth_current_user,
@@ -121,6 +123,7 @@ def _make_venue_player(  # noqa: PLR0913
     available: bool = True,
     enabled: bool = True,
     hidden: bool = False,
+    private: bool = False,
     needs_setup: bool = False,
     player_type: PlayerType = PlayerType.PLAYER,
     features: set[PlayerFeature] | None = None,
@@ -141,6 +144,7 @@ def _make_venue_player(  # noqa: PLR0913
     return SimpleNamespace(
         player_id=player_id,
         display_name=name,
+        private=private,
         playback_state=playback_state,
         is_native_player=is_native_player,
         provider=SimpleNamespace(domain=provider_domain),
@@ -158,6 +162,16 @@ def _make_venue_player(  # noqa: PLR0913
         ),
         extra_data={},
     )
+
+
+@contextmanager
+def _connected_on(client_player_id: str) -> Iterator[None]:
+    """Act as an API caller whose connection announced the given client player."""
+    token = sendspin_player_id.set(client_player_id)
+    try:
+        yield
+    finally:
+        sendspin_player_id.reset(token)
 
 
 def _make_round(round_index: int, suggestion_count: int = 4) -> MusicQuizRound:
@@ -809,6 +823,110 @@ async def test_playback_options_include_protocol_wrapped_speakers() -> None:
     assert options["venue_available"] is True
     assert options["default_venue_player_id"] == "universal_kitchen"
     assert options["venue_players"] == [{"player_id": "universal_kitchen", "name": "Kitchen"}]
+
+
+@pytest.mark.asyncio
+async def test_playback_options_offer_only_the_callers_own_hidden_web_player() -> None:
+    """Offer the caller's own hidden web player, but no other hidden player nor as default."""
+    plugin = _create_plugin(player="__auto__")
+    speaker = _make_venue_player("speaker", "Speaker")
+    own_web_player = _make_venue_player(
+        "own_web", "Browser", provider_domain="sendspin", hidden=True, private=True
+    )
+    other_web_player = _make_venue_player(
+        "other_web", "Other Browser", provider_domain="sendspin", hidden=True, private=True
+    )
+    cast("MagicMock", plugin.mass.players.all_players).return_value = [
+        speaker,
+        own_web_player,
+        other_web_player,
+    ]
+
+    other_caller_options = await plugin.playback_options()
+    with _connected_on("own_web"):
+        own_caller_options = await plugin.playback_options()
+
+    assert other_caller_options["venue_players"] == [{"player_id": "speaker", "name": "Speaker"}]
+    assert own_caller_options == {
+        "default_playback_mode": "venue",
+        "default_venue_player_id": "speaker",
+        "venue_available": True,
+        "remote_available": True,
+        "venue_players": [
+            {"player_id": "own_web", "name": "Browser"},
+            {"player_id": "speaker", "name": "Speaker"},
+        ],
+    }
+
+
+@pytest.mark.parametrize(
+    ("preference", "default_mode", "default_player_id"),
+    [
+        (None, "remote", None),
+        ({"playback_mode": "venue", "venue_player_id": "own_web"}, "venue", "own_web"),
+    ],
+)
+@pytest.mark.asyncio
+async def test_own_hidden_web_player_is_only_recommended_when_remembered(
+    preference: dict[str, str] | None,
+    default_mode: str,
+    default_player_id: str | None,
+) -> None:
+    """Keep remote as default without speakers until the own web player was picked before."""
+    plugin = _create_plugin(mode=None, player=None)
+    web_player = _make_venue_player(
+        "own_web", "Browser", provider_domain="sendspin", hidden=True, private=True
+    )
+    cast("MagicMock", plugin.mass.players.all_players).return_value = [web_player]
+    cast("AsyncMock", plugin.mass.cache.get).return_value = preference
+
+    with _connected_on("own_web"):
+        options = await plugin.playback_options()
+
+    assert options == {
+        "default_playback_mode": default_mode,
+        "default_venue_player_id": default_player_id,
+        "venue_available": True,
+        "remote_available": True,
+        "venue_players": [{"player_id": "own_web", "name": "Browser"}],
+    }
+
+
+@pytest.mark.asyncio
+async def test_chosen_hidden_web_player_stays_the_venue_player() -> None:
+    """Keep a hidden web player picked by its own client as venue player for the game."""
+    plugin = _create_plugin(player="__auto__")
+    web_player = _make_venue_player(
+        "own_web", "Browser", provider_domain="sendspin", hidden=True, private=True
+    )
+    cast("MagicMock", plugin.mass.players.all_players).return_value = [web_player]
+
+    with pytest.raises(MusicQuizNoPlaybackTargetError):
+        await plugin.create_game(
+            source_uris=["library://playlist/1"],
+            playback_mode="venue",
+            venue_player_id="own_web",
+        )
+    with _connected_on("own_web"):
+        await plugin.create_game(
+            source_uris=["library://playlist/1"],
+            playback_mode="venue",
+            venue_player_id="own_web",
+        )
+
+    game = plugin._game
+    assert game is not None
+    assert game.config.venue_player_id == "own_web"
+    selected_player = plugin._validate_playback_config(game.config)
+    assert selected_player is not None
+    assert selected_player.player_id == "own_web"
+    session = MagicMock()
+    with patch(
+        "music_assistant.providers.music_quiz.SharedPlaybackSession.create_venue",
+        new=AsyncMock(return_value=session),
+    ) as create_venue:
+        assert await plugin._get_playback_session() is session
+    create_venue.assert_awaited_once_with(plugin.mass, "own_web")
 
 
 @pytest.mark.asyncio

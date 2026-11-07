@@ -28,7 +28,7 @@ from functools import partial
 from pathlib import Path
 from typing import TYPE_CHECKING, Final, NoReturn
 
-from music_assistant_models.enums import ContentType, MediaType
+from music_assistant_models.enums import ContentType, MediaType, PlaybackState
 from music_assistant_models.errors import AudioError, LoginFailed, MusicAssistantError
 from music_assistant_models.media_items import AudioFormat
 
@@ -187,6 +187,10 @@ _LOG_DRAIN_TIMEOUT_S: Final[float] = 2.0
 # How long a run whose item was let go keeps the engine for the request that
 # follows it (a seek, a skip, the queue's next item) before stopping.
 _IDLE_GRACE_S: Final[float] = 2.0
+# How long that lasts while the run's queue still plays. A speaker that drops a track
+# asks for the next one at once, but under load its request can take seconds to reach
+# the engine, and a fresh run then starts too late for the speaker's patience.
+_QUEUE_PLAYING_GRACE_S: Final[float] = 10.0
 # how long the item the engine moved on to may sit unclaimed with a full cushion
 _UNCLAIMED_ITEM_S: Final[float] = 10.0
 # a playing report this close to 0:00, after the queued entry left the queue, is
@@ -1514,8 +1518,8 @@ class _EngineRun:
         Hold the engine where it is for the request that may follow.
 
         A seek, a skip or the queue's next item finds it there; with nothing
-        coming, the run stops after the grace period instead of letting the
-        engine play on to nobody.
+        coming, the run stops after the grace period (longer while its queue
+        still plays) instead of letting the engine play on to nobody.
         """
         await self._set_sink(running=False)
         self._cancel_idle_watch()
@@ -1524,6 +1528,8 @@ class _EngineRun:
     async def _stop_when_idle(self) -> None:
         """Stop the run once its released item has gone unclaimed for the grace period."""
         await asyncio.sleep(_IDLE_GRACE_S)
+        if not self.busy and self._queue_playing():
+            await asyncio.sleep(_QUEUE_PLAYING_GRACE_S - _IDLE_GRACE_S)
         if not self.busy:
             self.logger.debug("Nothing more to play, stopping the Spotify session")
             self.mass.create_task(self.backend.discard_run(self, unless_busy=True))
@@ -1584,6 +1590,11 @@ class _EngineRun:
             # the account's one stream
             self.logger.debug("Nobody took up %s, stopping the Spotify session", item.spotify_uri)
             self.mass.create_task(self.backend.discard_run(self, unless_busy=True))
+
+    def _queue_playing(self) -> bool:
+        """Return whether the queue this run serves still plays."""
+        queue = self.mass.player_queues.get(self.queue_id) if self.queue_id else None
+        return queue is not None and queue.state == PlaybackState.PLAYING
 
     def _cancel_idle_watch(self) -> None:
         """Keep the run: a request has come for it."""

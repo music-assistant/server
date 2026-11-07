@@ -19,11 +19,12 @@ import asyncio
 import sys
 from collections.abc import AsyncGenerator, Callable
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock, call, patch
 
 import pytest
-from music_assistant_models.enums import ContentType, MediaType
+from music_assistant_models.enums import ContentType, MediaType, PlaybackState
 from music_assistant_models.errors import AudioError, LoginFailed
 from music_assistant_models.media_items import AudioFormat
 from music_assistant_models.streamdetails import StreamDetails
@@ -1577,6 +1578,34 @@ async def test_a_stop_before_the_fed_item_idles_the_run_out(
     assert _idle_watch(run) is not None
     assert not run._stopped
 
+    async with asyncio.timeout(5):
+        while not tasks:
+            await asyncio.sleep(0.01)
+        await asyncio.gather(*tasks)
+    assert run.stopped
+    assert backend._run is None
+
+
+async def test_a_run_released_while_its_queue_plays_waits_longer_for_its_next_item(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A speaker that dropped a track asks for the next one; the engine stays for it a while."""
+    monkeypatch.setattr(soloist_backend, "_IDLE_GRACE_S", 0.01)
+    monkeypatch.setattr(soloist_backend, "_QUEUE_PLAYING_GRACE_S", 0.3)
+    backend = _streamable_backend(tmp_path)
+    queues = cast("MagicMock", backend.mass.player_queues)
+    queues.get.return_value = SimpleNamespace(state=PlaybackState.PLAYING)
+    run = _live_run(tmp_path, backend=backend)
+    backend._run = run
+    tasks = _run_tasks(run)
+
+    await backend.release_item(run, run.current_item)
+    await asyncio.sleep(0.1)
+    assert not tasks
+    assert not run._stopped
+    queues.get.assert_called_with("player1")
+
+    # nothing came for it after all: it still stops rather than playing on to nobody
     async with asyncio.timeout(5):
         while not tasks:
             await asyncio.sleep(0.01)
