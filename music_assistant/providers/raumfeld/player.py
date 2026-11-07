@@ -388,7 +388,7 @@ class RaumfeldPlayer(Player):
 
         :param room: The room's current name as reported by the host.
         """
-        # the player_id is tied to the hardware, but hassfeld is keyed by room name, so
+        # the player_id is tied to the hardware, but the host is addressed by room name, so
         # the stored name must track a rename or play/stop/volume would target a stale name
         if room == self.room:
             return
@@ -1055,7 +1055,7 @@ class RaumfeldPlayer(Player):
         if time.time() - self._power_changed_at < POWER_SETTLE_TIME:
             return
         try:
-            state = self.raumfeld.host.get_room_power_state(self.room)
+            state = self.raumfeld.host.power_state(self.room)
         except HOST_ERRORS as err:
             self.logger.debug("Failed to read power state for %s: %r", self.room, err)
             return
@@ -1078,13 +1078,11 @@ class RaumfeldPlayer(Player):
     def _plays_spotify_connect(self) -> bool:
         """Return whether Spotify Connect is playing on this room's own renderer."""
         # Spotify Connect takes the room out of every zone, so a room in a zone does not play
-        # it. hassfeld keeps a room flagged once the host reported Spotify Connect on it, also
-        # after the session ended, so the flag alone would keep pulling the room out of any
-        # group it joins later.
+        # it, whatever the host still reports for the room's renderer
         if self._active_zone() is not None:
             return False
         try:
-            return bool(self.raumfeld.host.room_is_spotify_single_room(self.room))
+            return bool(self.raumfeld.host.plays_spotify_connect(self.room))
         except HOST_ERRORS:
             return False
 
@@ -1691,8 +1689,11 @@ class RaumfeldPlayer(Player):
         """
         self._mark_play_started()
         self._clear_next()
-        host = self.raumfeld.host
-        uri = library_uri(host.media_server_udn, object_id, container)
+        if (media_server_udn := self.raumfeld.host.media_server_udn) is None:
+            raise PlayerCommandFailed(
+                f"Failed to start {object_id} on {self.room}: the host lists no media server"
+            )
+        uri = library_uri(media_server_udn, object_id, container)
         try:
             # the host wants the item's own description along with the reference
             metadata = await self.raumfeld.browse_library(object_id, children=False)
@@ -1720,8 +1721,6 @@ class RaumfeldPlayer(Player):
 
     async def _zone_command(self, zone: list[str], action_name: str, **arguments: str) -> None:
         """Send a transport command to the zone's renderer, raising when it is not carried out."""
-        # straight to the renderer rather than through hassfeld's zone calls, which swallow
-        # every error, so a command the host rejects fails here instead of passing silently
         if (location := self.raumfeld.zone_location(zone)) is None:
             raise PlayerCommandFailed(
                 f"{action_name} failed on {self.room}: the host has not published its zone"
@@ -2226,7 +2225,7 @@ class RaumfeldPlayer(Player):
             # rooms in MANUAL_STANDBY do not auto-power-on for playback (unlike
             # AUTOMATIC_STANDBY); leaving standby is a no-op for an already-awake room
             try:
-                state = host.get_room_power_state(room)
+                state = host.power_state(room)
                 if state is None and strict:
                     # the host does not know the room (renamed, or gone), so there is
                     # nothing to confirm it against
@@ -2247,7 +2246,7 @@ class RaumfeldPlayer(Player):
         deadline = time.time() + WAKE_TIMEOUT
         while time.time() < deadline:
             try:
-                states = [host.get_room_power_state(room) for room in zone]
+                states = [host.power_state(room) for room in zone]
                 # a room the host stops reporting counts as awake only when lenient
                 if all("STANDBY" not in state if state else not strict for state in states):
                     return
@@ -2260,9 +2259,9 @@ class RaumfeldPlayer(Player):
     def _active_zone(self) -> list[str] | None:
         """Return this room's zone if the host can address it, else ``None``."""
         # get_zone_for_room only lists active zones; double-check the host can still
-        # resolve it to a zone UDN, so callers never hand hassfeld an unknown zone
+        # resolve it to a zone UDN, so callers never address an unknown zone
         zone = self.raumfeld.get_zone_for_room(self.room)
-        if zone and self.raumfeld.host.roomlst_to_zoneudn(zone) is not None:
+        if zone and self.raumfeld.host.zone_udn(zone) is not None:
             return zone
         return None
 

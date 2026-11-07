@@ -264,8 +264,8 @@ def _follower(leader_state: PlaybackState) -> RaumfeldPlayer:
     player._attr_playback_state = PlaybackState.PLAYING
     player._attr_poll_interval = PLAYING_POLL_INTERVAL
     provider = MagicMock()
-    provider.host.get_room_power_state.return_value = "ACTIVE"
-    provider.host.room_is_spotify_single_room.return_value = False
+    provider.host.power_state.return_value = "ACTIVE"
+    provider.host.plays_spotify_connect.return_value = False
     provider.room_renderer_location.return_value = None
     player._provider = provider
     player._power_changed_at = 0.0
@@ -349,7 +349,7 @@ def _host_room_player() -> RaumfeldPlayer:
         return_value="Raumfeld Soundbar"
     )
     host = MagicMock()
-    host.get_room_power_state.return_value = "MANUAL_STANDBY"
+    host.power_state.return_value = "MANUAL_STANDBY"
     provider.host = host  # type: ignore[attr-defined]
     return RaumfeldPlayer(
         provider,  # type: ignore[arg-type]
@@ -560,7 +560,7 @@ async def test_no_zone_for_the_room_is_reported() -> None:
     """A room the host gives no zone raises a clear error instead of playing into nothing."""
     player = _room_player()
     host = MagicMock()
-    host.roomlst_to_zoneudn.return_value = None
+    host.zone_udn.return_value = None
     provider = MagicMock()
     provider.host = host
     provider.get_zone_for_room.return_value = None
@@ -613,7 +613,7 @@ def _powered_player(power_state: str | None) -> tuple[RaumfeldPlayer, MagicMock]
     """Build a RaumfeldPlayer whose host reports the given power state; return its provider."""
     player = _room_player()
     host = MagicMock()
-    host.get_room_power_state.return_value = power_state
+    host.power_state.return_value = power_state
     provider = MagicMock()
     provider.host = host
     provider.enter_standby = AsyncMock()
@@ -643,7 +643,7 @@ def test_unknown_power_state_keeps_the_last_value() -> None:
     player._attr_powered = True
     player._update_power()
     assert player._attr_powered is True
-    provider.host.get_room_power_state.side_effect = KeyError("Bar")
+    provider.host.power_state.side_effect = KeyError("Bar")
     player._update_power()
     assert player._attr_powered is True
 
@@ -654,7 +654,7 @@ def test_power_control_only_for_a_room_with_a_power_state() -> None:
     player._attr_supported_features = {PlayerFeature.PLAY_MEDIA, PlayerFeature.POWER}
     player._update_power()
     assert PlayerFeature.POWER not in player._attr_supported_features
-    provider.host.get_room_power_state.return_value = "ACTIVE"
+    provider.host.power_state.return_value = "ACTIVE"
     player._update_power()
     assert PlayerFeature.POWER in player._attr_supported_features
 
@@ -676,7 +676,7 @@ async def test_power_on_wakes_the_room() -> None:
     player, provider = _powered_player("MANUAL_STANDBY")
 
     async def leave_standby(_room: str) -> None:
-        provider.host.get_room_power_state.return_value = "ACTIVE"
+        provider.host.power_state.return_value = "ACTIVE"
 
     provider.leave_standby.side_effect = leave_standby
     with patch.object(player, "update_state"):
@@ -724,7 +724,7 @@ async def test_power_on_fails_when_the_room_vanishes_while_waking() -> None:
     player._attr_powered = False
 
     async def leave_standby(_room: str) -> None:
-        provider.host.get_room_power_state.return_value = None
+        provider.host.power_state.return_value = None
 
     provider.leave_standby.side_effect = leave_standby
     with (
@@ -1105,7 +1105,7 @@ async def test_a_leader_taken_by_spotify_connect_dissolves_its_group() -> None:
     player._player_id = "raumfeld_leader"
     player._attr_group_members = ["raumfeld_leader", "raumfeld_follower"]
     provider = MagicMock()
-    provider.host.room_is_spotify_single_room.return_value = True
+    provider.host.plays_spotify_connect.return_value = True
     provider.get_zone_for_room.return_value = None
     provider.room_renderer_location.return_value = None
     player._provider = provider
@@ -1293,7 +1293,7 @@ async def test_a_failed_stop_is_reported() -> None:
 def test_a_room_in_a_zone_does_not_play_spotify_connect() -> None:
     """A stale Spotify Connect flag does not take a grouped room out of its group."""
     player, host = _external_player()
-    host.room_is_spotify_single_room.return_value = True
+    host.plays_spotify_connect.return_value = True
     with patch.object(player, "_active_zone", return_value=["Bank", "Bar"]):
         assert player._plays_spotify_connect() is False
     with patch.object(player, "_active_zone", return_value=None):
