@@ -170,6 +170,14 @@ class TestHlsRadioStart:
         assert await self._start(_playlist(durations)) == (segments, seconds)
 
     @pytest.mark.asyncio
+    async def test_segments_just_under_four_seconds_start_six_back(self) -> None:
+        """ARD stations use 3.98933 s segments, a seventh one would only add delay."""
+        segments, seconds = await self._start(_playlist([3.98933] * 20))
+
+        assert segments == 6
+        assert seconds == pytest.approx(23.93598)
+
+    @pytest.mark.asyncio
     async def test_a_short_playlist_starts_at_its_first_segment(self) -> None:
         """The start can't be further back than what the playlist holds."""
         assert await self._start(_playlist([4.0, 4.0])) == (2, 8.0)

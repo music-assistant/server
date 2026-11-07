@@ -80,7 +80,7 @@ HLS_RADIO_INPUT_BURST: Final[int] = 12
 # segments that are already published, so this leaves room for it. It counts in time as a
 # start further back only adds listening delay, and a title from a live source runs that
 # much further ahead of the audio.
-HLS_RADIO_LIVE_START_SECONDS: Final[int] = 24
+HLS_RADIO_LIVE_START_SECONDS: Final[int] = 23
 
 # The least segments behind the live edge, which is the default of ffmpeg.
 HLS_RADIO_MIN_START_SEGMENTS: Final[int] = 3
