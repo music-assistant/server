@@ -37,6 +37,7 @@ from music_assistant_models.media_items import (
     ItemMapping,
     MediaItemType,
     PlayableMediaItemType,
+    Playlist,
     PodcastEpisode,
     Track,
     media_from_dict,
@@ -168,7 +169,7 @@ class QueueLoaderMixin(_PlayerQueuesBase):
                     keep_played=False,
                     shuffle=shuffle,
                 )
-            await self._start_loaded_items(queue_id, 0)
+            await self.play_index(queue_id, 0)
             return
         # handle next: add item(s) in the index next to the playing/loaded/buffered index
         if option == QueueOption.NEXT:
@@ -217,7 +218,7 @@ class QueueLoaderMixin(_PlayerQueuesBase):
                     shuffle=shuffle,
                 )
             next_index = min(play_at_index, len(self._queue_data[queue_id].items) - 1)
-            await self._start_loaded_items(queue_id, next_index)
+            await self.play_index(queue_id, next_index)
             return
         # handle add: add/append item(s) to the remaining queue items
         if option == QueueOption.ADD:
@@ -942,21 +943,19 @@ class QueueLoaderMixin(_PlayerQueuesBase):
                 # like the shuffle state below, the first item that resolves decides for the batch
                 if not first_item_resolved:
                     first_item_resolved = True
-                    # A play that starts now is refused before its tracks are fetched when
-                    # every source of it is held by realtime playback on another player. A
-                    # shuffled batch may start on any of its items, so that is left to the
-                    # stream.
+                    # A play that starts now is refused before its tracks are fetched when every
+                    # source of it is held by realtime playback on another player. Anything else,
+                    # such as a shuffled batch that may start on any of its items, is left to the
+                    # check once its first track streams.
                     shuffled_batch = len(media_list) > 1 and (
                         shuffle or (shuffle is None and queue.shuffle_enabled)
                     )
                     if (
                         option in (QueueOption.PLAY, QueueOption.REPLACE)
                         and not shuffled_batch
-                        and not isinstance(media_item, BrowseFolder)
+                        and isinstance(media_item, (Playlist, Album, Track))
                     ):
-                        self.mass.streams.audio.refuse_held_sources(
-                            media_item, queue_id, playback_user
-                        )
+                        self._refuse_held_item(media_item, queue_id)
                     # Forget the previous queue's enqueued items when a new queue is requested: it
                     # is the option that says whether this is a new queue or an addition to the
                     # current one. Done after the check above, so a refused play leaves them alone.
@@ -1240,7 +1239,7 @@ class QueueLoaderMixin(_PlayerQueuesBase):
                 keep_played=option != QueueOption.REPLACE,
             )
             if start_playing:
-                await self._start_loaded_items(queue_id, insert_at)
+                await self.play_index(queue_id, insert_at)
             else:
                 # give an idle/empty queue a current item without starting playback
                 self._ensure_current_index(queue_id)
@@ -1402,19 +1401,26 @@ class QueueLoaderMixin(_PlayerQueuesBase):
         # the flow stream's accounting and fails is_valid() for any later reuse
         await audio_buffer.clear()
 
-    async def _start_loaded_items(self, queue_id: str, index: int) -> None:
+    def _refuse_held_item(self, media_item: Playlist | Album | Track, queue_id: str) -> None:
         """
-        Start playback at the given index of the items just loaded into the queue.
+        Raise when realtime playback on other queues holds the slot of every source of the item.
 
-        :param queue_id: The queue to start.
-        :param index: The index of the item to start from.
+        :param media_item: The playlist, album or track about to be played.
+        :param queue_id: The queue that is about to play it.
+        :raises ProviderStreamLimitError: When no source of the item has a free slot.
         """
-        try:
-            await self.play_index(queue_id, index)
-        except ProviderStreamLimitError:
-            # the queue already holds the new items, so its player must not play on from the old
-            await self._handle_stop(queue_id)
-            raise
+        refusal: ProviderStreamLimitError | None = None
+        for mapping in media_item.provider_mappings:
+            if not mapping.available:
+                continue
+            try:
+                self.mass.player_queues.refuse_held_stream_slot(mapping.provider_instance, queue_id)
+            except ProviderStreamLimitError as err:
+                refusal = refusal or err
+            else:
+                return
+        if refusal is not None:
+            raise refusal
 
 
 def _track_keys(track: Track) -> set[tuple[str, str]]:

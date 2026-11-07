@@ -1228,12 +1228,6 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
     ) -> None:
         """Play item at index (or item_id) X in queue."""
         self._check_player_permission(queue_id)
-        # a start refused for a source held elsewhere leaves this queue and its player alone
-        queue_item = self.get_item(queue_id, index)
-        if queue_item and queue_item.available and queue_item.media_item:
-            userid = self._queue_data[queue_id].userid
-            user = await self.mass.webserver.auth.get_user(userid) if userid else None
-            self.mass.streams.audio.refuse_held_sources(queue_item.media_item, queue_id, user)
         await self._play_index(queue_id, index, seek_position or None, fade_in)
 
     @api_command(

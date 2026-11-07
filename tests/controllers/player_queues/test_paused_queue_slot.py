@@ -7,8 +7,8 @@ one stream would make a play on any other player fail in that window.
 
 A playing queue keeps its slot. When its source is realtime, that slot stays taken until the
 item ends, so a start on another queue is refused at once instead of waiting its budget out.
-A play command is refused that way before its tracks are fetched, unless another source can
-still serve the item.
+A play command is refused that way before its tracks are fetched, unless one of the item's own
+sources has a free slot.
 """
 
 from __future__ import annotations
@@ -26,7 +26,6 @@ from music_assistant_models.enums import (
     ContentType,
     MediaType,
     PlaybackState,
-    ProviderFeature,
     QueueOption,
     StreamType,
 )
@@ -56,7 +55,6 @@ from music_assistant.models.music_provider import (
 )
 
 INSTANCE = "spotify--one"
-LOCAL_INSTANCE = "filesystem_local--music"
 PAUSED_QUEUE = "living_room"
 STARTING_QUEUE = "kitchen"
 PCM_FORMAT = AudioFormat(content_type=ContentType.PCM_S16LE, sample_rate=8000, bit_depth=16)
@@ -80,22 +78,11 @@ class _TwoStreamProvider(MusicProvider):
         return 2
 
 
-class _LocalProvider(MusicProvider):
-    """Local music source, which sets no limit on its streams."""
-
-    @property
-    def is_streaming_provider(self) -> bool:
-        """Return that this is a local source."""
-        return False
-
-
 def _provider(
-    provider_cls: type[MusicProvider] = _SingleStreamProvider,
-    instance: str = INSTANCE,
-    domain: str = "spotify",
+    provider_cls: type[MusicProvider] = _SingleStreamProvider, instance: str = INSTANCE
 ) -> MusicProvider:
     """Construct a provider of the given class, under the shared instance id by default."""
-    manifest = MagicMock(domain=domain)
+    manifest = MagicMock(domain="spotify")
     manifest.name = "Spotify"
     config = MagicMock(instance_id=instance)
     config.name = "Spotify"
@@ -242,28 +229,7 @@ class _Rig:
 def rig(monkeypatch: pytest.MonkeyPatch) -> _Rig:
     """Build the rig with every music source open to the queues' playback."""
     monkeypatch.setattr(audio_mod, "playback_sources", AsyncMock(return_value=(None, [])))
-    monkeypatch.setattr(audio_mod, "visible_playback_sources", MagicMock(return_value=None))
     return _Rig()
-
-
-def _mapping(instance: str, domain: str = "spotify") -> ProviderMapping:
-    """Build the mapping of an item on the given provider instance."""
-    return ProviderMapping(
-        item_id=f"on-{instance}", provider_domain=domain, provider_instance=instance
-    )
-
-
-def _playlist(item_id: str = "big") -> Playlist:
-    """Build a playlist straight from the single-slot provider."""
-    return Playlist(
-        item_id=item_id, provider=INSTANCE, name=item_id, provider_mappings={_mapping(INSTANCE)}
-    )
-
-
-async def _hold_the_slot(rig: _Rig) -> AudioBuffer:
-    """Let realtime playback on another queue take the provider's only slot."""
-    rig.provider.available = True
-    return await rig.fill(rig.add_queue(PAUSED_QUEUE, PlaybackState.PLAYING, realtime=True))
 
 
 async def test_a_paused_queue_hands_its_slot_to_a_start_on_another_queue(rig: _Rig) -> None:
@@ -703,6 +669,26 @@ async def test_a_member_starting_from_its_paused_group_takes_the_groups_slot(rig
     await buffer.clear()
 
 
+def _mapping(instance: str) -> ProviderMapping:
+    """Build the mapping of an item on the given provider instance."""
+    return ProviderMapping(
+        item_id=f"on-{instance}", provider_domain="spotify", provider_instance=instance
+    )
+
+
+def _playlist(item_id: str = "big") -> Playlist:
+    """Build a playlist straight from the single-slot provider."""
+    return Playlist(
+        item_id=item_id, provider=INSTANCE, name=item_id, provider_mappings={_mapping(INSTANCE)}
+    )
+
+
+async def _hold_the_slot(rig: _Rig) -> AudioBuffer:
+    """Let realtime playback on another queue take the provider's only slot."""
+    rig.provider.available = True
+    return await rig.fill(rig.add_queue(PAUSED_QUEUE, PlaybackState.PLAYING, realtime=True))
+
+
 async def test_a_play_on_a_held_source_is_refused_before_its_tracks_are_fetched(
     rig: _Rig,
 ) -> None:
@@ -729,56 +715,22 @@ async def test_a_play_on_a_held_source_is_refused_before_its_tracks_are_fetched(
     await holder_buffer.clear()
 
 
-@pytest.mark.parametrize("local_copy", [False, True], ids=["held-copy-only", "free-local-copy"])
-async def test_a_library_item_is_refused_early_only_when_every_copy_is_held(
-    rig: _Rig, local_copy: bool
+async def test_a_copy_on_a_free_second_account_keeps_a_play_from_being_refused_early(
+    rig: _Rig,
 ) -> None:
-    """A copy on a source with a free slot lets the stream itself pick where it plays from."""
-    holder_buffer = await _hold_the_slot(rig)
-    mappings = {_mapping(INSTANCE)}
-    if local_copy:
-        local = _provider(_LocalProvider, LOCAL_INSTANCE, "filesystem_local")
-        local.available = True
-        rig.other_providers[LOCAL_INSTANCE] = local
-        mappings.add(_mapping(LOCAL_INSTANCE, "filesystem_local"))
-    track = Track(item_id="7", provider="library", name="Seven", provider_mappings=mappings)
-
-    with contextlib.nullcontext() if local_copy else pytest.raises(ProviderStreamHeldError):
-        rig.audio.refuse_held_sources(track, STARTING_QUEUE, None)
-
-    await holder_buffer.clear()
-
-
-async def test_a_free_second_account_keeps_a_play_from_being_refused_early(rig: _Rig) -> None:
-    """Another account of the same service serves the same item, so the play goes ahead."""
+    """The stream itself picks the free account, so the play goes ahead."""
     holder_buffer = await _hold_the_slot(rig)
     second = _provider(instance="spotify--two")
     second.available = True
     rig.other_providers["spotify--two"] = second
-    rig.mass.providers = [rig.provider, second]
+    track = Track(
+        item_id="7",
+        provider="library",
+        name="Seven",
+        provider_mappings={_mapping(INSTANCE), _mapping("spotify--two")},
+    )
 
-    rig.audio.refuse_held_sources(_playlist(), STARTING_QUEUE, None)
-
-    await holder_buffer.clear()
-
-
-async def test_a_match_on_another_service_keeps_a_play_from_being_refused_early(
-    rig: _Rig,
-) -> None:
-    """The stream can still find the tracks on another streaming service, so the play goes ahead."""
-    holder_buffer = await _hold_the_slot(rig)
-    rig.mass.music.providers = [
-        MagicMock(
-            available=True,
-            is_streaming_provider=True,
-            domain="tidal",
-            instance_id="tidal--one",
-            supported_features={ProviderFeature.SEARCH},
-            supported_media_types={MediaType.TRACK},
-        )
-    ]
-
-    rig.audio.refuse_held_sources(_playlist(), STARTING_QUEUE, None)
+    rig.queues._refuse_held_item(track, STARTING_QUEUE)
 
     await holder_buffer.clear()
 
@@ -790,55 +742,7 @@ async def test_a_provider_with_more_than_one_slot_is_not_refused_early(rig: _Rig
     second_buffer = await rig.fill(rig.add_queue("office", PlaybackState.PLAYING, realtime=True))
     assert not rig.provider.has_available_stream_slot
 
-    rig.audio.refuse_held_sources(_playlist(), STARTING_QUEUE, None)
+    rig.queues._refuse_held_item(_playlist(), STARTING_QUEUE)
 
     await first_buffer.clear()
     await second_buffer.clear()
-
-
-@pytest.mark.parametrize(
-    ("library_track", "refused"),
-    [(False, False), (True, True)],
-    ids=["provider-playlist", "library-track"],
-)
-async def test_a_local_source_keeps_a_play_from_being_refused_early_unless_its_copies_are_known(
-    rig: _Rig, library_track: bool, refused: bool
-) -> None:
-    """A listed track plays from its library item, which may hold a copy on the local source."""
-    holder_buffer = await _hold_the_slot(rig)
-    rig.mass.music.providers = [
-        MagicMock(
-            available=True,
-            is_streaming_provider=False,
-            domain="filesystem_local",
-            instance_id=LOCAL_INSTANCE,
-            supported_media_types={MediaType.TRACK},
-        )
-    ]
-    item = (
-        Track(item_id="7", provider="library", name="Seven", provider_mappings={_mapping(INSTANCE)})
-        if library_track
-        else _playlist()
-    )
-
-    with pytest.raises(ProviderStreamHeldError) if refused else contextlib.nullcontext():
-        rig.audio.refuse_held_sources(item, STARTING_QUEUE, None)
-
-    await holder_buffer.clear()
-
-
-async def test_a_start_from_the_queue_on_a_held_source_leaves_the_player_alone(
-    rig: _Rig,
-) -> None:
-    """Picking a queue item whose source is held elsewhere neither stops nor resets the queue."""
-    holder_buffer = await _hold_the_slot(rig)
-    rig.add_queue(STARTING_QUEUE, PlaybackState.PLAYING)
-    queue_data = rig.queues._queue_data[STARTING_QUEUE]
-
-    with pytest.raises(ProviderStreamHeldError):
-        await rig.queues.play_index(STARTING_QUEUE, 0)
-
-    rig.stop_device.assert_not_awaited()
-    assert queue_data.session_id == f"session-{STARTING_QUEUE}"
-    assert queue_data.queue.state == PlaybackState.PLAYING
-    await holder_buffer.clear()

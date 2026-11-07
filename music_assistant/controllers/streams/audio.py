@@ -178,11 +178,7 @@ from music_assistant.helpers.playlists import (
     read_playlist_body,
 )
 from music_assistant.helpers.process import descriptor_path
-from music_assistant.helpers.provider_access import (
-    exact_provider,
-    playback_sources,
-    visible_playback_sources,
-)
+from music_assistant.helpers.provider_access import exact_provider, playback_sources
 from music_assistant.helpers.throttle_retry import RequestPriority, request_priority
 from music_assistant.helpers.util import (
     clean_stream_title,
@@ -195,7 +191,6 @@ from music_assistant.models.media_capabilities import AudioStreamMixin
 from music_assistant.models.music_provider import MusicProvider, ProviderStreamLimitError
 
 if TYPE_CHECKING:
-    from music_assistant_models.auth import User
     from music_assistant_models.media_items import MediaItemType, ProviderMapping
     from music_assistant_models.player_queue import PlayerQueue
     from music_assistant_models.queue_item import QueueItem
@@ -756,56 +751,6 @@ class StreamsAudio:
                 stop_paused_queues,
                 consumer_connected,
             )
-
-    def refuse_held_sources(
-        self, media_item: MediaItemType, queue_id: str, user: User | None
-    ) -> None:
-        """
-        Raise when realtime playback on other queues holds every source that can stream the item.
-
-        Lets a play be refused before the item is expanded into tracks, instead of once its
-        first track is about to stream. Nothing is raised while any source could still serve
-        it, such as another account of the same service, a match on another streaming
-        provider or, for anything but a library track, a library copy on a local source.
-
-        :param media_item: The item about to be played, or the container its tracks come from.
-        :param queue_id: The queue that is about to play it.
-        :param user: The user the playback is for; None for anonymous playback.
-        :raises ProviderStreamHeldError: Naming the holding player, when the caller may
-            control it.
-        :raises ProviderStreamLimitError: When the holding player is not one the caller may
-            control.
-        """
-        allowed = visible_playback_sources(self.mass, user)
-        # once every known source is held, the stream searches the other providers for a match
-        if self._has_alternative_match_providers(media_item, allowed):
-            return
-        # Only a library track names every copy up front. Any other track, and the tracks of
-        # a container, play from their library item once loaded, whose copies may include
-        # one on a source like local files.
-        if not (
-            media_item.media_type == MediaType.TRACK and media_item.provider == "library"
-        ) and any(
-            provider.available
-            and not provider.is_streaming_provider
-            and MediaType.TRACK in provider.supported_media_types
-            and (allowed is None or provider.instance_id in allowed)
-            for provider in self.mass.music.providers
-        ):
-            return
-        refusal: ProviderStreamLimitError | None = None
-        for mapping in rank_provider_mappings(media_item.provider_mappings):
-            if not mapping.available:
-                continue
-            for provider in self._get_mapping_providers(mapping, allowed):
-                try:
-                    self.mass.player_queues.refuse_held_stream_slot(provider.instance_id, queue_id)
-                except ProviderStreamLimitError as err:
-                    refusal = refusal or err
-                else:
-                    return
-        if refusal is not None:
-            raise refusal
 
     async def get_media_stream(
         self,
@@ -4308,12 +4253,12 @@ class StreamsAudio:
         )
 
     def _has_alternative_match_providers(
-        self, media_item: MediaItemType, allowed: list[str] | None
+        self, media_item: Track, allowed: list[str] | None
     ) -> bool:
         """
         Return whether any configured streaming provider could carry an unmapped match.
 
-        :param media_item: Item whose existing mappings define the known provider domains.
+        :param media_item: Track whose existing mappings define the known provider domains.
         :param allowed: Music sources the playback user may use, or None for all of them.
         """
         known_domains = {mapping.provider_domain for mapping in media_item.provider_mappings}

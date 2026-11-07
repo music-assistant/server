@@ -1,10 +1,10 @@
 """
 Tests for refusing a play whose sources are held elsewhere, before its tracks are fetched.
 
-A large playlist takes a while to expand into tracks. A play that starts right away is
-checked against the sources that realtime playback on other players holds as soon as the
-requested item itself is known, so a refusal comes at once and leaves the queue as it was.
-Options that only add items to the queue are left to the check when their audio is streamed.
+A large playlist takes a while to expand into tracks. A play of a playlist, album or track
+that starts right away is checked against the slots that realtime playback on other players
+holds as soon as the requested item itself is known, so a refusal comes at once and leaves the
+queue as it was. Anything else is left to the check when its audio is streamed.
 """
 
 from __future__ import annotations
@@ -15,7 +15,7 @@ from unittest.mock import AsyncMock, MagicMock, Mock, patch
 import pytest
 from music_assistant_models.auth import User, UserRole
 from music_assistant_models.enums import MediaType, QueueOption
-from music_assistant_models.media_items import ItemMapping, ProviderMapping, Track
+from music_assistant_models.media_items import Artist, ItemMapping, ProviderMapping, Track
 from music_assistant_models.player_queue import PlayerQueue
 from music_assistant_models.queue_item import QueueItem
 from music_assistant_models.unique_list import UniqueList
@@ -61,8 +61,8 @@ def _controller(default_option: QueueOption = QueueOption.REPLACE) -> Any:
     """
     Build a bare controller driving ``play_media`` on a queue "q1" that holds one item.
 
-    The requested item is handed straight back by the stubbed media resolver, and every
-    source of it counts as held unless a test lets it through.
+    The requested item is handed straight back by the stubbed media resolver, and the slot
+    of every source counts as held unless a test lets it through.
 
     :param default_option: The configured enqueue option for a play that names none.
     """
@@ -74,7 +74,7 @@ def _controller(default_option: QueueOption = QueueOption.REPLACE) -> Any:
     lock_cm.__aenter__ = AsyncMock(return_value=None)
     lock_cm.__aexit__ = AsyncMock(return_value=None)
     ctrl.mass.players.get_group_and_player_lock = Mock(return_value=lock_cm)
-    ctrl.mass.streams.audio.refuse_held_sources = Mock(side_effect=_held_error())
+    ctrl.mass.player_queues.refuse_held_stream_slot = Mock(side_effect=_held_error())
     ctrl.mass.providers = []
     ctrl.signal_update = Mock()  # type: ignore[method-assign]
     ctrl.on_player_update = Mock()  # type: ignore[method-assign]
@@ -129,10 +129,10 @@ async def test_only_a_play_that_starts_now_is_refused_early(
             "player_name": "Living Room",
             "provider_instance": INSTANCE,
         }
-        ctrl.mass.streams.audio.refuse_held_sources.assert_called_once_with(track, "q1", LISTENER)
+        ctrl.mass.player_queues.refuse_held_stream_slot.assert_called_once_with(INSTANCE, "q1")
     else:
         await ctrl.play_media("q1", track, option)
-        ctrl.mass.streams.audio.refuse_held_sources.assert_not_called()
+        ctrl.mass.player_queues.refuse_held_stream_slot.assert_not_called()
         ctrl._media_resolver._resolve_media_items.assert_awaited_once()
 
 
@@ -158,12 +158,12 @@ async def test_a_refused_play_leaves_the_queue_as_it_was() -> None:
 async def test_only_the_first_item_of_a_batch_is_checked() -> None:
     """Playback starts from the first item, so the items behind it are not checked."""
     ctrl = _controller()
-    ctrl.mass.streams.audio.refuse_held_sources.side_effect = None
+    ctrl.mass.player_queues.refuse_held_stream_slot.side_effect = None
     first, second = _track("first"), _track("second")
 
     await ctrl.play_media("q1", [first, second], QueueOption.REPLACE)
 
-    ctrl.mass.streams.audio.refuse_held_sources.assert_called_once_with(first, "q1", LISTENER)
+    ctrl.mass.player_queues.refuse_held_stream_slot.assert_called_once_with(INSTANCE, "q1")
     assert [item.media_item for item in ctrl._queue_data["q1"].items] == [first, second]
 
 
@@ -184,7 +184,7 @@ async def test_a_shuffled_batch_is_left_to_the_stream(
         "q1", [_track("first"), _track("second")], QueueOption.REPLACE, shuffle=shuffle
     )
 
-    ctrl.mass.streams.audio.refuse_held_sources.assert_not_called()
+    ctrl.mass.player_queues.refuse_held_stream_slot.assert_not_called()
     ctrl.play_index.assert_awaited_once()
 
 
@@ -200,14 +200,23 @@ async def test_a_shuffled_single_item_is_still_refused_early() -> None:
 
 
 @patch(GET_CURRENT_USER, Mock(return_value=LISTENER))
-async def test_a_start_refused_once_the_items_are_loaded_stops_the_queue() -> None:
-    """The queue already holds the new items, so the player does not play on from the old ones."""
+async def test_an_artist_is_left_to_the_stream() -> None:
+    """An artist names no source of its own tracks, so its play is not refused early."""
     ctrl = _controller()
-    ctrl.mass.streams.audio.refuse_held_sources.side_effect = None
-    ctrl.play_index.side_effect = _held_error()
-    ctrl._handle_stop = AsyncMock()
+    artist = Artist(
+        item_id="a",
+        provider=INSTANCE,
+        name="A",
+        provider_mappings={
+            ProviderMapping(item_id="a", provider_domain="spotify", provider_instance=INSTANCE)
+        },
+    )
+    ctrl._media_resolver.resolve_artist_tracks = AsyncMock(return_value=None)
+    ctrl._media_resolver._resolve_media_items = AsyncMock(
+        return_value=[ResolvedItem(_track("by-a"))]
+    )
 
-    with pytest.raises(ProviderStreamHeldError):
-        await ctrl.play_media("q1", _track("new"), QueueOption.REPLACE)
+    await ctrl.play_media("q1", artist, QueueOption.REPLACE)
 
-    ctrl._handle_stop.assert_awaited_once_with("q1")
+    ctrl.mass.player_queues.refuse_held_stream_slot.assert_not_called()
+    ctrl._media_resolver._resolve_media_items.assert_awaited_once()
