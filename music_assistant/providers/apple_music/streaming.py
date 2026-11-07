@@ -104,6 +104,41 @@ class AppleMusicStreamingManager:
             allow_seek=True,
         )
 
+    @property
+    def cdm_available(self) -> bool:
+        """Return if the Widevine device files of this provider were loaded."""
+        return bool(self._decrypt_client_id and self._decrypt_private_key)
+
+    @property
+    def decryption_headers(self) -> dict[str, str]:
+        """Return headers required for decryption requests."""
+        return {
+            "authorization": f"Bearer {self.provider._music_app_token}",
+            "media-user-token": cast("str", self.provider._music_user_token),
+            "connection": "keep-alive",
+            "accept": "application/json",
+            "origin": "https://music.apple.com",
+            "referer": "https://music.apple.com/",
+            "accept-encoding": "gzip, deflate, br",
+            "content-type": "application/json;charset=utf-8",
+            # mimics the Apple Music web player these requests come from (#1315)
+            "user-agent": (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+                " (KHTML, like Gecko) Chrome/110.0.0.0 Safari/537.36"
+            ),
+        }
+
+    def create_cdm(self) -> Cdm:
+        """Return a Widevine CDM on the device files of this provider."""
+        device = Device(
+            client_id=self._decrypt_client_id,
+            private_key=self._decrypt_private_key,
+            type_=DeviceTypes.ANDROID,
+            security_level=3,
+            flags={},
+        )
+        return Cdm.from_device(device)
+
     async def _fetch_song_stream_metadata(self, song_id: str) -> dict[str, Any]:
         """Get the stream metadata for a song from Apple Music."""
         playback_url = "https://play.music.apple.com/WebObjects/MZPlay.woa/wa/webPlayback"
@@ -118,7 +153,7 @@ class AppleMusicStreamingManager:
             try:
                 async with self.provider.mass.http_session.post(
                     playback_url,
-                    headers=self._decryption_headers,
+                    headers=self.decryption_headers,
                     json=data,
                     ssl=True,
                 ) as response:
@@ -152,25 +187,6 @@ class AppleMusicStreamingManager:
         key = playlist_item.key
         return (track_url, key)
 
-    @property
-    def _decryption_headers(self) -> dict[str, str]:
-        """Return headers required for decryption requests."""
-        return {
-            "authorization": f"Bearer {self.provider._music_app_token}",
-            "media-user-token": cast("str", self.provider._music_user_token),
-            "connection": "keep-alive",
-            "accept": "application/json",
-            "origin": "https://music.apple.com",
-            "referer": "https://music.apple.com/",
-            "accept-encoding": "gzip, deflate, br",
-            "content-type": "application/json;charset=utf-8",
-            # mimics the Apple Music web player these requests come from (#1315)
-            "user-agent": (
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
-                " (KHTML, like Gecko) Chrome/110.0.0.0 Safari/537.36"
-            ),
-        }
-
     async def _get_decryption_key(
         self, license_url: str, key_id: bytes, uri: str, item_id: str
     ) -> str:
@@ -184,14 +200,7 @@ class AppleMusicStreamingManager:
             self.logger.debug("Decryption key for %s found in cache.", item_id)
             return cast("str", decryption_key)
         pssh = self._build_pssh(key_id)
-        device = Device(
-            client_id=self._decrypt_client_id,
-            private_key=self._decrypt_private_key,
-            type_=DeviceTypes.ANDROID,
-            security_level=3,
-            flags={},
-        )
-        cdm = Cdm.from_device(device)
+        cdm = self.create_cdm()
         session_id = cdm.open()
         try:
             challenge = cdm.get_license_challenge(session_id, pssh)
@@ -237,7 +246,7 @@ class AppleMusicStreamingManager:
         async with self.provider.mass.http_session.post(
             license_url,
             data=json.dumps(data),
-            headers=self._decryption_headers,
+            headers=self.decryption_headers,
             ssl=False,
         ) as response:
             response.raise_for_status()
