@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock, MagicMock, Mock
 
 import pytest
 from music_assistant_models.enums import MediaType
+from music_assistant_models.errors import AudioError
 
 from music_assistant.providers.deezer.helpers import parse_flac_streaminfo
 from music_assistant.providers.deezer.streaming import DeezerStreamingManager
@@ -95,6 +96,22 @@ async def test_failed_probe_keeps_default_format(
     details = await streaming.get_stream_details("1", MediaType.TRACK)
 
     assert (details.audio_format.sample_rate, details.audio_format.bit_depth) == (44100, 16)
+    provider.mass.cache.set.assert_not_called()
+
+
+async def test_missing_decrypt_key_skips_the_probe(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A build without the decryption key keeps the default format and fetches nothing."""
+    streaming, provider = _streaming(monkeypatch, "FLAC", _flac_header(88200, 24, 2))
+
+    def _no_key(_track_id: str) -> str:
+        raise AudioError("no key")
+
+    monkeypatch.setattr(streaming, "_get_blowfish_key", _no_key)
+
+    details = await streaming.get_stream_details("1", MediaType.TRACK)
+
+    assert (details.audio_format.sample_rate, details.audio_format.bit_depth) == (44100, 16)
+    provider.mass.http_session.get.assert_not_called()
     provider.mass.cache.set.assert_not_called()
 
 

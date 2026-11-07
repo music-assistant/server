@@ -154,12 +154,10 @@ class DeezerStreamingManager:
         """
         Read sample rate, bit depth and channels from the FLAC header of a track.
 
-        Deezer serves CD and hi-res FLAC under the same format name, so the first chunk of
-        the file is fetched and decrypted. Returns None on any failure.
-
         :param url: The stream URL of the track.
         :param track_id: The Deezer track ID, used for the decryption key.
         :param size: The file size reported by Deezer, so a replaced file is read again.
+        :returns: Tuple of (sample_rate, bit_depth, channels), or None on any failure.
         """
         cache_key = f"_get_flac_streaminfo.{track_id}"
         if cached := await self.mass.cache.get(
@@ -167,7 +165,10 @@ class DeezerStreamingManager:
         ):
             sample_rate, bit_depth, channels = cached
             return sample_rate, bit_depth, channels
+        # Deezer serves CD and hi-res FLAC under the same format name, so the first
+        # (encrypted) chunk of the file is fetched and decrypted to read STREAMINFO
         try:
+            blowfish_key = self._get_blowfish_key(track_id)
             async with self.mass.http_session.get(
                 url, headers={"Range": "bytes=0-2047"}, timeout=ClientTimeout(total=10)
             ) as resp:
@@ -177,7 +178,7 @@ class DeezerStreamingManager:
                     )
                     return None
                 first_chunk = await resp.content.readexactly(2048)
-            header = self._decrypt_chunk(first_chunk, self._get_blowfish_key(track_id))
+            header = self._decrypt_chunk(first_chunk, blowfish_key)
         except (ClientError, TimeoutError, IncompleteReadError, AudioError) as err:
             self.logger.debug("Could not probe FLAC format of track %s: %s", track_id, err)
             return None
