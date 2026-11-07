@@ -26,6 +26,7 @@ from music_assistant_models.enums import (
     ContentType,
     MediaType,
     PlaybackState,
+    ProviderFeature,
     ProviderType,
     QueueOption,
     StreamType,
@@ -772,6 +773,27 @@ async def test_a_free_account_the_user_may_not_use_does_not_keep_a_play_going(
         pytest.raises(ProviderStreamHeldError),
     ):
         rig.queues.refuse_held_item(track, STARTING_QUEUE, None)
+
+    await holder_buffer.clear()
+
+
+async def test_a_play_another_streaming_service_may_find_is_not_refused_early(
+    rig: _Rig,
+) -> None:
+    """The stream itself may still find the item on a service it has no mapping on."""
+    holder_buffer = await _hold_the_slot(rig)
+    rig.mass.music.providers = [
+        SimpleNamespace(
+            available=True,
+            is_streaming_provider=True,
+            supported_features={ProviderFeature.SEARCH},
+            domain="tidal",
+            supported_media_types={MediaType.TRACK},
+            instance_id="tidal--one",
+        )
+    ]
+
+    rig.queues.refuse_held_item(_playlist(), STARTING_QUEUE, None)
 
     await holder_buffer.clear()
 

@@ -254,7 +254,10 @@ class StreamFeederMixin(_PlayerQueuesBase):
                     refusal = refusal or err
                 else:
                     return
-        if refusal is not None:
+        # the stream itself may still find the item on a streaming provider it has no mapping on
+        if refusal is not None and not self.mass.streams.audio.has_alternative_match_providers(
+            media_item, allowed
+        ):
             raise refusal
 
     async def release_paused_stream_slot(self, provider_instance: str, queue_id: str) -> bool:
