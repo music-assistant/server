@@ -544,8 +544,8 @@ class DeezerStreamingManager:
     async def _push_queue_state(self, queue: PlayerQueue, position: int) -> None:
         """Push the queue from its current track on, the way a Deezer app saves its own."""
         media: list[PushQueueMediaInput] = []
-        contexts: dict[str, PushQueueContextInput] = {}
-        resolved: dict[str | None, tuple[str, str] | None] = {}
+        # one context per album, artist or playlist the tracks are played from
+        contexts: dict[str | None, PushQueueContextInput | None] = {}
         for item in self.mass.player_queues.items(
             queue.queue_id, QUEUE_SYNC_SIZE, queue.current_index or 0
         ):
@@ -553,32 +553,29 @@ class DeezerStreamingManager:
                 continue
             container = item.origin.container if item.origin else None
             key = container.uri if container else None
-            if key not in resolved:
-                resolved[key] = await self._deezer_context(container)
-            context_id = None
-            if context := resolved[key]:
-                context_type, item_id = context
-                content = json.dumps(
-                    {
-                        "ctxId": item_id,
-                        "ctxT": context_type,
-                        "ctxC": item_id,
-                        "lt": "music_on_demand",
-                        "pipeTrackType": "full",
-                        "version": 2,
-                    },
-                    separators=(",", ":"),
-                )
-                if content not in contexts:
-                    contexts[content] = PushQueueContextInput(
-                        id=str(len(contexts)), content=content
+            if key not in contexts:
+                context = None
+                if deezer_context := await self._deezer_context(container):
+                    context_type, item_id = deezer_context
+                    content = json.dumps(
+                        {
+                            "ctxId": item_id,
+                            "ctxT": context_type,
+                            "ctxC": item_id,
+                            "lt": "music_on_demand",
+                            "pipeTrackType": "full",
+                            "version": 2,
+                        },
+                        separators=(",", ":"),
                     )
-                context_id = contexts[content].id
+                    context = PushQueueContextInput(id=str(len(contexts)), content=content)
+                contexts[key] = context
+            context = contexts[key]
             media.append(
                 PushQueueMediaInput(
                     id=track_id,
                     type=MediaTypeInput.TRACK,
-                    contextId=context_id,
+                    contextId=context.id if context else None,
                     localQueueItemId=item.queue_item_id,
                     unshuffledPosition=len(media),
                 )
@@ -596,7 +593,7 @@ class DeezerStreamingManager:
             previousVersion=self._queue_state_version,
             queueConfiguration=QUEUE_SYNC_CONFIGURATION,
             repeatMode=QUEUE_SYNC_REPEAT_MODES[queue.repeat_mode],
-            contexts=list(contexts.values()),
+            contexts=[context for context in contexts.values() if context],
         )
         # a Deezer app may have saved its queue since, then push on top of its version
         for _ in range(2):
