@@ -12,7 +12,7 @@ from unittest.mock import AsyncMock, MagicMock, PropertyMock, patch
 import aiohttp
 import pytest
 from music_assistant_models.config_entries import MULTI_VALUE_SPLITTER
-from music_assistant_models.enums import MediaType, PlaybackState
+from music_assistant_models.enums import IdentifierType, MediaType, PlaybackState
 from music_assistant_models.errors import ResourceBusyError
 from music_assistant_models.player import PlayerMedia
 
@@ -25,6 +25,7 @@ from music_assistant.providers.raumfeld.constants import (
 from music_assistant.providers.raumfeld.host import Devices, RaumfeldHost, Room, ZoneConfig
 from music_assistant.providers.raumfeld.player import RaumfeldPlayer
 from music_assistant.providers.raumfeld.provider import RaumfeldPlayerProvider
+from music_assistant.providers.raumfeld.speaker import RaumfeldSpeaker
 
 _LOCATION = "http://192.168.1.42:54730/renderer.xml"
 _DEVICE_DESCRIPTION = (
@@ -58,7 +59,14 @@ def _host(
     host = RaumfeldHost(MagicMock(), "http://192.168.1.41:47365")
     host._zone_config = ZoneConfig(
         rooms={
-            name: Room(name, udn, renderer_udn, "ACTIVE", spotify_active=False)
+            name: Room(
+                name,
+                udn,
+                renderer_udn,
+                "ACTIVE",
+                spotify_active=False,
+                renderer_udns=(renderer_udn,) if renderer_udn else (),
+            )
             for name, (udn, renderer_udn) in rooms.items()
         },
         zones=zones or {},
@@ -76,9 +84,14 @@ def _provider(description: str) -> tuple[RaumfeldPlayerProvider, MagicMock]:
     """Build a provider whose room renderer answers with the given device description."""
     provider = RaumfeldPlayerProvider.__new__(RaumfeldPlayerProvider)
     provider._room_serials = {}
-    provider._room_renderers = {}
+    provider._room_serial_renderers = {}
     provider._room_models = {}
     provider._room_transport_paths = {}
+    provider._room_renderers = {}
+    provider._room_pins = {}
+    provider._renderer_descriptions = {}
+    provider._room_ids = {}
+    provider._shared_serial_warned = set()
     provider.host = _host({"Bar": ("uuid:room", "uuid:renderer")}, {"uuid:renderer": _LOCATION})
     response = MagicMock()
     response.text = AsyncMock(return_value=description)
@@ -128,6 +141,243 @@ async def test_transport_url_follows_the_renderers_current_address() -> None:
     assert provider.room_transport_url("Bar") == "http://192.168.1.42:41000/AVTransport/ctrl"
 
 
+_SECOND_LOCATION = "http://192.168.1.31:54730/renderer.xml"
+_SECOND_DESCRIPTION = _DEVICE_DESCRIPTION.replace("04:a3:16:f3:b6:c4", "d8:3a:dd:da:8e:62")
+
+
+def _room_of_two(
+    pinned: str | None = None, configured: str | None = None
+) -> tuple[RaumfeldPlayerProvider, MagicMock]:
+    """
+    Build a provider whose room Bar holds two speakers, listed by the host in that order.
+
+    :param pinned: The player id the cache holds for the room.
+    :param configured: The serial that already has a player config.
+    """
+    provider, mass = _provider(_DEVICE_DESCRIPTION)
+    provider.host._devices.locations["uuid:second"] = _SECOND_LOCATION
+    _list_renderers(provider, ["uuid:renderer", "uuid:second"])
+    descriptions = {_LOCATION: _DEVICE_DESCRIPTION, _SECOND_LOCATION: _SECOND_DESCRIPTION}
+
+    def _get(location: str, **_: Any) -> MagicMock:
+        response = MagicMock()
+        response.text = AsyncMock(return_value=descriptions[location])
+        request = MagicMock()
+        request.__aenter__ = AsyncMock(return_value=response)
+        request.__aexit__ = AsyncMock(return_value=None)
+        return request
+
+    mass.http_session.get.side_effect = _get
+    mass.cache.get = AsyncMock(return_value=pinned)
+    mass.cache.set = AsyncMock()
+    configured_id = f"players/raumfeld_{configured.replace(':', '')}" if configured else None
+    mass.config.get.side_effect = lambda key: (
+        {"provider": "raumfeld"} if key == configured_id else None
+    )
+    provider.config = MagicMock(instance_id="raumfeld")
+    return provider, mass
+
+
+def _list_renderers(provider: RaumfeldPlayerProvider, renderers: list[str]) -> None:
+    """Let the host list room Bar with the given renderers, in that order."""
+    provider.host._zone_config.rooms["Bar"] = Room(
+        "Bar",
+        "uuid:room",
+        renderers[0],
+        "ACTIVE",
+        spotify_active=False,
+        renderer_udns=tuple(renderers),
+    )
+
+
+async def _sync_ids(provider: RaumfeldPlayerProvider) -> dict[str, str]:
+    """Run the id part of a room sync for room Bar and return the room ids."""
+    await provider._load_room_pin("Bar")
+    await provider._settle_room_renderer("Bar")
+    await provider._ensure_room_serial("Bar")
+    provider._assign_room_ids(["Bar"])
+    await provider._pin_room_ids()
+    return provider._room_ids
+
+
+async def test_a_room_keeps_its_speaker_when_another_is_listed_first() -> None:
+    """A room of several speakers keeps its player when the host lists them in another order."""
+    provider, _ = _room_of_two()
+    assert await _sync_ids(provider) == {"Bar": "raumfeld_04a316f3b6c4"}
+
+    _list_renderers(provider, ["uuid:second", "uuid:renderer"])
+
+    assert await _sync_ids(provider) == {"Bar": "raumfeld_04a316f3b6c4"}
+    assert provider.room_renderer_location("Bar") == _LOCATION
+
+
+async def test_a_room_keeps_its_player_while_its_speaker_is_away() -> None:
+    """The speaker that gave a room its player leaving it for a while does not change it."""
+    provider, _ = _room_of_two()
+    assert await _sync_ids(provider) == {"Bar": "raumfeld_04a316f3b6c4"}
+
+    _list_renderers(provider, ["uuid:second"])
+
+    assert await _sync_ids(provider) == {"Bar": "raumfeld_04a316f3b6c4"}
+    assert provider.room_renderer_location("Bar") == _SECOND_LOCATION
+    assert await provider._ensure_room_serial("Bar") == "d8:3a:dd:da:8e:62"
+
+    _list_renderers(provider, ["uuid:renderer", "uuid:second"])
+
+    assert await _sync_ids(provider) == {"Bar": "raumfeld_04a316f3b6c4"}
+
+
+async def test_a_room_keeps_its_player_across_a_restart() -> None:
+    """The player a room got is remembered, and read through the speaker it came from."""
+    provider, mass = _room_of_two(pinned="raumfeld_d83addda8e62")
+
+    assert await _sync_ids(provider) == {"Bar": "raumfeld_d83addda8e62"}
+
+    assert provider.room_renderer_location("Bar") == _SECOND_LOCATION
+    mass.cache.set.assert_not_awaited()
+
+
+async def test_a_room_whose_speaker_is_away_at_start_keeps_its_player() -> None:
+    """A remembered player stays the room's, even when its speaker is not there at start."""
+    provider, _ = _room_of_two(pinned="raumfeld_d83addda8e62")
+    _list_renderers(provider, ["uuid:renderer"])
+
+    assert await _sync_ids(provider) == {"Bar": "raumfeld_d83addda8e62"}
+
+
+async def test_a_room_seen_first_keeps_the_player_it_had_before() -> None:
+    """Without a remembered player, the speaker whose player is already configured is chosen."""
+    provider, mass = _room_of_two(configured="d8:3a:dd:da:8e:62")
+
+    assert await _sync_ids(provider) == {"Bar": "raumfeld_d83addda8e62"}
+
+    assert mass.cache.set.await_args.args[:2] == ("uuid:room", "raumfeld_d83addda8e62")
+
+
+async def test_a_room_of_one_speaker_reads_no_other_speaker() -> None:
+    """A room with a single speaker takes its id from that speaker, as before."""
+    provider, mass = _room_of_two()
+    _list_renderers(provider, ["uuid:renderer"])
+
+    assert await _sync_ids(provider) == {"Bar": "raumfeld_04a316f3b6c4"}
+
+    assert mass.http_session.get.call_count == 1
+
+
+@pytest.mark.parametrize("cached", ["uuid:renderer", 42, ""])
+async def test_a_cached_value_that_is_no_player_id_is_not_taken(cached: Any) -> None:
+    """Only one of this provider's player ids counts as the player a room got."""
+    provider, _ = _room_of_two(pinned=cached)
+
+    assert await _sync_ids(provider) == {"Bar": "raumfeld_04a316f3b6c4"}
+
+
+def test_a_room_whose_serial_another_room_holds_uses_its_room_udn() -> None:
+    """A room keeps its player even when a new room reports the serial it came from."""
+    provider, _ = _provider(_DEVICE_DESCRIPTION)
+    provider.host._zone_config.rooms["Sofa"] = Room(
+        "Sofa", "uuid:sofa", None, "ACTIVE", spotify_active=False
+    )
+    provider._room_pins = {"uuid:room": "raumfeld_04a316f3b6c4"}
+    provider._room_serials = {"Sofa": "04:a3:16:f3:b6:c4"}
+
+    provider._assign_room_ids(["Sofa", "Bar"])
+
+    assert provider._room_ids == {"Bar": "raumfeld_04a316f3b6c4", "Sofa": "raumfeld_sofa"}
+
+
+def _with_registry(mass: MagicMock) -> dict[str, Any]:
+    """Keep the players the provider registers, as the player controller would."""
+    registry: dict[str, Any] = {}
+
+    async def register(player: Any) -> None:
+        registry[player.player_id] = player
+
+    async def unregister(player_id: str, **_: Any) -> None:
+        registry.pop(player_id, None)
+
+    mass.players.register = AsyncMock(side_effect=register)
+    mass.players.unregister = AsyncMock(side_effect=unregister)
+    mass.players.get_player.side_effect = registry.get
+    mass.config.create_default_player_config = MagicMock()
+    return registry
+
+
+async def _sync_speakers(provider: RaumfeldPlayerProvider, registry: dict[str, Any]) -> None:
+    """Run a speaker sync for room Bar, with the provider seeing the registered players."""
+    await _sync_ids(provider)
+    with patch.object(
+        RaumfeldPlayerProvider,
+        "players",
+        new_callable=lambda: property(lambda _: list(registry.values())),
+    ):
+        await provider._sync_speakers(["Bar"])
+
+
+async def test_the_other_speaker_of_a_room_gets_a_hidden_player() -> None:
+    """A room of two speakers holds the other speaker's outputs in a hidden player."""
+    provider, mass = _room_of_two()
+    registry = _with_registry(mass)
+
+    await _sync_speakers(provider, registry)
+
+    speaker = registry["raumfeld_speaker_d83addda8e62"]
+    assert isinstance(speaker, RaumfeldSpeaker)
+    assert speaker.room == "Bar"
+    assert speaker.name == "Speaker Bar"
+    assert speaker.hidden_by_default
+    assert not speaker.expose_to_ha_by_default
+    assert speaker.device_info.identifiers == {
+        IdentifierType.UUID: "second",
+        IdentifierType.IP_ADDRESS: "192.168.1.31",
+    }
+    assert list(registry) == ["raumfeld_speaker_d83addda8e62"]
+
+
+async def test_a_speaker_that_left_the_room_gives_its_outputs_back() -> None:
+    """The hidden player goes once its speaker is no longer one of the room's others."""
+    provider, mass = _room_of_two()
+    registry = _with_registry(mass)
+    await _sync_speakers(provider, registry)
+
+    _list_renderers(provider, ["uuid:renderer"])
+    await _sync_speakers(provider, registry)
+
+    assert registry == {}
+    mass.players.unregister.assert_awaited_once_with(
+        "raumfeld_speaker_d83addda8e62", permanent=True
+    )
+
+
+async def test_the_speaker_a_room_is_linked_by_gets_no_hidden_player() -> None:
+    """The room's own player keeps the outputs of the speaker it is linked by."""
+    provider, mass = _room_of_two()
+    registry = _with_registry(mass)
+    room = MagicMock(spec=RaumfeldPlayer)
+    room.device_info.identifiers = {IdentifierType.UUID: "second"}
+    registry["raumfeld_04a316f3b6c4"] = room
+
+    await _sync_speakers(provider, registry)
+
+    assert "raumfeld_speaker_04a316f3b6c4" in registry
+    assert "raumfeld_speaker_d83addda8e62" not in registry
+
+
+def test_a_room_groups_with_the_other_rooms_only() -> None:
+    """The hidden speakers of a room are not offered for grouping."""
+    provider, players = _zone_provider([])
+    speaker = MagicMock(spec=RaumfeldSpeaker)
+    speaker.player_id = "raumfeld_speaker_d83addda8e62"
+    with patch.object(
+        RaumfeldPlayerProvider,
+        "players",
+        new_callable=lambda: property(lambda _: [*players.values(), speaker]),
+    ):
+        bar = players["Bar"]
+        bar._provider = provider
+        assert bar.can_group_with == {"raumfeld_sofa", "raumfeld_kitchen", "raumfeld_office"}
+
+
 # a speaker's renderer UDN -> (description url, serial) on its own hardware
 _SPEAKERS = {
     "uuid:pi4": ("http://192.168.1.31:34393/pi4.xml", "d8:3a:dd:da:8e:62"),
@@ -142,8 +392,6 @@ def _moving_provider(rooms: dict[str, tuple[str, str]]) -> RaumfeldPlayerProvide
     :param rooms: Room name -> (room UDN, renderer UDN of the speaker in it).
     """
     provider, mass = _provider(_DEVICE_DESCRIPTION)
-    provider._room_ids = {}
-    provider._shared_serial_warned = set()
     descriptions = {
         location: _DEVICE_DESCRIPTION.replace("04:a3:16:f3:b6:c4", serial)
         for location, serial in _SPEAKERS.values()
@@ -174,8 +422,9 @@ async def _room_ids(provider: RaumfeldPlayerProvider) -> dict[str, str | None]:
     rooms = provider.host.get_rooms()
     provider._forget_moved_renderers(rooms)
     for room in rooms:
+        await provider._settle_room_renderer(room)
         await provider._ensure_room_serial(room)
-    provider._assign_room_ids()
+    provider._assign_room_ids(rooms)
     return {room: provider._room_player_id(room) for room in rooms}
 
 
