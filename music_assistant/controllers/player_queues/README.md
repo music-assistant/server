@@ -166,7 +166,13 @@ holds it, so a track handed to the player after a wait is still the one that fol
 Queue edits (moves, deletes, refills) do not take the lock, so the handover checks the queue again once
 the player has the track, and hands over the real next track when an edit changed it meanwhile.
 While an action is in progress an "action in progress" flag is surfaced on the queue and reported to
-subscribers.
+subscribers. Once the lock is acquired, the outermost queue play action has a 60-second deadline
+(`PLAY_ACTION_TIMEOUT`), including any nested actions. Expiry cancels the action and its awaited
+provider work, clears the in-progress flag, releases the lock, and reports a playback-command error.
+This bounds the complete operation, including catalogue pagination and retry waits, rather than
+only individual HTTP requests or the commands waiting for the lock. An aborted buffer preparation
+detaches its newly created buffer and schedules cleanup. Buffer teardown continues independently
+when source cleanup is slow, so it cannot swallow the deadline or retain the playback lock.
 
 A per-queue transitioning flag guards the window during track changes, so concurrent
 player-update callbacks are skipped while a queue is mid-transition. A load that shuffles prepares

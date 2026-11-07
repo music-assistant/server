@@ -9,12 +9,14 @@ new items are ready, and hands the audio over in a single swap.
 
 from __future__ import annotations
 
+import asyncio
 from types import SimpleNamespace
 from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock, Mock
 
 import pytest
 from music_assistant_models.enums import MediaType, PlaybackState, QueueOption
+from music_assistant_models.errors import PlayerCommandFailed
 from music_assistant_models.media_items import (
     ItemMapping,
     Playlist,
@@ -26,9 +28,11 @@ from music_assistant_models.queue_item import QueueItem
 from music_assistant_models.unique_list import UniqueList
 
 from music_assistant.controllers.player_queues import PlayerQueuesController
+from music_assistant.controllers.player_queues import helpers as queue_helpers
 from music_assistant.controllers.player_queues.media_resolver import ResolvedItem
 from music_assistant.controllers.player_queues.state import PlayerQueueData
 from music_assistant.models.player import Player
+from tests.common import bare_player_controller
 
 NEW_TRACKS = ["n1", "n2", "n3"]
 PLAYING_TRACKS = ["p1", "p2", "p3"]
@@ -156,6 +160,44 @@ async def test_replace_never_advertises_an_empty_queue() -> None:
 
     assert counts == [len(NEW_TRACKS)]
     assert _item_ids(ctrl) == NEW_TRACKS
+
+
+async def test_replace_timeout_keeps_current_audio_and_accepts_another_request(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An unresponsive catalogue lookup leaves the playing items intact and releases the queue."""
+    monkeypatch.setattr(queue_helpers, "PLAY_ACTION_TIMEOUT", 0.01)
+    ctrl = _controller()
+    replaced = _load_playing_queue(ctrl, with_buffers=True)
+    players = bare_player_controller()
+    ctrl.mass.players.get_group_and_player_lock = players.get_group_and_player_lock
+    cancelled = asyncio.Event()
+
+    async def slow_lookup(*_args: Any, **_kwargs: Any) -> None:
+        try:
+            await asyncio.Event().wait()
+        finally:
+            cancelled.set()
+
+    resolver = ctrl._media_resolver._resolve_media_items
+    resolver.side_effect = slow_lookup
+    async with asyncio.timeout(2):
+        with pytest.raises(PlayerCommandFailed, match="timed out"):
+            await ctrl.play_media("q1", _playlist(), QueueOption.REPLACE)
+
+    assert cancelled.is_set()
+    assert _item_ids(ctrl) == PLAYING_TRACKS
+    assert _queue(ctrl).current_item is replaced[0]
+    assert _queue(ctrl).state == PlaybackState.PLAYING
+    for item in replaced:
+        cast("Any", item.streamdetails).buffer.clear.assert_not_awaited()
+    ctrl.play_index.assert_not_awaited()
+
+    resolver.side_effect = None
+    resolver.return_value = [ResolvedItem(_track(item_id)) for item_id in NEW_TRACKS]
+    await ctrl.play_media("q1", _playlist(), QueueOption.REPLACE)
+    assert _item_ids(ctrl) == NEW_TRACKS
+    ctrl.play_index.assert_awaited_once()
 
 
 async def test_replace_releases_the_audio_of_the_items_it_swapped_out() -> None:

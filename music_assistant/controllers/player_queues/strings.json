@@ -1,4 +1,7 @@
 {
+  "errors": {
+    "play_action_timeout": "The playback command took longer than {0} seconds and was cancelled. Please try again."
+  },
   "manifest": {
     "name": "Player Queues",
     "description": "Configuration of the core player queue management module"

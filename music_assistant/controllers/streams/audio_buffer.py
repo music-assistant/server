@@ -404,43 +404,10 @@ class AudioBuffer:
         self._attach_producer_task(task)
 
     async def clear(self, cancel_inactivity_task: bool = True) -> None:
-        """Reset the buffer, clearing all data and cancelling active tasks."""
-        chunk_count = len(self._chunks)
-        LOGGER.log(
-            VERBOSE_LOG_LEVEL,
-            "AudioBuffer.clear: Resetting buffer (had %s chunks, producer: %s)",
-            chunk_count,
-            self._producer_task is not None,
-        )
-        if self._producer_task and not self._producer_task.done():
-            self._producer_task.cancel()
-            with suppress(asyncio.CancelledError):
-                await self._producer_task
-
-        if cancel_inactivity_task and self._inactivity_task and not self._inactivity_task.done():
-            self._inactivity_task.cancel()
-            with suppress(asyncio.CancelledError):
-                await self._inactivity_task
-
-        # signal cancel callbacks only if the stream did not complete normally
-        if not self._eof_received:
-            for callback in list(self._cancel_callbacks):
-                try:
-                    callback()
-                except Exception:
-                    LOGGER.exception("Cancel callback failed during clear")
-
-        async with self._lock:
-            self._chunks = deque()
-            self._discarded_chunks = 0
-            self._read_position = 0
-            self._eof_received = False
-            self._cancelled = True
-            self._producer_error = None
-            self.ready.clear()
-            self._cancel_callbacks.clear()
-            self._data_available.notify_all()
-            self._space_available.notify_all()
+        """Reset the buffer while allowing caller cancellation to interrupt the wait."""
+        # The producer's cancellation is expected inside _clear. Isolate that teardown
+        # so it cannot swallow a caller's deadline or have its own cleanup interrupted.
+        await asyncio.shield(self._clear(cancel_inactivity_task))
 
     @staticmethod
     async def get_buffer(
@@ -537,11 +504,58 @@ class AudioBuffer:
         audio_buffer.fill(audio_source, source_name=streamdetails.uri, on_complete=on_complete)
 
         if wait_ready:
-            await audio_buffer._wait_until_ready(streamdetails, ready_timeout, log_prefix)
+            try:
+                await audio_buffer._wait_until_ready(streamdetails, ready_timeout, log_prefix)
+            except asyncio.CancelledError:
+                # This caller created the producer. Detach it immediately and release its
+                # source slot without letting slow source cleanup hold the playback lock.
+                if streamdetails.buffer is audio_buffer:
+                    streamdetails.buffer = None
+                mass.create_task(audio_buffer.clear())
+                raise
 
         return audio_buffer
 
     # -- Private methods --
+
+    async def _clear(self, cancel_inactivity_task: bool = True) -> None:
+        """Reset the buffer, clearing all data and cancelling active tasks."""
+        chunk_count = len(self._chunks)
+        LOGGER.log(
+            VERBOSE_LOG_LEVEL,
+            "AudioBuffer.clear: Resetting buffer (had %s chunks, producer: %s)",
+            chunk_count,
+            self._producer_task is not None,
+        )
+        if self._producer_task and not self._producer_task.done():
+            self._producer_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await self._producer_task
+
+        if cancel_inactivity_task and self._inactivity_task and not self._inactivity_task.done():
+            self._inactivity_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await self._inactivity_task
+
+        # signal cancel callbacks only if the stream did not complete normally
+        if not self._eof_received:
+            for callback in list(self._cancel_callbacks):
+                try:
+                    callback()
+                except Exception:
+                    LOGGER.exception("Cancel callback failed during clear")
+
+        async with self._lock:
+            self._chunks = deque()
+            self._discarded_chunks = 0
+            self._read_position = 0
+            self._eof_received = False
+            self._cancelled = True
+            self._producer_error = None
+            self.ready.clear()
+            self._cancel_callbacks.clear()
+            self._data_available.notify_all()
+            self._space_available.notify_all()
 
     async def _wait_until_ready(
         self, streamdetails: StreamDetails, ready_timeout: float, log_prefix: str

@@ -6,6 +6,9 @@ from enum import StrEnum
 
 from music_assistant_models.enums import AlbumType, MediaType
 
+# Bound the work holding the playback lock, not just other commands waiting for it.
+PLAY_ACTION_TIMEOUT = 60
+
 CONF_DEFAULT_ENQUEUE_SELECT_ARTIST = "default_enqueue_select_artist"
 CONF_DEFAULT_ENQUEUE_SELECT_ALBUM = "default_enqueue_select_album"
 
