@@ -82,6 +82,7 @@ from music_assistant.constants import ATTR_ANNOUNCEMENT_IN_PROGRESS, CONF_ENABLE
 from music_assistant.controllers.webserver.helpers.auth_middleware import (
     current_user,
     impersonated_user,
+    is_own_client_player,
 )
 from music_assistant.helpers import guest_access
 from music_assistant.helpers.config_entries import PLAYBACK_TARGET_TYPES
@@ -1623,7 +1624,7 @@ class MusicQuizPlugin(PluginProvider):
             and game.config.playback_mode == SharedPlaybackMode.VENUE
             and (
                 self._playback_session.player_id != game.config.venue_player_id
-                or not self._is_eligible_venue_player_id(self._playback_session.player_id)
+                or not self._is_venue_playback_target_id(self._playback_session.player_id)
             )
         ):
             await self._playback_session.close()
@@ -1639,7 +1640,7 @@ class MusicQuizPlugin(PluginProvider):
                 self._playback_session = await self._create_remote_playback_session()
             except SetupFailedError as err:
                 self.logger.warning("Unable to create remote quiz session: %s", err)
-        elif (player_id := game.config.venue_player_id) and self._is_eligible_venue_player_id(
+        elif (player_id := game.config.venue_player_id) and self._is_venue_playback_target_id(
             player_id
         ):
             try:
@@ -1664,12 +1665,20 @@ class MusicQuizPlugin(PluginProvider):
         """Resolve current playback availability and the recommended defaults."""
         preference = await self._load_playback_preference()
         legacy_mode, legacy_player_id, _ = self._legacy_playback_preference()
-        eligible_players = self._eligible_venue_players()
+        targets = self._venue_playback_targets()
+        visible_players = [player for player in targets if not player.state.hide_in_ui]
+        # the caller's own web player is hidden by default: it is offered, but only
+        # recommended when it is the remembered choice
+        offered_players = [
+            player
+            for player in targets
+            if not player.state.hide_in_ui or is_own_client_player(player)
+        ]
         venue_players: list[MusicQuizVenuePlayerOption] = [
             {"player_id": player.player_id, "name": player.display_name}
-            for player in eligible_players
+            for player in offered_players
         ]
-        eligible_player_ids = {player["player_id"] for player in venue_players}
+        offered_player_ids = {player["player_id"] for player in venue_players}
         stored_venue_player_id = (
             preference["venue_player_id"] if preference is not None else legacy_player_id
         )
@@ -1680,9 +1689,9 @@ class MusicQuizPlugin(PluginProvider):
                     preference["venue_player_id"] if preference is not None else None,
                     legacy_player_id,
                 )
-                if player_id in eligible_player_ids
+                if player_id in offered_player_ids
             ),
-            venue_players[0]["player_id"] if venue_players else None,
+            visible_players[0].player_id if visible_players else None,
         )
         venue_available = bool(venue_players)
         remote_available = self._remote_playback_available()
@@ -1691,11 +1700,11 @@ class MusicQuizPlugin(PluginProvider):
             if preference is not None
             else legacy_mode
         )
-        if preferred_mode == SharedPlaybackMode.VENUE and venue_available:
+        if preferred_mode == SharedPlaybackMode.VENUE and default_venue_player_id is not None:
             default_mode = SharedPlaybackMode.VENUE
         elif preferred_mode == SharedPlaybackMode.REMOTE and remote_available:
             default_mode = SharedPlaybackMode.REMOTE
-        elif venue_available:
+        elif default_venue_player_id is not None:
             default_mode = SharedPlaybackMode.VENUE
         elif remote_available:
             default_mode = SharedPlaybackMode.REMOTE
@@ -1764,37 +1773,37 @@ class MusicQuizPlugin(PluginProvider):
                 raise MusicQuizNoPlaybackTargetError("Remote Music Quiz playback is not available")
             return None
         if config.venue_player_id:
-            for player in self._eligible_venue_players():
+            for player in self._venue_playback_targets():
                 if player.player_id == config.venue_player_id:
                     return player
         raise MusicQuizNoPlaybackTargetError(
             "The selected Music Quiz venue player is not available"
         )
 
-    def _eligible_venue_players(self) -> list[Player]:
-        """Return stable, visible and playable venue targets."""
-        eligible_players = [
+    def _venue_playback_targets(self) -> list[Player]:
+        """Return all venue playback targets, hidden ones included, sorted by name."""
+        targets = [
             player
             for player in self.mass.players.all_players(False, False)
-            if self._is_eligible_venue_player(player)
+            if self._is_venue_playback_target(player)
         ]
         return sorted(
-            eligible_players,
+            targets,
             key=lambda player: (player.display_name.casefold(), player.player_id),
         )
 
-    def _is_eligible_venue_player_id(self, player_id: str) -> bool:
+    def _is_venue_playback_target_id(self, player_id: str) -> bool:
         """
-        Return whether a player remains eligible for venue playback.
+        Return whether the given player is a real venue playback target, hidden or not.
 
         :param player_id: Player to validate.
         """
         player = self.mass.players.get_player(player_id)
-        return player is not None and self._is_eligible_venue_player(player)
+        return player is not None and self._is_venue_playback_target(player)
 
-    def _is_eligible_venue_player(self, player: Player) -> bool:
+    def _is_venue_playback_target(self, player: Player) -> bool:
         """
-        Return whether a player is a real venue playback target.
+        Return whether a player is a real venue playback target, hidden or not.
 
         :param player: Player to inspect.
         """
@@ -1802,7 +1811,6 @@ class MusicQuizPlugin(PluginProvider):
         return (
             state.available
             and state.enabled
-            and not state.hide_in_ui
             and not state.needs_setup
             and state.synced_to is None
             and state.active_group is None

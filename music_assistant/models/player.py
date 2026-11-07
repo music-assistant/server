@@ -457,11 +457,6 @@ class Player(ABC):
     # on its own source list counts as a takeover of the remembered MA queue. Leave at
     # False for devices that also list the transport our own stream arrives on.
     _attr_trusts_reported_source: bool = False
-    # Set this on players that play upcoming tracks from their own cached copy of the
-    # queue (which may not be refreshable, e.g. the Sonos cloud queue): a stream request
-    # for a queue item away from the playhead is then refused, so the player re-reads
-    # the queue instead of silently playing a stale cached track.
-    _attr_strict_queue_item_requests: bool = False
 
     def __init__(self, provider: PlayerProvider, player_id: str) -> None:
         """Initialize the Player."""
@@ -1398,6 +1393,15 @@ class Player(ABC):
         # default implementation will simply trigger an update for the state of the player
         self.mass.players.trigger_player_update(self.player_id)
 
+    def on_queue_position_served(self, queue_index: int, queue_item_id: str) -> None:  # noqa: B027
+        """
+        Handle callback when a stream request addressed by queue position was served.
+
+        :param queue_index: The queue position the player fetched.
+        :param queue_item_id: The queue item whose audio went out for that position.
+        """
+        # optional callback, for a player that fetches its queue items by position
+
     def on_sync_parent_updated(
         self, sync_parent: Player, changed_values: dict[str, tuple[Any, Any]]
     ) -> None:
@@ -1769,18 +1773,6 @@ class Player(ABC):
         Otherwise checks the native player's GAPLESS_PLAYBACK feature.
         """
         return self._check_feature_with_active_protocol(PlayerFeature.GAPLESS_PLAYBACK)
-
-    @property
-    @final
-    def strict_queue_item_requests(self) -> bool:
-        """
-        Return whether queue item stream requests must match the queue's playhead.
-
-        When set, a stream request for a queue item the queue no longer places at or
-        around the playhead is refused, so the player re-reads the queue instead of
-        playing a track out of a stale cached copy of it.
-        """
-        return self._attr_strict_queue_item_requests
 
     @property
     @final

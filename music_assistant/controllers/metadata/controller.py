@@ -66,6 +66,7 @@ from .constants import (
     ALBUM_RECONCILIATION_TASK_ID,
     CONF_ENABLE_ONLINE_METADATA,
     CONF_ENABLE_RADIO_METADATA_LOOKUP,
+    CONF_LANGUAGE_CHANGED,
     CONF_LINK_PROVIDERS_VIA_MUSICBRAINZ,
     CONF_MUSICBRAINZ_LINKED_DOMAINS,
     CONF_PREFER_LOCAL_GENRES,
@@ -187,6 +188,14 @@ class MetaDataController(
                 multi_value=True,
                 hidden=True,
             ),
+            # when the preferred language last changed; declared so a config save carries it over
+            ConfigEntry(
+                key=CONF_LANGUAGE_CHANGED,
+                type=ConfigEntryType.INTEGER,
+                required=False,
+                default_value=0,
+                hidden=True,
+            ),
             ConfigEntry(
                 key=CONF_PREFER_LOCAL_GENRES,
                 type=ConfigEntryType.BOOLEAN,
@@ -229,6 +238,13 @@ class MetaDataController(
         self.mass.streams.unregister_dynamic_route("/imageproxy/*")
         self.mass.webserver.unregister_dynamic_route("/imageproxy/*")
 
+    async def update_config(self, config: CoreConfig, changed_keys: set[str]) -> None:
+        """Handle logic when the config is updated."""
+        previous_locale = str(self.config.get_value(CONF_LANGUAGE) or DEFAULT_LANGUAGE)
+        await super().update_config(config, changed_keys)
+        if f"values/{CONF_LANGUAGE}" in changed_keys:
+            self._note_language_change(previous_locale)
+
     @property
     def providers(self) -> list[MetadataProvider]:
         """Return all loaded/running MetadataProviders."""
@@ -249,6 +265,13 @@ class MetaDataController(
             self.domain, CONF_LANGUAGE, DEFAULT_LANGUAGE
         )
         return str(value)
+
+    @property
+    def language_changed(self) -> int:
+        """Return when the preferred language last changed (epoch seconds, 0 if never)."""
+        return int(
+            self.mass.config.get_raw_core_config_value(self.domain, CONF_LANGUAGE_CHANGED, 0) or 0
+        )
 
     @property
     def link_providers_via_musicbrainz(self) -> bool:
@@ -279,22 +302,20 @@ class MetaDataController(
         """
         # prefer exact match
         if lang in LOCALES:
-            self.mass.config.set_raw_core_config_value(self.domain, CONF_LANGUAGE, lang)
+            self._store_language(lang)
             return
         # try strict matching on either locale code or region
         lang = lang.lower().replace("-", "_")
         for locale_code, lang_name in LOCALES.items():
             if lang in (locale_code.lower(), lang_name.lower()):
-                self.mass.config.set_raw_core_config_value(self.domain, CONF_LANGUAGE, locale_code)
+                self._store_language(locale_code)
                 return
         # attempt loose match on language code or region code
         for lang_part in (lang[:2], lang[:-2]):
             for locale_code in tuple(LOCALES):
                 language_code, region_code = locale_code.lower().split("_", 1)
                 if lang_part in (language_code, region_code):
-                    self.mass.config.set_raw_core_config_value(
-                        self.domain, CONF_LANGUAGE, locale_code
-                    )
+                    self._store_language(locale_code)
                     return
         # if we reach this point, we couldn't match the language
         self.logger.warning("%s is not a valid language", lang)
@@ -379,7 +400,10 @@ class MetaDataController(
             # this shouldn't happen but just in case.
             return
         last_refresh = item.metadata.last_refresh or 0
-        needs_update = (time() - last_refresh) > REFRESH_INTERVAL
+        needs_update = (time() - last_refresh) > REFRESH_INTERVAL or (
+            item.media_type in (MediaType.ARTIST, MediaType.ALBUM, MediaType.TRACK)
+            and self._description_language_outdated(item.metadata)
+        )
         if not needs_update:
             return
         assert item.uri is not None
@@ -580,6 +604,19 @@ class MetaDataController(
         # a run already pending or running is not queued twice; the hourly schedule
         # covers whatever such a run misses
         self.mass.tasks.run_task(MUSICBRAINZ_LINK_TASK_ID)
+
+    def _store_language(self, locale_code: str) -> None:
+        """Store the preferred language, noting when it changes."""
+        previous_locale = self.locale
+        self.mass.config.set_raw_core_config_value(self.domain, CONF_LANGUAGE, locale_code)
+        self._note_language_change(previous_locale)
+
+    def _note_language_change(self, previous_locale: str) -> None:
+        """Store that the preferred language changed now, if it differs from the previous one."""
+        if previous_locale.split("_", maxsplit=1)[0] != self.preferred_language:
+            self.mass.config.set_raw_core_config_value(
+                self.domain, CONF_LANGUAGE_CHANGED, int(time())
+            )
 
     @staticmethod
     def _get_metadata_lookup_task_id(uri: str) -> str:

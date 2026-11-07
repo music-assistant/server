@@ -19,11 +19,12 @@ import asyncio
 import sys
 from collections.abc import AsyncGenerator, Callable
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock, call, patch
 
 import pytest
-from music_assistant_models.enums import ContentType, MediaType
+from music_assistant_models.enums import ContentType, MediaType, PlaybackState
 from music_assistant_models.errors import AudioError, LoginFailed
 from music_assistant_models.media_items import AudioFormat
 from music_assistant_models.streamdetails import StreamDetails
@@ -56,7 +57,10 @@ from music_assistant.providers.spotify_connect.soloist.runtime import (
     WS_PORT_FILE,
     SoloistAuthState,
     SoloistEntity,
+    SoloistError,
     SoloistEvent,
+    SoloistOptionsChanged,
+    SoloistPlaybackOptions,
     SoloistPlaybackState,
     SoloistPosition,
     SoloistQueueChanged,
@@ -875,6 +879,7 @@ async def test_session_normalizes_answers_only_for_the_items_own_run(tmp_path: P
     backend = _make_backend(tmp_path)
     run = _live_run(tmp_path, backend=backend)
     run.engine_normalizes = True
+    run._engine_normalization_enabled = MagicMock(return_value=True)  # type: ignore[method-assign]
     backend._run = run
     assert backend.session_normalizes(_streamdetails_for(uri=TRACK_A)) is True
     assert backend.session_normalizes(_streamdetails_for(uri=TRACK_B)) is None
@@ -1573,6 +1578,34 @@ async def test_a_stop_before_the_fed_item_idles_the_run_out(
     assert _idle_watch(run) is not None
     assert not run._stopped
 
+    async with asyncio.timeout(5):
+        while not tasks:
+            await asyncio.sleep(0.01)
+        await asyncio.gather(*tasks)
+    assert run.stopped
+    assert backend._run is None
+
+
+async def test_a_run_released_while_its_queue_plays_waits_longer_for_its_next_item(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A speaker that dropped a track asks for the next one; the engine stays for it a while."""
+    monkeypatch.setattr(soloist_backend, "_IDLE_GRACE_S", 0.01)
+    monkeypatch.setattr(soloist_backend, "_QUEUE_PLAYING_GRACE_S", 0.3)
+    backend = _streamable_backend(tmp_path)
+    queues = cast("MagicMock", backend.mass.player_queues)
+    queues.get.return_value = SimpleNamespace(state=PlaybackState.PLAYING)
+    run = _live_run(tmp_path, backend=backend)
+    backend._run = run
+    tasks = _run_tasks(run)
+
+    await backend.release_item(run, run.current_item)
+    await asyncio.sleep(0.1)
+    assert not tasks
+    assert not run._stopped
+    queues.get.assert_called_with("player1")
+
+    # nothing came for it after all: it still stops rather than playing on to nobody
     async with asyncio.timeout(5):
         while not tasks:
             await asyncio.sleep(0.01)
@@ -2324,3 +2357,231 @@ async def test_a_removed_repeat_of_the_current_track_is_no_boundary(tmp_path: Pa
     await run._handle_event(_playback_event("playing", uri=TRACK_A, position_ms=1_500))
     assert not run.current_item.ended
     assert run._next is None
+
+
+def _shorten_stall_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Let the capture give up on a silent FIFO within a fraction of a second."""
+    monkeypatch.setattr(soloist_backend, "_READ_SLICE_S", 0.01)
+    monkeypatch.setattr(soloist_backend, "_STALL_TIMEOUT_S", 0.05)
+
+
+@pytest.mark.parametrize("status", ["playing", "buffering"])
+async def test_an_engine_that_stops_sending_audio_fails_the_run(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, status: str
+) -> None:
+    """A rebuffer that never recovers suspends the sink, and still ends in an error."""
+    _shorten_stall_timeout(monkeypatch)
+    run = _live_run(tmp_path)
+    run._reader = asyncio.StreamReader()
+    await run._handle_event(_playback_event(status, uri=TRACK_A))
+    async with asyncio.timeout(5):
+        await run._read_capture()
+    assert run._error == "Spotify stopped sending audio"
+
+
+@pytest.mark.parametrize("hold", ["paused", "cushion_full", "released", "moving"])
+async def test_a_sink_held_on_purpose_is_no_stall(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, hold: str
+) -> None:
+    """A suspension of our own may outlast the stall timeout: the consumer can stop for minutes."""
+    _shorten_stall_timeout(monkeypatch)
+    run = _live_run(tmp_path)
+    run._reader = asyncio.StreamReader()
+    item = run.current_item
+    if hold == "paused":
+        await run._handle_event(_playback_event("paused", uri=TRACK_A, position_ms=60_000))
+    else:
+        await run._handle_event(_playback_event("buffering", uri=TRACK_A))
+    if hold == "cushion_full":
+        while not item.chunks.full():
+            item.chunks.put_nowait(b"\x01")
+    elif hold == "released":
+        item.streaming = False
+    elif hold == "moving":
+        run._moving = True
+    reading = asyncio.ensure_future(run._read_capture())
+    await asyncio.sleep(0.2)
+    assert run._error is None
+    run._stopped = True
+    await asyncio.wait_for(reading, 1)
+    for task in run._tasks:
+        task.cancel()
+
+
+def _options_event(report: str, *, repeat: str = "off", shuffle: bool = False) -> SoloistEvent:
+    """Return an options report, as its own event or as part of a playback state."""
+    options = SoloistPlaybackOptions(shuffle=shuffle, repeat=repeat)
+    if report == "options_changed":
+        return SoloistEvent(type=report, data=SoloistOptionsChanged(options=options), raw={})
+    item = SoloistEntity(uri=TRACK_A, entity_type="track")
+    return SoloistEvent(
+        type=report,
+        data=SoloistPlaybackState(status="playing", item=item, options=options),
+        raw={},
+    )
+
+
+@pytest.mark.parametrize("report", ["options_changed", "playback_state"])
+@pytest.mark.parametrize(
+    ("repeat", "shuffle"), [("track", False), ("context", False), ("off", True)]
+)
+async def test_shuffle_or_repeat_switched_on_in_spotify_is_switched_off(
+    tmp_path: Path, report: str, repeat: str, shuffle: bool
+) -> None:
+    """Repeat would loop an item past its end and shuffle reorder the items it is given."""
+    run = _live_run(tmp_path)
+    client = _client(run)
+    reset = [
+        call.set_repeat_track(False, await_result=True),
+        call.set_repeat_context(False, await_result=True),
+        call.set_shuffle(False, await_result=True),
+    ]
+
+    def _resets() -> list[Any]:
+        return [entry for entry in client.mock_calls if entry in reset]
+
+    await run._handle_event(_options_event(report))
+    # the engine repeats its options across reports: one reset per switch
+    for _ in range(2):
+        await run._handle_event(_options_event(report, repeat=repeat, shuffle=shuffle))
+    await asyncio.gather(*run._tasks)
+    assert _resets() == reset
+    await run._handle_event(_options_event(report))
+    await run._handle_event(_options_event(report, repeat=repeat, shuffle=shuffle))
+    await asyncio.gather(*run._tasks)
+    assert _resets() == reset * 2
+
+
+async def test_a_toggled_normalization_switch_gets_the_next_item_a_fresh_run(
+    tmp_path: Path,
+) -> None:
+    """The engine reads its normalization at startup only, even for the queue it plays for."""
+    backend = _streamable_backend(tmp_path)
+    run = _live_run(tmp_path, backend=backend)
+    backend._run = run
+    await _cross_fed_boundary(run)
+    # the player's switch was turned on while the run played
+    run._engine_normalization_enabled = MagicMock(  # type: ignore[method-assign]
+        return_value=not run.engine_normalizes
+    )
+    run.stop = AsyncMock()  # type: ignore[method-assign]
+    fresh = MagicMock()
+    backend._start_run = AsyncMock(return_value=fresh)  # type: ignore[method-assign]
+    details = _streamdetails_for(uri=TRACK_B)
+    assert details.queue_id == run.queue_id
+    acquired = await backend._acquire_item(TRACK_B, 0, details, continuation=False)
+    assert acquired == (fresh, fresh.current_item)
+    assert run.current_item.media_key is None
+    run.stop.assert_awaited()
+    backend._start_run.assert_awaited_once_with(TRACK_B, 0, details)
+
+
+async def test_an_item_reached_before_the_engine_died_gets_a_fresh_run(tmp_path: Path) -> None:
+    """The queued item the engine moved on to is not failed along with the dead engine."""
+    backend = _streamable_backend(tmp_path)
+    run = _live_run(tmp_path, backend=backend)
+    backend._run = run
+    await _cross_fed_boundary(run)
+    run._engine_exited = True
+    run._proc = MagicMock(returncode=1)
+    run.stop = AsyncMock()  # type: ignore[method-assign]
+    fresh = MagicMock()
+    backend._start_run = AsyncMock(return_value=fresh)  # type: ignore[method-assign]
+    details = _streamdetails_for(uri=TRACK_B)
+    acquired = await backend._acquire_item(TRACK_B, 0, details, continuation=False)
+    assert acquired == (fresh, fresh.current_item)
+    assert run.current_item.media_key is None
+    backend._start_run.assert_awaited_once_with(TRACK_B, 0, details)
+
+
+async def test_a_hold_between_two_rebuffers_starts_the_stall_clock_over(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A skip during a long rebuffer leaves the item it moves to the full stall timeout."""
+    monkeypatch.setattr(soloist_backend, "_READ_SLICE_S", 0.01)
+    monkeypatch.setattr(soloist_backend, "_STALL_TIMEOUT_S", 0.1)
+    run = _live_run(tmp_path)
+    run._reader = asyncio.StreamReader()
+    await run._handle_event(_playback_event("buffering", uri=TRACK_A))
+    reading = asyncio.ensure_future(run._read_capture())
+    await asyncio.sleep(0.07)
+    run._moving = True
+    await asyncio.sleep(0.05)
+    run._moving = False
+    await asyncio.sleep(0.07)
+    assert run._error is None
+    run._stopped = True
+    await asyncio.wait_for(reading, 1)
+
+
+@pytest.mark.parametrize("error", [TimeoutError(), SoloistError("not connected")])
+async def test_a_failed_option_reset_is_tried_again(tmp_path: Path, error: Exception) -> None:
+    """A reset lost to a dropped connection is retried on the next report that still shows repeat."""
+    run = _live_run(tmp_path)
+    client = _client(run)
+    client.set_repeat_track.side_effect = [error, None]
+    # a closed socket fails the command, which the reset sees like a timeout
+    client.connected = not isinstance(error, SoloistError)
+    for _ in range(2):
+        await run._handle_event(_options_event("options_changed", repeat="track"))
+        await asyncio.gather(*run._tasks)
+    assert client.set_repeat_track.await_count == 2
+    client.set_shuffle.assert_awaited_once_with(False, await_result=True)
+
+
+async def test_a_move_between_two_read_slices_starts_the_stall_clock_over(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A seek that lands within one read slice still leaves its item the full stall timeout."""
+    monkeypatch.setattr(soloist_backend, "_READ_SLICE_S", 0.05)
+    monkeypatch.setattr(soloist_backend, "_STALL_TIMEOUT_S", 0.2)
+    run = _live_run(tmp_path)
+    run._reader = asyncio.StreamReader()
+    _confirm_seeks(run)
+    await run._handle_event(_playback_event("playing", uri=TRACK_A))
+    await run._handle_event(_playback_event("buffering", uri=TRACK_A))
+    reading = asyncio.ensure_future(run._read_capture())
+    await asyncio.sleep(0.17)
+    await run.move_to(TRACK_A, 30_000, _streamdetails_for(uri=TRACK_A))
+    await asyncio.sleep(0.12)
+    assert run._error is None
+    run._stopped = True
+    await asyncio.wait_for(reading, 1)
+
+
+async def test_repeat_tapped_again_during_a_reset_gets_a_second_round(tmp_path: Path) -> None:
+    """Repeat-one is two taps in the Spotify app, the second while the first reset still runs."""
+    run = _live_run(tmp_path)
+    client = _client(run)
+    acked = asyncio.Event()
+
+    async def _await_ack(*_args: Any, **_kwargs: Any) -> None:
+        await acked.wait()
+
+    client.set_repeat_context.side_effect = _await_ack
+    await run._handle_event(_options_event("options_changed", repeat="context"))
+    while not client.set_repeat_context.await_count:
+        await asyncio.sleep(0)
+    await run._handle_event(_options_event("options_changed", repeat="track"))
+    acked.set()
+    await asyncio.gather(*run._tasks)
+    round_of_resets = [
+        call.set_repeat_track(False, await_result=True),
+        call.set_repeat_context(False, await_result=True),
+        call.set_shuffle(False, await_result=True),
+    ]
+    assert [entry for entry in client.mock_calls if entry in round_of_resets] == (
+        round_of_resets * 2
+    )
+    assert run._options_reset is None
+
+
+async def test_session_normalizes_leaves_a_toggled_switch_to_the_fresh_run(tmp_path: Path) -> None:
+    """A seek after the switch changed gets a fresh run, so the old one must not answer for it."""
+    backend = _make_backend(tmp_path)
+    run = _live_run(tmp_path, backend=backend)
+    backend._run = run
+    run.engine_normalizes = False
+    # the player's switch was turned on while the run played
+    run._engine_normalization_enabled = MagicMock(return_value=True)  # type: ignore[method-assign]
+    assert backend.session_normalizes(_streamdetails_for(uri=TRACK_A)) is None
