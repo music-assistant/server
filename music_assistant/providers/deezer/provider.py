@@ -109,6 +109,11 @@ class DeezerProvider(RecommendationPayloadMixin, MusicProvider):
     streaming_manager: DeezerStreamingManager
     user_id: str
 
+    @property
+    def stream_format_supersedes_catalog(self) -> bool:
+        """Return True: Deezer serves CD and hi-res FLAC under one format name."""
+        return True
+
     async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
         """Return Config entries to configure this provider."""
         return (

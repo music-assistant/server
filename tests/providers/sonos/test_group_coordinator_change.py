@@ -129,6 +129,8 @@ class _Household:
         player.cloud_queue_id = None
         player._flow_queue_id = None
         player.cloud_queue_item_generation = 1
+        player._window_item_ids = {}
+        player._served_bindings = {}
         player._evicted_cloud_queue = None
         player._queue_session_id = "session1"
         player._hand_over_tasks = set()

@@ -1022,6 +1022,8 @@ class MusicAssistant:
                 continue
             if manifest.depends_on != prov_conf.domain:
                 continue
+            if self.safe_mode and not manifest.builtin:
+                continue
             try:
                 # the scan above skipped the config values, but the load path does need them:
                 # a provider reads config (e.g. its log level) while it is being constructed.

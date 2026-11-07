@@ -4,6 +4,7 @@
   "name": "Yandex Station",
   "description": "Play music on Yandex Station smart speakers via local Glagol protocol.",
   "codeowners": ["@trudenboy"],
+  "tier": "community",
   "credits": [
     "[AlexxIT/YandexStation](https://github.com/AlexxIT/YandexStation)"
   ],

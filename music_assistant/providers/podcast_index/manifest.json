@@ -5,7 +5,8 @@
   "documentation": "https://music-assistant.io/music-providers/podcast_index/",
   "type": "music",
   "requirements": [],
-  "codeowners": ["@ozgav"],
+  "codeowners": ["@OzGav"],
+  "tier": "community",
   "multi_instance": false,
   "stage": "stable"
 }

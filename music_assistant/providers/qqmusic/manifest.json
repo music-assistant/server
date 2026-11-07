@@ -5,6 +5,7 @@
   "name": "QQ Music",
   "description": "Stream QQ Music catalog, playlists, lyrics, and personalized recommendations.",
   "codeowners": ["@xiasi0"],
+  "tier": "community",
   "credits": ["[QQMusicApi](https://github.com/L-1124/QQMusicApi)"],
   "requirements": ["qqmusic-api-python==0.8.2"],
   "documentation": "https://music-assistant.io/music-providers/qqmusic",
