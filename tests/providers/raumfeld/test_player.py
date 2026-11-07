@@ -20,12 +20,12 @@ from music_assistant.providers.raumfeld.constants import PLAYER_CONFIG_ENTRIES
 from music_assistant.providers.raumfeld.helpers import library_uri, play_mode_for
 from music_assistant.providers.raumfeld.player import (
     ADVANCE_WATCH_ATTEMPTS,
+    EVENT_POLL_DELAY,
     IDLE_EVENTS_POLL_INTERVAL,
     IDLE_POLL_INTERVAL,
     PLAYING_EVENTS_POLL_INTERVAL,
     PLAYING_POLL_INTERVAL,
     ZONE_CREATE_ATTEMPTS,
-    ZONE_EVENT_POLL_DELAY,
     RaumfeldPlayer,
     _changes_playback,
     _map_transport_state,
@@ -1283,7 +1283,7 @@ def test_a_zone_event_reads_the_room_soon() -> None:
     player.zone_event(_ZONE)
     assert player._zone_events == _ZONE
     delay, target = mass.call_later.call_args.args
-    assert delay == ZONE_EVENT_POLL_DELAY
+    assert delay == EVENT_POLL_DELAY
     assert target == player._start_event_poll
     assert mass.call_later.call_args.kwargs["task_id"] == "raumfeld_event_poll_raumfeld_bar"
 
@@ -1318,6 +1318,78 @@ async def test_a_regular_poll_gives_way_to_a_read_an_event_asked_for() -> None:
         read.assert_not_awaited()
         await player.poll()
     read.assert_awaited_once()
+
+
+async def test_a_follower_whose_events_come_in_is_read_seldom() -> None:
+    """Its leader has it read after each event, so a regular read is seldom needed."""
+    player = _follower(PlaybackState.PLAYING)
+    player.set_rendering_events(True)
+    player.set_zone_events(_ZONE)
+    with (
+        patch.object(RaumfeldPlayer, "synced_to", new_callable=PropertyMock) as synced_to,
+        patch.object(RaumfeldPlayer, "update_state"),
+    ):
+        synced_to.return_value = "raumfeld_leader"
+        await player.poll()
+    assert player._attr_poll_interval == PLAYING_EVENTS_POLL_INTERVAL
+
+
+async def test_a_room_outside_a_zone_whose_events_come_in_is_read_seldom() -> None:
+    """Its volume comes in as events and the host reports its power, so it is read seldom."""
+    player = _room_player()
+    player.set_rendering_events(True)
+    with (
+        patch.object(RaumfeldPlayer, "update_state"),
+        patch.object(player, "_active_zone", return_value=None),
+        patch.object(player, "_plays_spotify_connect", return_value=False),
+        patch.object(player, "_update_power"),
+        patch.object(player, "_held_for_watcher", return_value=False),
+        patch.object(RaumfeldPlayer, "synced_to", new_callable=PropertyMock, return_value=None),
+    ):
+        await player._poll_state()
+    assert player._attr_poll_interval == IDLE_EVENTS_POLL_INTERVAL
+
+
+async def test_spotify_connect_whose_events_come_in_is_read_seldom() -> None:
+    """A room renderer that sends its transport events is read on them, not every few seconds."""
+    player, _ = _external_player()
+    player._play_started_at = 0.0
+    await _poll_renderer(player, _renderer_state("PLAYING"), "0:01:00")
+    assert player._attr_poll_interval == PLAYING_POLL_INTERVAL
+    player.set_rendering_events(True)
+    player.set_room_transport_events(True)
+    await _poll_renderer(player, _renderer_state("PLAYING"), "0:01:05")
+    assert player._attr_poll_interval == PLAYING_EVENTS_POLL_INTERVAL
+    await _poll_renderer(player, _renderer_state("STOPPED"), "0:00:00")
+    assert player._attr_poll_interval == IDLE_EVENTS_POLL_INTERVAL
+
+
+async def test_a_leader_has_its_followers_read_after_an_event() -> None:
+    """The rooms that follow the leader take over what it read on the zone's event."""
+    player, _ = _external_player()
+    player._player_id = "raumfeld_bar"
+    player._attr_available = True
+    player._attr_group_members = ["raumfeld_bar", "raumfeld_bank"]
+    follower = RaumfeldPlayer.__new__(RaumfeldPlayer)
+    player.mass = MagicMock()
+    player.mass.players.get_player.return_value = follower
+    with (
+        patch.object(player, "_poll_state", AsyncMock()),
+        patch.object(follower, "_start_event_poll") as start,
+    ):
+        await player._event_poll()
+    player.mass.players.get_player.assert_called_once_with("raumfeld_bank")
+    start.assert_called_once_with()
+
+
+def test_a_room_reported_changed_is_read_soon() -> None:
+    """A change of power or Spotify session the host reported has the room read soon."""
+    player, _ = _external_player()
+    player.mass = MagicMock()
+    player._player_id = "raumfeld_bar"
+    player.state_event()
+    delay, target = player.mass.call_later.call_args.args
+    assert (delay, target) == (EVENT_POLL_DELAY, player._start_event_poll)
 
 
 def _flow_mode_on() -> Any:

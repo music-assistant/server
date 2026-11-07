@@ -52,7 +52,12 @@ from .constants import (
     UNLOAD_TIMEOUT,
     ZONE_WATCH_INTERVAL,
 )
-from .events import ROOM_EVENTS_PATH, ZONE_EVENTS_PATH, RendererEvents
+from .events import (
+    ROOM_EVENTS_PATH,
+    ROOM_TRANSPORT_EVENTS_PATH,
+    ZONE_EVENTS_PATH,
+    RendererEvents,
+)
 from .helpers import (
     discover_hosts,
     host_is_valid,
@@ -84,8 +89,10 @@ class RaumfeldPlayerProvider(PlayerProvider):
     """Player provider for Teufel Raumfeld multiroom devices."""
 
     host: RaumfeldHost
-    # the volume and mute events of the rooms' own renderers
+    # the volume and mute events of the rooms' own renderers, and their transport events
+    # (what Spotify Connect plays on a room outside any zone)
     room_events: RendererEvents
+    room_transport_events: RendererEvents
     # the transport events of the zone renderers, and the zones last subscribed to
     zone_events: RendererEvents
     _zone_event_locations: set[str]
@@ -195,9 +202,15 @@ class RaumfeldPlayerProvider(PlayerProvider):
         self._room_ids = {}
         self._shared_serial_warned = set()
         # empty until connected; replaced by a fresh one on every connect
-        self.host = RaumfeldHost(self.mass.http_session, self._host_url)
+        self.host = RaumfeldHost(self.mass.http_session, self._host_url, self._handle_rooms_changed)
         self.room_events = RendererEvents(
             self.mass, ROOM_EVENTS_PATH, SERVICE_RENDERING_CONTROL, self._handle_room_event
+        )
+        self.room_transport_events = RendererEvents(
+            self.mass,
+            ROOM_TRANSPORT_EVENTS_PATH,
+            SERVICE_AV_TRANSPORT,
+            self._handle_room_transport_event,
         )
         self.zone_events = RendererEvents(
             self.mass, ZONE_EVENTS_PATH, SERVICE_AV_TRANSPORT, self._handle_zone_event
@@ -224,7 +237,11 @@ class RaumfeldPlayerProvider(PlayerProvider):
         self._zone_watch_task = None
         try:
             async with asyncio.timeout(UNLOAD_TIMEOUT):
-                await asyncio.gather(self.room_events.close(), self.zone_events.close())
+                await asyncio.gather(
+                    self.room_events.close(),
+                    self.room_transport_events.close(),
+                    self.zone_events.close(),
+                )
         except TimeoutError:
             self.logger.debug("Ending the Raumfeld renderer events took too long")
 
@@ -389,7 +406,7 @@ class RaumfeldPlayerProvider(PlayerProvider):
             self.logger.debug("Raumfeld host %s not reachable yet; will retry", self._host_address)
             return
         # a fresh host object avoids stale state left by a previous failed attempt
-        self.host = RaumfeldHost(self.mass.http_session, self._host_url)
+        self.host = RaumfeldHost(self.mass.http_session, self._host_url, self._handle_rooms_changed)
         self._update_task = self.mass.create_task(self.host.run())
         try:
             async with asyncio.timeout(INITIAL_UPDATE_TIMEOUT):
@@ -604,18 +621,22 @@ class RaumfeldPlayerProvider(PlayerProvider):
 
     async def _refresh_room_events(self) -> None:
         """Follow the events of every room's own renderer, and tell each room which come in."""
-        await self.room_events.refresh(
-            [
-                location
-                for room in self.host.get_rooms()
-                if (location := self.room_renderer_location(room)) is not None
-            ]
+        locations = [
+            location
+            for room in self.host.get_rooms()
+            if (location := self.room_renderer_location(room)) is not None
+        ]
+        await asyncio.gather(
+            self.room_events.refresh(locations), self.room_transport_events.refresh(locations)
         )
         for player in self.players:
             if isinstance(player, RaumfeldPlayer):
                 location = self.room_renderer_location(player.room)
                 player.set_rendering_events(
                     location is not None and self.room_events.follows(location)
+                )
+                player.set_room_transport_events(
+                    location is not None and self.room_transport_events.follows(location)
                 )
 
     async def _refresh_zone_events(self) -> None:
@@ -658,6 +679,22 @@ class RaumfeldPlayerProvider(PlayerProvider):
             ):
                 player.set_rendering_events(True)
                 player.apply_rendering_event(changes)
+
+    def _handle_room_transport_event(self, location: str, _changes: dict[str, str]) -> None:
+        """Have a room read what its own renderer plays, after it reported a change."""
+        for player in self.players:
+            if (
+                isinstance(player, RaumfeldPlayer)
+                and self.room_renderer_location(player.room) == location
+            ):
+                player.set_room_transport_events(True)
+                player.state_event()
+
+    def _handle_rooms_changed(self, rooms: set[str]) -> None:
+        """Have rooms read, after the host reported a new power state or Spotify session."""
+        for player in self.players:
+            if isinstance(player, RaumfeldPlayer) and player.room in rooms:
+                player.state_event()
 
     async def _watch_zones(self) -> None:
         """Follow zone changes made outside Music Assistant (e.g. in the Raumfeld app)."""

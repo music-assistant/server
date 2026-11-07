@@ -29,9 +29,10 @@ if TYPE_CHECKING:
 
 LOGGER = logging.getLogger(__name__)
 
-# the paths of Music Assistant's stream server the events of the rooms' own renderers and
-# of the zone renderers are sent to
+# the paths of Music Assistant's stream server the events are sent to: the volume and the
+# transport of the rooms' own renderers, and the transport of the zone renderers
 ROOM_EVENTS_PATH = "/raumfeld/notify/rooms"
+ROOM_TRANSPORT_EVENTS_PATH = "/raumfeld/notify/room-transport"
 ZONE_EVENTS_PATH = "/raumfeld/notify/zones"
 
 

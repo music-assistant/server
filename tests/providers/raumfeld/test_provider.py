@@ -1542,6 +1542,8 @@ async def test_a_resync_tells_each_room_whether_its_events_come_in() -> None:
     provider._sync_rooms = AsyncMock()  # type: ignore[method-assign]
     provider.room_events = MagicMock(refresh=AsyncMock())
     provider.room_events.follows.side_effect = lambda location: location == _LOCATION
+    provider.room_transport_events = MagicMock(refresh=AsyncMock())
+    provider.room_transport_events.follows.side_effect = lambda location: location != _LOCATION
     provider.zone_events = MagicMock(refresh=AsyncMock())
     provider.zone_events.follows.return_value = True
     bar = MagicMock(spec=RaumfeldPlayer, room="Bar")
@@ -1556,6 +1558,13 @@ async def test_a_resync_tells_each_room_whether_its_events_come_in() -> None:
     }
     bar.set_rendering_events.assert_called_once_with(False)
     bank.set_rendering_events.assert_called_once_with(True)
+    # their transport as well, for Spotify Connect
+    assert set(provider.room_transport_events.refresh.await_args.args[0]) == {
+        "http://192.168.1.42/bar.xml",
+        _LOCATION,
+    }
+    bar.set_room_transport_events.assert_called_once_with(True)
+    bank.set_room_transport_events.assert_called_once_with(False)
     # the zone renderers are followed too, each room told about its own zone
     provider.zone_events.refresh.assert_awaited_once_with({_ZONE_LOCATION})
     bar.set_zone_events.assert_called_once_with(_ZONE_LOCATION)
@@ -1585,6 +1594,37 @@ def test_a_zone_event_has_the_rooms_of_that_zone_read() -> None:
     players[2].zone_event.assert_not_called()
 
 
+def test_a_room_transport_event_has_that_room_read() -> None:
+    """What Spotify Connect does on a room's own renderer has that room read, not another."""
+    provider = RaumfeldPlayerProvider.__new__(RaumfeldPlayerProvider)
+    provider.host = _host(
+        {"Bar": ("uuid:bar", "uuid:bar-renderer"), "Bank": ("uuid:bank", "uuid:bank-renderer")},
+        {"uuid:bar-renderer": "http://192.168.1.42/bar.xml", "uuid:bank-renderer": _LOCATION},
+    )
+    bar = MagicMock(spec=RaumfeldPlayer, room="Bar")
+    bank = MagicMock(spec=RaumfeldPlayer, room="Bank")
+    with patch.object(
+        RaumfeldPlayerProvider, "players", new_callable=PropertyMock, return_value=[bar, bank]
+    ):
+        provider._handle_room_transport_event(_LOCATION, {"TransportState": "PAUSED_PLAYBACK"})
+    bank.set_room_transport_events.assert_called_once_with(True)
+    bank.state_event.assert_called_once_with()
+    bar.state_event.assert_not_called()
+
+
+def test_a_room_the_host_reports_changed_is_read() -> None:
+    """A room switched on or off, or taken by Spotify Connect, is read at once."""
+    provider = RaumfeldPlayerProvider.__new__(RaumfeldPlayerProvider)
+    bar = MagicMock(spec=RaumfeldPlayer, room="Bar")
+    bank = MagicMock(spec=RaumfeldPlayer, room="Bank")
+    with patch.object(
+        RaumfeldPlayerProvider, "players", new_callable=PropertyMock, return_value=[bar, bank]
+    ):
+        provider._handle_rooms_changed({"Bank"})
+    bank.state_event.assert_called_once_with()
+    bar.state_event.assert_not_called()
+
+
 async def test_unload_waits_for_its_tasks_to_end() -> None:
     """The supervisor, the update loop and the zone watcher have ended once unload returns."""
     provider = RaumfeldPlayerProvider.__new__(RaumfeldPlayerProvider)
@@ -1604,11 +1644,12 @@ async def test_unload_waits_for_its_tasks_to_end() -> None:
     provider._zone_watch_task = asyncio.create_task(runs_until_cancelled("zones"))
     events = MagicMock(close=AsyncMock())
     provider.room_events = events
+    provider.room_transport_events = events
     provider.zone_events = events
     await asyncio.sleep(0)
     await provider.unload()
     # the renderers are told to stop sending events
-    assert events.close.await_count == 2
+    assert events.close.await_count == 3
     assert sorted(ended) == ["supervisor", "update", "zones"]
     assert provider._supervisor_task is None
 

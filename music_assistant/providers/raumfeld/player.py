@@ -72,14 +72,14 @@ FAST_POLL_INTERVAL = 1
 # request rate on the Raumfeld host low.
 PLAYING_POLL_INTERVAL = 5
 IDLE_POLL_INTERVAL = 15
-# The same, for a zone whose events come in: every change of what it plays or whether it
-# plays is read at once (see zone_event), and the position, which it sends no event for,
-# runs on in Music Assistant between reads.
+# The same, for a room whose events come in: every change of what it plays, whether it
+# plays, its volume and its power is read at once (see state_event), and the position,
+# which no event is sent for, runs on in Music Assistant between reads.
 PLAYING_EVENTS_POLL_INTERVAL = 15
 IDLE_EVENTS_POLL_INTERVAL = 60
-# How long (seconds) after a zone's event to read its state: a change comes in as a few
+# How long (seconds) after an event to read the room's state: a change comes in as a few
 # events within a fraction of a second (measured), which one read takes in.
-ZONE_EVENT_POLL_DELAY = 0.3
+EVENT_POLL_DELAY = 0.3
 # How long (seconds) after a play/resume command to keep polling fast, so MA catches
 # the device actually starting playback (Raumfeld renderers buffer before they start).
 STARTUP_POLL_WINDOW = 20
@@ -248,6 +248,8 @@ class RaumfeldPlayer(Player):
     _resume_context: tuple[str, str, str, int, str | None] | None = None
     # whether the volume and mute of the room's own renderer come in as events
     _rendering_events: bool = False
+    # whether the transport of the room's own renderer (Spotify Connect) comes in as events
+    _room_transport_events: bool = False
     # the description URL of the zone whose events come in, if the room is in one
     _zone_events: str | None = None
     # held by a poll, so a poll an event asked for does not run alongside the regular one
@@ -798,8 +800,12 @@ class RaumfeldPlayer(Player):
         :param location: The description URL of the zone renderer that sent the event.
         """
         self._zone_events = location
+        self.state_event()
+
+    def state_event(self) -> None:
+        """Read the room's state soon, after an event or the host reported a change."""
         self.mass.call_later(
-            ZONE_EVENT_POLL_DELAY, self._start_event_poll, task_id=self._event_poll_timer_id
+            EVENT_POLL_DELAY, self._start_event_poll, task_id=self._event_poll_timer_id
         )
 
     def set_rendering_events(self, followed: bool) -> None:
@@ -809,6 +815,14 @@ class RaumfeldPlayer(Player):
         :param followed: Whether they do; if not, they are read on every poll.
         """
         self._rendering_events = followed
+
+    def set_room_transport_events(self, followed: bool) -> None:
+        """
+        Set whether the transport of the room's own renderer comes in as events.
+
+        :param followed: Whether it does; if not, Spotify Connect on the room is read often.
+        """
+        self._room_transport_events = followed
 
     def apply_rendering_event(self, changes: dict[str, str]) -> None:
         """
@@ -994,10 +1008,16 @@ class RaumfeldPlayer(Player):
                 return
             leader = self.mass.players.get_player(self.synced_to)
             self._attr_playback_state = leader.playback_state if leader else PlaybackState.IDLE
+            # the leader has this room read after each read of the zone it made on an event
+            evented = self._rendering_events and self._zone_events is not None
             if self._attr_playback_state == PlaybackState.PLAYING:
-                self._attr_poll_interval = PLAYING_POLL_INTERVAL
+                self._attr_poll_interval = (
+                    PLAYING_EVENTS_POLL_INTERVAL if evented else PLAYING_POLL_INTERVAL
+                )
             else:
-                self._attr_poll_interval = IDLE_POLL_INTERVAL
+                self._attr_poll_interval = (
+                    IDLE_EVENTS_POLL_INTERVAL if evented else IDLE_POLL_INTERVAL
+                )
             self.update_state()
             return
 
@@ -1012,7 +1032,10 @@ class RaumfeldPlayer(Player):
             await self._update_volume()
             self._clear_external()
             self._attr_playback_state = PlaybackState.IDLE
-            self._attr_poll_interval = IDLE_POLL_INTERVAL
+            # the host reports a new power state or Spotify session at once (state_event)
+            self._attr_poll_interval = (
+                IDLE_EVENTS_POLL_INTERVAL if self._rendering_events else IDLE_POLL_INTERVAL
+            )
             self.update_state()
             return
 
@@ -2114,7 +2137,7 @@ class RaumfeldPlayer(Player):
 
     @property
     def _event_poll_timer_id(self) -> str:
-        """Return the id of the timer that reads the zone after its event."""
+        """Return the id of the timer that reads the room after an event."""
         return f"raumfeld_event_poll_{self.player_id}"
 
     def _start_event_poll(self) -> None:
@@ -2134,10 +2157,20 @@ class RaumfeldPlayer(Player):
                 if self._attr_available:
                     async with self._poll_guard():
                         await self._poll_state()
+                    self._read_followers()
                 if not self._event_poll_again:
                     return
         finally:
             self._event_poll_running = False
+
+    def _read_followers(self) -> None:
+        """Have the rooms that follow this one in its group take over what it just read."""
+        if not self.leads_group:
+            return
+        for member_id in self._attr_group_members[1:]:
+            member = self.mass.players.get_player(member_id)
+            if isinstance(member, RaumfeldPlayer):
+                member._start_event_poll()
 
     def _play_mode_guard(self) -> asyncio.Lock:
         """Return the lock a shuffle or repeat change holds while it combines the two."""
@@ -2154,12 +2187,15 @@ class RaumfeldPlayer(Player):
 
     def _update_poll_interval(self) -> None:
         """Poll at the playing rate while something plays, and slowly otherwise."""
+        evented = self._room_transport_events and self._rendering_events
         if (time.time() - self._play_started_at) < STARTUP_POLL_WINDOW:
             self._attr_poll_interval = FAST_POLL_INTERVAL
         elif self._attr_playback_state == PlaybackState.PLAYING:
-            self._attr_poll_interval = PLAYING_POLL_INTERVAL
+            self._attr_poll_interval = (
+                PLAYING_EVENTS_POLL_INTERVAL if evented else PLAYING_POLL_INTERVAL
+            )
         else:
-            self._attr_poll_interval = IDLE_POLL_INTERVAL
+            self._attr_poll_interval = IDLE_EVENTS_POLL_INTERVAL if evented else IDLE_POLL_INTERVAL
 
     async def _read_volume(self) -> int | None:
         """Read this room's volume (0-100), or ``None`` if it could not be read."""

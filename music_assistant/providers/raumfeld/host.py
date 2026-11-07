@@ -61,15 +61,23 @@ class Devices:
 class RaumfeldHost:
     """The rooms, zones and devices of a Raumfeld host, kept up to date while it runs."""
 
-    def __init__(self, session: aiohttp.ClientSession, url: str) -> None:
+    def __init__(
+        self,
+        session: aiohttp.ClientSession,
+        url: str,
+        on_rooms_changed: Callable[[set[str]], None] | None = None,
+    ) -> None:
         """
         Set up the model of a host; it holds nothing until it runs.
 
         :param session: The HTTP session to use.
         :param url: The base URL of the host's web service.
+        :param on_rooms_changed: Called with the names of the rooms whose power state or
+            Spotify Connect session changed, once the rooms have been read before.
         """
         self._session = session
         self._url = url
+        self._on_rooms_changed = on_rooms_changed
         self._zone_config = ZoneConfig(rooms={}, zones={})
         self._devices = Devices(locations={}, media_server_udn=None)
         self._zones_read = asyncio.Event()
@@ -167,8 +175,17 @@ class RaumfeldHost:
 
     def _apply_zone_config(self, xml: str) -> None:
         """Take over the rooms and zones from a getZones answer."""
+        before = self._zone_config.rooms
         self._zone_config = parse_zone_config(xml)
         self._zones_read.set()
+        changed = {
+            name
+            for name, room in self._zone_config.rooms.items()
+            if (old := before.get(name)) is not None
+            and (old.power_state, old.spotify_active) != (room.power_state, room.spotify_active)
+        }
+        if changed and self._on_rooms_changed is not None:
+            self._on_rooms_changed(changed)
 
     def _apply_devices(self, xml: str) -> None:
         """Take over the devices from a listDevices answer."""
