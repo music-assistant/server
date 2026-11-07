@@ -119,15 +119,17 @@ class _HasUrl(Protocol):
     def url(self) -> object: ...
 
 
-def _cover_image(provider: DeezerProvider, cover: _CoverLike | None) -> MediaItemImage | None:
+def _cover_image(
+    provider: DeezerProvider, cover: _CoverLike | None, image_type: ImageType = ImageType.THUMB
+) -> MediaItemImage | None:
     """
-    Create a THUMB image from a GQL cover/picture object with a `.urls` list.
+    Create an image (THUMB by default) from a GQL cover/picture object with a `.urls` list.
 
     Returns None when the cover is absent or has no URLs.
     """
     if cover and cover.urls:
         return MediaItemImage(
-            type=ImageType.THUMB,
+            type=image_type,
             path=cover.urls[0],
             provider=provider.instance_id,
             remotely_accessible=True,
@@ -288,6 +290,9 @@ def parse_artist(
     """Parse a GQL artist model to Music Assistant Artist."""
     images: UniqueList[MediaItemImage] = UniqueList()
     if img := _cover_image(provider, artist.picture):
+        images.append(img)
+    # only the artist details carry the hero picture
+    if img := _cover_image(provider, getattr(artist, "hero_picture", None), ImageType.FANART):
         images.append(img)
     metadata = MediaItemMetadata(images=images) if images else MediaItemMetadata()
     if bio := getattr(artist, "bio", None):
