@@ -1595,15 +1595,16 @@ jobs:
         shell: python
         run: |
           import os
+          import re
           import tomllib
 
+          pin = re.compile(
+              r"music-assistant-frontend @ "
+              r"https://github\.com/music-assistant/frontend/releases/download/([^/]+)/"
+          )
           with open("pyproject.toml", "rb") as file_handle:
               dependencies = tomllib.load(file_handle)["project"]["dependencies"]
-          matches = [
-              dependency.removeprefix("music-assistant-frontend==")
-              for dependency in dependencies
-              if dependency.startswith("music-assistant-frontend==")
-          ]
+          matches = [match[1] for dependency in dependencies if (match := pin.match(dependency))]
           if len(matches) != 1:
               raise RuntimeError("Expected one pinned music-assistant-frontend dependency")
           with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:

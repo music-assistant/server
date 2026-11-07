@@ -20,6 +20,9 @@ env:
   EXPECTED_APP_BOT_ID: "304008617"
   EXPECTED_APP_SLUG: musicassistant-bot
   EXPECTED_APP_INSTALLATION_ID: "146062122"
+  # A pin in pyproject.toml or requirements_all.txt format: models by version from PyPI,
+  # the frontend wheel by URL and sha256 from its GitHub release
+  PIN_LINE: '^[+-][[:space:]]*"?music-assistant-(models==[0-9][0-9a-zA-Z.]*|frontend @ https://github\.com/music-assistant/frontend/releases/download/[0-9][0-9a-zA-Z.]*/music_assistant_frontend-[0-9][0-9a-zA-Z.]*-py3-none-any\.whl#sha256=[0-9a-f]{64})"?,?[[:space:]]*$'
 
 # CRITICAL SECURITY: This workflow uses pull_request_target which runs in the context
 # of the base repository and has access to secrets. Multiple security checks ensure
@@ -192,7 +195,7 @@ jobs:
           UNEXPECTED=$(echo "$DIFF" \
             | grep -E '^[+-]' \
             | grep -vE '^(\+\+\+|---)' \
-            | grep -vE '^[+-][[:space:]]*"?music-assistant-(frontend|models)==[0-9][0-9a-zA-Z.]*"?,?[[:space:]]*$' \
+            | grep -vE "$PIN_LINE" \
             || true)
 
           if [[ -n "$UNEXPECTED" ]]; then
@@ -202,7 +205,7 @@ jobs:
           fi
 
           # A pin must be added, not just removed
-          if ! echo "$DIFF" | grep -qE '^\+.*music-assistant-(frontend|models)=='; then
+          if ! echo "$DIFF" | grep -qE '^\+.*music-assistant-(frontend @|models==)'; then
             echo "❌ No added version pin found"
             exit 1
           fi
@@ -217,9 +220,17 @@ jobs:
           # Extract the package name and version from the added lines of the diff
           DIFF=$(gh pr diff "${{ steps.pr.outputs.number }}" -R "${{ github.repository }}" | grep '^+' || true)
 
-          if echo "$DIFF" | grep -q "music-assistant-frontend=="; then
+          if echo "$DIFF" | grep -q "music-assistant-frontend @"; then
             PACKAGE="music-assistant-frontend"
-            VERSION=$(echo "$DIFF" | grep -oP 'music-assistant-frontend==\K[0-9.]+' | head -1)
+            VERSION=$(echo "$DIFF" | grep -oP 'music-assistant-frontend @ https://github\.com/music-assistant/frontend/releases/download/\K[0-9][0-9a-zA-Z.]*' | head -1)
+            SHA256=$(echo "$DIFF" | grep -oP 'music-assistant-frontend @ \S+#sha256=\K[0-9a-f]{64}' | head -1)
+            # Both files must pin the same wheel, and its file name must carry the release version
+            EXPECTED="music-assistant-frontend @ https://github.com/music-assistant/frontend/releases/download/$VERSION/music_assistant_frontend-$VERSION-py3-none-any.whl#sha256=$SHA256"
+            if echo "$DIFF" | grep "music-assistant-frontend @" | grep -vqF "$EXPECTED"; then
+              echo "❌ The frontend pins do not all point at the $VERSION release wheel"
+              exit 1
+            fi
+            echo "sha256=$SHA256" >> "$GITHUB_OUTPUT"
           elif echo "$DIFF" | grep -q "music-assistant-models=="; then
             PACKAGE="music-assistant-models"
             VERSION=$(echo "$DIFF" | grep -oP 'music-assistant-models==\K[0-9.]+' | head -1)
@@ -233,10 +244,35 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      # Security check 7: Wait for package to be available on PyPI.
+      # Security check 7: The frontend wheel is pinned by sha256, which must be the digest
+      # GitHub reports for that asset on the immutable frontend release.
+      - name: Verify frontend release asset
+        if: steps.package.outputs.package == 'music-assistant-frontend'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ steps.package.outputs.version }}
+          SHA256: ${{ steps.package.outputs.sha256 }}
+        run: |
+          RELEASE=$(gh api "repos/music-assistant/frontend/releases/tags/$VERSION")
+          if [ "$(jq -r '.draft' <<< "$RELEASE")" != "false" ] || \
+             [ "$(jq -r '.immutable // false' <<< "$RELEASE")" != "true" ]; then
+            echo "❌ Frontend $VERSION is not a published immutable release"
+            exit 1
+          fi
+
+          DIGEST=$(jq -r --arg name "music_assistant_frontend-$VERSION-py3-none-any.whl" \
+            '.assets[] | select(.name == $name and .state == "uploaded") | .digest' <<< "$RELEASE")
+          if [ "$DIGEST" != "sha256:$SHA256" ]; then
+            echo "❌ The pinned sha256 does not match the release asset digest: $DIGEST"
+            exit 1
+          fi
+          echo "✅ The pin matches the frontend $VERSION release wheel"
+
+      # Security check 7: Wait for the models package to be available on PyPI.
       # No GH_TOKEN here and --only-binary: pip may otherwise run sdist build
       # hooks with the step's token in its environment.
       - name: Wait for package availability on PyPI
+        if: steps.package.outputs.package == 'music-assistant-models'
         env:
           PACKAGE: ${{ steps.package.outputs.package }}
           VERSION: ${{ steps.package.outputs.version }}
@@ -384,7 +420,7 @@ jobs:
             EXTRA=$(gh pr diff "$NUMBER" -R "$REPO" \
               | grep -E '^[+-]' \
               | grep -vE '^(\+\+\+|---)' \
-              | grep -vE '^[+-][[:space:]]*"?music-assistant-(frontend|models)==[0-9][0-9a-zA-Z.]*"?,?[[:space:]]*$' \
+              | grep -vE "$PIN_LINE" \
               || true)
             if [ -n "$EXTRA" ]; then
               echo "PR #$NUMBER carries non-pin changes, skipping:"
@@ -447,9 +483,22 @@ jobs:
             exit 1
           fi
 
+          if [[ "$PACKAGE" == "music-assistant-frontend" ]]; then
+            WHEEL="music_assistant_frontend-$VERSION-py3-none-any.whl"
+            DIGEST=$(gh api "repos/music-assistant/frontend/releases/tags/$VERSION" \
+              | jq -r --arg name "$WHEEL" '.assets[] | select(.name == $name) | .digest')
+            if ! [[ "$DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+              echo "Refusing to act without a sha256 digest for $WHEEL: '$DIGEST'"
+              exit 1
+            fi
+            PIN="$PACKAGE @ https://github.com/music-assistant/frontend/releases/download/$VERSION/$WHEEL#sha256=${DIGEST#sha256:}"
+          else
+            PIN="$PACKAGE==$VERSION"
+          fi
+
           echo "branch=$BRANCH" >> "$GITHUB_OUTPUT"
           echo "package=$PACKAGE" >> "$GITHUB_OUTPUT"
-          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "pin=$PIN" >> "$GITHUB_OUTPUT"
           echo "title=$TITLE" >> "$GITHUB_OUTPUT"
 
       - name: Check out dev
@@ -462,15 +511,15 @@ jobs:
         id: pin
         env:
           PACKAGE: ${{ steps.pr.outputs.package }}
-          VERSION: ${{ steps.pr.outputs.version }}
+          PIN: ${{ steps.pr.outputs.pin }}
         run: |
           # in-place edit keeps requirements_all.txt in the order gen_requirements_all produces
-          sed -i.bak "s/$PACKAGE==.*/$PACKAGE==$VERSION\",/" pyproject.toml
-          sed -i.bak "s/$PACKAGE==.*/$PACKAGE==$VERSION/" requirements_all.txt
+          sed -i.bak "s|\"${PACKAGE}[ =].*|\"$PIN\",|" pyproject.toml
+          sed -i.bak "s|^${PACKAGE}[ =].*|$PIN|" requirements_all.txt
           rm -f pyproject.toml.bak requirements_all.txt.bak
 
           if [ -z "$(git status --porcelain)" ]; then
-            echo "dev already pins $PACKAGE==$VERSION, nothing to re-cut"
+            echo "dev already pins $PIN, nothing to re-cut"
             echo "changed=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
@@ -480,7 +529,7 @@ jobs:
           UNEXPECTED=$(git diff -U0 \
             | grep -E '^[+-]' \
             | grep -vE '^(\+\+\+|---)' \
-            | grep -vE '^[+-][[:space:]]*"?music-assistant-(frontend|models)==[0-9][0-9a-zA-Z.]*"?,?[[:space:]]*$' \
+            | grep -vE "$PIN_LINE" \
             || true)
           if [ -n "$UNEXPECTED" ]; then
             echo "Refusing to push, the pin edit touched more than a version:"
