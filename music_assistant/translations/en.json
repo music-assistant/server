@@ -2396,6 +2396,8 @@
   "provider.sendspin.config_entries.connect_method.options.unpaired": "Connect unpaired",
   "provider.sendspin.config_entries.connect_method.options.unpaired_with_input": "Connect unpaired with audio input",
   "provider.sendspin.config_entries.connect_method.options.unpaired_without_input": "Connect unpaired without audio input",
+  "provider.sendspin.config_entries.dsd_dop.description": "Play local DSD files (.dsf) bit-perfect by packing them as DoP for a DAC that decodes it, instead of converting them to PCM. Only enable this when the DAC detects DoP and nothing in between alters the audio: no DSP, no volume normalization and the player volume at 100% (DSD tracks skip crossfades; set the volume on your amplifier). The DAC must support the DoP rate (176.4 kHz for DSD64, 352.8 kHz for DSD128). It only applies while the player plays on its own, not in a group.",
+  "provider.sendspin.config_entries.dsd_dop.label": "Send DSD as DoP (DSD over PCM)",
   "provider.sendspin.config_entries.dynamic_pin_channel_display.label": "Enter the code shown on the device's screen",
   "provider.sendspin.config_entries.dynamic_pin_channel_display_speaker.label": "Enter the code the device shows on screen or speaks aloud",
   "provider.sendspin.config_entries.dynamic_pin_channel_speaker.label": "Enter the code the device speaks aloud",
