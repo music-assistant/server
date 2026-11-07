@@ -143,6 +143,10 @@ async def e2e_mass(tmp_path: pathlib.Path) -> AsyncGenerator[MusicAssistant]:
             new=AsyncMock(return_value=None),
         ),
         patch(
+            "music_assistant.providers.musicbrainz.api_client.MusicBrainzAPIClient.get_url_data",
+            new=AsyncMock(return_value=None),
+        ),
+        patch(
             "music_assistant.providers.musicbrainz.api_client.MusicBrainzAPIClient.get_browse_data",
             new=AsyncMock(return_value=None),
         ),
