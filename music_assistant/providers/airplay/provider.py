@@ -41,11 +41,13 @@ from music_assistant.helpers.util import (
 )
 from music_assistant.models.player_provider import PlayerProvider
 
+from .apple_groups import AppleGroupManager
 from .constants import (
     AIRPLAY_DISCOVERY_TYPE,
     AIRPLAY_VOLUME_MUTE,
     CLI_PROBLEM_MARKERS,
     COMPANION_DISCOVERY_TYPE,
+    CONF_APPLE_HOME_GROUPS,
     CONF_COMPAT_PINS_REVIEWED,
     CONF_PASSWORD_INVALID,
     CONF_PASSWORD_MARKERS_REVIEWED,
@@ -222,6 +224,12 @@ class AirPlayProvider(PlayerProvider):
         """Return Config entries to configure this provider."""
         return (
             ConfigEntry(
+                key=CONF_APPLE_HOME_GROUPS,
+                type=ConfigEntryType.BOOLEAN,
+                default_value=False,
+                required=False,
+            ),
+            ConfigEntry(
                 key=CONF_VERBOSE_PTP_LOGGING,
                 type=ConfigEntryType.BOOLEAN,
                 default_value=False,
@@ -250,6 +258,10 @@ class AirPlayProvider(PlayerProvider):
 
         # Registers eligible Apple TVs as dashboard endpoints for the tvOS app
         self.dashboards = AirPlayDashboards(self)
+
+        # Plays the groups the Home app made (Apple TV + speakers, stereo pairs) as one
+        self.apple_groups = AppleGroupManager(self)
+        await self.apple_groups.setup()
 
         # register DACP zeroconf service
         dacp_port = await select_free_port(39831, 49831)
@@ -287,6 +299,8 @@ class AirPlayProvider(PlayerProvider):
         # so realign pyatv's logger here
         if f"values/{CONF_LOG_LEVEL}" in changed_keys:
             self._set_pyatv_log_level()
+        if f"values/{CONF_APPLE_HOME_GROUPS}" in changed_keys:
+            self.apple_groups.schedule_reconcile()
 
     async def on_mdns_service_state_change(
         self, name: str, state_change: ServiceStateChange, info: AsyncServiceInfo | None
@@ -323,6 +337,7 @@ class AirPlayProvider(PlayerProvider):
                 # Remove the Sendspin bridge first
                 await self._bridge_manager.remove_bridge(player_id)
                 await self.mass.players.unregister(player_id)
+                self.apple_groups.schedule_reconcile()
             self.dashboards.unregister(player_id)
             return
         # handle update for existing device
@@ -331,14 +346,20 @@ class AirPlayProvider(PlayerProvider):
         if player := cast("AirPlayPlayer | None", self.mass.players.get_player(player_id)):
             # update the latest discovery info for existing player
             player.set_discovery_info(info, display_name)
+            self.apple_groups.schedule_reconcile()
             # only control players can ever be dashboard endpoints
             if isinstance(player, AirPlayControlPlayer):
                 self.dashboards.reconcile(player_id)
             return
         await self._setup_player(player_id, display_name, info)
+        self.apple_groups.schedule_reconcile()
 
     async def unload(self, is_removed: bool = False) -> None:
         """Handle unload/close of the provider."""
+        # stop regrouping; the groups formed from Apple groups go with the provider
+        apple_groups = getattr(self, "apple_groups", None)
+        if apple_groups:
+            await apple_groups.unload()
         # Unregister all dashboard endpoints
         dashboards = getattr(self, "dashboards", None)
         if dashboards:

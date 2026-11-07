@@ -314,6 +314,9 @@
       "label": "Custom (pre)announcement chime URL",
       "description": "URL to a custom audio file to play before announcements.\nLeave empty to use the default chime.\nSupports http:// and https:// URLs pointing to audio files (.mp3, .wav, .flac, .ogg, .m4a, .aac).\nExample: http://homeassistant.local:8123/local/audio/custom_chime.mp3"
     },
+    "hide_in_ui_represented": {
+      "label": "This setting is overridden by \"Follow Apple Home groupings\" while this device is a member of an AirPlay group."
+    },
     "hide_in_ui": {
       "label": "Hide this player in the user interface",
       "description": "Hide this player from the main players list and dashboard selection menus.  The player remains fully controllable and still appears in any sync group it currently belongs to and in the settings. Disable the player to exclude it everywhere."

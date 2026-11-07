@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from copy import deepcopy
+from dataclasses import replace
 from typing import TYPE_CHECKING, Any, Literal, cast, overload
 
 from music_assistant_models.auth import Scope
@@ -337,6 +338,9 @@ class PlayerConfigMixin:
             *[x for x in default_entries if x.key not in player_entries_keys],
             *player_entries,
         ]
+        if player.managed_externally:
+            # nothing about it can be changed here: show its settings read only
+            all_entries = [replace(entry, read_only=True) for entry in all_entries]
         return _with_translation_owner(all_entries, player.translation_owner)
 
     @api_command("config/players/invoke_action", required_scope=Scope.CONFIG_PLAYERS_WRITE)
@@ -356,6 +360,7 @@ class PlayerConfigMixin:
         :param player_id: The player whose config surface holds the action.
         :param action: The action id of the pressed button (may be protocol-prefixed).
         """
+        self.mass.players.raise_if_managed_externally(player_id)
         if not (player := self.mass.players.get_player(player_id, False)):
             msg = f"Player {player_id} not found"
             raise KeyError(msg)
@@ -511,6 +516,7 @@ class PlayerConfigMixin:
         self, player_id: str, values: dict[str, ConfigValueType]
     ) -> PlayerConfig:
         """Save/update PlayerConfig."""
+        self.mass.players.raise_if_managed_externally(player_id)
         _reject_encrypted_values(values)
         values = await self._update_output_protocol_config(values)
         values = await self._update_plugin_provider_config(player_id, values)
@@ -564,6 +570,7 @@ class PlayerConfigMixin:
     @api_command("config/players/remove", required_scope=Scope.CONFIG_PLAYERS_WRITE)
     async def remove_player_config(self, player_id: str) -> None:
         """Remove PlayerConfig."""
+        self.mass.players.raise_if_managed_externally(player_id)
         conf_key = f"{CONF_PLAYERS}/{player_id}"
         player_config = self.get(conf_key)
         if not player_config:
@@ -816,6 +823,18 @@ class PlayerConfigMixin:
                 default_value=player.hidden_by_default,
                 category="generic",
                 advanced=False,
+            ),
+            # hidden anyway while another player represents it, whatever this is set to
+            *(
+                [
+                    ConfigEntry(
+                        key="hide_in_ui_represented",
+                        type=ConfigEntryType.ALERT,
+                        category="generic",
+                    )
+                ]
+                if player.represented_by
+                else []
             ),
             # add entry to expose player to HA
             ConfigEntry(

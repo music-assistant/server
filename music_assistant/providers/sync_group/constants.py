@@ -7,7 +7,17 @@ from typing import Final
 from music_assistant_models.config_entries import ConfigEntry
 from music_assistant_models.enums import ConfigEntryType, PlayerFeature
 
+from music_assistant.constants import AIRPLAY_GROUP_HOME_THEATER, AIRPLAY_GROUP_STEREO_PAIR
+
 SGP_PREFIX: Final[str] = "syncgroup_"
+
+# how a group the AirPlay provider formed from an Apple group shows (its model, with
+# AirPlay as the manufacturer): what the Home app grouped, not a product
+AIRPLAY_GROUP_MANUFACTURER: Final[str] = "AirPlay"
+AIRPLAY_GROUP_MODELS: Final[dict[str, str]] = {
+    AIRPLAY_GROUP_HOME_THEATER: "Apple TV Home Theater",
+    AIRPLAY_GROUP_STEREO_PAIR: "HomePod Stereo Pair",
+}
 
 # Grace period (seconds) before a sync group dissolves itself after the queue
 # naturally finishes (playback_state transitions to IDLE without an explicit
