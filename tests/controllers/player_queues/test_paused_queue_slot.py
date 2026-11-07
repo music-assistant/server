@@ -18,7 +18,7 @@ import contextlib
 from collections.abc import AsyncGenerator, AsyncIterator, Awaitable
 from types import SimpleNamespace
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from music_assistant_models.auth import User, UserRole
@@ -26,6 +26,7 @@ from music_assistant_models.enums import (
     ContentType,
     MediaType,
     PlaybackState,
+    ProviderType,
     QueueOption,
     StreamType,
 )
@@ -41,6 +42,7 @@ from music_assistant_models.player_queue import PlayerQueue
 from music_assistant_models.queue_item import QueueItem
 from music_assistant_models.streamdetails import StreamDetails
 
+import music_assistant.controllers.player_queues.stream_feeder as feeder_mod
 import music_assistant.controllers.streams.audio as audio_mod
 from music_assistant.constants import ATTR_ANNOUNCEMENT_IN_PROGRESS
 from music_assistant.controllers.player_queues import PlayerQueuesController
@@ -82,7 +84,7 @@ def _provider(
     provider_cls: type[MusicProvider] = _SingleStreamProvider, instance: str = INSTANCE
 ) -> MusicProvider:
     """Construct a provider of the given class, under the shared instance id by default."""
-    manifest = MagicMock(domain="spotify")
+    manifest = MagicMock(domain="spotify", type=ProviderType.MUSIC)
     manifest.name = "Spotify"
     config = MagicMock(instance_id=instance)
     config.name = "Spotify"
@@ -715,14 +717,21 @@ async def test_a_play_on_a_held_source_is_refused_before_its_tracks_are_fetched(
     await holder_buffer.clear()
 
 
+def _second_account(rig: _Rig) -> MusicProvider:
+    """Add a free second account of the provider's streaming service."""
+    second = _provider(instance="spotify--two")
+    second.available = True
+    rig.other_providers["spotify--two"] = second
+    rig.mass.providers = [rig.provider, second]
+    return second
+
+
 async def test_a_copy_on_a_free_second_account_keeps_a_play_from_being_refused_early(
     rig: _Rig,
 ) -> None:
     """The stream itself picks the free account, so the play goes ahead."""
     holder_buffer = await _hold_the_slot(rig)
-    second = _provider(instance="spotify--two")
-    second.available = True
-    rig.other_providers["spotify--two"] = second
+    _second_account(rig)
     track = Track(
         item_id="7",
         provider="library",
@@ -730,7 +739,39 @@ async def test_a_copy_on_a_free_second_account_keeps_a_play_from_being_refused_e
         provider_mappings={_mapping(INSTANCE), _mapping("spotify--two")},
     )
 
-    rig.queues._refuse_held_item(track, STARTING_QUEUE)
+    rig.queues.refuse_held_item(track, STARTING_QUEUE, None)
+
+    await holder_buffer.clear()
+
+
+async def test_a_free_second_account_streams_an_item_mapped_to_the_busy_one(rig: _Rig) -> None:
+    """Another account of the same service plays the same item id, so the play goes ahead."""
+    holder_buffer = await _hold_the_slot(rig)
+    _second_account(rig)
+
+    rig.queues.refuse_held_item(_playlist(), STARTING_QUEUE, None)
+
+    await holder_buffer.clear()
+
+
+async def test_a_free_account_the_user_may_not_use_does_not_keep_a_play_going(
+    rig: _Rig,
+) -> None:
+    """Only the sources the user may play from count as free."""
+    holder_buffer = await _hold_the_slot(rig)
+    _second_account(rig)
+    track = Track(
+        item_id="7",
+        provider="library",
+        name="Seven",
+        provider_mappings={_mapping(INSTANCE), _mapping("spotify--two")},
+    )
+
+    with (
+        patch.object(feeder_mod, "visible_playback_sources", return_value=[INSTANCE]),
+        pytest.raises(ProviderStreamHeldError),
+    ):
+        rig.queues.refuse_held_item(track, STARTING_QUEUE, None)
 
     await holder_buffer.clear()
 
@@ -742,7 +783,7 @@ async def test_a_provider_with_more_than_one_slot_is_not_refused_early(rig: _Rig
     second_buffer = await rig.fill(rig.add_queue("office", PlaybackState.PLAYING, realtime=True))
     assert not rig.provider.has_available_stream_slot
 
-    rig.queues._refuse_held_item(_playlist(), STARTING_QUEUE)
+    rig.queues.refuse_held_item(_playlist(), STARTING_QUEUE, None)
 
     await first_buffer.clear()
     await second_buffer.clear()

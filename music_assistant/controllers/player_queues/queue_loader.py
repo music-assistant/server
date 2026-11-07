@@ -955,7 +955,9 @@ class QueueLoaderMixin(_PlayerQueuesBase):
                         and not shuffled_batch
                         and isinstance(media_item, (Playlist, Album, Track))
                     ):
-                        self._refuse_held_item(media_item, queue_id)
+                        self.mass.player_queues.refuse_held_item(
+                            media_item, queue_id, playback_user
+                        )
                     # Forget the previous queue's enqueued items when a new queue is requested: it
                     # is the option that says whether this is a new queue or an addition to the
                     # current one. Done after the check above, so a refused play leaves them alone.
@@ -1400,27 +1402,6 @@ class QueueLoaderMixin(_PlayerQueuesBase):
         # the cancelled buffer stays attached: it marks the source as aborted for
         # the flow stream's accounting and fails is_valid() for any later reuse
         await audio_buffer.clear()
-
-    def _refuse_held_item(self, media_item: Playlist | Album | Track, queue_id: str) -> None:
-        """
-        Raise when realtime playback on other queues holds the slot of every source of the item.
-
-        :param media_item: The playlist, album or track about to be played.
-        :param queue_id: The queue that is about to play it.
-        :raises ProviderStreamLimitError: When no source of the item has a free slot.
-        """
-        refusal: ProviderStreamLimitError | None = None
-        for mapping in media_item.provider_mappings:
-            if not mapping.available:
-                continue
-            try:
-                self.mass.player_queues.refuse_held_stream_slot(mapping.provider_instance, queue_id)
-            except ProviderStreamLimitError as err:
-                refusal = refusal or err
-            else:
-                return
-        if refusal is not None:
-            raise refusal
 
 
 def _track_keys(track: Track) -> set[tuple[str, str]]:

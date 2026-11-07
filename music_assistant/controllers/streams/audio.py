@@ -3423,6 +3423,17 @@ class StreamsAudio:
         if pending := self._crossfade_pending.pop(queue_id, None):
             pending[1].set()
 
+    def get_stream_providers(
+        self, mapping: ProviderMapping, allowed: list[str] | None
+    ) -> list[Provider]:
+        """
+        Return the loaded providers that can stream the item a provider mapping points to.
+
+        :param mapping: The provider mapping of the item.
+        :param allowed: Music sources the playback user may use, or None for all of them.
+        """
+        return self._get_mapping_providers(mapping, allowed)
+
     async def get_shoutcast_stream(
         self, url: str, streamdetails: StreamDetails
     ) -> AsyncGenerator[bytes]:

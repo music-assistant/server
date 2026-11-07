@@ -74,7 +74,7 @@ def _controller(default_option: QueueOption = QueueOption.REPLACE) -> Any:
     lock_cm.__aenter__ = AsyncMock(return_value=None)
     lock_cm.__aexit__ = AsyncMock(return_value=None)
     ctrl.mass.players.get_group_and_player_lock = Mock(return_value=lock_cm)
-    ctrl.mass.player_queues.refuse_held_stream_slot = Mock(side_effect=_held_error())
+    ctrl.mass.player_queues.refuse_held_item = Mock(side_effect=_held_error())
     ctrl.mass.providers = []
     ctrl.signal_update = Mock()  # type: ignore[method-assign]
     ctrl.on_player_update = Mock()  # type: ignore[method-assign]
@@ -129,10 +129,10 @@ async def test_only_a_play_that_starts_now_is_refused_early(
             "player_name": "Living Room",
             "provider_instance": INSTANCE,
         }
-        ctrl.mass.player_queues.refuse_held_stream_slot.assert_called_once_with(INSTANCE, "q1")
+        ctrl.mass.player_queues.refuse_held_item.assert_called_once_with(track, "q1", LISTENER)
     else:
         await ctrl.play_media("q1", track, option)
-        ctrl.mass.player_queues.refuse_held_stream_slot.assert_not_called()
+        ctrl.mass.player_queues.refuse_held_item.assert_not_called()
         ctrl._media_resolver._resolve_media_items.assert_awaited_once()
 
 
@@ -158,12 +158,12 @@ async def test_a_refused_play_leaves_the_queue_as_it_was() -> None:
 async def test_only_the_first_item_of_a_batch_is_checked() -> None:
     """Playback starts from the first item, so the items behind it are not checked."""
     ctrl = _controller()
-    ctrl.mass.player_queues.refuse_held_stream_slot.side_effect = None
+    ctrl.mass.player_queues.refuse_held_item.side_effect = None
     first, second = _track("first"), _track("second")
 
     await ctrl.play_media("q1", [first, second], QueueOption.REPLACE)
 
-    ctrl.mass.player_queues.refuse_held_stream_slot.assert_called_once_with(INSTANCE, "q1")
+    ctrl.mass.player_queues.refuse_held_item.assert_called_once_with(first, "q1", LISTENER)
     assert [item.media_item for item in ctrl._queue_data["q1"].items] == [first, second]
 
 
@@ -184,7 +184,7 @@ async def test_a_shuffled_batch_is_left_to_the_stream(
         "q1", [_track("first"), _track("second")], QueueOption.REPLACE, shuffle=shuffle
     )
 
-    ctrl.mass.player_queues.refuse_held_stream_slot.assert_not_called()
+    ctrl.mass.player_queues.refuse_held_item.assert_not_called()
     ctrl.play_index.assert_awaited_once()
 
 
@@ -218,5 +218,5 @@ async def test_an_artist_is_left_to_the_stream() -> None:
 
     await ctrl.play_media("q1", artist, QueueOption.REPLACE)
 
-    ctrl.mass.player_queues.refuse_held_stream_slot.assert_not_called()
+    ctrl.mass.player_queues.refuse_held_item.assert_not_called()
     ctrl._media_resolver._resolve_media_items.assert_awaited_once()
