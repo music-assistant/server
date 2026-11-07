@@ -35,10 +35,11 @@ if TYPE_CHECKING:
 
 
 @pytest.fixture(autouse=True)
-async def _providers_available(mass: MusicAssistant) -> None:  # noqa: ARG001
-    """Make the test providers available, so their tracks are playable."""
+async def _providers_available(mass: MusicAssistant) -> None:
+    """Select full discographies and make the test providers' tracks playable."""
     # the server's boot sets the providers it loaded, so this must run after it
     await set_global_cache_values({"available_providers": {"library", "streaming", "other"}})
+    _set_selection(mass, "all_tracks")
 
 
 def _library_mapping() -> set[ProviderMapping]:

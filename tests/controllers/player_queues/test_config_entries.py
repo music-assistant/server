@@ -69,6 +69,7 @@ def test_core_config_entries_enqueue_defaults() -> None:
     by_key = _by_key(core_config_entries(_mass(similar_tracks=True, smart_fades=True)))
     assert by_key[CONF_DEFAULT_ENQUEUE_OPTION_TRACK].default_value == "play"
     assert by_key[CONF_DEFAULT_ENQUEUE_OPTION_ALBUM].default_value == "replace"
+    assert by_key[CONF_DEFAULT_ENQUEUE_SELECT_ARTIST].default_value == "top_tracks"
     # the enqueue entries now live in their own dedicated categories
     assert by_key[CONF_DEFAULT_ENQUEUE_SELECT_ARTIST].category == CATEGORY_ITEMS_TO_SELECT
     assert by_key[CONF_DEFAULT_ENQUEUE_OPTION_TRACK].category == CATEGORY_DEFAULT_ENQUEUE_OPTION

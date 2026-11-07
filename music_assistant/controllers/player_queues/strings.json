@@ -143,9 +143,10 @@
       }
     },
     "default_enqueue_select_artist": {
-      "label": "Items to select when you play a (in-library) artist.",
+      "label": "Items to select when you play an artist.",
+      "description": "Top tracks are selected by default, with library tracks used when no top tracks are available. Library-only selections use top tracks for artists outside your library. All tracks fetches the artist's full catalogue and can take longer to start.",
       "options": {
-        "top_tracks": "Artist top tracks only",
+        "top_tracks": "Top tracks, fall back to library",
         "library_tracks": "In-library tracks for the artist only",
         "prefer_library": "Prefer library, fall back to top",
         "all_tracks": "All tracks from all providers"

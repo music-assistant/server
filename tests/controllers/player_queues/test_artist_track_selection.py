@@ -18,7 +18,7 @@ from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
 
 import pytest
-from music_assistant_models.errors import MediaNotFoundError
+from music_assistant_models.errors import MediaNotFoundError, ResourceTemporarilyUnavailable
 from music_assistant_models.media_items import Artist, ProviderMapping, Track
 from music_assistant_models.unique_list import UniqueList
 
@@ -117,10 +117,13 @@ async def test_legacy_library_album_tracks_maps_to_library_tracks(mass: MusicAss
 
 
 async def test_top_tracks_excludes_library_tracks(mass: MusicAssistant) -> None:
-    """top_tracks returns only provider top tracks, never the in-library tracks."""
+    """Available top tracks do not pull in the artist's other library tracks."""
     artist = await _add_artist(mass, "ABBA")
     await _add_track(mass, "Honey Honey", [artist])
     _select(mass, "top_tracks")
+    mass.music.artists.top_tracks = AsyncMock(  # type: ignore[method-assign]
+        return_value=[_track_obj("Top song")]
+    )
 
     result = await mass.player_queues._media_resolver.get_artist_tracks(artist)
 
@@ -147,10 +150,12 @@ def _artist_obj(mappings: set[ProviderMapping] | None = None) -> Artist:
     return Artist(item_id="1", provider="library", name="ABBA", provider_mappings=mappings or set())
 
 
-def _fake_queues(selection: str) -> MagicMock:
+def _fake_queues(selection: str | None) -> MagicMock:
     """Create a mock standing in for the media resolver, with the artist option preselected."""
     fake = MagicMock()
-    fake.mass.config.get_raw_core_config_value = MagicMock(return_value=selection)
+    fake.mass.config.get_raw_core_config_value = MagicMock(
+        side_effect=lambda _domain, _key, default: selection if selection is not None else default
+    )
     fake._resolve_library_artist = AsyncMock(
         return_value=_artist_obj({_prov_mapping("p1", "a1", in_library=True)})
     )
@@ -175,6 +180,80 @@ async def test_all_tracks_unions_and_dedups_sources() -> None:
     result = await MediaResolver.get_artist_tracks(cast("MediaResolver", fake), _artist_obj())
 
     assert sorted(t.name for t in result) == ["LibOnly", "ProvOnly", "Shared"]
+
+
+@pytest.mark.parametrize(
+    "stored_artist",
+    [
+        None,
+        _artist_obj({_prov_mapping("p1", "a1")}),
+        _artist_obj({_prov_mapping("p1", "a1", in_library=True)}),
+    ],
+    ids=["unsaved", "stored", "in_library"],
+)
+async def test_default_uses_top_tracks_without_fetching_discography(
+    stored_artist: Artist | None,
+) -> None:
+    """The default plays provider top tracks for both saved artists and search results."""
+    fake = _fake_queues(None)
+    fake._resolve_library_artist = AsyncMock(return_value=stored_artist)
+    fake._library_artist_tracks = AsyncMock(return_value=[_track_obj("Local")])
+    fake._provider_artist_tracks = AsyncMock(return_value=[_track_obj("Full catalogue")])
+    fake.mass.music.artists.top_tracks = AsyncMock(return_value=[_track_obj("Top")])
+    artist = stored_artist or Artist(
+        item_id="a1", provider="spotify", name="ABBA", provider_mappings=set()
+    )
+
+    result = await MediaResolver.get_artist_tracks(cast("MediaResolver", fake), artist)
+
+    assert [t.name for t in result] == ["Top"]
+    fake.mass.music.artists.top_tracks.assert_awaited_once_with(
+        artist.item_id, artist.provider, limit=None
+    )
+    fake._provider_artist_tracks.assert_not_awaited()
+    fake._library_artist_tracks.assert_not_awaited()
+
+
+async def test_default_falls_back_to_library_when_top_tracks_are_empty() -> None:
+    """A provider without top tracks still plays the artist's available library tracks."""
+    fake = _fake_queues(None)
+    fake.mass.music.artists.top_tracks = AsyncMock(return_value=[])
+    fake._library_artist_tracks = AsyncMock(return_value=[_track_obj("Local")])
+    fake._provider_artist_tracks = AsyncMock()
+
+    result = await MediaResolver.get_artist_tracks(cast("MediaResolver", fake), _artist_obj())
+
+    assert [t.name for t in result] == ["Local"]
+    fake._provider_artist_tracks.assert_not_awaited()
+
+
+async def test_top_tracks_failure_does_not_silently_change_selection() -> None:
+    """A provider failure remains visible instead of being treated as an empty ranking."""
+    fake = _fake_queues(None)
+    fake.mass.music.artists.top_tracks = AsyncMock(
+        side_effect=ResourceTemporarilyUnavailable("provider unavailable")
+    )
+    fake._library_artist_tracks = AsyncMock()
+
+    with pytest.raises(ResourceTemporarilyUnavailable, match="provider unavailable"):
+        await MediaResolver.get_artist_tracks(cast("MediaResolver", fake), _artist_obj())
+
+    fake._library_artist_tracks.assert_not_awaited()
+
+
+async def test_explicit_all_tracks_still_expands_an_unsaved_artist() -> None:
+    """Choosing all tracks explicitly also applies to an artist outside the library."""
+    fake = _fake_queues("all_tracks")
+    fake._resolve_library_artist = AsyncMock(return_value=None)
+    fake._library_artist_tracks = AsyncMock(return_value=[])
+    fake._provider_artist_tracks = AsyncMock(return_value=[_track_obj("All")])
+    fake.mass.music.artists.top_tracks = AsyncMock()
+    artist = Artist(item_id="a1", provider="spotify", name="ABBA", provider_mappings=set())
+
+    result = await MediaResolver.get_artist_tracks(cast("MediaResolver", fake), artist)
+
+    assert [t.name for t in result] == ["All"]
+    fake.mass.music.artists.top_tracks.assert_not_awaited()
 
 
 async def test_all_tracks_keeps_distinct_versions() -> None:
@@ -213,10 +292,10 @@ async def test_prefer_library_falls_back_to_top_tracks() -> None:
 
 @pytest.mark.parametrize("selection", ["top_tracks", "library_tracks", "prefer_library"])
 @pytest.mark.parametrize("stored_artist", [None, _artist_obj({_prov_mapping("p1", "a1")})])
-async def test_artist_not_in_the_library_plays_all_its_tracks(
+async def test_artist_not_in_the_library_plays_top_tracks(
     selection: str, stored_artist: Artist | None
 ) -> None:
-    """An artist not in the library, even when stored for a saved track, plays all its tracks."""
+    """An unsaved artist uses top tracks when a library selection cannot apply."""
     fake = _fake_queues(selection)
     fake._resolve_library_artist = AsyncMock(return_value=stored_artist)
     fake._library_artist_tracks = AsyncMock(return_value=[])
@@ -226,7 +305,8 @@ async def test_artist_not_in_the_library_plays_all_its_tracks(
 
     result = await MediaResolver.get_artist_tracks(cast("MediaResolver", fake), artist)
 
-    assert {t.name for t in result} == {"All"}
+    assert {t.name for t in result} == {"Top"}
+    fake._provider_artist_tracks.assert_not_awaited()
 
 
 async def test_library_tracks_keeps_a_library_artist_to_its_library_tracks() -> None:
