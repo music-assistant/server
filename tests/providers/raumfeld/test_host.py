@@ -116,6 +116,25 @@ def test_spotify_connect_ends_with_the_session() -> None:
     assert not host.plays_spotify_connect("Office")
 
 
+def test_a_change_of_power_or_spotify_connect_is_reported() -> None:
+    """The rooms whose power state or Spotify session changed are named, once read before."""
+    changed = MagicMock()
+    host = RaumfeldHost(MagicMock(), "http://192.168.1.41:47365", changed)
+    host._apply_zone_config(_ZONES)
+    # the first read is no change
+    changed.assert_not_called()
+    host._apply_zone_config(
+        _ZONES.replace("MANUAL_STANDBY", "ACTIVE").replace(" spotifyConnect='active'", "")
+    )
+    changed.assert_called_once_with({"Kitchen", "Office"})
+    # the same rooms again: nothing to report
+    changed.reset_mock()
+    host._apply_zone_config(
+        _ZONES.replace("MANUAL_STANDBY", "ACTIVE").replace(" spotifyConnect='active'", "")
+    )
+    changed.assert_not_called()
+
+
 def test_incomplete_elements_are_skipped() -> None:
     """A room or device without its name, UDN or location is left out, not half-read."""
     config = parse_zone_config(

@@ -49,6 +49,10 @@ DEVICE_INFO_TIMEOUT = 10
 # How long (seconds) a UPnP request to a speaker or the host may take.
 UPNP_TIMEOUT = 15
 
+# How long (seconds) a subscription to a renderer's events is asked for; it is renewed
+# halfway. The renderers grant 300 (measured).
+EVENT_SUBSCRIPTION_TIMEOUT = 300
+
 # How long (seconds) a command to the host's web service (grouping, standby) may take.
 HOST_COMMAND_TIMEOUT = 15
 
