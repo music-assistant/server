@@ -10,9 +10,9 @@ import pytest
 from bumble import core as bumble_core
 from bumble import device as bumble_device
 from bumble import hci as bumble_hci
-from bumble import transport as bumble_transport
 from lc3 import Encoder
 
+from music_assistant.providers.auracast import broadcaster as broadcaster_module
 from music_assistant.providers.auracast.broadcaster import (
     AuracastBroadcaster,
     BroadcastConfig,
@@ -67,7 +67,7 @@ def create_bluetooth_device(
 async def test_pcm_is_accumulated_encoded_and_split_per_bis() -> None:
     """Buffer partial PCM frames and split encoded output across BIS streams."""
     broadcaster = AuracastBroadcaster(
-        BroadcastConfig(name="Test", transport_spec="serial:/dev/test,1000000")
+        BroadcastConfig(name="Test", serial_port="/dev/test", baudrate=1_000_000)
     )
     encoder = FakeEncoder()
     streams = [FakeIsoStream(), FakeIsoStream()]
@@ -112,7 +112,7 @@ def _prepare_silence(broadcaster: AuracastBroadcaster, streams: list[FakeIsoStre
 async def test_silence_frame_is_unaffected_by_previously_encoded_music() -> None:
     """Encode idle silence with an encoder that never saw music, and reuse that frame."""
     broadcaster = AuracastBroadcaster(
-        BroadcastConfig(name="Test", transport_spec="serial:/dev/test,1000000")
+        BroadcastConfig(name="Test", serial_port="/dev/test", baudrate=1_000_000)
     )
     streams = [FakeIsoStream(), FakeIsoStream()]
     music_encoder = _prepare_silence(broadcaster, streams)
@@ -138,7 +138,7 @@ async def test_silence_frame_is_unaffected_by_previously_encoded_music() -> None
 async def test_send_silence_does_nothing_without_a_silence_frame() -> None:
     """Skip idle packets once the broadcaster has been stopped and its cache cleared."""
     broadcaster = AuracastBroadcaster(
-        BroadcastConfig(name="Test", transport_spec="serial:/dev/test,1000000")
+        BroadcastConfig(name="Test", serial_port="/dev/test", baudrate=1_000_000)
     )
     streams = [FakeIsoStream(), FakeIsoStream()]
     _prepare_silence(broadcaster, streams)
@@ -209,7 +209,9 @@ async def test_start_uses_serial_transport_and_stop_closes_it(
         )
     )
 
-    monkeypatch.setattr(bumble_transport, "open_transport", AsyncMock(return_value=hci_transport))
+    monkeypatch.setattr(
+        broadcaster_module, "open_hci_transport", AsyncMock(return_value=hci_transport)
+    )
     monkeypatch.setattr(
         bumble_device.Device,
         "from_config_with_hci",
@@ -217,14 +219,14 @@ async def test_start_uses_serial_transport_and_stop_closes_it(
     )
     monkeypatch.setattr(AuracastBroadcaster, "_create_broadcast", AsyncMock())
     broadcaster = AuracastBroadcaster(
-        BroadcastConfig(name="Test", transport_spec="serial:/dev/cu.test,1000000")
+        BroadcastConfig(name="Test", serial_port="/dev/cu.test", baudrate=1_000_000)
     )
 
     await broadcaster.start()
     await broadcaster.stop()
 
-    cast("Any", bumble_transport.open_transport).assert_awaited_once_with(
-        "serial:/dev/cu.test,1000000"
+    cast("Any", broadcaster_module).open_hci_transport.assert_awaited_once_with(
+        "/dev/cu.test", 1_000_000
     )
     bluetooth_device.power_on.assert_awaited_once()
     assert broadcaster.controller_stack == (
@@ -256,14 +258,16 @@ async def test_start_rejects_controller_without_broadcast_support(
     hci_transport.__iter__.return_value = (object(), object())
     hci_transport.close = AsyncMock()
     bluetooth_device = create_bluetooth_device(missing_feature, missing_command)
-    monkeypatch.setattr(bumble_transport, "open_transport", AsyncMock(return_value=hci_transport))
+    monkeypatch.setattr(
+        broadcaster_module, "open_hci_transport", AsyncMock(return_value=hci_transport)
+    )
     monkeypatch.setattr(
         bumble_device.Device,
         "from_config_with_hci",
         MagicMock(return_value=bluetooth_device),
     )
     broadcaster = AuracastBroadcaster(
-        BroadcastConfig(name="Test", transport_spec="serial:/dev/cu.test,1000000")
+        BroadcastConfig(name="Test", serial_port="/dev/cu.test", baudrate=1_000_000)
     )
 
     with pytest.raises(bumble_core.NotSupportedError, match=expected):
@@ -285,7 +289,9 @@ async def test_controller_probe_returns_support_and_releases_uart(
     bluetooth_device = create_bluetooth_device(
         None if supported else bumble_hci.LeFeatureMask.ISOCHRONOUS_BROADCASTER
     )
-    monkeypatch.setattr(bumble_transport, "open_transport", AsyncMock(return_value=hci_transport))
+    monkeypatch.setattr(
+        broadcaster_module, "open_hci_transport", AsyncMock(return_value=hci_transport)
+    )
     monkeypatch.setattr(
         bumble_device.Device,
         "from_config_with_hci",
@@ -307,7 +313,7 @@ async def test_controller_probe_propagates_open_failures(
 ) -> None:
     """Report a serial port that cannot be opened instead of treating it as incompatible."""
     monkeypatch.setattr(
-        bumble_transport, "open_transport", AsyncMock(side_effect=OSError("port busy"))
+        broadcaster_module, "open_hci_transport", AsyncMock(side_effect=OSError("port busy"))
     )
 
     with pytest.raises(OSError, match="port busy"):
@@ -318,7 +324,7 @@ async def test_controller_probe_propagates_open_failures(
 async def test_drain_pads_partial_frame_and_waits_for_transmission() -> None:
     """Flush the buffered tail as a silent-padded frame before waiting for the queue."""
     broadcaster = AuracastBroadcaster(
-        BroadcastConfig(name="Test", transport_spec="serial:/dev/test,1000000")
+        BroadcastConfig(name="Test", serial_port="/dev/test", baudrate=1_000_000)
     )
     encoder = FakeEncoder()
     streams = [FakeIsoStream(), FakeIsoStream()]
@@ -344,7 +350,7 @@ async def test_drain_pads_partial_frame_and_waits_for_transmission() -> None:
 def test_queued_seconds_reports_pending_frames() -> None:
     """Convert pending SDUs across all BIS streams into seconds of queued audio."""
     broadcaster = AuracastBroadcaster(
-        BroadcastConfig(name="Test", transport_spec="serial:/dev/test,1000000")
+        BroadcastConfig(name="Test", serial_port="/dev/test", baudrate=1_000_000)
     )
     streams = [FakeIsoStream(), FakeIsoStream()]
     streams[0].data_packet_queue.pending = 128
@@ -360,7 +366,8 @@ async def test_manufacturer_data_is_added_to_extended_advertising() -> None:
     broadcaster = AuracastBroadcaster(
         BroadcastConfig(
             name="Test",
-            transport_spec="serial:/dev/test,1000000",
+            serial_port="/dev/test",
+            baudrate=1_000_000,
             manufacturer_data={87: payload},
         )
     )
@@ -386,7 +393,7 @@ async def test_broadcast_name_is_also_advertised_as_local_name() -> None:
     """Advertise the name as both the Complete Local Name and the Broadcast Name."""
     name = "Living room"
     broadcaster = AuracastBroadcaster(
-        BroadcastConfig(name=name, transport_spec="serial:/dev/test,1000000")
+        BroadcastConfig(name=name, serial_port="/dev/test", baudrate=1_000_000)
     )
     advertising_set = MagicMock()
     advertising_set.start_periodic = AsyncMock()
@@ -441,13 +448,16 @@ async def test_start_uses_the_configured_device_address(
     hci_transport.__iter__.return_value = (object(), object())
     hci_transport.close = AsyncMock()
     from_config = MagicMock(return_value=create_bluetooth_device())
-    monkeypatch.setattr(bumble_transport, "open_transport", AsyncMock(return_value=hci_transport))
+    monkeypatch.setattr(
+        broadcaster_module, "open_hci_transport", AsyncMock(return_value=hci_transport)
+    )
     monkeypatch.setattr(bumble_device.Device, "from_config_with_hci", from_config)
     monkeypatch.setattr(AuracastBroadcaster, "_create_broadcast", AsyncMock())
     broadcaster = AuracastBroadcaster(
         BroadcastConfig(
             name="Test",
-            transport_spec="serial:/dev/test,1000000",
+            serial_port="/dev/test",
+            baudrate=1_000_000,
             device_address=configured,
         )
     )
