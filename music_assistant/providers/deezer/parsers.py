@@ -65,6 +65,7 @@ from .helpers import (
 if TYPE_CHECKING:
     from deezer_python_gql.generated.fragments import (
         AlbumFields,
+        AlbumFieldsSubtypes,
         ArtistFields,
         AudiobookFields,
         LivestreamFields,
@@ -328,7 +329,8 @@ def parse_album(
         images.append(img)
 
     deezer_type = album.type_
-    album_type = map_album_type(deezer_type, name)
+    # the search result has no subtypes
+    album_type = map_album_type(deezer_type, name, version, getattr(album, "subtypes", None))
 
     year: int | None = None
     if album.release_date:
@@ -914,11 +916,27 @@ def apply_web_url(item: Artist | Album, gql_result: _HasUrl) -> None:
             pm.url = web_url
 
 
-def map_album_type(deezer_type: DeezerAlbumType | None, title: str) -> AlbumType:
-    """Map Deezer album type to Music Assistant AlbumType."""
-    inferred = infer_album_type(title, "")
+def map_album_type(
+    deezer_type: DeezerAlbumType | None,
+    title: str,
+    version: str,
+    subtypes: AlbumFieldsSubtypes | None,
+) -> AlbumType:
+    """
+    Map Deezer album type to Music Assistant AlbumType.
+
+    :param deezer_type: The album type Deezer reports.
+    :param title: The album title without its version.
+    :param version: The version split off the title, such as "Live".
+    :param subtypes: Deezer's live and compilation flags, absent in search results.
+    """
+    if subtypes is not None and subtypes.is_live:
+        return AlbumType.LIVE
+    inferred = infer_album_type(title, version)
     if inferred in (AlbumType.SOUNDTRACK, AlbumType.LIVE):
         return inferred
+    if subtypes is not None and subtypes.is_compilation:
+        return AlbumType.COMPILATION
     if deezer_type is None:
         return AlbumType.UNKNOWN
     match deezer_type:
