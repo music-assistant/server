@@ -65,6 +65,7 @@ from music_assistant_models.streamdetails import MultiPartPath, StreamMetadata
 
 from music_assistant.constants import (
     CONF_CROSSFADE_DURATION,
+    CONF_DSD_DOP,
     CONF_ENTRY_CROSSFADE_DIFFERENT_SAMPLE_RATES,
     CONF_ENTRY_VOLUME_NORMALIZATION_TARGET,
     CONF_FLOW_MODE_SAMPLE_RATE,
@@ -153,6 +154,7 @@ from music_assistant.helpers.audio import (
     resolve_output_player_ids,
 )
 from music_assistant.helpers.compare import compare_item_ids
+from music_assistant.helpers.dop import get_dop_sample_rate, get_dop_stream, is_dop_source
 from music_assistant.helpers.dsp import ComplexFilter, filter_to_ffmpeg_params
 from music_assistant.helpers.ffmpeg import (
     FFMpeg,
@@ -1541,6 +1543,17 @@ class StreamsAudio:
                 start_streamdetails,
                 supported_sample_rates=supported_sample_rates,
             )
+        if (
+            dop_rate := self._get_dop_rate(start_streamdetails, supported_sample_rates)
+        ) and self.dop_enabled_for_players(players):
+            # DoP has to reach the player bit-exact: no resampling, and F32 holds
+            # every 24-bit DoP word exactly
+            return AudioFormat(
+                content_type=INTERNAL_PCM_FORMAT.content_type,
+                sample_rate=dop_rate,
+                bit_depth=INTERNAL_PCM_FORMAT.bit_depth,
+                channels=2,
+            )
         flow_mode_conf = cast(
             "str",
             player.config.get_value(CONF_FLOW_MODE_SAMPLE_RATE, FLOW_MODE_SAMPLE_RATE_SMART),
@@ -1643,7 +1656,7 @@ class StreamsAudio:
         finally:
             streamdetails.seconds_streamed = bytes_received / pcm_format.pcm_sample_size
 
-    async def get_queue_item_stream(  # noqa: C901, PLR0912
+    async def get_queue_item_stream(  # noqa: C901, PLR0912, PLR0913
         self,
         queue_item: QueueItem,
         pcm_format: AudioFormat,
@@ -1655,6 +1668,7 @@ class StreamsAudio:
         prepared_buffer: AudioBuffer | None = None,
         exact_seek: bool = False,
         consumer_connected: Callable[[], bool] | None = None,
+        dop: bool = False,
     ) -> AsyncGenerator[bytes]:
         """
         Get the (PCM) audio stream for a single queue item.
@@ -1675,6 +1689,7 @@ class StreamsAudio:
         :param consumer_connected: Reports whether the consumer of this stream is still
             connected; once it reports False before the source is opened, the stream ends
             without audio and without marking the item.
+        :param dop: Send a DSD source as untouched DoP instead of decoding it to PCM.
         """
         streamdetails = queue_item.streamdetails
         assert streamdetails
@@ -1694,6 +1709,12 @@ class StreamsAudio:
                 raise_on_error=raise_on_error,
                 display_name=queue_item.name,
                 on_no_audio=_mark_item_unavailable,
+            ):
+                yield chunk
+            return
+        if dop and is_dop_source(streamdetails):
+            async for chunk in self._get_dop_queue_item_stream(
+                queue_item, pcm_format, seek_position, raise_on_error
             ):
                 yield chunk
             return
@@ -2586,6 +2607,8 @@ class StreamsAudio:
         flow_mode_sample_rate_conf, flow_supported_sample_rates = self._flow_restart_context(
             queue.queue_id, protocol_player
         )
+        flow_player = protocol_player or self.mass.players.get_player(queue.queue_id)
+        flow_dop = flow_player is not None and self.dop_enabled_for_players([flow_player])
         # note: get_crossfade_mode() already falls back to standard when smart fades aren't
         # available (no analysis provider / minimal buffer), so crossfade_mode is safe to use.
         self.logger.info(
@@ -2643,6 +2666,7 @@ class StreamsAudio:
                     flow_supported_sample_rates,
                     flow_mode_sample_rate_conf,
                     is_first_track=queue_track is start_queue_item,
+                    dop_enabled=flow_dop,
                 ):
                     break
 
@@ -2665,6 +2689,9 @@ class StreamsAudio:
                     standard_crossfade_duration = self.mass.config.get_raw_core_config_value(
                         CONF_PLAYER_QUEUES, CONF_CROSSFADE_DURATION, 8
                     )
+                # a fade mixes two tracks, which destroys DoP on either side of it
+                if flow_dop and self._dop_transition(queue.queue_id, queue_track):
+                    item_crossfade_mode = CrossfadeMode.DISABLED
                 # the item before fades into this one as the queue is set; a declared
                 # overlap only concerns this item's own tail, into the item after it
                 incoming_mode = item_crossfade_mode
@@ -2864,7 +2891,18 @@ class StreamsAudio:
                 source_buffer: AudioBuffer | None = None
                 holding_back = item_crossfade_mode != CrossfadeMode.DISABLED
 
-                item_stream = await incoming_prefetcher.take(queue_track, int(raw_seek_position))
+                item_dop = flow_dop and (
+                    self._get_dop_rate(queue_track.streamdetails, [pcm_format.sample_rate])
+                    is not None
+                )
+                if item_dop:
+                    # a prefetch holds decoded PCM, never the raw DSD that DoP needs
+                    await incoming_prefetcher.close()
+                    item_stream = None
+                else:
+                    item_stream = await incoming_prefetcher.take(
+                        queue_track, int(raw_seek_position)
+                    )
                 prefetched_size = incoming_prefetcher.collected_at_handover if item_stream else 0
                 if item_stream is None:
                     item_stream = self.get_queue_item_stream(
@@ -2877,6 +2915,7 @@ class StreamsAudio:
                         raise_on_error=False,
                         session_id=flow_session_id,
                         prepared_buffer=incoming_audio_buffer,
+                        dop=item_dop,
                     )
 
                 # closing here releases the decoders on an early exit,
@@ -3171,11 +3210,16 @@ class StreamsAudio:
                         else MIN_CROSSFADE_DURATION
                     )
                 )
-                if len(crossfade_buffer) >= min_fade_out_size and self.crossfade_allowed(
-                    queue_track,
-                    crossfade_mode=item_crossfade_mode,
-                    player_id=queue.queue_id,
-                    flow_mode=True,
+                if (
+                    len(crossfade_buffer) >= min_fade_out_size
+                    # the next item may have changed into a DSD track since this one started
+                    and not (flow_dop and self._dop_transition(queue.queue_id, queue_track))
+                    and self.crossfade_allowed(
+                        queue_track,
+                        crossfade_mode=item_crossfade_mode,
+                        player_id=queue.queue_id,
+                        flow_mode=True,
+                    )
                 ):
                     last_fadeout_part = bytes(crossfade_buffer[-crossfade_buffer_size:])
                     last_streamdetails = queue_track.streamdetails
@@ -3408,6 +3452,23 @@ class StreamsAudio:
             return True
         pending = self._crossfade_pending.get(queue_id)
         return pending is not None and pending[0] == queue_item_id
+
+    def dop_enabled_for_players(self, players: Iterable[Player]) -> bool:
+        """
+        Return whether every given player takes DSD as DoP.
+
+        DoP is only sent to a player that plays on its own: a group mixes, resamples or
+        re-encodes the shared stream for its members, which turns DoP into noise.
+
+        :param players: The players consuming the stream.
+        """
+        players = tuple(players)
+        return bool(players) and all(
+            self.mass.config.get_raw_player_config_value(player.player_id, CONF_DSD_DOP, False)
+            is True
+            and len(player.group_members) <= 1
+            for player in players
+        )
 
     def clear_crossfade_handover(self, queue_id: str) -> None:
         """
@@ -5676,6 +5737,7 @@ class StreamsAudio:
         supported_sample_rates: list[int],
         flow_mode_sample_rate_conf: str,
         is_first_track: bool,
+        dop_enabled: bool = False,
     ) -> bool:
         """
         Return True if the upcoming queue track requires exiting the flow stream.
@@ -5698,6 +5760,7 @@ class StreamsAudio:
         :param supported_sample_rates: Sorted list of the player's supported rates.
         :param flow_mode_sample_rate_conf: The flow mode sample rate config value.
         :param is_first_track: Whether this is the first track of the flow stream.
+        :param dop_enabled: Whether the consuming player takes DSD as DoP.
         """
         # live audio (radio, plugin or audio source) cannot be flowed; let the
         # queue controller fall back to single-item streaming for this item
@@ -5712,6 +5775,21 @@ class StreamsAudio:
             return True
 
         if is_first_track or queue_track.streamdetails is None:
+            return False
+        if dop_enabled and (
+            dop_rate := self._get_dop_rate(queue_track.streamdetails, supported_sample_rates)
+        ):
+            # DoP only survives at exactly its own rate, whatever the flow mode
+            if dop_rate != pcm_format.sample_rate:
+                self.logger.info(
+                    "DSD track %s (%s) needs DoP rate %s, flow runs at %s "
+                    "- breaking out to restart flow stream",
+                    queue_track.queue_item_id,
+                    queue_track.name,
+                    dop_rate,
+                    pcm_format.sample_rate,
+                )
+                return True
             return False
         raw_next_rate = queue_track.streamdetails.audio_format.sample_rate
         if not raw_next_rate or not supported_sample_rates:
@@ -6000,3 +6078,121 @@ class StreamsAudio:
             # seeks by bitrate or the Xing TOC instead of decoding up to the position: exact for
             # CBR, while VBR lands seconds off with a TOC and can be minutes off without one
             add_input_fflag(extra_input_args, "+fastseek")
+
+    def _get_dop_rate(
+        self,
+        streamdetails: StreamDetails | None,
+        supported_sample_rates: Iterable[int],
+    ) -> int | None:
+        """
+        Return the DoP rate a stream would play at, or None if it cannot play as DoP.
+
+        :param streamdetails: Stream details of the item, if resolved.
+        :param supported_sample_rates: Sample rates the consuming player takes.
+        """
+        if streamdetails is None or not is_dop_source(streamdetails):
+            return None
+        dop_rate = get_dop_sample_rate(streamdetails.audio_format)
+        return dop_rate if dop_rate in set(supported_sample_rates) else None
+
+    def _dop_transition(self, queue_id: str, queue_item: QueueItem) -> bool:
+        """
+        Return whether a queue item or the one after it is a DSD track.
+
+        :param queue_id: The queue the items belong to.
+        :param queue_item: The item about to play (or playing).
+        """
+        if self._is_dsd_queue_item(queue_item):
+            return True
+        next_item = self.mass.player_queues.get_next_item(queue_id, queue_item.queue_item_id)
+        return next_item is not None and self._is_dsd_queue_item(next_item)
+
+    @staticmethod
+    def _is_dsd_queue_item(queue_item: QueueItem) -> bool:
+        """Return whether a queue item plays a DSD source, also before it is resolved."""
+        if queue_item.streamdetails is not None:
+            return is_dop_source(queue_item.streamdetails)
+        media_item = queue_item.media_item
+        return isinstance(media_item, Track) and any(
+            mapping.available and get_dop_sample_rate(mapping.audio_format) is not None
+            for mapping in media_item.provider_mappings
+        )
+
+    async def _get_dop_queue_item_stream(
+        self,
+        queue_item: QueueItem,
+        pcm_format: AudioFormat,
+        seek_position: float,
+        raise_on_error: bool,
+    ) -> AsyncGenerator[bytes]:
+        """
+        Stream a DSD queue item as untouched DoP.
+
+        Volume normalization, fades, speed changes and the audio buffer are all
+        bypassed: anything that alters the samples turns DoP into noise.
+
+        :param queue_item: The DSD queue item.
+        :param pcm_format: Flow PCM format, running at the DoP rate of the item.
+        :param seek_position: Start position in seconds.
+        :param raise_on_error: Raise on stream errors instead of logging them.
+        """
+        streamdetails = queue_item.streamdetails
+        assert streamdetails
+        assert isinstance(streamdetails.path, str)
+        logger = self.logger.getChild("queue_item_stream")
+        streamdetails.volume_normalization_mode = VolumeNormalizationMode.DISABLED
+        streamdetails.volume_normalization_gain_correct = None
+        logger.info(
+            "Streaming %s (%s) as DoP at %s Hz",
+            queue_item.name,
+            streamdetails.uri,
+            pcm_format.sample_rate,
+        )
+        bytes_received = 0
+        finished = False
+        start_reported = False
+        next_buffer_triggered = False
+        try:
+            async for chunk in get_dop_stream(streamdetails.path, pcm_format, seek_position):
+                if bytes_received == 0 and streamdetails.seconds_streamed is None:
+                    start_reported = self._notify_provider_stream_started(streamdetails)
+                bytes_received += len(chunk)
+                if (
+                    not next_buffer_triggered
+                    and streamdetails.duration
+                    and (bytes_received / pcm_format.pcm_sample_size + seek_position)
+                    >= streamdetails.duration - 60
+                    and (
+                        next_item := self.mass.player_queues.get_next_item(
+                            queue_item.queue_id, queue_item.queue_item_id
+                        )
+                    )
+                    and next_item.queue_item_id != queue_item.queue_item_id
+                    and next_item.media_type in (MediaType.TRACK, MediaType.SOUND_EFFECT)
+                ):
+                    next_buffer_triggered = True
+                    self.mass.player_queues.prepare_next_audio_buffer(
+                        queue_item.queue_id, queue_item.queue_item_id
+                    )
+                yield chunk
+            finished = True
+        except asyncio.CancelledError:
+            raise
+        except Exception as err:
+            streamdetails.stream_error = True
+            if bytes_received == 0:
+                queue_item.available = False
+            if raise_on_error:
+                raise AudioError(f"DoP stream failed: {err}") from err
+            logger.error(
+                "Error while streaming %s (%s) as DoP: %s",
+                queue_item.name,
+                streamdetails.uri,
+                err,
+            )
+        finally:
+            seconds_streamed = bytes_received / pcm_format.pcm_sample_size
+            streamdetails.seconds_streamed = seconds_streamed
+            self._notify_provider_streamed(
+                streamdetails, finished, seconds_streamed, start_reported
+            )
