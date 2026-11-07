@@ -92,6 +92,7 @@ def _enrichment(musicbrainz: MagicMock | None = None) -> MetadataEnrichmentMixin
     enrichment.config = MagicMock()
     enrichment.config.get_value = _online_metadata_only
     enrichment.preferred_language = "en"  # type: ignore[misc]
+    enrichment.language_changed = 0  # type: ignore[misc]
     enrichment.providers = []  # type: ignore[misc]
     enrichment.link_providers_via_musicbrainz = True  # type: ignore[misc]
     # every music provider resolves to a stub, MusicBrainz only when it is loaded
