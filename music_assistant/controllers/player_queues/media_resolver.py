@@ -869,8 +869,9 @@ class MediaResolver:
         """
         if artist_items_conf == "top_tracks":
             tracks = await self.mass.music.artists.top_tracks(
-                artist.item_id, artist.provider, limit=None
+                artist.item_id, artist.provider, limit=None, raise_on_unavailable=True
             )
+            tracks = [track for track in tracks if track.available]
             if not tracks:
                 tracks = await self._library_artist_tracks(artist)
             random.shuffle(tracks)

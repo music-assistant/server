@@ -13,12 +13,14 @@ from __future__ import annotations
 
 import logging
 from functools import partial
+from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, cast
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
 import pytest
 from music_assistant_models.errors import MediaNotFoundError, ResourceTemporarilyUnavailable
+from music_assistant_models.helpers import set_global_cache_values
 from music_assistant_models.media_items import Artist, ProviderMapping, Track
 from music_assistant_models.unique_list import UniqueList
 
@@ -78,7 +80,10 @@ async def test_default_resolves_library_only_artist(mass: MusicAssistant) -> Non
     track_a = await _add_track(mass, "Dancing Queen", [artist])
     track_b = await _add_track(mass, "Mamma Mia", [artist])
 
-    result = await mass.player_queues._media_resolver.get_artist_tracks(artist)
+    # Model a loaded local source with no top-tracks feature, rather than a missing source.
+    local_provider = SimpleNamespace(supported_features=set())
+    with patch.object(mass.music, "get_visible_provider", return_value=local_provider):
+        result = await mass.player_queues._media_resolver.get_artist_tracks(artist)
 
     assert {t.name for t in result} == {track_a.name, track_b.name}
 
@@ -125,6 +130,7 @@ async def test_top_tracks_excludes_library_tracks(mass: MusicAssistant) -> None:
         return_value=[_track_obj("Top song")]
     )
 
+    await set_global_cache_values({"available_providers": {"test"}})
     result = await mass.player_queues._media_resolver.get_artist_tracks(artist)
 
     assert "Honey Honey" not in {t.name for t in result}
@@ -135,7 +141,13 @@ async def test_top_tracks_excludes_library_tracks(mass: MusicAssistant) -> None:
 
 def _track_obj(name: str, version: str = "") -> Track:
     """Create a minimal track with the given name and version (for dedup-key tests)."""
-    return Track(item_id=name, provider="test", name=name, version=version, provider_mappings=set())
+    return Track(
+        item_id=name,
+        provider="test",
+        name=name,
+        version=version,
+        provider_mappings={_prov_mapping("test", name)},
+    )
 
 
 def _prov_mapping(instance: str, item_id: str, in_library: bool = False) -> ProviderMapping:
@@ -208,7 +220,7 @@ async def test_default_uses_top_tracks_without_fetching_discography(
 
     assert [t.name for t in result] == ["Top"]
     fake.mass.music.artists.top_tracks.assert_awaited_once_with(
-        artist.item_id, artist.provider, limit=None
+        artist.item_id, artist.provider, limit=None, raise_on_unavailable=True
     )
     fake._provider_artist_tracks.assert_not_awaited()
     fake._library_artist_tracks.assert_not_awaited()
@@ -225,6 +237,25 @@ async def test_default_falls_back_to_library_when_top_tracks_are_empty() -> None
 
     assert [t.name for t in result] == ["Local"]
     fake._provider_artist_tracks.assert_not_awaited()
+
+
+@pytest.mark.parametrize("has_playable_top_track", [False, True])
+async def test_default_ignores_unavailable_top_tracks(has_playable_top_track: bool) -> None:
+    """Unavailable rankings fall back locally; mixed rankings keep only playable top tracks."""
+    fake = _fake_queues(None)
+    unavailable = _track_obj("Unavailable")
+    for mapping in unavailable.provider_mappings:
+        mapping.available = False
+    ranking = [unavailable]
+    if has_playable_top_track:
+        ranking.append(_track_obj("Top"))
+    fake.mass.music.artists.top_tracks = AsyncMock(return_value=ranking)
+    fake._library_artist_tracks = AsyncMock(return_value=[_track_obj("Local")])
+
+    result = await MediaResolver.get_artist_tracks(cast("MediaResolver", fake), _artist_obj())
+
+    assert [track.name for track in result] == ["Top" if has_playable_top_track else "Local"]
+    assert fake._library_artist_tracks.await_count == (0 if has_playable_top_track else 1)
 
 
 async def test_top_tracks_failure_does_not_silently_change_selection() -> None:
