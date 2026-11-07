@@ -1,0 +1,12 @@
+{
+  "error": {
+    "details": {
+      "ynison-error-code": "500140000",
+      "ynison-go-away-for-seconds": "3600"
+    },
+    "grpc_code": 14,
+    "http_code": 503,
+    "http_status": "Service Unavailable",
+    "message": "Ynison service is temporary unavailable."
+  }
+}

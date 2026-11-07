@@ -5,7 +5,8 @@ from __future__ import annotations
 
 import asyncio
 import json
-from collections.abc import AsyncGenerator
+import time
+from collections.abc import AsyncGenerator, Awaitable, Callable
 from contextlib import suppress
 from copy import deepcopy
 from pathlib import Path
@@ -14,6 +15,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import aiohttp
 import pytest
+from music_assistant_models.enums import RepeatMode
 from music_assistant_models.errors import LoginFailed, ResourceTemporarilyUnavailable
 from ya_passport_auth import SecretStr
 
@@ -23,6 +25,7 @@ from music_assistant.providers.yandex_ynison.constants import (
     YNISON_ORIGIN,
 )
 from music_assistant.providers.yandex_ynison.ynison_client import (
+    StatusBaseline,
     YnisonClient,
     YnisonDeviceInfo,
     YnisonSendError,
@@ -37,6 +40,14 @@ FIXTURES = Path(__file__).parent / "fixtures" / "ynison"
 def _fixture(name: str) -> dict[str, Any]:
     """Load a sanitized Ynison protocol fixture."""
     return cast("dict[str, Any]", json.loads((FIXTURES / name).read_text()))
+
+
+@pytest.fixture(autouse=True)
+def _short_strict_send_wait(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep strict sends on a dead channel from waiting the production 5 s."""
+    monkeypatch.setattr(
+        "music_assistant.providers.yandex_ynison.ynison_client.STRICT_SEND_WAIT", 0.2
+    )
 
 
 @pytest.fixture
@@ -196,6 +207,40 @@ class TestYnisonClientBuildMethods:
         assert device["info"]["device_id"] == "test-device-id"
         assert device["capabilities"]["can_be_player"] is True
         assert device["capabilities"]["can_be_remote_controller"] is False
+
+    def test_device_header_carries_app_version(self, client: YnisonClient) -> None:
+        """The device-info header names the app version, as the official header proto does."""
+        data = json.loads(client._build_ws_protocol_header()[len("Bearer, v2, ") :])
+
+        assert json.loads(data["Ynison-Device-Info"])["app_version"] == "1.0.0"
+
+    def test_device_registration_has_only_update_device_fields(self, client: YnisonClient) -> None:
+        """Registration sends only fields the UpdateDevice message defines."""
+        assert set(client._build_device_dict()) == {"info", "capabilities"}
+
+    async def test_losing_activity_mutes_passive_events_again(self, client: YnisonClient) -> None:
+        """The server clears mute_events_if_passive on activation, so it is re-sent on loss."""
+        mock_ws = AsyncMock()
+        mock_ws.closed = False
+        client._ws = mock_ws
+        client._connected = True
+        frames = [
+            {"active_device_id_optional": "test-device-id"},
+            {"active_device_id_optional": "phone"},
+        ]
+
+        async def _aiter(_self: Any) -> Any:
+            for frame in frames:
+                yield _make_ws_msg(aiohttp.WSMsgType.TEXT, json.dumps(frame))
+
+        mock_ws.__aiter__ = _aiter
+        with patch.object(client, "_reconnect", new_callable=AsyncMock):
+            await client._message_loop()
+
+        sent = [json.loads(call.args[0]) for call in mock_ws.send_str.call_args_list]
+        assert [msg["update_session_params"] for msg in sent if "update_session_params" in msg] == [
+            {"mute_events_if_passive": True}
+        ]
 
     def test_build_initial_state(self, client: YnisonClient) -> None:
         """Initial state is paused with empty queue."""
@@ -668,6 +713,299 @@ class TestYnisonClientSend:
         await client.update_active_device("test")
         # No exception raised
 
+    @pytest.mark.parametrize(
+        "send",
+        [
+            lambda c: c.update_playing_status(1000, 5000, paused=True),
+            lambda c: c.update_active_device("device-123"),
+            lambda c: c.update_session_params(mute_events_if_passive=True),
+        ],
+    )
+    async def test_every_message_carries_request_envelope(
+        self, client: YnisonClient, send: Callable[[YnisonClient], Awaitable[Any]]
+    ) -> None:
+        """Status, active-device and session-params messages carry the request envelope."""
+        await send(client)
+        msg = json.loads(self.mock_ws.send_str.call_args[0][0])
+
+        assert msg["rid"]
+        assert msg["player_action_timestamp_ms"].isdigit()
+        assert msg["activity_interception_type"] == "DO_NOT_INTERCEPT_BY_DEFAULT"
+
+    async def test_own_unpaused_status_intercepts_if_no_one_active(
+        self, client: YnisonClient
+    ) -> None:
+        """An unpaused status claims activity only when no device is active."""
+        await client.update_playing_status(1000, 5000, paused=False)
+        msg = json.loads(self.mock_ws.send_str.call_args[0][0])
+
+        assert msg["activity_interception_type"] == "INTERCEPT_IF_NO_ONE_ACTIVE"
+
+
+class TestReportStatus:
+    """Tests for the status reporter policy in front of update_playing_status."""
+
+    @pytest.fixture(autouse=True)
+    def _setup(self, client: YnisonClient) -> None:
+        """Connect a mock socket and make this device active on a known track."""
+        self.mock_ws = AsyncMock()
+        self.mock_ws.closed = False
+        client._ws = self.mock_ws
+        client._connected = True
+        client._parse_state(
+            {
+                "active_device_id_optional": "test-device-id",
+                "player_state": {
+                    "player_queue": {
+                        "current_playable_index": 0,
+                        "playable_list": [{"playable_id": "t1"}],
+                    },
+                    "status": {
+                        "progress_ms": "10000",
+                        "duration_ms": "200000",
+                        "paused": False,
+                        "version": {"device_id": "peer", "version": "1", "timestamp_ms": "0"},
+                    },
+                },
+            }
+        )
+
+    def _sent(self) -> list[dict[str, Any]]:
+        """Return the playing-status payloads sent so far."""
+        return [
+            json.loads(call.args[0])["update_playing_status"]["playing_status"]
+            for call in self.mock_ws.send_str.call_args_list
+        ]
+
+    async def test_clamps_progress_to_duration(self, client: YnisonClient) -> None:
+        """Progress never exceeds duration on the wire."""
+        assert await client.report_status(250000, 200000, paused=False, strict=True)
+
+        assert self._sent()[-1]["progress_ms"] == "200000"
+
+    async def test_falls_back_to_server_duration(self, client: YnisonClient) -> None:
+        """An unknown local duration uses the server's duration."""
+        assert await client.report_status(50000, 0, paused=True, strict=True)
+
+        assert self._sent()[-1]["duration_ms"] == "200000"
+
+    async def test_unknown_duration_strict_raises(self, client: YnisonClient) -> None:
+        """A strict report without any known duration fails instead of succeeding silently."""
+        client.state.player_state["status"]["duration_ms"] = "0"
+
+        with pytest.raises(YnisonSendError):
+            await client.report_status(1000, 0, paused=True, strict=True)
+        assert self._sent() == []
+
+    async def test_unknown_duration_best_effort_skips(self, client: YnisonClient) -> None:
+        """A best-effort report without a duration is skipped."""
+        client.state.player_state["status"]["duration_ms"] = "0"
+
+        assert await client.report_status(1000, 0, paused=False) is False
+        assert self._sent() == []
+
+    async def test_best_effort_matching_server_status_is_skipped(
+        self, client: YnisonClient
+    ) -> None:
+        """A heartbeat within 2 s of the extrapolated server status is not sent."""
+        with patch(
+            "music_assistant.providers.yandex_ynison.ynison_client.time.monotonic",
+            return_value=time.monotonic() + 5,
+        ):
+            sent = await client.report_status(15500, 200000, paused=False)
+
+        assert sent is False
+        assert self._sent() == []
+
+    @pytest.mark.parametrize(
+        ("progress", "duration", "paused"),
+        [(40000, 200000, False), (15000, 200000, True), (15000, 180000, False)],
+    )
+    async def test_best_effort_change_is_sent(
+        self, client: YnisonClient, progress: int, duration: int, paused: bool
+    ) -> None:
+        """Drift above 2 s, a pause change, or a duration change is published."""
+        with patch(
+            "music_assistant.providers.yandex_ynison.ynison_client.time.monotonic",
+            return_value=time.monotonic() + 5,
+        ):
+            assert await client.report_status(progress, duration, paused=paused)
+
+        assert self._sent()[-1]["progress_ms"] == str(progress)
+
+    async def test_own_send_becomes_dedup_baseline(self, client: YnisonClient) -> None:
+        """After publishing a seek, a matching heartbeat is not sent again."""
+        assert await client.report_status(90000, 200000, paused=False, strict=True)
+        assert await client.report_status(90500, 200000, paused=False) is False
+
+        assert len(self._sent()) == 1
+
+    def test_relayed_known_status_is_marked(self, client: YnisonClient) -> None:
+        """A frame repeating the newest known status is flagged as a relay."""
+        client._parse_state(
+            {
+                "player_state": {
+                    "status": {"progress_ms": "10000", "duration_ms": "200000", "paused": False}
+                }
+            }
+        )
+        assert client.state.status_is_relay is True
+
+        client._parse_state(
+            {
+                "player_state": {
+                    "status": {"progress_ms": "90000", "duration_ms": "200000", "paused": False}
+                }
+            }
+        )
+        assert client.state.status_is_relay is False
+
+    async def test_relay_of_own_sent_status_is_marked(self, client: YnisonClient) -> None:
+        """After our seek, the server relaying that position is not a new status."""
+        assert await client.report_status(90000, 200000, paused=False, strict=True)
+
+        client._parse_state(
+            {
+                "player_state": {
+                    "status": {"progress_ms": "90000", "duration_ms": "200000", "paused": False}
+                }
+            }
+        )
+        assert client.state.status_is_relay is True
+
+    def test_peer_seek_to_known_position_is_not_a_relay(self, client: YnisonClient) -> None:
+        """A newly versioned peer status is fresh even at the last known position."""
+        client._parse_state(
+            {
+                "player_state": {
+                    "status": {
+                        "progress_ms": "10000",
+                        "duration_ms": "200000",
+                        "paused": False,
+                        "version": {"device_id": "peer", "version": "2", "timestamp_ms": "0"},
+                    }
+                }
+            }
+        )
+        assert client.state.status_is_relay is False
+
+    def test_relay_keeps_the_known_version(self, client: YnisonClient) -> None:
+        """A status repeated with its original version is a relay."""
+        client._parse_state(
+            {
+                "player_state": {
+                    "status": {
+                        "progress_ms": "10000",
+                        "duration_ms": "200000",
+                        "paused": False,
+                        "version": {"device_id": "peer", "version": "1", "timestamp_ms": "0"},
+                    }
+                }
+            }
+        )
+        assert client.state.status_is_relay is True
+
+    async def test_peer_seek_to_own_sent_position_is_not_a_relay(
+        self, client: YnisonClient
+    ) -> None:
+        """A peer command at the position we published last is not our relay."""
+        assert await client.report_status(0, 200000, paused=False, strict=True)
+
+        client._parse_state(
+            {
+                "player_state": {
+                    "status": {
+                        "progress_ms": "0",
+                        "duration_ms": "200000",
+                        "paused": False,
+                        "version": {"device_id": "peer", "version": "3", "timestamp_ms": "0"},
+                    }
+                }
+            }
+        )
+        assert client.state.status_is_relay is False
+
+    async def test_relay_keeps_the_extrapolation_anchor(self, client: YnisonClient) -> None:
+        """A relayed status does not restart the clock its position is extrapolated from."""
+        later = time.monotonic() + 60
+        with patch(
+            "music_assistant.providers.yandex_ynison.ynison_client.time.monotonic",
+            return_value=later,
+        ):
+            client._parse_state(
+                {
+                    "player_state": {
+                        "status": {
+                            "progress_ms": "10000",
+                            "duration_ms": "200000",
+                            "paused": False,
+                            "version": {"device_id": "peer", "version": "1", "timestamp_ms": "0"},
+                        }
+                    }
+                }
+            )
+            assert client.state.status_is_relay is True
+            assert await client.report_status(70000, 200000, paused=False) is False
+
+        assert self._sent() == []
+
+    def test_frame_without_status_keeps_relay_marker(self, client: YnisonClient) -> None:
+        """A frame that does not carry a status leaves the retained status stale."""
+        client._parse_state({"devices": [{"info": {"device_id": "peer"}}]})
+        assert client.state.status_is_relay is True
+
+        client._parse_state(
+            {
+                "player_state": {
+                    "player_queue": {
+                        "current_playable_index": 0,
+                        "playable_list": [{"playable_id": "t1"}, {"playable_id": "t2"}],
+                    }
+                }
+            }
+        )
+        assert client.state.status_is_relay is True
+
+    async def test_best_effort_skipped_while_other_device_active(
+        self, client: YnisonClient
+    ) -> None:
+        """Best-effort status is not published for a session another device owns."""
+        client.state.active_device_id = "phone"
+
+        assert await client.report_status(90000, 200000, paused=False) is False
+        assert self._sent() == []
+
+    async def test_strict_report_is_not_gated(self, client: YnisonClient) -> None:
+        """User commands are delivered even while another device is active."""
+        client.state.active_device_id = "phone"
+
+        assert await client.report_status(90000, 200000, paused=False, strict=True)
+
+    async def test_strict_waits_for_reconnect(self, client: YnisonClient) -> None:
+        """A strict report waits for the channel to come back."""
+        client._connected = False
+        client._ws = None
+
+        async def reconnect() -> None:
+            await asyncio.sleep(0.05)
+            client._ws = self.mock_ws
+            client._connected = True
+
+        task = asyncio.create_task(reconnect())
+        assert await client.report_status(90000, 200000, paused=True, strict=True)
+        await task
+
+    async def test_strict_raises_after_wait(self, client: YnisonClient) -> None:
+        """A strict report raises when the channel does not return in time."""
+        client._connected = False
+        client._ws = None
+
+        with (
+            patch("music_assistant.providers.yandex_ynison.ynison_client.STRICT_SEND_WAIT", 0.05),
+            pytest.raises(YnisonSendError),
+        ):
+            await client.report_status(90000, 200000, paused=True, strict=True)
+
 
 # ------------------------------------------------------------------
 # generate_device_id
@@ -1128,6 +1466,45 @@ class TestGetRedirectTicket:
         assert sid == 42
         mock_ws.close.assert_awaited_once()
 
+    @pytest.mark.parametrize(
+        ("redirect_extra", "heartbeat"),
+        [
+            ({"keep_alive_params": {"keep_alive_time_seconds": 20}}, 20.0),
+            ({"keep_alive_params": {"keep_alive_time_seconds": "45"}}, 45.0),
+            ({"keep_alive_params": {"keep_alive_time_seconds": 0}}, 30.0),
+            ({"keep_alive_params": {"keep_alive_time_seconds": 0.01}}, 5.0),
+            ({}, 30.0),
+        ],
+    )
+    async def test_server_keepalive_drives_state_heartbeat(
+        self,
+        client: YnisonClient,
+        redirect_extra: dict[str, Any],
+        heartbeat: float,
+    ) -> None:
+        """The redirector's keep-alive interval becomes the state socket heartbeat."""
+        redirect_msg = MagicMock()
+        redirect_msg.type = aiohttp.WSMsgType.TEXT
+        redirect_msg.data = json.dumps(
+            {"host": "node", "redirect_ticket": "ticket", "session_id": 1, **redirect_extra}
+        )
+        redirect_ws = AsyncMock()
+        redirect_ws.receive = AsyncMock(return_value=redirect_msg)
+        state_ws = AsyncMock()
+        session = AsyncMock()
+        session.ws_connect = AsyncMock(side_effect=[redirect_ws, state_ws])
+        client._session = session
+
+        with patch.object(client, "send_full_state", new_callable=AsyncMock):
+            await client._connect_state(*await client._get_redirect_ticket())
+        message_task = client._message_task
+        assert message_task is not None
+        message_task.cancel()
+        with suppress(asyncio.CancelledError):
+            await message_task
+
+        assert session.ws_connect.await_args_list[1].kwargs["heartbeat"] == heartbeat
+
     async def test_auth_failure_401(self, client: YnisonClient) -> None:
         """401 WSServerHandshakeError raises LoginFailed."""
         err = aiohttp.WSServerHandshakeError(
@@ -1416,7 +1793,9 @@ class TestMessageLoop:
             assert client.queue_snapshot()["playable_list"] == [{"playable_id": "peer-new"}]
         finally:
             release.set()
-            tasks = [command] if heartbeat is None else [heartbeat, command]
+            tasks: list[asyncio.Task[Any]] = (
+                [command] if heartbeat is None else [heartbeat, command]
+            )
             await asyncio.gather(*tasks, return_exceptions=True)
 
     async def test_callback_programming_error_propagates(
@@ -1706,6 +2085,159 @@ class TestMessageLoop:
 
         on_state_update.assert_not_awaited()
 
+    async def _record_reconnect_delays(self, client: YnisonClient, count: int) -> list[float]:
+        """Run ``count`` failing reconnect attempts and return their scheduled delays."""
+        client._session = MagicMock()
+        client._session.closed = False
+        sleeps: list[float] = []
+
+        async def record_sleep(delay: float) -> None:
+            sleeps.append(delay)
+            if len(sleeps) >= count:
+                client._stop_event.set()
+
+        with (
+            patch(SLEEP_PATH, new_callable=AsyncMock, side_effect=record_sleep),
+            patch.object(
+                client,
+                "_get_redirect_ticket",
+                new_callable=AsyncMock,
+                side_effect=ConnectionError("down"),
+            ),
+        ):
+            await client._reconnect()
+        client._stop_event.clear()
+        return sleeps
+
+    async def test_go_away_error_breaks_loop_and_waits_exact_window(
+        self,
+        client: YnisonClient,
+        mock_state_callback: AsyncMock,
+    ) -> None:
+        """A server go-away stops the session and holds the next dial for exactly its window."""
+        go_away_msg = _make_ws_msg(
+            aiohttp.WSMsgType.TEXT, json.dumps(_fixture("go_away_throttle.json"))
+        )
+        valid_msg = _make_ws_msg(
+            aiohttp.WSMsgType.TEXT,
+            json.dumps({"player_state": {"status": {"paused": True}}}),
+        )
+
+        await self._run_loop_with_messages(client, [go_away_msg, valid_msg])
+        mock_state_callback.assert_not_awaited()
+
+        assert await self._record_reconnect_delays(client, 1) == [3600.0]
+
+    async def test_repeated_go_away_waits_server_window_without_escalation(
+        self, client: YnisonClient
+    ) -> None:
+        """Consecutive go-aways each wait the server window; the client adds no escalation."""
+        go_away = _make_ws_msg(
+            aiohttp.WSMsgType.TEXT, json.dumps(_fixture("go_away_throttle.json"))
+        )
+        for _ in range(3):
+            await self._run_loop_with_messages(client, [go_away])
+            assert await self._record_reconnect_delays(client, 1) == [3600.0]
+
+    async def test_ladder_restarts_after_go_away_window(self, client: YnisonClient) -> None:
+        """Failures after a go-away wait restart the default ladder from its first step."""
+        await self._record_reconnect_delays(client, 3)
+        await self._run_loop_with_messages(
+            client,
+            [_make_ws_msg(aiohttp.WSMsgType.TEXT, json.dumps(_fixture("go_away_throttle.json")))],
+        )
+
+        assert await self._record_reconnect_delays(client, 3) == [3600.0, 1.0, 5.0]
+
+    async def test_go_away_defers_a_reconnect_already_waiting(self, client: YnisonClient) -> None:
+        """A go-away that arrives while a reconnect waits holds that dial for its window."""
+        client._session = MagicMock()
+        client._session.closed = False
+        client._policy.on_transport_failure()
+        sleeps: list[float] = []
+        dials: list[list[float]] = []
+
+        async def record_sleep(delay: float) -> None:
+            sleeps.append(delay)
+            if len(sleeps) == 1:
+                client._apply_error_frame(_fixture("go_away_throttle.json")["error"])
+
+        async def dial() -> None:
+            dials.append(list(sleeps))
+            client._stop_event.set()
+            raise ConnectionError("down")
+
+        with (
+            patch(SLEEP_PATH, new_callable=AsyncMock, side_effect=record_sleep),
+            patch.object(client, "_get_redirect_ticket", new_callable=AsyncMock, side_effect=dial),
+        ):
+            await client._reconnect()
+        client._stop_event.clear()
+
+        assert dials == [[1.0, 3600.0]]
+
+    async def test_drop_after_healthy_state_is_a_transport_failure(
+        self, client: YnisonClient
+    ) -> None:
+        """A non-fatal error followed by state and a drop retries on the transport ladder."""
+        error = _make_ws_msg(
+            aiohttp.WSMsgType.TEXT,
+            json.dumps({"error": {"details": {"ynison-error-code": "400030001"}, "grpc_code": 3}}),
+        )
+        state = _make_ws_msg(
+            aiohttp.WSMsgType.TEXT, json.dumps({"player_state": {"status": {"paused": True}}})
+        )
+        await self._run_loop_with_messages(client, [error, state])
+
+        assert await self._record_reconnect_delays(client, 1) == [1.0]
+
+    async def test_server_backoff_ladder_replaces_default(self, client: YnisonClient) -> None:
+        """``ynison-backoff-millis`` supplies the ladder, sorted and de-duplicated."""
+        rebalance = _make_ws_msg(
+            aiohttp.WSMsgType.TEXT,
+            json.dumps(
+                {
+                    "error": {
+                        "details": {
+                            "ynison-error-code": "300100001",
+                            "ynison-backoff-millis": "0:100:500:1000:1000:5000",
+                        },
+                        "grpc_code": 10,
+                        "http_code": 409,
+                    }
+                }
+            ),
+        )
+        await self._run_loop_with_messages(client, [rebalance])
+
+        # The first dial follows the server ladder; failed dials are transport
+        # failures, a different error kind, so the default ladder takes over.
+        assert await self._record_reconnect_delays(client, 5) == [0.0, 1.0, 5.0, 30.0, 300.0]
+
+    async def test_state_frames_wait_for_the_previous_callback(
+        self, client: YnisonClient, mock_state_callback: AsyncMock
+    ) -> None:
+        """A frame is not applied while the provider still handles the previous one."""
+        seen_during_callback: list[bool] = []
+
+        async def slow_callback(state: YnisonState) -> None:
+            if not seen_during_callback:
+                await asyncio.sleep(0.01)
+                seen_during_callback.append(state.is_paused)
+
+        mock_state_callback.side_effect = slow_callback
+        frames = [
+            _make_ws_msg(
+                aiohttp.WSMsgType.TEXT,
+                json.dumps({"player_state": {"status": {"paused": paused}}}),
+            )
+            for paused in (False, True)
+        ]
+
+        await self._run_loop_with_messages(client, frames)
+
+        assert seen_during_callback == [False]
+
     async def test_text_message_invalid_json(self, client: YnisonClient) -> None:
         """TEXT message with invalid JSON logs warning, continues."""
         bad_msg = _make_ws_msg(aiohttp.WSMsgType.TEXT, "not valid json{{{")
@@ -1934,6 +2466,66 @@ class TestReconnect:
             await client._reconnect()
 
         assert attempt_count >= stop_after
+
+    async def test_backoff_escalates_across_sessions_lost_before_healthy_state(
+        self, client: YnisonClient
+    ) -> None:
+        """A session that connects but dies before any state does not reset the backoff."""
+        client._session = MagicMock()
+        client._session.closed = False
+        sleeps: list[float] = []
+
+        async def record_sleep(delay: float) -> None:
+            sleeps.append(delay)
+
+        with (
+            patch(SLEEP_PATH, new_callable=AsyncMock, side_effect=record_sleep),
+            patch.object(
+                client,
+                "_get_redirect_ticket",
+                new_callable=AsyncMock,
+                return_value=("host", "ticket", 1),
+            ),
+            patch.object(client, "_connect_state", new_callable=AsyncMock),
+        ):
+            for _ in range(3):
+                await client._reconnect()
+
+        assert sleeps == [1.0, 5.0, 30.0]
+
+    async def test_healthy_state_resets_backoff(self, client: YnisonClient) -> None:
+        """The first state message of a session restores the shortest reconnect delay."""
+        client._session = MagicMock()
+        client._session.closed = False
+        sleeps: list[float] = []
+
+        async def record_sleep(delay: float) -> None:
+            sleeps.append(delay)
+
+        with (
+            patch(SLEEP_PATH, new_callable=AsyncMock, side_effect=record_sleep),
+            patch.object(
+                client,
+                "_get_redirect_ticket",
+                new_callable=AsyncMock,
+                return_value=("host", "ticket", 1),
+            ),
+            patch.object(client, "_connect_state", new_callable=AsyncMock),
+        ):
+            await client._reconnect()
+            await client._reconnect()
+            await TestMessageLoop()._run_loop_with_messages(
+                client,
+                [
+                    _make_ws_msg(
+                        aiohttp.WSMsgType.TEXT,
+                        json.dumps({"player_state": {"status": {"paused": True}}}),
+                    )
+                ],
+            )
+            await client._reconnect()
+
+        assert sleeps == [1.0, 5.0, 1.0]
 
     async def test_stop_event_before_attempt(self, client: YnisonClient) -> None:
         """stop_event set before reconnect → exits immediately."""
@@ -2599,3 +3191,636 @@ class TestScheduleReconnect:
             client._schedule_reconnect()
         assert client._reconnect_task is None
         mock_rc.assert_not_called()
+
+
+# ------------------------------------------------------------------
+# Go-away log
+# ------------------------------------------------------------------
+
+
+class TestGoAwayLog:
+    """A go-away is explained in the log."""
+
+    def _client(self, **kwargs: Any) -> YnisonClient:
+        return YnisonClient(
+            token=SecretStr("test-token"),
+            device_info=YnisonDeviceInfo(device_id="test-device-id", title="T"),
+            on_state_update=AsyncMock(),
+            logger=MagicMock(),
+            **kwargs,
+        )
+
+    async def test_go_away_log_explains_impact_and_next_attempt(self) -> None:
+        """The warning names the error, the wait, the user impact, and the next attempt time."""
+        client = self._client()
+
+        await TestMessageLoop()._run_loop_with_messages(
+            client,
+            [_make_ws_msg(aiohttp.WSMsgType.TEXT, json.dumps(_fixture("go_away_throttle.json")))],
+        )
+
+        warnings = [call.args for call in client._logger.warning.call_args_list]
+        message, *args = next(w for w in warnings if "asked to wait" in w[0])
+        rendered = message % tuple(args)
+        assert "500140000" in rendered
+        assert "3600 s" in rendered
+        assert "will not appear in the Yandex Music app" in rendered
+        assert time.strftime("%Y-%m-%d", time.localtime(time.time() + 3600)) in rendered
+
+
+# ------------------------------------------------------------------
+# Queue commands
+# ------------------------------------------------------------------
+
+
+class TestQueueCommands:
+    """Queue commands publish complete edits through the serialized mutation path."""
+
+    @pytest.fixture(autouse=True)
+    def _setup(self, client: YnisonClient) -> None:
+        """Make this device active on a three-item queue."""
+        self.mock_ws = AsyncMock()
+        self.mock_ws.closed = False
+        client._ws = self.mock_ws
+        client._connected = True
+        client._parse_state(
+            {
+                "active_device_id_optional": "test-device-id",
+                "player_state": {
+                    "player_queue": {
+                        "current_playable_index": 0,
+                        "playable_list": [{"playable_id": f"t{i}"} for i in range(3)],
+                        "options": {"repeat_mode": "NONE"},
+                        "entity_type": "VARIOUS",
+                        "version": {"device_id": "peer", "version": "1", "timestamp_ms": "0"},
+                    },
+                    "status": {"progress_ms": "0", "duration_ms": "9000", "paused": False},
+                },
+            }
+        )
+
+    def _sent_queue(self) -> dict[str, Any]:
+        """Return the last published player queue."""
+        msg = json.loads(self.mock_ws.send_str.call_args.args[0])
+        return cast("dict[str, Any]", msg["update_player_state"]["player_state"]["player_queue"])
+
+    async def test_advance_publishes_next_item(self, client: YnisonClient) -> None:
+        """A natural advance moves to the next item."""
+        assert await client.advance_queue(natural=True, duration_ms=9000) == "change"
+        assert self._sent_queue()["current_playable_index"] == 1
+
+    async def test_advance_at_radio_end_does_not_publish(self, client: YnisonClient) -> None:
+        """A RADIO queue end returns ``radio`` and publishes nothing."""
+        client.state.player_state["player_queue"].update(
+            entity_type="RADIO", current_playable_index=2
+        )
+
+        assert await client.advance_queue(natural=True, duration_ms=9000) == "radio"
+        self.mock_ws.send_str.assert_not_awaited()
+
+    async def test_advance_aborts_when_playback_changed_meanwhile(
+        self, client: YnisonClient
+    ) -> None:
+        """A peer pause between decision and publication supersedes navigation."""
+        original = client.mutate_player_state
+
+        async def pause_then_mutate(mutation: Any, **kwargs: Any) -> None:
+            client.state.player_state["status"]["paused"] = True
+            await original(mutation, **kwargs)
+
+        with (
+            patch.object(client, "mutate_player_state", side_effect=pause_then_mutate),
+            pytest.raises(ResourceTemporarilyUnavailable, match="changed during navigation"),
+        ):
+            await client.advance_queue(natural=True, duration_ms=9000)
+
+    async def test_advance_follows_our_own_append(self, client: YnisonClient) -> None:
+        """Navigation decided before our own append still advances the same item."""
+        baseline = client.navigation_baseline()
+        items = [*client.state.player_state["player_queue"]["playable_list"], {"playable_id": "n"}]
+        await client.publish_items(items)
+
+        assert client.is_current_playback(baseline)
+        assert await client.advance_queue(natural=True, duration_ms=9000, baseline=baseline) == (
+            "change"
+        )
+        assert self._sent_queue()["current_playable_index"] == 1
+
+    async def test_own_trim_echo_keeps_the_current_item(self, client: YnisonClient) -> None:
+        """The echo of our window trim moves the index but keeps the same item current."""
+        queue = client.state.player_state["player_queue"]
+        queue["playable_list"] = [{"playable_id": f"t{i}"} for i in range(200)]
+        queue["current_playable_index"] = 199
+        items = [*queue["playable_list"], {"playable_id": "n"}]
+        assert await client.publish_items(items) == 1
+
+        client._parse_state({"player_state": {"player_queue": self._sent_queue()}})
+
+        assert client.state.current_index == 198
+        assert client.state.current_item_kept is True
+
+    async def test_navigation_echo_during_the_send_is_navigation(
+        self, client: YnisonClient
+    ) -> None:
+        """Navigation is registered before it is sent, so an early echo is recognised."""
+        baseline = client.navigation_baseline()
+
+        async def echo_while_sending(raw: str) -> None:
+            queue = json.loads(raw)["update_player_state"]["player_state"]["player_queue"]
+            client._parse_state({"player_state": {"player_queue": queue}})
+
+        self.mock_ws.send_str.side_effect = echo_while_sending
+        assert await client.advance_queue(natural=True, duration_ms=9000) == "change"
+
+        assert client.state.current_item_kept is False
+        assert client.navigation_confirmed(baseline)
+
+    async def test_navigation_to_a_repeated_track_survives_an_option_edit(
+        self, client: YnisonClient
+    ) -> None:
+        """An option edit sent before the navigation echo does not hide the navigation."""
+        queue = client.state.player_state["player_queue"]
+        queue["playable_list"] = [{"playable_id": "x"}, {"playable_id": "x"}, {"playable_id": "y"}]
+        queue["current_playable_index"] = 0
+        assert await client.advance_queue(natural=True, duration_ms=9000) == "change"
+        navigation_echo = self._sent_queue()
+        await client.set_repeat_mode(RepeatMode.ALL)
+
+        client._parse_state({"player_state": {"player_queue": navigation_echo}})
+        client._parse_state({"player_state": {"player_queue": self._sent_queue()}})
+
+        assert client.state.current_index == 1
+        assert client.state.current_item_kept is False
+
+    def test_estimated_progress_extrapolates_the_server_status(self, client: YnisonClient) -> None:
+        """The server-known position advances with time while playing."""
+        with patch(
+            "music_assistant.providers.yandex_ynison.ynison_client.time.monotonic",
+            return_value=time.monotonic() + 3,
+        ):
+            assert 2900 <= client.estimated_progress_ms() <= 3100
+
+    def test_peer_queue_is_not_the_current_playback(self, client: YnisonClient) -> None:
+        """A queue from another device replaces the playback a decision was made for."""
+        baseline = client.navigation_baseline()
+        client._parse_state(
+            {
+                "player_state": {
+                    "player_queue": {
+                        "current_playable_index": 0,
+                        "playable_list": [{"playable_id": "t0"}, {"playable_id": "p1"}],
+                        "options": {"repeat_mode": "NONE"},
+                        "entity_type": "VARIOUS",
+                        "version": {"device_id": "peer", "version": "2", "timestamp_ms": "0"},
+                    }
+                }
+            }
+        )
+
+        assert not client.is_current_playback(baseline)
+
+    def test_peer_option_edit_keeps_the_current_playback(self, client: YnisonClient) -> None:
+        """A peer repeat or shuffle change does not replace the playback a decision was made for."""
+        baseline = client.navigation_baseline()
+        queue = deepcopy(client.state.player_state["player_queue"])
+        queue["options"] = {"repeat_mode": "ONE"}
+        queue["version"] = {"device_id": "peer", "version": "2", "timestamp_ms": "0"}
+
+        generation = client.queue_generation
+
+        client._parse_state({"player_state": {"player_queue": queue}})
+
+        assert client.is_current_playback(baseline)
+        assert client.queue_generation == generation
+
+    async def test_own_navigation_echo_is_flagged(self, client: YnisonClient) -> None:
+        """The echo of our navigation reports a new occurrence even when it looks unchanged."""
+        assert await client.advance_queue(natural=True, duration_ms=9000) == "change"
+
+        client._parse_state({"player_state": {"player_queue": self._sent_queue()}})
+
+        assert client.state.current_item_navigated is True
+        assert client.state.current_item_kept is False
+
+    async def test_failed_navigation_send_is_not_adopted_later(self, client: YnisonClient) -> None:
+        """Navigation that never reached Ynison does not turn a later own edit into a skip."""
+        self.mock_ws.send_str.side_effect = aiohttp.ClientError("down")
+        with pytest.raises(YnisonSendError):
+            await client.advance_queue(natural=True, duration_ms=9000)
+        self.mock_ws.send_str.side_effect = None
+        await client.set_repeat_mode(RepeatMode.ALL)
+
+        client._parse_state({"player_state": {"player_queue": self._sent_queue()}})
+
+        assert client.state.current_item_navigated is False
+        assert client.state.current_item_kept is True
+
+    async def test_failed_option_edit_keeps_a_pending_navigation(
+        self, client: YnisonClient
+    ) -> None:
+        """An unrelated failed send does not forget navigation that is still awaiting its echo."""
+        queue = client.state.player_state["player_queue"]
+        queue["playable_list"] = [{"playable_id": "x"}, {"playable_id": "x"}, {"playable_id": "y"}]
+        assert await client.advance_queue(natural=True, duration_ms=9000) == "change"
+        navigation_echo = self._sent_queue()
+        self.mock_ws.send_str.side_effect = aiohttp.ClientError("down")
+        with pytest.raises(YnisonSendError):
+            await client.set_repeat_mode(RepeatMode.ALL)
+
+        client._parse_state({"player_state": {"player_queue": navigation_echo}})
+
+        assert client.state.current_item_navigated is True
+
+    async def test_queue_only_navigation_echo_starts_at_the_sent_position(
+        self, client: YnisonClient
+    ) -> None:
+        """Adopting our navigation without a status uses the position we sent, not the old one."""
+        client._parse_state(
+            {
+                "player_state": {
+                    "status": {"progress_ms": "70000", "duration_ms": "200000", "paused": False}
+                }
+            }
+        )
+        assert await client.advance_queue(natural=False, duration_ms=200000) == "change"
+
+        client._parse_state({"player_state": {"player_queue": self._sent_queue()}})
+
+        assert client.state.current_item_navigated is True
+        assert client.state.progress_ms == 0
+
+    async def test_option_edit_before_navigation_echo_keeps_the_sent_position(
+        self, client: YnisonClient
+    ) -> None:
+        """An edit sent before our navigation is adopted republishes that navigation's status."""
+        client._parse_state(
+            {
+                "player_state": {
+                    "status": {"progress_ms": "70000", "duration_ms": "200000", "paused": False}
+                }
+            }
+        )
+        assert await client.advance_queue(natural=False, duration_ms=200000) == "change"
+
+        await client.set_repeat_mode(RepeatMode.ALL)
+
+        sent = json.loads(self.mock_ws.send_str.call_args.args[0])
+        assert sent["update_player_state"]["player_state"]["status"]["progress_ms"] == "0"
+
+    async def test_status_sent_before_navigation_echo_is_not_reverted(
+        self, client: YnisonClient
+    ) -> None:
+        """A pause sent while our navigation awaits its echo survives a later queue edit."""
+        assert await client.advance_queue(natural=False, duration_ms=200000) == "change"
+        assert await client.update_playing_status(30000, 200000, paused=True, strict=True)
+
+        await client.set_repeat_mode(RepeatMode.ALL)
+
+        sent = json.loads(self.mock_ws.send_str.call_args.args[0])
+        status = sent["update_player_state"]["player_state"]["status"]
+        assert (status["progress_ms"], status["paused"]) == ("30000", True)
+
+    async def test_peer_status_before_navigation_echo_is_kept(self, client: YnisonClient) -> None:
+        """A newer status from Ynison wins over the one our pending navigation sent."""
+        assert await client.advance_queue(natural=False, duration_ms=200000) == "change"
+        navigation_echo = self._sent_queue()
+        peer_version = {"device_id": "peer", "version": "9", "timestamp_ms": "0"}
+        client._parse_state(
+            {
+                "player_state": {
+                    "status": {
+                        "progress_ms": "50000",
+                        "duration_ms": "200000",
+                        "paused": False,
+                        "version": peer_version,
+                    }
+                }
+            }
+        )
+
+        client._parse_state({"player_state": {"player_queue": navigation_echo}})
+
+        assert client.state.progress_ms == 50000
+
+    async def test_obsolete_own_echo_does_not_revert_the_navigation_start(
+        self, client: YnisonClient
+    ) -> None:
+        """An own echo older than our navigation keeps the position that navigation sent."""
+        client._parse_state(
+            {
+                "player_state": {
+                    "status": {"progress_ms": "70000", "duration_ms": "200000", "paused": False}
+                }
+            }
+        )
+        await client.set_repeat_mode(RepeatMode.ALL)
+        option_edit = json.loads(self.mock_ws.send_str.call_args.args[0])
+        # Next reports the end of the current item before navigating, as completion does.
+        assert await client.update_playing_status(200000, 200000, paused=False, strict=True)
+        assert await client.advance_queue(natural=False, duration_ms=200000) == "change"
+        navigation_echo = self._sent_queue()
+
+        # Ynison versions the status of a full-state echo with our device id.
+        stale = option_edit["update_player_state"]["player_state"]
+        stale["status"]["version"] = stale["player_queue"]["version"]
+
+        client._parse_state({"player_state": stale})
+        client._parse_state({"player_state": {"player_queue": navigation_echo}})
+
+        assert client.state.current_item_navigated is True
+        assert client.state.progress_ms == 0
+
+    async def test_peer_status_in_an_obsolete_echo_is_kept(self, client: YnisonClient) -> None:
+        """A peer command delivered with our obsolete queue still applies."""
+        await client.set_repeat_mode(RepeatMode.ALL)
+        option_edit = self._sent_queue()
+        await client.set_repeat_mode(RepeatMode.OFF)
+        peer_version = {"device_id": "peer", "version": "9", "timestamp_ms": "0"}
+
+        client._parse_state(
+            {
+                "player_state": {
+                    "player_queue": option_edit,
+                    "status": {
+                        "progress_ms": "50000",
+                        "duration_ms": "200000",
+                        "paused": True,
+                        "version": peer_version,
+                    },
+                }
+            }
+        )
+
+        queue = client.state.player_state["player_queue"]
+        assert queue["options"]["repeat_mode"] == "NONE"
+        assert (client.state.progress_ms, client.state.is_paused) == (50000, True)
+
+    async def test_pending_navigation_baseline_settles_with_its_echo(
+        self, client: YnisonClient
+    ) -> None:
+        """Our sent navigation is pending until Ynison adopts it, and never past the queue TTL."""
+        assert client.pending_navigation_baseline() is None
+        assert await client.advance_queue(natural=False, duration_ms=9000) == "change"
+
+        pending = client.pending_navigation_baseline()
+        assert pending is not None
+        assert not client.navigation_confirmed(pending)
+        with patch(
+            "music_assistant.providers.yandex_ynison.ynison_client.time.monotonic",
+            return_value=time.monotonic() + 31,
+        ):
+            assert client.pending_navigation_baseline() is None
+
+        client._parse_state({"player_state": {"player_queue": self._sent_queue()}})
+
+        assert client.pending_navigation_baseline() is None
+        assert client.navigation_confirmed(pending)
+
+    async def test_obsolete_navigation_echo_does_not_confirm_it(self, client: YnisonClient) -> None:
+        """A navigation echo rejected as older than a later edit does not settle the navigation."""
+        baseline = client.navigation_baseline()
+        assert await client.advance_queue(natural=True, duration_ms=9000) == "change"
+        navigation_echo = self._sent_queue()
+        await client.set_repeat_mode(RepeatMode.ALL)
+
+        client._parse_state({"player_state": {"player_queue": navigation_echo}})
+
+        assert not client.navigation_confirmed(baseline)
+        client._parse_state({"player_state": {"player_queue": self._sent_queue()}})
+        assert client.navigation_confirmed(baseline)
+
+    def test_peer_seek_supersedes_the_playback(self, client: YnisonClient) -> None:
+        """A seek from another device invalidates a decision taken for the same item."""
+        baseline = client.navigation_baseline()
+        peer = {"device_id": "peer", "version": "7", "timestamp_ms": "0"}
+
+        client._parse_state(
+            {
+                "player_state": {
+                    "status": {
+                        "progress_ms": "10000",
+                        "duration_ms": "200000",
+                        "paused": False,
+                        "version": peer,
+                    }
+                }
+            }
+        )
+
+        assert not client.is_current_playback(baseline)
+
+    async def test_own_edit_echo_of_a_retained_peer_status_keeps_the_playback(
+        self, client: YnisonClient
+    ) -> None:
+        """Our queue edit republishes a retained peer status; its echo is not a new peer seek."""
+        peer = {"device_id": "peer", "version": "7", "timestamp_ms": "0"}
+        client._parse_state(
+            {
+                "player_state": {
+                    "status": {
+                        "progress_ms": "3000",
+                        "duration_ms": "200000",
+                        "paused": False,
+                        "version": peer,
+                    }
+                }
+            }
+        )
+        assert await client.update_playing_status(5000, 200000, paused=False, strict=True)
+        baseline = client.navigation_baseline()
+        await client.set_repeat_mode(RepeatMode.ALL)
+        sent = json.loads(self.mock_ws.send_str.call_args.args[0])
+
+        client._parse_state({"player_state": sent["update_player_state"]["player_state"]})
+
+        assert client.is_current_playback(baseline)
+
+    def test_peer_option_edit_with_a_new_status_keeps_the_playback(
+        self, client: YnisonClient
+    ) -> None:
+        """A peer repeat change that re-stamps its status is not a seek."""
+        baseline = client.navigation_baseline()
+        queue = deepcopy(client.state.player_state["player_queue"])
+        queue["options"] = {"repeat_mode": "ONE"}
+        peer = {"device_id": "peer", "version": "2", "timestamp_ms": "0"}
+        queue["version"] = peer
+        status = {"progress_ms": "4000", "duration_ms": "200000", "paused": False, "version": peer}
+
+        client._parse_state({"player_state": {"player_queue": queue, "status": status}})
+
+        assert client.is_current_playback(baseline)
+
+    async def test_own_and_relayed_status_keep_the_playback(self, client: YnisonClient) -> None:
+        """Our progress reports and their relays are not seeks."""
+        baseline = client.navigation_baseline()
+        assert await client.update_playing_status(30000, 200000, paused=False, strict=True)
+        own = {"device_id": client.device_id, "version": "8", "timestamp_ms": "0"}
+
+        client._parse_state(
+            {
+                "player_state": {
+                    "status": {
+                        "progress_ms": "30000",
+                        "duration_ms": "200000",
+                        "paused": False,
+                        "version": own,
+                    }
+                }
+            }
+        )
+
+        assert client.is_current_playback(baseline)
+
+    async def test_own_navigation_supersedes_an_earlier_baseline(
+        self, client: YnisonClient
+    ) -> None:
+        """A decision taken before our own navigation no longer applies after it."""
+        queue = client.state.player_state["player_queue"]
+        queue["playable_list"] = [{"playable_id": "x"}, {"playable_id": "x"}, {"playable_id": "y"}]
+        baseline = client.navigation_baseline()
+
+        assert await client.advance_queue(natural=False, duration_ms=9000) == "change"
+
+        assert not client.is_current_playback(baseline)
+
+    async def test_repeat_one_echo_is_not_navigation(self, client: YnisonClient) -> None:
+        """Repeating the same item restarts it locally, so its echo is not a new occurrence."""
+        client.state.player_state["player_queue"]["options"] = {"repeat_mode": "ONE"}
+        assert await client.advance_queue(natural=True, duration_ms=9000) == "restart"
+
+        client._parse_state({"player_state": {"player_queue": self._sent_queue()}})
+
+        assert client.state.current_item_navigated is False
+
+    async def test_own_trim_echo_keeps_the_status_baseline(self, client: YnisonClient) -> None:
+        """A known position repeated after our window trim is still a relay."""
+        queue = client.state.player_state["player_queue"]
+        queue["playable_list"] = [{"playable_id": f"t{i}"} for i in range(200)]
+        queue["current_playable_index"] = 199
+        status = {"progress_ms": "10000", "duration_ms": "200000", "paused": False}
+        client._parse_state({"player_state": {"status": dict(status)}})
+        await client.publish_items([*queue["playable_list"], {"playable_id": "n"}])
+
+        client._parse_state({"player_state": {"player_queue": self._sent_queue()}})
+        assert client.state.current_item_kept is True
+        client._parse_state({"player_state": {"status": dict(status)}})
+
+        assert client.state.status_is_relay is True
+
+    async def test_option_edit_does_not_adopt_a_peer_queue(self, client: YnisonClient) -> None:
+        """A peer queue stays foreign after our repeat edit re-publishes it."""
+        baseline = client.navigation_baseline()
+        client._parse_state(
+            {
+                "player_state": {
+                    "player_queue": {
+                        "current_playable_index": 0,
+                        "playable_list": [{"playable_id": "t0"}, {"playable_id": "p1"}],
+                        "options": {"repeat_mode": "NONE"},
+                        "entity_type": "VARIOUS",
+                        "version": {"device_id": "peer", "version": "2", "timestamp_ms": "0"},
+                    }
+                }
+            }
+        )
+        await client.set_repeat_mode(RepeatMode.ALL)
+
+        assert not client.is_current_playback(baseline)
+        with pytest.raises(ResourceTemporarilyUnavailable):
+            await client.advance_queue(natural=True, duration_ms=9000, baseline=baseline)
+
+    async def test_navigation_is_confirmed_by_its_own_echo(self, client: YnisonClient) -> None:
+        """An older own queue echo, such as a window trim, does not confirm navigation."""
+        baseline = client.navigation_baseline()
+        assert await client.advance_queue(natural=True, duration_ms=9000) == "change"
+        sent = self._sent_queue()
+        version = int(sent["version"]["version"])
+        assert not client.navigation_confirmed(baseline)
+
+        older = {**sent, "current_playable_index": 0}
+        older["version"] = {**sent["version"], "version": str(version - 1)}
+        client._parse_state({"player_state": {"player_queue": older}})
+        assert not client.navigation_confirmed(baseline)
+
+        client._parse_state({"player_state": {"player_queue": sent}})
+        assert client.navigation_confirmed(baseline)
+
+    def test_peer_queue_settles_a_pending_navigation(self, client: YnisonClient) -> None:
+        """Another device replacing the queue ends the wait for our navigation."""
+        baseline = client.navigation_baseline()
+        client._parse_state(
+            {
+                "player_state": {
+                    "player_queue": {
+                        "current_playable_index": 0,
+                        "playable_list": [{"playable_id": "p0"}],
+                        "entity_type": "VARIOUS",
+                        "version": {"device_id": "peer", "version": "2", "timestamp_ms": "0"},
+                    }
+                }
+            }
+        )
+
+        assert client.navigation_confirmed(baseline)
+
+    async def test_go_to_index_with_items_keeps_window(self, client: YnisonClient) -> None:
+        """Appending items while moving keeps the 200-item window around the target."""
+        queue = client.state.player_state["player_queue"]
+        queue["playable_list"] = [{"playable_id": f"t{i}"} for i in range(200)]
+        queue["current_playable_index"] = 199
+        items = [*queue["playable_list"], {"playable_id": "n0"}]
+
+        await client.go_to_index(200, items=items)
+
+        sent = self._sent_queue()
+        assert len(sent["playable_list"]) == 200
+        assert sent["playable_list"][sent["current_playable_index"]] == {"playable_id": "n0"}
+
+    async def test_publish_items_is_gated_on_activity(self, client: YnisonClient) -> None:
+        """A best-effort list publication is skipped while another device is active."""
+        client.state.active_device_id = "phone"
+        items = [*client.state.player_state["player_queue"]["playable_list"], {"playable_id": "n"}]
+
+        assert await client.publish_items(items) is None
+        self.mock_ws.send_str.assert_not_awaited()
+
+    async def test_publish_items_appends(self, client: YnisonClient) -> None:
+        """An active device publishes the appended list without moving."""
+        items = [*client.state.player_state["player_queue"]["playable_list"], {"playable_id": "n"}]
+
+        assert await client.publish_items(items) == 0
+        assert self._sent_queue()["playable_list"][-1] == {"playable_id": "n"}
+        assert self._sent_queue()["current_playable_index"] == 0
+
+    async def test_set_repeat_and_shuffle(self, client: YnisonClient) -> None:
+        """Repeat and shuffle edits are published and preserve each other before the echo."""
+        await client.set_repeat_mode(RepeatMode.ALL)
+        await client.set_shuffle(enabled=True)
+
+        sent = self._sent_queue()
+        assert sent["options"]["repeat_mode"] == "ALL"
+        assert sent["shuffle_optional"]["playable_indices"][0] == 0
+
+
+class TestStatusBaseline:
+    """The newest server-known status and the questions asked of it."""
+
+    def test_playing_status_extrapolates_and_paused_does_not(self) -> None:
+        """A playing position advances with time; a paused one stays."""
+        playing = StatusBaseline(10000, 200000, False, anchor=100.0, version=None)
+        paused = StatusBaseline(10000, 200000, True, anchor=100.0, version=None)
+
+        assert playing.expected_progress_ms(160.0) == 70000
+        assert paused.expected_progress_ms(160.0) == 10000
+
+    def test_matches_within_the_dedup_window_only(self) -> None:
+        """A candidate within two seconds of the extrapolation adds nothing."""
+        baseline = StatusBaseline(10000, 200000, False, anchor=100.0, version=None)
+
+        assert baseline.matches(71500, 200000, False, now=160.0)
+        assert not baseline.matches(73000, 200000, False, now=160.0)
+        assert not baseline.matches(70000, 200000, True, now=160.0)
+
+    def test_unreadable_status_has_no_baseline(self) -> None:
+        """A status with a non-numeric position cannot anchor deduplication."""
+        assert StatusBaseline.from_status({"progress_ms": "x"}, anchor=0.0) is None
