@@ -1346,6 +1346,8 @@
   "provider.deezer.config_entries.arl_token.label": "ARL token",
   "provider.deezer.config_entries.family_profile.description": "The profile of your Deezer Family whose library this source uses.",
   "provider.deezer.config_entries.family_profile.label": "Deezer profile",
+  "provider.deezer.config_entries.sync_queue.description": "Save what plays from Deezer in Music Assistant as your Deezer queue, so the Deezer app continues it the next time you open it. Uses an unofficial Deezer interface.",
+  "provider.deezer.config_entries.sync_queue.label": "Continue in the Deezer app",
   "provider.deezer.errors.arl_rejected": "Could not authenticate with Deezer using this ARL token. Try again and check that the token is current. See the Music Assistant log for details.",
   "provider.deezer.errors.auth_failed": "Could not sign in to Deezer. See the Music Assistant log for the reason reported by Deezer.",
   "provider.deezer.errors.gw_no_session": "Deezer authenticated this account but could not establish a playback session. Try again. If the problem persists, see the Music Assistant log for details.",
