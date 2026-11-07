@@ -105,7 +105,7 @@ class MetadataEnrichmentMixin:
     Rich metadata enrichment functionality for the MetaDataController.
 
     Expects to be mixed with a class providing ``mass``, ``logger``, ``config``
-    and the ``providers``, ``preferred_language`` and
+    and the ``providers``, ``preferred_language``, ``language_changed`` and
     ``link_providers_via_musicbrainz`` properties.
     """
 
@@ -116,6 +116,9 @@ class MetadataEnrichmentMixin:
 
         @property
         def preferred_language(self) -> str: ...  # noqa: D102
+
+        @property
+        def language_changed(self) -> int: ...  # noqa: D102
 
         @property
         def providers(self) -> list[MetadataProvider]: ...  # noqa: D102
@@ -129,7 +132,10 @@ class MetadataEnrichmentMixin:
         """Get/update rich metadata for an artist."""
         # collect metadata from all (online) music + metadata providers
         # NOTE: we only do/allow this every REFRESH_INTERVAL
-        needs_refresh = (time() - (artist.metadata.last_refresh or 0)) > REFRESH_INTERVAL
+        language_outdated = self._description_language_outdated(artist.metadata)
+        needs_refresh = (
+            time() - (artist.metadata.last_refresh or 0)
+        ) > REFRESH_INTERVAL or language_outdated
         if not (force_refresh or needs_refresh):
             return
 
@@ -268,6 +274,7 @@ class MetadataEnrichmentMixin:
             sources,
             _ARTIST_FIELDS,
             self._replaces_stored_values(artist, force_refresh, retry_soon or source_missing),
+            language_outdated,
         )
         if replacements or local_images:
             await self.mass.music.artists.replace_metadata(
@@ -276,7 +283,9 @@ class MetadataEnrichmentMixin:
 
         # update final item in library database
         # set timestamp, used to determine when this function was last called
-        artist.metadata.last_refresh = _refresh_timestamp(retry_soon)
+        artist.metadata.last_refresh = _refresh_timestamp(
+            retry_soon, self.language_changed if language_outdated else 0
+        )
         await self.mass.music.artists.update_item_in_library(artist.item_id, artist)
         # an id a name search found may belong to a namesake, so only a reliable one merges
         if merge_mbid:
@@ -322,6 +331,7 @@ class MetadataEnrichmentMixin:
         sources: list[tuple[int, MediaItemMetadata]],
         field_names: Sequence[str],
         replace_stored: bool,
+        language_outdated: bool = False,
     ) -> dict[str, Any]:
         """
         Set the description and the fresh values of a refresh on an item's metadata.
@@ -334,6 +344,8 @@ class MetadataEnrichmentMixin:
         :param field_names: The single-value fields the refresh may write over the stored ones.
         :param replace_stored: Whether the values of every source replace the stored ones,
             else only those of a local metadata provider.
+        :param language_outdated: Whether the stored description is in a language the user
+            changed away from, so one in the preferred language may replace it.
         :return: The values to write over the stored ones.
         """
         sources = sorted(sources, key=itemgetter(0))
@@ -358,9 +370,12 @@ class MetadataEnrichmentMixin:
         )
         replacements: dict[str, Any] = {}
         # a run that only fills gaps keeps a stored description, unless a local metadata
-        # provider supplies one
+        # provider supplies one or the stored one is in a language the user changed away from
         if winner is not None and (
-            replace_stored or winner == _LOCAL_METADATA or metadata.description is None
+            replace_stored
+            or winner == _LOCAL_METADATA
+            or metadata.description is None
+            or (language_outdated and language == self.preferred_language)
         ):
             if (description, language) != prev_description:
                 # a library update keeps a stored description, so a new one is written explicitly
@@ -402,6 +417,15 @@ class MetadataEnrichmentMixin:
             )
         return force_refresh and not source_failed
 
+    def _description_language_outdated(self, metadata: MediaItemMetadata) -> bool:
+        """Return whether an item's description is in a language the user changed away from."""
+        return bool(
+            metadata.description
+            and metadata.description_language
+            and metadata.description_language != self.preferred_language
+            and (metadata.last_refresh or 0) < self.language_changed
+        )
+
     def _music_source_unreachable(self, provider_instance: str) -> bool:
         """
         Return whether a music source that is not loaded is set up and switched on.
@@ -418,7 +442,10 @@ class MetadataEnrichmentMixin:
         """Get/update rich metadata for an album."""
         # collect metadata from all (online) music + metadata providers
         # NOTE: we only do/allow this every REFRESH_INTERVAL
-        needs_refresh = (time() - (album.metadata.last_refresh or 0)) > REFRESH_INTERVAL
+        language_outdated = self._description_language_outdated(album.metadata)
+        needs_refresh = (
+            time() - (album.metadata.last_refresh or 0)
+        ) > REFRESH_INTERVAL or language_outdated
         if not (force_refresh or needs_refresh):
             return
 
@@ -515,11 +542,14 @@ class MetadataEnrichmentMixin:
             sources,
             _ALBUM_FIELDS,
             self._replaces_stored_values(album, force_refresh, retry_soon or source_missing),
+            language_outdated,
         ):
             await self.mass.music.albums.replace_metadata(album.item_id, replacements)
         # update final item in library database
         # set timestamp, used to determine when this function was last called
-        album.metadata.last_refresh = _refresh_timestamp(retry_soon)
+        album.metadata.last_refresh = _refresh_timestamp(
+            retry_soon, self.language_changed if language_outdated else 0
+        )
         await self.mass.music.albums.update_item_in_library(album.item_id, album)
 
     async def _update_track_metadata(  # noqa: PLR0915
@@ -528,7 +558,10 @@ class MetadataEnrichmentMixin:
         """Get/update rich metadata for a track."""
         # collect metadata from all (online) music + metadata providers
         # NOTE: we only do/allow this every REFRESH_INTERVAL
-        needs_refresh = (time() - (track.metadata.last_refresh or 0)) > REFRESH_INTERVAL
+        language_outdated = self._description_language_outdated(track.metadata)
+        needs_refresh = (
+            time() - (track.metadata.last_refresh or 0)
+        ) > REFRESH_INTERVAL or language_outdated
         if not (force_refresh or needs_refresh):
             return
 
@@ -637,10 +670,13 @@ class MetadataEnrichmentMixin:
             sources,
             _TRACK_FIELDS,
             self._replaces_stored_values(track, force_refresh, retry_soon or source_missing),
+            language_outdated,
         ):
             await self.mass.music.tracks.replace_metadata(track.item_id, replacements)
         # set timestamp, used to determine when this function was last called
-        track.metadata.last_refresh = _refresh_timestamp(retry_soon)
+        track.metadata.last_refresh = _refresh_timestamp(
+            retry_soon, self.language_changed if language_outdated else 0
+        )
         # update final item in library database
         await self.mass.music.tracks.update_item_in_library(track.item_id, track)
 
@@ -1228,12 +1264,14 @@ def _drop_provider_images(metadata: MediaItemMetadata, provider_instance_id: str
         )
 
 
-def _refresh_timestamp(retry_soon: bool) -> int:
+def _refresh_timestamp(retry_soon: bool, not_before: int = 0) -> int:
     """
     Return the last_refresh stamp of a refresh that finishes now.
 
     :param retry_soon: Whether a metadata provider failed temporarily, which makes the
         item due again after REFRESH_RETRY_INTERVAL rather than REFRESH_INTERVAL.
+    :param not_before: The earliest stamp to return, so a refresh after a language change
+        counts as done for that change even when it is due again soon.
     """
     now = int(time())
-    return now - REFRESH_INTERVAL + REFRESH_RETRY_INTERVAL if retry_soon else now
+    return max(now - REFRESH_INTERVAL + REFRESH_RETRY_INTERVAL if retry_soon else now, not_before)
