@@ -5,6 +5,7 @@
   "name": "Digitally Imported Streaming Network",
   "description": "Stream curated internet radio from DI.FM, RadioTunes, RockRadio, JazzRadio, ClassicalRadio, and ZenRadio.",
   "codeowners": ["@benklop"],
+  "tier": "community",
   "requirements": [],
   "documentation": "https://music-assistant.io/music-providers/digitally-imported/",
   "multi_instance": false

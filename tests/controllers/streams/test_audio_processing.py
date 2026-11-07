@@ -2160,7 +2160,6 @@ def _native_stream_handler_context(
         session_id="session-1",
         flow_mode_stream_log=[],
         last_served_item_id=None,
-        last_requested_item_id=None,
     )
     mass.player_queues.get.return_value = queue
     mass.player_queues.queue_data.return_value = queue_data

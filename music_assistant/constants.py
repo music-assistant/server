@@ -70,7 +70,7 @@ PLAYLIST_MEDIA_TYPES: Final[tuple[MediaType, ...]] = (
 # a new enum value or error code, a change in what an existing field holds, or a command that
 # only the bundled frontend uses: the frontend ships in lockstep with the server and never
 # gates on this.
-API_SCHEMA_VERSION: Final[int] = 102
+API_SCHEMA_VERSION: Final[int] = 105
 
 # MIN_SCHEMA_VERSION is the minimum API schema version that the current server
 # version can work with. Only bump when there are breaking changes to existing
@@ -276,6 +276,7 @@ DB_TABLE_ALBUM_TRACKS: Final[str] = "album_tracks"
 DB_TABLE_TRACK_ARTISTS: Final[str] = "track_artists"
 DB_TABLE_ALBUM_ARTISTS: Final[str] = "album_artists"
 DB_TABLE_AUDIOBOOK_ARTISTS: Final[str] = "audiobook_artists"
+DB_TABLE_BOOKMARKS: Final[str] = "bookmarks"
 DB_TABLE_LOUDNESS_MEASUREMENTS: Final[str] = "loudness_measurements"
 DB_TABLE_AUDIO_ANALYSIS: Final[str] = "audio_analysis"
 DB_TABLE_AUDIO_ANALYSIS_FAILURES: Final[str] = "audio_analysis_failures"

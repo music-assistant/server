@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, Mock, patch
@@ -128,6 +129,44 @@ async def test_library_artist_tracks_follow_the_listing_contract(mass: MusicAssi
     assert await _tracks(limit=0) == ["Apple", "Mango", "Zebra"]
     with pytest.raises(InvalidDataError):
         await _tracks(sort_field=SortField.YEAR)
+
+
+async def test_artist_release_date_filters_before_pagination(
+    mass: MusicAssistant,
+) -> None:
+    """Typed shelves return the newest 50 of a year without skipping the next page."""
+    albums = []
+    for index in range(60):
+        album = _album(f"release-{index}", f"Release {index:02}", 2025)
+        album.album_type = AlbumType.SINGLE if index % 2 else AlbumType.EP
+        album.metadata.release_date = datetime(2025, 1, 1, tzinfo=UTC) + timedelta(days=index)
+        albums.append(album)
+    other_type = _album("album", "Newer album", 2026)
+    other_type.album_type = AlbumType.ALBUM
+    with patch.object(
+        mass.music.artists,
+        "get_library_artist_albums",
+        AsyncMock(return_value=[other_type, *albums]),
+    ):
+        page = await mass.music.artists.albums(
+            "1",
+            "library",
+            album_types=[AlbumType.SINGLE, AlbumType.EP],
+            sort_field=SortField.RELEASE_DATE,
+            limit=50,
+        )
+        remainder = await mass.music.artists.albums(
+            "1",
+            "library",
+            album_types=[AlbumType.SINGLE, AlbumType.EP],
+            sort_field=SortField.RELEASE_DATE,
+            limit=50,
+            offset=50,
+        )
+    assert [album.item_id for album in page] == [f"release-{index}" for index in range(59, 9, -1)]
+    assert [album.item_id for album in remainder] == [
+        f"release-{index}" for index in range(9, -1, -1)
+    ]
 
 
 async def test_library_artist_tracks_count_matches_listing_filters(

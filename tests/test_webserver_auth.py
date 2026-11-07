@@ -31,6 +31,7 @@ from music_assistant_models.translations import TRANSLATION_RESOLVER
 from music_assistant.constants import (
     CONF_PLAYERS,
     CONF_PROVIDERS,
+    DB_TABLE_BOOKMARKS,
     DB_TABLE_MEDIA_PROGRESS,
     DB_TABLE_PLAY_HISTORY,
     HOMEASSISTANT_SYSTEM_USER,
@@ -945,6 +946,7 @@ async def test_delete_user_removes_dependent_rows(
     assert progress_delete.await_args_list == [
         call(DB_TABLE_MEDIA_PROGRESS, {"userid": user.user_id}),
         call(DB_TABLE_PLAY_HISTORY, {"userid": user.user_id}),
+        call(DB_TABLE_BOOKMARKS, {"user_id": user.user_id}),
     ]
 
 

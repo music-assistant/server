@@ -59,7 +59,7 @@ from music_assistant_models.errors import (
     QueueEmpty,
     RetriesExhausted,
 )
-from music_assistant_models.media_items import Album, AudioFormat, Track
+from music_assistant_models.media_items import Album, AudioFormat, Playlist, Track
 from music_assistant_models.player_queue import PlayLogEntry
 from music_assistant_models.streamdetails import MultiPartPath, StreamMetadata
 
@@ -220,6 +220,11 @@ PREFETCH_HANDOVER_TIMEOUT = 5.0
 # paced tail). The speaker holds its early request open for this long; it still has
 # the current track buffered meanwhile.
 CROSSFADE_HANDOFF_WAIT = 30.0
+
+# The same wait for an incoming item with a realtime source. A speaker gives up on a
+# request that sends no audio for about 10 s (seen on Sonos) and drops the item, which
+# aborts that source: its single stream slot then has to start over for the next item.
+REALTIME_CROSSFADE_HANDOFF_WAIT = 5.0
 
 # Size of the tail slices played out while a fade waits for the incoming track's
 # audio. The fade is sized on what is left of the tail once that audio shows up,
@@ -729,6 +734,8 @@ class StreamsAudio:
             connected; once it reports False, no source is opened for it.
         :return: The buffer, or None when the consumer reported it left.
         :raises ProviderStreamLimitError: If no source slot becomes available within the budget.
+        :raises ProviderStreamHeldError: If another player's realtime playback holds the only
+            slot of the source and the item needs a new one, refused without waiting.
         """
         lock_key = (queue_item.queue_id, queue_item.queue_item_id)
         if (buffer_lock := self._audio_buffer_locks.get(lock_key)) is None:
@@ -2426,10 +2433,12 @@ class StreamsAudio:
                         first_part_written / pcm_format.pcm_sample_size,
                         crossfade_timing.post_crossfade_duration,
                     )
+                    # the tail play-out and the mix's pre-fade plus overlap are pulled at
+                    # playback pace inside this interval: it is mostly audio played, not work
                     crossfade_elapsed = asyncio.get_event_loop().time() - crossfade_start_time
                     self.logger.debug(
                         "Stored crossfade data for queue %s"
-                        " - next queue_item_id: %s (preparation took %.1fs)",
+                        " - next queue_item_id: %s (%.1fs after the outgoing source ended)",
                         queue.display_name,
                         next_queue_item.queue_item_id,
                         crossfade_elapsed,
@@ -3414,6 +3423,28 @@ class StreamsAudio:
         if pending := self._crossfade_pending.pop(queue_id, None):
             pending[1].set()
 
+    def get_stream_providers(
+        self, mapping: ProviderMapping, allowed: list[str] | None
+    ) -> list[Provider]:
+        """
+        Return the loaded providers that can stream the item a provider mapping points to.
+
+        :param mapping: The provider mapping of the item.
+        :param allowed: Music sources the playback user may use, or None for all of them.
+        """
+        return self._get_mapping_providers(mapping, allowed)
+
+    def has_alternative_match_providers(
+        self, media_item: Playlist | Album | Track, allowed: list[str] | None
+    ) -> bool:
+        """
+        Return whether a streaming provider the item has no mapping on could stream a match.
+
+        :param media_item: The item whose own mappings define the providers it is known on.
+        :param allowed: Music sources the playback user may use, or None for all of them.
+        """
+        return self._has_alternative_match_providers(media_item, allowed)
+
     async def get_shoutcast_stream(
         self, url: str, streamdetails: StreamDetails
     ) -> AsyncGenerator[bytes]:
@@ -3982,14 +4013,24 @@ class StreamsAudio:
             # probe (0s) whenever a reselection can still follow: a free slot is still
             # acquired instantly, while a busy one fails fast instead of spending the
             # whole budget on this candidate. Block only on the last resort.
-            source_wait = (
-                0.0
-                if (
-                    not final_pass
-                    and (alternatives_left or busy_instances or match_pending or paused_holder)
-                )
-                else remaining
+            last_resort = final_pass or not (
+                alternatives_left or busy_instances or match_pending or paused_holder
             )
+            # an item that resumes from its own buffer (the reuse check of get_buffer) opens
+            # no new source, so a held slot is nothing to refuse it over
+            own_buffer = streamdetails.buffer
+            resumes = (
+                own_buffer is not None
+                and not own_buffer.has_error
+                and own_buffer.is_valid(seek_position_ms)
+            )
+            if last_resort and not resumes:
+                # a realtime source keeps its slot until its item ends, so the budget would
+                # run out with nothing to show for it: refuse right away instead
+                self.mass.player_queues.refuse_held_stream_slot(
+                    streamdetails.provider, queue_item.queue_id
+                )
+            source_wait = remaining if last_resort else 0.0
             # record whose audio this is before it exists: a queue stop releases only the
             # buffers of the session it is tearing down, and details resolved by an earlier
             # session are reused as they are, so the claim has to be made where the buffer
@@ -4234,12 +4275,12 @@ class StreamsAudio:
         )
 
     def _has_alternative_match_providers(
-        self, media_item: Track, allowed: list[str] | None
+        self, media_item: Playlist | Album | Track, allowed: list[str] | None
     ) -> bool:
         """
         Return whether any configured streaming provider could carry an unmapped match.
 
-        :param media_item: Track whose existing mappings define the known provider domains.
+        :param media_item: Item whose existing mappings define the known provider domains.
         :param allowed: Music sources the playback user may use, or None for all of them.
         """
         known_domains = {mapping.provider_domain for mapping in media_item.provider_mappings}
@@ -4916,15 +4957,17 @@ class StreamsAudio:
         if pending is None or pending[0] != queue_item.queue_item_id:
             return None
         handoff = pending[1]
+        realtime = queue_item.streamdetails is not None and queue_item.streamdetails.is_realtime
+        max_wait = REALTIME_CROSSFADE_HANDOFF_WAIT if realtime else CROSSFADE_HANDOFF_WAIT
         self.logger.debug(
             "Waiting up to %.1fs for the fade into %s being mixed for queue %s",
-            CROSSFADE_HANDOFF_WAIT,
+            max_wait,
             queue_item.name,
             queue.display_name,
         )
         waited_from = asyncio.get_event_loop().time()
         with suppress(TimeoutError):
-            await asyncio.wait_for(handoff.wait(), CROSSFADE_HANDOFF_WAIT)
+            await asyncio.wait_for(handoff.wait(), max_wait)
         # claimed (popped) only when it is this item's own boundary; a stale entry
         # for another item stays for its own request
         handover = await self._claim_crossfade_handover(queue, queue_item, session_id)

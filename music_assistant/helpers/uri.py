@@ -22,10 +22,11 @@ _CANONICAL_URL_TYPES: Final[frozenset[MediaType]] = frozenset(
 # providers whose artist, album and track ids are plain numbers
 _NUMERIC_ID_PROVIDERS: Final[frozenset[str]] = frozenset({"tidal", "deezer", "apple_music"})
 
-# share URL hosts of the form open.<provider>.com, by provider domain
+# share URL hosts whose path is /<type>/<id>, by provider domain
 _OPEN_HOSTS: Final[dict[str, str]] = {
     "open.spotify.com": "spotify",
     "open.qobuz.com": "qobuz",
+    "play.qobuz.com": "qobuz",
 }
 
 _APPLE_TYPE_MAP: Final[dict[str, MediaType]] = {
@@ -229,6 +230,7 @@ def _parse_share_url(uri: str) -> tuple[MediaType, str, str] | None:
         # https://open.spotify.com/playlist/5lH9NjOeJvctAO92ZrKQNB?si=04a63c8234ac413e
         # https://open.spotify.com/intl-de/track/4cOdK2wGLETKBW3PvgPWqT
         # https://open.qobuz.com/album/0634904032432
+        # https://play.qobuz.com/artist/1044
         if path and path[0].startswith("intl-"):
             path = path[1:]
         return (MediaType(path[0]), domain, path[1])

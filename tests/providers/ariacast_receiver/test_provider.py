@@ -6,6 +6,7 @@ from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
+from music_assistant_models.enums import PlayerType
 from music_assistant_models.errors import SetupFailedError
 
 from music_assistant.providers.ariacast_receiver import (
@@ -76,3 +77,50 @@ def test_target_player_is_none_while_configured_player_unavailable() -> None:
     provider = _make_provider()
 
     assert provider._get_target_player_id() is None
+
+
+def _register_players(provider: AriaCastReceiver, players: dict[str, MagicMock]) -> None:
+    """Make the given players the only registered ones."""
+    provider.mass.players.get_player.side_effect = players.get  # type: ignore[attr-defined]
+
+
+def _protocol_player(parent_id: str | None) -> MagicMock:
+    """Create a protocol player linked to the given parent player."""
+    player = MagicMock()
+    player.type = PlayerType.PROTOCOL
+    player.protocol_parent_id = parent_id
+    return player
+
+
+def test_target_player_is_the_parent_of_a_linked_protocol_player() -> None:
+    """A protocol player has no queue of its own, so its parent player is the target."""
+    provider = _make_provider()
+    _register_players(provider, {"player1": _protocol_player("parent1"), "parent1": MagicMock()})
+
+    assert provider._get_target_player_id() == "parent1"
+
+
+def test_target_player_is_none_while_the_protocol_parent_is_unavailable() -> None:
+    """A protocol player whose parent is not registered yields no target."""
+    provider = _make_provider()
+    _register_players(provider, {"player1": _protocol_player("parent1")})
+
+    assert provider._get_target_player_id() is None
+
+
+def test_unlinked_protocol_player_is_its_own_target() -> None:
+    """A protocol player without a parent keeps its queue and stays the target."""
+    provider = _make_provider()
+    _register_players(provider, {"player1": _protocol_player(None)})
+
+    assert provider._get_target_player_id() == "player1"
+
+
+def test_stored_protocol_player_is_replaced_by_its_parent() -> None:
+    """A remembered protocol player is redirected and the parent is remembered instead."""
+    provider = _make_provider()
+    provider._active_player_id = "proto1"
+    _register_players(provider, {"proto1": _protocol_player("parent1"), "parent1": MagicMock()})
+
+    assert provider._get_target_player_id() == "parent1"
+    assert provider._active_player_id == "parent1"

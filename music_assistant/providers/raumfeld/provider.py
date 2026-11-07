@@ -7,13 +7,13 @@ Raumfeld exposes a central *RaumfeldHost* webservice that manages the system's
 * each Raumfeld **room** as a stable Music Assistant :class:`RaumfeldPlayer`
 * each Raumfeld **zone** as a Music Assistant sync-group (leader + members)
 
-All device communication goes through the ``hassfeld`` library, which wraps the
-Raumfeld host's UPnP/OpenHome services and keeps an in-memory model of the
-current rooms/zones that we read from and act on.
+A :class:`RaumfeldHost` keeps an in-memory model of the host's current rooms, zones and
+devices, which we read from; commands go to the host's web service and to the UPnP
+services of its renderers.
 
 A background supervisor owns the host connection: it never hard-fails on a
-(temporarily) unreachable host, and it stops the update loop when the host drops
-so hassfeld's long-polling can't flood the log while the host is offline.
+(temporarily) unreachable host, and it stops following the host when it drops, until it
+can be reached again.
 """
 
 from __future__ import annotations
@@ -25,10 +25,7 @@ from typing import TYPE_CHECKING, cast
 from urllib.parse import urljoin, urlparse
 
 import aiohttp
-import hassfeld
 from async_upnp_client.exceptions import UpnpError
-from hassfeld import upnp as hassfeld_upnp
-from hassfeld.constants import SERVICE_CONTENT_DIRECTORY
 
 from music_assistant.constants import (
     CONF_ENABLE_ICY_METADATA,
@@ -37,6 +34,7 @@ from music_assistant.constants import (
 )
 from music_assistant.models.player_provider import PlayerProvider
 
+from . import webservice
 from .constants import (
     BUTTON_ITEM_CACHE_TTL,
     CACHE_CATEGORY_BUTTON_ITEMS,
@@ -45,6 +43,7 @@ from .constants import (
     GROUP_SETTLE_TIME,
     HOST_CHECK_FAILURES,
     HOST_ERRORS,
+    HOST_SEARCH_INTERVAL,
     INITIAL_UPDATE_TIMEOUT,
     LIBRARY_REFRESH_INTERVAL,
     LINE_IN_OBJECT_ID,
@@ -54,6 +53,7 @@ from .constants import (
     ZONE_WATCH_INTERVAL,
 )
 from .helpers import (
+    discover_hosts,
     host_is_valid,
     parse_control_url,
     parse_library_items,
@@ -63,7 +63,9 @@ from .helpers import (
     room_udn_to_player_id,
     serial_to_player_id,
 )
+from .host import RaumfeldHost
 from .player import RaumfeldPlayer
+from .upnp import SERVICE_CONTENT_DIRECTORY, browse, get_action
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -74,7 +76,7 @@ if TYPE_CHECKING:
 class RaumfeldPlayerProvider(PlayerProvider):
     """Player provider for Teufel Raumfeld multiroom devices."""
 
-    host: hassfeld.RaumfeldHost
+    host: RaumfeldHost
     _host_address: str
     _host_port: int
     _supervisor_task: asyncio.Task[None] | None = None
@@ -90,6 +92,8 @@ class RaumfeldPlayerProvider(PlayerProvider):
     _connected: bool = False
     # health checks the host has missed in a row while connected
     _host_check_failures: int = 0
+    # when the network was last searched for a host that stopped answering
+    _host_searched_at: float = 0.0
     # renderer UUID -> (Line-In stream url, title) for rooms that expose an analog input
     _line_in: dict[str, tuple[str, str]]
     # when the station buttons were last read
@@ -97,6 +101,8 @@ class RaumfeldPlayerProvider(PlayerProvider):
     # room name -> renderer hardware serial, the basis for the player_id. Read from the
     # device once and kept, so a resync does not refetch a description per room.
     _room_serials: dict[str, str]
+    # room name -> UDN of the renderer the room's serial, model and control URL were read from
+    _room_renderers: dict[str, str]
     # room name -> renderer model name, read from the same device description
     _room_models: dict[str, str]
     # room name -> AVTransport control URL of its renderer as the description gives it,
@@ -141,12 +147,9 @@ class RaumfeldPlayerProvider(PlayerProvider):
 
         :param zone: The rooms of the zone.
         """
-        try:
-            zone_udn = self.host.roomlst_to_zoneudn(zone)
-            location: str | None = self.host.resolve["udn_to_devloc"].get(zone_udn)
-        except KeyError, AttributeError:
+        if (zone_udn := self.host.zone_udn(zone)) is None:
             return None
-        return location
+        return self.host.location(zone_udn)
 
     @property
     def group_change_settling(self) -> bool:
@@ -174,10 +177,13 @@ class RaumfeldPlayerProvider(PlayerProvider):
         self._host_port = cast("int", self.get_setup_value(CONF_PORT) or DEFAULT_PORT)
         self._line_in = {}
         self._room_serials = {}
+        self._room_renderers = {}
         self._room_models = {}
         self._room_transport_paths = {}
         self._room_ids = {}
         self._shared_serial_warned = set()
+        # empty until connected; replaced by a fresh one on every connect
+        self.host = RaumfeldHost(self.mass.http_session, self._host_url)
         # a background supervisor owns the connection so a missing or (temporarily)
         # unreachable host never leaves the provider permanently unavailable
         self._supervisor_task = self.mass.create_task(self._supervise())
@@ -192,7 +198,7 @@ class RaumfeldPlayerProvider(PlayerProvider):
         for task in tasks:
             task.cancel()
         if tasks:
-            # let them finish, so hassfeld's long-poll has ended before the provider is gone
+            # let them finish, so following the host has ended before the provider is gone
             await asyncio.wait(tasks, timeout=UNLOAD_TIMEOUT)
         self._supervisor_task = None
         self._update_task = None
@@ -215,13 +221,9 @@ class RaumfeldPlayerProvider(PlayerProvider):
 
         :param room: The Raumfeld room name to look up.
         """
-        try:
-            resolve = self.host.resolve
-            room_udn = resolve["room_to_udn"].get(room)
-            rend_udn = resolve["roomudn_to_rendudn"].get(room_udn) if room_udn else None
-            return resolve["udn_to_devloc"].get(rend_udn) if rend_udn else None
-        except KeyError, AttributeError:
+        if (renderer_udn := self.host.renderer_udn(room)) is None:
             return None
+        return self.host.location(renderer_udn)
 
     def resolve_room_renderer(self, room: str) -> tuple[str | None, str | None]:
         """
@@ -229,16 +231,81 @@ class RaumfeldPlayerProvider(PlayerProvider):
 
         :param room: The Raumfeld room name to look up.
         """
-        try:
-            resolve = self.host.resolve
-            room_udn = resolve["room_to_udn"].get(room)
-            rend_udn = resolve["roomudn_to_rendudn"].get(room_udn) if room_udn else None
-            devloc = resolve["udn_to_devloc"].get(rend_udn) if rend_udn else None
-        except KeyError, AttributeError:
-            return None, None
+        rend_udn = self.host.renderer_udn(room)
+        devloc = self.host.location(rend_udn) if rend_udn else None
         uuid = rend_udn.removeprefix("uuid:") if rend_udn else None
         ip_address = urlparse(devloc).hostname if devloc else None
         return uuid, ip_address
+
+    async def browse_library(self, object_id: str, children: bool) -> str | None:
+        """
+        Browse the host's own library, returning its DIDL-Lite, or ``None`` if it gave none.
+
+        :param object_id: The library object to browse.
+        :param children: Whether to list its children rather than describe it.
+        :raises UpnpError: When the host's media server rejects the request.
+        :raises KeyError: When the host lists no media server.
+        """
+        return await browse(
+            self.mass.http_session, self._media_server_location(), object_id, children
+        )
+
+    async def create_zone(self, rooms: list[str]) -> None:
+        """
+        Have the host put rooms in a zone of their own.
+
+        :param rooms: The rooms of the new zone.
+        :raises KeyError: When the host does not know one of the rooms.
+        """
+        room_udns = [self._known_room_udn(room) for room in rooms]
+        await webservice.connect_rooms_to_zone(self.mass.http_session, self._host_url, room_udns)
+
+    async def add_room_to_zone(self, room: str, zone: list[str]) -> None:
+        """
+        Have the host add a room to an existing zone.
+
+        :param room: The room to add.
+        :param zone: The rooms of the zone to add it to.
+        :raises KeyError: When the host does not know the room or the zone.
+        """
+        if (zone_udn := self.host.zone_udn(zone)) is None:
+            raise KeyError(f"No zone of {', '.join(zone)}")
+        await webservice.connect_room_to_zone(
+            self.mass.http_session, self._host_url, self._known_room_udn(room), zone_udn
+        )
+
+    async def drop_room(self, room: str) -> None:
+        """
+        Have the host take a room out of its zone.
+
+        :param room: The room to take out.
+        :raises KeyError: When the host does not know the room.
+        """
+        await webservice.drop_room(
+            self.mass.http_session, self._host_url, self._known_room_udn(room)
+        )
+
+    async def enter_standby(self, room: str) -> None:
+        """
+        Switch a room off (manual standby).
+
+        :param room: The room to switch off.
+        :raises KeyError: When the host does not know the room.
+        """
+        await webservice.enter_manual_standby(
+            self.mass.http_session, self._host_url, self._known_room_udn(room)
+        )
+
+    async def leave_standby(self, room: str) -> None:
+        """
+        Wake a room from standby.
+
+        :param room: The room to wake.
+        :raises KeyError: When the host does not know the room.
+        """
+        await webservice.leave_standby(
+            self.mass.http_session, self._host_url, self._known_room_udn(room)
+        )
 
     async def refresh_station_buttons(self, player: RaumfeldPlayer) -> None:
         """
@@ -258,16 +325,18 @@ class RaumfeldPlayerProvider(PlayerProvider):
                 if not self._connected:
                     await self._try_connect()
                 elif self._update_task is None or self._update_task.done():
-                    # hassfeld's update loop exited (it swallows a disconnect and returns,
-                    # freezing state) - drop so the next cycle reconnects and recreates it
-                    await self._disconnect("host connection lost")
+                    # following the host ended (it stopped answering), which would freeze
+                    # its state - drop so the next cycle reconnects and follows it again
+                    await self._disconnect(f"stopped answering ({self._follow_error()})")
                 elif not await host_is_valid(
                     self.mass.http_session, self._host_address, self._host_port
                 ):
                     # one missed answer is a slow host; only a run of them is a lost one
                     self._host_check_failures += 1
                     if self._host_check_failures >= HOST_CHECK_FAILURES:
-                        await self._disconnect("host connection lost")
+                        await self._disconnect(
+                            f"did not answer {HOST_CHECK_FAILURES} health checks in a row"
+                        )
                 else:
                     self._host_check_failures = 0
                     # host still healthy: re-sync so a room that (re)appeared or vanished
@@ -279,7 +348,7 @@ class RaumfeldPlayerProvider(PlayerProvider):
             except HOST_ERRORS as err:
                 self.logger.debug("Raumfeld supervisor error: %r", err)
             except Exception:
-                # anything else (say a hassfeld change that raises something new) must not
+                # anything else (an answer from the host nobody expected) must not
                 # end the supervisor, or the provider would never reconnect this session
                 self.logger.exception("Unexpected error in the Raumfeld connection supervisor")
             await asyncio.sleep(RECONNECT_INTERVAL)
@@ -289,19 +358,18 @@ class RaumfeldPlayerProvider(PlayerProvider):
         if not self._host_address:
             self.logger.debug("No Raumfeld host configured yet; will retry")
             return
-        # a fresh host object avoids stale state left by a previous failed attempt
-        self.host = hassfeld.RaumfeldHost(
-            self._host_address, self._host_port, session=self.mass.http_session
-        )
-        if not await host_is_valid(self.mass.http_session, self._host_address, self._host_port):
+        if (
+            not await host_is_valid(self.mass.http_session, self._host_address, self._host_port)
+            and not await self._follow_moved_host()
+        ):
             self.logger.debug("Raumfeld host %s not reachable yet; will retry", self._host_address)
             return
-        self._update_task = self.mass.create_task(
-            self.host.async_update_all(self.mass.http_session)
-        )
+        # a fresh host object avoids stale state left by a previous failed attempt
+        self.host = RaumfeldHost(self.mass.http_session, self._host_url)
+        self._update_task = self.mass.create_task(self.host.run())
         try:
             async with asyncio.timeout(INITIAL_UPDATE_TIMEOUT):
-                await self.host.async_wait_initial_update()
+                await self.host.wait_ready()
         except TimeoutError:
             self.logger.warning(
                 "Timed out waiting for initial data from Raumfeld host %s; will retry",
@@ -323,6 +391,37 @@ class RaumfeldPlayerProvider(PlayerProvider):
         self._zone_watch_task = self.mass.create_task(self._watch_zones())
         self._connected = True
         self.logger.info("Connected to Raumfeld host %s", self._host_address)
+
+    async def _follow_moved_host(self) -> bool:
+        """
+        Look for the host on the network, and take its new address when it moved.
+
+        Returns whether a host answers at the address the provider now uses.
+        """
+        if time.time() - self._host_searched_at < HOST_SEARCH_INTERVAL:
+            return False
+        self._host_searched_at = time.time()
+        try:
+            found = [host for host in await discover_hosts() if host != self._host_address]
+        except OSError as err:
+            self.logger.debug("Searching the network for the Raumfeld host failed: %r", err)
+            return False
+        if len(found) > 1:
+            # another Raumfeld system on the same network: which one is ours cannot be told
+            self.logger.debug(
+                "Found more than one other Raumfeld host (%s), keeping %s",
+                found,
+                self._host_address,
+            )
+            return False
+        if not found or not await host_is_valid(self.mass.http_session, found[0], self._host_port):
+            return False
+        self.logger.info(
+            "Raumfeld host moved from %s to %s, using the new address", self._host_address, found[0]
+        )
+        self._host_address = found[0]
+        self._update_setup_data(CONF_IP_ADDRESS, found[0])
+        return True
 
     async def _disconnect(self, reason: str) -> None:
         """Stop the update loop and mark players unavailable until the host returns."""
@@ -364,12 +463,11 @@ class RaumfeldPlayerProvider(PlayerProvider):
         if renderer_uuid is None:
             return None
         try:
-            location = self.host.resolve["udn_to_devloc"][self.host.media_server_udn]
-            action = await hassfeld_upnp.get_dlna_action(
-                location,
+            action = await get_action(
+                self.mass.http_session,
+                self._media_server_location(),
                 SERVICE_CONTENT_DIRECTORY,
                 "GetStationButtonAssignment",
-                session=self.mass.http_session,
             )
             assigned = [
                 (button, response.get("ObjectID") or "")
@@ -426,21 +524,17 @@ class RaumfeldPlayerProvider(PlayerProvider):
         :param object_id: The library object to browse.
         :param children: Whether to list its children rather than describe it.
         """
-        flag = "BrowseDirectChildren" if children else "BrowseMetadata"
         try:
-            didl: str | None = await self.host.async_browse_media_server(object_id, flag)
-        except HOST_ERRORS as err:
+            return await self.browse_library(object_id, children)
+        except (*HOST_ERRORS, UpnpError) as err:
             self.logger.debug("Failed to browse %s on the Raumfeld host: %r", object_id, err)
             return None
-        return didl
 
     async def _load_line_in(self) -> None:
         """Fetch the host's Line-In inputs, keyed by renderer UUID."""
         try:
-            didl = await self.host.async_browse_media_server(
-                LINE_IN_OBJECT_ID, "BrowseDirectChildren"
-            )
-        except HOST_ERRORS as err:
+            didl = await self.browse_library(LINE_IN_OBJECT_ID, children=True)
+        except (*HOST_ERRORS, UpnpError) as err:
             self.logger.debug("Failed to browse Raumfeld Line-In inputs: %r", err)
             return
         self._line_in = parse_line_in(didl)
@@ -449,6 +543,7 @@ class RaumfeldPlayerProvider(PlayerProvider):
         """Register (or re-activate) a Music Assistant player for every Raumfeld room."""
         # ``get_rooms`` returns the list of room names currently known to the host.
         rooms = self.host.get_rooms()
+        self._forget_moved_renderers(rooms)
         # the id comes from the renderer's hardware serial, which has to be read from the
         # device once; a room whose serial we cannot read yet is skipped for now rather than
         # registered under an id that would have to change once the serial comes in
@@ -713,13 +808,67 @@ class RaumfeldPlayerProvider(PlayerProvider):
                 )
         self._room_ids = ids
 
+    def _follow_error(self) -> str:
+        """Return why following the host ended, for the log."""
+        task = self._update_task
+        if task is None or not task.done() or task.cancelled() or task.exception() is None:
+            return "no reason given"
+        error = task.exception()
+        # the host model ends with a group holding the error of the read that gave up
+        while isinstance(error, BaseExceptionGroup) and error.exceptions:
+            error = error.exceptions[0]
+        return repr(error)
+
     def _room_udn(self, room: str) -> str | None:
         """Return the room UDN the host reports for a room, or ``None``."""
-        try:
-            udn: str | None = self.host.resolve["room_to_udn"].get(room)
-        except KeyError, AttributeError:
-            return None
+        return self.host.room_udn(room)
+
+    def _known_room_udn(self, room: str) -> str:
+        """Return the room UDN the host reports for a room, raising ``KeyError`` if none."""
+        if (udn := self._room_udn(room)) is None:
+            raise KeyError(f"Unknown room {room}")
         return udn
+
+    def _media_server_location(self) -> str:
+        """Return the description URL of the host's media server, raising ``KeyError`` if none."""
+        udn = self.host.media_server_udn
+        if udn is None or (location := self.host.location(udn)) is None:
+            raise KeyError("The Raumfeld host lists no media server")
+        return location
+
+    @property
+    def _host_url(self) -> str:
+        """Return the base URL of the host's web service."""
+        return f"http://{self._host_address}:{self._host_port}"
+
+    def _room_renderer_udn(self, room: str) -> str | None:
+        """Return the UDN of a room's own renderer as the host reports it, or ``None``."""
+        return self.host.renderer_udn(room)
+
+    def _forget_moved_renderers(self, rooms: list[str]) -> None:
+        """
+        Drop what was read for a room whose renderer now sits in another room.
+
+        :param rooms: The rooms the host reports now.
+        """
+        # A speaker moved to another room (or a room set up again under a new UDN) still
+        # holds its serial under the room it left. Kept, it would claim that serial first
+        # and push the speaker in its new room onto a room-UDN id, a new player each move.
+        owners = {
+            renderer_udn: room
+            for room in rooms
+            if (renderer_udn := self._room_renderer_udn(room)) is not None
+        }
+        for room, renderer_udn in list(self._room_renderers.items()):
+            if owners.get(renderer_udn, room) != room:
+                self._forget_room(room)
+
+    def _forget_room(self, room: str) -> None:
+        """Drop the serial, model and control URL read for a room."""
+        self._room_serials.pop(room, None)
+        self._room_renderers.pop(room, None)
+        self._room_models.pop(room, None)
+        self._room_transport_paths.pop(room, None)
 
     def _room_sort_key(self, room: str) -> str:
         """Return a stable sort key for a room: its UDN, or its name if that is unknown."""
@@ -727,8 +876,12 @@ class RaumfeldPlayerProvider(PlayerProvider):
 
     async def _ensure_room_serial(self, room: str) -> str | None:
         """Read (and remember) the hardware serial of a room's renderer."""
+        renderer_udn = self._room_renderer_udn(room)
         if (cached := self._room_serials.get(room)) is not None:
-            return cached
+            if renderer_udn is None or self._room_renderers.get(room) == renderer_udn:
+                return cached
+            # another speaker took the room's place: what was read belongs to the one it had
+            self._forget_room(room)
         location = self.room_renderer_location(room)
         if location is None:
             return None
@@ -743,6 +896,8 @@ class RaumfeldPlayerProvider(PlayerProvider):
             self.logger.debug("Renderer of room %s reports no serial number", room)
             return None
         self._room_serials[room] = serial
+        if renderer_udn is not None:
+            self._room_renderers[room] = renderer_udn
         if (model := parse_model_name(description)) is not None:
             self._room_models[room] = model
         if (control_url := parse_control_url(description, "AVTransport")) is not None:
@@ -770,14 +925,9 @@ class RaumfeldPlayerProvider(PlayerProvider):
 
     def _zone_rooms_leader_first(self, zone_rooms: list[str]) -> list[str]:
         """Return the zone's rooms ordered with the coordinator (leader) first."""
-        try:
-            resolve = self.host.resolve
-            zone_udn = self.host.roomlst_to_zoneudn(zone_rooms)
-            udn_order = resolve["zoneudn_to_roomudnlst"].get(zone_udn) or []
-            udn_to_room = {udn: room for room, udn in resolve["room_to_udn"].items()}
-        except KeyError, AttributeError:
+        if (zone_udn := self.host.zone_udn(zone_rooms)) is None:
             return list(zone_rooms)
-        ordered = [udn_to_room[udn] for udn in udn_order if udn in udn_to_room]
+        ordered = [room for room in self.host.zone_rooms(zone_udn) if room in zone_rooms]
         # keep any room the coordinator list didn't cover
         ordered += [room for room in zone_rooms if room not in ordered]
-        return ordered or list(zone_rooms)
+        return ordered

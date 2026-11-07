@@ -75,6 +75,7 @@ from music_assistant.constants import (
     DB_TABLE_TRACKS,
     PROVIDERS_WITH_SHAREABLE_URLS,
 )
+from music_assistant.controllers.music.bookmarks import BookmarksController
 from music_assistant.controllers.music.constants import (
     BROWSE_CACHE_EXPIRATION,
     CACHE_CATEGORY_SEARCH_RESULTS,
@@ -411,6 +412,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         self.recommendations = RecommendationsController(self.mass)
         self.recency = RecencyEngine(self.mass)
         self.favorites = FavoritesStore(self.mass)
+        self.bookmarks = BookmarksController(self.mass)
         self._database: DatabaseConnection | None = None
         self._sync_lock = asyncio.Lock()
         # a sync ran that MUSIC_SYNC_COMPLETED has not announced yet
@@ -1157,8 +1159,11 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         Return the sort options a listing offers, the listing's default first.
 
         :param listing: The listing to get the sort options of.
+        :raises InvalidDataError: When this server does not serve the listing.
         """
-        return list(LISTING_SORT_OPTIONS[listing])
+        if (options := LISTING_SORT_OPTIONS.get(listing)) is None:
+            raise InvalidDataError(f"Listing {listing.value} is not supported")
+        return list(options)
 
     @api_command("music/recently_played_items", required_scope=Scope.LIBRARY_READ)
     async def recently_played(
@@ -1867,6 +1872,12 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             return media_item
 
         library_id = media_item.item_id if media_item.provider == "library" else None
+
+        if media_type == MediaType.TRACK:
+            # a wrong measured volume is not kept, the track is measured again
+            await self.mass.streams.audio_analysis.delete_measured_loudness(
+                media_item.provider_mappings
+            )
 
         # cache in_library state before the provider fetch overwrites media_item
         in_library_cache: dict[tuple[str, str], bool] = {}
