@@ -208,9 +208,15 @@ async def api_request(
     api_url = str(provider.get_setup_value(CONF_API_URL) or "")
     url = f"{api_url.rstrip('/')}/{endpoint.lstrip('/')}"
 
-    return await _request_with_session(
-        provider.mass.http_session, method, url, json_data, timeout, auth
-    )
+    session = provider.mass.http_session
+    try:
+        return await _request_with_session(session, method, url, json_data, timeout, auth)
+    except (aiohttp.ServerDisconnectedError, aiohttp.ClientOSError) as err:
+        if isinstance(err, aiohttp.ClientConnectorError):
+            raise
+        # The skill server may close a pooled keep-alive connection as the request arrives.
+        _LOGGER.debug("Retrying request to %s on a fresh connection: %s", url, err)
+        return await _request_with_session(session, method, url, json_data, timeout, auth)
 
 
 def _parse_json_object(text: str) -> dict[str, Any]:
