@@ -9,7 +9,6 @@ import aiohttp
 from music_assistant_models.enums import ImageType, MediaType, StreamType
 from music_assistant_models.errors import (
     MediaNotFoundError,
-    MusicAssistantError,
     ProviderUnavailableError,
     UnplayableMediaError,
 )
@@ -141,23 +140,17 @@ class SunshineLiveProvider(MusicProvider):
     async def _update_stream_metadata(
         self, streamdetails: StreamDetails, elapsed_time: int
     ) -> None:
-        """
-        Show what plays on a channel.
-
-        The title in the stream follows the audio, so it decides for a song. During a show the
-        stream only names the station, and the list of the station has the name of the show.
-
-        :param streamdetails: The stream details of the channel.
-        :param elapsed_time: Elapsed playback time in seconds, not used for a live channel.
-        """
+        """Show what plays on a channel."""
         try:
             channel = await self._get_channel(streamdetails.item_id)
-        except MusicAssistantError as err:
+        except (MediaNotFoundError, ProviderUnavailableError) as err:
             # says nothing about what plays, so the last known metadata stays
             self.logger.debug("Could not update what plays on a channel: %s", err)
             return
         data = streamdetails.data
         stream_title = str(data.get(STREAMDETAILS_INBAND_TITLE_KEY) or "").strip()
+        # the title in the stream follows the audio, so it decides for a song; during a show
+        # the stream only names the station, and the list of the station has the show
         if stream_title and not is_station_title(stream_title):
             await self._show_song(streamdetails, stream_title, channel)
             return

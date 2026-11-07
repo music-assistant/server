@@ -10,8 +10,9 @@ from music_assistant_models.enums import ContentType
 
 from .constants import FALLBACK_IMAGE_URL, NAME_WORDS, STATION_NAME
 
-_STREAM_URL = re.compile(r"^(?:https?:)?//(stream\.[^/\s]+/([^/\s]+)/\S*)$")
-_STREAM_FORMAT = re.compile(r"/(mp3|aac)-(\d+)(?:/|$)")
+# host, channel and format of a stream; what follows names the player to the ad platform
+_STREAM_URL = re.compile(r"^(?:https?:)?//(stream\.[^/\s]+)/([^/\s]+)/([^/\s]+)")
+_STREAM_FORMAT = re.compile(r"^(mp3|aac)-(\d+)$")
 _SONG_PUNCTUATION = re.compile(r"[\W_]+")
 _TITLE_VERSION = re.compile(r"\s*[(\[][^)\]]*[)\]]\s*$")
 
@@ -45,26 +46,6 @@ def parse_channels(data: Any) -> dict[str, Channel]:
     return channels
 
 
-def _parse_channel(entry: dict[str, Any]) -> Channel | None:
-    """Return a channel, None when it has no id or no stream to play."""
-    match = _STREAM_URL.match(str(entry.get("url_high") or entry.get("url_low") or "").strip())
-    if entry.get("station_id") is None or not match:
-        return None
-    stream_format = _STREAM_FORMAT.search(match.group(1))
-    return Channel(
-        name=_channel_name(str(entry.get("stream") or ""), fallback=match.group(2)),
-        stream_url=f"https://{match.group(1)}",
-        image=str(entry.get("stream_logo") or "").strip() or FALLBACK_IMAGE_URL,
-        content_type=(
-            ContentType.try_parse(stream_format.group(1)) if stream_format else ContentType.UNKNOWN
-        ),
-        bit_rate=int(stream_format.group(2)) if stream_format else None,
-        artist=str(entry.get("artist_name") or "").strip(),
-        title=str(entry.get("song_title") or "").strip(),
-        cover=_cover(entry.get("covers")),
-    )
-
-
 def is_station_title(stream_title: str) -> bool:
     """
     Return whether a title from the stream only names the station, not what plays.
@@ -78,16 +59,36 @@ def is_same_song(stream_title: str, channel: Channel) -> bool:
     """
     Return whether the title from the stream is the song the list of the station names.
 
-    The two write a song differently, like "Timmo, Stoked - Back to the Oldschool (Extended Mix)"
-    and "Timmo & Stoked" with "Back to the Oldschool".
-
     :param stream_title: The title from the stream.
     :param channel: The channel with the song from the list of the station.
     """
+    # the two write a song differently, like "Timmo, Stoked - Back to the Oldschool
+    # (Extended Mix)" and "Timmo & Stoked" with "Back to the Oldschool"
     artist, separator, title = stream_title.partition(" - ")
     if not separator or not channel.title:
         return False
     return _song_key(artist, title) == _song_key(channel.artist, channel.title)
+
+
+def _parse_channel(entry: dict[str, Any]) -> Channel | None:
+    """Return a channel, None when it has no id or no stream to play."""
+    match = _STREAM_URL.match(str(entry.get("url_high") or entry.get("url_low") or "").strip())
+    if entry.get("station_id") is None or not match:
+        return None
+    host, path, stream_format = match.groups()
+    known_format = _STREAM_FORMAT.match(stream_format)
+    return Channel(
+        name=_channel_name(str(entry.get("stream") or ""), fallback=path),
+        stream_url=f"https://{host}/{path}/{stream_format}/",
+        image=str(entry.get("stream_logo") or "").strip() or FALLBACK_IMAGE_URL,
+        content_type=(
+            ContentType.try_parse(known_format.group(1)) if known_format else ContentType.UNKNOWN
+        ),
+        bit_rate=int(known_format.group(2)) if known_format else None,
+        artist=str(entry.get("artist_name") or "").strip(),
+        title=str(entry.get("song_title") or "").strip(),
+        cover=_cover(entry.get("covers")),
+    )
 
 
 def _song_key(artist: str, title: str) -> tuple[str, str]:

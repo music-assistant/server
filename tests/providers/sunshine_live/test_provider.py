@@ -59,6 +59,7 @@ ANSWER: dict[str, Any] = {
     "9": _entry(11, "90s", "//stream.sunshine-live.de/90er/mp3-192/homepage/"),
     "11": _entry(48, "WOMEN OF TECHNO", "//stream.sunshine-live.de/technoqueens/mp3-192/homepage/"),
     "10": _entry(96, "", "//stream.sunshine-live.de/xmasbeats/mp3-192/homepage", logo=""),
+    "12": _entry(104, "MOST WANTED", "//stream.sunshine-live.de/mostwanted/mp3-192/webstream"),
 }
 
 
@@ -144,15 +145,17 @@ def test_channel_names_are_readable(channel_id: str, name: str) -> None:
 @pytest.mark.parametrize(
     ("channel_id", "url"),
     [
-        ("6", "https://stream.sunshine-live.de/classics/mp3-192/homepage/"),
-        ("101", "https://stream.sunshine-live.de/bounce/mp3-192/homepage/"),
-        ("97", "https://stream.sunshine-live.de/calmflow/mp3-192/homepage"),
-        ("83", "https://stream.sunshine-live.de/MelodicB/mp3-192/homepage/"),
+        ("6", "https://stream.sunshine-live.de/classics/mp3-192/"),
+        ("101", "https://stream.sunshine-live.de/bounce/mp3-192/"),
+        ("97", "https://stream.sunshine-live.de/calmflow/mp3-192/"),
+        ("83", "https://stream.sunshine-live.de/MelodicB/mp3-192/"),
+        ("87", "https://stream.sunshine-live.de/schweiz/mp3-192/"),
+        ("104", "https://stream.sunshine-live.de/mostwanted/mp3-192/"),
     ],
-    ids=["no-scheme", "http", "leading-space", "case-sensitive"],
+    ids=["no-scheme", "http", "leading-space", "case-sensitive", "no-slash", "other-player"],
 )
 def test_stream_urls_are_cleaned_up(channel_id: str, url: str) -> None:
-    """Every stream ends up as a full https url, with its path untouched."""
+    """Every stream is a full https url of channel and format, without the name of a player."""
     assert parse_channels(ANSWER)[channel_id].stream_url == url
 
 
@@ -286,7 +289,7 @@ async def test_stream_details_use_the_stream_of_the_channel(
     """The stream comes from the list of the station, cleaned up."""
     details = await provider.get_stream_details("101", MediaType.RADIO)
 
-    assert details.path == "https://stream.sunshine-live.de/bounce/mp3-192/homepage/"
+    assert details.path == "https://stream.sunshine-live.de/bounce/mp3-192/"
     assert details.provider == "sunshine_live_test"
     assert details.media_type == MediaType.RADIO
     assert details.stream_type == StreamType.HTTP
@@ -402,14 +405,12 @@ async def test_a_request_to_the_station_is_throttled(provider: SunshineLiveProvi
     """Failed requests aren't cached, so the throttler limits how often they come."""
     entered: list[bool] = []
 
-    class _Throttler:
-        async def __aenter__(self) -> None:
+    class _Throttler(Throttler):
+        async def __aenter__(self) -> float:
             entered.append(True)
+            return await super().__aenter__()
 
-        async def __aexit__(self, *_args: object) -> None:
-            return None
-
-    provider._throttler = _Throttler()  # type: ignore[assignment]
+    provider._throttler = _Throttler(rate_limit=1000, period=1)
 
     await provider.browse("sunshine_live://")
 
