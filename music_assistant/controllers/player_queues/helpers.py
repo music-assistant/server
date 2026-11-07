@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import asyncio
 import functools
 import random
 from collections.abc import Awaitable, Callable, Coroutine
 from typing import TYPE_CHECKING, Any, Concatenate, Protocol, TypedDict, TypeGuard
 
 from music_assistant_models.enums import MediaType
+from music_assistant_models.errors import PlayerCommandFailed
 from music_assistant_models.media_items import (
     ItemMapping,
     MediaItemMetadata,
@@ -18,7 +20,7 @@ from music_assistant_models.media_items import (
 from music_assistant_models.queue_item import QueueItem, QueueItemOrigin
 
 from music_assistant.constants import ATTR_PLAY_ACTION_IN_PROGRESS
-from music_assistant.controllers.player_queues.constants import ArtistOrder
+from music_assistant.controllers.player_queues.constants import PLAY_ACTION_TIMEOUT, ArtistOrder
 
 if TYPE_CHECKING:
     from music_assistant_models.enums import ContentType, PlaybackState
@@ -86,6 +88,8 @@ def handle_play_action[PlayActionHostT: _PlayActionHost, **P, R](
     running one to finish and fails with ResourceBusyError when that takes too long,
     rather than run alongside it.
     Uses an internal refcount so nested actions don't clear the flag prematurely.
+    The outermost action has a deadline, shared by its nested actions, so provider
+    lookups cannot keep the queue busy indefinitely.
 
     :param func: The function to wrap.
     """  # noqa: D401
@@ -109,7 +113,22 @@ def handle_play_action[PlayActionHostT: _PlayActionHost, **P, R](
                 queue.extra_attributes[ATTR_PLAY_ACTION_IN_PROGRESS] = True
                 if not prev_in_progress:
                     self.signal_update(queue_id)
-                return await func(self, *args, **kwargs)
+                if queue_data.play_action_refcount > 1:
+                    return await func(self, *args, **kwargs)
+                timeout = asyncio.timeout(PLAY_ACTION_TIMEOUT)
+                try:
+                    async with timeout:
+                        return await func(self, *args, **kwargs)
+                except TimeoutError as err:
+                    if not timeout.expired():
+                        raise
+                    raise PlayerCommandFailed(
+                        f"Playback action {func.__name__} for {queue_id} timed out "
+                        f"after {PLAY_ACTION_TIMEOUT} seconds",
+                        translation_key="play_action_timeout",
+                        translation_owner="core.player_queues",
+                        translation_args=[PLAY_ACTION_TIMEOUT],
+                    ) from err
             finally:
                 queue_data.play_action_refcount -= 1
                 if queue_data.play_action_refcount <= 0:
