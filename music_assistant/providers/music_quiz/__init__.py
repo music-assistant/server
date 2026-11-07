@@ -1239,9 +1239,28 @@ class MusicQuizPlugin(PluginProvider):
         quiz_type: QuizType,
         round_index: int,
         previous_rounds: list[MusicQuizRound],
+        track_known: asyncio.Future[MusicQuizRound] | None = None,
     ) -> MusicQuizRound:
-        """Prepare a round and its required assets."""
-        game_round = await quiz_type.prepare_round(round_index, previous_rounds)
+        """
+        Prepare a round and its required assets.
+
+        :param quiz_type: Quiz type that prepares the round.
+        :param round_index: Index of the round to prepare.
+        :param previous_rounds: Rounds prepared before this one.
+        :param track_known: Resolved with the round as soon as its track is chosen, before
+            the remaining assets (such as lyrics) are fetched.
+        """
+        try:
+            game_round = await quiz_type.prepare_round(round_index, previous_rounds)
+        except BaseException as err:
+            if track_known is not None and not track_known.done():
+                if isinstance(err, Exception):
+                    track_known.set_exception(err)
+                else:
+                    track_known.cancel()
+            raise
+        if track_known is not None and not track_known.done():
+            track_known.set_result(game_round)
         if game_round.track_uri and quiz_type.prefetch_lyrics:
             await self._fetch_lyrics(game_round.track_uri)
         return game_round
@@ -1253,12 +1272,19 @@ class MusicQuizPlugin(PluginProvider):
             return
         game, quiz_type, _ = self._require_game_strategies()
         with _system_auth_context():
-            self._next_round_task = self.mass.create_task(
-                self._prepare_round(quiz_type, round_index, list(game.rounds))
+            # the warm-up only needs the track, so it does not wait for the lyrics the
+            # round itself still fetches (which can take most of the running round)
+            track_known: asyncio.Future[MusicQuizRound] | None = (
+                asyncio.get_running_loop().create_future()
+                if quiz_type.plays_track_before_answering
+                else None
             )
-            if quiz_type.plays_track_before_answering:
+            self._next_round_task = self.mass.create_task(
+                self._prepare_round(quiz_type, round_index, list(game.rounds), track_known)
+            )
+            if track_known is not None:
                 self._warm_next_track_task = self.mass.create_task(
-                    self._warm_next_track(self._next_round_task)
+                    self._warm_next_track(track_known)
                 )
 
     async def _get_prepared_round(self, round_index: int) -> MusicQuizRound:
@@ -1450,10 +1476,14 @@ class MusicQuizPlugin(PluginProvider):
                 session.queue_id, track_uri, option=QueueOption.ADD
             )
 
-    async def _warm_next_track(self, task: asyncio.Task[MusicQuizRound]) -> None:
-        """Queue the prefetched round's track so its stream details resolve before it plays."""
+    async def _warm_next_track(self, track_known: asyncio.Future[MusicQuizRound]) -> None:
+        """
+        Queue the prefetched round's track and buffer its audio before it plays.
+
+        :param track_known: Resolves with the prefetched round once its track is chosen.
+        """
         try:
-            game_round = await task
+            game_round = await track_known
         except asyncio.CancelledError:
             raise
         except Exception:
@@ -1473,13 +1503,14 @@ class MusicQuizPlugin(PluginProvider):
             queue = self.mass.player_queues.get(session.queue_id)
             if queue is None or queue.current_item is None:
                 return
-            try:
-                await self.mass.player_queues.load_next_queue_item(
-                    session.queue_id, queue.current_item.queue_item_id
-                )
-            except MusicAssistantError as err:
-                # the round is resolved on demand instead if this best-effort warm-up misses
-                self.logger.debug("Could not resolve next Music Quiz track: %s", err)
+            # A round ends long before its track does, so the queue never reaches the point
+            # where it prepares the next item itself. Resolving and buffering it here lets
+            # the next round start from audio that is already in hand, instead of a cold
+            # source start while the player has no lead yet. Best effort: a miss is
+            # resolved on demand when the round starts.
+            self.mass.player_queues.prepare_next_audio_buffer(
+                session.queue_id, queue.current_item.queue_item_id
+            )
 
     async def _advance_to_queued_track(self, track_uri: str) -> bool:
         """Start an already-queued track; False when the caller must fall back."""
