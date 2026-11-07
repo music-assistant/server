@@ -149,7 +149,7 @@ class AriaCastReceiver(PluginProvider):
                 )
             },
             can_play_pause=True,
-            can_seek=False,
+            can_seek=True,
             can_next_previous=True,
             exclusive=True,
             allow_external_trigger=True,
@@ -343,6 +343,8 @@ class AriaCastReceiver(PluginProvider):
             await self._forward_action("next")
         elif action == SourceControl.PREVIOUS:
             await self._forward_action("previous")
+        elif action == SourceControl.SEEK and isinstance(value, (int, float)):
+            await self._cmd_seek(int(value * 1000))
 
     async def resolve_image(self, path: str) -> bytes:
         """Return image bytes for the given path."""
@@ -497,10 +499,12 @@ class AriaCastReceiver(PluginProvider):
             if self._in_use_by_player:
                 await self._forward_action(command, exclude=ws)
         elif command == "seek":
-            # The live AriaCast source has no seekable timeline on the MA side
-            # (audio_source.can_seek is False); accept and ack per spec, no-op.
+            # Relayed to the other control clients like next/previous, so the
+            # streaming sender seeks within its own player.
             position = payload.get("position_ms", payload.get("value"))
             reply["position_ms"] = position
+            if self._in_use_by_player and isinstance(position, int):
+                await self._forward_action("seek", exclude=ws, position_ms=position)
         else:
             self.logger.debug("Unknown /control %s: %r", key, command)
             reply["success"] = False
@@ -867,16 +871,31 @@ class AriaCastReceiver(PluginProvider):
         await self._forward_action("pause")
         await self._broadcast_meta()
 
+    async def _cmd_seek(self, position_ms: int) -> None:
+        """
+        Ask the sender to seek, as the live stream has no timeline on the MA side.
+
+        :param position_ms: The target position in milliseconds.
+        """
+        self.logger.info("SEEK %d ms", position_ms)
+        await self._forward_action("seek", position_ms=position_ms)
+        # Show the new position right away; the sender's next metadata update
+        # confirms or corrects it
+        self._stream_meta.elapsed_time = position_ms // 1000
+        self._stream_meta.elapsed_time_last_updated = time.time()
+        await self._broadcast_meta()
+
     async def _forward_action(
-        self, action: str, exclude: web.WebSocketResponse | None = None
+        self, action: str, exclude: web.WebSocketResponse | None = None, **fields: Any
     ) -> None:
         """
         Send an action to all connected /control WebSocket senders.
 
         :param action: The action to broadcast.
         :param exclude: Optional sender to skip (the originator of a relayed command).
+        :param fields: Extra message fields, e.g. ``position_ms`` for a seek.
         """
-        msg = {"action": action}
+        msg = {"action": action, **fields}
         dead: set[web.WebSocketResponse] = set()
         for ws in list(self._control_senders):
             if ws is exclude:
