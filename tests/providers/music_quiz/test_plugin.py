@@ -6009,6 +6009,74 @@ async def test_advance_uses_queued_item_when_available() -> None:
 
 
 @pytest.mark.asyncio
+async def test_advance_uses_a_queue_item_resolved_to_the_library_track() -> None:
+    """A round track that is in the library is queued as its library item, which still starts."""
+    plugin = _create_plugin()
+    session = _mock_playback_session("venue_player", "venue_player")
+    plugin._playback_session = session
+    plugin._get_playback_session = AsyncMock(return_value=session)  # type: ignore[method-assign]
+    get_player = cast("MagicMock", plugin.mass.players.get_player)
+    get_player.side_effect = None
+    get_player.return_value = SimpleNamespace(state=SimpleNamespace(available=True), extra_data={})
+
+    queued_item = MagicMock()
+    queued_item.queue_item_id = "item-library"
+    queued_item.available = True
+    queued_item.uri = "library://track/5"
+    queued_item.media_item = _library_track_mapped_to("spotify--test", "abc")
+    cast("MagicMock", plugin.mass.player_queues).items = MagicMock(return_value=[queued_item])
+    play_index = AsyncMock()
+    cast("MagicMock", plugin.mass.player_queues).play_index = play_index
+
+    plugin._advance_to_queued_track = (  # type: ignore[method-assign]
+        MusicQuizPlugin._advance_to_queued_track.__get__(plugin, MusicQuizPlugin)
+    )
+
+    assert await plugin._advance_to_queued_track("spotify--test://track/abc") is True
+    play_index.assert_awaited_once_with("venue_player", "item-library")
+
+
+@pytest.mark.asyncio
+async def test_advance_falls_back_when_neither_uri_nor_mapping_matches() -> None:
+    """A library item that maps to another track is not mistaken for the round's track."""
+    plugin = _create_plugin()
+    session = _mock_playback_session("venue_player", "venue_player")
+    plugin._playback_session = session
+
+    queued_item = MagicMock()
+    queued_item.queue_item_id = "item-other"
+    queued_item.available = True
+    queued_item.uri = "library://track/5"
+    queued_item.media_item = _library_track_mapped_to("spotify--test", "other")
+    cast("MagicMock", plugin.mass.player_queues).items = MagicMock(return_value=[queued_item])
+    play_index = AsyncMock()
+    cast("MagicMock", plugin.mass.player_queues).play_index = play_index
+
+    plugin._advance_to_queued_track = (  # type: ignore[method-assign]
+        MusicQuizPlugin._advance_to_queued_track.__get__(plugin, MusicQuizPlugin)
+    )
+
+    assert await plugin._advance_to_queued_track("spotify--test://track/abc") is False
+    play_index.assert_not_awaited()
+
+
+def _library_track_mapped_to(provider_instance: str, item_id: str) -> Track:
+    """Return a library track whose only provider mapping points at the given provider item."""
+    return Track(
+        item_id="5",
+        provider="library",
+        name="Library Track",
+        provider_mappings={
+            ProviderMapping(
+                item_id=item_id,
+                provider_domain=provider_instance.split("--", 1)[0],
+                provider_instance=provider_instance,
+            )
+        },
+    )
+
+
+@pytest.mark.asyncio
 async def test_advance_falls_back_when_track_not_queued() -> None:
     """A track that is not in the queue (or unavailable) falls back to the play path."""
     plugin = _create_plugin()
@@ -6154,6 +6222,48 @@ async def test_warm_next_track_prepares_nothing_without_a_playing_item() -> None
 
 
 @pytest.mark.asyncio
+async def test_warm_next_track_prepares_a_queue_item_resolved_to_the_library_track() -> None:
+    """A round track that is in the library is queued as its library item and still warmed."""
+    plugin = _create_plugin()
+    session = _mock_playback_session("venue_player", "venue_player")
+    plugin._playback_session = session
+    game = _fake_game()
+    game.rounds.append(_make_round(0))
+    game.current_round_index = 0
+    plugin._game = game
+
+    cast("MagicMock", plugin.mass.player_queues).play_media = AsyncMock()
+    queue = SimpleNamespace(current_item=SimpleNamespace(queue_item_id="item-current"))
+    cast("MagicMock", plugin.mass.player_queues).get = MagicMock(return_value=queue)
+    cast("MagicMock", plugin.mass.player_queues).get_next_item = MagicMock(
+        return_value=SimpleNamespace(
+            queue_item_id="item-library",
+            uri="library://track/5",
+            media_item=_library_track_mapped_to("spotify--test", "abc"),
+        )
+    )
+    prepare_next_audio_buffer = MagicMock(return_value=None)
+    cast(
+        "MagicMock", plugin.mass.player_queues
+    ).prepare_next_audio_buffer = prepare_next_audio_buffer
+
+    prepared = MusicQuizRound(
+        round_index=1,
+        track_uri="spotify--test://track/abc",
+        answer_label="Warm Track",
+        answer_state=MultipleChoiceRoundState(suggestions=[]),
+    )
+    task: asyncio.Task[MusicQuizRound] = asyncio.get_running_loop().create_task(
+        _immediate(prepared)
+    )
+
+    await plugin._warm_next_track(task)
+
+    prepare_next_audio_buffer.assert_called_once()
+    assert prepare_next_audio_buffer.call_args.args == ("venue_player", "item-current")
+
+
+@pytest.mark.asyncio
 async def test_warm_next_track_skips_preparation_when_another_item_is_next() -> None:
     """Items behind the playing one (autoplay, an earlier game) are not prepared by mistake."""
     plugin = _create_plugin()
@@ -6168,7 +6278,9 @@ async def test_warm_next_track_skips_preparation_when_another_item_is_next() -> 
     queue = SimpleNamespace(current_item=SimpleNamespace(queue_item_id="item-current"))
     cast("MagicMock", plugin.mass.player_queues).get = MagicMock(return_value=queue)
     cast("MagicMock", plugin.mass.player_queues).get_next_item = MagicMock(
-        return_value=SimpleNamespace(queue_item_id="item-autoplay", uri="library://track/other")
+        return_value=SimpleNamespace(
+            queue_item_id="item-autoplay", uri="library://track/other", media_item=None
+        )
     )
     prepare_next_audio_buffer = MagicMock(return_value=None)
     cast(

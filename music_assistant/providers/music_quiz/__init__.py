@@ -72,6 +72,7 @@ from music_assistant_models.enums import ConfigEntryType, ProviderFeature, Queue
 from music_assistant_models.errors import (
     AudioError,
     InvalidDataError,
+    InvalidProviderURI,
     MediaNotFoundError,
     MusicAssistantError,
     SetupFailedError,
@@ -162,6 +163,7 @@ from music_assistant.providers.music_quiz.quiz_types.base import (
 
 if TYPE_CHECKING:
     from music_assistant_models.provider import ProviderManifest
+    from music_assistant_models.queue_item import QueueItem
 
     from music_assistant.mass import MusicAssistant
     from music_assistant.models import ProviderInstanceType
@@ -1508,7 +1510,7 @@ class MusicQuizPlugin(PluginProvider):
             next_item = self.mass.player_queues.get_next_item(
                 session.queue_id, queue.current_item.queue_item_id
             )
-            if next_item is None or next_item.uri != game_round.track_uri:
+            if next_item is None or not await self._is_round_track(next_item, game_round.track_uri):
                 # other items sit behind the playing one (autoplay, an earlier game): the
                 # queue's next item is not this round's track, so there is nothing to prepare
                 return
@@ -1534,15 +1536,12 @@ class MusicQuizPlugin(PluginProvider):
             session = self._playback_session
             if session is None:
                 return False
-            # match by uri: the queue's next-item helpers silently skip unplayable items
-            queued_item = next(
-                (
-                    item
-                    for item in self.mass.player_queues.items(session.queue_id)
-                    if item.uri == track_uri and item.available
-                ),
-                None,
-            )
+            # matched per item: the queue's next-item helpers silently skip unplayable items
+            queued_item: QueueItem | None = None
+            for item in self.mass.player_queues.items(session.queue_id):
+                if item.available and await self._is_round_track(item, track_uri):
+                    queued_item = item
+                    break
             if queued_item is None:
                 return False
             # re-prepare per round like _play_track, or listen-in guests drop after round one
@@ -1560,6 +1559,30 @@ class MusicQuizPlugin(PluginProvider):
                 )
                 return False
             return True
+
+    async def _is_round_track(self, queue_item: QueueItem, track_uri: str) -> bool:
+        """
+        Return whether the given queue item plays the round's track.
+
+        A track that is in the library is queued as its library item, so the item is also
+        matched on a provider mapping of the round's track.
+
+        :param queue_item: Queue item to compare.
+        :param track_uri: URI of the round's track.
+        """
+        if queue_item.uri == track_uri:
+            return True
+        if not isinstance(queue_item.media_item, Track):
+            return False
+        try:
+            _, provider, item_id = await parse_uri(track_uri)
+        except InvalidProviderURI:
+            return False
+        return any(
+            mapping.item_id == item_id
+            and provider in (mapping.provider_instance, mapping.provider_domain)
+            for mapping in queue_item.media_item.provider_mappings
+        )
 
     async def _stop_playback(self) -> None:
         """Stop playback on the game's playback session, if any."""
