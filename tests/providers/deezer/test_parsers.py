@@ -7,9 +7,13 @@ from types import SimpleNamespace
 import pytest
 from deezer_python_gql.generated.enums import AlbumType as DeezerAlbumType
 from deezer_python_gql.generated.fragments import AlbumFieldsSubtypes
-from music_assistant_models.enums import AlbumType, ImageType
+from music_assistant_models.enums import AlbumType, ExternalID, ImageType
 
-from music_assistant.providers.deezer.parsers import map_album_type, parse_artist
+from music_assistant.providers.deezer.parsers import (
+    map_album_type,
+    parse_artist,
+    parse_audiobook,
+)
 from music_assistant.providers.deezer.provider import DeezerProvider
 
 PICTURE = "https://cdn-images.dzcdn.net/images/artist/abc/500x500-000000-80-0-0.jpg"
@@ -83,3 +87,32 @@ def test_artist_from_a_list_has_no_fanart(provider: DeezerProvider) -> None:
     artist = SimpleNamespace(id="1", name="Example", picture=SimpleNamespace(urls=[PICTURE]))
     parsed = parse_artist(provider, artist)  # type: ignore[arg-type]
     assert [image.type for image in parsed.metadata.images or []] == [ImageType.THUMB]
+
+
+def _audiobook(**details: str) -> SimpleNamespace:
+    """Build an audiobook as Deezer returns it, with optional detail fields."""
+    return SimpleNamespace(
+        id="220381052",
+        display_title="Weihnachten in Bullerbü",
+        cover=None,
+        is_explicit=False,
+        description=None,
+        fans_count=0,
+        contributors=SimpleNamespace(edges=[]),
+        duration=3600,
+        publisher=None,
+        is_favorite=False,
+        **details,
+    )
+
+
+def test_audiobook_details_add_the_upc(provider: DeezerProvider) -> None:
+    """The audiobook details add the UPC as barcode."""
+    parsed = parse_audiobook(provider, _audiobook(upc="4064066253691"))  # type: ignore[arg-type]
+    assert parsed.external_ids == {(ExternalID.BARCODE, "4064066253691")}
+
+
+def test_audiobook_from_a_list_has_no_barcode(provider: DeezerProvider) -> None:
+    """Audiobooks from lists carry no UPC."""
+    parsed = parse_audiobook(provider, _audiobook())  # type: ignore[arg-type]
+    assert parsed.external_ids == set()

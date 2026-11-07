@@ -552,6 +552,9 @@ def parse_audiobook(provider: DeezerProvider, audiobook: AudiobookFields) -> Aud
         provider_mappings={_provider_mapping(provider, audiobook.id)},
         metadata=metadata,
     )
+    # only the audiobook details carry the UPC
+    if upc := getattr(audiobook, "upc", None):
+        item.external_ids.add((ExternalID.BARCODE, upc))
     if audiobook.is_favorite:
         item.favorite = True
     return item
