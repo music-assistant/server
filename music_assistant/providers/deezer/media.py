@@ -49,6 +49,7 @@ from .constants import (
     PERSONAL_ALBUM_PREFIX,
     PERSONAL_ARTIST_PREFIX,
     PERSONAL_METADATA_VERSION,
+    PODCAST_EPISODE_METADATA_VERSION,
 )
 from .helpers import fetch_all_audiobook_chapter_edges, fetch_all_bookmarks
 from .parsers import (
@@ -592,7 +593,9 @@ class DeezerMediaManager:
         podcast.total_episodes = len(result.raw_episodes)
         return podcast
 
-    @use_cache(3600 * 24 * 30, allow_expired_cache=True)
+    @use_cache(
+        3600 * 24 * 30, allow_expired_cache=True, cache_checksum=PODCAST_EPISODE_METADATA_VERSION
+    )
     async def get_podcast_episode(self, prov_episode_id: str) -> PodcastEpisode:
         """Get (full) podcast episode details by id."""
         result = await self.provider.gql_client.get_podcast_episode(
@@ -611,7 +614,14 @@ class DeezerMediaManager:
             if result.podcast.cover and result.podcast.cover.urls
             else None
         )
-        return parse_podcast_episode(self.provider, result, podcast_mapping, 0, podcast_image_url)
+        return parse_podcast_episode(
+            self.provider,
+            result,
+            podcast_mapping,
+            0,
+            podcast_image_url,
+            podcast_explicit=result.podcast.is_explicit,
+        )
 
     @use_cache(3600 * 24 * 30, allow_expired_cache=True)
     async def get_audiobook(self, prov_audiobook_id: str) -> Audiobook:
@@ -673,7 +683,7 @@ class DeezerMediaManager:
                 ep.fully_played, ep.resume_position_ms, _ = bookmarks[ep.item_id]
             yield ep
 
-    @use_cache(3600)
+    @use_cache(3600, cache_checksum=PODCAST_EPISODE_METADATA_VERSION)
     async def _fetch_podcast_episodes(self, prov_podcast_id: str) -> list[PodcastEpisode]:
         """Fetch all episodes for a podcast (cached 1h)."""
         # Two-layer caching strategy:
@@ -722,7 +732,12 @@ class DeezerMediaManager:
             for ep in fetched:
                 if ep is not None:
                     parsed = parse_podcast_episode(
-                        self.provider, ep, podcast_mapping, 0, podcast_image_url
+                        self.provider,
+                        ep,
+                        podcast_mapping,
+                        0,
+                        podcast_image_url,
+                        podcast_explicit=result.is_explicit,
                     )
                     cached_episodes[ep.id] = parsed
                     self.mass.create_task(
@@ -740,6 +755,8 @@ class DeezerMediaManager:
         positions = rank_episodes_by_date([ep.metadata.release_date for ep in episodes])
         for episode, position in zip(episodes, positions, strict=True):
             episode.position = position
+            # episodes cached on their own may predate the explicit flag, the podcast's is current
+            episode.metadata.explicit = result.is_explicit
         return episodes
 
     @use_cache(3600 * 24 * 7, allow_expired_cache=True)

@@ -7,6 +7,20 @@
     "family_profile": {
       "label": "Deezer profile",
       "description": "The profile of your Deezer Family whose library this source uses."
+    },
+    "explicit_content": {
+      "label": "Explicit content",
+      "description": "Hide tracks, podcasts and audiobooks Deezer marks as explicit. 'Follow Deezer account setting' uses the explicit content setting of this account or profile on deezer.com, read when this source starts. Hidden tracks are also refused at playback, so they cannot be played from a shared playlist either.",
+      "options": {
+        "account": "Follow Deezer account setting",
+        "hide": "Hide explicit content",
+        "no_recommendations": "Hide explicit content from recommendations",
+        "show": "Show explicit content"
+      }
+    },
+    "hide_explicit_albums": {
+      "label": "Hide explicit albums too",
+      "description": "Also hide albums Deezer marks as explicit, instead of showing them without their explicit tracks. Deezer marks an album explicit when any of its tracks is, so this hides the clean tracks of those albums from the album view as well. A separate clean version of an album stays visible."
     }
   },
   "setup_flow": {

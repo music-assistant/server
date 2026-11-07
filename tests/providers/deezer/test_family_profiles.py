@@ -305,6 +305,7 @@ async def test_gw_switch_sends_what_the_web_player_sends(gw_user_data: dict[str,
 def _provider(setup_data: dict[str, Any]) -> DeezerProvider:
     mass = Mock()
     mass.config.get.return_value = setup_data
+    mass.cache = AsyncMock()
     mass.config.decrypt_string.side_effect = lambda value: value
     manifest = Mock()
     manifest.domain = "deezer"
@@ -327,6 +328,8 @@ async def test_profile_is_passed_to_both_clients(stored: str) -> None:
         patch("music_assistant.providers.deezer.provider.GWClient") as gw_client,
     ):
         gql_client.return_value.get_me = AsyncMock(return_value=Mock(id=stored or ADMIN))
+        gql_client.return_value.execute = AsyncMock()
+        gql_client.return_value.get_data.return_value = {}
         gw_client.return_value.setup = AsyncMock()
         await provider.handle_async_init()
 

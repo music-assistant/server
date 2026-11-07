@@ -25,6 +25,7 @@ from music_assistant.helpers.app_vars import app_var
 from music_assistant.helpers.datetime import utc_timestamp
 
 from .constants import DECRYPT_KEY_ERROR, DECRYPT_KEY_LENGTH
+from .explicit_filter import ExplicitMode, gw_song_is_explicit
 from .gw_client import DeezerGWError
 from .helpers import fetch_all_audiobook_chapter_edges, fetch_all_bookmarks
 from .parsers import parse_date
@@ -116,6 +117,12 @@ class DeezerStreamingManager:
             url_details, song_data = await self.provider.gw_client.get_deezer_track_urls(item_id)
         except DeezerGWError as err:
             _raise_stream_error(err, item_id, "Track")
+        # a track can reach playback without passing a filtered listing, e.g. from a
+        # playlist someone else shared, so the filter is applied here as well
+        if self._hides_explicit() and gw_song_is_explicit(song_data):
+            raise MediaNotFoundError(
+                f"Track {item_id} is explicit and hidden by the content filter"
+            )
         url = url_details["sources"][0]["url"]
         size_key = f"FILESIZE_{url_details['format']}"
         size = int(song_data.get(size_key) or song_data.get("FILESIZE_MP3_MISC") or 0)
@@ -151,6 +158,10 @@ class DeezerStreamingManager:
         for edge in all_edges:
             if edge.node is None:
                 continue
+            if self._hides_explicit() and edge.node.is_explicit:
+                raise MediaNotFoundError(
+                    f"Audiobook {item_id} is explicit and hidden by the content filter"
+                )
             chapter_ids.append(edge.node.id)
             chapter_durations_ms.append(edge.node.duration * 1000)
 
@@ -216,6 +227,10 @@ class DeezerStreamingManager:
         result = await self.provider.gql_client.get_podcast_episode(podcast_episode_id=item_id)
         if result is None or not result.media:
             raise MediaNotFoundError(f"Podcast episode {item_id} has no stream URL")
+        if self._hides_explicit() and result.podcast is not None and result.podcast.is_explicit:
+            raise MediaNotFoundError(
+                f"Podcast episode {item_id} is explicit and hidden by the content filter"
+            )
         content_type = ContentType.UNKNOWN
         if result.media.codec:
             content_type = ContentType.try_parse(result.media.codec.type_)
@@ -361,6 +376,10 @@ class DeezerStreamingManager:
         if not isinstance(streamdetails.data, dict) or "start_ts" not in streamdetails.data:
             return
         await self.provider.gw_client.log_listen(last_track=streamdetails)
+
+    def _hides_explicit(self) -> bool:
+        """Return whether explicit content is refused at playback."""
+        return self.provider.explicit_mode == ExplicitMode.HIDE
 
     # -- Decryption helpers --
 
