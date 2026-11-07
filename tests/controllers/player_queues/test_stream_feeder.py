@@ -283,6 +283,7 @@ def _controller_with_next_item() -> tuple[PlayerQueuesController, SimpleNamespac
                 session_id="session-1",
                 next_item_id_preparing=None,
                 last_served_item_id=None,
+                sleep_timer_target=None,
             ),
         )
     }

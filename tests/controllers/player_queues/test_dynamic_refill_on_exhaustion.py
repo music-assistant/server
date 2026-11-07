@@ -38,7 +38,7 @@ def _controller(
             return queue_data.items[index]
         return None
 
-    def _next_index(_queue_id: str, index: int, allow_repeat: bool = True) -> int | None:  # noqa: ARG001
+    def _next_index(_queue_id: str, index: int, **_kwargs: bool) -> int | None:
         """Report the next index against the live item list, so a refill changes the answer."""
         return index + 1 if index + 1 < len(queue_data.items) else None
 

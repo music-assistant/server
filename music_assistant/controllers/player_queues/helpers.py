@@ -7,7 +7,7 @@ import random
 from collections.abc import Awaitable, Callable, Coroutine
 from typing import TYPE_CHECKING, Any, Concatenate, Protocol, TypedDict, TypeGuard
 
-from music_assistant_models.enums import MediaType
+from music_assistant_models.enums import MediaType, SleepTimerMode
 from music_assistant_models.media_items import (
     ItemMapping,
     MediaItemMetadata,
@@ -248,6 +248,39 @@ def get_current_playback_speed(queue: PlayerQueue) -> float:
     if queue.current_item is None:
         return 1.0
     return float(queue.current_item.extra_attributes.get("playback_speed") or 1.0)
+
+
+def get_sleep_timer_stop_position(
+    mode: SleepTimerMode, queue_item: QueueItem, elapsed_time: float
+) -> float | None:
+    """
+    Return the position in the queue item at which a sleep timer in the given mode stops it.
+
+    Returns None when the item has no known end. Outside of any chapter, END_OF_CHAPTER stops
+    at the end of the item.
+
+    :param mode: END_OF_ITEM or END_OF_CHAPTER.
+    :param queue_item: The queue item that is playing.
+    :param elapsed_time: The (media-time) position in the queue item.
+    """
+    if not queue_item.duration:
+        return None
+    item_end = float(queue_item.duration)
+    if mode != SleepTimerMode.END_OF_CHAPTER or queue_item.media_item is None:
+        return item_end
+    chapters = sorted(queue_item.media_item.metadata.chapters or [], key=lambda x: x.start)
+    # a seek takes whole seconds, so a seek to a chapter start lands up to a second before it
+    position = elapsed_time + 1
+    for index, chapter in enumerate(chapters):
+        if chapter.end is not None:
+            chapter_end = chapter.end
+        elif index + 1 < len(chapters):
+            chapter_end = chapters[index + 1].start
+        else:
+            chapter_end = item_end
+        if chapter.start <= position < chapter_end:
+            return chapter_end
+    return item_end
 
 
 def committed_index(queue: PlayerQueue) -> int | None:
