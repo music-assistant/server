@@ -1,0 +1,97 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Web Kiosk — Display</title>
+<link rel="icon" href="/web/icon.svg" type="image/svg+xml">
+<link rel="manifest" href="/web/manifest.webmanifest">
+<style>
+:root { --bg:#0c0c10; --fg:#ececf2; --muted:#9a9aa6; --accent:#4f8cff; }
+* { box-sizing:border-box; margin:0; padding:0; }
+html,body { height:100%; background:var(--bg); color:var(--fg); font-family:system-ui,sans-serif; overflow:hidden; }
+#view { position:fixed; top:0; right:0; bottom:0; left:0; background:#000; color:#fff; overflow:hidden; }
+#view-bg { position:absolute; top:0; right:0; bottom:0; left:0; background-size:cover; background-position:center; filter:blur(40px) brightness(.4); transform:scale(1.1); opacity:.9; transition:opacity .8s; }
+#view-bg img { width:100%; height:100%; object-fit:cover; opacity:0; transition:opacity .8s; }
+#view-main { position:absolute; top:0; right:0; bottom:0; left:0; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:10px; padding:40px 40px 24px; z-index:2; min-height:0; }
+#view-artbox { position:relative; width:42vh; height:42vh; width:min(42vh,42vw); height:min(42vh,42vw); flex:0 1 auto; min-height:0; border-radius:14px; background:#16161c; box-shadow:0 20px 60px rgba(0,0,0,.6); overflow:hidden; }
+#view-art { width:100%; height:100%; object-fit:cover; display:none; }
+#view-artbox.has-art #view-art { display:block; }
+#view-art-fallback { position:absolute; top:0; right:0; bottom:0; left:0; display:flex; align-items:center; justify-content:center; color:#5a5a68; font-size:64px; }
+#view-title { font-size:clamp(20px,4vw,44px); font-weight:700; text-align:center; text-shadow:0 2px 20px rgba(0,0,0,.8); max-width:92vw; }
+#view-artist { font-size:clamp(15px,2.6vw,26px); color:#cfcfe0; text-align:center; max-width:92vw; }
+#view-group, #view-player-id { font-size:13px; color:var(--muted); letter-spacing:.5px; text-align:center; }
+#view-progress { width:720px; width:min(720px,88vw); margin-top:4px; }
+#view-progress-bar { height:5px; border-radius:3px; background:rgba(255,255,255,.18); overflow:hidden; }
+#view-progress-bar span { display:block; height:100%; width:0; background:var(--accent); transition:width .4s linear; }
+#view-times { display:flex; justify-content:space-between; color:var(--muted); font-size:12px; margin-top:4px; font-variant-numeric:tabular-nums; }
+#view-lyrics { width:820px; width:min(820px,92vw); text-align:center; }
+#view-lyrics .l { margin:0; line-height:1.35; min-height:1.35em; color:rgba(255,255,255,.35); font-size:clamp(13px,1.8vw,18px); }
+#view-lyrics .l.current { color:#fff; font-weight:600; font-size:clamp(16px,2.6vw,26px); }
+html.lyrics-full #view-artbox, html.lyrics-full #view-title, html.lyrics-full #view-artist, html.lyrics-full #view-group, html.lyrics-full #view-player-id, html.lyrics-full #view-progress { display:none; }
+html.lyrics-full #view-main { justify-content:center; }
+html.lyrics-full #view-lyrics { width:1100px; width:min(1100px,94vw); }
+html.lyrics-full #view-lyrics .l { font-size:clamp(22px,3.4vw,46px); line-height:1.3; }
+html.lyrics-full #view-lyrics .l.current { font-size:clamp(28px,4.4vw,58px); }
+#view-queue { position:absolute; right:16px; top:16px; width:360px; width:min(360px,calc(100vw - 32px)); max-height:60vh; overflow-y:auto; z-index:4; background:rgba(10,10,14,.6); border-radius:12px; padding:12px; backdrop-filter:blur(8px); }
+#view-queue .qrow { display:flex; align-items:center; gap:10px; padding:6px; border-radius:8px; font-size:14px; }
+#view-queue .qrow.active { background:rgba(255,255,255,.14); }
+#view-queue .qrow img { width:34px; height:34px; border-radius:5px; object-fit:cover; flex-shrink:0; }
+#view-queue .qmeta { flex:1; min-width:0; display:flex; flex-direction:column; }
+#view-queue .qt { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+#view-queue .qa { color:var(--muted); font-size:12px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+#view-queue .qbadge { font-size:10px; text-transform:uppercase; letter-spacing:.5px; padding:1px 5px; border-radius:6px; background:rgba(255,255,255,.14); color:#fff; flex-shrink:0; }
+#view-queue .qbadge.boost { background:#b55522; }
+#view-party { position:absolute; left:16px; bottom:16px; z-index:6; width:150px; width:min(150px,24vw); background:#fff; border-radius:8px; padding:6px; cursor:pointer; }
+#view-party img { display:block; width:100%; height:auto; }
+#view-party-caption { color:#111; font-size:11px; text-align:center; margin-top:4px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+#view-party-expanded { position:fixed; top:0; right:0; bottom:0; left:0; z-index:20; background:rgba(0,0,0,.92); display:flex; align-items:center; justify-content:center; }
+#view-party-expanded img { width:80vmin; width:min(80vmin,80vw); height:auto; background:#fff; padding:12px; border-radius:12px; }
+#view-status { position:absolute; top:16px; left:50%; transform:translateX(-50%); z-index:8; max-width:calc(100vw - 32px); font-size:13px; color:#ffd2d2; background:rgba(10,10,14,.74); padding:8px 12px; border-radius:8px; text-align:center; }
+#view-fullscreen { position:absolute; top:16px; right:16px; z-index:9; width:40px; height:40px; border-radius:20px; background:rgba(10,10,14,.5); color:#fff; border:0; cursor:pointer; }
+#view-fullscreen svg { width:20px; height:20px; fill:none; stroke:currentColor; stroke-width:2; stroke-linecap:round; stroke-linejoin:round; }
+html.tv #view-title { font-size:clamp(26px,5vw,60px); }
+html.tv #view-artist { font-size:clamp(18px,3vw,34px); }
+html.lite #view-bg { filter:none; opacity:.35; }
+.hidden { display:none !important; }
+@media (max-width:900px) {
+  #view-queue { top:56px; right:12px; left:12px; width:auto; max-height:24vh; }
+  #view-main { justify-content:flex-start; padding:24vh 16px 24px; }
+  html.lyrics-full #view-main { justify-content:center; padding:24px 16px; }
+}
+</style>
+</head>
+<body>
+<div id="view">
+  <div id="view-bg"><img id="view-bg-img" alt=""></div>
+  <button type="button" id="view-fullscreen" class="hidden" aria-label="Enter fullscreen" title="Enter fullscreen">
+    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 3H5a2 2 0 0 0-2 2v3m13-5h3a2 2 0 0 1 2 2v3m0 8v3a2 2 0 0 1-2 2h-3M8 21H5a2 2 0 0 1-2-2v-3"></path></svg>
+  </button>
+  <div id="view-main">
+    <div id="view-artbox">
+      <img id="view-art" alt="">
+      <div id="view-art-fallback" aria-hidden="true">♪</div>
+    </div>
+    <div id="view-title">Connecting…</div>
+    <div id="view-artist">Music Assistant</div>
+    <div id="view-group" class="hidden"></div>
+    <div id="view-player-id" class="hidden"></div>
+    <div id="view-progress">
+      <div id="view-progress-bar"><span></span></div>
+      <div id="view-times"><span id="view-elapsed">0:00</span><span id="view-duration">0:00</span></div>
+    </div>
+    <div id="view-lyrics" class="hidden" aria-live="polite"></div>
+  </div>
+  <div id="view-queue" class="hidden"></div>
+  <div id="view-party" class="hidden" role="button" tabindex="0" aria-label="Enlarge Party QR">
+    <img id="view-party-art" alt="Join Party">
+    <div id="view-party-caption"></div>
+  </div>
+  <div id="view-party-expanded" class="hidden" role="button" tabindex="0" aria-label="Close Party QR">
+    <img id="view-party-expanded-art" alt="Join Party">
+  </div>
+  <div id="view-status" class="hidden" role="status"></div>
+</div>
+<script src="/web/display.js"></script>
+</body>
+</html>

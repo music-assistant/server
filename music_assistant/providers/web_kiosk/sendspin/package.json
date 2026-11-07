@@ -1,0 +1,24 @@
+{
+  "name": "web-kiosk-sendspin-build",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "build": "node build.mjs",
+    "check": "node build.mjs --check"
+  },
+  "dependencies": {
+    "@sendspin/sendspin-js": "5.0.0"
+  },
+  "devDependencies": {
+    "esbuild": "0.28.2"
+  },
+  "overrides": {
+    "@noble/curves": "1.9.7",
+    "@noble/hashes": "1.8.0",
+    "@noble/ciphers": "1.3.0",
+    "opus-encdec": "0.1.1"
+  }
+}

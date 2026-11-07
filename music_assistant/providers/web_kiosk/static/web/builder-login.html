@@ -1,0 +1,49 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sign in to Music Assistant</title>
+<style>
+body { font-family:system-ui,sans-serif; background:#181818; color:#fff; max-width:420px; margin:10vh auto; padding:24px; }
+form { display:grid; gap:16px; }
+label { display:grid; gap:6px; }
+input, button { font:inherit; padding:12px; border-radius:6px; border:1px solid #666; }
+button { background:#03a9f4; color:#fff; cursor:pointer; }
+small { color:#aaa; }
+#error { color:#ff8a8a; }
+</style>
+</head>
+<body>
+<h1>Music Assistant</h1>
+<p>Sign in to open the URL builder.</p>
+<form id="signin">
+<label>Username<input id="username" autocomplete="username"></label>
+<label>Password<input type="password" id="password" autocomplete="current-password"></label>
+<details><summary>Use an MA access token</summary>
+<label>Access token<input type="password" id="token" autocomplete="off"></label>
+<small>Use a token from your Music Assistant account if you normally sign in through Home Assistant.</small>
+</details>
+<button type="submit">Sign in</button>
+<p id="error" role="alert"></p>
+</form>
+<script>
+document.getElementById('signin').onsubmit = function (event) {
+    event.preventDefault();
+    var error = document.getElementById('error');
+    error.textContent = '';
+        return fetch('/builder-auth', {
+            method:'POST', headers:{'Content-Type':'application/json'},
+            body:JSON.stringify({
+                username:document.getElementById('username').value,
+                password:document.getElementById('password').value,
+                token:document.getElementById('token').value.trim()
+            })
+        }).then(function (response) {
+        if (!response.ok) { error.textContent = 'Music Assistant sign-in failed.'; return; }
+        location.assign('/');
+        }).catch(function () { error.textContent = 'Could not connect to Music Assistant.'; });
+};
+</script>
+</body>
+</html>
