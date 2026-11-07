@@ -221,6 +221,11 @@ PREFETCH_HANDOVER_TIMEOUT = 5.0
 # the current track buffered meanwhile.
 CROSSFADE_HANDOFF_WAIT = 30.0
 
+# The same wait for an incoming item with a realtime source. A speaker gives up on a
+# request that sends no audio for about 10 s (seen on Sonos) and drops the item, which
+# aborts that source: its single stream slot then has to start over for the next item.
+REALTIME_CROSSFADE_HANDOFF_WAIT = 5.0
+
 # Size of the tail slices played out while a fade waits for the incoming track's
 # audio. The fade is sized on what is left of the tail once that audio shows up,
 # so a small slice keeps it from losing more of the tail than the wait took.
@@ -4930,15 +4935,17 @@ class StreamsAudio:
         if pending is None or pending[0] != queue_item.queue_item_id:
             return None
         handoff = pending[1]
+        realtime = queue_item.streamdetails is not None and queue_item.streamdetails.is_realtime
+        max_wait = REALTIME_CROSSFADE_HANDOFF_WAIT if realtime else CROSSFADE_HANDOFF_WAIT
         self.logger.debug(
             "Waiting up to %.1fs for the fade into %s being mixed for queue %s",
-            CROSSFADE_HANDOFF_WAIT,
+            max_wait,
             queue_item.name,
             queue.display_name,
         )
         waited_from = asyncio.get_event_loop().time()
         with suppress(TimeoutError):
-            await asyncio.wait_for(handoff.wait(), CROSSFADE_HANDOFF_WAIT)
+            await asyncio.wait_for(handoff.wait(), max_wait)
         # claimed (popped) only when it is this item's own boundary; a stale entry
         # for another item stays for its own request
         handover = await self._claim_crossfade_handover(queue, queue_item, session_id)
