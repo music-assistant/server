@@ -54,6 +54,7 @@ from music_assistant.constants import (
     ATTR_FAKE_MUTE,
     ATTR_MUTE_LOCK,
     ATTR_POWER_OFF_IN_PROGRESS,
+    ATTR_POWER_ON_IN_PROGRESS,
     ATTR_PREVIOUS_VOLUME,
     CONF_AUTO_PLAY,
     CONF_ENTRY_TTS_PRE_ANNOUNCE,
@@ -3443,6 +3444,7 @@ class TestVolumeScalingOnRedirect:
             player_id=player_id,
             type=PlayerType.PLAYER,
             protocol_parent_id=None,
+            offline_by_power_control=False,
             extra_data={},
             volume_control=volume_control,
             mute_control=PLAYER_CONTROL_NONE,
@@ -3692,6 +3694,256 @@ class TestExternalPowerControl:
 
         power_on.assert_not_awaited()
         power_off.assert_not_awaited()
+
+
+class TestOfflinePowerControl:
+    """A player switched off at its external power control is powered on through that control."""
+
+    def _setup(
+        self,
+        mock_mass: MagicMock,
+        *,
+        auto_play: bool = False,
+        comes_online: bool = True,
+    ) -> tuple[PlayerController, MockPlayer, PlayerControl]:
+        """
+        Build a controller with an offline player behind a switched off external control.
+
+        :param mock_mass: The mocked MusicAssistant instance to attach the controller to.
+        :param auto_play: The player's 'auto play on power on' setting.
+        :param comes_online: Whether the device comes online once its control is switched on.
+        """
+        control = PlayerControl(
+            id="switch.smart_plug",
+            provider="hass",
+            name="Smart plug",
+            supports_power=True,
+            power_on=AsyncMock(),
+            power_off=AsyncMock(),
+        )
+        mock_mass.config.get_raw_player_config_value = MagicMock(
+            side_effect=_player_config_stub({CONF_POWER_CONTROL: control.id})
+        )
+        mock_mass.player_queues.resume = AsyncMock()
+        controller = PlayerController(mock_mass)
+        provider = MockProvider("test_provider", instance_id="test", mass=mock_mass)
+        player = MockPlayer(provider, "player_1", "Player 1")
+        player._attr_available = False
+        controller._controls = {control.id: control}
+        controller._players = {"player_1": player}
+        mock_mass.players = controller
+        config_get_value = player.config.get_value
+        player.config.get_value = MagicMock(  # type: ignore[method-assign]
+            side_effect=lambda key, *args, **kwargs: (
+                auto_play if key == CONF_AUTO_PLAY else config_get_value(key, *args, **kwargs)
+            )
+        )
+        player.set_initialized()
+        player.update_state(signal_event=False)
+
+        def _switch_on() -> None:
+            control.power_state = True
+            # the control reports its new state while the device is still starting up
+            player.refresh_state()
+            if comes_online:
+                # the device boots and reconnects a moment after its power came on
+                asyncio.get_running_loop().call_later(
+                    0.05, setattr, player, "_attr_available", True
+                )
+
+        cast("AsyncMock", control.power_on).side_effect = _switch_on
+        return controller, player, control
+
+    async def test_power_on_waits_until_the_device_is_online(self, mock_mass: MagicMock) -> None:
+        """Powering on switches the control on and returns once the device is reachable."""
+        controller, player, control = self._setup(mock_mass)
+        assert player.state.available is True
+        assert player.state.powered is False
+        power_on = cast("AsyncMock", control.power_on)
+        switch_on = power_on.side_effect
+        state_while_starting: list[tuple[bool, bool | None]] = []
+
+        def _record_state() -> None:
+            switch_on()
+            state_while_starting.append((player.state.available, player.state.powered))
+
+        power_on.side_effect = _record_state
+
+        await controller.cmd_power("player_1", True)
+
+        power_on.assert_awaited_once()
+        # it does not drop out of sight while it starts up
+        assert state_while_starting == [(True, True)]
+        assert player.available is True
+        assert ATTR_POWER_ON_IN_PROGRESS not in player.extra_data
+        assert player.state.available is True
+        assert player.state.powered is True
+
+    async def test_auto_play_runs_once_the_device_is_online(self, mock_mass: MagicMock) -> None:
+        """The 'auto play on power on' setting resumes the queue on the reachable device."""
+        controller, player, _control = self._setup(mock_mass, auto_play=True)
+        online_at_resume: list[bool] = []
+        resume = cast("AsyncMock", mock_mass.player_queues.resume)
+        resume.side_effect = lambda _queue_id: online_at_resume.append(player.available)
+
+        await controller.cmd_power("player_1", True)
+
+        resume.assert_awaited_once_with("player_1")
+        assert online_at_resume == [True]
+
+    async def test_power_on_follows_a_reregistered_player(self, mock_mass: MagicMock) -> None:
+        """A provider registering a new instance for the returning device ends the wait."""
+        controller, player, control = self._setup(mock_mass, comes_online=False)
+        replacement = MockPlayer(player.provider, "player_1", "Player 1")  # type: ignore[arg-type]
+        replacement.set_initialized()
+
+        def _switch_on() -> None:
+            control.power_state = True
+            asyncio.get_running_loop().call_later(
+                0.05, controller._players.__setitem__, "player_1", replacement
+            )
+
+        cast("AsyncMock", control.power_on).side_effect = _switch_on
+
+        await controller.cmd_power("player_1", True)
+
+        assert ATTR_POWER_ON_IN_PROGRESS not in player.extra_data
+        assert replacement.state.available is True
+        assert replacement.state.powered is True
+
+    async def test_power_on_times_out_when_the_device_stays_offline(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """A device that does not come online fails the power on and is unavailable again."""
+        controller, player, _control = self._setup(mock_mass, comes_online=False)
+
+        with (
+            patch.object(players_controller, "OFFLINE_POWER_ON_TIMEOUT", 0.05),
+            pytest.raises(PlayerUnavailableError),
+        ):
+            await controller.cmd_power("player_1", True)
+
+        assert ATTR_POWER_ON_IN_PROGRESS not in player.extra_data
+        # its control is on while the device is still unreachable: a real fault
+        assert player.state.available is False
+
+    async def test_power_off_of_a_switched_off_player_is_a_no_op(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """Powering off a player that is already switched off neither raises nor switches."""
+        controller, _player, control = self._setup(mock_mass)
+
+        await controller.cmd_power("player_1", False)
+
+        cast("AsyncMock", control.power_off).assert_not_awaited()
+
+    @pytest.mark.parametrize(
+        ("command", "handler", "argument"),
+        [
+            ("play_media", "_handle_play_media", PlayerMedia(uri="http://ma/stream.flac")),
+            ("select_source", "_handle_select_source", "spotify_connect"),
+        ],
+    )
+    async def test_playback_command_powers_the_player_on_first(
+        self, mock_mass: MagicMock, command: str, handler: str, argument: object
+    ) -> None:
+        """A command that starts playback only reaches its handler once the device is online."""
+        controller, player, control = self._setup(mock_mass, auto_play=True)
+        online_at_handler: list[bool] = []
+        setattr(
+            controller,
+            handler,
+            AsyncMock(side_effect=lambda *_args: online_at_handler.append(player.available)),
+        )
+
+        await getattr(controller, command)("player_1", argument)
+
+        cast("AsyncMock", control.power_on).assert_awaited_once()
+        assert online_at_handler == [True]
+        # the command plays what it was asked to, so the queue is not resumed on top of it
+        cast("AsyncMock", mock_mass.player_queues.resume).assert_not_awaited()
+
+    async def test_concurrent_power_on_switches_the_control_once(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """A playback command during a running power on waits for it instead of switching again."""
+        controller, player, control = self._setup(mock_mass)
+        online_at_handler: list[bool] = []
+        for handler in ("_handle_play_media", "_handle_select_source"):
+            setattr(
+                controller,
+                handler,
+                AsyncMock(side_effect=lambda *_args: online_at_handler.append(player.available)),
+            )
+
+        await asyncio.gather(
+            controller.play_media("player_1", PlayerMedia(uri="http://ma/stream.flac")),
+            controller.select_source("player_1", "spotify_connect"),
+        )
+
+        cast("AsyncMock", control.power_on).assert_awaited_once()
+        assert online_at_handler == [True, True]
+
+    async def test_other_commands_are_refused(self, mock_mass: MagicMock) -> None:
+        """A command that does not start playback is refused for a switched off player."""
+        controller, _player, control = self._setup(mock_mass)
+        controller._handle_cmd_volume_set = AsyncMock()  # type: ignore[method-assign]
+
+        with pytest.raises(PlayerUnavailableError):
+            await controller.cmd_volume_set("player_1", 50)
+        with pytest.raises(PlayerUnavailableError):
+            await controller.cmd_set_members("player_1", player_ids_to_add=["other"])
+
+        controller._handle_cmd_volume_set.assert_not_awaited()
+        cast("AsyncMock", control.power_on).assert_not_awaited()
+
+    async def test_switched_off_player_is_not_added_to_a_group(
+        self, mock_mass: MagicMock, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Grouping skips a member that is only available through its power control."""
+        controller, player, _control = self._setup(mock_mass)
+        leader = MockPlayer(player.provider, "leader", "Leader")  # type: ignore[arg-type]
+        leader._attr_supported_features.add(PlayerFeature.SET_MEMBERS)
+        leader._attr_can_group_with = {"player_1"}
+        leader.set_initialized()
+        controller._players["leader"] = leader
+        leader.update_state(signal_event=False)
+        assert player.state.available is True
+
+        with caplog.at_level(logging.WARNING):
+            await controller.cmd_set_members("leader", player_ids_to_add=["player_1"])
+
+        assert "player_1" not in leader.group_members
+        assert "Player player_1 is not available" in caplog.text
+
+    def test_going_offline_with_its_control_detaches_a_synced_player(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """A synced player that goes offline along with its control is detached directly."""
+        controller, player, control = self._setup(mock_mass)
+        control.power_state = True
+        player._attr_available = True
+        leader = MockPlayer(player.provider, "leader", "Leader")  # type: ignore[arg-type]
+        leader._attr_group_members = ["leader", "player_1"]
+        leader.set_initialized()
+        controller._players["leader"] = leader
+        for _player in (leader, player):
+            _player._cache.clear()
+            _player.update_state(signal_event=False)
+        assert player.state.synced_to == "leader"
+        controller._forward_state_update = MagicMock()  # type: ignore[method-assign]
+        controller.cmd_ungroup = MagicMock(return_value="ungroup-coro")  # type: ignore[method-assign]
+        controller._cleanup_player_memberships = MagicMock(  # type: ignore[method-assign]
+            return_value="cleanup-coro"
+        )
+        # the smart plug is switched off, which takes the device down with it
+        control.power_state = False
+        player._attr_available = False
+
+        controller.signal_player_state_update(player, {"powered": (True, False)})
+
+        controller._cleanup_player_memberships.assert_called_once_with("player_1")
+        controller.cmd_ungroup.assert_not_called()
 
 
 class TestEnforceVolumeLimits:

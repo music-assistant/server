@@ -124,7 +124,7 @@ class UniversalGroupPlayer(Player):
         # mute are advertised whether or not the group currently has a live session.
         for member_id in self._attr_group_members:
             member_player = self.mass.players.get_player(member_id)
-            if member_player and member_player.state.available:
+            if member_player and member_player.available_for_playback:
                 for feature in EXTRA_FEATURES_FROM_MEMBERS:
                     if feature in member_player.state.supported_features:
                         features.add(feature)

@@ -176,7 +176,7 @@ class AnnouncementsMixin:
     # becomes once mixed in; the attributes it needs are declared in the block above.
     # mypy reports that on the outermost decorator, hence the ignore below.
     @api_command("players/cmd/play_announcement", required_scope=Scope.PLAYERS_CONTROL)  # type: ignore[type-var]
-    @handle_player_command
+    @handle_player_command(power_on=True)
     async def play_announcement(
         self,
         player_id: str,

@@ -55,6 +55,7 @@ from music_assistant.constants import (
     ATTR_FAKE_MUTE,
     ATTR_FAKE_POWER,
     ATTR_FAKE_VOLUME,
+    ATTR_POWER_ON_IN_PROGRESS,
     CONF_ENTRY_PLAYER_ICON,
     CONF_EXPOSE_PLAYER_TO_HA,
     CONF_FLOW_MODE,
@@ -648,6 +649,23 @@ class Player(ABC):
         picked as an output protocol or command target.
         """
         return self.available and not self.needs_setup
+
+    @property
+    @final
+    def offline_by_power_control(self) -> bool:
+        """
+        Return if the device is offline because it is switched off at its external power control.
+
+        Also True while Music Assistant powers it on through that control and waits for it
+        to come online. Such a player is reported as available (and powered off) to clients,
+        so it can be powered on from there, but it can not take any other command.
+        """
+        if self.available or self.type in (PlayerType.GROUP, PlayerType.PROTOCOL):
+            return False
+        control = self.mass.players.get_player_control(self.power_control)
+        if control is None or not control.supports_power:
+            return False
+        return not control.power_state or ATTR_POWER_ON_IN_PROGRESS in self.extra_data
 
     @property
     @final
@@ -2733,7 +2751,9 @@ class Player(ABC):
             player_id=self.player_id,
             provider=self.provider_id,
             type=self.type,
-            available=self.enabled and self.available and not self.needs_setup,
+            available=self.enabled
+            and (self.available or self.offline_by_power_control)
+            and not self.needs_setup,
             device_info=self.device_info,
             supported_features=self.__final_supported_features,
             playback_state=playback_state,

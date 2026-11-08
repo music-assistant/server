@@ -16,6 +16,7 @@ from music_assistant_models.errors import (
     InsufficientPermissions,
     MusicAssistantError,
     PlayerCommandFailed,
+    PlayerUnavailableError,
 )
 
 from music_assistant.controllers.players.constants import PlayerLockPurpose
@@ -56,6 +57,8 @@ def handle_player_command[PlayerControllerT: "PlayerController", **P, R](
     func: None = None,
     *,
     lock: PlayerLockPurpose | None = None,
+    power_on: bool = False,
+    allow_offline: bool = False,
 ) -> Callable[
     [Callable[Concatenate[PlayerControllerT, P], Awaitable[R]]],
     Callable[Concatenate[PlayerControllerT, P], Coroutine[Any, Any, R | None]],
@@ -66,6 +69,8 @@ def handle_player_command[PlayerControllerT: "PlayerController", **P, R](
     func: Callable[Concatenate[PlayerControllerT, P], Awaitable[R]] | None = None,
     *,
     lock: PlayerLockPurpose | None = None,
+    power_on: bool = False,
+    allow_offline: bool = False,
 ) -> (
     Callable[Concatenate[PlayerControllerT, P], Coroutine[Any, Any, R | None]]
     | Callable[
@@ -84,6 +89,12 @@ def handle_player_command[PlayerControllerT: "PlayerController", **P, R](
     :param lock: PlayerLockPurpose to serialize commands in the same category per
         player. Commands with the same lock purpose on the same player will not run
         concurrently. None (default) means no locking.
+    :param power_on: Power on a player that is switched off at its external power control
+        (and wait for it to come online) before running the command. Meant for the
+        commands that start playback.
+    :param allow_offline: Run the command as is on a player that is switched off at its
+        external power control. Meant for the power command itself. Without this flag or
+        power_on, the command is refused for such a player.
     """  # noqa: D401
 
     def decorator(
@@ -131,7 +142,13 @@ def handle_player_command[PlayerControllerT: "PlayerController", **P, R](
                 f"by user {current_user.username}" if current_user else "unauthenticated",
             )
 
+            if player.offline_by_power_control and not (power_on or allow_offline):
+                msg = f"Player {player.display_name} is switched off"
+                raise PlayerUnavailableError(msg)
+
             try:
+                if power_on and player.offline_by_power_control:
+                    await self._handle_cmd_power(player.player_id, True, skip_auto_play=True)
                 if lock:
                     async with self.get_player_lock(player.player_id, lock):
                         await fn(self, *args, **kwargs)

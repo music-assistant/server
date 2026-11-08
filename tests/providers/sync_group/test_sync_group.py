@@ -97,6 +97,7 @@ def _make_mock_player(
     player.player_id = player_id
     player.display_name = player_id
     player.available = available
+    player.available_for_playback = available
     player.active_output_protocol = active_output_protocol
     player.playback_state = playback_state
     player.protocol_parent_id = None
@@ -295,6 +296,24 @@ class TestProtocolAwareLeaderSelection:
         mass.players.get_player = _player_lookup({"light": light, "player_b": player_b})
 
         sgp._attr_group_members = ["light", "player_b"]
+
+        leader = sgp._select_sync_leader()
+        assert leader == player_b
+
+    def test_select_leader_skips_member_switched_off_at_its_power_control(self) -> None:
+        """A member reported available while it is switched off is never picked as leader."""
+        mass = _make_mock_mass()
+        sgp = _make_sync_group(mass)
+
+        switched_off = _make_mock_player("switched_off")
+        # clients still see it as available (and off), the device itself is offline
+        switched_off.available = switched_off.available_for_playback = False
+        player_b = _make_mock_player("player_b")
+        mass.players.get_player = _player_lookup(
+            {"switched_off": switched_off, "player_b": player_b}
+        )
+
+        sgp._attr_group_members = ["switched_off", "player_b"]
 
         leader = sgp._select_sync_leader()
         assert leader == player_b
@@ -2599,7 +2618,7 @@ class TestFormReconcilesIncompatibleMembers:
         leader.state.can_group_with = {"m2"}
         member = _make_mock_player("m2", provider_domain="sonos")
         offline = _make_mock_player("off", provider_domain="sonos")
-        offline.state.available = False
+        offline.available_for_playback = offline.state.available = False
         mass.players.get_player = _player_lookup({"leader": leader, "m2": member, "off": offline})
         sgp.sync_leader = leader
         sgp._attr_group_members = ["leader", "m2", "off"]
@@ -3240,7 +3259,7 @@ class TestDebouncedReform:
         sgp = self._setup_group(mass, members=["leader", "m2", "m3"])
         mass.players.cmd_resume = AsyncMock()
         leader = mass.players.get_player("leader")
-        leader.available = False
+        leader.available = leader.available_for_playback = False
         leader.state.available = False
         leader.state.group_members = ["leader", "m2", "m3"]
         mass.players.get_player("m2").state.can_group_with = {"m3"}
@@ -3309,7 +3328,7 @@ class TestDebouncedReform:
         sgp.logger = logging.getLogger("test.sync_group")
         mass.players.cmd_resume = AsyncMock()
         offline = mass.players.get_player("m2")
-        offline.available = offline.state.available = False
+        offline.available = offline.available_for_playback = offline.state.available = False
 
         with (
             patch("music_assistant.providers.sync_group.player.REFORM_DEBOUNCE_SECONDS", 0.05),
@@ -3335,7 +3354,7 @@ class TestDebouncedReform:
         sgp = self._setup_group(mass, members=["leader", "m2", "m3"])
         mass.players.cmd_resume = AsyncMock()
         leader = mass.players.get_player("leader")
-        leader.available = leader.state.available = False
+        leader.available = leader.available_for_playback = leader.state.available = False
         leader.state.group_members = ["leader", "m2", "m3"]
         members = [mass.players.get_player("m2"), mass.players.get_player("m3")]
         members[0].state.can_group_with = {"m3"}
