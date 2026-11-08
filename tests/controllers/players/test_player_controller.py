@@ -3781,6 +3781,26 @@ class TestOfflinePowerControl:
         assert player.state.available is True
         assert player.state.powered is True
 
+    async def test_a_control_reporting_on_after_the_device_is_online_is_waited_for(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """A device that is online before its control reports on is returned as powered."""
+        controller, player, control = self._setup(mock_mass)
+
+        def _switch_on_slow_report() -> None:
+            loop = asyncio.get_running_loop()
+            loop.call_later(0.01, setattr, player, "_attr_available", True)
+            loop.call_later(0.8, setattr, control, "power_state", True)
+
+        cast("AsyncMock", control.power_on).side_effect = _switch_on_slow_report
+
+        online_player = await controller._power_on_switched_off_player("player_1")
+
+        assert online_player.available is True
+        assert control.power_state is True
+        online_player.update_state(signal_event=False)
+        assert online_player.state.powered is True
+
     async def test_auto_play_runs_once_the_device_is_online(self, mock_mass: MagicMock) -> None:
         """The 'auto play on power on' setting resumes the queue on the reachable device."""
         controller, player, _control = self._setup(mock_mass, auto_play=True)
@@ -4166,7 +4186,7 @@ class TestOfflinePowerControl:
         def _slow_report() -> None:
             # the switch is on, its new state is only reported a moment later
             loop = asyncio.get_running_loop()
-            loop.call_later(0.6, setattr, control, "power_state", True)
+            loop.call_later(0.8, setattr, control, "power_state", True)
             loop.call_later(0.8, setattr, player, "_attr_available", True)
 
         cast("AsyncMock", control.power_on).side_effect = _slow_report

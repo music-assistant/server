@@ -4464,6 +4464,10 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
                 async with asyncio.timeout(OFFLINE_POWER_ON_TIMEOUT):
                     while True:
                         if (online_player := self._get_online_player(player_id)) is not None:
+                            # a device can come online before its control reports on, while
+                            # what follows (e.g. an announcement) reads the power state
+                            if (control := self._controls.get(control_id)) is not None:
+                                await wait_for_power_on(self.logger, online_player, control)
                             return online_player
                         if ATTR_POWER_ON_IN_PROGRESS not in player.extra_data:
                             # a power off called it off, or the power on waited for has ended
