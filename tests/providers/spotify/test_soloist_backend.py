@@ -1290,6 +1290,80 @@ async def test_the_item_after_a_refused_one_plays_on_the_running_engine(tmp_path
     backend._start_run.assert_not_called()
 
 
+async def _read_quiet_fifo(run: _EngineRun, seconds: float) -> None:
+    """Run the capture for a while on a FIFO the engine writes nothing more to."""
+    run._reader = asyncio.StreamReader()
+    reading = asyncio.ensure_future(run._read_capture())
+    await asyncio.sleep(seconds)
+    run._stopped = True
+    await asyncio.wait_for(reading, 1)
+
+
+async def test_the_item_before_a_refused_one_ends_where_the_paused_engine_stopped(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A cut the exact length put past the engine's last audio still ends the item at once."""
+    monkeypatch.setattr(soloist_backend, "_READ_SLICE_S", 0.01)
+    run = _live_run(tmp_path)
+    outgoing = run.current_item
+    await run._handle_event(
+        _playback_event("playing", uri=TRACK_A, position_ms=0, duration_ms=2_000)
+    )
+    await _reach_fed_item(run)
+    # the exact length cuts half a second past where the engine reported the change
+    assert outgoing.end_at == 2 * _BYTES_PER_SECOND
+    await run._handle_event(_playback_event("paused", uri=TRACK_A, position_ms=0))
+
+    await _read_quiet_fifo(run, 0.1)
+    assert outgoing.delivery_done
+    _sink(run).suspend.assert_awaited()
+    assert run._error is None
+    assert await asyncio.wait_for(_collect(run, outgoing), 1) == _audio(1.5)
+
+
+async def test_an_item_the_engine_paused_short_of_its_cut_ends_at_once(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """With nothing fed, the engine pausing at its context head leaves the cut unreached."""
+    monkeypatch.setattr(soloist_backend, "_READ_SLICE_S", 0.01)
+    run = _live_run(tmp_path)
+    item = run.current_item
+    await _capture(run, _audio(2))
+    item.end_at = item.raw_read + _BYTES_PER_SECOND // 2
+    await run._handle_event(_playback_event("paused", uri=TRACK_C, position_ms=0))
+
+    await _read_quiet_fifo(run, 0.1)
+    assert item.delivery_done
+    assert await asyncio.wait_for(_collect(run, item), 1) == _audio(2)
+
+
+@pytest.mark.parametrize(
+    ("short_s", "status"),
+    [
+        # further from its cut than an exact length can move it: a stalled engine
+        (1.5, "paused"),
+        # an engine still going owes the rest of the item
+        (0.5, "playing"),
+    ],
+)
+async def test_an_item_short_of_its_cut_is_left_to_the_stall_timeout(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, short_s: float, status: str
+) -> None:
+    """Only a paused engine a little short of the cut is taken to have nothing more."""
+    monkeypatch.setattr(soloist_backend, "_READ_SLICE_S", 0.01)
+    monkeypatch.setattr(soloist_backend, "_STALL_TIMEOUT_S", 0.1)
+    run = _live_run(tmp_path)
+    item = run.current_item
+    await _capture(run, _audio(2))
+    item.end_at = item.raw_read + int(short_s * _BYTES_PER_SECOND)
+    await run._handle_event(_playback_event(status, uri=TRACK_C, position_ms=0))
+    run._fail = MagicMock()  # type: ignore[method-assign]
+
+    await _read_quiet_fifo(run, 0.4)
+    assert not item.delivery_done
+    run._fail.assert_called_once_with("Spotify stopped sending audio")
+
+
 async def test_a_failed_sign_in_fails_the_run_at_once(tmp_path: Path) -> None:
     """The engine's failed-login line ends the run; the daemon itself only sits there."""
     run = _make_run(tmp_path)

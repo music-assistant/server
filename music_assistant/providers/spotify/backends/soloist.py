@@ -1698,10 +1698,9 @@ class _EngineRun:
             except TimeoutError:
                 if self._engine_exited:
                     # the engine exited and its last audio has been read
-                    for item in (self._item, self._next):
-                        if item is not None:
-                            self._finish_delivery(item)
+                    self._finish_deliveries()
                     return
+                await self._end_short_of_cut()
                 # No data. Either the sink is suspended on purpose (the engine
                 # is paused, the cushion is at its cap, or nothing is being
                 # served) or the run has died or is stuck rebuffering; only the
@@ -1736,9 +1735,7 @@ class _EngineRun:
             if self._engine_exited and not raw.strip(b"\x00"):
                 # the engine is gone and the sink only pads: its audio has all arrived
                 await self._set_sink(running=False)
-                for item in (self._item, self._next):
-                    if item is not None:
-                        self._finish_delivery(item)
+                self._finish_deliveries()
                 return
             if self._moving:
                 # rendered before a seek or jump: nobody's audio
@@ -1874,6 +1871,12 @@ class _EngineRun:
         with suppress(asyncio.QueueFull):
             item.chunks.put_nowait(None)
 
+    def _finish_deliveries(self) -> None:
+        """Mark the audio of the current item, and of the one it moves on to, as fully handed over."""
+        for item in (self._item, self._next):
+            if item is not None:
+                self._finish_delivery(item)
+
     def _end_item(self, past_end_ms: int = 0) -> None:
         """
         Have the capture end the current item where the engine left it.
@@ -1893,6 +1896,31 @@ class _EngineRun:
             item.end_at / _BYTES_PER_SECOND,
             reported_at / _BYTES_PER_SECOND,
         )
+
+    async def _end_short_of_cut(self) -> None:
+        """End the last item the engine was given when the paused engine stopped short of its cut."""
+        item = self._item
+        if (
+            item.end_at is None
+            or item.delivery_done
+            or self._next is not None
+            or not self._engine_paused
+            or not self._sink_running
+            or self._moving
+            # an exact length moves the cut at most this far past the engine's report;
+            # a bigger gap is a stalled engine, left to the stall timeout
+            or item.end_at - item.raw_read > _MAX_CUT_SKEW_S * _BYTES_PER_SECOND
+        ):
+            return
+        # a paused engine writes nothing more: the rest of the cut never comes
+        self.logger.debug(
+            "%s ends %.3f s into its capture, short of its cut at %.3f s",
+            item.spotify_uri,
+            item.raw_read / _BYTES_PER_SECOND,
+            item.end_at / _BYTES_PER_SECOND,
+        )
+        self._finish_delivery(item)
+        await self._set_sink(running=False)
 
     async def _set_sink(self, *, running: bool) -> None:
         """Run the capture sink only while its audio has somewhere to go."""
