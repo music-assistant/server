@@ -3907,13 +3907,17 @@ class TestOfflinePowerControl:
             ("cmd_volume_up", ()),
             ("cmd_volume_down", ()),
             ("cmd_volume_mute", (True,)),
+            ("cmd_group_volume", (50,)),
+            ("cmd_group_volume_up", ()),
+            ("cmd_group_volume_down", ()),
+            ("cmd_group_volume_mute", (True,)),
             ("cmd_ungroup", ()),
         ],
     )
     async def test_commands_without_anything_to_act_on_are_ignored(
         self, mock_mass: MagicMock, command: str, args: tuple[object, ...]
     ) -> None:
-        """Stop, volume and ungroup quietly do nothing on a switched off player."""
+        """Stop, (group) volume and ungroup quietly do nothing on a switched off player."""
         controller, player, control = self._setup(mock_mass)
         untouched = {
             name: AsyncMock()

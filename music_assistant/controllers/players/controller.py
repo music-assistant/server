@@ -985,7 +985,7 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         await self.cmd_volume_set(player_id, new_volume)
 
     @api_command("players/cmd/group_volume", required_scope=Scope.PLAYERS_CONTROL)
-    @handle_player_command
+    @handle_player_command(switched_off=SwitchedOffAction.IGNORE)
     async def cmd_group_volume(
         self,
         player_id: str,
@@ -1010,7 +1010,7 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
             await self.set_group_volume(group_player, volume_level)
 
     @api_command("players/cmd/group_volume_up", required_scope=Scope.PLAYERS_CONTROL)
-    @handle_player_command
+    @handle_player_command(switched_off=SwitchedOffAction.IGNORE)
     async def cmd_group_volume_up(self, player_id: str) -> None:
         """
         Send VOLUME_UP command to given playergroup.
@@ -1030,7 +1030,7 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
             await self.cmd_group_volume(player_id, new_volume)
 
     @api_command("players/cmd/group_volume_down", required_scope=Scope.PLAYERS_CONTROL)
-    @handle_player_command
+    @handle_player_command(switched_off=SwitchedOffAction.IGNORE)
     async def cmd_group_volume_down(self, player_id: str) -> None:
         """
         Send VOLUME_DOWN command to given playergroup.
@@ -1048,7 +1048,7 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
             await self.cmd_group_volume(player_id, new_volume)
 
     @api_command("players/cmd/group_volume_mute", required_scope=Scope.PLAYERS_CONTROL)
-    @handle_player_command
+    @handle_player_command(switched_off=SwitchedOffAction.IGNORE)
     async def cmd_group_volume_mute(self, player_id: str, muted: bool) -> None:
         """
         Handle muting a playergroup (or synced players) as a whole.
