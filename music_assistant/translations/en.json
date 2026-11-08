@@ -204,6 +204,7 @@
   "common.config_entries.play_media_overrides_group.label": "Play Media overrides active group",
   "common.config_entries.plugin_enable.description": "Make this player available in {0}. This is the same setting as the 'Connected players' list in the {0} configuration.",
   "common.config_entries.plugin_enable.label": "Enable {0} on this player",
+  "common.config_entries.power_control.description": "A Home Assistant entity chosen here, such as a smart plug, is also used to turn on this player when it is offline.",
   "common.config_entries.power_control.disabled_reasons.native": "This player does not support native power control.",
   "common.config_entries.power_control.label": "Power Control",
   "common.config_entries.power_control.options.fake": "Fake power control",

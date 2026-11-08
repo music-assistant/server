@@ -55,6 +55,8 @@ from music_assistant.constants import (
     ATTR_FAKE_MUTE,
     ATTR_FAKE_POWER,
     ATTR_FAKE_VOLUME,
+    ATTR_POWER_ON_IN_PROGRESS,
+    ATTR_REACHABLE,
     CONF_ENTRY_PLAYER_ICON,
     CONF_EXPOSE_PLAYER_TO_HA,
     CONF_FLOW_MODE,
@@ -645,9 +647,31 @@ class Player(ABC):
 
         A device that is reachable but still needs setup - an unpaired AirPlay
         receiver, for example - can not accept a stream, so it must never be
-        picked as an output protocol or command target.
+        picked as an output protocol or command target. Neither can a disabled player.
+
+        Use this, not state.available, for a device that must be reachable right now:
+        the state also reports a player that is switched off at its power control as
+        available (see offline_by_power_control).
         """
-        return self.available and not self.needs_setup
+        return self.enabled and self.available and not self.needs_setup
+
+    @property
+    @final
+    def offline_by_power_control(self) -> bool:
+        """
+        Return if the device is offline because it is switched off at its external power control.
+
+        Also True while Music Assistant powers it on through that control and waits for it
+        to come online. Such a player is reported to clients as available and powered off,
+        so it can be powered on (or played to) from there, while the device itself is not
+        reachable.
+        """
+        if self.available or self.type in (PlayerType.GROUP, PlayerType.PROTOCOL):
+            return False
+        control = self.mass.players.get_player_control(self.power_control)
+        if control is None or not control.supports_power:
+            return False
+        return not control.power_state or ATTR_POWER_ON_IN_PROGRESS in self.extra_data
 
     @property
     @final
@@ -2733,7 +2757,11 @@ class Player(ABC):
             player_id=self.player_id,
             provider=self.provider_id,
             type=self.type,
-            available=self.enabled and self.available and not self.needs_setup,
+            # the client view: it includes a player switched off at its power control, so
+            # internal code that needs a reachable device checks available_for_playback
+            available=self.enabled
+            and (self.available or self.offline_by_power_control)
+            and not self.needs_setup,
             device_info=self.device_info,
             supported_features=self.__final_supported_features,
             playback_state=playback_state,
@@ -2797,6 +2825,9 @@ class Player(ABC):
                 5, self.set_active_mass_source, None, task_id=f"set_mass_source_{self.player_id}"
             )
         new_fingerprint = _state_fingerprint(self._state)
+        # not part of the state: whether the device can be reached, which its availability
+        # does not tell for a player that is switched off at its power control
+        new_fingerprint[ATTR_REACHABLE] = self.available
         self.__state_fingerprint = new_fingerprint
         changed_values: dict[str, tuple[Any, Any]] = {}
         for key in prev_fingerprint.keys() | new_fingerprint.keys():
@@ -2920,6 +2951,11 @@ class Player(ABC):
             elapsed_time_last_updated = (
                 session.stream_metadata.elapsed_time_last_updated or time.time()
             )
+
+        if self.offline_by_power_control:
+            # a device that is switched off plays nothing, while one cut off mid-song may
+            # still report the state it had
+            playback_state = PlaybackState.IDLE
 
         return (playback_state, elapsed_time, elapsed_time_last_updated)
 

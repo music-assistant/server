@@ -987,6 +987,7 @@ ATTR_GROUP_VOLUME_SNAPSHOT: Final[str] = "group_volume_snapshot"
 ATTR_VOLUME_TARGET: Final[str] = "volume_target"
 ATTR_ENABLED: Final[str] = "enabled"
 ATTR_AVAILABLE: Final[str] = "available"
+ATTR_REACHABLE: Final[str] = "reachable"
 ATTR_POWERED: Final[str] = "powered"
 ATTR_MUTE_LOCK: Final[str] = "mute_lock"
 ATTR_ACTIVE_SOURCE: Final[str] = "active_source"
@@ -996,6 +997,7 @@ ATTR_VOLUME_CONTROL: Final[str] = "volume_control"
 ATTR_POWER_CONTROL: Final[str] = "power_control"
 ATTR_PLAY_ACTION_IN_PROGRESS: Final[str] = "play_action_in_progress"
 ATTR_POWER_OFF_IN_PROGRESS: Final[str] = "power_off_in_progress"
+ATTR_POWER_ON_IN_PROGRESS: Final[str] = "power_on_in_progress"
 
 # Album type detection patterns
 LIVE_INDICATORS = [
