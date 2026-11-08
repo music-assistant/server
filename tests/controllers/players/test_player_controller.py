@@ -4513,6 +4513,74 @@ class TestIdlePowerOff:
 
         power_off.assert_not_awaited()
 
+    async def test_playback_that_ends_while_waiting_for_the_lock_starts_the_count_over(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """An announcement that holds the player when its time is up delays the power off."""
+        controller, player, power_off = self._setup(mock_mass)
+        player.extra_data[ATTR_IDLE_SINCE] = time.monotonic() - 30 * 60
+        controller._check_idle_power_off(player)
+
+        async with _lock_held_elsewhere(controller, "player_1"):
+            power_off_task = asyncio.create_task(mock_mass.create_task.call_args.args[0])
+            await _yield_to_loop()
+            controller.signal_player_state_update(
+                player, {"playback_state": (PlaybackState.IDLE, PlaybackState.PLAYING)}
+            )
+            controller.signal_player_state_update(
+                player, {"playback_state": (PlaybackState.PLAYING, PlaybackState.IDLE)}
+            )
+            controller._check_idle_power_off(player)
+        await power_off_task
+
+        power_off.assert_not_awaited()
+        assert time.monotonic() - player.extra_data[ATTR_IDLE_SINCE] < 60
+
+    def test_playback_between_two_checks_starts_the_count_over(self, mock_mass: MagicMock) -> None:
+        """Playback that starts and ends before the next check still counts as activity."""
+        controller, player, _power_off = self._setup(mock_mass)
+        player.extra_data[ATTR_IDLE_SINCE] = time.monotonic() - 30 * 60
+
+        controller.signal_player_state_update(
+            player, {"playback_state": (PlaybackState.PLAYING, PlaybackState.IDLE)}
+        )
+        controller._check_idle_power_off(player)
+
+        assert time.monotonic() - player.extra_data[ATTR_IDLE_SINCE] < 60
+
+    def test_player_still_starting_up_is_not_idle(self, mock_mass: MagicMock) -> None:
+        """A device that is switched on but not online yet does not count down."""
+        controller, player, _power_off = self._setup(mock_mass, minutes=1)
+        player._attr_available = False
+        player.extra_data[ATTR_POWER_ON_IN_PROGRESS] = True
+        player.refresh_state(signal_event=False)
+        assert player.state.available is True
+        assert player.state.powered is True
+        assert player.state.playback_state == PlaybackState.IDLE
+        player.extra_data[ATTR_IDLE_SINCE] = time.monotonic() - 60
+
+        controller._check_idle_power_off(player)
+
+        assert ATTR_IDLE_SINCE not in player.extra_data
+        mock_mass.create_task.assert_not_called()
+
+    async def test_busy_player_is_not_powered_off(
+        self, mock_mass: MagicMock, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A power off that can't get the player lock in time gives up and keeps the count."""
+        monkeypatch.setattr(players_controller, "PLAYER_LOCK_SLOW_THRESHOLD", 0.01)
+        monkeypatch.setattr(players_controller, "PLAYER_LOCK_TIMEOUT", 0.05)
+        monkeypatch.setattr(players_controller, "PLAYER_LOCK_STRICT_TIMEOUT", 0.05)
+        controller, player, power_off = self._setup(mock_mass)
+        player.extra_data[ATTR_IDLE_SINCE] = time.monotonic() - 30 * 60
+        controller._check_idle_power_off(player)
+
+        async with _lock_held_elsewhere(controller, "player_1"):
+            await mock_mass.create_task.call_args.args[0]
+
+        power_off.assert_not_awaited()
+        assert ATTR_IDLE_SINCE in player.extra_data
+
 
 class TestEnforceVolumeLimits:
     """External volume changes outside the min/max range must be corrected."""

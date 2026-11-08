@@ -2157,6 +2157,7 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
                 player,
                 task_id=task_id,
             )
+        self._restart_idle_count(player, changed_values)
         # only steer into the (relatively expensive) membership cleanup when a field
         # that can require an unsync actually changed - this runs on every state tick
         if changed_values.keys() & {ATTR_AVAILABLE, ATTR_ENABLED, ATTR_POWERED, ATTR_REACHABLE}:
@@ -3511,19 +3512,29 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
 
         :param player: The player to check.
         """
-        if not (minutes := self._get_idle_power_off_minutes(player)):
+        if not self._get_idle_power_off_minutes(player):
             player.extra_data.pop(ATTR_IDLE_SINCE, None)
             return
-        now = time.monotonic()
-        idle_since: float = player.extra_data.setdefault(ATTR_IDLE_SINCE, now)
-        if now - idle_since < minutes * 60:
-            return
-        # starts the count over, so a power off that fails is retried a full idle time later
-        player.extra_data.pop(ATTR_IDLE_SINCE)
-        self.mass.create_task(
-            self._power_off_idle_player(player.player_id),
-            task_id=f"idle_power_off_{player.player_id}",
-        )
+        player.extra_data.setdefault(ATTR_IDLE_SINCE, time.monotonic())
+        if self._is_idle_power_off_due(player):
+            # the task id keeps a power off that waits for the player lock from starting twice
+            self.mass.create_task(
+                self._power_off_idle_player(player.player_id),
+                task_id=f"idle_power_off_{player.player_id}",
+            )
+
+    def _restart_idle_count(
+        self, player: Player, changed_values: dict[str, tuple[Any, Any]]
+    ) -> None:
+        """
+        Start the idle power off count of a player over when its playback or power changed.
+
+        :param player: The player whose state changed.
+        :param changed_values: The changed state values.
+        """
+        # also catches playback that starts and ends between two checks of the poll loop
+        if changed_values.keys() & {"playback_state", ATTR_POWERED}:
+            player.extra_data.pop(ATTR_IDLE_SINCE, None)
 
     async def _power_off_idle_player(self, player_id: str) -> None:
         """
@@ -3531,19 +3542,34 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
 
         :param player_id: The player to power off.
         """
-        # hold the lock across the check: a play command that overlaps holds it while it
-        # starts the playback, which must not be powered off right after
-        async with self.get_group_and_player_lock(player_id):
-            if not (player := self.get_player(player_id)) or not (
-                minutes := self._get_idle_power_off_minutes(player)
-            ):
-                return
-            self.logger.info(
-                "Powering off player %s, it has been idle for %s minutes",
-                player.display_name,
-                minutes,
-            )
-            await self._handle_cmd_power(player_id, False)
+        try:
+            # a command that holds the player may play on it, which starts the count over.
+            # So never run without the lock, and check again once it is ours.
+            async with self.get_group_and_player_lock(player_id, strict=True):
+                player = self.get_player(player_id)
+                if player is None or not self._is_idle_power_off_due(player):
+                    return
+                # starts the count over, so a power off that fails is retried a full idle
+                # time later
+                player.extra_data.pop(ATTR_IDLE_SINCE)
+                self.logger.info("Powering off idle player %s", player.display_name)
+                await self._handle_cmd_power(player_id, False)
+        except ResourceBusyError:
+            self.logger.debug("Player %s is busy, its idle power off is tried again", player_id)
+
+    def _is_idle_power_off_due(self, player: Player) -> bool:
+        """
+        Return if the player has been idle for its configured idle power off time.
+
+        :param player: The player to check.
+        """
+        minutes = self._get_idle_power_off_minutes(player)
+        idle_since = player.extra_data.get(ATTR_IDLE_SINCE)
+        return (
+            bool(minutes)
+            and idle_since is not None
+            and time.monotonic() - idle_since >= minutes * 60
+        )
 
     @staticmethod
     def _get_idle_power_off_minutes(player: Player) -> int:
@@ -3551,7 +3577,7 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         Return after how many idle minutes the player is to be powered off.
 
         Returns 0 while that does not apply: the player has no idle power off configured, is
-        not powered on and stopped, or is about to play an announcement.
+        not online, powered on and stopped, or is about to play an announcement.
 
         :param player: The player to get the idle power off time for.
         """
@@ -3564,6 +3590,8 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
             or state.powered is not True
             or state.playback_state != PlaybackState.IDLE
             or player.extra_data.get(ATTR_ANNOUNCEMENT_IN_PROGRESS)
+            # reported as powered on and idle while it is still starting up
+            or player.offline_by_power_control
         ):
             return 0
         return minutes

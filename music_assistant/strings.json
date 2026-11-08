@@ -62,7 +62,7 @@
     },
     "idle_power_off": {
       "label": "Power off when idle (minutes)",
-      "description": "Turn this player off once it has been stopped for this many minutes. Set to 0 to never turn it off automatically."
+      "description": "Turn this player off once it has been stopped for this many minutes. Set to 0 to never turn it off automatically.\n\nMusic Assistant only sees playback it knows about, so a device that is in use in another way, such as a TV or receiver on another input, may be turned off while in use."
     },
     "crossfade_different_sample_rates": {
       "label": "Allow crossfades between tracks of different sample rates",

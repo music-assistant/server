@@ -124,7 +124,7 @@
   "common.config_entries.http_profile.options.no_content_length": "Profile 2 - no content length",
   "common.config_entries.icon.description": "Icon for this player, from the shared Music Assistant icon set.\n\nSee https://github.com/music-assistant/shared-icons.",
   "common.config_entries.icon.label": "Icon",
-  "common.config_entries.idle_power_off.description": "Turn this player off once it has been stopped for this many minutes. Set to 0 to never turn it off automatically.",
+  "common.config_entries.idle_power_off.description": "Turn this player off once it has been stopped for this many minutes. Set to 0 to never turn it off automatically.\n\nMusic Assistant only sees playback it knows about, so a device that is in use in another way, such as a TV or receiver on another input, may be turned off while in use.",
   "common.config_entries.idle_power_off.label": "Power off when idle (minutes)",
   "common.config_entries.ignore_album_playlists.description": "A digital album often comes with a playlist file (.m3u) that contains the tracks of the album. \nAdding all these playlists to the library, is not very practical so it's better to just ignore them.\n\nIf this option is enabled, all playlists will be ignored which are more than 1 level deep anywhere in the folder structure. E.g. /music/artistname/albumname/playlist.m3u",
   "common.config_entries.ignore_album_playlists.label": "Ignore playlists with album tracks within album folders",
