@@ -954,6 +954,11 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         queue_active = queue.active
         if queue.active and queue.state == PlaybackState.PLAYING:
             queue.resume_pos = int(queue.corrected_elapsed_time)
+        if (
+            player := self.mass.players.get_player(queue_id)
+        ) is not None and player.offline_by_power_control:
+            # a player switched off at its power control has nothing to pause
+            return
         # Use internal handler to avoid circular redirect
         # (cmd_pause redirects to queue.pause, which calls cmd_pause again)
         await self.mass.players._handle_cmd_pause(queue_id)

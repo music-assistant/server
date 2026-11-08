@@ -69,6 +69,7 @@ from music_assistant.constants import (
     CONF_VOLUME_CONTROL,
     CONF_VOLUME_STEP,
 )
+from music_assistant.controllers.player_queues import PlayerQueuesController
 from music_assistant.controllers.players import PlayerController
 from music_assistant.controllers.players import controller as players_controller
 from music_assistant.controllers.players.announcements import ANNOUNCEMENT_TTS_TIMEOUT
@@ -4038,6 +4039,55 @@ class TestOfflinePowerControl:
         assert ATTR_POWER_ON_IN_PROGRESS not in player.extra_data
         assert player.state.available is True
         assert player.state.powered is False
+
+    async def test_power_off_before_the_control_reported_on_aborts_the_pending_play(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """A power off is not dropped as 'already off' while the control has not reported on."""
+        controller, player, control = self._setup(mock_mass, comes_online=False)
+        controller._handle_play_media = AsyncMock()  # type: ignore[method-assign]
+        # the switch is on, but it has not reported its new state yet
+        cast("AsyncMock", control.power_on).side_effect = None
+        pending = asyncio.create_task(
+            controller.play_media("player_1", PlayerMedia(uri="http://ma/stream.flac"))
+        )
+        await asyncio.sleep(0.1)
+        assert player.state.powered is False
+        started = time.monotonic()
+
+        await controller.cmd_power("player_1", False)
+        with pytest.raises(PlayerUnavailableError, match="switched off"):
+            await pending
+
+        cast("AsyncMock", control.power_off).assert_awaited_once()
+        assert time.monotonic() - started < 1.5
+        controller._handle_play_media.assert_not_awaited()
+        assert ATTR_POWER_ON_IN_PROGRESS not in player.extra_data
+
+    async def test_a_user_without_access_can_not_switch_it_on(self, mock_mass: MagicMock) -> None:
+        """Only a user with access to the player can switch it on."""
+        controller, _player, control = self._setup(mock_mass)
+
+        with _restricted_user(["kitchen"]), pytest.raises(InsufficientPermissions):
+            await controller._power_on_switched_off_player("player_1")
+
+        cast("AsyncMock", control.power_on).assert_not_awaited()
+
+    @pytest.mark.parametrize("action", ["resume", "play_index"])
+    async def test_a_queue_action_by_a_user_without_access_does_not_switch_it_on(
+        self, mock_mass: MagicMock, action: str
+    ) -> None:
+        """A queue action that powers the player on is refused before the control is switched."""
+        _controller, _player, control = self._setup(mock_mass)
+        queues: Any = PlayerQueuesController.__new__(PlayerQueuesController)
+        queues.mass = mock_mass
+        queues._queue_data = {"player_1": MagicMock()}
+        args = (0,) if action == "play_index" else ()
+
+        with _restricted_user(["kitchen"]), pytest.raises(InsufficientPermissions):
+            await getattr(queues, action)("player_1", *args)
+
+        cast("AsyncMock", control.power_on).assert_not_awaited()
 
     async def test_a_control_reporting_off_after_the_call_keeps_waiting(
         self, mock_mass: MagicMock

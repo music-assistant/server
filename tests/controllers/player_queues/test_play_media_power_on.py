@@ -1,4 +1,4 @@
-"""A play request powers on a player that is switched off at its power control, enqueuing does not."""
+"""Queue commands on a player that is switched off at its power control."""
 
 from __future__ import annotations
 
@@ -45,6 +45,17 @@ async def test_enqueued_media_leaves_the_player_switched_off(option: QueueOption
 
     ctrl.mass.players._power_on_switched_off_player.assert_not_awaited()
     ctrl._handle_play_media.assert_awaited_once()
+
+
+async def test_pausing_a_switched_off_player_does_nothing() -> None:
+    """A queue pause on a player switched off at its power control is a quiet no-op."""
+    ctrl = _controller()
+    ctrl.mass.players._handle_cmd_pause = AsyncMock()
+    ctrl._set_transitioning = MagicMock()
+
+    await ctrl.pause("q1")
+
+    ctrl.mass.players._handle_cmd_pause.assert_not_awaited()
 
 
 async def test_a_reachable_player_is_not_powered_on() -> None:

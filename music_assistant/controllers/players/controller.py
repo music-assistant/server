@@ -4315,8 +4315,9 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         assert player is not None  # for type checking
         player_state = player.state
 
-        # a player that is still starting up after a power on is waited for below
-        if player_state.powered == powered and not (powered and player.offline_by_power_control):
+        # a power on that still waits for the device is waited for (power on) or called off
+        # (power off) below, whatever its control reports by now
+        if player_state.powered == powered and ATTR_POWER_ON_IN_PROGRESS not in player.extra_data:
             self.logger.debug(
                 "Ignoring power %s command for player %s: already in state %s",
                 "ON" if powered else "OFF",
@@ -4399,6 +4400,8 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
                 await player_control.power_on()
                 await wait_for_power_on(self.logger, player, player_control)
             else:
+                # calls off a power on that still waits for the device
+                player.extra_data.pop(ATTR_POWER_ON_IN_PROGRESS, None)
                 assert player_control.power_off is not None  # for type checking
                 await player_control.power_off()
         # always trigger a state update to update the UI
@@ -4426,14 +4429,19 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         other commands wait for a player lock, so it must run before any lock is taken.
 
         :param player_id: The player to power on.
+        :raises InsufficientPermissions: When the current user has no access to the player.
         :raises PlayerUnavailableError: When the device does not come online in time, or
-            its power control is switched off again before it does.
+            it is switched off again before it does.
         :return: The player, which may be a newly registered instance once it is online.
         """
         player = self.get_player(player_id, True)
         assert player is not None  # for type checking
         if not player.offline_by_power_control:
             return player
+        current_user = get_current_user()
+        if current_user and not has_player_access(current_user, player.player_id, player):
+            msg = f"{current_user.username} does not have access to player {player.display_name}"
+            raise InsufficientPermissions(msg)
         control_id = player.power_control
         player_control = self._controls[control_id]
         # a power on that is already under way is only waited for: switching the control
@@ -4454,6 +4462,10 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
                     while True:
                         if (online_player := self._get_online_player(player_id)) is not None:
                             return online_player
+                        if ATTR_POWER_ON_IN_PROGRESS not in player.extra_data:
+                            # a power off called it off, or the power on waited for has ended
+                            msg = f"Player {player.display_name} is switched off"
+                            raise PlayerUnavailableError(msg)
                         if (control := self._controls.get(control_id)) is not None:
                             if control.power_state:
                                 control_reported_on = True
