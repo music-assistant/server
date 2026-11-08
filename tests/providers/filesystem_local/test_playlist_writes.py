@@ -157,3 +157,29 @@ async def test_get_playlist_refuses_a_non_playlist_file(base: Path) -> None:
 
     with pytest.raises(MediaNotFoundError):
         await provider.get_playlist("notes.txt")
+
+
+@pytest.mark.parametrize("line_break", ["\n", "\r\n", "\r"], ids=["lf", "crlf", "cr"])
+async def test_a_track_title_with_a_line_break_writes_one_entry(
+    base: Path, line_break: str
+) -> None:
+    """
+    A track title carrying a line break adds exactly one entry of two lines.
+
+    :param line_break: The line break embedded in the track title.
+    """
+    (base / "party.m3u").write_text("#EXTM3U\n", encoding="utf-8")
+    provider = _make_provider(base)
+    provider.get_track = AsyncMock(  # type: ignore[method-assign]
+        return_value=_fake_track(f"marker{line_break}inert_line = 1")
+    )
+
+    await provider.add_playlist_tracks("party.m3u", ["Artist/Song.mp3"])
+
+    lines = [line for line in (base / "party.m3u").read_text(encoding="utf-8").splitlines() if line]
+    assert len(lines) == 3
+    assert lines[0] == "#EXTM3U"
+    assert lines[1].startswith("#EXTINF:")
+    assert "marker" in lines[1]
+    assert lines[2] == "Artist/Song.mp3"
+    assert "inert_line = 1" not in lines

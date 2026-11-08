@@ -59,7 +59,7 @@ from music_assistant_models.errors import (
     QueueEmpty,
     RetriesExhausted,
 )
-from music_assistant_models.media_items import Album, AudioFormat, Track
+from music_assistant_models.media_items import Album, AudioFormat, Playlist, Track
 from music_assistant_models.player_queue import PlayLogEntry
 from music_assistant_models.streamdetails import MultiPartPath, StreamMetadata
 
@@ -3569,6 +3569,28 @@ class StreamsAudio:
         if pending := self._crossfade_pending.pop(queue_id, None):
             pending[1].set()
 
+    def get_stream_providers(
+        self, mapping: ProviderMapping, allowed: list[str] | None
+    ) -> list[Provider]:
+        """
+        Return the loaded providers that can stream the item a provider mapping points to.
+
+        :param mapping: The provider mapping of the item.
+        :param allowed: Music sources the playback user may use, or None for all of them.
+        """
+        return self._get_mapping_providers(mapping, allowed)
+
+    def has_alternative_match_providers(
+        self, media_item: Playlist | Album | Track, allowed: list[str] | None
+    ) -> bool:
+        """
+        Return whether a streaming provider the item has no mapping on could stream a match.
+
+        :param media_item: The item whose own mappings define the providers it is known on.
+        :param allowed: Music sources the playback user may use, or None for all of them.
+        """
+        return self._has_alternative_match_providers(media_item, allowed)
+
     async def get_shoutcast_stream(
         self, url: str, streamdetails: StreamDetails
     ) -> AsyncGenerator[bytes]:
@@ -4399,12 +4421,12 @@ class StreamsAudio:
         )
 
     def _has_alternative_match_providers(
-        self, media_item: Track, allowed: list[str] | None
+        self, media_item: Playlist | Album | Track, allowed: list[str] | None
     ) -> bool:
         """
         Return whether any configured streaming provider could carry an unmapped match.
 
-        :param media_item: Track whose existing mappings define the known provider domains.
+        :param media_item: Item whose existing mappings define the known provider domains.
         :param allowed: Music sources the playback user may use, or None for all of them.
         """
         known_domains = {mapping.provider_domain for mapping in media_item.provider_mappings}

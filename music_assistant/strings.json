@@ -1238,6 +1238,7 @@
     "role_in_use": "This role is still assigned to one or more users. Give them another role first.",
     "role_scope_not_allowed": "A custom role can not be granted this permission.",
     "playlist_not_owned": "Only the owner of this playlist may change it.",
+    "playlist_changed": "The playlist changed in the meantime. Please try again.",
     "playlist_follows_source": "This playlist follows the sharing of its music source.",
     "playlist_owner_must_be_member": "Only a member can own a playlist",
     "source_available_to_everyone": "{0} is always available to everyone",

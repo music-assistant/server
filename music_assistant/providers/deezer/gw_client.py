@@ -189,7 +189,8 @@ class GWClient:
                     "next": bool(next_track),
                 },
                 "lt": int(seconds_streamed),
-                "ctxt": {"t": "search_page", "id": last_track.item_id},
+                "ctxt": last_track.data.get("context")
+                or {"t": "search_page", "id": last_track.item_id},
                 "dev": {"v": "10020230525142740", "t": 0},
                 "ls": [],
                 "ts_listen": int(last_track.data["start_ts"]),

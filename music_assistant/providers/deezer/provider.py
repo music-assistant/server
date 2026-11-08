@@ -15,7 +15,8 @@ from datetime import datetime
 from typing import TYPE_CHECKING
 
 from deezer_python_gql import DeezerGQLClient, GraphQLClientAuthError, GraphQLClientError
-from music_assistant_models.enums import MediaType, ProviderFeature
+from music_assistant_models.config_entries import ConfigEntry
+from music_assistant_models.enums import ConfigEntryType, MediaType, ProviderFeature
 from music_assistant_models.errors import LoginFailed
 
 from music_assistant.constants import CONF_ENTRY_UNOFFICIAL_PROVIDER
@@ -24,7 +25,7 @@ from music_assistant.models.music_provider import MusicProvider
 from music_assistant.models.recommendation_payload import RecommendationPayloadMixin
 
 from .browse import DeezerBrowseManager
-from .constants import DECRYPT_KEY_ERROR, DECRYPT_KEY_LENGTH
+from .constants import CONF_SYNC_QUEUE, DECRYPT_KEY_ERROR, DECRYPT_KEY_LENGTH
 from .gw_client import (
     DeezerGWAuthError,
     DeezerGWError,
@@ -36,7 +37,6 @@ from .rest_client import DeezerRESTClient
 from .streaming import DeezerStreamingManager
 
 if TYPE_CHECKING:
-    from music_assistant_models.config_entries import ConfigEntry
     from music_assistant_models.enums import ExternalID
     from music_assistant_models.media_items import (
         Album,
@@ -109,9 +109,22 @@ class DeezerProvider(RecommendationPayloadMixin, MusicProvider):
     streaming_manager: DeezerStreamingManager
     user_id: str
 
+    @property
+    def stream_format_supersedes_catalog(self) -> bool:
+        """Return True: Deezer serves CD and hi-res FLAC under one format name."""
+        return True
+
     async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
         """Return Config entries to configure this provider."""
-        return (CONF_ENTRY_UNOFFICIAL_PROVIDER,)
+        return (
+            CONF_ENTRY_UNOFFICIAL_PROVIDER,
+            ConfigEntry(
+                key=CONF_SYNC_QUEUE,
+                type=ConfigEntryType.BOOLEAN,
+                default_value=False,
+                required=False,
+            ),
+        )
 
     async def handle_async_init(self) -> None:
         """Handle async init of the Deezer provider."""
@@ -383,6 +396,10 @@ class DeezerProvider(RecommendationPayloadMixin, MusicProvider):
         """Return the audio stream for the provider item."""
         async for chunk in self.streaming_manager.get_audio_stream(streamdetails, seek_position):
             yield chunk
+
+    async def on_stream_started(self, streamdetails: StreamDetails) -> None:
+        """Handle callback when a track starts playing."""
+        await self.streaming_manager.on_stream_started(streamdetails)
 
     async def on_streamed(self, streamdetails: StreamDetails) -> None:
         """Handle callback when an item completed streaming."""
