@@ -1149,8 +1149,11 @@ async def test_a_fed_track_spotify_refuses_fails_at_once(
 
 async def test_a_refusal_after_the_cut_fails_the_fed_item_too(tmp_path: Path) -> None:
     """The capture can reach the fed track before the engine reports leaving it."""
-    run = _live_run(tmp_path)
+    backend = _streamable_backend(tmp_path)
+    run = _live_run(tmp_path, backend=backend)
+    backend._run = run
     _, refused = await _reach_fed_item(run)
+    await backend._acquire_item(TRACK_B, 0, _streamdetails_for(uri=TRACK_B), continuation=False)
     # the silence the engine renders before a track's first sample
     await _capture(run, _silence(0.5))
     assert run.current_item is refused
@@ -1162,6 +1165,42 @@ async def test_a_refusal_after_the_cut_fails_the_fed_item_too(tmp_path: Path) ->
     assert run._pause_watch is None
     with pytest.raises(AudioError, match="would not play"):
         await asyncio.wait_for(_collect(run, refused), 1)
+    # what the engine renders from here on is nobody's audio
+    suspends = _sink(run).suspend.await_count
+    await _capture(run, _silence(0.1))
+    assert _sink(run).suspend.await_count == suspends + 1
+
+
+async def test_a_skip_onto_a_fed_track_spotify_refuses_fails_it(tmp_path: Path) -> None:
+    """A skip that lands on the fed track meets the refusal the same way as a boundary."""
+    backend = _streamable_backend(tmp_path)
+    run = _live_run(tmp_path, backend=backend)
+    backend._run = run
+    await run._handle_event(_playback_event("playing", uri=TRACK_A))
+    await _feed(run)
+    _client(run).skip_next.side_effect = lambda **_: run._observe_engine_item(
+        TRACK_B, announced=True
+    )
+    item = await run.move_to(TRACK_B, 0, _streamdetails_for(uri=TRACK_B))
+
+    await run._handle_event(_playback_event("paused", uri=TRACK_A, position_ms=0))
+    assert item.ended
+    assert run._error is None
+    # not mistaken for a pause from the Spotify app, which would stop the queue
+    assert run._pause_watch is None
+    assert TRACK_B in backend._refused_until
+    with pytest.raises(AudioError, match="would not play"):
+        await asyncio.wait_for(_collect(run, item), 1)
+
+
+async def test_a_track_refused_a_moment_ago_is_not_fed(tmp_path: Path) -> None:
+    """Its request fails at once, so queueing it would only have the engine play it to nobody."""
+    backend = _streamable_backend(tmp_path)
+    run = _live_run(tmp_path, backend=backend)
+    backend._note_refusal(TRACK_B)
+    await run.feed_next(cast("str", run.current_item.media_key), TRACK_B)
+    _client(run).add_to_queue.assert_not_called()
+    assert run._fed is None
 
 
 async def test_the_engine_leaving_a_fed_track_that_played_is_its_end(tmp_path: Path) -> None:

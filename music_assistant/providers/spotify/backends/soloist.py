@@ -1025,6 +1025,8 @@ class _EngineRun:
             or not self._item_live()
             or client is None
             or not client.connected
+            # its request fails at once, so the engine would play it to nobody
+            or self.backend._refused_lately(spotify_uri)
         ):
             return
         self._fed = _FedEntry(spotify_uri)
@@ -1073,8 +1075,8 @@ class _EngineRun:
             await self._set_sink(running=False)
             await self._drain()
             async with asyncio.timeout(_JUMP_TIMEOUT_S):
+                landed_on = None
                 if not in_place:
-                    landed_on = None
                     if self._fed is not None and self._fed.uid is None:
                         # never confirmed queued: most likely refused
                         self._fed = None
@@ -1085,6 +1087,7 @@ class _EngineRun:
                     if spotify_uri != landed_on:
                         await self._play(client, spotify_uri)
                 item = self._new_item(spotify_uri, seek_position_ms, switched=not in_place)
+                item.fed = landed_on == spotify_uri
                 # the drain may have stopped mid-frame
                 item.align_skip = -self._raw_total % _FRAME_BYTES
                 self._item, self._next = item, None
