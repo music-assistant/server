@@ -1014,6 +1014,9 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
             cur_volume = self._group_volume_nudge_base(group_player)
             if cur_volume is None:
                 return
+            if cur_volume >= 100 and group_player.state.group_members:
+                await self._step_up_group_members_below_maximum(group_player)
+                return
             new_volume = min(100, cur_volume + self._get_volume_step(cur_volume))
             await self.cmd_group_volume(player_id, new_volume)
 
@@ -2341,7 +2344,7 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
             if volume_level >= base_group:
                 # scaling up: interpolate each child from snapshot toward 100
                 if base_group >= 100:
-                    new_child_volume = 100
+                    new_child_volume = child_base
                 else:
                     progress = (volume_level - base_group) / (100 - base_group)
                     new_child_volume = round(child_base + (100 - child_base) * progress)
@@ -2358,6 +2361,27 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         # notify active AudioSource once at the group level to prevent
         # feedback loops from per-child callbacks with different volume values
         await self._notify_source_volume_change(group_player, volume_level)
+
+    async def _step_up_group_members_below_maximum(self, group_player: Player) -> None:
+        """
+        Step up the members below 100 of a group that is already at 100.
+
+        The group volume is the level of its loudest member, so this is the only way a
+        group nudge can still raise the others. The balance changes on purpose, so the
+        snapshot is dropped and the next group adjustment starts from the new levels.
+
+        :param group_player: The group player or sync leader.
+        """
+        group_player.extra_data.pop(ATTR_GROUP_VOLUME_SNAPSHOT, None)
+        coros = []
+        for member in self.iter_group_members(group_player, only_powered=True, exclude_self=False):
+            if member.state.volume_control == PLAYER_CONTROL_NONE:
+                continue
+            level = self._volume_nudge_base(member) or 0
+            if level < 100:
+                new_level = min(100, level + self._get_volume_step(level))
+                coros.append(self._set_member_volume(member.player_id, new_level))
+        await asyncio.gather(*coros)
 
     def iter_group_members(
         self,

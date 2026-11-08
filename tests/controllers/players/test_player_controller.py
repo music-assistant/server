@@ -4636,31 +4636,32 @@ class TestGroupVolumeReference:
         assert commands["member_1"] == [64, 68]
         assert commands["member_2"] == [64, 20, 28]
 
-    async def test_the_maximum_raises_every_member_to_the_maximum(
+    async def test_setting_the_maximum_keeps_the_balance_of_a_group_already_there(
         self, mock_mass: MagicMock
     ) -> None:
-        """A group at the maximum through one member brings the others up to it as well."""
+        """The slider at the maximum may not move the quieter members."""
         controller, _, commands = self._make_group(mock_mass, first_volume=100, second_volume=49)
         await controller.cmd_group_volume("group", 100)
 
         assert commands["member_1"] == [100]
-        assert commands["member_2"] == [100]
+        assert commands["member_2"] == [49]
 
-    async def test_a_nudge_up_at_the_maximum_raises_every_member_to_the_maximum(
+    async def test_a_nudge_up_at_the_maximum_steps_up_the_quieter_members(
         self, mock_mass: MagicMock
     ) -> None:
-        """A nudge up on a group at the maximum may not leave its quieter members behind."""
+        """Each nudge up at the maximum raises the quieter members by a single step."""
         controller, players, commands = self._make_group(
             mock_mass, first_volume=100, second_volume=49
         )
         await controller.cmd_group_volume_up("group")
-        self._report(players["member_1"], 100)
-        self._report(players["member_2"], 100)
+        self._report(players["member_2"], 54)
+        await controller.cmd_group_volume_up("group")
+        self._report(players["member_2"], 59)
         await controller.cmd_group_volume_down("group")
 
-        # below the maximum the members keep the balance they had before
-        assert commands["member_1"] == [100, 95]
-        assert commands["member_2"] == [100, 47]
+        # the step down keeps the balance the nudges made
+        assert commands["member_1"] == [95]
+        assert commands["member_2"] == [54, 59, 56]
 
 
 class TestFakeMuteInGroup:
