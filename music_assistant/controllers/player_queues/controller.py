@@ -877,6 +877,22 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         self.signal_update(queue_id)
 
     @api_command(
+        "player_queues/add_to_playlist",
+        required_scope=Scope.LIBRARY_WRITE,
+        allow_impersonation=True,
+    )
+    async def add_to_playlist(self, queue_id: str, db_playlist_id: str | int) -> BackgroundTask:
+        """
+        Add the items of a queue to an existing library playlist.
+
+        :param queue_id: The queue_id of the queue to take the items from.
+        :param db_playlist_id: Library playlist id to add the items to.
+        :return: Managed background task for the playlist update.
+        """
+        uris = self._playlist_uris(queue_id)
+        return await self.mass.music.playlists.add_playlist_tracks(db_playlist_id, uris)
+
+    @api_command(
         "player_queues/save_as_playlist",
         required_scope=Scope.LIBRARY_WRITE,
         allow_impersonation=True,
@@ -887,20 +903,9 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
 
         :param queue_id: The queue_id of the queue to save.
         :param name: The name for the new playlist.
+        :return: Managed background task that fills the new playlist.
         """
-        self._check_player_permission(queue_id)
-        if not self.get(queue_id):
-            raise PlayerUnavailableError(f"Queue {queue_id} is not available")
-        queue_items = queue_data.items if (queue_data := self._queue_data.get(queue_id)) else []
-        if not queue_items:
-            raise QueueEmpty("Cannot save an empty queue as a playlist.")
-        # collect URIs from queue items that are playlist-compatible
-        uris: list[str] = []
-        for item in queue_items:
-            if item.uri and item.media_type in PLAYLIST_MEDIA_TYPES:
-                uris.append(item.uri)
-        if not uris:
-            raise InvalidDataError("No valid items in queue to save as playlist.")
+        uris = self._playlist_uris(queue_id)
         playlist = await self.mass.music.playlists.create_playlist(name)
         return await self.mass.music.playlists.add_playlist_tracks(playlist.item_id, uris)
 
@@ -2572,3 +2577,18 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
                 self.signal_update(queue_id)
         finally:
             self._set_transitioning(queue_id, False)
+
+    def _playlist_uris(self, queue_id: str) -> list[str]:
+        """Return the URIs of the queue's playlist-compatible items, checking player access."""
+        self._check_player_permission(queue_id)
+        if not self.get(queue_id):
+            raise PlayerUnavailableError(f"Queue {queue_id} is not available")
+        queue_items = queue_data.items if (queue_data := self._queue_data.get(queue_id)) else []
+        if not queue_items:
+            raise QueueEmpty("Cannot save an empty queue as a playlist.")
+        uris = [
+            item.uri for item in queue_items if item.uri and item.media_type in PLAYLIST_MEDIA_TYPES
+        ]
+        if not uris:
+            raise InvalidDataError("No valid items in queue to save as playlist.")
+        return uris
