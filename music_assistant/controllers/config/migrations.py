@@ -416,7 +416,7 @@ PROVIDER_SETUP_FLOW_KEYS: dict[str, tuple[str, ...]] = {
     "neteasecloudmusic": ("api_base_url", "cookie", "uid"),
     "nicovideo": ("user_session",),
     "nugs": ("username", "password"),
-    "opensubsonic": ("username", "password", "baseURL", "port", "path"),
+    "opensubsonic": ("username", "password", "baseURL", "port", "path", "enable_legacy_auth"),
     "pandora": ("username", "password"),
     "plex": (
         "token",
