@@ -154,6 +154,14 @@ _MAX_SWITCH_GAP_S: Final[float] = 0.6
 # below this much audio an item rendered nothing: the engine either refused it
 # or never got going, and anything above it played and was cut short
 _REFUSED_DELIVERY_MS: Final[int] = 1000
+_REFUSED_MESSAGE: Final[str] = (
+    "Spotify would not play this track: it is unavailable for this account "
+    "or region, or Spotify refused it for now"
+)
+# How long a track Spotify refused fails at once instead of being tried again. The
+# speaker asks for it only once it gets there, often a minute after the refusal,
+# and a fresh run waits out its startup budget on it, far past the speaker's patience.
+_REFUSAL_MEMORY_S: Final[float] = 300.0
 # The elastic cushion between the paced FIFO reader and the consumer. A full
 # cushion suspends the capture sink, which pauses the engine: the FIFO itself
 # holds well under a second, so the reader must keep draining it whenever the
@@ -256,6 +264,8 @@ class SoloistBackend(SpotifyPlaybackBackend):
         # a replacement can only be spawned once the previous one is gone —
         # holding this across the teardown is what sequences that.
         self._run_lock = asyncio.Lock()
+        # tracks Spotify refused, with the time until which they are not tried again
+        self._refused_until: dict[str, float] = {}
 
     def source_audio_format(self, media_type: MediaType) -> AudioFormat:
         """
@@ -362,6 +372,8 @@ class SoloistBackend(SpotifyPlaybackBackend):
         """
         if self._server is None or self._binary is None:
             raise AudioError("Spotify Soloist backend is not started")
+        if self._refused_lately(spotify_uri):
+            raise AudioError(_REFUSED_MESSAGE)
         run, item = await self._acquire_item(
             spotify_uri, seek_position, streamdetails, continuation=continuation
         )
@@ -520,6 +532,21 @@ class SoloistBackend(SpotifyPlaybackBackend):
         deadline = asyncio.get_running_loop().time() + timeout
         while self._run is run and run.busy and asyncio.get_running_loop().time() < deadline:
             await asyncio.sleep(0.05)
+
+    def _note_refusal(self, spotify_uri: str) -> None:
+        """Remember that Spotify refused a track, so it is not tried again right away."""
+        self._refused_until[spotify_uri] = asyncio.get_running_loop().time() + _REFUSAL_MEMORY_S
+
+    def _refused_lately(self, spotify_uri: str) -> bool:
+        """Return whether Spotify refused this track a short while ago."""
+        now = asyncio.get_running_loop().time()
+        self._refused_until = {
+            uri: until for uri, until in self._refused_until.items() if until > now
+        }
+        if spotify_uri not in self._refused_until:
+            return False
+        self.logger.debug("Not trying %s again: Spotify refused it a moment ago", spotify_uri)
+        return True
 
     @property
     def _api_key(self) -> str:
@@ -747,6 +774,8 @@ class _Item:
         # its stream let go of it before it was delivered in full
         self.abandoned = False
         self.unclaimed_since: float | None = None
+        # the engine reached it through its queue, fed to follow another item
+        self.fed = False
         if streamdetails is not None:
             self.bind(streamdetails)
 
@@ -1339,10 +1368,7 @@ class _EngineRun:
         ):
             return
         if item.ended:
-            raise AudioError(
-                "Spotify would not play this track: it is unavailable for this account "
-                "or region, or Spotify refused it for now"
-            )
+            raise AudioError(_REFUSED_MESSAGE)
         raise AudioError("Spotify stopped before it played any of this track")
 
     def _engine_normalization_enabled(self, queue_id: str | None) -> bool:
@@ -2011,12 +2037,17 @@ class _EngineRun:
                     self._playing_at = asyncio.get_running_loop().time()
                 item.started.set()
             return
-        if not announced or uri in (item.spotify_uri, self._next and self._next.spotify_uri):
+        if uri in (item.spotify_uri, self._next and self._next.spotify_uri):
             return
-        if self._fed is not None and uri == self._fed.spotify_uri:
+        if announced and self._fed is not None and uri == self._fed.spotify_uri:
             self._consume_fed()
             return
-        if item.ended:
+        if (refused := self._unplayed_fed_item()) is not None:
+            # the engine left the track it was fed before any of it played: Spotify
+            # refused it, and the engine moved on to another track
+            self._refuse(refused)
+            return
+        if not announced or item.ended:
             return
         if self._fed is not None and self._fed.uid is not None and not self._fed.left:
             self._fail(
@@ -2068,9 +2099,35 @@ class _EngineRun:
         if self._item.ended:
             return
         upcoming = self._new_item(fed.spotify_uri, 0, switched=True)
+        upcoming.fed = True
         upcoming.started.set()
         self._next = upcoming
         self._end_item(position_ms)
+
+    def _unplayed_fed_item(self) -> _Item | None:
+        """Return the item the engine moved on to from its queue, while none of its audio arrived."""
+        item = self._next or self._item
+        if item.fed and not item.read_bytes and item.error is None and not item.ended:
+            return item
+        return None
+
+    def _refuse(self, item: _Item) -> None:
+        """
+        Fail the fed item Spotify would not play; the run stays for the item after it.
+
+        :param item: The fed item the engine left before playing any of it.
+        """
+        self.logger.debug(
+            "Spotify refused %s, the engine went to %s", item.spotify_uri, self._engine_uri
+        )
+        self.backend._note_refusal(item.spotify_uri)
+        item.error = _REFUSED_MESSAGE
+        if item is self._next:
+            # the capture stops where the item before it ends
+            self._next = None
+        else:
+            self._end_item()
+        self._release_item_waiters(item)
 
     def _new_item(self, spotify_uri: str, seek_position_ms: int, *, switched: bool) -> _Item:
         """
@@ -2093,6 +2150,15 @@ class _EngineRun:
 
     def _observe_rewound_pause(self) -> None:
         """End the current item when the engine has run past the last item it was given."""
+        if (
+            not self._moving
+            and (refused := self._unplayed_fed_item()) is not None
+            and self._engine_uri != refused.spotify_uri
+        ):
+            # back at the head of its context, which can be the item before the fed
+            # one, before any of the fed track played: Spotify refused it
+            self._refuse(refused)
+            return
         item = self._item
         if self._moving or item.ended or not item.started.is_set():
             return
