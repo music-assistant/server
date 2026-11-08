@@ -142,6 +142,8 @@ def handle_play_action[PlayActionHostT: _PlayActionHost, **P, R](
                     return None
                 if switched_off == SwitchedOffAction.POWER_ON:
                     await self.mass.players._power_on_switched_off_player(queue_id)
+                    # the queue can register anew while its device comes online
+                    queue_data = self._queue_data[queue_id]
             queue = queue_data.queue
             # a play action on the queue of a player captured by a (sync)group releases the
             # player from it first, which takes the group's lock - so that one is taken

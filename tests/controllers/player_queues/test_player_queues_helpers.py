@@ -365,6 +365,15 @@ async def _start_playback(self: PlayerQueuesController, queue_id: str) -> str:  
     return "playing"
 
 
+@handle_play_action(switched_off=SwitchedOffAction.POWER_ON)
+async def _record_while_playing(
+    self: PlayerQueuesController, queue_id: str, sink: list[tuple[bool, int]]
+) -> str:
+    """Stand in for an action that starts playback, recording the flag and refcount of its queue."""
+    sink.append((_flag_value(self, queue_id), self._queue_data[queue_id].play_action_refcount))
+    return "playing"
+
+
 @handle_play_action(switched_off=SwitchedOffAction.IGNORE)
 async def _ignored(self: PlayerQueuesController, queue_id: str) -> str:  # noqa: ARG001
     """Stand in for an action with nothing to do on a switched off player."""
@@ -459,6 +468,30 @@ class TestHandlePlayAction:
         assert await _start_playback(cast("PlayerQueuesController", ctrl), "q1") == "playing"
 
         assert players.powered_on == [("q1", False)]
+
+    async def test_a_queue_registered_anew_during_the_power_on_is_flagged(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """An action that waited for the power on flags the queue record that exists by then."""
+        stale_queue, new_queue = _FakeQueue(), _FakeQueue()
+        ctrl = _FakeController({"q1": stale_queue})
+        players = _switched_off(ctrl, "q1")
+        power_on = players._power_on_switched_off_player
+
+        async def _power_on_and_register_anew(player_id: str) -> _FakePlayer:
+            ctrl._queue_data[player_id] = PlayerQueueData(queue=cast("PlayerQueue", new_queue))
+            return await power_on(player_id)
+
+        monkeypatch.setattr(players, "_power_on_switched_off_player", _power_on_and_register_anew)
+        sink: list[tuple[bool, int]] = []
+
+        result = await _record_while_playing(cast("PlayerQueuesController", ctrl), "q1", sink)
+
+        assert result == "playing"
+        assert sink == [(True, 1)]
+        assert new_queue.extra_attributes[ATTR_PLAY_ACTION_IN_PROGRESS] is False
+        assert ctrl._queue_data["q1"].play_action_refcount == 0
+        assert stale_queue.extra_attributes == {}
 
     async def test_an_ignored_action_does_nothing_on_a_switched_off_player(self) -> None:
         """An action with nothing to act on returns without running or signalling."""

@@ -70,6 +70,7 @@ from music_assistant.constants import (
     CONF_VOLUME_STEP,
 )
 from music_assistant.controllers.player_queues import PlayerQueuesController
+from music_assistant.controllers.player_queues.state import PlayerQueueData
 from music_assistant.controllers.players import PlayerController
 from music_assistant.controllers.players import controller as players_controller
 from music_assistant.controllers.players.announcements import ANNOUNCEMENT_TTS_TIMEOUT
@@ -3885,6 +3886,18 @@ class TestOfflinePowerControl:
         cast("AsyncMock", control.power_on).assert_awaited_once()
         assert online_at_handler == [True, True]
 
+    async def test_overlapping_power_ons_resume_the_queue_once(self, mock_mass: MagicMock) -> None:
+        """A power on that joins one under way leaves the auto play to the one that started it."""
+        controller, _player, control = self._setup(mock_mass, auto_play=True)
+
+        await asyncio.gather(
+            controller.cmd_power("player_1", True),
+            controller.cmd_power("player_1", True),
+        )
+
+        cast("AsyncMock", control.power_on).assert_awaited_once()
+        cast("AsyncMock", mock_mass.player_queues.resume).assert_awaited_once_with("player_1")
+
     @pytest.mark.parametrize(
         ("command", "args"),
         [
@@ -4064,6 +4077,30 @@ class TestOfflinePowerControl:
         controller._handle_play_media.assert_not_awaited()
         assert ATTR_POWER_ON_IN_PROGRESS not in player.extra_data
 
+    @pytest.mark.parametrize("command", ["cmd_stop", "cmd_pause"])
+    async def test_stop_or_pause_while_starting_up_aborts_the_pending_play(
+        self, mock_mass: MagicMock, command: str
+    ) -> None:
+        """A stop or pause calls off the power on of a starting player, and the play it was for."""
+        controller, player, control = self._setup(mock_mass, comes_online=False)
+        controller._handle_play_media = AsyncMock()  # type: ignore[method-assign]
+        pending = asyncio.create_task(
+            controller.play_media("player_1", PlayerMedia(uri="http://ma/stream.flac"))
+        )
+        await asyncio.sleep(0.1)
+        assert ATTR_POWER_ON_IN_PROGRESS in player.extra_data
+
+        await getattr(controller, command)("player_1")
+        async with asyncio.timeout(1.5):
+            with pytest.raises(PlayerUnavailableError, match="switched off"):
+                await pending
+
+        controller._handle_play_media.assert_not_awaited()
+        # the control is left on, unlike with a power off
+        cast("AsyncMock", control.power_off).assert_not_awaited()
+        assert control.power_state is True
+        assert ATTR_POWER_ON_IN_PROGRESS not in player.extra_data
+
     async def test_a_user_without_access_can_not_switch_it_on(self, mock_mass: MagicMock) -> None:
         """Only a user with access to the player can switch it on."""
         controller, _player, control = self._setup(mock_mass)
@@ -4088,6 +4125,33 @@ class TestOfflinePowerControl:
             await getattr(queues, action)("player_1", *args)
 
         cast("AsyncMock", control.power_on).assert_not_awaited()
+
+    @pytest.mark.parametrize("action", ["stop", "pause"])
+    async def test_a_queue_stop_or_pause_while_starting_up_aborts_the_pending_play(
+        self, mock_mass: MagicMock, action: str
+    ) -> None:
+        """A queue stop or pause calls off the power on of a starting player, and its play."""
+        _controller, player, control = self._setup(mock_mass, comes_online=False)
+        queues: Any = PlayerQueuesController.__new__(PlayerQueuesController)
+        queues.mass = mock_mass
+        queue = cast("PlayerQueue", MagicMock(extra_attributes={}))
+        queues._queue_data = {"player_1": PlayerQueueData(queue=queue)}
+        queues.signal_update = MagicMock()
+        queues.on_player_update = MagicMock()
+        queues.play_index = AsyncMock()
+        pending = asyncio.create_task(queues.resume("player_1"))
+        await asyncio.sleep(0.1)
+        assert ATTR_POWER_ON_IN_PROGRESS in player.extra_data
+
+        await getattr(queues, action)("player_1")
+        async with asyncio.timeout(1.5):
+            with pytest.raises(PlayerUnavailableError, match="switched off"):
+                await pending
+
+        queues.play_index.assert_not_awaited()
+        cast("AsyncMock", control.power_off).assert_not_awaited()
+        assert control.power_state is True
+        assert ATTR_POWER_ON_IN_PROGRESS not in player.extra_data
 
     async def test_a_control_reporting_off_after_the_call_keeps_waiting(
         self, mock_mass: MagicMock

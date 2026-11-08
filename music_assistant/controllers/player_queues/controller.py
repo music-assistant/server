@@ -958,6 +958,7 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
             player := self.mass.players.get_player(queue_id)
         ) is not None and player.offline_by_power_control:
             # a player switched off at its power control has nothing to pause
+            self.mass.players._cancel_power_on(player)
             return
         # Use internal handler to avoid circular redirect
         # (cmd_pause redirects to queue.pause, which calls cmd_pause again)
@@ -2118,10 +2119,11 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         try:
             # a player switched off at its power control has nothing left to stop, while its
             # session below still needs the teardown
-            if not (
-                (player := self.mass.players.get_player(queue_id))
-                and player.offline_by_power_control
-            ):
+            if (
+                player := self.mass.players.get_player(queue_id)
+            ) and player.offline_by_power_control:
+                self.mass.players._cancel_power_on(player)
+            else:
                 # Use internal handler to avoid circular redirect:
                 # public cmd_stop redirects to queue.stop when a queue is active,
                 # which would loop back here indefinitely.

@@ -650,7 +650,7 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
     # Player commands
 
     @api_command("players/cmd/stop", required_scope=Scope.PLAYERS_CONTROL)
-    @handle_player_command(switched_off=SwitchedOffAction.IGNORE)
+    @handle_player_command(switched_off=SwitchedOffAction.CANCEL_POWER_ON)
     async def cmd_stop(self, player_id: str) -> None:
         """
         Send STOP command to given player.
@@ -695,7 +695,7 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
             await self._handle_cmd_play(player.player_id)
 
     @api_command("players/cmd/pause", required_scope=Scope.PLAYERS_CONTROL)
-    @handle_player_command(switched_off=SwitchedOffAction.IGNORE)
+    @handle_player_command(switched_off=SwitchedOffAction.CANCEL_POWER_ON)
     async def cmd_pause(self, player_id: str) -> None:
         """
         Send PAUSE command to given player.
@@ -4394,6 +4394,9 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
                     f"Player control {control_name} is not available"
                 )
             if powered and player.offline_by_power_control:
+                if ATTR_POWER_ON_IN_PROGRESS in player.extra_data:
+                    # joins a power on under way: the request that started it runs auto play
+                    skip_auto_play = True
                 player = await self._power_on_switched_off_player(player_id)
             elif powered:
                 assert player_control.power_on is not None  # for type checking
@@ -4401,7 +4404,7 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
                 await wait_for_power_on(self.logger, player, player_control)
             else:
                 # calls off a power on that still waits for the device
-                player.extra_data.pop(ATTR_POWER_ON_IN_PROGRESS, None)
+                self._cancel_power_on(player)
                 assert player_control.power_off is not None  # for type checking
                 await player_control.power_off()
         # always trigger a state update to update the UI
@@ -4481,6 +4484,17 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
                 player.extra_data.pop(ATTR_POWER_ON_IN_PROGRESS, None)
                 if refreshed := self.get_player(player_id):
                     refreshed.refresh_state()
+
+    def _cancel_power_on(self, player: Player) -> None:
+        """
+        Call off a power on of the player that still waits for its device to come online.
+
+        The requests waiting for it fail as switched off. Its power control is left as it is.
+
+        :param player: The player whose power on to call off.
+        """
+        if player.extra_data.pop(ATTR_POWER_ON_IN_PROGRESS, None) is not None:
+            self.logger.debug("Called off the power on of player %s", player.display_name)
 
     def _get_online_player(self, player_id: str) -> Player | None:
         """

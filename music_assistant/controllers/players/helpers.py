@@ -89,9 +89,9 @@ def handle_player_command[PlayerControllerT: "PlayerController", **P, R](
         concurrently. None (default) means no locking.
     :param switched_off: What the command does with a player that is switched off at its
         external power control (see SwitchedOffAction): refused by default, ignored when
-        the command has nothing to act on (stop, volume), powered on first (before any
-        lock is taken) for commands that start playback, or run as is for commands that
-        handle it themselves.
+        the command has nothing to act on (volume), ignored after calling off a power on
+        under way (stop, pause), powered on first (before any lock is taken) for commands
+        that start playback, or run as is for commands that handle it themselves.
     """  # noqa: D401
 
     def decorator(
@@ -143,7 +143,12 @@ def handle_player_command[PlayerControllerT: "PlayerController", **P, R](
             if is_switched_off and switched_off == SwitchedOffAction.REFUSE:
                 msg = f"Player {player.display_name} is switched off"
                 raise PlayerUnavailableError(msg)
-            if is_switched_off and switched_off == SwitchedOffAction.IGNORE:
+            if is_switched_off and switched_off in (
+                SwitchedOffAction.IGNORE,
+                SwitchedOffAction.CANCEL_POWER_ON,
+            ):
+                if switched_off == SwitchedOffAction.CANCEL_POWER_ON:
+                    self._cancel_power_on(player)
                 self.logger.debug(
                     "Ignoring command %s for player %s: it is switched off",
                     fn.__name__,
