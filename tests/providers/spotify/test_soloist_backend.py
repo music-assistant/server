@@ -1924,6 +1924,43 @@ async def test_a_hint_for_another_item_replaces_the_held_one(tmp_path: Path) -> 
     _client(run).add_to_queue.assert_awaited_once_with(TRACK_C)
 
 
+async def test_a_hint_the_engine_cannot_take_drops_the_held_one(tmp_path: Path) -> None:
+    """The held track is no longer next, so the engine is given nothing."""
+    run = _live_run(tmp_path)
+    await _hold(run)
+    await run.feed_next(cast("str", run.current_item.media_key), "spotify:episode:eee")
+    assert run._pending_feed is None
+    await _capture(run, _audio(2.1))
+    await _run_feeds(run)
+    _client(run).add_to_queue.assert_not_called()
+
+
+async def test_a_seek_back_out_of_the_window_takes_the_fed_item_off_the_engine(
+    tmp_path: Path,
+) -> None:
+    """Left queued that far ahead, it would be crossfaded into; the next hint holds it anew."""
+    run = _live_run(tmp_path)
+    await _hold(run)
+    await _capture(run, _audio(2.1))
+    await _run_feeds(run)
+    await run._handle_event(_queue_event(("q1", TRACK_B)))
+    client = _client(run)
+    client.skip_next.side_effect = lambda **_: run._observe_engine_item(TRACK_B, announced=True)
+    client.play.side_effect = lambda played, **_: run._observe_engine_item(played, announced=True)
+
+    item = await run.move_to(TRACK_A, 0, _streamdetails_for(uri=TRACK_A))
+    moves = [entry for entry in client.mock_calls if entry[0] in ("skip_next", "play", "seek")]
+    assert moves == [call.skip_next(), call.play(TRACK_A)]
+    assert run._fed is None
+    assert run.current_item is item
+    assert not item.fed
+
+    await run._handle_event(_queue_event())
+    await run.feed_next(cast("str", item.media_key), TRACK_B)
+    assert run._pending_feed == TRACK_B
+    client.add_to_queue.assert_awaited_once()
+
+
 @pytest.mark.parametrize(
     "length_ms",
     [

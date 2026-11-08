@@ -1020,12 +1020,16 @@ class _EngineRun:
         Queue the item that follows the one being streamed on the engine, once.
 
         The engine gets it in the current item's last seconds: until then the run
-        holds it, and a hint for another item replaces it.
+        holds it, and every later hint replaces it (one the engine cannot take
+        leaves nothing held).
 
         :param media_key: The StreamDetails uri of the item being streamed.
         :param spotify_uri: Canonical Spotify URI of the item that follows it.
         """
         client = self._client
+        held = self._pending_feed
+        if media_key == self._item.media_key:
+            self._pending_feed = None
         if self._queue_uids and self._fed is None:
             # the account's own queued items would play before it
             self.logger.debug(
@@ -1048,13 +1052,12 @@ class _EngineRun:
         ):
             return
         if not self._feed_due():
-            if spotify_uri != self._pending_feed:
+            if spotify_uri != held:
                 self.logger.debug(
                     "Holding %s back until %s nears its end", spotify_uri, self._item.spotify_uri
                 )
             self._pending_feed = spotify_uri
             return
-        self._pending_feed = None
         self._fed = _FedEntry(spotify_uri)
         try:
             await client.add_to_queue(spotify_uri)
@@ -1091,7 +1094,11 @@ class _EngineRun:
             raise AudioError("The Spotify session normalizes for another player")
         self._cancel_idle_watch()
         previous = self._item
-        in_place = spotify_uri == self._engine_uri
+        # back out of the feed lead, the item queued on the engine would be crossfaded
+        # into: the jump skips onto it, which takes it off, and plays the track afresh
+        in_place = spotify_uri == self._engine_uri and not self._fed_too_early_for(
+            spotify_uri, seek_position_ms
+        )
         self._pending_feed = None
         self._moving = True
         # nobody takes the previous item anymore: a capture waiting on its
@@ -2156,6 +2163,16 @@ class _EngineRun:
         return (
             item.engine_duration_ms is None
             or item.engine_duration_ms - item.position_ms <= _FEED_LEAD_S * 1000
+        )
+
+    def _fed_too_early_for(self, spotify_uri: str, position_ms: int) -> bool:
+        """Return whether the item queued on the engine is too far ahead of this track position."""
+        length = self._engine_length
+        return (
+            self._fed is not None
+            and length is not None
+            and length[0] == spotify_uri
+            and length[1] - position_ms > _FEED_LEAD_S * 1000
         )
 
     def _feed_when_due(self) -> None:

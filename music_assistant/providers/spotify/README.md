@@ -127,7 +127,8 @@ audio prefs, wire models) is shared infrastructure owned by the Spotify Connect 
   one, and the user keeps that setting for their own Spotify apps. It only crossfades
   into an item queued earlier than about that crossfade length plus 9 s before the end,
   so the run holds the next item back and queues it in the current one's last 8 s
-  (`_FEED_LEAD_S`): the two then play back to back.
+  (`_FEED_LEAD_S`): the two then play back to back. A seek back out of that window
+  skips onto the queued item to take it off the engine and plays the track afresh.
 - **Pacing**: the capture FIFO is reader-clocked — how fast it is read *is* how fast
   the engine plays, because the pipe sink applies no rate limit of its own (read
   unpaced, PulseAudio renders silence rather than pushing back, and the run runs
