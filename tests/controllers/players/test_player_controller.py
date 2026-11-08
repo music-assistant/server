@@ -53,6 +53,7 @@ from music_assistant.constants import (
     ANNOUNCE_ALERT_FILE,
     ATTR_ANNOUNCEMENT_IN_PROGRESS,
     ATTR_FAKE_MUTE,
+    ATTR_FAKE_POWER,
     ATTR_IDLE_SINCE,
     ATTR_MUTE_LOCK,
     ATTR_POWER_OFF_IN_PROGRESS,
@@ -4595,6 +4596,44 @@ class TestIdlePowerOff:
 
         power_off.assert_not_awaited()
         assert ATTR_IDLE_SINCE in player.extra_data
+
+
+class TestSelectSourcePowerOn:
+    """Selecting a player's own source powers it on first."""
+
+    async def test_switched_off_player_is_powered_on_without_auto_play(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """The selected source plays, not the queue that auto play would resume."""
+        mock_mass.config.get_raw_player_config_value = MagicMock(
+            side_effect=_player_config_stub({CONF_POWER_CONTROL: PLAYER_CONTROL_FAKE})
+        )
+        mock_mass.cache.set = AsyncMock()
+        mock_mass.player_queues.get = MagicMock(return_value=None)
+        mock_mass.player_queues.resume = AsyncMock()
+        controller = PlayerController(mock_mass)
+        provider = MockProvider("test_provider", instance_id="test", mass=mock_mass)
+        player = MockPlayer(provider, "player_1", "Player 1")
+        player._attr_supported_features.add(PlayerFeature.SELECT_SOURCE)
+        player._attr_source_list = [PlayerSource(id="hdmi", name="HDMI")]
+        player.select_source = AsyncMock()  # type: ignore[method-assign]
+        controller._players = {"player_1": player}
+        mock_mass.players = controller
+        config_get_value = player.config.get_value
+        player.config.get_value = MagicMock(  # type: ignore[method-assign]
+            side_effect=lambda key, *args, **kwargs: (
+                True if key == CONF_AUTO_PLAY else config_get_value(key, *args, **kwargs)
+            )
+        )
+        player.set_initialized()
+        player.refresh_state(signal_event=False)
+        assert player.state.powered is False
+
+        await controller._handle_select_source("player_1", "hdmi")
+
+        assert player.extra_data[ATTR_FAKE_POWER] is True
+        player.select_source.assert_awaited_once_with("hdmi")
+        mock_mass.player_queues.resume.assert_not_awaited()
 
 
 class TestEnforceVolumeLimits:

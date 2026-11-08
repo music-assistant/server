@@ -5290,7 +5290,8 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
             raise PlayerCommandFailed(
                 f"{source} is an invalid source for player {player.state.name}"
             )
-        await self._power_on_for_playback(player)
+        # the selected source plays, not the queue that auto play would resume
+        await self._power_on_for_playback(player, skip_auto_play=True)
         # forward to player
         await player.select_source(source)
 
