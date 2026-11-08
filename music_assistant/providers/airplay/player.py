@@ -691,6 +691,16 @@ class AirPlayPlayer(Player):
             self.player_id, CONF_STORED_VOLUME, volume_level
         )
 
+    def adopt_control_relay_volume(self, volume_level: int) -> None:
+        """Store a confirmed volume command from our active HomePod controller."""
+        if not 0 <= volume_level <= 100 or self._attr_volume_level == volume_level:
+            return
+        self._attr_volume_level = volume_level
+        self.mass.config.set_raw_player_config_value(
+            self.player_id, CONF_STORED_VOLUME, volume_level
+        )
+        self.update_state()
+
     async def volume_mute(self, muted: bool) -> None:
         """Handle VOLUME_MUTE command on the player."""
         self._attr_volume_muted = muted
