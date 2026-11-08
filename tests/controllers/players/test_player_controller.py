@@ -51,7 +51,9 @@ from music_assistant_models.player_queue import PlayerQueue
 
 from music_assistant.constants import (
     ANNOUNCE_ALERT_FILE,
+    ATTR_ANNOUNCEMENT_IN_PROGRESS,
     ATTR_FAKE_MUTE,
+    ATTR_IDLE_SINCE,
     ATTR_MUTE_LOCK,
     ATTR_POWER_OFF_IN_PROGRESS,
     ATTR_POWER_ON_IN_PROGRESS,
@@ -59,6 +61,7 @@ from music_assistant.constants import (
     CONF_AUTO_PLAY,
     CONF_ENTRY_TTS_PRE_ANNOUNCE,
     CONF_ICON,
+    CONF_IDLE_POWER_OFF,
     CONF_MAX_VOLUME,
     CONF_MIN_VOLUME,
     CONF_MUTE_CONTROL,
@@ -4372,6 +4375,143 @@ class TestOfflinePowerControl:
         cast("AsyncMock", control.power_on).assert_awaited_once()
         controller._run_announcement.assert_not_awaited()
         cast("AsyncMock", control.power_off).assert_not_awaited()
+
+
+class TestIdlePowerOff:
+    """A player with an idle power off time is switched off once it has been stopped that long."""
+
+    def _setup(
+        self, mock_mass: MagicMock, *, minutes: int = 30
+    ) -> tuple[PlayerController, MockPlayer, AsyncMock]:
+        """
+        Build a controller with a stopped player that is switched on at its external control.
+
+        :param mock_mass: The mocked MusicAssistant instance to attach the controller to.
+        :param minutes: The player's idle power off time.
+        :return: The controller, the player and the power off callback of its control.
+        """
+        power_off = AsyncMock()
+        control = PlayerControl(
+            id="switch.smart_plug",
+            provider="hass",
+            name="Smart plug",
+            supports_power=True,
+            power_state=True,
+            power_on=AsyncMock(),
+            power_off=power_off,
+        )
+        mock_mass.config.get_raw_player_config_value = MagicMock(
+            side_effect=_player_config_stub({CONF_POWER_CONTROL: control.id})
+        )
+        controller = PlayerController(mock_mass)
+        provider = MockProvider("test_provider", instance_id="test", mass=mock_mass)
+        player = MockPlayer(provider, "player_1", "Player 1")
+        controller._controls = {control.id: control}
+        controller._players = {"player_1": player}
+        mock_mass.players = controller
+        config_get_value = player.config.get_value
+        player.config.get_value = MagicMock(  # type: ignore[method-assign]
+            side_effect=lambda key, *args, **kwargs: (
+                minutes if key == CONF_IDLE_POWER_OFF else config_get_value(key, *args, **kwargs)
+            )
+        )
+        player.set_initialized()
+        player.update_state(signal_event=False)
+        assert player.state.powered is True
+        assert player.state.playback_state == PlaybackState.IDLE
+        return controller, player, power_off
+
+    async def test_powers_off_once_stopped_for_the_configured_time(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """The power off follows the configured number of minutes after the player stopped."""
+        controller, player, power_off = self._setup(mock_mass)
+
+        controller._check_idle_power_off(player)
+        # the count starts when the player is first seen stopped
+        assert ATTR_IDLE_SINCE in player.extra_data
+        player.extra_data[ATTR_IDLE_SINCE] = time.monotonic() - 30 * 60 + 5
+        controller._check_idle_power_off(player)
+        mock_mass.create_task.assert_not_called()
+
+        player.extra_data[ATTR_IDLE_SINCE] = time.monotonic() - 30 * 60
+        controller._check_idle_power_off(player)
+        mock_mass.create_task.assert_called_once()
+        await mock_mass.create_task.call_args.args[0]
+
+        power_off.assert_awaited_once()
+        # a power off that does not come through is tried again after a full idle time
+        assert ATTR_IDLE_SINCE not in player.extra_data
+
+    @pytest.mark.parametrize("playback_state", [PlaybackState.PLAYING, PlaybackState.PAUSED])
+    def test_playback_starts_the_count_over(
+        self, mock_mass: MagicMock, playback_state: PlaybackState
+    ) -> None:
+        """A playing or paused player is not idle, so its count restarts once it stops."""
+        controller, player, _power_off = self._setup(mock_mass)
+        player.extra_data[ATTR_IDLE_SINCE] = time.monotonic() - 30 * 60
+        player._attr_playback_state = playback_state
+        player.update_state(signal_event=False)
+
+        controller._check_idle_power_off(player)
+
+        assert ATTR_IDLE_SINCE not in player.extra_data
+        mock_mass.create_task.assert_not_called()
+
+    @pytest.mark.parametrize(
+        ("minutes", "attribute", "value"),
+        [
+            pytest.param(0, None, None, id="not_configured"),
+            pytest.param(30, "_attr_available", False, id="unavailable"),
+            pytest.param(30, ATTR_ANNOUNCEMENT_IN_PROGRESS, True, id="announcing"),
+        ],
+    )
+    def test_player_that_is_not_idle_is_left_on(
+        self, mock_mass: MagicMock, minutes: int, attribute: str | None, value: bool | None
+    ) -> None:
+        """No idle power off without the setting, while unavailable or about to announce."""
+        controller, player, _power_off = self._setup(mock_mass, minutes=minutes)
+        if attribute == ATTR_ANNOUNCEMENT_IN_PROGRESS:
+            player.extra_data[attribute] = value
+        elif attribute:
+            setattr(player, attribute, value)
+            player.update_state(signal_event=False)
+        player.extra_data[ATTR_IDLE_SINCE] = time.monotonic() - 30 * 60
+
+        controller._check_idle_power_off(player)
+
+        assert ATTR_IDLE_SINCE not in player.extra_data
+        mock_mass.create_task.assert_not_called()
+
+    def test_player_switched_off_elsewhere_is_left_alone(self, mock_mass: MagicMock) -> None:
+        """A player that is already powered off has nothing to count down."""
+        controller, player, _power_off = self._setup(mock_mass)
+        controller._controls["switch.smart_plug"].power_state = False
+        player.refresh_state(signal_event=False)
+        assert player.state.powered is False
+        player.extra_data[ATTR_IDLE_SINCE] = time.monotonic() - 30 * 60
+
+        controller._check_idle_power_off(player)
+
+        assert ATTR_IDLE_SINCE not in player.extra_data
+        mock_mass.create_task.assert_not_called()
+
+    async def test_playback_started_while_waiting_for_the_lock_is_left_alone(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """A play command that holds the player when its time is up keeps the player on."""
+        controller, player, power_off = self._setup(mock_mass)
+        player.extra_data[ATTR_IDLE_SINCE] = time.monotonic() - 30 * 60
+        controller._check_idle_power_off(player)
+
+        async with _lock_held_elsewhere(controller, "player_1"):
+            power_off_task = asyncio.create_task(mock_mass.create_task.call_args.args[0])
+            await _yield_to_loop()
+            player._attr_playback_state = PlaybackState.PLAYING
+            player.update_state(signal_event=False)
+        await power_off_task
+
+        power_off.assert_not_awaited()
 
 
 class TestEnforceVolumeLimits:

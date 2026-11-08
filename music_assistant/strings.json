@@ -60,6 +60,10 @@
       "label": "Automatically play (resume on power on)",
       "description": "When this player is turned ON, automatically start playing (if there are items in the queue)."
     },
+    "idle_power_off": {
+      "label": "Power off when idle (minutes)",
+      "description": "Turn this player off once it has been stopped for this many minutes. Set to 0 to never turn it off automatically."
+    },
     "crossfade_different_sample_rates": {
       "label": "Allow crossfades between tracks of different sample rates",
       "description": "Enable this option to allow crossfades between tracks that have different sample rates (e.g. 44.1kHz to 48kHz). \n\n Disable this option if you experience audio glitches during transitions between tracks."

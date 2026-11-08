@@ -72,6 +72,7 @@ from music_assistant.constants import (
     ATTR_FAKE_VOLUME,
     ATTR_GROUP_MEMBERS,
     ATTR_GROUP_VOLUME_SNAPSHOT,
+    ATTR_IDLE_SINCE,
     ATTR_LAST_POLL,
     ATTR_MUTE_CONTROL,
     ATTR_MUTE_LOCK,
@@ -90,6 +91,7 @@ from music_assistant.constants import (
     CONF_ENTRY_MAX_VOLUME,
     CONF_ENTRY_MIN_VOLUME,
     CONF_GROUP_MEMBERS,
+    CONF_IDLE_POWER_OFF,
     CONF_LINKED_PROTOCOL_IDS,
     CONF_MAX_VOLUME,
     CONF_MIN_VOLUME,
@@ -3466,6 +3468,7 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         """Background task that polls players for updates."""
         while True:
             for player in list(self._players.values()):
+                self._check_idle_power_off(player)
                 # if the player is playing, update elapsed time every tick
                 # to ensure the queue has accurate details
                 player_playing = player.state.playback_state == PlaybackState.PLAYING
@@ -3501,6 +3504,69 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
                 # Yield to event loop to prevent blocking
                 await asyncio.sleep(0)
             await asyncio.sleep(1)
+
+    def _check_idle_power_off(self, player: Player) -> None:
+        """
+        Power off a player once it has been idle for its configured idle power off time.
+
+        :param player: The player to check.
+        """
+        if not (minutes := self._get_idle_power_off_minutes(player)):
+            player.extra_data.pop(ATTR_IDLE_SINCE, None)
+            return
+        now = time.monotonic()
+        idle_since: float = player.extra_data.setdefault(ATTR_IDLE_SINCE, now)
+        if now - idle_since < minutes * 60:
+            return
+        # starts the count over, so a power off that fails is retried a full idle time later
+        player.extra_data.pop(ATTR_IDLE_SINCE)
+        self.mass.create_task(
+            self._power_off_idle_player(player.player_id),
+            task_id=f"idle_power_off_{player.player_id}",
+        )
+
+    async def _power_off_idle_player(self, player_id: str) -> None:
+        """
+        Power off a player that has been idle for its configured idle power off time.
+
+        :param player_id: The player to power off.
+        """
+        # hold the lock across the check: a play command that overlaps holds it while it
+        # starts the playback, which must not be powered off right after
+        async with self.get_group_and_player_lock(player_id):
+            if not (player := self.get_player(player_id)) or not (
+                minutes := self._get_idle_power_off_minutes(player)
+            ):
+                return
+            self.logger.info(
+                "Powering off player %s, it has been idle for %s minutes",
+                player.display_name,
+                minutes,
+            )
+            await self._handle_cmd_power(player_id, False)
+
+    @staticmethod
+    def _get_idle_power_off_minutes(player: Player) -> int:
+        """
+        Return after how many idle minutes the player is to be powered off.
+
+        Returns 0 while that does not apply: the player has no idle power off configured, is
+        not powered on and stopped, or is about to play an announcement.
+
+        :param player: The player to get the idle power off time for.
+        """
+        minutes = player.config.get_value(CONF_IDLE_POWER_OFF)
+        state = player.state
+        if (
+            not isinstance(minutes, int)
+            or minutes <= 0
+            or not state.available
+            or state.powered is not True
+            or state.playback_state != PlaybackState.IDLE
+            or player.extra_data.get(ATTR_ANNOUNCEMENT_IN_PROGRESS)
+        ):
+            return 0
+        return minutes
 
     def _handle_group_dsp_change(
         self, player: Player, prev_group_members: list[str], new_group_members: list[str]
