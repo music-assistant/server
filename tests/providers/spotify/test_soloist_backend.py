@@ -1193,6 +1193,48 @@ async def test_a_skip_onto_a_fed_track_spotify_refuses_fails_it(tmp_path: Path) 
         await asyncio.wait_for(_collect(run, item), 1)
 
 
+async def test_a_refusal_reported_before_the_skip_landed_still_fails_it(tmp_path: Path) -> None:
+    """Both reports can reach the run while the skip is still landing."""
+    backend = _streamable_backend(tmp_path)
+    run = _live_run(tmp_path, backend=backend)
+    backend._run = run
+    await run._handle_event(_playback_event("playing", uri=TRACK_A))
+    await _feed(run)
+
+    def _refuse_at_once(**_: Any) -> None:
+        run._observe_engine_item(TRACK_B, announced=True)
+        run._observe_engine_item(TRACK_A, announced=True)
+
+    _client(run).skip_next.side_effect = _refuse_at_once
+    item = await run.move_to(TRACK_B, 0, _streamdetails_for(uri=TRACK_B))
+    assert item.ended
+    assert TRACK_B in backend._refused_until
+    with pytest.raises(AudioError, match="would not play"):
+        await asyncio.wait_for(_collect(run, item), 1)
+
+
+async def test_a_seek_onto_the_fed_track_is_no_refusal_at_its_end(tmp_path: Path) -> None:
+    """A confirmed seek proves the engine plays the track, so leaving it later is its end."""
+    run = _live_run(tmp_path)
+    await run._handle_event(_playback_event("playing", uri=TRACK_A))
+    await _feed(run)
+    _client(run).skip_next.side_effect = lambda **_: run._observe_engine_item(
+        TRACK_B, announced=True
+    )
+    _confirm_seeks(run)
+    details = _streamdetails_for(uri=TRACK_B)
+    details.duration = 180
+    item = await run.move_to(TRACK_B, 179_500, details)
+
+    # its silent last half second is trimmed, then the engine is back at its context head
+    await _capture(run, _silence(0.5))
+    await run._handle_event(_playback_event("paused", uri=TRACK_A, position_ms=0))
+    assert item.ended
+    assert item.error is None
+    assert not run.backend._refused_until
+    assert run._pause_watch is None
+
+
 async def test_a_track_refused_a_moment_ago_is_not_fed(tmp_path: Path) -> None:
     """Its request fails at once, so queueing it would only have the engine play it to nobody."""
     backend = _streamable_backend(tmp_path)
