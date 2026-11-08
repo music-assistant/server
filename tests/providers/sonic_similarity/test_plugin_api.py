@@ -347,7 +347,12 @@ class TestHandleSimilarSearch:
         plugin._run_ann_search = _rebuild_lands_mid_search
         # zero genre/era weights skip the library metadata rerank
         result = await plugin._handle_similar(
-            item_id="t0", seed_provider="spotify", limit=5, genre_weight=0, era_weight=0
+            item_id="t0",
+            seed_provider="spotify",
+            limit=5,
+            include_group_distances=True,
+            genre_weight=0,
+            era_weight=0,
         )
 
         assert search_threads
@@ -357,6 +362,7 @@ class TestHandleSimilarSearch:
         assert len(returned) == 5
         assert "t0" not in returned
         assert all(item["provider"] == "spotify" for item in result["items"])
+        assert all("group_distances" in item for item in result["items"])
 
 
 def _track_with_metadata(

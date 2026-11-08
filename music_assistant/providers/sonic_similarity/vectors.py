@@ -233,8 +233,6 @@ def compute_weighted_distance_vec(
     total_weighted_dims = float(dim_weights.sum())
     if total_weighted_dims == 0.0:
         return 0.0
-    # np.asarray is a no-op when the caller already holds a float64 array,
-    # avoiding the list round-trip the previous version forced.
     a = np.asarray(sig_a, dtype=np.float64)
     b = np.asarray(sig_b, dtype=np.float64)
     diff = a - b

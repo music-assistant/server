@@ -1395,8 +1395,8 @@ class SonicSimilarityPlugin(PluginProvider):
         self.corpus_means = new_corpus_means
         self.corpus_stds = new_corpus_stds
 
-        # Drop the old viewer's reference; CPython refcounting closes the mmap
-        # synchronously, releasing the previous on-disk file for unlink below.
+        # Drop the old viewer's reference; CPython refcounting closes the mmap once no
+        # in-flight search still holds it. Unlinking a mapped file is fine on POSIX.
         del old_search_index
 
         # Best-effort cleanup of the previous versioned files (off the event loop).
