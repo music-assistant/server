@@ -507,6 +507,11 @@ class PlaybackTrackerMixin(_PlayerQueuesBase):
             # copy of the queue that the stream server then refused): it did not reach the end of
             # the queue, so the queue must stay where it is and remain resumable
             return
+        if (
+            player := self.mass.players.get_player(queue.queue_id)
+        ) and player.offline_by_power_control:
+            # it was switched off, so it did not reach the end of the queue either
+            return
 
         # retrieve prev_item here so it's available in the _settle_or_resume_delayed closure
         # regardless of which code path (flow mode or non-flow mode) creates the task

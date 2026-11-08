@@ -32,7 +32,6 @@ from music_assistant_models.player import PlayerMedia
 from music_assistant.constants import (
     ANNOUNCE_ALERT_FILE,
     ATTR_ANNOUNCEMENT_IN_PROGRESS,
-    ATTR_POWER_ON_IN_PROGRESS,
     CONF_ANNOUNCE_TTS_ENGINE,
     CONF_ENTRY_ANNOUNCE_VOLUME,
     CONF_ENTRY_ANNOUNCE_VOLUME_MAX,
@@ -158,6 +157,8 @@ class AnnouncementsMixin:
             self, player_id: str, powered: bool, skip_auto_play: bool = False
         ) -> None: ...
 
+        async def _power_on_switched_off_player(self, player_id: str) -> Player: ...
+
         async def _handle_cmd_resume(
             self, player_id: str, source: str | None = None, media: PlayerMedia | None = None
         ) -> None: ...
@@ -223,6 +224,10 @@ class AnnouncementsMixin:
             and not validate_announcement_chime_url(pre_announce_url)
         ):
             raise PlayerCommandFailed("Invalid pre-announce chime URL specified.")
+        # a player switched off at its power control is powered on for the announcement (and
+        # then stays on), before the lock is taken: waiting for it to come online takes far
+        # longer than other commands wait for the lock
+        player = await self._power_on_switched_off_player(player.player_id)
         # A member's announcement detaches it from its (sync)group and joins it back
         # afterwards, which takes the group's lock - so that one is taken before the
         # member's own (see get_group_and_player_lock). A spoken message is rendered under
@@ -259,23 +264,7 @@ class AnnouncementsMixin:
                 # filled in once the player that fetches the stream is known
                 announce_player_id=None,
             )
-            # a player switched off at its power control is switched on for the announcement
-            # and off again afterwards, like a powered off player. One that is already being
-            # switched on (e.g. to play) is only waited for, and stays on.
-            switch_off_after = (
-                player.offline_by_power_control
-                and ATTR_POWER_ON_IN_PROGRESS not in player.extra_data
-            )
-            if player.offline_by_power_control:
-                await self._handle_cmd_power(player.player_id, True, skip_auto_play=True)
-                # the provider may have registered a new instance for the returning device
-                player = self.get_player(player.player_id, True)
-                assert player is not None  # for type checking
-            try:
-                await self._run_announcement(player, announce_data, volume_level)
-            finally:
-                if switch_off_after:
-                    await self._switch_off_after_announcement(player)
+            await self._run_announcement(player, announce_data, volume_level)
 
     @api_command("players/tts_engines", required_scope=Scope.PLAYERS_CONTROL)
     async def get_announcement_tts_engines(self) -> list[dict[str, str]]:
@@ -663,23 +652,6 @@ class AnnouncementsMixin:
             async with TaskManager(self.mass) as tg:
                 for muted_player in muted_players:
                     tg.create_task(self._set_announcement_mute(muted_player, True))
-
-    async def _switch_off_after_announcement(self, player: Player) -> None:
-        """
-        Switch a player off again that was switched on for an announcement only.
-
-        :param player: The player the announcement was played on.
-        """
-        try:
-            await self._handle_cmd_power(player.player_id, False)
-        except Exception as err:
-            # deliberately broad and only logged, like the restore after the default
-            # announcement flow: it may never mask the error of the announcement itself
-            self.logger.warning(
-                "Announcement to player %s - switching it off again failed: %s",
-                player.state.name,
-                err,
-            )
 
     async def _play_announcement(
         self,

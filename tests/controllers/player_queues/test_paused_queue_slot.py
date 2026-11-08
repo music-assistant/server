@@ -192,6 +192,7 @@ class _Rig:
             state=SimpleNamespace(playback_state=state, active_source=queue_id),
             extra_data={},
             private=False,
+            offline_by_power_control=False,
         )
         return item
 

@@ -68,6 +68,7 @@ from music_assistant.controllers.player_queues.helpers import (
     played_from_album,
 )
 from music_assistant.controllers.player_queues.managed_pool import gate_tracks
+from music_assistant.controllers.players.constants import SwitchedOffAction
 from music_assistant.controllers.webserver.helpers.auth_middleware import (
     get_current_user,
     set_current_user,
@@ -813,7 +814,7 @@ class QueueLoaderMixin(_PlayerQueuesBase):
             return
         await self.load(queue_id, queue_items, insert_at_index=len(queue_data.items) + 1)
 
-    @handle_play_action
+    @handle_play_action(switched_off=SwitchedOffAction.RUN)
     async def _handle_play_media(  # noqa: C901, PLR0912
         self,
         queue_id: str,

@@ -57,6 +57,7 @@ def _controller(items: list[QueueItem]) -> PlayerQueuesController:
     ctrl.player_media_from_queue_item = AsyncMock()  # type: ignore[method-assign]
     ctrl.mark_ended = Mock()  # type: ignore[method-assign]
     ctrl.mass = MagicMock()
+    ctrl.mass.players.get_player.return_value.offline_by_power_control = False
     ctrl.mass.streams.is_smart_fades_active.return_value = False
     ctrl.mass.players.play_media = AsyncMock()
     return ctrl

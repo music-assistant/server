@@ -90,6 +90,7 @@ from music_assistant.controllers.player_queues.queue_loader import QueueLoaderMi
 from music_assistant.controllers.player_queues.smart_shuffle import SmartShuffle
 from music_assistant.controllers.player_queues.state import PlayerQueueData
 from music_assistant.controllers.player_queues.stream_feeder import StreamFeederMixin
+from music_assistant.controllers.players.constants import SwitchedOffAction
 from music_assistant.controllers.webserver.helpers.auth_middleware import (
     get_current_user,
     has_player_access,
@@ -709,6 +710,14 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         if (source_uri := await _resolve_audio_source_request(media)) is not None:
             await self.mass.players.select_source(queue_id, source_uri)
             return
+        if (
+            option not in (QueueOption.ADD, QueueOption.NEXT, QueueOption.REPLACE_NEXT)
+            and (player := self.mass.players.get_player(queue_id)) is not None
+            and player.offline_by_power_control
+        ):
+            # powered on before the play action takes its locks; media that is only enqueued
+            # leaves the player switched off
+            await self.mass.players._power_on_switched_off_player(queue_id)
         # Lock is acquired by the @handle_play_action decorator on the internal handler
         await self._handle_play_media(
             queue_id,
@@ -1153,7 +1162,7 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         required_scope=Scope.QUEUES_CONTROL,
         allow_impersonation=True,
     )
-    @handle_play_action
+    @handle_play_action(switched_off=SwitchedOffAction.POWER_ON)
     async def resume(self, queue_id: str, fade_in: bool | None = None) -> None:
         """
         Handle RESUME command for given queue.
@@ -1218,7 +1227,7 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         required_scope=Scope.QUEUES_CONTROL,
         allow_impersonation=True,
     )
-    @handle_play_action
+    @handle_play_action(switched_off=SwitchedOffAction.POWER_ON)
     async def play_index(
         self,
         queue_id: str,
@@ -1684,6 +1693,11 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
             await asyncio.sleep(1)
             if queue.state != PlaybackState.IDLE or queue_data.session_id != original_session_id:
                 return
+            if (
+                player := self.mass.players.get_player(queue_id)
+            ) and player.offline_by_power_control:
+                # it went idle because it was switched off, which is no cue to play on
+                return
             # check if new items were added to the queue after the flow stream ended
             if queue.current_index is not None and (
                 next_item := self.get_next_item(queue_id, queue.current_index)
@@ -2082,7 +2096,7 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
             msg = f"{current_user.username} does not have access to queue {queue_id}"
             raise InsufficientPermissions(msg)
 
-    @handle_play_action
+    @handle_play_action(switched_off=SwitchedOffAction.RUN)
     async def _handle_stop(self, queue_id: str) -> None:
         """
         Handle stop without checking the caller's player permissions.
@@ -2097,10 +2111,16 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
             if queue.state == PlaybackState.PLAYING:
                 queue.resume_pos = int(queue.corrected_elapsed_time)
         try:
-            # Use internal handler to avoid circular redirect:
-            # public cmd_stop redirects to queue.stop when a queue is active,
-            # which would loop back here indefinitely.
-            await self.mass.players._handle_cmd_stop(queue_id)
+            # a player switched off at its power control has nothing left to stop, while its
+            # session below still needs the teardown
+            if not (
+                (player := self.mass.players.get_player(queue_id))
+                and player.offline_by_power_control
+            ):
+                # Use internal handler to avoid circular redirect:
+                # public cmd_stop redirects to queue.stop when a queue is active,
+                # which would loop back here indefinitely.
+                await self.mass.players._handle_cmd_stop(queue_id)
         finally:
             # a device that could not be reached still gets its session torn down: an
             # open session keeps the item buffers producing, which holds a provider's
@@ -2128,7 +2148,7 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         self.mass.cancel_task(f"prepare_next_audio_buffer_{queue_id}")
         self._set_transitioning(queue_id, False)
 
-    @handle_play_action
+    @handle_play_action(switched_off=SwitchedOffAction.POWER_ON)
     async def _handle_play(self, queue_id: str) -> None:
         """Handle play without acquiring the queue lock."""
         queue_player = self.mass.players.get_player(queue_id, True)

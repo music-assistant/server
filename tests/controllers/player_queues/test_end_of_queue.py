@@ -63,7 +63,9 @@ def _controller(*, player_available: bool = True) -> tuple[PlayerQueuesControlle
     ctrl.mass.players.play_media = AsyncMock()
     ctrl.mass.music.get_playback_speed = AsyncMock(return_value=1.0)
     ctrl.mass.players.get_player = Mock(
-        return_value=MagicMock(state=MagicMock(playback_state=PlaybackState.IDLE))
+        return_value=MagicMock(
+            state=MagicMock(playback_state=PlaybackState.IDLE), offline_by_power_control=False
+        )
         if player_available
         else None
     )
@@ -311,6 +313,7 @@ def _tracker(*items: Any) -> Any:
             items=list(items), flow_mode_stream_log=[], served_item_ids={"i1"}
         )
     }
+    tracker.mass.players.get_player.return_value.offline_by_power_control = False
     return tracker
 
 
@@ -430,6 +433,17 @@ def test_playing_a_track_to_its_end_settles_the_queue() -> None:
     PlaybackTrackerMixin._handle_end_of_queue(tracker, _queue_stub(), prev_state, new_state)
 
     tracker.mass.create_task.assert_called_once()
+
+
+def test_a_player_switched_off_at_the_last_track_does_not_settle_the_queue() -> None:
+    """A player that went idle because it was switched off did not run out of music."""
+    tracker = _tracker()
+    tracker.mass.players.get_player.return_value.offline_by_power_control = True
+    prev_state, new_state = _stop_states(_item(MediaType.TRACK))
+
+    PlaybackTrackerMixin._handle_end_of_queue(tracker, _queue_stub(), prev_state, new_state)
+
+    tracker.mass.create_task.assert_not_called()
 
 
 def test_a_completed_sound_effect_settles_the_queue() -> None:

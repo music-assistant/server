@@ -20,7 +20,7 @@ from music_assistant_models.constants import (
     PLAYER_CONTROL_NATIVE,
     PLAYER_CONTROL_NONE,
 )
-from music_assistant_models.enums import PlayerFeature, PlayerType
+from music_assistant_models.enums import PlaybackState, PlayerFeature, PlayerType
 from music_assistant_models.player_control import PlayerControl
 
 from music_assistant.constants import (
@@ -323,6 +323,29 @@ class TestOfflineByPowerControl:
         assert player.power_control == PLAYER_CONTROL_NATIVE
         assert player.offline_by_power_control is False
         assert player.state.available is False
+
+    def test_device_cut_off_mid_song_reports_idle(self, mock_mass: MagicMock) -> None:
+        """A device that lost power while playing plays nothing, whatever it last reported."""
+        player = self._offline_player(mock_mass, power_state=False)
+        player._attr_playback_state = PlaybackState.PLAYING
+        player.update_state(signal_event=False)
+
+        assert player.state.playback_state == PlaybackState.IDLE
+
+        # once it is back, it reports its own state again
+        player._attr_available = True
+        player.update_state(signal_event=False)
+        state_when_back = player.state
+        assert state_when_back.playback_state == PlaybackState.PLAYING
+
+    def test_disabled_player_is_not_available_for_playback(self, mock_mass: MagicMock) -> None:
+        """A disabled player can not be played to, even when its provider keeps it listed."""
+        player = _create_player(mock_mass)
+        player._config.enabled = False
+        player._cache.clear()
+
+        assert player.available is True
+        assert player.available_for_playback is False
 
 
 class TestVolumeControlExplicitConfig:

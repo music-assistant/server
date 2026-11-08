@@ -56,6 +56,7 @@ from music_assistant.constants import (
     ATTR_FAKE_POWER,
     ATTR_FAKE_VOLUME,
     ATTR_POWER_ON_IN_PROGRESS,
+    ATTR_REACHABLE,
     CONF_ENTRY_PLAYER_ICON,
     CONF_EXPOSE_PLAYER_TO_HA,
     CONF_FLOW_MODE,
@@ -646,13 +647,13 @@ class Player(ABC):
 
         A device that is reachable but still needs setup - an unpaired AirPlay
         receiver, for example - can not accept a stream, so it must never be
-        picked as an output protocol or command target.
+        picked as an output protocol or command target. Neither can a disabled player.
 
         Use this, not state.available, for a device that must be reachable right now:
         the state also reports a player that is switched off at its power control as
         available (see offline_by_power_control).
         """
-        return self.available and not self.needs_setup
+        return self.enabled and self.available and not self.needs_setup
 
     @property
     @final
@@ -2824,6 +2825,9 @@ class Player(ABC):
                 5, self.set_active_mass_source, None, task_id=f"set_mass_source_{self.player_id}"
             )
         new_fingerprint = _state_fingerprint(self._state)
+        # not part of the state: whether the device can be reached, which its availability
+        # does not tell for a player that is switched off at its power control
+        new_fingerprint[ATTR_REACHABLE] = self.available
         self.__state_fingerprint = new_fingerprint
         changed_values: dict[str, tuple[Any, Any]] = {}
         for key in prev_fingerprint.keys() | new_fingerprint.keys():
@@ -2947,6 +2951,11 @@ class Player(ABC):
             elapsed_time_last_updated = (
                 session.stream_metadata.elapsed_time_last_updated or time.time()
             )
+
+        if self.offline_by_power_control:
+            # a device that is switched off plays nothing, while one cut off mid-song may
+            # still report the state it had
+            playback_state = PlaybackState.IDLE
 
         return (playback_state, elapsed_time, elapsed_time_last_updated)
 

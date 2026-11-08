@@ -80,6 +80,7 @@ from music_assistant.constants import (
     ATTR_POWER_ON_IN_PROGRESS,
     ATTR_POWERED,
     ATTR_PREVIOUS_VOLUME,
+    ATTR_REACHABLE,
     ATTR_SUPPORTED_FEATURES,
     ATTR_VOLUME_CONTROL,
     ATTR_VOLUME_TARGET,
@@ -910,6 +911,11 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         :param player_id: player_id of the player to handle the command.
         :param powered: bool if player should be powered on or off.
         """
+        if powered and (player := self.get_player(player_id)) and player.offline_by_power_control:
+            # no lock while the switched off device comes online: that takes far longer than
+            # other commands wait for the lock, and it has no group to form
+            await self._handle_cmd_power(player_id, True)
+            return
         # Power is serialized with PLAYBACK because powering on a sync/group player
         # forms the group (and powering off dissolves it) - this must not race with
         # play_media / cmd_resume / cmd_set_members on the same player.
@@ -2151,7 +2157,7 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
             )
         # only steer into the (relatively expensive) membership cleanup when a field
         # that can require an unsync actually changed - this runs on every state tick
-        if changed_values.keys() & {ATTR_AVAILABLE, ATTR_ENABLED, ATTR_POWERED}:
+        if changed_values.keys() & {ATTR_AVAILABLE, ATTR_ENABLED, ATTR_POWERED, ATTR_REACHABLE}:
             self._handle_membership_cleanup_on_state_change(player, changed_values)
             self._handle_external_power_off(player, changed_values)
 
@@ -2199,7 +2205,10 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
 
         # trigger update of all players in a provider if group related fields changed
         # this ensures that calculated fields like can_group_with are updated on all players
-        if any(key in changed_values for key in ("group_members", "synced_to", "available")):
+        if any(
+            key in changed_values
+            for key in ("group_members", "synced_to", ATTR_AVAILABLE, ATTR_REACHABLE)
+        ):
             for prov_player in player.provider.players:
                 self.trigger_player_update(prov_player.player_id, debounce_delay=2)
 
@@ -4384,7 +4393,7 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
                     f"Player control {control_name} is not available"
                 )
             if powered and player.offline_by_power_control:
-                player = await self._power_on_offline_player(player, player_control)
+                player = await self._power_on_switched_off_player(player_id)
             elif powered:
                 assert player_control.power_on is not None  # for type checking
                 await player_control.power_on()
@@ -4407,21 +4416,26 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         ):
             await self.mass.player_queues.resume(player_id)
 
-    async def _power_on_offline_player(
-        self, player: Player, player_control: PlayerControl
-    ) -> Player:
+    async def _power_on_switched_off_player(self, player_id: str) -> Player:
         """
         Power on a player that is switched off at its external power control.
 
-        Returns once the device is online again, while the player stays available to
-        clients in the meantime.
+        Returns right away for a player that is not switched off. Otherwise it returns once
+        the device is online and registered again, while the player stays available to
+        clients in the meantime. Takes no lock: waiting for the device takes far longer than
+        other commands wait for a player lock, so it must run before any lock is taken.
 
-        :param player: The player to power on.
-        :param player_control: The external power control of the player.
-        :raises PlayerUnavailableError: When the device does not come online in time.
-        :return: The player once it is online, which may be a newly registered instance.
+        :param player_id: The player to power on.
+        :raises PlayerUnavailableError: When the device does not come online in time, or
+            its power control is switched off again before it does.
+        :return: The player, which may be a newly registered instance once it is online.
         """
-        player_id = player.player_id
+        player = self.get_player(player_id, True)
+        assert player is not None  # for type checking
+        if not player.offline_by_power_control:
+            return player
+        control_id = player.power_control
+        player_control = self._controls[control_id]
         # a power on that is already under way is only waited for: switching the control
         # once more could switch a device behind a toggling control off again
         owns_power_on = ATTR_POWER_ON_IN_PROGRESS not in player.extra_data
@@ -4432,13 +4446,20 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
                 assert player_control.power_on is not None  # for type checking
                 await player_control.power_on()
             self.logger.debug("Waiting for player %s to come online", player.display_name)
+            # a control reports its new state a moment after it was switched, so only an
+            # off that follows its on means it was switched off again
+            control_reported_on = False
             try:
                 async with asyncio.timeout(OFFLINE_POWER_ON_TIMEOUT):
                     while True:
-                        # the provider may register a new instance once the device is back
-                        current = self.get_player(player_id)
-                        if current is not None and current.available:
-                            return current
+                        if (online_player := self._get_online_player(player_id)) is not None:
+                            return online_player
+                        if (control := self._controls.get(control_id)) is not None:
+                            if control.power_state:
+                                control_reported_on = True
+                            elif control_reported_on:
+                                msg = f"Player {player.display_name} is switched off"
+                                raise PlayerUnavailableError(msg)
                         await asyncio.sleep(0.5)
             except TimeoutError:
                 msg = f"Player {player.display_name} did not come online after powering it on"
@@ -4448,6 +4469,39 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
                 player.extra_data.pop(ATTR_POWER_ON_IN_PROGRESS, None)
                 if refreshed := self.get_player(player_id):
                     refreshed.refresh_state()
+
+    def _get_online_player(self, player_id: str) -> Player | None:
+        """
+        Return the player once its device is online and it is fully registered again.
+
+        A returning device may come back as a newly registered instance, which can only be
+        played to once its registration finished: its queue is restored, and a player that
+        plays through its linked protocols needs the protocol player that brought it back
+        to be registered too.
+
+        :param player_id: The player to look up.
+        """
+        player = self.get_player(player_id)
+        if (
+            player is None
+            or not player.available
+            or not player.initialized.is_set()
+            or self.mass.player_queues.get(player_id) is None
+        ):
+            return None
+        if PlayerFeature.PLAY_MEDIA in player.supported_features or not (
+            player.linked_output_protocols
+        ):
+            return player
+        for linked in player.linked_output_protocols:
+            protocol_player = self.get_player(linked.output_protocol_id)
+            if (
+                protocol_player is not None
+                and protocol_player.available_for_playback
+                and protocol_player.initialized.is_set()
+            ):
+                return player
+        return None
 
     def _resolve_group_volume_player(self, player: Player) -> Player | None:
         """

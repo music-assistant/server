@@ -559,6 +559,7 @@ def _tracker() -> Any:
     tracker = MagicMock()
     # the item the player stopped on ("i1" in the stop states) had its audio served
     tracker._queue_data = {"q1": SimpleNamespace(flow_mode_stream_log=[], served_item_ids={"i1"})}
+    tracker.mass.players.get_player.return_value.offline_by_power_control = False
     return tracker
 
 
