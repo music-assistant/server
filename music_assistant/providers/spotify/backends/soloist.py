@@ -210,6 +210,11 @@ _DRAIN_QUIET_S: Final[float] = 0.05
 # reported moment of the track change trails that by the capture pipeline. A
 # length further off than this from the reported moment is not trusted.
 _MAX_CUT_SKEW_S: Final[float] = 1.0
+# An item queued earlier than about the account's crossfade length plus 9 s before
+# the current one ends is crossfaded into, by the account's own Spotify setting
+# (which overrides the off written into the prefs). Queued this close to the end,
+# the engine plays the two back to back whatever that setting is.
+_FEED_LEAD_S: Final[float] = 8.0
 
 
 class SoloistSessionBusyError(ProviderStreamLimitError):
@@ -662,7 +667,9 @@ class SoloistBackend(SpotifyPlaybackBackend):
         # SpotifyProvider.delivers_normalized_audio).
         # crossfade 0: Music Assistant mixes the queue's crossfade itself, so the
         # engine plays every track clean from its first sample and an item's
-        # delivered audio lines up with its analysis (waveform, beat grid, light sync)
+        # delivered audio lines up with its analysis (waveform, beat grid, light sync).
+        # A crossfade in the account's Spotify playback settings overrides it, which
+        # is why the next item is only queued in the current one's last seconds.
         if not write_audio_prefs(
             self._data_dir,
             self.logger,
@@ -792,12 +799,16 @@ class _Item:
         return self.end_at is not None
 
     @property
+    def position_ms(self) -> float:
+        """Return how far into the track the capture has read."""
+        return self.seek_target_ms + self.raw_read * 1000 / _BYTES_PER_SECOND
+
+    @property
     def in_tail(self) -> bool:
         """Return whether the capture has reached the last seconds of the item."""
         if (length_ms := self.length_ms) is None:
             return False
-        position_ms = self.seek_target_ms + self.raw_read * 1000 / _BYTES_PER_SECOND
-        return position_ms >= length_ms - _TAIL_PAD_ZONE_S * 1000
+        return self.position_ms >= length_ms - _TAIL_PAD_ZONE_S * 1000
 
     def bind(self, streamdetails: StreamDetails) -> None:
         """
@@ -849,6 +860,8 @@ class _EngineRun:
 
     # switches shuffle and repeat off while the engine reports one on
     _options_reset: asyncio.Task[None] | None = None
+    # the item to queue on the engine once the current one is in its last seconds
+    _pending_feed: str | None = None
 
     def __init__(
         self,
@@ -1006,6 +1019,9 @@ class _EngineRun:
         """
         Queue the item that follows the one being streamed on the engine, once.
 
+        The engine gets it in the current item's last seconds: until then the run
+        holds it, and a hint for another item replaces it.
+
         :param media_key: The StreamDetails uri of the item being streamed.
         :param spotify_uri: Canonical Spotify URI of the item that follows it.
         """
@@ -1031,6 +1047,14 @@ class _EngineRun:
             or self.backend._refused_lately(spotify_uri)
         ):
             return
+        if not self._feed_due():
+            if spotify_uri != self._pending_feed:
+                self.logger.debug(
+                    "Holding %s back until %s nears its end", spotify_uri, self._item.spotify_uri
+                )
+            self._pending_feed = spotify_uri
+            return
+        self._pending_feed = None
         self._fed = _FedEntry(spotify_uri)
         try:
             await client.add_to_queue(spotify_uri)
@@ -1068,6 +1092,7 @@ class _EngineRun:
         self._cancel_idle_watch()
         previous = self._item
         in_place = spotify_uri == self._engine_uri
+        self._pending_feed = None
         self._moving = True
         # nobody takes the previous item anymore: a capture waiting on its
         # cushion has to move on to the drain
@@ -1804,6 +1829,7 @@ class _EngineRun:
             item.raw_read += min(skip, len(raw))
             raw = raw[skip:]
         item.raw_read += len(raw)
+        self._feed_when_due()
         if item.abandoned or not (chunk := item.shaper.shape(raw)):
             return True
         chunk = self._scrub(item, chunk)
@@ -1890,6 +1916,7 @@ class _EngineRun:
         :param past_end_ms: How far the engine reported to be into what follows.
         """
         item = self._item
+        self._pending_feed = None
         reported_at = (
             item.raw_read
             + _unread_fifo_bytes(self._transport)
@@ -2122,6 +2149,29 @@ class _EngineRun:
                 # the engine reporting it plays the item confirms it was started
                 fed.left = True
         self._queue_uids = uids
+
+    def _feed_due(self) -> bool:
+        """Return whether the current item is close enough to its end to queue what follows."""
+        item = self._item
+        return (
+            item.engine_duration_ms is None
+            or item.engine_duration_ms - item.position_ms <= _FEED_LEAD_S * 1000
+        )
+
+    def _feed_when_due(self) -> None:
+        """Queue the held item on the engine once the current one is in its last seconds."""
+        if self._pending_feed is None or not self._feed_due():
+            return
+        spotify_uri, self._pending_feed = self._pending_feed, None
+        # the capture must not wait on the engine
+        self._spawn_task(self._feed_held(self._item, spotify_uri))
+
+    async def _feed_held(self, item: _Item, spotify_uri: str) -> None:
+        """Queue a held item on the engine, unless the run moved on from the item it follows."""
+        # under the run lock, like every hint: a move must not cross the add
+        async with self.backend._run_lock:
+            if item is self._item and item.media_key is not None:
+                await self.feed_next(item.media_key, spotify_uri)
 
     def _consume_fed(self, position_ms: int = 0) -> None:
         """
