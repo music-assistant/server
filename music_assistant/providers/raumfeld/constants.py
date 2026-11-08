@@ -14,18 +14,30 @@ from music_assistant.constants import (
 )
 
 # Errors expected when the host is (temporarily) unreachable or a zone/room cannot be
-# resolved by hassfeld; used to narrow the try/except around host communication. KeyError is
-# one of them: hassfeld looks rooms and zones up in its model of the host, which raises it
-# for a room or zone the host just dropped (a regrouping, a speaker going to deep standby).
+# resolved; used to narrow the try/except around host communication. KeyError is one of
+# them: a command for a room or zone the host just dropped (a regrouping, a speaker going to
+# deep standby) raises it.
 HOST_ERRORS = (aiohttp.ClientError, OSError, TimeoutError, KeyError)
 
 # Default port of the Raumfeld host webservice (the device running the "RaumfeldHost"
 # service). Config keys reuse MA's CONF_IP_ADDRESS / CONF_PORT.
 DEFAULT_PORT = 47365
 
-# How long (seconds) to wait for hassfeld to complete its initial discovery
-# of rooms/zones before giving up on a single connection attempt.
+# How long (seconds) to wait for the first reading of the host's rooms, zones and devices
+# before giving up on a single connection attempt.
 INITIAL_UPDATE_TIMEOUT = 30
+
+# How long (seconds) the host is asked to hold a request for its rooms, zones or devices
+# until something changes, and how long a request is held before it is made again. The host
+# does not keep to the wait it is asked for (measured: it held one for over seven minutes),
+# so a request that runs out is simply made again.
+LONG_POLL_WAIT = 300
+LONG_POLL_TIMEOUT = 330
+
+# Failed reads of the rooms, zones or devices in a row before the host counts as lost, and
+# the pause (seconds) before the next try. A lost host is reconnected from scratch.
+LONG_POLL_FAILURES = 3
+LONG_POLL_RETRY_DELAY = 5
 
 # How long (seconds) unload waits for its cancelled tasks to finish.
 UNLOAD_TIMEOUT = 5
@@ -33,6 +45,16 @@ UNLOAD_TIMEOUT = 5
 # How long (seconds) to wait for a renderer's device description, which is read once per
 # room to get the hardware serial the player_id is derived from.
 DEVICE_INFO_TIMEOUT = 10
+
+# How long (seconds) a UPnP request to a speaker or the host may take.
+UPNP_TIMEOUT = 15
+
+# How long (seconds) a subscription to a renderer's events is asked for; it is renewed
+# halfway. The renderers grant 300 (measured).
+EVENT_SUBSCRIPTION_TIMEOUT = 300
+
+# How long (seconds) a command to the host's web service (grouping, standby) may take.
+HOST_COMMAND_TIMEOUT = 15
 
 # How long (seconds) to wait for a renderer to answer a state query. Polls run one after the
 # other for all players, so a renderer that stops answering must not hold them up for long.
@@ -42,16 +64,21 @@ RENDERER_QUERY_TIMEOUT = 5
 # unreachable, and health-checks the host while connected.
 RECONNECT_INTERVAL = 30
 
-# How long (seconds) the host gets to answer a health check. hassfeld's own check allows
-# 3 s, which a host on a slow Wi-Fi link misses now and then.
+# How long (seconds) the host gets to answer a health check. A host on a slow Wi-Fi link
+# misses 3 s now and then.
 HOST_CHECK_TIMEOUT = 10
 
 # Failed health checks in a row before the host counts as lost. Losing it marks every room
 # unavailable and rebuilds the connection, too much for one slow answer.
 HOST_CHECK_FAILURES = 3
 
+# How often (seconds) at most the network is searched for a host that stopped answering at
+# its address, in case it got a new one. A host that is only switched off is searched for
+# again and again, so not on every reconnect attempt.
+HOST_SEARCH_INTERVAL = 120
+
 # How often (seconds) the zones the host reports are compared with the groups Music Assistant
-# shows. The comparison reads hassfeld's in-memory model, so it costs no request.
+# shows. The comparison reads the model of the host kept in memory, so it costs no request.
 ZONE_WATCH_INTERVAL = 2
 
 # How long (seconds) after Music Assistant changed a group itself the host's zones are left

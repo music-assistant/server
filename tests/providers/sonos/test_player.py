@@ -55,6 +55,8 @@ def _bind_player(mass: MusicAssistant | MagicMock) -> tuple[SonosPlayer, MagicMo
     player._woken_from_sleep = False
     player.cloud_queue_id = None
     player.cloud_queue_item_generation = 0
+    player._window_item_ids = {}
+    player._served_bindings = {}
     player._evicted_cloud_queue = None
     player._flow_queue_id = None
     player._queue_session_id = None
@@ -686,6 +688,71 @@ async def test_a_failed_track_hands_its_source_to_the_track_the_speaker_moves_on
     mass.player_queues.release_failed_item_source.assert_awaited_once_with("queue1", "abc")
 
 
+async def test_a_failed_track_releases_the_track_at_its_position() -> None:
+    """Test the source released is that of the track the queue holds at the failed slot."""
+    player = _make_named_player("Kantoor")
+    player.cloud_queue_id = "queue1"
+    player.cloud_queue_item_generation = 3
+    player._window_item_ids = {4: "abc@3"}
+    player.on_queue_position_served(4, "guest")
+    mass = cast("MagicMock", player.mass)
+    mass.player_queues.release_failed_item_source = AsyncMock()
+    scheduled = _scheduled_tasks(mass)
+
+    player._on_playback_error(_playback_error(reason="ERROR_BUFFERING", itemId="abc@3"))
+
+    assert len(scheduled) == 1
+    await scheduled[0]
+    mass.player_queues.release_failed_item_source.assert_awaited_once_with("queue1", "guest")
+
+
+def _report_playing_our_queue(group: MagicMock, wire_item_id: str) -> None:
+    """Let the given group report it plays our cloud queue, on the given item."""
+    group.playback_state = SonosPlayBackState.PLAYBACK_STATE_PLAYING
+    group.position = 12.0
+    group.container_type = None
+    group.active_service = MusicService.MUSIC_ASSISTANT
+    group.playback_metadata = {
+        "container": {
+            "name": "Music Assistant",
+            "id": {"objectId": "mass:queue1"},
+            "service": {"name": "Music Assistant", "id": "mass"},
+        },
+        "currentItem": {"id": wire_item_id, "track": {"name": "Shout"}},
+    }
+    group.playback_actions.raw_data = {}
+    group.play_modes.shuffle = False
+    group.play_modes.repeat = False
+    group.play_modes.repeat_one = False
+
+
+def test_the_playing_item_follows_the_audio_served_for_the_reported_position(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Test a stale cached id the speaker reports reads as the track served for its slot, logged once."""
+    player, _mass, client = _connected_player()
+    player._cache = {}
+    player._attr_name = "Kantoor"
+    player._config = MagicMock()
+    player._config.name = None
+    client.player.is_coordinator = True
+    client.player.group_members = ["sonos_player"]
+    player.cloud_queue_id = "queue1"
+    player.cloud_queue_item_generation = 3
+    player._window_item_ids = {4: "abc@3"}
+    player.on_queue_position_served(4, "guest")
+    _report_playing_our_queue(client.player.group, "abc@3")
+
+    with caplog.at_level(logging.DEBUG, logger="test.sonos.player"):
+        player.on_player_event(None)
+        player.on_player_event(None)
+
+    assert player.current_media is not None
+    assert player.current_media.queue_item_id == "guest"
+    stale_reports = "Position 4 of queue queue1 now holds guest, speaker Kantoor expected abc"
+    assert caplog.text.count(stale_reports) == 1
+
+
 def test_a_failure_of_an_earlier_load_of_a_track_leaves_its_fresh_source_alone(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
@@ -1153,3 +1220,48 @@ async def test_set_members_gives_up_when_the_sonos_group_never_reports_the_membe
         await player.set_members(player_ids_to_add=["sonos_player_2"])
 
     assert client.player.group_members == [player.player_id]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("coordinator_state", ["connected", "disconnected", "unknown"])
+async def test_ungroup_leaves_a_group_whose_coordinator_is_offline_by_creating_its_own(
+    coordinator_state: str,
+) -> None:
+    """A member can only leave through a reachable coordinator, else it forms its own group."""
+    mass = MagicMock()
+    player, client = _bind_player(mass)
+    client.player.is_coordinator = False
+    client.player.group.coordinator_id = "coordinator"
+    client.player.leave_group = AsyncMock()
+    client.create_group = AsyncMock()
+    coordinator, _ = _bind_player(mass)
+    coordinator._attr_available = coordinator.connected = coordinator_state == "connected"
+    mass.players.get_player.return_value = None if coordinator_state == "unknown" else coordinator
+
+    await player.ungroup()
+
+    if coordinator_state == "connected":
+        client.player.leave_group.assert_awaited_once()
+        client.create_group.assert_not_awaited()
+    else:
+        client.create_group.assert_awaited_once_with(["sonos_player"])
+        client.player.leave_group.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("situation", ["coordinator", "no_group"])
+async def test_ungroup_without_a_coordinator_to_reach_leaves_the_group(situation: str) -> None:
+    """A coordinator, or a speaker without a group, simply leaves its group."""
+    mass = MagicMock()
+    player, client = _bind_player(mass)
+    client.player.is_coordinator = situation == "coordinator"
+    if situation == "no_group":
+        client.player.group = None
+    client.player.leave_group = AsyncMock()
+    client.create_group = AsyncMock()
+
+    await player.ungroup()
+
+    client.player.leave_group.assert_awaited_once()
+    client.create_group.assert_not_awaited()
+    mass.players.get_player.assert_not_called()

@@ -33,6 +33,7 @@ from music_assistant_models.errors import (
 
 from music_assistant.constants import (
     CONF_PLAYERS,
+    DB_TABLE_BOOKMARKS,
     DB_TABLE_MEDIA_PROGRESS,
     DB_TABLE_PLAY_HISTORY,
     HOMEASSISTANT_SYSTEM_USER,
@@ -1436,6 +1437,7 @@ class AuthenticationManager:
             await self.database.delete(table, {"user_id": user_id})
         await self.mass.music.database.delete(DB_TABLE_MEDIA_PROGRESS, {"userid": user_id})
         await self.mass.music.database.delete(DB_TABLE_PLAY_HISTORY, {"userid": user_id})
+        await self.mass.music.database.delete(DB_TABLE_BOOKMARKS, {"user_id": user_id})
         await self.database.delete("users", {"user_id": user_id})
         await self.database.commit()
 

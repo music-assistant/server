@@ -381,7 +381,7 @@ class SmartPlaylistProvider(PluginProvider):
         user_provider_filter = tuple(sorted(visible)) if visible is not None else ()
         # Filter the cached sample at the boundary (not inside the cached evaluation) so a
         # recency-filtered batch from a queue refill never gets cached and served to browse.
-        if rules.favorites_only and user:
+        if (rules.favorites_only or rules.exclude_favorites) and user:
             # favorites are personal, so this sample is keyed on (and evaluated as) the user
             sample = await self._cached_dynamic_sample(
                 resolved_id, user_provider_filter, favorites_user_id=user.user_id
@@ -389,7 +389,10 @@ class SmartPlaylistProvider(PluginProvider):
         else:
             sample = await self._cached_dynamic_sample(resolved_id, user_provider_filter)
         # a cached sample carries the favorite state of whoever filled it
-        return filter_tracks(await with_user_favorites(self.mass, user, sample))
+        sample = await with_user_favorites(self.mass, user, sample)
+        if rules.exclude_favorites:
+            sample = [track for track in sample if track.favorite is not True]
+        return filter_tracks(sample)
 
     @use_cache(
         expiration=DYNAMIC_SAMPLE_CACHE_EXPIRATION,
@@ -408,7 +411,7 @@ class SmartPlaylistProvider(PluginProvider):
 
         :param prov_playlist_id: The smart playlist to sample.
         :param user_provider_filter: The music sources the sample is limited to.
-        :param favorites_user_id: The user whose favorites a favorites-only sample reads; a
+        :param favorites_user_id: The user whose favorites the sample filters on; a
             background refresh has no session, so the user is restored from it.
         """
         rules = self._rules_store.get(prov_playlist_id)
@@ -857,6 +860,9 @@ class SmartPlaylistProvider(PluginProvider):
         tracks = self._apply_exclusions(
             tracks, rules, excluded_genre_names, excl_album_type_ids or None
         )
+        if rules.exclude_favorites:
+            tracks = await with_user_favorites(self.mass, get_current_user(), tracks)
+            tracks = [track for track in tracks if track.favorite is not True]
         tracks = self._deduplicate_tracks(tracks)
         random.shuffle(tracks)
         return tracks[: rules.limit]

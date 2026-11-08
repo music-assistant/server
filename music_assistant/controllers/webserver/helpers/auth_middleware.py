@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable, Iterator, Mapping
+from contextlib import contextmanager
 from contextvars import ContextVar
 from types import TracebackType
 from typing import TYPE_CHECKING, Any, Final, Self, cast
@@ -33,6 +34,9 @@ if TYPE_CHECKING:
 
 # Context key for storing authenticated user in request
 USER_CONTEXT_KEY = "authenticated_user"
+# API websocket query parameter and Sendspin auth message field with which a browser
+# identifies itself over Home Assistant Ingress
+INGRESS_CLIENT_KEY: Final = "ingress_client_key"
 
 _GUEST_SCOPES: Final[frozenset[Scope]] = frozenset(
     {
@@ -382,11 +386,18 @@ def is_own_client_player(player: Player | None) -> bool:
     A private client player (browser session, desktop or mobile app) is bound to the
     connection that announced it, so its owner may always use it regardless of their
     player filter. Only private players qualify, so a shared speaker cannot be claimed
-    by announcing its id.
+    by announcing its id. Another user the caller acts as never connected on it, so it does
+    not count for them.
 
     :param player: The player to check, or None.
     """
-    return player is not None and player.private and player.player_id == get_sendspin_player_id()
+    if player is None or not player.private or player.player_id != get_sendspin_player_id():
+        return False
+    acting_user = get_impersonated_user()
+    authenticated_user = current_user.get()
+    return acting_user is None or (
+        authenticated_user is not None and acting_user.user_id == authenticated_user.user_id
+    )
 
 
 def player_access_filter(user: User | None) -> list[str] | None:
@@ -445,6 +456,18 @@ def set_impersonated_user(user: User | None) -> None:
     :param user: The user to set as impersonated.
     """
     impersonated_user.set(user)
+
+
+@contextmanager
+def system_auth_context() -> Iterator[None]:
+    """Run the enclosed block as the server itself, without the requesting user."""
+    current_user_token = current_user.set(None)
+    impersonated_user_token = impersonated_user.set(None)
+    try:
+        yield
+    finally:
+        impersonated_user.reset(impersonated_user_token)
+        current_user.reset(current_user_token)
 
 
 def get_current_token() -> str | None:

@@ -5,6 +5,8 @@ import os
 import pathlib
 import re
 from copy import deepcopy
+from importlib.metadata import PackageNotFoundError
+from importlib.metadata import version as pkg_version
 from typing import Any, Final, cast
 
 from music_assistant_models.config_entries import (
@@ -31,6 +33,20 @@ from music_assistant_models.media_items import (
 
 APPLICATION_NAME: Final = "Music Assistant"
 
+
+def _get_own_version() -> str:
+    """Return the installed version of Music Assistant."""
+    try:
+        return pkg_version("music_assistant")
+    except PackageNotFoundError:
+        return "0.0.0"
+
+
+MASS_VERSION: Final[str] = _get_own_version()
+
+# User agent that identifies Music Assistant on outgoing HTTP requests
+MASS_USER_AGENT: Final[str] = f"{APPLICATION_NAME}/{MASS_VERSION} (https://music-assistant.io)"
+
 # Type alias for items that can be added to playlists
 PlaylistPlayableItem = Track | Radio | PodcastEpisode | Audiobook | SoundEffect
 
@@ -54,7 +70,7 @@ PLAYLIST_MEDIA_TYPES: Final[tuple[MediaType, ...]] = (
 # a new enum value or error code, a change in what an existing field holds, or a command that
 # only the bundled frontend uses: the frontend ships in lockstep with the server and never
 # gates on this.
-API_SCHEMA_VERSION: Final[int] = 100
+API_SCHEMA_VERSION: Final[int] = 104
 
 # MIN_SCHEMA_VERSION is the minimum API schema version that the current server
 # version can work with. Only bump when there are breaking changes to existing
@@ -260,6 +276,7 @@ DB_TABLE_ALBUM_TRACKS: Final[str] = "album_tracks"
 DB_TABLE_TRACK_ARTISTS: Final[str] = "track_artists"
 DB_TABLE_ALBUM_ARTISTS: Final[str] = "album_artists"
 DB_TABLE_AUDIOBOOK_ARTISTS: Final[str] = "audiobook_artists"
+DB_TABLE_BOOKMARKS: Final[str] = "bookmarks"
 DB_TABLE_LOUDNESS_MEASUREMENTS: Final[str] = "loudness_measurements"
 DB_TABLE_AUDIO_ANALYSIS: Final[str] = "audio_analysis"
 DB_TABLE_AUDIO_ANALYSIS_FAILURES: Final[str] = "audio_analysis_failures"
@@ -970,6 +987,7 @@ ATTR_GROUP_VOLUME_SNAPSHOT: Final[str] = "group_volume_snapshot"
 ATTR_VOLUME_TARGET: Final[str] = "volume_target"
 ATTR_ENABLED: Final[str] = "enabled"
 ATTR_AVAILABLE: Final[str] = "available"
+ATTR_REACHABLE: Final[str] = "reachable"
 ATTR_POWERED: Final[str] = "powered"
 ATTR_MUTE_LOCK: Final[str] = "mute_lock"
 ATTR_ACTIVE_SOURCE: Final[str] = "active_source"
@@ -979,6 +997,7 @@ ATTR_VOLUME_CONTROL: Final[str] = "volume_control"
 ATTR_POWER_CONTROL: Final[str] = "power_control"
 ATTR_PLAY_ACTION_IN_PROGRESS: Final[str] = "play_action_in_progress"
 ATTR_POWER_OFF_IN_PROGRESS: Final[str] = "power_off_in_progress"
+ATTR_POWER_ON_IN_PROGRESS: Final[str] = "power_on_in_progress"
 
 # Album type detection patterns
 LIVE_INDICATORS = [

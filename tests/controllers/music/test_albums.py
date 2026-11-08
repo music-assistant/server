@@ -8,7 +8,11 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 from music_assistant_models.enums import ExternalID, ImageType, SortDirection, SortField
-from music_assistant_models.errors import InvalidDataError, MediaNotFoundError
+from music_assistant_models.errors import (
+    InvalidDataError,
+    MediaNotFoundError,
+    ProviderUnavailableError,
+)
 from music_assistant_models.helpers import set_global_cache_values
 from music_assistant_models.media_items import (
     ItemMapping,
@@ -497,24 +501,35 @@ async def test_album_tracks_outside_the_library_are_listed_once(mass: MusicAssis
     """An album that is not in the library is fetched once, from the instance its provider resolves to."""
     fetch = AsyncMock(return_value=[create_track("qobuz_1", "t1"), create_track("qobuz_1", "t2")])
     with (
-        patch.object(mass, "get_provider", return_value=SimpleNamespace(instance_id="qobuz_1")),
-        patch.object(mass.music.albums, "_get_provider_album_tracks", fetch),
+        patch.object(
+            mass,
+            "get_provider",
+            return_value=SimpleNamespace(
+                instance_id="qobuz_1", available=True, get_album_tracks=fetch
+            ),
+        ),
         patch.object(mass.music.albums, "_backfill_album_on_tracks", AsyncMock()),
     ):
         # the domain and the instance it resolves to share one listing
         first = await mass.music.albums.tracks("album_x", "qobuz")
         second = await mass.music.albums.tracks("album_x", "qobuz_1")
-    fetch.assert_awaited_once_with("album_x", "qobuz_1")
+    fetch.assert_awaited_once_with("album_x")
     assert [track.item_id for track in first] == [track.item_id for track in second] == ["t1", "t2"]
 
 
 async def test_album_tracks_of_an_unavailable_provider_are_not_kept(mass: MusicAssistant) -> None:
     """Without the provider there is nothing to list, and nothing is cached as the listing."""
-    assert await mass.music.albums.tracks("album_x", "qobuz_1") == []
+    with pytest.raises(ProviderUnavailableError):
+        await mass.music.albums.tracks("album_x", "qobuz_1")
     fetch = AsyncMock(return_value=[create_track("qobuz_1", "t1")])
     with (
-        patch.object(mass, "get_provider", return_value=SimpleNamespace(instance_id="qobuz_1")),
-        patch.object(mass.music.albums, "_get_provider_album_tracks", fetch),
+        patch.object(
+            mass,
+            "get_provider",
+            return_value=SimpleNamespace(
+                instance_id="qobuz_1", available=True, get_album_tracks=fetch
+            ),
+        ),
         patch.object(mass.music.albums, "_backfill_album_on_tracks", AsyncMock()),
     ):
         tracks = await mass.music.albums.tracks("album_x", "qobuz_1")

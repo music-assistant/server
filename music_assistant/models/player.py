@@ -55,6 +55,8 @@ from music_assistant.constants import (
     ATTR_FAKE_MUTE,
     ATTR_FAKE_POWER,
     ATTR_FAKE_VOLUME,
+    ATTR_POWER_ON_IN_PROGRESS,
+    ATTR_REACHABLE,
     CONF_ENTRY_PLAYER_ICON,
     CONF_EXPOSE_PLAYER_TO_HA,
     CONF_FLOW_MODE,
@@ -458,11 +460,6 @@ class Player(ABC):
     # on its own source list counts as a takeover of the remembered MA queue. Leave at
     # False for devices that also list the transport our own stream arrives on.
     _attr_trusts_reported_source: bool = False
-    # Set this on players that play upcoming tracks from their own cached copy of the
-    # queue (which may not be refreshable, e.g. the Sonos cloud queue): a stream request
-    # for a queue item away from the playhead is then refused, so the player re-reads
-    # the queue instead of silently playing a stale cached track.
-    _attr_strict_queue_item_requests: bool = False
 
     def __init__(self, provider: PlayerProvider, player_id: str) -> None:
         """Initialize the Player."""
@@ -651,9 +648,31 @@ class Player(ABC):
 
         A device that is reachable but still needs setup - an unpaired AirPlay
         receiver, for example - can not accept a stream, so it must never be
-        picked as an output protocol or command target.
+        picked as an output protocol or command target. Neither can a disabled player.
+
+        Use this, not state.available, for a device that must be reachable right now:
+        the state also reports a player that is switched off at its power control as
+        available (see offline_by_power_control).
         """
-        return self.available and not self.needs_setup
+        return self.enabled and self.available and not self.needs_setup
+
+    @property
+    @final
+    def offline_by_power_control(self) -> bool:
+        """
+        Return if the device is offline because it is switched off at its external power control.
+
+        Also True while Music Assistant powers it on through that control and waits for it
+        to come online. Such a player is reported to clients as available and powered off,
+        so it can be powered on (or played to) from there, while the device itself is not
+        reachable.
+        """
+        if self.available or self.type in (PlayerType.GROUP, PlayerType.PROTOCOL):
+            return False
+        control = self.mass.players.get_player_control(self.power_control)
+        if control is None or not control.supports_power:
+            return False
+        return not control.power_state or ATTR_POWER_ON_IN_PROGRESS in self.extra_data
 
     @property
     @final
@@ -1399,6 +1418,15 @@ class Player(ABC):
         # default implementation will simply trigger an update for the state of the player
         self.mass.players.trigger_player_update(self.player_id)
 
+    def on_queue_position_served(self, queue_index: int, queue_item_id: str) -> None:  # noqa: B027
+        """
+        Handle callback when a stream request addressed by queue position was served.
+
+        :param queue_index: The queue position the player fetched.
+        :param queue_item_id: The queue item whose audio went out for that position.
+        """
+        # optional callback, for a player that fetches its queue items by position
+
     def on_sync_parent_updated(
         self, sync_parent: Player, changed_values: dict[str, tuple[Any, Any]]
     ) -> None:
@@ -1770,18 +1798,6 @@ class Player(ABC):
         Otherwise checks the native player's GAPLESS_PLAYBACK feature.
         """
         return self._check_feature_with_active_protocol(PlayerFeature.GAPLESS_PLAYBACK)
-
-    @property
-    @final
-    def strict_queue_item_requests(self) -> bool:
-        """
-        Return whether queue item stream requests must match the queue's playhead.
-
-        When set, a stream request for a queue item the queue no longer places at or
-        around the playhead is refused, so the player re-reads the queue instead of
-        playing a track out of a stale cached copy of it.
-        """
-        return self._attr_strict_queue_item_requests
 
     @property
     @final
@@ -2778,7 +2794,11 @@ class Player(ABC):
             player_id=self.player_id,
             provider=self.provider_id,
             type=self.type,
-            available=self.enabled and self.available and not self.needs_setup,
+            # the client view: it includes a player switched off at its power control, so
+            # internal code that needs a reachable device checks available_for_playback
+            available=self.enabled
+            and (self.available or self.offline_by_power_control)
+            and not self.needs_setup,
             device_info=self.device_info,
             supported_features=self.__final_supported_features,
             playback_state=playback_state,
@@ -2842,6 +2862,9 @@ class Player(ABC):
                 5, self.set_active_mass_source, None, task_id=f"set_mass_source_{self.player_id}"
             )
         new_fingerprint = _state_fingerprint(self._state)
+        # not part of the state: whether the device can be reached, which its availability
+        # does not tell for a player that is switched off at its power control
+        new_fingerprint[ATTR_REACHABLE] = self.available
         self.__state_fingerprint = new_fingerprint
         changed_values: dict[str, tuple[Any, Any]] = {}
         for key in prev_fingerprint.keys() | new_fingerprint.keys():
@@ -2970,6 +2993,11 @@ class Player(ABC):
             elapsed_time_last_updated = (
                 session.stream_metadata.elapsed_time_last_updated or time.time()
             )
+
+        if self.offline_by_power_control:
+            # a device that is switched off plays nothing, while one cut off mid-song may
+            # still report the state it had
+            playback_state = PlaybackState.IDLE
 
         return (playback_state, elapsed_time, elapsed_time_last_updated)
 

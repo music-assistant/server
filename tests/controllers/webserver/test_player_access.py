@@ -13,10 +13,13 @@ from contextlib import contextmanager
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, cast
 
+import pytest
 from music_assistant_models.auth import User, UserRole
 
 from music_assistant.controllers.webserver.helpers.auth_middleware import (
+    current_user,
     has_player_access,
+    impersonated_user,
     player_access_filter,
     sendspin_player_id,
 )
@@ -83,6 +86,26 @@ def test_own_client_player_is_permitted() -> None:
     user = _user(UserRole.USER, [ALLOWED_PLAYER])
     with _connected_on(OWN_CLIENT):
         assert has_player_access(user, OWN_CLIENT, _player(OWN_CLIENT, private=True))
+
+
+@pytest.mark.parametrize(("caller_id", "permitted"), [("user_1", True), ("service_1", False)])
+def test_own_client_player_is_not_lent_to_an_impersonated_user(
+    caller_id: str, permitted: bool
+) -> None:
+    """The caller's private client player stays outside the filter of another user it acts as."""
+    target = _user(UserRole.USER, [ALLOWED_PLAYER])
+    caller = User(user_id=caller_id, username=caller_id, role=UserRole.USER, player_filter=[])
+    caller_token = current_user.set(caller)
+    target_token = impersonated_user.set(target)
+    try:
+        with _connected_on(OWN_CLIENT):
+            assert (
+                has_player_access(target, OWN_CLIENT, _player(OWN_CLIENT, private=True))
+                is permitted
+            )
+    finally:
+        impersonated_user.reset(target_token)
+        current_user.reset(caller_token)
 
 
 def test_shared_speaker_claimed_as_the_client_player_is_refused() -> None:
