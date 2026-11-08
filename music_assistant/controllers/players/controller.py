@@ -4025,12 +4025,7 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
             if not await self._dissolve_own_group(child_player, parent_player.state.name):
                 continue
 
-            # power on the player if needed
-            if (
-                not child_player.state.powered
-                and child_player.state.power_control != PLAYER_CONTROL_NONE
-            ):
-                await self._handle_cmd_power(child_player.player_id, True)
+            await self._power_on_for_playback(child_player)
             # if we reach here, all checks passed
             final_player_ids_to_add.append(child_player_id)
 
@@ -4364,9 +4359,7 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         player = self._get_player_with_redirect(player_id)
         source = source or player.state.active_source
         media = media or player.state.current_media
-        # power on the player if needed
-        if not player.state.powered and player.state.power_control != PLAYER_CONTROL_NONE:
-            await self._handle_cmd_power(player.player_id, True)
+        await self._power_on_for_playback(player)
         # Redirect to queue controller if it is active
         if active_queue := self.mass.player_queues.get(source or player_id):
             await self.mass.player_queues.resume(active_queue.queue_id)
@@ -4515,6 +4508,19 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
             and not player.extra_data.get(ATTR_ANNOUNCEMENT_IN_PROGRESS)
         ):
             await self.mass.player_queues.resume(player_id)
+
+    async def _power_on_for_playback(self, player: Player, skip_auto_play: bool = False) -> None:
+        """
+        Power on a player that is about to start playback, if it is not on yet.
+
+        :param player: The player that is about to play.
+        :param skip_auto_play: Skip the auto play on power on, as the caller starts playback.
+        """
+        # a device reports its playback a moment after it started, so the idle power off
+        # counts from here, or it could switch off playback that was just started
+        player.extra_data.pop(ATTR_IDLE_SINCE, None)
+        if not player.state.powered and player.state.power_control != PLAYER_CONTROL_NONE:
+            await self._handle_cmd_power(player.player_id, True, skip_auto_play=skip_auto_play)
 
     async def _power_on_switched_off_player(self, player_id: str) -> Player:
         """
@@ -4938,9 +4944,8 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
             player.set_active_output_protocol("native")
 
         async with player.prepare_play_media():
-            # power on the player if needed (skip auto-play since we're about to start playback)
-            if not player.state.powered and player.state.power_control != PLAYER_CONTROL_NONE:
-                await self._handle_cmd_power(player.player_id, True, skip_auto_play=True)
+            # skip auto-play since we're about to start playback
+            await self._power_on_for_playback(player, skip_auto_play=True)
             await target_player.play_media(media)
             if target_player.player_id != player.player_id:
                 # notify the native player that protocol playback started
@@ -5285,6 +5290,7 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
             raise PlayerCommandFailed(
                 f"{source} is an invalid source for player {player.state.name}"
             )
+        await self._power_on_for_playback(player)
         # forward to player
         await player.select_source(source)
 
@@ -5388,9 +5394,7 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
             (x for x in player.state.source_list if x.id == player.state.active_source), None
         )
         media = player.state.current_media
-        # power on the player if needed
-        if not player.state.powered and player.state.power_control != PLAYER_CONTROL_NONE:
-            await self._handle_cmd_power(player.player_id, True)
+        await self._power_on_for_playback(player)
         if active_source and not active_source.passive:
             await self._handle_select_source(player_id, active_source.id)
             return

@@ -4536,6 +4536,21 @@ class TestIdlePowerOff:
         power_off.assert_not_awaited()
         assert time.monotonic() - player.extra_data[ATTR_IDLE_SINCE] < 60
 
+    async def test_play_command_starts_the_count_over(self, mock_mass: MagicMock) -> None:
+        """Playback the device reports only after the play command returned is not cut short."""
+        controller, player, power_off = self._setup(mock_mass)
+        mock_mass.player_queues.resume = AsyncMock()
+        player.extra_data[ATTR_IDLE_SINCE] = time.monotonic() - 30 * 60
+        controller._check_idle_power_off(player)
+        power_off_idle = mock_mass.create_task.call_args.args[0]
+
+        await controller._handle_cmd_resume("player_1")
+        # the device still reports idle when the power off gets its turn
+        controller._check_idle_power_off(player)
+        await power_off_idle
+
+        power_off.assert_not_awaited()
+
     def test_playback_between_two_checks_starts_the_count_over(self, mock_mass: MagicMock) -> None:
         """Playback that starts and ends before the next check still counts as activity."""
         controller, player, _power_off = self._setup(mock_mass)
