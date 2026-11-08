@@ -1,5 +1,8 @@
 """Constants for the Deezer provider."""
 
+from deezer_python_gql.generated.enums import RepeatModeInput
+from music_assistant_models.enums import MediaType, RepeatMode
+
 # -- Virtual playlist IDs --
 
 FLOW_PLAYLIST_ID = "flow"
@@ -54,3 +57,28 @@ DECRYPT_KEY_ERROR = (
     "The Deezer decryption key is missing or invalid. "
     "Use an official Music Assistant build to play encrypted audio."
 )
+
+# -- Listen logging --
+
+# Deezer lists an album, artist or playlist under recently played from the context of a listen
+LISTEN_CONTEXT_TYPES = {
+    MediaType.ALBUM: "album_page",
+    MediaType.ARTIST: "artist_top",
+    MediaType.PLAYLIST: "playlist_page",
+}
+
+# -- Queue sync --
+
+CONF_SYNC_QUEUE = "sync_queue"
+# tracks of the Music Assistant queue saved as the Deezer queue, from the current one on
+QUEUE_SYNC_SIZE = 50
+# the configuration the Deezer apps save with a plain queue
+QUEUE_SYNC_CONFIGURATION = (
+    '{"allowEdit":true,"allowShuffle":true,"allowedRepeatModes":["ONE","ALL"],'
+    '"version":2,"queueType":"basic"}'
+)
+QUEUE_SYNC_REPEAT_MODES = {
+    RepeatMode.OFF: RepeatModeInput.NONE,
+    RepeatMode.ONE: RepeatModeInput.ONE,
+    RepeatMode.ALL: RepeatModeInput.ALL,
+}
