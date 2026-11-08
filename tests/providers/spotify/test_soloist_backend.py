@@ -1977,8 +1977,39 @@ async def test_a_seek_back_keeps_the_length_the_skipped_track_overwrote(tmp_path
 
     client.skip_next.side_effect = skip
     client.play.side_effect = lambda played, **_: run._observe_engine_item(played, announced=True)
+    _confirm_seeks(run)
     item = await run.move_to(TRACK_A, 0, _streamdetails_for(uri=TRACK_A))
     assert item.engine_duration_ms == int((_FEED_LEAD_S + 2) * 1000)
+
+    # fed again in its last seconds and seeked back again before the engine described it
+    await run._handle_event(_queue_event())
+    await run.feed_next(cast("str", item.media_key), TRACK_B)
+    await _capture(run, _audio(2.1))
+    await _run_feeds(run)
+    await run._handle_event(_queue_event(("q2", TRACK_B)))
+    await run.move_to(TRACK_A, 0, _streamdetails_for(uri=TRACK_A))
+    assert client.add_to_queue.await_count == 2
+    assert client.skip_next.await_count == 2
+
+
+async def test_a_seek_back_after_the_app_removed_the_fed_item_stays_in_place(
+    tmp_path: Path,
+) -> None:
+    """With the entry gone from the engine's queue there is nothing to skip onto."""
+    run = _live_run(tmp_path)
+    await _hold(run)
+    await _capture(run, _audio(2.1))
+    await _run_feeds(run)
+    await run._handle_event(_queue_event(("q1", TRACK_B)))
+    # removed in the Spotify app: the entry leaves while the engine stays on the track
+    await run._handle_event(_queue_event())
+    _confirm_seeks(run)
+    client = _client(run)
+
+    await run.move_to(TRACK_A, 0, _streamdetails_for(uri=TRACK_A))
+    client.skip_next.assert_not_called()
+    client.play.assert_not_called()
+    client.seek.assert_awaited_with(0)
 
 
 async def test_a_seek_back_before_the_queue_report_leaves_the_fed_item_tracked(

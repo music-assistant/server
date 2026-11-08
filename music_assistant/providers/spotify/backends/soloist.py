@@ -2170,15 +2170,15 @@ class _EngineRun:
 
     def _fed_too_early_for(self, spotify_uri: str, position_ms: int) -> bool:
         """Return whether the item queued on the engine is too far ahead of this track position."""
-        length = self._engine_length
-        return (
-            self._fed is not None
-            # only a confirmed entry can be skipped onto; an unconfirmed one stays tracked
-            and self._fed.uid is not None
-            and length is not None
-            and length[0] == spotify_uri
-            and length[1] - position_ms > _FEED_LEAD_S * 1000
-        )
+        fed = self._fed
+        # only an entry confirmed and still queued can be skipped onto; another stays tracked
+        if fed is None or fed.uid is None or fed.left:
+            return False
+        # the engine may last have described the track skipped through on a seek back
+        length_ms = self._item.engine_duration_ms if self._item.spotify_uri == spotify_uri else None
+        if length_ms is None and (known := self._engine_length) and known[0] == spotify_uri:
+            length_ms = known[1]
+        return length_ms is not None and length_ms - position_ms > _FEED_LEAD_S * 1000
 
     def _feed_when_due(self) -> None:
         """Queue the held item on the engine once the current one is in its last seconds."""
