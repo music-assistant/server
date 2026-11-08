@@ -169,3 +169,46 @@ def _session(player: SendspinPlayer, *, sample_rate: int) -> SendspinPlaybackSes
     media = PlayerMedia(uri="track-1", source_id="queue-1", queue_item_id="item-1")
     session._start_streamdetails = session._get_start_streamdetails(media)
     return session
+
+
+def _fmt(codec: AudioCodec, rate: int, bits: int, channels: int = 2) -> SupportedAudioFormat:
+    return SupportedAudioFormat(codec=codec, channels=channels, sample_rate=rate, bit_depth=bits)
+
+
+def test_dop_output_needs_24_bit_lossless_stereo_at_the_rate() -> None:
+    """DoP needs the session at its rate to negotiate lossless stereo of 24 bits or more."""
+    deep, _ = _player([_fmt(AudioCodec.FLAC, 48000, 16), _fmt(AudioCodec.FLAC, 352800, 24)])
+    shallow, _ = _player([_fmt(AudioCodec.FLAC, 48000, 16), _fmt(AudioCodec.FLAC, 352800, 16)])
+    pcm, _ = _player([_fmt(AudioCodec.PCM, 48000, 16), _fmt(AudioCodec.PCM, 352800, 32)])
+    lossy, _ = _player([_fmt(AudioCodec.OPUS, 48000, 16), _fmt(AudioCodec.FLAC, 352800, 24)])
+
+    assert deep.supports_dop_output(352800)
+    assert not deep.supports_dop_output(176400)
+    assert not shallow.supports_dop_output(352800)
+    assert pcm.supports_dop_output(352800)
+    # the session stays in the client's top codec, which can not carry the rate
+    assert not lossy.supports_dop_output(352800)
+
+
+def test_dop_output_follows_the_negotiated_format() -> None:
+    """The deepest stereo format at the rate is the one negotiated, so it decides."""
+    player, _ = _player(
+        [
+            _fmt(AudioCodec.PCM, 48000, 16),
+            _fmt(AudioCodec.PCM, 176400, 16),
+            _fmt(AudioCodec.PCM, 176400, 24),
+        ]
+    )
+    assert player.supports_dop_output(176400)
+    # a client whose own default runs at the rate keeps that default
+    default_16, _ = _player([_fmt(AudioCodec.PCM, 176400, 16), _fmt(AudioCodec.PCM, 176400, 24)])
+    assert not default_16.supports_dop_output(176400)
+
+
+def test_dop_output_needs_the_automatic_format() -> None:
+    """An explicit Sendspin format never follows the DoP rate."""
+    player, _ = _player(
+        [_fmt(AudioCodec.FLAC, 48000, 16), _fmt(AudioCodec.FLAC, 352800, 24)],
+        preferred_format="flac:48000:16:2",
+    )
+    assert not player.supports_dop_output(352800)

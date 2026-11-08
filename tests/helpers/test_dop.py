@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import struct
 from pathlib import Path
 
@@ -13,6 +14,7 @@ from music_assistant_models.streamdetails import StreamDetails
 
 from music_assistant.helpers.dop import (
     DoPError,
+    DopMarkerState,
     get_dop_sample_rate,
     get_dop_stream,
     is_dop_source,
@@ -180,3 +182,40 @@ def test_read_dsf_info(tmp_path: Path) -> None:
     assert info.dop_sample_rate == 176400
     assert info.bytes_per_channel == 10
     assert info.data_offset == 92
+
+
+async def test_dop_markers_alternate_across_gapless_tracks(tmp_path: Path) -> None:
+    """A track with an odd number of DoP frames hands the next track the other marker."""
+    # 1026 bytes per channel = 513 DoP frames: the first track ends on marker 0x05
+    first = tmp_path / "first.dsf"
+    second = tmp_path / "second.dsf"
+    _write_dsf(first, bytes(1026), bytes(1026))
+    _write_dsf(second, bytes(1024), bytes(1024))
+    pcm_format = _pcm_format(ContentType.PCM_S32LE, 32)
+    state = DopMarkerState()
+
+    raw_first = b"".join(
+        [chunk async for chunk in get_dop_stream(str(first), pcm_format, marker_state=state)]
+    )
+    raw_second = b"".join(
+        [chunk async for chunk in get_dop_stream(str(second), pcm_format, marker_state=state)]
+    )
+    markers = np.concatenate([_words_from_s32(raw_first), _words_from_s32(raw_second)])[::2] >> 16
+
+    assert markers[512] == 0x05
+    assert markers[513] == 0xFA
+    assert np.all(markers[1:] != markers[:-1])
+
+
+async def test_dop_stream_reads_an_open_descriptor(tmp_path: Path) -> None:
+    """A descriptor is read in place and left open for its owner to close."""
+    path = tmp_path / "track.dsf"
+    _write_dsf(path, bytes(range(256)) * 4, bytes(range(256)) * 4)
+    pcm_format = _pcm_format(ContentType.PCM_S32LE, 32)
+    fd = os.open(path, os.O_RDONLY)
+    try:
+        from_fd = b"".join([chunk async for chunk in get_dop_stream(fd, pcm_format)])
+        os.fstat(fd)  # still open
+    finally:
+        os.close(fd)
+    assert from_fd == await _collect(path, pcm_format)

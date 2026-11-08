@@ -1501,6 +1501,17 @@ class Player(ABC):
         """Return if the player is enabled."""
         return self._config.enabled
 
+    def supports_dop_output(self, sample_rate: int) -> bool:
+        """
+        Return whether this player hands DoP at the given rate to its device untouched.
+
+        DoP (DSD over PCM) only survives a lossless stereo output of at least 24 bits at
+        exactly its rate. Players that can not guarantee that keep this default: no DoP.
+
+        :param sample_rate: The DoP rate (DSD rate / 16).
+        """
+        return False
+
     @final
     def get_supported_sample_rates(self) -> list[tuple[int, int]]:
         """

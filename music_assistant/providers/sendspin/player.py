@@ -82,7 +82,12 @@ from music_assistant_models.enums import (
     ProviderType,
     RepeatMode,
 )
-from music_assistant_models.errors import MediaNotFoundError, PlayerCommandFailed
+from music_assistant_models.errors import (
+    InvalidCommand,
+    MediaNotFoundError,
+    PlayerCommandFailed,
+    PlayerUnavailableError,
+)
 from music_assistant_models.media_items import Album, Artist, is_track
 from music_assistant_models.player import DeviceInfo
 from PIL import Image
@@ -413,7 +418,20 @@ class SendspinBasePlayer(Player):
                 if client_id not in self._attr_group_members:
                     self._attr_group_members.append(client_id)
                     self.update_state()
-                self._schedule_membership_sync(group)
+                if (
+                    is_group_leader
+                    and client_id != self.player_id
+                    and (active_queue := self.mass.players.get_active_queue(self)) is not None
+                    and self.mass.streams.audio.is_streaming_dop(active_queue.queue_id)
+                ):
+                    # same task id: replaces any pending sync, which must not run first
+                    self.mass.create_task(
+                        self._restart_dop_stream_for_group(group, active_queue.queue_id),
+                        task_id=f"sendspin_membership_sync_{self.player_id}",
+                        abort_existing=True,
+                    )
+                else:
+                    self._schedule_membership_sync(group)
             case GroupMemberRemovedEvent(client_id=client_id):
                 self.mass.create_task(self._handle_group_member_removed(group, client_id))
                 self._schedule_membership_sync(group)
@@ -861,6 +879,13 @@ class SendspinBasePlayer(Player):
     def _on_group_stopped(self) -> None:
         """Handle the group transitioning to STOPPED state."""
 
+    async def _stop_playback_session(self, reason: str) -> None:
+        """
+        Stop the playback session this player feeds, if it feeds one.
+
+        :param reason: Why the session stops, for logging.
+        """
+
     async def _sync_membership_from_group(self, group: SendspinGroup) -> None:
         """
         Sync MA player group membership from authoritative group state.
@@ -876,6 +901,35 @@ class SendspinBasePlayer(Player):
         if self._attr_group_members != desired_group_members:
             self._attr_group_members = desired_group_members
             self.update_state()
+
+    async def _restart_dop_stream_for_group(self, group: SendspinGroup, queue_id: str) -> None:
+        """
+        Restart a DoP stream as decoded PCM now that this player leads a group.
+
+        The running stream would otherwise carry on as DoP for the members that join it,
+        which resample or mix it, or can not decode it, and play it as full-scale noise.
+        The stream stops before the member is attached, so none of its DoP audio is
+        backfilled to the member. The queue then resumes at the same position, and the
+        new flow stream no longer qualifies for DoP because the player is grouped.
+
+        :param group: The Sendspin group the member joined.
+        :param queue_id: The queue streaming DoP.
+        """
+        queue = self.mass.player_queues.get(queue_id)
+        position = int(queue.corrected_elapsed_time) if queue is not None else 0
+        self.logger.info(
+            "Player %s got grouped while streaming DSD as DoP, restarting as PCM at %ss",
+            self.display_name,
+            position,
+        )
+        await self._stop_playback_session("grouped during DoP playback")
+        await self._sync_membership_from_group(group)
+        try:
+            await self.mass.player_queues.seek(queue_id, position)
+        except (InvalidCommand, PlayerUnavailableError) as err:
+            self.logger.warning(
+                "Could not resume %s as PCM after grouping: %s", self.display_name, err
+            )
 
     def _schedule_membership_sync(self, group: SendspinGroup) -> None:
         """Schedule a coalesced membership reconciliation task for this player."""
@@ -1377,6 +1431,31 @@ class SendspinPlayer(SendspinBasePlayer):
     def requires_flow_mode(self) -> bool:
         """Return if the player requires flow mode."""
         return True
+
+    def supports_dop_output(self, sample_rate: int) -> bool:
+        """
+        Return whether a session at the given rate reaches the client fit to carry DoP.
+
+        DoP needs lossless stereo of at least 24 bits at exactly its rate: a 16-bit or lossy
+        output truncates the DSD payload. Only the automatic format follows the session rate.
+
+        :param sample_rate: The DoP rate.
+        """
+        player_role = self._player_role
+        if player_role is None:
+            return False
+        config_value = self.config.get_value(
+            CONF_PREFERRED_SENDSPIN_FORMAT, SENDSPIN_FORMAT_AUTOMATIC
+        )
+        if config_value != SENDSPIN_FORMAT_AUTOMATIC:
+            return False
+        fmt = self._format_for_rate(self._top_codec_formats(player_role), sample_rate)
+        return (
+            fmt is not None
+            and fmt.codec in (AudioCodec.PCM, AudioCodec.FLAC)
+            and fmt.channels == 2
+            and fmt.bit_depth >= 24
+        )
 
     def __init__(
         self,
@@ -2180,6 +2259,14 @@ class SendspinPlayer(SendspinBasePlayer):
             return
         self.mass.create_task(self._cancel_stale_playback_session(stale_task))
 
+    async def _stop_playback_session(self, reason: str) -> None:
+        """
+        Stop the playback session this player feeds.
+
+        :param reason: Why the session stops, for logging.
+        """
+        await self.playback_session.cancel(reason)
+
     async def _cancel_stale_playback_session(self, task: asyncio.Task[None]) -> None:
         """Cancel the playback session only if the given task is still the active one."""
         if self.playback_session.playback_task is not task:
@@ -2380,15 +2467,36 @@ class SendspinPlayer(SendspinBasePlayer):
         formats = self._top_codec_formats(player_role)
         if not formats or self._session_sample_rate in (None, formats[0].sample_rate):
             return None, None
-        default = formats[0]
-        candidates = [fmt for fmt in formats if fmt.sample_rate == self._session_sample_rate]
-        if not candidates:
+        best = self._format_for_rate(formats, self._session_sample_rate)
+        if best is None:
             return None, None
-        best = max(candidates, key=lambda fmt: (fmt.channels == default.channels, fmt.bit_depth))
         audio_format = SendspinAudioFormat(
             sample_rate=best.sample_rate, bit_depth=best.bit_depth, channels=best.channels
         )
         return audio_format, best.codec
+
+    @staticmethod
+    def _format_for_rate(
+        formats: list[SupportedAudioFormat], sample_rate: int
+    ) -> SupportedAudioFormat | None:
+        """
+        Return the format a session at the given rate negotiates, or None for no match.
+
+        The client's own default is kept when it already runs at that rate. Otherwise the
+        deepest format at that rate wins, preferring the default's channel count.
+
+        :param formats: The client's formats in the codec of its top choice, in priority order.
+        :param sample_rate: The session sample rate.
+        """
+        if not formats:
+            return None
+        default = formats[0]
+        if default.sample_rate == sample_rate:
+            return default
+        candidates = [fmt for fmt in formats if fmt.sample_rate == sample_rate]
+        if not candidates:
+            return None
+        return max(candidates, key=lambda fmt: (fmt.channels == default.channels, fmt.bit_depth))
 
     @staticmethod
     def _top_codec_formats(player_role: PlayerRoleProtocol) -> list[SupportedAudioFormat]:

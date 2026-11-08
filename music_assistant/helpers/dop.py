@@ -14,6 +14,7 @@ on the way turns it into noise, which is why callers must bypass all of that.
 from __future__ import annotations
 
 import asyncio
+import os
 import struct
 from dataclasses import dataclass
 from functools import cache
@@ -44,6 +45,19 @@ _BLOCKS_PER_READ = 64
 
 class DoPError(Exception):
     """Raised when a file cannot be streamed as DoP."""
+
+
+@dataclass
+class DopMarkerState:
+    """
+    Marker phase carried from one DoP stream into the next.
+
+    The markers have to keep alternating across a gapless track boundary: a file with an
+    odd number of DoP frames ends on the marker the next file would start with, and a DAC
+    that sees the same marker twice drops out of DSD mode for a moment.
+    """
+
+    phase: int = 0
 
 
 @dataclass(frozen=True)
@@ -102,24 +116,35 @@ def read_dsf_info(path: str) -> DsfInfo:
 
     :param path: Path to the DSF file.
     """
-    with open(path, "rb") as file:
-        header = file.read(92)
+    fd = os.open(path, os.O_RDONLY)
+    try:
+        return read_dsf_info_fd(fd, path)
+    finally:
+        os.close(fd)
+
+
+def read_dsf_info_fd(fd: int, name: str = "") -> DsfInfo:
+    """
+    Parse the header of an open DSF file.
+
+    :param fd: Descriptor of the DSF file, read with positional reads only.
+    :param name: Name of the file, for error messages.
+    """
+    header = os.pread(fd, 92, 0)
     if len(header) < 92 or header[0:4] != b"DSD " or header[28:32] != b"fmt ":
-        raise DoPError(f"Not a DSF file: {path}")
+        raise DoPError(f"Not a DSF file: {name}")
     fmt_chunk_size = struct.unpack_from("<Q", header, 32)[0]
     channels, dsd_rate, bits_per_sample, sample_count, block_size = struct.unpack_from(
         "<IIIQI", header, 52
     )
     data_chunk_start = 28 + fmt_chunk_size
-    with open(path, "rb") as file:
-        file.seek(data_chunk_start)
-        data_header = file.read(12)
+    data_header = os.pread(fd, 12, data_chunk_start)
     if len(data_header) < 12 or data_header[0:4] != b"data":
-        raise DoPError(f"DSF file has no data chunk: {path}")
+        raise DoPError(f"DSF file has no data chunk: {name}")
     if bits_per_sample not in (1, 8):
-        raise DoPError(f"Unsupported DSF bit order {bits_per_sample}: {path}")
+        raise DoPError(f"Unsupported DSF bit order {bits_per_sample}: {name}")
     if block_size <= 0 or channels <= 0:
-        raise DoPError(f"Invalid DSF layout: {path}")
+        raise DoPError(f"Invalid DSF layout: {name}")
     return DsfInfo(
         channels=channels,
         dsd_rate=dsd_rate,
@@ -174,20 +199,54 @@ def dop_words_to_pcm(words: np.ndarray, pcm_format: AudioFormat) -> bytes:
 
 
 async def get_dop_stream(
-    path: str,
+    source: str | int,
     pcm_format: AudioFormat,
     seek_position: float = 0,
+    marker_state: DopMarkerState | None = None,
 ) -> AsyncGenerator[bytes]:
     """
     Stream a DSF file as DoP, encoded in the given PCM format.
 
-    :param path: Path to the DSF file.
+    :param source: Path to the DSF file, or an open descriptor of it. A descriptor is only
+        read with positional reads and is left open for the caller to close.
     :param pcm_format: PCM format of the consumer; its rate must be the DoP rate.
     :param seek_position: Start position in seconds.
+    :param marker_state: Marker phase to start from and to leave for the next stream, so
+        the markers keep alternating across gapless tracks. A fresh stream starts at 0.
+    """
+    if isinstance(source, int):
+        async for chunk in _get_dop_stream_fd(
+            source, str(source), pcm_format, seek_position, marker_state
+        ):
+            yield chunk
+        return
+    fd = await asyncio.to_thread(os.open, source, os.O_RDONLY)
+    try:
+        async for chunk in _get_dop_stream_fd(fd, source, pcm_format, seek_position, marker_state):
+            yield chunk
+    finally:
+        os.close(fd)
+
+
+async def _get_dop_stream_fd(
+    fd: int,
+    name: str,
+    pcm_format: AudioFormat,
+    seek_position: float,
+    marker_state: DopMarkerState | None,
+) -> AsyncGenerator[bytes]:
+    """
+    Stream an open DSF file as DoP, see `get_dop_stream`.
+
+    :param fd: Descriptor of the DSF file.
+    :param name: Name of the file, for error messages.
+    :param pcm_format: PCM format of the consumer; its rate must be the DoP rate.
+    :param seek_position: Start position in seconds.
+    :param marker_state: Marker phase carried across streams, if any.
     """
     import numpy as np  # noqa: PLC0415
 
-    info = await asyncio.to_thread(read_dsf_info, path)
+    info = await asyncio.to_thread(read_dsf_info_fd, fd, name)
     if info.channels != 2 or pcm_format.channels != 2:
         raise DoPError("DoP streaming supports stereo DSD only")
     if pcm_format.sample_rate != info.dop_sample_rate:
@@ -200,12 +259,15 @@ async def get_dop_stream(
     block_size = info.block_size
     total_blocks = -(-info.bytes_per_channel // block_size)
     start_block = min(int(seek_position * info.dsd_rate / 8) // block_size, total_blocks)
-    marker_phase = 0
+    if marker_state is None:
+        marker_state = DopMarkerState()
 
     def _read_blocks(first_block: int, count: int) -> bytes:
-        with open(path, "rb") as file:
-            file.seek(info.data_offset + first_block * block_size * channels)
-            return file.read(count * block_size * channels)
+        return os.pread(
+            fd,
+            count * block_size * channels,
+            info.data_offset + first_block * block_size * channels,
+        )
 
     block = start_block
     while block < total_blocks:
@@ -231,7 +293,7 @@ async def get_dop_stream(
                 [dsd, np.full((channels, 1), DSD_SILENCE_BYTE, dtype=np.uint8)], axis=1
             )
         if dsd.shape[1]:
-            words, marker_phase = pack_dop(dsd, marker_phase)
+            words, marker_state.phase = pack_dop(dsd, marker_state.phase)
             yield dop_words_to_pcm(words, pcm_format)
         block += whole_blocks
 
