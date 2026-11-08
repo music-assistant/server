@@ -4663,6 +4663,36 @@ class TestGroupVolumeReference:
         assert commands["member_1"] == [95]
         assert commands["member_2"] == [54, 59, 56]
 
+    async def test_a_nudge_up_with_every_member_at_the_maximum_keeps_the_balance(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """A nudge up that moves nothing may not lose the levels to step back down to."""
+        controller, players, commands = self._make_group(
+            mock_mass, first_volume=95, second_volume=50
+        )
+        await controller.cmd_group_volume("group", 100)
+        self._report(players["member_1"], 100)
+        self._report(players["member_2"], 100)
+        await controller.cmd_group_volume_up("group")
+        await controller.cmd_group_volume_down("group")
+
+        assert commands["member_1"] == [100, 95]
+        assert commands["member_2"] == [100, 50]
+
+    async def test_a_nudge_up_at_the_maximum_skips_a_member_of_unknown_volume(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """A member that reports no volume may not be treated as being at zero."""
+        controller, players, commands = self._make_group(
+            mock_mass, first_volume=100, second_volume=49
+        )
+        players["member_2"]._attr_volume_level = None
+        players["member_2"]._cache.clear()
+        players["member_2"].update_state(force_update=True)
+        await controller.cmd_group_volume_up("group")
+
+        assert commands["member_2"] == []
+
 
 class TestFakeMuteInGroup:
     """A fake muted player in a group follows the mute lock, just like a native mute."""
