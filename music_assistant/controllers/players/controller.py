@@ -4516,9 +4516,12 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         :param player: The player that is about to play.
         :param skip_auto_play: Skip the auto play on power on, as the caller starts playback.
         """
-        # a device reports its playback a moment after it started, so the idle power off
-        # counts from here, or it could switch off playback that was just started
-        player.extra_data.pop(ATTR_IDLE_SINCE, None)
+        # a device reports its playback a moment after it started, so the idle power off of
+        # the player and the members playing along counts from here, or it could switch off
+        # playback that was just started
+        for member_id in {player.player_id, *player.state.group_members}:
+            if member := self.get_player(member_id):
+                member.extra_data.pop(ATTR_IDLE_SINCE, None)
         if not player.state.powered and player.state.power_control != PLAYER_CONTROL_NONE:
             await self._handle_cmd_power(player.player_id, True, skip_auto_play=skip_auto_play)
 

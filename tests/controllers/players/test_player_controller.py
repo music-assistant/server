@@ -4552,6 +4552,22 @@ class TestIdlePowerOff:
 
         power_off.assert_not_awaited()
 
+    async def test_play_command_starts_the_count_over_for_its_members(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """A member is not taken out of a group that starts playing before it reports so."""
+        controller, leader, _power_off = self._setup(mock_mass)
+        mock_mass.player_queues.resume = AsyncMock()
+        member = MockPlayer(leader.provider, "player_2", "Player 2")  # type: ignore[arg-type]
+        controller._players["player_2"] = member
+        leader._attr_group_members = ["player_1", "player_2"]
+        leader.update_state(signal_event=False)
+        member.extra_data[ATTR_IDLE_SINCE] = time.monotonic() - 30 * 60
+
+        await controller._handle_cmd_resume("player_1")
+
+        assert ATTR_IDLE_SINCE not in member.extra_data
+
     def test_playback_between_two_checks_starts_the_count_over(self, mock_mass: MagicMock) -> None:
         """Playback that starts and ends before the next check still counts as activity."""
         controller, player, _power_off = self._setup(mock_mass)
