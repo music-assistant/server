@@ -3470,6 +3470,45 @@ class StreamsAudio:
             for player in players
         )
 
+    def queue_item_plays_as_dop(self, queue_item: QueueItem) -> bool:
+        """
+        Return whether a queue item will be streamed as DoP.
+
+        A DoP item is read straight from its file, so an AudioBuffer for it would hold
+        decoded PCM nobody reads: for DSD128 that is 705.6 kHz / 32-bit, ~1.7 GB for a
+        five minute track. Callers use this to skip creating that buffer. When the item
+        ends up decoded after all (e.g. its DoP rate is not supported by the flow), the
+        decode path creates the buffer on demand, so only the warm-up is lost.
+
+        The output player is the active protocol player of the queue player. Before
+        playback has picked one, any linked protocol player with DoP enabled counts.
+
+        :param queue_item: The queue item, with its streamdetails resolved.
+        """
+        streamdetails = queue_item.streamdetails
+        if streamdetails is None or not is_dop_source(streamdetails):
+            return False
+        if (queue_player := self.mass.players.get_player(queue_item.queue_id)) is None:
+            return False
+        if len(queue_player.group_members) > 1:
+            return False
+        output_player = queue_player.resolve_output_player()
+        candidates: list[Player] = [output_player]
+        if output_player is queue_player:
+            candidates.extend(
+                protocol_player
+                for linked in queue_player.linked_output_protocols
+                if (protocol_player := self.mass.players.get_player(linked.output_protocol_id))
+            )
+        return any(
+            self.dop_enabled_for_players([candidate])
+            and self._get_dop_rate(
+                streamdetails, [rate for rate, _ in candidate.get_supported_sample_rates()]
+            )
+            is not None
+            for candidate in candidates
+        )
+
     def clear_crossfade_handover(self, queue_id: str) -> None:
         """
         Clear any pending crossfade data for a queue.
@@ -6148,6 +6187,11 @@ class StreamsAudio:
             streamdetails.uri,
             pcm_format.sample_rate,
         )
+        if (unused_buffer := streamdetails.buffer) is not None:
+            # DoP never reads decoded PCM: release any buffer warmed for this item
+            # before DoP was decided, instead of holding it until its inactivity timeout
+            streamdetails.buffer = None
+            await unused_buffer.clear()
         bytes_received = 0
         finished = False
         start_reported = False

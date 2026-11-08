@@ -294,6 +294,7 @@ def _controller_with_next_item() -> tuple[PlayerQueuesController, SimpleNamespac
 
     controller.load_next_queue_item = AsyncMock(side_effect=_load_next)  # type: ignore[method-assign]
     mass = MagicMock()
+    mass.streams.audio.queue_item_plays_as_dop = MagicMock(return_value=False)
     controller.mass = mass
     return controller, next_item, mass
 
@@ -860,3 +861,16 @@ async def test_a_repeated_prepare_joins_a_preparation_that_skipped_ahead() -> No
     preparation.cancel()
     with pytest.raises(asyncio.CancelledError):
         await preparation
+
+
+async def test_prepare_next_skips_the_buffer_of_a_dop_item() -> None:
+    """A DoP item streams straight from its file, so warming a decoded buffer only wastes RAM."""
+    controller, next_item, mass = _controller_with_next_item()
+    mass.streams.audio.get_audio_buffer = AsyncMock()
+    mass.streams.audio.queue_item_plays_as_dop = MagicMock(return_value=True)
+
+    controller.prepare_next_audio_buffer("queue-1", "current")
+    await mass.create_task.call_args.args[0]
+
+    mass.streams.audio.queue_item_plays_as_dop.assert_called_once_with(next_item)
+    mass.streams.audio.get_audio_buffer.assert_not_awaited()

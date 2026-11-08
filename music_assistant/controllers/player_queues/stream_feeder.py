@@ -114,6 +114,13 @@ class StreamFeederMixin(_PlayerQueuesBase):
                             streamed_item.streamdetails, prepared_item.streamdetails
                         )
                     return
+                if self.mass.streams.audio.queue_item_plays_as_dop(prepared_item):
+                    # streamed straight from its file, a buffer would never be read
+                    self.logger.debug(
+                        "Not preparing an audio buffer for %s: it streams as DoP",
+                        prepared_item.name,
+                    )
+                    return
                 self.logger.debug(
                     "Preparing audio buffer for next track %s on queue %s",
                     prepared_item.name,

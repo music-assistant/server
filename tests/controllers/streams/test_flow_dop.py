@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock, patch
+from collections.abc import AsyncGenerator
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from music_assistant_models.enums import ContentType, MediaType, StreamType
@@ -182,3 +183,138 @@ def test_dop_transition_detects_dsd_before_resolving() -> None:
         assert audio._dop_transition("queue", pcm_item)
     with patch.object(audio.mass.player_queues, "get_next_item", return_value=None):
         assert not audio._dop_transition("queue", pcm_item)
+
+
+def _queue_item_audio(
+    *,
+    dop_player_ids: set[str],
+    queue_player: MagicMock,
+    protocol_players: dict[str, MagicMock] | None = None,
+) -> StreamsAudio:
+    """Return a StreamsAudio resolving players by id, with DoP on for the given ids."""
+    audio = StreamsAudio(MagicMock())
+    players = {queue_player.player_id: queue_player, **(protocol_players or {})}
+    audio.mass.players.get_player = MagicMock(side_effect=players.get)  # type: ignore[method-assign]
+    audio.mass.config.get_raw_player_config_value = MagicMock(  # type: ignore[method-assign]
+        side_effect=lambda player_id, key, default=None: (
+            player_id in dop_player_ids if key == CONF_DSD_DOP else default
+        )
+    )
+    return audio
+
+
+def _universal_player(
+    output: MagicMock | None = None, linked_ids: tuple[str, ...] = ()
+) -> MagicMock:
+    """Return a queue player that renders through ``output`` (itself when None)."""
+    player = _make_player()
+    player.player_id = "queue"
+    player.resolve_output_player = MagicMock(return_value=output or player)
+    player.linked_output_protocols = [MagicMock(output_protocol_id=pid) for pid in linked_ids]
+    return player
+
+
+def _dsd_queue_item(streamdetails: MagicMock | None = None) -> MagicMock:
+    item = _queue_track(streamdetails if streamdetails is not None else _dsd_streamdetails())
+    item.queue_id = "queue"
+    return item
+
+
+def _protocol_player(player_id: str, supported: list[tuple[int, int]] = DOP_RATES) -> MagicMock:
+    player = _make_player(supported=supported)
+    player.player_id = player_id
+    return player
+
+
+def test_dop_item_on_active_dop_protocol_player_skips_buffer() -> None:
+    """The active Sendspin protocol player has DoP on: the item plays as DoP."""
+    sendspin = _protocol_player("sendspin")
+    audio = _queue_item_audio(
+        dop_player_ids={"sendspin"},
+        queue_player=_universal_player(output=sendspin, linked_ids=("sendspin",)),
+        protocol_players={"sendspin": sendspin},
+    )
+    assert audio.queue_item_plays_as_dop(_dsd_queue_item()) is True
+
+
+def test_dop_item_before_protocol_selection_uses_linked_players() -> None:
+    """No active protocol yet: a linked DoP protocol player is enough."""
+    sendspin = _protocol_player("sendspin")
+    audio = _queue_item_audio(
+        dop_player_ids={"sendspin"},
+        queue_player=_universal_player(linked_ids=("airplay", "sendspin")),
+        protocol_players={"sendspin": sendspin, "airplay": _protocol_player("airplay")},
+    )
+    assert audio.queue_item_plays_as_dop(_dsd_queue_item()) is True
+
+
+def test_active_non_dop_protocol_keeps_buffer() -> None:
+    """A different protocol is active: the item gets decoded, so it keeps its buffer."""
+    airplay = _protocol_player("airplay")
+    audio = _queue_item_audio(
+        dop_player_ids={"sendspin"},
+        queue_player=_universal_player(output=airplay, linked_ids=("sendspin", "airplay")),
+        protocol_players={"sendspin": _protocol_player("sendspin"), "airplay": airplay},
+    )
+    assert audio.queue_item_plays_as_dop(_dsd_queue_item()) is False
+
+
+def test_unsupported_dop_rate_keeps_buffer() -> None:
+    """DSD128 needs 352.8 kHz: a player that tops out at 192 kHz decodes it."""
+    sendspin = _protocol_player("sendspin", supported=[(176400, 24), (192000, 24)])
+    audio = _queue_item_audio(
+        dop_player_ids={"sendspin"},
+        queue_player=_universal_player(output=sendspin),
+        protocol_players={"sendspin": sendspin},
+    )
+    assert audio.queue_item_plays_as_dop(_dsd_queue_item(_dsd_streamdetails(705600))) is False
+
+
+def test_grouped_queue_player_keeps_buffer() -> None:
+    """A group mixes the stream for its members, so DoP is never used."""
+    queue_player = _universal_player()
+    queue_player.group_members = ["queue", "other"]
+    audio = _queue_item_audio(dop_player_ids={"queue"}, queue_player=queue_player)
+    assert audio.queue_item_plays_as_dop(_dsd_queue_item()) is False
+
+
+def test_pcm_item_keeps_buffer() -> None:
+    """Only local DSF files play as DoP."""
+    streamdetails = _dsd_streamdetails()
+    streamdetails.audio_format = AudioFormat(
+        content_type=ContentType.FLAC, sample_rate=44100, bit_depth=16, channels=2
+    )
+    audio = _queue_item_audio(dop_player_ids={"queue"}, queue_player=_universal_player())
+    assert audio.queue_item_plays_as_dop(_dsd_queue_item(streamdetails)) is False
+
+
+def test_unresolved_item_keeps_buffer() -> None:
+    """Without streamdetails nothing is known yet."""
+    item = _dsd_queue_item()
+    item.streamdetails = None
+    audio = _queue_item_audio(dop_player_ids={"queue"}, queue_player=_universal_player())
+    assert audio.queue_item_plays_as_dop(item) is False
+
+
+@pytest.mark.asyncio
+async def test_dop_stream_releases_a_warmed_buffer() -> None:
+    """A decoded buffer warmed before DoP was decided is released as DoP starts."""
+    audio = StreamsAudio(MagicMock())
+    warmed = MagicMock()
+    warmed.clear = AsyncMock()
+    streamdetails = _dsd_streamdetails()
+    streamdetails.buffer = warmed
+    streamdetails.duration = 300
+    item = _dsd_queue_item(streamdetails)
+
+    async def _no_audio(*_args: object, **_kwargs: object) -> AsyncGenerator[bytes]:
+        chunks: tuple[bytes, ...] = ()
+        for chunk in chunks:
+            yield chunk
+
+    with patch("music_assistant.controllers.streams.audio.get_dop_stream", _no_audio):
+        async for _ in audio._get_dop_queue_item_stream(item, _pcm_format(176400), 0, True):
+            pass
+
+    warmed.clear.assert_awaited_once()
+    assert streamdetails.buffer is None
