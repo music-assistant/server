@@ -1389,19 +1389,19 @@ class YoutubeMusicProvider(RecommendationPayloadMixin, MusicProvider):
                 )
                 if not stream_format:
                     raise UnplayableMediaError("No stream formats found")
-                rotated: dict[str, str] = {}
+                changed: dict[str, str] = {}
                 if _has_login_cookie(ydl.cookiejar):
                     # only what YouTube changed, so cookies another stream stored aren't undone
-                    rotated = {
+                    changed = {
                         cookie.name: cookie.value
                         for cookie in ydl.cookiejar
                         if cookie.domain.endswith("youtube.com")
                         and sent.get(cookie.name) != cookie.value
                     }
-                return stream_format, rotated
+                return stream_format, changed
 
-        stream_format, rotated = await asyncio.to_thread(_extract_best_stream_url_format)
-        self._store_cookies(rotated)
+        stream_format, changed = await asyncio.to_thread(_extract_best_stream_url_format)
+        self._store_cookies(changed)
         return stream_format
 
     def _get_item_mapping(self, media_type: MediaType, key: str, name: str) -> ItemMapping:
@@ -1435,7 +1435,7 @@ class YoutubeMusicProvider(RecommendationPayloadMixin, MusicProvider):
 
     def _store_cookies(self, updates: dict[str, str]) -> None:
         """
-        Merge cookies YouTube set into the stored cookie, so the session stays valid.
+        Merge cookies YouTube changed during playback into the stored cookie.
 
         :param updates: Cookie names and values YouTube returned.
         """
