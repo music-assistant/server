@@ -11,7 +11,7 @@ from __future__ import annotations
 import time
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, cast
-from unittest.mock import AsyncMock, MagicMock, Mock
+from unittest.mock import AsyncMock, MagicMock, Mock, patch
 
 import pytest
 from music_assistant_models.enums import MediaType, PlaybackState, QueueOption
@@ -444,6 +444,27 @@ def test_a_player_switched_off_at_the_last_track_does_not_settle_the_queue() -> 
     PlaybackTrackerMixin._handle_end_of_queue(tracker, _queue_stub(), prev_state, new_state)
 
     tracker.mass.create_task.assert_not_called()
+
+
+@pytest.mark.parametrize("switched_off", [False, True])
+async def test_a_player_switched_off_while_settling_is_not_played_on(switched_off: bool) -> None:
+    """Items added while the queue settles play on, unless the player was switched off meanwhile."""
+    tracker = _tracker()
+    tracker.play_index = AsyncMock()
+    queue = _queue_stub()
+    prev_state, new_state = _stop_states(_item(MediaType.TRACK))
+    PlaybackTrackerMixin._handle_end_of_queue(tracker, queue, prev_state, new_state)
+    settle = tracker.mass.create_task.call_args.args[0]
+    # an item got added while it settles; the player may get switched off in the meantime
+    queue_stub: Any = queue
+    queue_stub.state = PlaybackState.IDLE
+    queue_stub.current_index = 0
+    tracker.mass.players.get_player.return_value.offline_by_power_control = switched_off
+
+    with patch("asyncio.sleep", new=AsyncMock()):
+        await settle
+
+    assert tracker.play_index.await_count == (0 if switched_off else 1)
 
 
 def test_a_completed_sound_effect_settles_the_queue() -> None:

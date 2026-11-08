@@ -520,13 +520,18 @@ class PlaybackTrackerMixin(_PlayerQueuesBase):
         if prev_item is not None and prev_item.media_type in UNENDABLE_MEDIA_TYPES:
             return
 
+        def _switched_off() -> bool:
+            # a player switched off meanwhile is not powered on again to continue playback
+            player = self.mass.players.get_player(queue.queue_id)
+            return player is not None and player.offline_by_power_control
+
         async def _settle_or_resume_delayed() -> None:
             for _ in range(5):
                 await asyncio.sleep(1)
                 if self._queue_data.get(queue.queue_id) is not queue_data:
                     # the queue was removed or re-registered while we waited
                     return
-                if queue.state != PlaybackState.IDLE:
+                if queue.state != PlaybackState.IDLE or _switched_off():
                     return
                 if queue.next_item is not None:
                     return
@@ -564,7 +569,7 @@ class PlaybackTrackerMixin(_PlayerQueuesBase):
                     dynamic_tracks = await without_disliked_tracks(
                         self.mass, queue_data.userid, dynamic_tracks
                     )
-                    if self._queue_data.get(queue.queue_id) is not queue_data:
+                    if self._queue_data.get(queue.queue_id) is not queue_data or _switched_off():
                         # the queue was removed or re-registered while tracks were fetched
                         return
                     if dynamic_tracks:
