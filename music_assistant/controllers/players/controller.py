@@ -131,6 +131,7 @@ from .constants import (
     PLAYER_LOCK_STRICT_TIMEOUT,
     PLAYER_LOCK_TIMEOUT,
     PlayerLockPurpose,
+    SwitchedOffAction,
 )
 from .helpers import handle_player_command, wait_for_power_on
 from .protocol_linking import ProtocolLinkingMixin
@@ -648,7 +649,7 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
     # Player commands
 
     @api_command("players/cmd/stop", required_scope=Scope.PLAYERS_CONTROL)
-    @handle_player_command
+    @handle_player_command(switched_off=SwitchedOffAction.IGNORE)
     async def cmd_stop(self, player_id: str) -> None:
         """
         Send STOP command to given player.
@@ -665,7 +666,7 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
             await self._handle_cmd_stop(player.player_id)
 
     @api_command("players/cmd/play", required_scope=Scope.PLAYERS_CONTROL)
-    @handle_player_command(power_on=True)
+    @handle_player_command(switched_off=SwitchedOffAction.POWER_ON)
     async def cmd_play(self, player_id: str) -> None:
         """
         Send PLAY (unpause) command to given player.
@@ -693,7 +694,7 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
             await self._handle_cmd_play(player.player_id)
 
     @api_command("players/cmd/pause", required_scope=Scope.PLAYERS_CONTROL)
-    @handle_player_command
+    @handle_player_command(switched_off=SwitchedOffAction.IGNORE)
     async def cmd_pause(self, player_id: str) -> None:
         """
         Send PAUSE command to given player.
@@ -722,7 +723,7 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
             await self.cmd_play(player.player_id)
 
     @api_command("players/cmd/resume", required_scope=Scope.PLAYERS_CONTROL)
-    @handle_player_command(power_on=True)
+    @handle_player_command(switched_off=SwitchedOffAction.POWER_ON)
     async def cmd_resume(
         self, player_id: str, source: str | None = None, media: PlayerMedia | None = None
     ) -> None:
@@ -901,7 +902,7 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         raise UnsupportedFeaturedException(msg)
 
     @api_command("players/cmd/power", required_scope=Scope.PLAYERS_CONTROL)
-    @handle_player_command(allow_offline=True)
+    @handle_player_command(switched_off=SwitchedOffAction.RUN)
     async def cmd_power(self, player_id: str, powered: bool) -> None:
         """
         Send POWER command to given player.
@@ -923,7 +924,7 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
             await self._handle_cmd_power(player_id, powered)
 
     @api_command("players/cmd/volume_set", required_scope=Scope.PLAYERS_CONTROL)
-    @handle_player_command
+    @handle_player_command(switched_off=SwitchedOffAction.IGNORE)
     async def cmd_volume_set(self, player_id: str, volume_level: int) -> None:
         """
         Send VOLUME_SET command to given player.
@@ -944,7 +945,7 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
             await self._handle_cmd_volume_set(player_id, volume_level, record_target=False)
 
     @api_command("players/cmd/volume_up", required_scope=Scope.PLAYERS_CONTROL)
-    @handle_player_command
+    @handle_player_command(switched_off=SwitchedOffAction.IGNORE)
     async def cmd_volume_up(self, player_id: str) -> None:
         """
         Send VOLUME_UP command to given player.
@@ -961,7 +962,7 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         await self.cmd_volume_set(player_id, new_volume)
 
     @api_command("players/cmd/volume_down", required_scope=Scope.PLAYERS_CONTROL)
-    @handle_player_command
+    @handle_player_command(switched_off=SwitchedOffAction.IGNORE)
     async def cmd_volume_down(self, player_id: str) -> None:
         """
         Send VOLUME_DOWN command to given player.
@@ -1066,7 +1067,7 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         await self.cmd_volume_mute(player_id, muted)
 
     @api_command("players/cmd/volume_mute", required_scope=Scope.PLAYERS_CONTROL)
-    @handle_player_command(lock=PlayerLockPurpose.VOLUME)
+    @handle_player_command(lock=PlayerLockPurpose.VOLUME, switched_off=SwitchedOffAction.IGNORE)
     async def cmd_volume_mute(self, player_id: str, muted: bool) -> None:
         """
         Send VOLUME_MUTE command to given player.
@@ -1108,7 +1109,7 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
                 player.extra_data.pop(ATTR_MUTE_LOCK, None)
             raise
 
-    @handle_player_command(power_on=True)
+    @handle_player_command(switched_off=SwitchedOffAction.POWER_ON)
     async def play_media(self, player_id: str, media: PlayerMedia) -> None:
         """
         Handle PLAY MEDIA on given player.
@@ -1212,7 +1213,7 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         await player.set_option(option_key=option_key, option_value=option_value)
 
     @api_command("players/cmd/select_source", required_scope=Scope.PLAYERS_CONTROL)
-    @handle_player_command(power_on=True)
+    @handle_player_command(switched_off=SwitchedOffAction.POWER_ON)
     async def select_source(self, player_id: str, source: str | None) -> None:
         """
         Handle SELECT SOURCE command on given player.
@@ -1442,7 +1443,7 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         await self.cmd_set_members(target_player, player_ids_to_add=child_player_ids)
 
     @api_command("players/cmd/ungroup", required_scope=Scope.PLAYERS_CONTROL)
-    @handle_player_command
+    @handle_player_command(switched_off=SwitchedOffAction.IGNORE)
     async def cmd_ungroup(self, player_id: str) -> None:
         """
         Handle UNGROUP command for given player.

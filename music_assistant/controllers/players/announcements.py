@@ -32,6 +32,7 @@ from music_assistant_models.player import PlayerMedia
 from music_assistant.constants import (
     ANNOUNCE_ALERT_FILE,
     ATTR_ANNOUNCEMENT_IN_PROGRESS,
+    ATTR_POWER_ON_IN_PROGRESS,
     CONF_ANNOUNCE_TTS_ENGINE,
     CONF_ENTRY_ANNOUNCE_VOLUME,
     CONF_ENTRY_ANNOUNCE_VOLUME_MAX,
@@ -55,7 +56,7 @@ from music_assistant.helpers.tts import (
 from music_assistant.helpers.util import TaskManager, validate_announcement_chime_url
 from music_assistant.models.player import AnnouncementFeature, Player
 
-from .constants import PlayerLockPurpose
+from .constants import PlayerLockPurpose, SwitchedOffAction
 from .helpers import AnnounceData, handle_player_command
 
 if TYPE_CHECKING:
@@ -176,7 +177,7 @@ class AnnouncementsMixin:
     # becomes once mixed in; the attributes it needs are declared in the block above.
     # mypy reports that on the outermost decorator, hence the ignore below.
     @api_command("players/cmd/play_announcement", required_scope=Scope.PLAYERS_CONTROL)  # type: ignore[type-var]
-    @handle_player_command(power_on=True)
+    @handle_player_command(switched_off=SwitchedOffAction.RUN)
     async def play_announcement(
         self,
         player_id: str,
@@ -258,7 +259,23 @@ class AnnouncementsMixin:
                 # filled in once the player that fetches the stream is known
                 announce_player_id=None,
             )
-            await self._run_announcement(player, announce_data, volume_level)
+            # a player switched off at its power control is switched on for the announcement
+            # and off again afterwards, like a powered off player. One that is already being
+            # switched on (e.g. to play) is only waited for, and stays on.
+            switch_off_after = (
+                player.offline_by_power_control
+                and ATTR_POWER_ON_IN_PROGRESS not in player.extra_data
+            )
+            if player.offline_by_power_control:
+                await self._handle_cmd_power(player.player_id, True, skip_auto_play=True)
+                # the provider may have registered a new instance for the returning device
+                player = self.get_player(player.player_id, True)
+                assert player is not None  # for type checking
+            try:
+                await self._run_announcement(player, announce_data, volume_level)
+            finally:
+                if switch_off_after:
+                    await self._switch_off_after_announcement(player)
 
     @api_command("players/tts_engines", required_scope=Scope.PLAYERS_CONTROL)
     async def get_announcement_tts_engines(self) -> list[dict[str, str]]:
@@ -646,6 +663,23 @@ class AnnouncementsMixin:
             async with TaskManager(self.mass) as tg:
                 for muted_player in muted_players:
                     tg.create_task(self._set_announcement_mute(muted_player, True))
+
+    async def _switch_off_after_announcement(self, player: Player) -> None:
+        """
+        Switch a player off again that was switched on for an announcement only.
+
+        :param player: The player the announcement was played on.
+        """
+        try:
+            await self._handle_cmd_power(player.player_id, False)
+        except Exception as err:
+            # deliberately broad and only logged, like the restore after the default
+            # announcement flow: it may never mask the error of the announcement itself
+            self.logger.warning(
+                "Announcement to player %s - switching it off again failed: %s",
+                player.state.name,
+                err,
+            )
 
     async def _play_announcement(
         self,

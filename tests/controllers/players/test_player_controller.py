@@ -3884,17 +3884,57 @@ class TestOfflinePowerControl:
         cast("AsyncMock", control.power_on).assert_awaited_once()
         assert online_at_handler == [True, True]
 
+    @pytest.mark.parametrize(
+        ("command", "args"),
+        [
+            ("cmd_stop", ()),
+            ("cmd_pause", ()),
+            ("cmd_volume_set", (50,)),
+            ("cmd_volume_up", ()),
+            ("cmd_volume_down", ()),
+            ("cmd_volume_mute", (True,)),
+            ("cmd_ungroup", ()),
+        ],
+    )
+    async def test_commands_without_anything_to_act_on_are_ignored(
+        self, mock_mass: MagicMock, command: str, args: tuple[object, ...]
+    ) -> None:
+        """Stop, volume and ungroup quietly do nothing on a switched off player."""
+        controller, player, control = self._setup(mock_mass)
+        untouched = {
+            name: AsyncMock()
+            for name in (
+                "_handle_cmd_stop",
+                "_handle_cmd_pause",
+                "_handle_cmd_volume_set",
+                "_handle_cmd_volume_mute",
+                "cmd_set_members",
+                "_detach_member",
+            )
+        }
+        for name, mock in untouched.items():
+            setattr(controller, name, mock)
+        controller._record_volume_target = MagicMock()  # type: ignore[method-assign]
+        controller.get_active_queue = MagicMock()  # type: ignore[method-assign]
+
+        assert await getattr(controller, command)("player_1", *args) is None
+
+        for mock in untouched.values():
+            mock.assert_not_awaited()
+        controller._record_volume_target.assert_not_called()
+        controller.get_active_queue.assert_not_called()
+        cast("AsyncMock", control.power_on).assert_not_awaited()
+        assert player.state.available is True
+
     async def test_other_commands_are_refused(self, mock_mass: MagicMock) -> None:
-        """A command that does not start playback is refused for a switched off player."""
+        """A command that neither starts playback nor can be skipped is refused."""
         controller, _player, control = self._setup(mock_mass)
-        controller._handle_cmd_volume_set = AsyncMock()  # type: ignore[method-assign]
 
         with pytest.raises(PlayerUnavailableError):
-            await controller.cmd_volume_set("player_1", 50)
+            await controller.cmd_next_track("player_1")
         with pytest.raises(PlayerUnavailableError):
             await controller.cmd_set_members("player_1", player_ids_to_add=["other"])
 
-        controller._handle_cmd_volume_set.assert_not_awaited()
         cast("AsyncMock", control.power_on).assert_not_awaited()
 
     async def test_switched_off_player_is_not_added_to_a_group(
@@ -3944,6 +3984,80 @@ class TestOfflinePowerControl:
 
         controller._cleanup_player_memberships.assert_called_once_with("player_1")
         controller.cmd_ungroup.assert_not_called()
+
+    def _announce_through_the_default_flow(
+        self, controller: PlayerController, mock_mass: MagicMock, steps: list[str]
+    ) -> None:
+        """
+        Let announcements take the default flow, recording when the clip gets played.
+
+        :param controller: The controller the announcements are played on.
+        :param mock_mass: The mocked MusicAssistant instance the controller belongs to.
+        :param steps: Filled with what happened, in order.
+        """
+        render = MagicMock()
+        render.wait_ready = AsyncMock(return_value=True)
+        render.wait_finished = AsyncMock(return_value=3.0)
+        renderer = mock_mass.streams.announcement_renderer
+        renderer.register = MagicMock(return_value=render)
+        renderer.get = MagicMock(return_value=render)
+        renderer.unregister = AsyncMock()
+        mock_mass.streams.get_announcement_url = MagicMock(
+            return_value="http://ma/announcement/player_1.mp3"
+        )
+        # the player has no queue, so it shows nothing whose palette is fetched
+        mock_mass.player_queues.get = MagicMock(return_value=None)
+        controller._resolve_ready_announce_player = AsyncMock(  # type: ignore[method-assign]
+            return_value=None
+        )
+        controller._wait_for_playback_state = AsyncMock()  # type: ignore[method-assign]
+        controller.get_announcement_volume = MagicMock(return_value=None)  # type: ignore[method-assign]
+        player = controller._players["player_1"]
+        controller._handle_play_media = AsyncMock(  # type: ignore[method-assign]
+            side_effect=lambda *_args: steps.append(f"play (online: {player.available})")
+        )
+
+    @pytest.mark.usefixtures("running_background_tasks")
+    async def test_announcement_switches_the_player_on_and_off_again(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """Like a powered off player, a switched off one is only switched on to announce."""
+        controller, player, control = self._setup(mock_mass)
+        steps: list[str] = []
+        self._announce_through_the_default_flow(controller, mock_mass, steps)
+        power_on = cast("AsyncMock", control.power_on)
+        switch_on = power_on.side_effect
+
+        def _record_switch_on() -> None:
+            steps.append("switch on")
+            switch_on()
+
+        power_on.side_effect = _record_switch_on
+        cast("AsyncMock", control.power_off).side_effect = lambda: steps.append("switch off")
+
+        await controller.play_announcement("player_1", "http://test/announcement.mp3")
+
+        # the default flow saw a powered player, so it leaves the switching off to the
+        # announcement itself: the control is switched off once
+        assert steps == ["switch on", "play (online: True)", "switch off"]
+        assert ATTR_POWER_ON_IN_PROGRESS not in player.extra_data
+
+    async def test_announcement_power_on_timeout_leaves_the_control_alone(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """A device that does not come online fails the announcement without switching back."""
+        controller, _player, control = self._setup(mock_mass, comes_online=False)
+        controller._run_announcement = AsyncMock()  # type: ignore[method-assign]
+
+        with (
+            patch.object(players_controller, "OFFLINE_POWER_ON_TIMEOUT", 0.05),
+            pytest.raises(PlayerUnavailableError),
+        ):
+            await controller.play_announcement("player_1", "http://test/announcement.mp3")
+
+        cast("AsyncMock", control.power_on).assert_awaited_once()
+        controller._run_announcement.assert_not_awaited()
+        cast("AsyncMock", control.power_off).assert_not_awaited()
 
 
 class TestEnforceVolumeLimits:

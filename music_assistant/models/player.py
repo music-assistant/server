@@ -647,6 +647,10 @@ class Player(ABC):
         A device that is reachable but still needs setup - an unpaired AirPlay
         receiver, for example - can not accept a stream, so it must never be
         picked as an output protocol or command target.
+
+        Use this, not state.available, for a device that must be reachable right now:
+        the state also reports a player that is switched off at its power control as
+        available (see offline_by_power_control).
         """
         return self.available and not self.needs_setup
 
@@ -657,8 +661,9 @@ class Player(ABC):
         Return if the device is offline because it is switched off at its external power control.
 
         Also True while Music Assistant powers it on through that control and waits for it
-        to come online. Such a player is reported as available (and powered off) to clients,
-        so it can be powered on from there, but it can not take any other command.
+        to come online. Such a player is reported to clients as available and powered off,
+        so it can be powered on (or played to) from there, while the device itself is not
+        reachable.
         """
         if self.available or self.type in (PlayerType.GROUP, PlayerType.PROTOCOL):
             return False
@@ -2751,6 +2756,8 @@ class Player(ABC):
             player_id=self.player_id,
             provider=self.provider_id,
             type=self.type,
+            # the client view: it includes a player switched off at its power control, so
+            # internal code that needs a reachable device checks available_for_playback
             available=self.enabled
             and (self.available or self.offline_by_power_control)
             and not self.needs_setup,

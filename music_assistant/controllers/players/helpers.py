@@ -19,7 +19,7 @@ from music_assistant_models.errors import (
     PlayerUnavailableError,
 )
 
-from music_assistant.controllers.players.constants import PlayerLockPurpose
+from music_assistant.controllers.players.constants import PlayerLockPurpose, SwitchedOffAction
 from music_assistant.controllers.webserver.helpers.auth_middleware import (
     get_current_user,
     has_player_access,
@@ -57,8 +57,7 @@ def handle_player_command[PlayerControllerT: "PlayerController", **P, R](
     func: None = None,
     *,
     lock: PlayerLockPurpose | None = None,
-    power_on: bool = False,
-    allow_offline: bool = False,
+    switched_off: SwitchedOffAction = SwitchedOffAction.REFUSE,
 ) -> Callable[
     [Callable[Concatenate[PlayerControllerT, P], Awaitable[R]]],
     Callable[Concatenate[PlayerControllerT, P], Coroutine[Any, Any, R | None]],
@@ -69,8 +68,7 @@ def handle_player_command[PlayerControllerT: "PlayerController", **P, R](
     func: Callable[Concatenate[PlayerControllerT, P], Awaitable[R]] | None = None,
     *,
     lock: PlayerLockPurpose | None = None,
-    power_on: bool = False,
-    allow_offline: bool = False,
+    switched_off: SwitchedOffAction = SwitchedOffAction.REFUSE,
 ) -> (
     Callable[Concatenate[PlayerControllerT, P], Coroutine[Any, Any, R | None]]
     | Callable[
@@ -89,12 +87,10 @@ def handle_player_command[PlayerControllerT: "PlayerController", **P, R](
     :param lock: PlayerLockPurpose to serialize commands in the same category per
         player. Commands with the same lock purpose on the same player will not run
         concurrently. None (default) means no locking.
-    :param power_on: Power on a player that is switched off at its external power control
-        (and wait for it to come online) before running the command. Meant for the
-        commands that start playback.
-    :param allow_offline: Run the command as is on a player that is switched off at its
-        external power control. Meant for the power command itself. Without this flag or
-        power_on, the command is refused for such a player.
+    :param switched_off: What the command does with a player that is switched off at its
+        external power control (see SwitchedOffAction): refused by default, ignored when
+        the command has nothing to act on (stop, volume), powered on first for commands
+        that start playback, or run as is for commands that handle it themselves.
     """  # noqa: D401
 
     def decorator(
@@ -142,12 +138,20 @@ def handle_player_command[PlayerControllerT: "PlayerController", **P, R](
                 f"by user {current_user.username}" if current_user else "unauthenticated",
             )
 
-            if player.offline_by_power_control and not (power_on or allow_offline):
+            is_switched_off = player.offline_by_power_control
+            if is_switched_off and switched_off == SwitchedOffAction.REFUSE:
                 msg = f"Player {player.display_name} is switched off"
                 raise PlayerUnavailableError(msg)
+            if is_switched_off and switched_off == SwitchedOffAction.IGNORE:
+                self.logger.debug(
+                    "Ignoring command %s for player %s: it is switched off",
+                    fn.__name__,
+                    player.display_name,
+                )
+                return
 
             try:
-                if power_on and player.offline_by_power_control:
+                if is_switched_off and switched_off == SwitchedOffAction.POWER_ON:
                     await self._handle_cmd_power(player.player_id, True, skip_auto_play=True)
                 if lock:
                     async with self.get_player_lock(player.player_id, lock):
@@ -164,7 +168,7 @@ def handle_player_command[PlayerControllerT: "PlayerController", **P, R](
 
         return wrapper
 
-    # Support both @handle_player_command and @handle_player_command(lock=...)
+    # Support both @handle_player_command and @handle_player_command(lock=..., ...)
     if func is not None:
         return decorator(func)
     return decorator
