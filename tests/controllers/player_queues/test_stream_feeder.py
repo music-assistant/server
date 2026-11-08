@@ -343,6 +343,23 @@ async def test_prepare_next_uses_the_speculative_capacity_budget() -> None:
     }
 
 
+async def test_prepare_next_waits_for_capacity_as_long_as_the_caller_allows() -> None:
+    """A caller that knows when the next item is due can let the preparation wait longer."""
+    controller, next_item, mass = _controller_with_next_item()
+    mass.streams.audio.get_audio_buffer = AsyncMock()
+
+    controller.prepare_next_audio_buffer("queue-1", "current", capacity_wait_timeout=30.0)
+    await mass.create_task.call_args.args[0]
+
+    mass.streams.audio.get_audio_buffer.assert_awaited_once_with(
+        next_item,
+        reason="prepare_next",
+        capacity_wait_timeout=30.0,
+        allow_provider_match=False,
+        stop_paused_queues=False,
+    )
+
+
 @pytest.mark.parametrize(
     ("is_buffering", "expect_cleared"),
     [(True, True), (False, False)],
