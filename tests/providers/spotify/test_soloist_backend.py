@@ -1961,6 +1961,44 @@ async def test_a_seek_back_out_of_the_window_takes_the_fed_item_off_the_engine(
     client.add_to_queue.assert_awaited_once()
 
 
+async def test_a_seek_back_keeps_the_length_the_skipped_track_overwrote(tmp_path: Path) -> None:
+    """The skipped track's report must not leave the replayed one without a length."""
+    run = _live_run(tmp_path)
+    await _hold(run)
+    await _capture(run, _audio(2.1))
+    await _run_feeds(run)
+    await run._handle_event(_queue_event(("q1", TRACK_B)))
+    client = _client(run)
+
+    async def skip(**_: Any) -> None:
+        await run._handle_event(
+            _playback_event("playing", uri=TRACK_B, position_ms=0, duration_ms=200_000)
+        )
+
+    client.skip_next.side_effect = skip
+    client.play.side_effect = lambda played, **_: run._observe_engine_item(played, announced=True)
+    item = await run.move_to(TRACK_A, 0, _streamdetails_for(uri=TRACK_A))
+    assert item.engine_duration_ms == int((_FEED_LEAD_S + 2) * 1000)
+
+
+async def test_a_seek_back_before_the_queue_report_leaves_the_fed_item_tracked(
+    tmp_path: Path,
+) -> None:
+    """An entry the engine has not confirmed yet cannot be skipped onto, so it is kept."""
+    run = _live_run(tmp_path)
+    await _hold(run)
+    await _capture(run, _audio(2.1))
+    await _run_feeds(run)
+    _confirm_seeks(run)
+    client = _client(run)
+
+    await run.move_to(TRACK_A, 1_000, _streamdetails_for(uri=TRACK_A))
+    client.skip_next.assert_not_called()
+    client.play.assert_not_called()
+    assert run._fed is not None
+    assert run._fed.spotify_uri == TRACK_B
+
+
 @pytest.mark.parametrize(
     "length_ms",
     [

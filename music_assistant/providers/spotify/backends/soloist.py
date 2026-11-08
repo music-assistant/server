@@ -1121,6 +1121,9 @@ class _EngineRun:
                     if spotify_uri != landed_on:
                         await self._play(client, spotify_uri)
                 item = self._new_item(spotify_uri, seek_position_ms, switched=not in_place)
+                if item.engine_duration_ms is None and previous.spotify_uri == spotify_uri:
+                    # the engine may describe the track skipped through last
+                    item.engine_duration_ms = previous.engine_duration_ms
                 # a seek can land just before its end, so once the move is done only
                 # a skip onto its start can still meet a refusal
                 item.fed = landed_on == spotify_uri and not seek_position_ms
@@ -2170,6 +2173,8 @@ class _EngineRun:
         length = self._engine_length
         return (
             self._fed is not None
+            # only a confirmed entry can be skipped onto; an unconfirmed one stays tracked
+            and self._fed.uid is not None
             and length is not None
             and length[0] == spotify_uri
             and length[1] - position_ms > _FEED_LEAD_S * 1000
