@@ -372,8 +372,6 @@ class SoloistBackend(SpotifyPlaybackBackend):
         """
         if self._server is None or self._binary is None:
             raise AudioError("Spotify Soloist backend is not started")
-        if self._refused_lately(spotify_uri):
-            raise AudioError(_REFUSED_MESSAGE)
         run, item = await self._acquire_item(
             spotify_uri, seek_position, streamdetails, continuation=continuation
         )
@@ -457,12 +455,16 @@ class SoloistBackend(SpotifyPlaybackBackend):
 
         :raises StreamSupersededError: When a continuation finds the item taken
             over by the stream that replaced it.
+        :raises AudioError: When Spotify refused this track a short while ago.
         """
         media_key = streamdetails.uri if streamdetails is not None else None
         seek_ms = seek_position * 1000
         waited = False
         while True:
             async with self._run_lock:
+                # checked under the lock: a refusal can land while this request waits for it
+                if self._refused_lately(spotify_uri):
+                    raise AudioError(_REFUSED_MESSAGE)
                 if (run := self._run) is not None and run.stopped:
                     # a run whose teardown was cut short serves nobody anymore: finish it
                     await run.stop()

@@ -1229,12 +1229,14 @@ async def test_a_refused_track_fails_at_once_when_asked_for_again(tmp_path: Path
     backend._run = run
     await _reach_fed_item(run)
     await run._handle_event(_track_event(TRACK_C))
-    backend._acquire_item = AsyncMock(side_effect=AudioError("served"))  # type: ignore[method-assign]
+    # the run idled out by the time the speaker gets there
+    backend._run = None
+    backend._start_run = AsyncMock(side_effect=AudioError("served"))  # type: ignore[method-assign]
     details = _streamdetails_for(uri=TRACK_B)
 
     with pytest.raises(AudioError, match="would not play"):
         await anext(backend.stream_spotify_uri(TRACK_B, streamdetails=details))
-    backend._acquire_item.assert_not_called()
+    backend._start_run.assert_not_called()
     # any other track is served as usual
     with pytest.raises(AudioError, match="served"):
         await anext(
@@ -1244,6 +1246,26 @@ async def test_a_refused_track_fails_at_once_when_asked_for_again(tmp_path: Path
     backend._refused_until[TRACK_B] = 0.0
     with pytest.raises(AudioError, match="served"):
         await anext(backend.stream_spotify_uri(TRACK_B, streamdetails=details))
+
+
+async def test_a_refusal_that_lands_while_its_request_waits_is_not_tried(tmp_path: Path) -> None:
+    """A request already waiting for the run when the refusal comes in fails instead of playing it."""
+    backend = _streamable_backend(tmp_path)
+    run = _live_run(tmp_path, backend=backend)
+    backend._run = run
+    await _reach_fed_item(run)
+    run.move_to = AsyncMock()  # type: ignore[method-assign]
+    backend._start_run = AsyncMock()  # type: ignore[method-assign]
+    async with backend._run_lock:
+        waiting = asyncio.ensure_future(
+            backend._acquire_item(TRACK_B, 0, _streamdetails_for(uri=TRACK_B), continuation=False)
+        )
+        await asyncio.sleep(0)
+        await run._handle_event(_track_event(TRACK_C))
+    with pytest.raises(AudioError, match="would not play"):
+        await asyncio.wait_for(waiting, 1)
+    run.move_to.assert_not_called()
+    backend._start_run.assert_not_called()
 
 
 async def test_the_item_after_a_refused_one_plays_on_the_running_engine(tmp_path: Path) -> None:
