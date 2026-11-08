@@ -324,6 +324,7 @@
     },
     "power_control": {
       "label": "Power Control",
+      "description": "A Home Assistant entity chosen here, such as a smart plug, is also used to turn on this player when it is offline.",
       "options": {
         "native": "Native power control",
         "none": "None",

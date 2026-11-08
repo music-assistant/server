@@ -113,6 +113,7 @@ def _make_mock_player(
     player.display_name = player_id
     player.type = player_type
     player.available = available
+    player.available_for_playback = available
     player.enabled = enabled
     player.powered = powered
     player.power_control = "native"

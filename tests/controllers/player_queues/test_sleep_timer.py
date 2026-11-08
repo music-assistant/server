@@ -62,6 +62,7 @@ def _controller(
     ctrl = PlayerQueuesController.__new__(PlayerQueuesController)
     mass = MagicMock()
     mass.players.get_player.return_value.extra_data = {}
+    mass.players.get_player.return_value.offline_by_power_control = False
     ctrl.mass = mass
     ctrl.logger = MagicMock()
     ctrl.signal_update = Mock()  # type: ignore[method-assign]

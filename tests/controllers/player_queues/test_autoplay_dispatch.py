@@ -563,6 +563,7 @@ def _tracker() -> Any:
             flow_mode_stream_log=[], served_item_ids={"i1"}, sleep_timer_stopped_target=None
         )
     }
+    tracker.mass.players.get_player.return_value.offline_by_power_control = False
     return tracker
 
 

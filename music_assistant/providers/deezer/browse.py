@@ -813,7 +813,7 @@ class DeezerBrowseManager:
 
     # -- Recently played (shared by browse and recommendations) --
 
-    @use_cache(3600)
+    @use_cache(300)
     async def _get_recently_played_items(self) -> list[MediaItemType]:
         """Get recently played items (cached)."""
         result = await self.provider.gql_client.get_recently_played(first=50)

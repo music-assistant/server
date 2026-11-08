@@ -33,7 +33,7 @@ certifi==2026.10.19
 chardet==7.6.0
 colorlog==6.12.0
 cryptography==50.0.0
-deezer-python-gql==0.21.0
+deezer-python-gql==0.22.1
 defusedxml==0.7.1
 deno==2.9.6
 duration-parser==1.0.1
@@ -53,7 +53,7 @@ lyricsgenius==3.12.2
 markdownify==1.2.3
 mashumaro==3.22
 modern_colorthief==0.3.0
-music-assistant-frontend==2.17.360
+music-assistant-frontend==2.17.361
 music-assistant-models==1.1.236
 mutagen==1.48.1
 niconico.py-ma==3.0.0

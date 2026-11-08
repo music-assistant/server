@@ -65,6 +65,7 @@ def _controller(
     ctrl.stop = stop_mock  # type: ignore[method-assign]
     ctrl.player_media_from_queue_item = AsyncMock()  # type: ignore[method-assign]
     ctrl.mass = MagicMock()
+    ctrl.mass.players.get_player.return_value.offline_by_power_control = False
     ctrl.mass.players.play_media = AsyncMock()
     ctrl.logger = MagicMock()
     return ctrl, queue_data, fill_mock, stop_mock
