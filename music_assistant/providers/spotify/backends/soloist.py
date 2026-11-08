@@ -979,7 +979,7 @@ class _EngineRun:
         upcoming = self._next or self._fed
         return {
             "current_item": self._item.spotify_uri,
-            "next_item": upcoming.spotify_uri if upcoming is not None else None,
+            "next_item": upcoming.spotify_uri if upcoming is not None else self._pending_feed,
             "idle": not self._item.streaming,
         }
 
@@ -2160,18 +2160,21 @@ class _EngineRun:
 
     def _feed_when_due(self) -> None:
         """Queue the held item on the engine once the current one is in its last seconds."""
-        if self._pending_feed is None or not self._feed_due():
+        if (
+            self._pending_feed is None
+            or (media_key := self._item.media_key) is None
+            or not self._feed_due()
+        ):
             return
         spotify_uri, self._pending_feed = self._pending_feed, None
         # the capture must not wait on the engine
-        self._spawn_task(self._feed_held(self._item, spotify_uri))
+        self._spawn_task(self._feed_held(media_key, spotify_uri))
 
-    async def _feed_held(self, item: _Item, spotify_uri: str) -> None:
-        """Queue a held item on the engine, unless the run moved on from the item it follows."""
+    async def _feed_held(self, media_key: str, spotify_uri: str) -> None:
+        """Queue a held item on the engine, as a hint arriving now would."""
         # under the run lock, like every hint: a move must not cross the add
         async with self.backend._run_lock:
-            if item is self._item and item.media_key is not None:
-                await self.feed_next(item.media_key, spotify_uri)
+            await self.feed_next(media_key, spotify_uri)
 
     def _consume_fed(self, position_ms: int = 0) -> None:
         """

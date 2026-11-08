@@ -1996,20 +1996,31 @@ async def test_the_held_item_is_dropped_when_the_run_moves(
     client.add_to_queue.assert_not_called()
 
 
-async def test_a_feed_waiting_for_the_run_lock_is_dropped_when_the_run_moved_on(
-    tmp_path: Path,
+@pytest.mark.parametrize(
+    ("uri", "held"),
+    [
+        # another track follows something else
+        (TRACK_C, None),
+        # the same item seeked back out of its last seconds holds it again
+        (TRACK_A, TRACK_B),
+    ],
+)
+async def test_a_feed_waiting_for_the_run_lock_follows_a_move_that_came_first(
+    tmp_path: Path, uri: str, held: str | None
 ) -> None:
-    """A move that held the lock first leaves the feed nothing to follow."""
+    """A move that held the lock first decides what the waiting feed still does."""
     run = _live_run(tmp_path)
     await _hold(run)
     client = _client(run)
     client.play.side_effect = lambda played, **_: run._observe_engine_item(played, announced=True)
+    _confirm_seeks(run)
     async with run.backend._run_lock:
         await _capture(run, _audio(2.1))
         await asyncio.sleep(0)
-        await run.move_to(TRACK_C, 0, _streamdetails_for(uri=TRACK_C))
+        await run.move_to(uri, 0, _streamdetails_for(uri=uri))
     await _run_feeds(run)
     client.add_to_queue.assert_not_called()
+    assert run._pending_feed == held
 
 
 async def test_a_feed_waiting_for_the_run_lock_dies_with_the_run(tmp_path: Path) -> None:
