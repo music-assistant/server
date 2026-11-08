@@ -1089,8 +1089,8 @@ class _EngineRun:
                     if spotify_uri != landed_on:
                         await self._play(client, spotify_uri)
                 item = self._new_item(spotify_uri, seek_position_ms, switched=not in_place)
-                # a confirmed seek proves the engine plays it, so only a skip onto
-                # its start can still meet a refusal
+                # a seek can land just before its end, so once the move is done only
+                # a skip onto its start can still meet a refusal
                 item.fed = landed_on == spotify_uri and not seek_position_ms
                 # the drain may have stopped mid-frame
                 item.align_skip = -self._raw_total % _FRAME_BYTES
@@ -1105,8 +1105,9 @@ class _EngineRun:
             raise AudioError(f"Spotify did not move to {spotify_uri}: {err!r}") from err
         finally:
             self._moving = False
-        if item.fed and self._engine_uri != spotify_uri:
-            # the engine already left it again while the move landed: Spotify refused it
+        if landed_on == spotify_uri and self._engine_uri != spotify_uri:
+            # the engine already left the fed track while the move landed (a report
+            # of the track it fell back to can confirm a short seek): Spotify refused it
             self._refuse(item)
         if streamdetails is not None:
             item.bind(streamdetails)

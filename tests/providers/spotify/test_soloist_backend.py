@@ -1213,6 +1213,28 @@ async def test_a_refusal_reported_before_the_skip_landed_still_fails_it(tmp_path
         await asyncio.wait_for(_collect(run, item), 1)
 
 
+async def test_a_seek_onto_a_fed_track_spotify_refuses_fails_it(tmp_path: Path) -> None:
+    """The context head paused at its start can confirm a short seek onto a refused track."""
+    backend = _streamable_backend(tmp_path)
+    run = _live_run(tmp_path, backend=backend)
+    backend._run = run
+    await run._handle_event(_playback_event("playing", uri=TRACK_A))
+    await _feed(run)
+    _client(run).skip_next.side_effect = lambda **_: run._observe_engine_item(
+        TRACK_B, announced=True
+    )
+
+    async def _refuse(*_: Any) -> None:
+        await run._handle_event(_playback_event("paused", uri=TRACK_A, position_ms=0))
+
+    _client(run).seek.side_effect = _refuse
+    item = await run.move_to(TRACK_B, 1000, _streamdetails_for(uri=TRACK_B))
+    assert item.ended
+    assert TRACK_B in backend._refused_until
+    with pytest.raises(AudioError, match="would not play"):
+        await asyncio.wait_for(_collect(run, item), 1)
+
+
 async def test_a_seek_onto_the_fed_track_is_no_refusal_at_its_end(tmp_path: Path) -> None:
     """A confirmed seek proves the engine plays the track, so leaving it later is its end."""
     run = _live_run(tmp_path)
