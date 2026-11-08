@@ -1103,7 +1103,7 @@ class DeezerBrowseManager:
         cache_key = f"_get_regular_playlist_tracks.{prov_playlist_id}"
         await self.mass.cache.delete(key=cache_key, provider=self.instance_id)
 
-    @use_cache(3600 * 3)
+    @use_cache(60 * 15)
     async def _get_regular_playlist_tracks(self, prov_playlist_id: str) -> list[Track]:
         """Get tracks for regular Deezer playlists (cached)."""
         result = await self.provider.gql_client.get_playlist(playlist_id=prov_playlist_id)
