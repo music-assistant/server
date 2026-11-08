@@ -564,15 +564,20 @@ async def _feed(run: _EngineRun, uri: str = TRACK_B, uid: str = "q1") -> None:
     await run._handle_event(_queue_event((uid, uri)))
 
 
-async def _cross_fed_boundary(run: _EngineRun) -> tuple[_Item, _Item]:
-    """Play the current item into a fed TRACK_B, returning the outgoing and the next item."""
+async def _reach_fed_item(run: _EngineRun) -> tuple[_Item, _Item]:
+    """Have the engine move on to a fed TRACK_B, returning the outgoing and the next item."""
     outgoing = run.current_item
     await _feed(run)
     await _capture(run, _audio(1.5))
     await run._handle_event(_queue_event())
     await run._handle_event(_track_event(TRACK_B))
     assert run._next is not None
-    upcoming = run._next
+    return outgoing, run._next
+
+
+async def _cross_fed_boundary(run: _EngineRun) -> tuple[_Item, _Item]:
+    """Play the current item into a fed TRACK_B, returning the outgoing and the next item."""
+    outgoing, upcoming = await _reach_fed_item(run)
     # the capture runs on past the cut
     await _capture(run, _audio(0.5, 2))
     assert run.current_item is upcoming
@@ -1103,6 +1108,324 @@ async def test_another_item_while_a_fed_one_is_pending_fails_the_run(tmp_path: P
     assert run._error is not None
     assert "already streaming somewhere else" in run._error
     assert run.current_item.error == run._error
+
+
+@pytest.mark.parametrize(
+    "report",
+    [
+        # back at the head of its context: the run's first item
+        _playback_event("paused", uri=TRACK_A, position_ms=0),
+        # back at the head of a context an earlier item started
+        _playback_event("paused", uri=TRACK_C, position_ms=0),
+        # on to another track
+        _track_event(TRACK_C),
+    ],
+)
+async def test_a_fed_track_spotify_refuses_fails_at_once(
+    tmp_path: Path, report: SoloistEvent
+) -> None:
+    """The engine leaving the fed track before any of it played fails that item, not the run."""
+    backend = _streamable_backend(tmp_path)
+    run = _live_run(tmp_path, backend=backend)
+    backend._run = run
+    outgoing, refused = await _reach_fed_item(run)
+    _, claimed = await backend._acquire_item(
+        TRACK_B, 0, _streamdetails_for(uri=TRACK_B), continuation=False
+    )
+    assert claimed is refused
+
+    await run._handle_event(report)
+    assert _upcoming(run) is None
+    assert run._error is None
+    assert not run.stopped
+    with pytest.raises(AudioError, match="would not play"):
+        await asyncio.wait_for(_collect(run, refused), 1)
+    # the item before it still plays to its end, and what the engine renders after it
+    # belongs to nobody
+    await _capture(run, _audio(0.5, 2))
+    _sink(run).suspend.assert_awaited()
+    assert await asyncio.wait_for(_collect(run, outgoing), 1) == _audio(1.5)
+
+
+async def test_a_refusal_after_the_cut_fails_the_fed_item_too(tmp_path: Path) -> None:
+    """The capture can reach the fed track before the engine reports leaving it."""
+    backend = _streamable_backend(tmp_path)
+    run = _live_run(tmp_path, backend=backend)
+    backend._run = run
+    _, refused = await _reach_fed_item(run)
+    await backend._acquire_item(TRACK_B, 0, _streamdetails_for(uri=TRACK_B), continuation=False)
+    # the silence the engine renders before a track's first sample
+    await _capture(run, _silence(0.5))
+    assert run.current_item is refused
+
+    await run._handle_event(_playback_event("paused", uri=TRACK_A, position_ms=0))
+    assert refused.ended
+    assert run._error is None
+    # going back to the head of its context is no pause from the Spotify app
+    assert run._pause_watch is None
+    with pytest.raises(AudioError, match="would not play"):
+        await asyncio.wait_for(_collect(run, refused), 1)
+    # what the engine renders from here on is nobody's audio
+    suspends = _sink(run).suspend.await_count
+    await _capture(run, _silence(0.1))
+    assert _sink(run).suspend.await_count == suspends + 1
+
+
+async def test_a_skip_onto_a_fed_track_spotify_refuses_fails_it(tmp_path: Path) -> None:
+    """A skip that lands on the fed track meets the refusal the same way as a boundary."""
+    backend = _streamable_backend(tmp_path)
+    run = _live_run(tmp_path, backend=backend)
+    backend._run = run
+    await run._handle_event(_playback_event("playing", uri=TRACK_A))
+    await _feed(run)
+    _client(run).skip_next.side_effect = lambda **_: run._observe_engine_item(
+        TRACK_B, announced=True
+    )
+    item = await run.move_to(TRACK_B, 0, _streamdetails_for(uri=TRACK_B))
+
+    await run._handle_event(_playback_event("paused", uri=TRACK_A, position_ms=0))
+    assert item.ended
+    assert run._error is None
+    # not mistaken for a pause from the Spotify app, which would stop the queue
+    assert run._pause_watch is None
+    assert TRACK_B in backend._refused_until
+    with pytest.raises(AudioError, match="would not play"):
+        await asyncio.wait_for(_collect(run, item), 1)
+
+
+async def test_a_refusal_reported_before_the_skip_landed_still_fails_it(tmp_path: Path) -> None:
+    """Both reports can reach the run while the skip is still landing."""
+    backend = _streamable_backend(tmp_path)
+    run = _live_run(tmp_path, backend=backend)
+    backend._run = run
+    await run._handle_event(_playback_event("playing", uri=TRACK_A))
+    await _feed(run)
+
+    def _refuse_at_once(**_: Any) -> None:
+        run._observe_engine_item(TRACK_B, announced=True)
+        run._observe_engine_item(TRACK_A, announced=True)
+
+    _client(run).skip_next.side_effect = _refuse_at_once
+    item = await run.move_to(TRACK_B, 0, _streamdetails_for(uri=TRACK_B))
+    assert item.ended
+    assert TRACK_B in backend._refused_until
+    with pytest.raises(AudioError, match="would not play"):
+        await asyncio.wait_for(_collect(run, item), 1)
+
+
+async def test_a_seek_onto_a_fed_track_spotify_refuses_fails_it(tmp_path: Path) -> None:
+    """The context head paused at its start can confirm a short seek onto a refused track."""
+    backend = _streamable_backend(tmp_path)
+    run = _live_run(tmp_path, backend=backend)
+    backend._run = run
+    await run._handle_event(_playback_event("playing", uri=TRACK_A))
+    await _feed(run)
+    _client(run).skip_next.side_effect = lambda **_: run._observe_engine_item(
+        TRACK_B, announced=True
+    )
+
+    async def _refuse(*_: Any) -> None:
+        await run._handle_event(_playback_event("paused", uri=TRACK_A, position_ms=0))
+
+    _client(run).seek.side_effect = _refuse
+    item = await run.move_to(TRACK_B, 1000, _streamdetails_for(uri=TRACK_B))
+    assert item.ended
+    assert TRACK_B in backend._refused_until
+    with pytest.raises(AudioError, match="would not play"):
+        await asyncio.wait_for(_collect(run, item), 1)
+
+
+async def test_a_seek_onto_the_fed_track_is_no_refusal_at_its_end(tmp_path: Path) -> None:
+    """A confirmed seek proves the engine plays the track, so leaving it later is its end."""
+    run = _live_run(tmp_path)
+    await run._handle_event(_playback_event("playing", uri=TRACK_A))
+    await _feed(run)
+    _client(run).skip_next.side_effect = lambda **_: run._observe_engine_item(
+        TRACK_B, announced=True
+    )
+    _confirm_seeks(run)
+    details = _streamdetails_for(uri=TRACK_B)
+    details.duration = 180
+    item = await run.move_to(TRACK_B, 179_500, details)
+
+    # its silent last half second is trimmed, then the engine is back at its context head
+    await _capture(run, _silence(0.5))
+    await run._handle_event(_playback_event("paused", uri=TRACK_A, position_ms=0))
+    assert item.ended
+    assert item.error is None
+    assert not run.backend._refused_until
+    assert run._pause_watch is None
+
+
+async def test_a_track_refused_a_moment_ago_is_not_fed(tmp_path: Path) -> None:
+    """Its request fails at once, so queueing it would only have the engine play it to nobody."""
+    backend = _streamable_backend(tmp_path)
+    run = _live_run(tmp_path, backend=backend)
+    backend._note_refusal(TRACK_B)
+    await run.feed_next(cast("str", run.current_item.media_key), TRACK_B)
+    _client(run).add_to_queue.assert_not_called()
+    assert run._fed is None
+
+
+async def test_the_engine_leaving_a_fed_track_that_played_is_its_end(tmp_path: Path) -> None:
+    """Once the fed track's audio arrived, the engine moving on is no refusal."""
+    run = _live_run(tmp_path)
+    _, upcoming = await _cross_fed_boundary(run)
+    await run._handle_event(_track_event(TRACK_C))
+    assert upcoming.ended
+    assert upcoming.error is None
+    assert not run.backend._refused_until
+
+
+async def test_a_pause_on_the_fed_track_is_no_refusal(tmp_path: Path) -> None:
+    """The engine pausing on the fed track itself did not refuse it."""
+    run = _live_run(tmp_path)
+    _, upcoming = await _reach_fed_item(run)
+    await run._handle_event(_playback_event("paused", uri=TRACK_B, position_ms=0))
+    assert upcoming.error is None
+    assert _upcoming(run) is upcoming
+
+
+async def test_a_refused_track_fails_at_once_when_asked_for_again(tmp_path: Path) -> None:
+    """The speaker reaching the refused track later gets the refusal, not a fresh run on it."""
+    backend = _streamable_backend(tmp_path)
+    run = _live_run(tmp_path, backend=backend)
+    backend._run = run
+    await _reach_fed_item(run)
+    await run._handle_event(_track_event(TRACK_C))
+    # the run idled out by the time the speaker gets there
+    backend._run = None
+    backend._start_run = AsyncMock(side_effect=AudioError("served"))  # type: ignore[method-assign]
+    details = _streamdetails_for(uri=TRACK_B)
+
+    with pytest.raises(AudioError, match="would not play"):
+        await anext(backend.stream_spotify_uri(TRACK_B, streamdetails=details))
+    backend._start_run.assert_not_called()
+    # any other track is served as usual
+    with pytest.raises(AudioError, match="served"):
+        await anext(
+            backend.stream_spotify_uri(TRACK_C, streamdetails=_streamdetails_for(uri=TRACK_C))
+        )
+    # Spotify may well play it later: once the memory runs out the track is tried again
+    backend._refused_until[TRACK_B] = 0.0
+    with pytest.raises(AudioError, match="served"):
+        await anext(backend.stream_spotify_uri(TRACK_B, streamdetails=details))
+
+
+async def test_a_refusal_that_lands_while_its_request_waits_is_not_tried(tmp_path: Path) -> None:
+    """A request already waiting for the run when the refusal comes in fails instead of playing it."""
+    backend = _streamable_backend(tmp_path)
+    run = _live_run(tmp_path, backend=backend)
+    backend._run = run
+    await _reach_fed_item(run)
+    run.move_to = AsyncMock()  # type: ignore[method-assign]
+    backend._start_run = AsyncMock()  # type: ignore[method-assign]
+    async with backend._run_lock:
+        waiting = asyncio.ensure_future(
+            backend._acquire_item(TRACK_B, 0, _streamdetails_for(uri=TRACK_B), continuation=False)
+        )
+        await asyncio.sleep(0)
+        await run._handle_event(_track_event(TRACK_C))
+    with pytest.raises(AudioError, match="would not play"):
+        await asyncio.wait_for(waiting, 1)
+    run.move_to.assert_not_called()
+    backend._start_run.assert_not_called()
+
+
+async def test_the_item_after_a_refused_one_plays_on_the_running_engine(tmp_path: Path) -> None:
+    """The run outlives the refusal, so the queue's next item needs no fresh engine."""
+    backend = _streamable_backend(tmp_path)
+    run = _live_run(tmp_path, backend=backend)
+    backend._run = run
+    outgoing, _ = await _reach_fed_item(run)
+    await run._handle_event(_playback_event("paused", uri=TRACK_A, position_ms=0))
+    await _capture(run, _audio(0.5, 2))
+    await backend.release_item(run, outgoing)
+    client = _client(run)
+    client.play.side_effect = lambda uri, **_: run._observe_engine_item(uri, announced=True)
+    backend._start_run = AsyncMock()  # type: ignore[method-assign]
+
+    acquired, item = await backend._acquire_item(
+        TRACK_C, 0, _streamdetails_for(uri=TRACK_C), continuation=False
+    )
+    assert acquired is run
+    assert item.spotify_uri == TRACK_C
+    client.play.assert_awaited_once_with(TRACK_C)
+    backend._start_run.assert_not_called()
+
+
+async def _read_quiet_fifo(run: _EngineRun, seconds: float) -> None:
+    """Run the capture for a while on a FIFO the engine writes nothing more to."""
+    run._reader = asyncio.StreamReader()
+    reading = asyncio.ensure_future(run._read_capture())
+    await asyncio.sleep(seconds)
+    run._stopped = True
+    await asyncio.wait_for(reading, 1)
+
+
+async def test_the_item_before_a_refused_one_ends_where_the_paused_engine_stopped(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A cut the exact length put past the engine's last audio still ends the item at once."""
+    monkeypatch.setattr(soloist_backend, "_READ_SLICE_S", 0.01)
+    run = _live_run(tmp_path)
+    outgoing = run.current_item
+    await run._handle_event(
+        _playback_event("playing", uri=TRACK_A, position_ms=0, duration_ms=2_000)
+    )
+    await _reach_fed_item(run)
+    # the exact length cuts half a second past where the engine reported the change
+    assert outgoing.end_at == 2 * _BYTES_PER_SECOND
+    await run._handle_event(_playback_event("paused", uri=TRACK_A, position_ms=0))
+
+    await _read_quiet_fifo(run, 0.1)
+    assert outgoing.delivery_done
+    _sink(run).suspend.assert_awaited()
+    assert run._error is None
+    assert await asyncio.wait_for(_collect(run, outgoing), 1) == _audio(1.5)
+
+
+async def test_an_item_the_engine_paused_short_of_its_cut_ends_at_once(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """With nothing fed, the engine pausing at its context head leaves the cut unreached."""
+    monkeypatch.setattr(soloist_backend, "_READ_SLICE_S", 0.01)
+    run = _live_run(tmp_path)
+    item = run.current_item
+    await _capture(run, _audio(2))
+    item.end_at = item.raw_read + _BYTES_PER_SECOND // 2
+    await run._handle_event(_playback_event("paused", uri=TRACK_C, position_ms=0))
+
+    await _read_quiet_fifo(run, 0.1)
+    assert item.delivery_done
+    assert await asyncio.wait_for(_collect(run, item), 1) == _audio(2)
+
+
+@pytest.mark.parametrize(
+    ("short_s", "status"),
+    [
+        # further from its cut than an exact length can move it: a stalled engine
+        (1.5, "paused"),
+        # an engine still going owes the rest of the item
+        (0.5, "playing"),
+    ],
+)
+async def test_an_item_short_of_its_cut_is_left_to_the_stall_timeout(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, short_s: float, status: str
+) -> None:
+    """Only a paused engine a little short of the cut is taken to have nothing more."""
+    monkeypatch.setattr(soloist_backend, "_READ_SLICE_S", 0.01)
+    monkeypatch.setattr(soloist_backend, "_STALL_TIMEOUT_S", 0.1)
+    run = _live_run(tmp_path)
+    item = run.current_item
+    await _capture(run, _audio(2))
+    item.end_at = item.raw_read + int(short_s * _BYTES_PER_SECOND)
+    await run._handle_event(_playback_event(status, uri=TRACK_C, position_ms=0))
+    run._fail = MagicMock()  # type: ignore[method-assign]
+
+    await _read_quiet_fifo(run, 0.4)
+    assert not item.delivery_done
+    run._fail.assert_called_once_with("Spotify stopped sending audio")
 
 
 async def test_a_failed_sign_in_fails_the_run_at_once(tmp_path: Path) -> None:
