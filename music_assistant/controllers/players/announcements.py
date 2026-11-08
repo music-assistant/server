@@ -32,6 +32,7 @@ from music_assistant_models.player import PlayerMedia
 from music_assistant.constants import (
     ANNOUNCE_ALERT_FILE,
     ATTR_ANNOUNCEMENT_IN_PROGRESS,
+    ATTR_IDLE_SINCE,
     CONF_ANNOUNCE_TTS_ENGINE,
     CONF_ENTRY_ANNOUNCE_VOLUME,
     CONF_ENTRY_ANNOUNCE_VOLUME_MAX,
@@ -444,6 +445,9 @@ class AnnouncementsMixin:
             # Cleared after restore finishes.
             # Resume during announce still needs the parked position while this is set.
             player.extra_data[ATTR_ANNOUNCEMENT_IN_PROGRESS] = False
+            # the idle power off counts from here, also after a native announcement that
+            # leaves the playback state as it was
+            player.extra_data.pop(ATTR_IDLE_SINCE, None)
             await self.mass.streams.announcement_renderer.unregister(player.player_id, render)
 
     async def _run_member_announcement(

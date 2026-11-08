@@ -6494,6 +6494,18 @@ class TestPlayAnnouncementCleanup:
         assert announcements == {}
         mock_mass.streams.announcement_renderer.unregister.assert_awaited_once()
 
+    async def test_announcement_starts_the_idle_count_over(self, mock_mass: MagicMock) -> None:
+        """A native announcement that leaves the playback state as it was still counts."""
+        controller, player, _render = self._make_player(mock_mass, {})
+        player.play_announcement = AsyncMock()  # type: ignore[method-assign]
+        player.extra_data[ATTR_IDLE_SINCE] = time.monotonic() - 30 * 60
+
+        await controller.play_announcement("player_1", "http://test/announcement.mp3")
+
+        player.play_announcement.assert_awaited_once()
+        assert player.state.playback_state == PlaybackState.IDLE
+        assert ATTR_IDLE_SINCE not in player.extra_data
+
     async def test_announcement_data_removed_on_error(self, mock_mass: MagicMock) -> None:
         """The registered announcement data is released even when playback fails."""
         announcements: dict[str, object] = {}
