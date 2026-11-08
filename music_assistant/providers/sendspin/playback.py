@@ -841,9 +841,14 @@ class SendspinPlaybackSession:
                         raise
 
         anchor_move_task_id = f"sendspin_anchor_move_{uuid4().hex}"
+        first_heard_task_id = f"sendspin_first_heard_{uuid4().hex}"
+        first_heard_scheduled = False
+        first_heard_reported = False
+        report_when_heard = False
 
         async def _report_timeline(anchor_us: int, now_us: int) -> None:
-            nonlocal last_elapsed_update_s, reported_anchor_us
+            nonlocal last_elapsed_update_s, reported_anchor_us, first_heard_scheduled
+            nonlocal first_heard_reported, report_when_heard
             # The first commit reports too, since beats published before it were timed
             # from an estimated start. Later moves are compared against the last reported
             # anchor so small ones add up.
@@ -855,17 +860,40 @@ class SendspinPlaybackSession:
                 reported_anchor_us = anchor_us
             else:
                 timeline_changed = False
-            elapsed_real_s = max(0.0, (now_us - anchor_us) / 1_000_000)
+            stream_position_s = (now_us - anchor_us) / 1_000_000
+            heard = False
+            if not first_heard_reported and stream_position_s < 0:
+                # The first commits happen the players' lead time before position 0 plays,
+                # so the position published now runs ahead by that much. Publish it again
+                # once the audio is heard: the later updates are too small a correction
+                # to re-anchor a published position by themselves. Follow the anchor until
+                # then: a new stream can start out on the old one's schedule.
+                if not first_heard_scheduled or timeline_changed or report_when_heard:
+                    first_heard_scheduled = True
+                    self.player.mass.call_later(
+                        -stream_position_s, _report_when_heard, task_id=first_heard_task_id
+                    )
+            elif not first_heard_reported and first_heard_scheduled:
+                heard = True
+            elapsed_real_s = max(0.0, stream_position_s)
             # A rebase can step the position backward, which would keep the gate shut.
             if (
                 timeline_changed
+                or heard
                 or last_elapsed_update_s is None
                 or elapsed_real_s - last_elapsed_update_s >= 1.0
             ):
                 last_elapsed_update_s = elapsed_real_s
                 self.player._attr_elapsed_time = elapsed_real_s
                 self.player._attr_elapsed_time_last_updated = time.time()
-                self.player.update_state()
+                # The correction when the first audio is heard is smaller than what
+                # update_state() takes for a moved position, so it has to insist.
+                self.player.update_state(force_update=heard)
+            if heard:
+                first_heard_reported = True
+                report_when_heard = False
+                self.player.mass.cancel_timer(first_heard_task_id)
+                self.player.on_first_audio_heard()
             if timeline_changed:
                 self.player.on_flow_timeline_changed()
             # A move queued behind the playing audio must apply even if no commit follows.
@@ -879,6 +907,16 @@ class SendspinPlaybackSession:
                     _apply_queued_move,
                     task_id=anchor_move_task_id,
                 )
+
+        async def _report_when_heard() -> None:
+            nonlocal report_when_heard
+            now_us = push_stream.now_us()
+            async with self._state_lock:
+                if not self._history:
+                    return
+                anchor_us = self._playing_timeline_start_us_locked(now_us)
+            report_when_heard = True
+            await _report_timeline(anchor_us, now_us)
 
         async def _apply_queued_move() -> None:
             now_us = push_stream.now_us()
@@ -1007,8 +1045,9 @@ class SendspinPlaybackSession:
                     # non-clean stop so we skip group.stop() below
                     # and let the new playback handle the transition.
                     producer_stopped_cleanly = False
-            self.player.mass.cancel_timer(anchor_move_task_id)
-            self.player.mass.cancel_task(anchor_move_task_id)
+            for task_id in (anchor_move_task_id, first_heard_task_id):
+                self.player.mass.cancel_timer(task_id)
+                self.player.mass.cancel_task(task_id)
             with suppress(Exception):
                 # Same condition as the group.stop() below, so we snapshot on exactly the
                 # paths where a group STOP is already emitted. That stop resets the reported

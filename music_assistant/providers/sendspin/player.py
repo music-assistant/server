@@ -7,6 +7,7 @@ import time
 from collections.abc import Callable, Iterable
 from contextlib import suppress
 from copy import deepcopy
+from dataclasses import replace
 from io import BytesIO
 from typing import TYPE_CHECKING, Any, ClassVar, cast
 
@@ -1911,12 +1912,40 @@ class SendspinPlayer(SendspinBasePlayer):
         )
 
     def on_flow_timeline_changed(self) -> None:
-        """Re-publish the beat schedule after the flow stream's timeline was set or moved."""
+        """Re-publish position and beat schedule after the flow stream's timeline was set or moved."""
         if self.synced_to is not None:
             return
         self.mass.create_task(
             self._refresh_beat_schedule(),
             task_id=f"sendspin_beat_rebase_{self.player_id}",
+            abort_existing=True,
+        )
+        # The position published at the play or seek command predates the audio.
+        self.mass.create_task(
+            self.send_current_media_metadata(),
+            task_id=f"sendspin_metadata_{self.player_id}",
+            abort_existing=True,
+        )
+
+    def on_first_audio_heard(self) -> None:
+        """Re-publish the position once a new stream's first audio is heard."""
+        if self.synced_to is not None:
+            return
+        # The correction is smaller than a position jump, so nothing re-bases the queue on
+        # it by itself. The queue belongs to the protocol parent when there is one, whose
+        # state only follows on a deferred update: bring it up to date first.
+        queue_owner: Player = self
+        if self.type == PlayerType.PROTOCOL and (
+            parent := self.mass.players.get_player(self.protocol_parent_id or "")
+        ):
+            parent.update_state(force_update=True)
+            queue_owner = parent
+        self.mass.players.on_player_position_jumped(queue_owner)
+        # What was published at the play or seek command predates the audio, and the
+        # queue may only now place the track in the flow stream.
+        self.mass.create_task(
+            self.send_current_media_metadata(),
+            task_id=f"sendspin_metadata_{self.player_id}",
             abort_existing=True,
         )
 
@@ -1995,6 +2024,9 @@ class SendspinPlayer(SendspinBasePlayer):
         track_progress = metadata.track_progress
         if track_progress is None:
             return
+        metadata, timestamp_us = self._timeline_anchored(
+            metadata, queue, queue_item, is_playing=is_playing
+        )
 
         if not self._metadata_publish_allowed(generation):
             return
@@ -2008,7 +2040,7 @@ class SendspinPlayer(SendspinBasePlayer):
                     int(current_media.duration * 1000) if current_media.duration else None
                 )
             if (metadata_role := self._metadata_role) is not None:
-                metadata_role.set_metadata(metadata)
+                metadata_role.set_metadata(metadata, timestamp_us=timestamp_us)
                 self._published_item = (current_media.uri, current_media.queue_item_id)
 
         if not self._metadata_publish_allowed(generation):
@@ -2712,6 +2744,65 @@ class SendspinPlayer(SendspinBasePlayer):
             file_seek_s = float(queue_item.streamdetails.seek_position or 0)
         return int((track_flow_start_s - file_seek_s) * 1_000_000)
 
+    def _timeline_anchored(
+        self,
+        metadata: Metadata,
+        queue: PlayerQueue | None,
+        queue_item: QueueItem | None,
+        *,
+        is_playing: bool,
+    ) -> tuple[Metadata, int | None]:
+        """
+        Return the metadata with its position taken from the flow stream's timeline.
+
+        The queue's position counts from the play or seek command, before the audio was even
+        prepared; the timeline knows when the track is heard. Also returns the server-clock
+        time the metadata takes effect at: when the track isn't audible yet, then.
+        Unchanged (and None) while the timeline doesn't place the track.
+
+        :param metadata: Metadata with the queue's position.
+        :param queue: The queue the track plays from.
+        :param queue_item: The track playing now.
+        :param is_playing: Whether the player is playing.
+        """
+        if not is_playing or queue_item is None:
+            return metadata, None
+        provider = cast("SendspinProvider", self.provider)
+        now_us = provider.server_api.clock.now_us()
+        anchor_us = self._timeline_track_anchor_us(queue, queue_item, now_us)
+        if anchor_us is None:
+            return metadata, None
+        if anchor_us > now_us:
+            return replace(metadata, track_progress=0), anchor_us
+        progress_ms = (now_us - anchor_us) // 1000
+        if metadata.track_duration:
+            progress_ms = min(progress_ms, metadata.track_duration)
+        return replace(metadata, track_progress=progress_ms), None
+
+    def _timeline_track_anchor_us(
+        self, queue: PlayerQueue | None, queue_item: QueueItem, now_us: int
+    ) -> int | None:
+        """
+        Return the server-clock time at which the current track's file position 0 plays.
+
+        Taken from the flow stream's audio timeline, so it matches what players hear.
+        None until the first chunk commits, or while the flow log hasn't recorded the track.
+
+        :param queue: The queue the track plays from.
+        :param queue_item: The track playing now.
+        :param now_us: The server clock now.
+        """
+        timeline_start_us = self.playback_session.flow_track_anchor_us(0)
+        if timeline_start_us is None:
+            return None
+        pq_data = self.mass.player_queues.queue_data_or_none(queue.queue_id) if queue else None
+        offset_us = self._flow_track_offset_us(
+            pq_data, queue_item, (now_us - timeline_start_us) / 1_000_000
+        )
+        if offset_us is None:
+            return None
+        return timeline_start_us + offset_us
+
     async def _send_beat_schedule(
         self,
         queue: PlayerQueue | None,
@@ -2751,15 +2842,7 @@ class SendspinPlayer(SendspinBasePlayer):
         # Anchor beats to the current track's spot in the flow stream's audio
         # timeline. Falls back to the progress-derived anchor until the first
         # chunk commits or while the flow log hasn't recorded this track yet.
-        anchor_us: int | None = None
-        pq_data = self.mass.player_queues.queue_data_or_none(queue.queue_id) if queue else None
-        timeline_start_us = self.playback_session.flow_track_anchor_us(0)
-        if timeline_start_us is not None:
-            offset_us = self._flow_track_offset_us(
-                pq_data, queue_item, (now_us - timeline_start_us) / 1_000_000
-            )
-            if offset_us is not None:
-                anchor_us = timeline_start_us + offset_us
+        anchor_us = self._timeline_track_anchor_us(queue, queue_item, now_us)
         if anchor_us is None:
             anchor_us = now_us - track_progress_ms * 1000
         # Re-push only on track change, seek or timeline rebase (anchor jumps beyond natural drift).

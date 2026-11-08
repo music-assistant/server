@@ -18,7 +18,7 @@ from music_assistant.providers.sendspin.playback import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator
+    from collections.abc import AsyncIterator, Awaitable, Callable
 
     import pytest
 
@@ -126,7 +126,7 @@ async def _run_commit_loop(
     player.on_flow_timeline_changed.side_effect = lambda *_: trace.player_calls.append(
         ("timeline", None)
     )
-    player.update_state.side_effect = lambda: trace.player_calls.append(
+    player.update_state.side_effect = lambda **_kwargs: trace.player_calls.append(
         ("elapsed", player._attr_elapsed_time)
     )
     original_prune = SendspinPlaybackSession._prune_history_locked
@@ -222,6 +222,77 @@ async def test_first_commit_reports_the_anchor(monkeypatch: pytest.MonkeyPatch) 
     trace = await _run_commit_loop(monkeypatch, [t0, t0 + _CHUNK_DURATION_US])
 
     assert trace.player_calls == [("elapsed", 0.0), ("timeline", None)]
+
+
+async def test_position_is_published_again_once_it_is_heard(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """
+    The first commit's position runs ahead by the send-ahead, so it is re-published when heard.
+
+    The send-ahead is the players' lead time: below the 1 s jump threshold, the correction
+    the regular updates bring would never re-anchor the published position.
+    """
+    t0 = 10_000_000
+
+    async def _drain_until_the_first_chunk_plays(self: SendspinPlaybackSession) -> None:
+        call_later = cast("MagicMock", self.player.mass.call_later)
+        delay_s, report = next(
+            call.args[:2]
+            for call in call_later.call_args_list
+            if str(call.kwargs.get("task_id", "")).startswith("sendspin_first_heard_")
+        )
+        assert delay_s == _SEND_AHEAD_US / 1_000_000
+        push_stream = cast("_FakePushStream", self._push_stream)
+        push_stream._now_us = t0
+        await report()
+
+    monkeypatch.setattr(
+        SendspinPlaybackSession, "_wait_for_buffer_drain", _drain_until_the_first_chunk_plays
+    )
+
+    trace = await _run_commit_loop(monkeypatch, [t0, t0 + _CHUNK_DURATION_US])
+
+    assert trace.player_calls == [("elapsed", 0.0), ("timeline", None), ("elapsed", 0.0)]
+    # a correction below the jump threshold, so the state has to be recalculated regardless
+    update_state = cast("MagicMock", trace.player.update_state)
+    assert update_state.call_args_list[-1].kwargs == {"force_update": True}
+    cast("MagicMock", trace.player.on_first_audio_heard).assert_called_once()
+
+
+async def test_a_report_timer_that_fires_early_waits_for_the_audio(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A timer that fires before the first chunk plays sets itself again instead of reporting."""
+    t0 = 10_000_000
+
+    async def _drain_with_an_early_timer(self: SendspinPlaybackSession) -> None:
+        call_later = cast("MagicMock", self.player.mass.call_later)
+
+        def _scheduled() -> list[tuple[float, Callable[[], Awaitable[None]]]]:
+            return [
+                (call.args[0], call.args[1])
+                for call in call_later.call_args_list
+                if str(call.kwargs.get("task_id", "")).startswith("sendspin_first_heard_")
+            ]
+
+        push_stream = cast("_FakePushStream", self._push_stream)
+        push_stream._now_us = t0 - 3_000
+        await _scheduled()[0][1]()
+        assert len(_scheduled()) == 2
+        assert _scheduled()[1][0] == 0.003
+        cast("MagicMock", self.player.on_first_audio_heard).assert_not_called()
+        push_stream._now_us = t0
+        await _scheduled()[1][1]()
+
+    monkeypatch.setattr(
+        SendspinPlaybackSession, "_wait_for_buffer_drain", _drain_with_an_early_timer
+    )
+
+    trace = await _run_commit_loop(monkeypatch, [t0, t0 + _CHUNK_DURATION_US])
+
+    assert trace.player_calls == [("elapsed", 0.0), ("timeline", None), ("elapsed", 0.0)]
+    cast("MagicMock", trace.player.on_first_audio_heard).assert_called_once()
 
 
 async def test_buffered_runahead_keeps_unplayed_history(monkeypatch: pytest.MonkeyPatch) -> None:
