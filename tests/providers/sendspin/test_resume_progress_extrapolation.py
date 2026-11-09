@@ -93,6 +93,7 @@ async def test_push_pairs_the_position_with_the_playing_state() -> None:
     player._send_beat_schedule = AsyncMock()
     # no flow timeline yet: the queue position is all there is
     player._timeline_anchored = lambda metadata, *_args, **_kwargs: (metadata, None)
+    player._album_artist = AsyncMock(return_value=None)
     idle_media = _media(74, updated_ago=360.0)
     idle_media.duration = 309
     player._player_media = idle_media

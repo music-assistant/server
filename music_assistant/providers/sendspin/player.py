@@ -2164,7 +2164,7 @@ class SendspinPlayer(SendspinBasePlayer):
         repeat, shuffle = self._queue_repeat_shuffle(self.mass.player_queues.get(queue_id))
         self._publish_repeat_shuffle(repeat, shuffle=shuffle)
 
-    async def send_current_media_metadata(self) -> None:  # noqa: PLR0915
+    async def send_current_media_metadata(self) -> None:
         """Send the current media metadata to the sendspin group."""
         if not self.available or self._content_takeover_pending:
             return
@@ -2193,20 +2193,7 @@ class SendspinPlayer(SendspinBasePlayer):
         if not self._metadata_publish_allowed(generation):
             return
 
-        album_artist: str | None = None
-        if queue_item and queue_item.media_item and is_track(queue_item.media_item):
-            album_mapping = queue_item.media_item.album
-            full_album: Album | None = None
-            if album_mapping is not None:
-                if isinstance(album_mapping, Album):
-                    full_album = album_mapping
-                else:
-                    result = await self.mass.music.get_library_item_by_prov_id(
-                        MediaType.ALBUM, album_mapping.item_id, album_mapping.provider
-                    )
-                    full_album = result if isinstance(result, Album) else None
-                if full_album and full_album.artists:
-                    album_artist = full_album.artist_str
+        album_artist = await self._album_artist(queue_item)
         if not self._metadata_publish_allowed(generation):
             return
 
@@ -2843,24 +2830,54 @@ class SendspinPlayer(SendspinBasePlayer):
         artwork_url = current_media.image_url
         if self._metadata_publish_allowed(generation) and artwork_url != self.last_sent_artwork_url:
             if artwork_url is not None:
-                # Fetch from the resolved URL so the bytes match artwork_url, even when
-                # radio now-playing art differs from the queue item's own image.
-                try:
-                    image_data = await self.mass.metadata.get_thumbnail(
-                        artwork_url, provider="builtin"
-                    )
-                except MediaNotFoundError:
-                    # artwork file was removed from disk; skip rather than crash the send
-                    image_data = None
-                if isinstance(image_data, bytes):
-                    # decode through the guard so undecodable art (e.g. SVG) is skipped, not crashed
-                    image = await self._decode_artwork(image_data)
-                    if image is not None:
-                        await self._publish_artwork(image, artwork_url, generation)
+                image = await self._fetch_album_artwork(artwork_url)
+                if image is not None:
+                    await self._publish_artwork(image, artwork_url, generation)
             else:
                 await self._publish_artwork(None, None, generation)
 
         return artwork_url
+
+    async def _fetch_album_artwork(self, artwork_url: str) -> Image.Image | None:
+        """
+        Return the album artwork at the given URL, or None when it cannot be loaded.
+
+        :param artwork_url: The resolved image URL of the media.
+        """
+        # Fetch from the resolved URL so the bytes match artwork_url, even when
+        # radio now-playing art differs from the queue item's own image.
+        try:
+            image_data = await self.mass.metadata.get_thumbnail(artwork_url, provider="builtin")
+        except MediaNotFoundError:
+            # artwork file was removed from disk; skip rather than crash the send
+            return None
+        if not isinstance(image_data, bytes):
+            return None
+        # decode through the guard so undecodable art (e.g. SVG) is skipped, not crashed
+        return await self._decode_artwork(image_data)
+
+    async def _album_artist(self, queue_item: QueueItem | None) -> str | None:
+        """
+        Return the album artist of a queue item's track, if known.
+
+        :param queue_item: The queue item to look up.
+        """
+        if not queue_item or not queue_item.media_item or not is_track(queue_item.media_item):
+            return None
+        album_mapping = queue_item.media_item.album
+        if album_mapping is None:
+            return None
+        full_album: Album | None
+        if isinstance(album_mapping, Album):
+            full_album = album_mapping
+        else:
+            result = await self.mass.music.get_library_item_by_prov_id(
+                MediaType.ALBUM, album_mapping.item_id, album_mapping.provider
+            )
+            full_album = result if isinstance(result, Album) else None
+        if full_album and full_album.artists:
+            return full_album.artist_str
+        return None
 
     async def _send_artist_artwork(
         self, current_item: QueueItem, *, generation: int | None = None
