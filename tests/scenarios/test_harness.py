@@ -21,6 +21,7 @@ from . import harness
 from .harness import (
     CLOCK_START,
     FAKE_SETTING,
+    TEST_TRACK_URI,
     Event,
     Scenario,
     ScenarioError,
@@ -514,6 +515,37 @@ async def test_stored_config_mentions_come_from_the_saved_settings(scenario: Sce
         in await scenario.stored_config_mentioning("Kitchen Sonos")
     )
     assert await scenario.stored_config_mentioning("nothing like this") == []
+
+
+async def test_play_runs_the_queue_on_the_fake_protocol(scenario: Scenario) -> None:
+    """play() loads the test track into the player's queue and the protocol reports it playing."""
+    sonos = await scenario.add_provider("sonos")
+    speaker = sonos.protocol("RINCON_KITCHEN", "Kitchen", identifiers=KITCHEN)
+    await scenario.attach(speaker)
+
+    await scenario.play("RINCON_KITCHEN")
+
+    assert [command[0] for command in speaker.commands] == ["play_media"]
+    assert speaker.playback_state == PlaybackState.PLAYING
+    queue = scenario.queue("RINCON_KITCHEN")
+    assert queue is not None
+    assert (queue.state, queue.items) == (PlaybackState.PLAYING, 1)
+    assert queue.current_item is not None
+    assert queue.current_item.uri == TEST_TRACK_URI
+    await scenario.idle()
+
+
+async def test_saved_queue_holds_the_items_a_queue_played(scenario: Scenario) -> None:
+    """A queue that never held an item has no saved queue; a played one has, also before the debounce."""
+    sonos = await scenario.add_provider("sonos")
+    speaker = sonos.protocol("RINCON_KITCHEN", "Kitchen", identifiers=KITCHEN)
+    await scenario.attach(speaker)
+    await scenario.idle()
+
+    assert await scenario.saved_queue("RINCON_KITCHEN") is None
+    await scenario.play("RINCON_KITCHEN")
+    assert await scenario.saved_queue("RINCON_KITCHEN") == [TEST_TRACK_URI]
+    assert await scenario.saved_queue("unknown") is None
 
 
 async def test_session_only_flag_stays_with_the_device(scenario: Scenario) -> None:

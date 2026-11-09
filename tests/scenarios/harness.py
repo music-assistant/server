@@ -35,8 +35,11 @@ from music_assistant_models.enums import (
 )
 from music_assistant_models.player import DeviceInfo
 from music_assistant_models.player_control import PlayerControl
+from music_assistant_models.queue_item import QueueItem
 
 from music_assistant.constants import CONF_PLAYERS
+from music_assistant.controllers.player_queues.constants import CACHE_CATEGORY_PLAYER_QUEUE_ITEMS
+from music_assistant.controllers.streams.audio import StreamsAudio
 from music_assistant.helpers.util import load_provider_module
 from music_assistant.mass import MusicAssistant
 from music_assistant.models.player_protocol import PlayerProtocol
@@ -63,6 +66,12 @@ REAL_PLAYER_PROVIDERS = frozenset({"universal_player", "universal_group", "sync_
 
 # The provider instance that owns the fake power controls: one that is always loaded.
 POWER_CONTROL_PROVIDER = "builtin"
+
+# The music provider play() plays from: the server's own test provider, whose fake media items
+# need no network, loaded on first use.
+MUSIC_PROVIDER = "test"
+# The track play() plays.
+TEST_TRACK_URI = f"{MUSIC_PROVIDER}://track/0_0_0"
 
 # Loop time at the start of every scenario.
 CLOCK_START = 1000.0
@@ -597,6 +606,24 @@ class Scenario:
         self._set_power(control, powered)
         await self.settle()
 
+    async def play(self, player_id: str) -> None:
+        """
+        Play a track on a player through its queue, the way a client does.
+
+        The track is one of the server's own test music provider (see MUSIC_PROVIDER), loaded
+        on first use; no audio is decoded for it. Returns once the player reports that it
+        plays, and raises ScenarioError when it does not get there.
+
+        :param player_id: ID of the player, which is the id of its queue.
+        """
+        if self.mass.get_provider(MUSIC_PROVIDER) is None:
+            await self.mass.config._create_provider_instance(MUSIC_PROVIDER, {})
+        task = await self.command(self.mass.player_queues.play_media(player_id, TEST_TRACK_URI))
+        if not task.done():
+            msg = f"{player_id} did not start playing"
+            raise ScenarioError(msg)
+        await task
+
     async def command(self, command: Coroutine[Any, Any, _T]) -> asyncio.Task[_T]:
         """
         Start a command in the background and settle; await the task once it is done.
@@ -826,6 +853,25 @@ class Scenario:
         :param queue_id: ID of the queue, which is the id of its player.
         """
         return self.mass.player_queues.get(queue_id)
+
+    async def saved_queue(self, queue_id: str) -> list[str] | None:
+        """
+        Return the URIs of the saved items of a queue, None when none were ever saved.
+
+        The saved items are what the queue is restored from after a restart; a queue that never
+        held an item has none. A pending (debounced) save is written first.
+
+        :param queue_id: ID of the queue, which is the id of its player.
+        """
+        await self.mass.player_queues._save_queue_to_cache(queue_id)
+        items = await self.mass.cache.get(
+            queue_id,
+            provider=self.mass.player_queues.domain,
+            category=CACHE_CATEGORY_PLAYER_QUEUE_ITEMS,
+        )
+        if items is None:
+            return None
+        return [QueueItem.from_cache(dict(item)).uri for item in items]
 
     def events(self, *event_types: EventType, object_id: str | None = None) -> list[Event]:
         """
@@ -1065,6 +1111,7 @@ class Scenario:
             stack.enter_context(patch("music_assistant.mass.load_provider_module", _load_module))
             stack.enter_context(patch.object(MusicAssistant, "unload_provider", _unload_provider))
             stack.enter_context(patch("music_assistant.helpers.util.get_mac_address", _arp_lookup))
+            stack.enter_context(patch.object(StreamsAudio, "get_audio_buffer", _no_audio_buffer))
             stack.enter_context(patch.object(SqliteConnection, "_execute", _sqlite_execute))
             stack.enter_context(patch.object(loop, "run_in_executor", _run_in_executor))
             stack.enter_context(patch.object(loop, "time", self._clock.time))
@@ -1220,6 +1267,11 @@ def _patch_module_clocks(clock: _VirtualClock) -> Iterator[None]:
                     if value is real:
                         stack.enter_context(patch.object(module, name, stand_in))
         yield
+
+
+async def _no_audio_buffer(*_args: Any, **_kwargs: Any) -> None:
+    """Decode nothing ahead of playback: no fake protocol fetches audio, so ffmpeg never runs."""
+    return
 
 
 def _runnable() -> int:

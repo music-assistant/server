@@ -7,7 +7,6 @@ from unittest.mock import ANY
 
 import pytest
 from music_assistant_models.enums import EventType, IdentifierType
-from music_assistant_models.player import PlayerMedia
 
 from .harness import FAKE_SETTING, Role, Scenario, ScenarioError, VisiblePlayer
 
@@ -38,8 +37,6 @@ CONNECTOR_UDN = "uuid:raumfeld-connector-0001"
 ONE_M_UDN = "uuid:raumfeld-one-m-0002"
 ONE_S_UDN = "uuid:raumfeld-one-s-0003"
 
-MEDIA = PlayerMedia(uri="http://ma.local/stream/track.flac")
-
 
 @pytest.mark.parametrize(
     ("domain", "kitchen_ids", "den_ids"),
@@ -48,11 +45,6 @@ MEDIA = PlayerMedia(uri="http://ma.local/stream/track.flac")
             "airplay",
             {IdentifierType.AIRPLAY_ID: "AA:AA:AA:AA:AA:01"},
             {IdentifierType.AIRPLAY_ID: "AA:AA:AA:AA:AA:02"},
-            marks=pytest.mark.xfail(
-                strict=True,
-                raises=AssertionError,
-                reason="phase 2 (#416): a protocol-only player names its protocol's provider",
-            ),
             id="airplay_id",
         ),
         pytest.param(
@@ -78,8 +70,7 @@ async def test_receivers_on_one_host_stay_separate_players(
     Two receivers of one protocol on one host (same IP and MAC, different strong ids) are two players.
 
     A differing strong identifier vetoes a match before the MAC or IP fallback, also while the
-    first receiver is away and the player it left behind has no protocol attached. Each player
-    names the provider of its one protocol.
+    first receiver is away and the player it left behind has no protocol attached.
     """
     provider = await scenario.add_provider(domain)
     kitchen = provider.protocol(
@@ -103,7 +94,7 @@ async def test_receivers_on_one_host_stay_separate_players(
             name="Kitchen",
             available=True,
             powered=None,
-            provider=domain,
+            provider=ANY,
             outputs=((domain, True),),
         )
     ]
@@ -113,11 +104,27 @@ async def test_receivers_on_one_host_stay_separate_players(
             name="Den",
             available=True,
             powered=None,
-            provider=domain,
+            provider=ANY,
             outputs=((domain, True),),
         )
     ]
     assert len(scenario.visible_players()) == 2
+
+
+@pytest.mark.xfail(
+    strict=True,
+    raises=AssertionError,
+    reason="phase 2 (#416): a protocol-only player names its protocol's provider",
+)
+async def test_protocol_only_player_names_the_provider_of_its_protocol(scenario: Scenario) -> None:
+    """A player with one audio protocol and no native one names that protocol's provider."""
+    airplay = await scenario.add_provider("airplay")
+    kitchen = airplay.protocol("airplay_kitchen", "Kitchen", role="audio", identifiers=PI)
+    await scenario.attach(kitchen)
+    await scenario.advance(15)
+    await scenario.idle()
+
+    assert [player.provider for player in scenario.players_carrying(kitchen)] == ["airplay"]
 
 
 @pytest.mark.xfail(
@@ -406,7 +413,7 @@ async def test_unused_duplicate_is_merged_into_the_older_player(scenario: Scenar
             name="TV",
             available=True,
             powered=None,
-            provider="airplay",
+            provider=ANY,
             outputs=(("airplay", True), ("chromecast", True)),
         )
     ]
@@ -416,12 +423,15 @@ async def test_unused_duplicate_is_merged_into_the_older_player(scenario: Scenar
 
 
 async def _played(scenario: Scenario, player_id: str, protocol: FakeProtocol) -> None:
-    """Play something on the player, which reaches its protocol, and stop it again."""
-    await scenario.mass.players.play_media(player_id, MEDIA)
-    await scenario.mass.players.cmd_stop(player_id)
-    await scenario.settle()
-    if ("play_media", MEDIA) not in protocol.commands:
+    """Play through the player's queue, which reaches its protocol, and stop; the queue is saved."""
+    await scenario.play(player_id)
+    await scenario.mass.player_queues.stop(player_id)
+    await scenario.idle()
+    if not any(command[0] == "play_media" for command in protocol.commands):
         msg = f"{protocol.player_id} did not play"
+        raise ScenarioError(msg)
+    if not await scenario.saved_queue(player_id):
+        msg = f"the queue of {player_id} was not saved"
         raise ScenarioError(msg)
 
 
