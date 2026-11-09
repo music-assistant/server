@@ -73,11 +73,14 @@ from music_assistant.controllers.music.constants import (
     CACHE_CATEGORY_SEARCH_RESULTS,
     COLLECTION_COVER_COUNT,
     RANDOM_SORT_FIELDS,
+    RESUME_POSITION_TOLERANCE_SECONDS,
 )
 from music_assistant.controllers.music.helpers import (
+    ResumePoint,
     preferred_thumb,
     provider_mappings_from_urls,
     search_name_match_clause,
+    select_resume_point,
     sibling_instance_mappings,
     usable_thumb,
 )
@@ -214,6 +217,24 @@ class AudiobookSyncDetails(LibraryItemSyncDetails):
     narrators: tuple[str, ...]
     fully_played: bool | None
     resume_position_ms: int | None
+    resume_position_timestamp: datetime | None
+
+    def resume_point_changed(self, audiobook: Audiobook) -> bool:
+        """
+        Return True when the provider's resume point differs from the stored one and wins.
+
+        :param audiobook: The audiobook as the provider currently reports it.
+        """
+        provider_point = ResumePoint.from_item(audiobook)
+        stored_point = ResumePoint.from_item(self)
+        if provider_point is None or (
+            stored_point is not None
+            and provider_point.fully_played == stored_point.fully_played
+            and abs(provider_point.position_ms - stored_point.position_ms)
+            <= RESUME_POSITION_TOLERANCE_SECONDS * 1000
+        ):
+            return False
+        return select_resume_point(provider_point, stored_point) is provider_point
 
     def authors_narrators_changed(self, audiobook: Audiobook) -> bool:
         """

@@ -11,6 +11,7 @@ from music_assistant_models.media_items import Audiobook, ProviderMapping
 
 from music_assistant.constants import DB_TABLE_MEDIA_PROGRESS
 from music_assistant.controllers.music.helpers import ResumePoint, select_resume_point
+from music_assistant.controllers.music.media.base import AudiobookSyncDetails
 from music_assistant.controllers.webserver.helpers.auth_middleware import set_current_user
 from music_assistant.mass import MusicAssistant
 
@@ -41,6 +42,53 @@ def test_select_resume_point(
     result = select_resume_point(provider_point, playlog_point)
 
     assert result is {"provider": provider_point, "playlog": playlog_point}[expected]
+
+
+@pytest.mark.parametrize(
+    ("provider_point", "stored_point", "expected"),
+    [
+        (None, ResumePoint(False, 1000, MID), False),
+        (ResumePoint(False, 1000, None), None, True),
+        # the same progress again, also under a newer timestamp, settles
+        (ResumePoint(False, 1000, NEW), ResumePoint(False, 1000, MID), False),
+        # the playlog keeps whole seconds, so a provider a few hundred ms ahead settles too
+        (ResumePoint(False, 12345, None), ResumePoint(False, 12000, MID), False),
+        (ResumePoint(False, 5000, NEW), ResumePoint(False, 1000, MID), True),
+        # where the stored progress wins, the sync must not update the book again and again
+        (ResumePoint(False, 5000, OLD), ResumePoint(False, 1000, MID), False),
+        (ResumePoint(False, 500, None), ResumePoint(False, 1000, MID), False),
+        (ResumePoint(False, 5000, None), ResumePoint(False, 1000, MID), True),
+    ],
+)
+def test_sync_updates_only_a_winning_resume_point(
+    provider_point: ResumePoint | None, stored_point: ResumePoint | None, expected: bool
+) -> None:
+    """A library sync updates a book only for a resume point that differs and wins."""
+    mapping = ProviderMapping(
+        item_id="book_1", provider_domain="test_prov", provider_instance="test_prov"
+    )
+    book = Audiobook(
+        item_id="book_1",
+        provider="test_prov",
+        name="Book",
+        provider_mappings={mapping},
+        fully_played=provider_point.fully_played if provider_point else None,
+        resume_position_ms=provider_point.position_ms if provider_point else None,
+        resume_position_timestamp=provider_point.timestamp if provider_point else None,
+    )
+    sync_details = AudiobookSyncDetails(
+        item_id=1,
+        date_added=OLD,
+        provider_mappings={mapping},
+        artist_links=frozenset(),
+        authors=(),
+        narrators=(),
+        fully_played=stored_point.fully_played if stored_point else None,
+        resume_position_ms=stored_point.position_ms if stored_point else None,
+        resume_position_timestamp=stored_point.timestamp if stored_point else None,
+    )
+
+    assert sync_details.resume_point_changed(book) is expected
 
 
 @pytest.mark.parametrize(

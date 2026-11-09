@@ -34,6 +34,7 @@ if TYPE_CHECKING:
 
     from music_assistant_models.enums import MediaType
 
+    from music_assistant.controllers.music.media.base import AudiobookSyncDetails
     from music_assistant.mass import MusicAssistant
     from music_assistant.providers.musicbrainz.models import MusicBrainzRecording
 
@@ -50,8 +51,10 @@ class ResumePoint(NamedTuple):
     timestamp: datetime | None
 
     @classmethod
-    def from_item(cls, item: Audiobook | PodcastEpisode) -> ResumePoint | None:
-        """Return the resume point the provider set on an item, None when it set none."""
+    def from_item(
+        cls, item: Audiobook | PodcastEpisode | AudiobookSyncDetails
+    ) -> ResumePoint | None:
+        """Return the resume point set on an item, None when it has none."""
         if item.fully_played is None and item.resume_position_ms is None:
             return None
         return cls(
@@ -89,7 +92,7 @@ def select_resume_point(
         if provider_point.timestamp > playlog_point.timestamp:
             return provider_point
         return playlog_point
-    # on a tie, Music Assistant's own record wins
+    # on a tie, Music Assistant's own record wins: nothing new to apply, so no redundant write
     return max(playlog_point, provider_point, key=lambda x: (x.fully_played, x.position_ms))
 
 

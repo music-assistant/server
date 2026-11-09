@@ -8,6 +8,8 @@ from music_assistant_models.enums import SortDirection, SortField
 
 CONF_RESET_DB = "reset_db"
 DEFAULT_SYNC_INTERVAL = 12 * 60  # default sync interval in minutes
+# the playlog stores whole seconds, so closer resume positions count as unchanged
+RESUME_POSITION_TOLERANCE_SECONDS: Final[int] = 2
 CONF_SYNC_INTERVAL = "sync_interval"
 CONF_DELETED_PROVIDERS = "deleted_providers"
 CONF_KEEP_REMASTERS_APART: Final[str] = "keep_remasters_apart"

@@ -624,6 +624,7 @@ def _sync_details_without_mapping_details(provider: BookOrbitProvider) -> Audiob
         narrators=(),
         fully_played=None,
         resume_position_ms=None,
+        resume_position_timestamp=None,
     )
 
 
@@ -802,6 +803,7 @@ async def test_sync_library_keeps_fingerprint_when_library_write_fails(
         narrators=(),
         fully_played=None,
         resume_position_ms=None,
+        resume_position_timestamp=None,
     )
     mass.music.audiobooks.get_library_item_sync_details = AsyncMock(return_value=sync_details)
     mass.music.audiobooks.update_item_in_library = AsyncMock(

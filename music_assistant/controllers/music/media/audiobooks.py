@@ -33,6 +33,7 @@ from music_assistant.constants import (
     DB_TABLE_MEDIA_PROGRESS,
     DB_TABLE_PROVIDER_MAPPINGS,
 )
+from music_assistant.controllers.music.constants import RESUME_POSITION_TOLERANCE_SECONDS
 from music_assistant.controllers.music.helpers import ResumePoint, select_resume_point
 from music_assistant.controllers.webserver.helpers.auth_middleware import get_current_user
 from music_assistant.helpers.compare import (
@@ -41,7 +42,7 @@ from music_assistant.helpers.compare import (
     loose_compare_strings,
 )
 from music_assistant.helpers.database import UNSET
-from music_assistant.helpers.datetime import utc_timestamp
+from music_assistant.helpers.datetime import from_utc_timestamp, utc_timestamp
 from music_assistant.helpers.json import serialize_to_json
 from music_assistant.helpers.util import parse_optional_bool
 from music_assistant.models.music_provider import MusicProvider
@@ -688,7 +689,8 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
             if cur_entry and (
                 (
                     parse_optional_bool(cur_entry["fully_played"]) == media_item.fully_played
-                    and abs((cur_entry["seconds_played"] or 0) - seconds_played) <= 2
+                    and abs((cur_entry["seconds_played"] or 0) - seconds_played)
+                    <= RESUME_POSITION_TOLERANCE_SECONDS
                 )
                 or select_resume_point(provider_point, ResumePoint.from_playlog_row(cur_entry))
                 is not provider_point
@@ -750,6 +752,7 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
             , audiobooks.narrators AS stored_narrators
             , playlog.fully_played AS fully_played
             , playlog.seconds_played * 1000 AS resume_position_ms
+            , playlog.timestamp AS resume_position_timestamp
         """
         extra_joins = (
             f"LEFT JOIN {DB_TABLE_MEDIA_PROGRESS} AS playlog ON playlog.id = ("
@@ -763,6 +766,7 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
     def _parse_sync_details_row(self, db_row: Mapping[str, Any]) -> AudiobookSyncDetails:
         """Parse a raw sync-details db row into an AudiobookSyncDetails object."""
         resume_position_ms = db_row["resume_position_ms"]
+        resume_position_timestamp = db_row["resume_position_timestamp"]
         return AudiobookSyncDetails(
             item_id=db_row["item_id"],
             date_added=datetime.fromtimestamp(db_row["timestamp_added"], tz=UTC),
@@ -779,6 +783,9 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
             ),
             fully_played=parse_optional_bool(db_row["fully_played"]),
             resume_position_ms=int(resume_position_ms) if resume_position_ms is not None else None,
+            resume_position_timestamp=from_utc_timestamp(resume_position_timestamp)
+            if resume_position_timestamp is not None
+            else None,
         )
 
     def _parse_summary_row(
