@@ -2,8 +2,10 @@
 
 import base64
 import logging
+import struct
 import time
 from collections.abc import AsyncGenerator
+from io import BytesIO
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
@@ -16,12 +18,14 @@ from music_assistant_models.errors import (
     UnplayableMediaError,
 )
 from music_assistant_models.streamdetails import StreamDetails
+from mutagen import id3
 
 from music_assistant.models.music_provider import ProviderStreamLimitError
 from music_assistant.providers.apple_music.live_radio import (
     RENEW_RETRY_SECONDS,
     AppleMusicLiveRadioManager,
     WidevinePlaylistParser,
+    parse_stream_metadata,
     segment_uri,
     select_substream,
 )
@@ -73,6 +77,25 @@ def _http_error(status: int) -> ClientResponseError:
     return ClientResponseError(request_info, (), status=status)
 
 
+def _tagged_segment(version: int, title: str = "Song") -> bytes:
+    """Return a media segment with an ID3 tag in an emsg box in front of its audio."""
+    frames: Any = id3
+    tag = frames.ID3()
+    tag.add(frames.TIT2(encoding=3, text=title))
+    tag.add(frames.TPE1(encoding=3, text="Artist"))
+    tag.add(frames.TALB(encoding=3, text="Album"))
+    tag.add(frames.WXXX(encoding=3, desc="artworkURL_640x", url="https://img.example/a.jpg"))
+    buffer = BytesIO()
+    tag.save(buffer, v2_version=4, padding=lambda _info: 0)
+    scheme = b"https://aomedia.org/emsg/ID3\0" + b"0\0"
+    if version == 1:
+        body = b"\x01\0\0\0" + b"\0" * 20 + scheme + buffer.getvalue()
+    else:
+        body = b"\0\0\0\0" + scheme + b"\0" * 16 + buffer.getvalue()
+    emsg = struct.pack(">I4s", 8 + len(body), b"emsg") + body
+    return emsg + struct.pack(">I4s", 8, b"moof")
+
+
 def _radio() -> AppleMusicLiveRadioManager:
     provider = MagicMock(instance_id="am", domain="apple_music", max_concurrent_streams=1)
     provider.name = "Apple Music"
@@ -90,12 +113,14 @@ class _Live:
         self.playlists = playlists
         self.decoders: list[dict[str, Any]] = []
         self.sleeps: list[float] = []
+        self.segments: dict[str, bytes] = {}
 
         async def fetch(url: str) -> bytes:
             if url == MEDIA_URL:
                 text = self.playlists.pop(0) if len(self.playlists) > 1 else self.playlists[0]
                 return text.encode()
-            return url.rsplit("/", 1)[-1].encode()
+            name = url.rsplit("/", 1)[-1]
+            return self.segments.get(name, name.encode())
 
         async def get_license(_data: dict[str, Any], key_uri: str) -> str:
             return f"key-{base64.b64decode(key_uri.rsplit(',', 1)[-1]).decode()[-1]}"
@@ -183,6 +208,32 @@ async def test_a_key_change_starts_a_new_decoder_and_the_stream_goes_on(
     assert live.radio.state["key_changes"] == 1
     # new segments were there each time, so the input was never held back
     assert live.sleeps == []
+
+
+@pytest.mark.parametrize("version", [0, 1])
+def test_stream_metadata_comes_from_the_id3_tag_in_front_of_the_audio(version: int) -> None:
+    """The emsg box of either version holds the track that is on air."""
+    track = parse_stream_metadata(_tagged_segment(version))
+    assert track is not None
+    assert (track.title, track.artist, track.album) == ("Song", "Artist", "Album")
+    assert track.image_url == "https://img.example/a.jpg"
+    assert parse_stream_metadata(struct.pack(">I4s", 8, b"moof")) is None
+
+
+async def test_a_title_shows_when_its_audio_plays(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A title waits for the audio sent before it, and the same title is noted once."""
+    live = _Live([_media(10, ["A"] * 3), _media(13, ["A"])], monkeypatch)
+    live.segments = {"s11": _tagged_segment(1), "s12": _tagged_segment(1), "s13": b"s13"}
+
+    await live.read(4)
+
+    callback = live.radio._update_stream_metadata
+    await callback(live.details, 15)
+    assert live.details.stream_metadata is None
+    await callback(live.details, 16)
+    shown: Any = live.details.stream_metadata
+    assert shown.title == "Song"
+    assert live.details.data["pending_metadata"] == []
 
 
 async def test_a_playlist_without_new_segments_stalls_into_an_error(

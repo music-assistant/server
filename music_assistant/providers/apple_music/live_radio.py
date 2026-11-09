@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import asyncio
 import re
+import struct
 import time
 from contextlib import aclosing
+from io import BytesIO
 from typing import TYPE_CHECKING, Any, cast
 from urllib.parse import urljoin
 
@@ -18,7 +20,7 @@ from music_assistant_models.errors import (
     UnplayableMediaError,
 )
 from music_assistant_models.media_items import AudioFormat, Radio
-from music_assistant_models.streamdetails import StreamDetails
+from music_assistant_models.streamdetails import StreamDetails, StreamMetadata
 from pywidevine import PSSH
 
 from music_assistant.controllers.cache import use_cache
@@ -43,6 +45,7 @@ MIN_STALL_SECONDS = 45
 DEFAULT_TARGET_DURATION = 16.0
 SEGMENT_RETRIES = 3
 RENEW_RETRY_SECONDS = 60
+METADATA_UPDATE_SECONDS = 5
 STATIONS_CACHE_SECONDS = 3600 * 24
 INPUT_BURST_SECONDS = "5"
 _CDN_TIMEOUT = ClientTimeout(total=20)
@@ -99,6 +102,55 @@ def segment_uri(line: str | None) -> str:
     if not line or not (match := _URI.search(line)):
         raise UnplayableMediaError("The live stream offers no Widevine stream")
     return match.group(1)
+
+
+def parse_stream_metadata(segment: bytes) -> StreamMetadata | None:
+    """
+    Return what is on air according to the timed metadata in front of a segment's audio.
+
+    :param segment: The bytes of a media segment.
+    """
+    position = 0
+    while position + 8 <= len(segment):
+        size, box = struct.unpack(">I4s", segment[position : position + 8])
+        if size < 8 or box == b"moof":
+            return None
+        if box == b"emsg" and (found := _parse_emsg(segment[position + 8 : position + size])):
+            return found
+        position += size
+    return None
+
+
+def _parse_emsg(box: bytes) -> StreamMetadata | None:
+    """Return the track of an emsg box that holds an ID3 tag, if it names one."""
+    # imported here like in the tags helper, to keep mutagen off the startup path
+    from mutagen import MutagenError  # noqa: PLC0415
+    from mutagen.id3 import ID3  # noqa: PLC0415
+
+    try:
+        if box[0] == 1:
+            # version 1 has its times (20 bytes) in front of the scheme and value
+            scheme_end = box.index(0, 24)
+            payload = box[box.index(0, scheme_end + 1) + 1 :]
+        else:
+            # version 0 has its times (16 bytes) after the scheme and value
+            scheme_end = box.index(0, 4)
+            payload = box[box.index(0, scheme_end + 1) + 1 + 16 :]
+        tag: Any = ID3(BytesIO(payload))  # type: ignore[no-untyped-call]
+    except ValueError, IndexError, MutagenError:
+        return None
+    title = tag.get("TIT2")
+    if not title or not title.text:
+        return None
+    artist, album = tag.get("TPE1"), tag.get("TALB")
+    return StreamMetadata(
+        title=str(title.text[0]),
+        artist=str(artist.text[0]) if artist and artist.text else None,
+        album=str(album.text[0]) if album and album.text else None,
+        image_url=next(
+            (frame.url for frame in tag.getall("WXXX") if frame.desc == "artworkURL_640x"), None
+        ),
+    )
 
 
 class AppleMusicLiveRadioManager:
@@ -168,6 +220,8 @@ class AppleMusicLiveRadioManager:
             can_seek=False,
             allow_seek=False,
             data=data,
+            stream_metadata_update_callback=self._update_stream_metadata,
+            stream_metadata_update_interval=METADATA_UPDATE_SECONDS,
         )
 
     async def get_audio_stream(self, streamdetails: StreamDetails) -> AsyncGenerator[bytes]:
@@ -181,6 +235,8 @@ class AppleMusicLiveRadioManager:
         """
         data = cast("dict[str, Any]", streamdetails.data)
         self.state.update(station_id=streamdetails.item_id, key_changes=0, last_error=None)
+        # the titles wait for the audio that was sent before them to play
+        data.update(audio_seconds=0.0, last_metadata=None, pending_metadata=[])
         try:
             async with aclosing(self._new_segments(data)) as new_segments:
                 segment = await anext(new_segments)
@@ -233,6 +289,11 @@ class AppleMusicLiveRadioManager:
             if content := await self._fetch_segment(
                 urljoin(data["media_url"], segment.segment_url)
             ):
+                metadata = parse_stream_metadata(content)
+                if metadata and metadata != data["last_metadata"]:
+                    data["last_metadata"] = metadata
+                    data["pending_metadata"].append((data["audio_seconds"], metadata))
+                data["audio_seconds"] += segment.duration
                 yield content
             segment = await anext(new_segments)
             if segment_uri(segment.key_line) != key_uri:
@@ -332,6 +393,23 @@ class AppleMusicLiveRadioManager:
         renew_after = float(answer.get("renew-after") or 0)
         data["renew_at"] = time.monotonic() + renew_after if renew_after else None
         return key
+
+    async def _update_stream_metadata(
+        self, streamdetails: StreamDetails, elapsed_time: int
+    ) -> None:
+        """
+        Show the newest title whose audio has started to play.
+
+        :param streamdetails: The stream details of the live station.
+        :param elapsed_time: Elapsed playback time in seconds.
+        """
+        # a restart counts the audio from 0 again while the playback time goes on, so its
+        # titles show when they are sent, a few seconds early, which a listener can accept
+        pending: list[tuple[float, StreamMetadata]] = cast(
+            "dict[str, Any]", streamdetails.data
+        ).get("pending_metadata", [])
+        while pending and pending[0][0] <= elapsed_time:
+            _, streamdetails.stream_metadata = pending.pop(0)
 
     async def _get_asset(self, station_id: str) -> dict[str, Any]:
         """Return the stream url and key server Apple hands this account for a station."""
