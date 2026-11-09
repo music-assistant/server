@@ -71,10 +71,14 @@ from music_assistant.controllers.player_queues.constants import (
     CACHE_CATEGORY_PLAYER_QUEUE_STATE,
     CONF_AUTOPLAY_ENABLED,
     CONF_CROSSFADE_ENABLED,
+    CONF_PAUSE_TIMEOUT,
     DEFAULT_AUTOPLAY_ENABLED,
     DEFAULT_CROSSFADE_ENABLED,
+    DEFAULT_PAUSE_TIMEOUT,
+    PAUSE_TIMEOUT_RANGE,
     PLAYBACK_START_TIMEOUT,
     QUEUE_CACHE_SAVE_DELAY,
+    QUEUE_SHUTDOWN_STOP_TIMEOUT,
     SKIP_END_MARGIN,
 )
 from music_assistant.controllers.player_queues.helpers import (
@@ -279,10 +283,16 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         # stop all playback
         for queue in self.all():
             if queue.state in (PlaybackState.PLAYING, PlaybackState.PAUSED):
-                await self.stop(queue.queue_id)
-        # flush any pending (debounced) state writes so the latest queue survives shutdown/update
+                try:
+                    async with asyncio.timeout(QUEUE_SHUTDOWN_STOP_TIMEOUT):
+                        await self.stop(queue.queue_id)
+                except Exception as err:
+                    self.logger.warning("Failed to stop queue %s - %s", queue.queue_id, err)
+        # flush any pending (debounced) state writes so the latest queue survives shutdown/update;
+        # a save that already started is cancelled too, so its older state can't land last
         for queue in self.all():
             self.mass.cancel_timer(f"save_queue_cache_{queue.queue_id}")
+            self.mass.cancel_task(f"save_queue_cache_{queue.queue_id}")
             await self._save_queue_to_cache(queue.queue_id)
 
     async def get_diagnostics(self) -> dict[str, SerializableType]:
@@ -1016,14 +1026,15 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
             if player.state.playback_state != PlaybackState.PAUSED:
                 return
             count = 0
-            while count < 30 and player.state.playback_state == PlaybackState.PAUSED:
+            pause_timeout = self._get_pause_timeout()
+            while count < pause_timeout and player.state.playback_state == PlaybackState.PAUSED:
                 count += 1
                 await asyncio.sleep(1)
             # if player is still paused when the limit is reached, send stop
             if player.state.playback_state == PlaybackState.PAUSED:
                 await self.stop(queue_id)
 
-        # we auto stop a player from paused when its paused for 30 seconds
+        # we auto stop a player from paused when its paused for the configured pause timeout
         if (
             queue_active
             and (queue_player := self.mass.players.get_player(queue_id))
@@ -2503,6 +2514,15 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
                 self.domain, CONF_CROSSFADE_ENABLED, DEFAULT_CROSSFADE_ENABLED
             )
         )
+
+    def _get_pause_timeout(self) -> int:
+        """Return the seconds a queue may stay paused before it is stopped."""
+        pause_timeout = self.mass.config.get_raw_core_config_value(
+            self.domain, CONF_PAUSE_TIMEOUT, DEFAULT_PAUSE_TIMEOUT
+        )
+        # the range is only enforced by the frontend, an API client can store any value
+        min_timeout, max_timeout = PAUSE_TIMEOUT_RANGE
+        return min(max(int(pause_timeout), min_timeout), max_timeout)
 
     def _resync_position(self, queue_id: str) -> None:
         """
