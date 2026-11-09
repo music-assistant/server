@@ -7,7 +7,6 @@ import logging
 from collections.abc import Awaitable, Callable, Coroutine, Iterable, Mapping, Sequence
 from contextlib import aclosing, suppress
 from copy import deepcopy
-from datetime import datetime
 from itertools import zip_longest
 from typing import TYPE_CHECKING, Any, Final, NamedTuple, cast
 
@@ -105,7 +104,9 @@ from music_assistant.controllers.music.database import (
 )
 from music_assistant.controllers.music.favorites import FavoritesStore
 from music_assistant.controllers.music.helpers import (
+    ResumePoint,
     filter_search_results,
+    select_resume_point,
     sibling_instance_mappings,
     sort_search_result,
 )
@@ -153,7 +154,6 @@ from music_assistant.helpers.compare import (
 )
 from music_assistant.helpers.database import UNSET, DatabaseConnection
 from music_assistant.helpers.datetime import (
-    from_utc_timestamp,
     local_clock_time_to_utc,
     utc_timestamp,
 )
@@ -173,7 +173,7 @@ from music_assistant.helpers.provider_access import (
 from music_assistant.helpers.tags import split_artists
 from music_assistant.helpers.throttle_retry import RequestPriority, request_priority
 from music_assistant.helpers.uri import parse_uri
-from music_assistant.helpers.util import parse_optional_bool, parse_title_and_version
+from music_assistant.helpers.util import parse_title_and_version
 from music_assistant.models.core_controller import CoreController
 from music_assistant.models.media_capabilities import MediaCatalogMixin
 from music_assistant.models.music_provider import (
@@ -2308,10 +2308,6 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         :param pinned: The (provider instance, item id) of the copy the item plays from, whose
             resume point is asked for first.
         """
-        provider_fully_played = False
-        provider_position_ms = 0
-        provider_timestamp: datetime | None = None
-
         user: User | None = None
         if userid:
             # userid overridden by parameter
@@ -2347,22 +2343,18 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         )
 
         # Try to get position from providers
+        provider_point: ResumePoint | None = None
         for prov_mapping in preferred_providers:
             provider = exact_provider(self.mass, prov_mapping.provider_instance)
             if not isinstance(provider, MusicProvider):
                 continue
             with suppress(NotImplementedError):
-                (
-                    provider_fully_played,
-                    provider_position_ms,
-                    provider_timestamp,
-                ) = await provider.get_resume_position(prov_mapping.item_id, media_item.media_type)
+                provider_point = ResumePoint(
+                    *await provider.get_resume_position(prov_mapping.item_id, media_item.media_type)
+                )
                 break  # Use first provider that returns data
 
         # Get MA's internal position from playlog
-        ma_fully_played = False
-        ma_position_ms = 0
-        ma_timestamp = from_utc_timestamp(0)
         params = {
             "media_type": media_item.media_type.value,
             "item_id": media_item.item_id,
@@ -2372,18 +2364,12 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             params["userid"] = userid
         elif user:
             params["userid"] = user.user_id
-        if db_entry := await self.database.get_row(DB_TABLE_MEDIA_PROGRESS, params):
-            ma_position_ms = db_entry["seconds_played"] * 1000 if db_entry["seconds_played"] else 0
-            # fully_played is a nullable column; treat an unknown (NULL) value as not played
-            ma_fully_played = parse_optional_bool(db_entry["fully_played"]) or False
-            ma_timestamp = from_utc_timestamp(db_entry["timestamp"])
+        db_entry = await self.database.get_row(DB_TABLE_MEDIA_PROGRESS, params)
+        playlog_point = ResumePoint.from_playlog_row(db_entry) if db_entry else None
 
-        if provider_timestamp is not None and provider_timestamp > ma_timestamp:
-            return provider_fully_played, provider_position_ms
-        # Return the higher position to ensure users never lose progress
-        if ma_position_ms >= provider_position_ms:
-            return ma_fully_played, ma_position_ms
-        return provider_fully_played, provider_position_ms
+        if point := select_resume_point(provider_point, playlog_point):
+            return point.fully_played, point.position_ms
+        return False, 0
 
     async def get_playback_speed(
         self, media_item: Audiobook | PodcastEpisode, userid: str | None = None

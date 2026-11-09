@@ -33,6 +33,7 @@ from music_assistant.constants import (
     DB_TABLE_MEDIA_PROGRESS,
     DB_TABLE_PROVIDER_MAPPINGS,
 )
+from music_assistant.controllers.music.helpers import ResumePoint, select_resume_point
 from music_assistant.controllers.webserver.helpers.auth_middleware import get_current_user
 from music_assistant.helpers.compare import (
     compare_audiobook,
@@ -669,7 +670,7 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
                         "userid": user_id,
                     },
                 )
-        if media_item.fully_played is None and media_item.resume_position_ms is None:
+        if (provider_point := ResumePoint.from_item(media_item)) is None:
             return
 
         for user_id in user_ids:
@@ -683,11 +684,14 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
                 },
             )
             seconds_played = int((media_item.resume_position_ms or 0) / 1000)
-            # abort if nothing changed
-            if (
-                cur_entry
-                and parse_optional_bool(cur_entry["fully_played"]) == media_item.fully_played
-                and abs((cur_entry["seconds_played"] or 0) - seconds_played) <= 2
+            # abort if nothing changed, or Music Assistant's own record wins
+            if cur_entry and (
+                (
+                    parse_optional_bool(cur_entry["fully_played"]) == media_item.fully_played
+                    and abs((cur_entry["seconds_played"] or 0) - seconds_played) <= 2
+                )
+                or select_resume_point(provider_point, ResumePoint.from_playlog_row(cur_entry))
+                is not provider_point
             ):
                 return
 
