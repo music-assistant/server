@@ -96,7 +96,7 @@ from music_assistant.models.player import (
     Player,
     PlayerMedia,
 )
-from music_assistant.models.player_endpoint import PlayerEndpoint
+from music_assistant.models.player_protocol import PlayerProtocol
 from music_assistant.models.setup_flow import FINISH_STEP_SILENT, AbortFlow, StepExpiredError
 
 from .bridge_role import BridgePlayerRole
@@ -332,7 +332,7 @@ if TYPE_CHECKING:
     from .provider import PinPairingSession, SendspinProvider
 
 
-class SendspinBasePlayer(PlayerEndpoint):
+class SendspinBasePlayer(PlayerProtocol):
     """
     Base class for Sendspin players in Music Assistant.
 
@@ -1824,7 +1824,7 @@ class SendspinPlayer(SendspinBasePlayer):
         """Handle SET_MEMBERS command on the player."""
         for player_id in player_ids_to_remove or []:
             member_player = cast(
-                "SendspinPlayer", self.provider.get_endpoint(player_id, raise_unavailable=True)
+                "SendspinPlayer", self.provider.get_protocol(player_id, raise_unavailable=True)
             )
 
             # Dynamic leader switch: transfer the active playback session to the
@@ -1838,7 +1838,7 @@ class SendspinPlayer(SendspinBasePlayer):
                 remaining = [c for c in self.api.group.clients if c.client_id != self.player_id]
                 if remaining:
                     new_owner_id = remaining[0].client_id
-                    new_owner = self.provider.get_endpoint(new_owner_id)
+                    new_owner = self.provider.get_protocol(new_owner_id)
                     if isinstance(new_owner, SendspinPlayer):
                         self.logger.info(
                             "Transferring playback session to %s for dynamic leader switch",
@@ -1864,7 +1864,7 @@ class SendspinPlayer(SendspinBasePlayer):
             for player_id in player_ids_to_add or []:
                 member_player = cast(
                     "SendspinPlayer",
-                    self.provider.get_endpoint(player_id, raise_unavailable=True),
+                    self.provider.get_protocol(player_id, raise_unavailable=True),
                 )
                 if (
                     self.api.group.has_active_stream
@@ -2921,11 +2921,11 @@ class SendspinVisualizerPlayer(SendspinBasePlayer):
     ) -> None:
         """Handle SET_MEMBERS command for the visualizer player."""
         for player_id in player_ids_to_remove or []:
-            member = self.provider.get_endpoint(player_id, raise_unavailable=True)
+            member = self.provider.get_protocol(player_id, raise_unavailable=True)
             if isinstance(member, SendspinBasePlayer):
                 await self.api.group.remove_client(member.api)
         for player_id in player_ids_to_add or []:
-            member = self.provider.get_endpoint(player_id, raise_unavailable=True)
+            member = self.provider.get_protocol(player_id, raise_unavailable=True)
             if isinstance(member, SendspinBasePlayer):
                 await self.api.group.add_client(member.api)
 

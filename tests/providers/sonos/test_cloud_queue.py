@@ -939,7 +939,7 @@ def test_queue_change_only_reaches_the_speakers_playing_it() -> None:
     other.player_id = "other"
     other.cloud_queue_id = "another_queue"
     with pytest.MonkeyPatch.context() as patch:
-        patch.setattr(type(provider), "endpoints", property(lambda _self: [playing, other]))
+        patch.setattr(type(provider), "protocols", property(lambda _self: [playing, other]))
         provider._handle_queue_items_updated(MagicMock(object_id=QUEUE_ID))
 
     # the version must be invalidated before the (debounced) command goes out, or a window

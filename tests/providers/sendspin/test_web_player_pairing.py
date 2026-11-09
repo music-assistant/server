@@ -77,6 +77,7 @@ def _make_web_provider(
     # the provider resolves its translation namespace through the manifest
     cast("Any", provider).manifest = SimpleNamespace(domain="sendspin")
     player = SendspinBasePlayer.__new__(SendspinBasePlayer)
+    player._provider = provider
     player.is_web_player = is_web_player
     security = None if psk_category is None else SimpleNamespace(psk_category=psk_category)
     player.api = cast("SendspinClient", SimpleNamespace(connection_security=security))

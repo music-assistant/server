@@ -183,7 +183,7 @@ class SonosPlayerProvider(PlayerProvider):
 
         player_id = await asyncio.to_thread(_read_uid)
 
-        if existing := cast("SonosPlayer", self.get_endpoint(player_id)):
+        if existing := cast("SonosPlayer", self.get_protocol(player_id)):
             if existing.soco.ip_address != soco.ip_address:
                 await existing.update_ip(soco)
             return

@@ -40,7 +40,7 @@ from music_assistant_models.unique_list import UniqueList
 
 from music_assistant.helpers.upnp import AVTransport, search_xml
 from music_assistant.helpers.util import format_ip_for_url, is_valid_mac_address
-from music_assistant.models.player_endpoint import PlayerEndpoint
+from music_assistant.models.player_protocol import PlayerProtocol
 from music_assistant.providers.musiccast.constants import (
     CONF_PLAYER_AUTO_ADVANCE,
     CONF_PLAYER_HANDLE_SOURCE_DISABLED,
@@ -121,7 +121,7 @@ class UpnpUpdateHelper:
     current_uri: str | None
 
 
-class MusicCastPlayer(PlayerEndpoint):
+class MusicCastPlayer(PlayerProtocol):
     """MusicCastPlayer in Music Assistant."""
 
     def __init__(
@@ -377,7 +377,7 @@ class MusicCastPlayer(PlayerEndpoint):
         elif self.zone_device.is_client:
             _server = self.zone_device.group_server
             _server_id = self._get_player_id_from_zone_device(_server)
-            _server_player = cast("MusicCastPlayer | None", self.provider.get_endpoint(_server_id))
+            _server_player = cast("MusicCastPlayer | None", self.provider.get_protocol(_server_id))
             _server_update_helper: UpnpUpdateHelper | None = None
             if _server_player is not None:
                 _server_update_helper = _server_player.upnp_update_helper
@@ -411,7 +411,7 @@ class MusicCastPlayer(PlayerEndpoint):
         elif self.zone_device.is_client:
             _server = self.zone_device.group_server
             _server_id = self._get_player_id_from_zone_device(_server)
-            _server_player = cast("MusicCastPlayer | None", self.provider.get_endpoint(_server_id))
+            _server_player = cast("MusicCastPlayer | None", self.provider.get_protocol(_server_id))
             if _server_player is not None and _server_player.upnp_update_helper is not None:
                 self._attr_active_source = (
                     self.zone_device.source_id
@@ -646,7 +646,7 @@ class MusicCastPlayer(PlayerEndpoint):
         player_id = self._get_player_id_from_zone_device(zone_player)
         assert player_id is not None  # for TYPE_CHECKING
 
-        mass_player = self.provider.get_endpoint(player_id)
+        mass_player = self.provider.get_protocol(player_id)
         if mass_player is None:
             # Do not assert here, should the player not yet exist
             return
@@ -721,7 +721,7 @@ class MusicCastPlayer(PlayerEndpoint):
         self.update_state()
 
         for zone_device in self.zone_device.other_zones:
-            if zone_device_player := self.provider.get_endpoint(
+            if zone_device_player := self.provider.get_protocol(
                 self._get_player_id_from_zone_device(zone_device)
             ):
                 assert isinstance(zone_device_player, MusicCastPlayer)  # for type checking
@@ -741,7 +741,7 @@ class MusicCastPlayer(PlayerEndpoint):
             (
                 zone_device
                 for zone_device in self.physical_device.zone_devices.values()
-                if self.provider.get_endpoint(self._get_player_id_from_zone_device(zone_device))
+                if self.provider.get_protocol(self._get_player_id_from_zone_device(zone_device))
             ),
             None,
         )
@@ -762,7 +762,7 @@ class MusicCastPlayer(PlayerEndpoint):
             await self.set_dynamic_attributes()
             # fetch() above covers every zone; push it to the other zone players too
             for zone_device in self.zone_device.other_zones:
-                if zone_device_player := self.provider.get_endpoint(
+                if zone_device_player := self.provider.get_protocol(
                     self._get_player_id_from_zone_device(zone_device)
                 ):
                     assert isinstance(zone_device_player, MusicCastPlayer)  # for type checking
@@ -931,7 +931,7 @@ class MusicCastPlayer(PlayerEndpoint):
         # Removing players
         if player_ids_to_remove:
             for player_id in player_ids_to_remove:
-                if player := self.provider.get_endpoint(player_id):
+                if player := self.provider.get_protocol(player_id):
                     assert isinstance(player, MusicCastPlayer)  # for type checking
                     await player.ungroup()
 
@@ -944,7 +944,7 @@ class MusicCastPlayer(PlayerEndpoint):
         rejected_reasons: list[str] = []
         player_ids_to_add = [] if player_ids_to_add is None else player_ids_to_add
         for child_id in player_ids_to_add:
-            child_player = self.provider.get_endpoint(child_id)
+            child_player = self.provider.get_protocol(child_id)
             if child_player is None:
                 continue
             assert isinstance(child_player, MusicCastPlayer)  # for type checking
@@ -986,7 +986,7 @@ class MusicCastPlayer(PlayerEndpoint):
                 if not x.is_netusb or x.zone_data is None or x.zone_data.power != "on":
                     continue
                 _other_player_id = self._get_player_id_from_zone_device(x)
-                _other_player = self.provider.get_endpoint(_other_player_id)
+                _other_player = self.provider.get_protocol(_other_player_id)
                 if _other_player is None or not _other_player.enabled:
                     continue
                 _other_zone_mc = x
@@ -1015,7 +1015,7 @@ class MusicCastPlayer(PlayerEndpoint):
             rejected_reasons.extend(
                 await self._join_network_children(
                     [
-                        cast("MusicCastPlayer", self.provider.get_endpoint(child_id))
+                        cast("MusicCastPlayer", self.provider.get_protocol(child_id))
                         for child_id in children
                     ]
                 )
@@ -1024,7 +1024,7 @@ class MusicCastPlayer(PlayerEndpoint):
         # after the joins: a main with a main_sync zone counts as server and would
         # close that local group when it joins as client
         for child_id in children_zones:
-            child_player = self.provider.get_endpoint(child_id)
+            child_player = self.provider.get_protocol(child_id)
             if TYPE_CHECKING:
                 child_player = cast("MusicCastPlayer", child_player)
             child_main = child_player.zone_device.physical_device.zone_devices["main"]
@@ -1138,7 +1138,7 @@ class MusicCastPlayer(PlayerEndpoint):
             )
         # likewise for a second zone of a device that joins in this call on its own
         if child_zone.zone_name != "main" and any(
-            isinstance(player := self.provider.get_endpoint(player_id), MusicCastPlayer)
+            isinstance(player := self.provider.get_protocol(player_id), MusicCastPlayer)
             and player.zone_device.device.ip == child_zone.device.ip
             for player_id in joining_player_ids
         ):

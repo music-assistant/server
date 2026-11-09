@@ -110,7 +110,7 @@ class UniversalPlayerProvider(PlayerProvider):
         :return: The created UniversalPlayer instance.
         """
         # Check if player already exists
-        if existing := self.get_endpoint(player_id):
+        if existing := self.get_protocol(player_id):
             # Update existing player with new protocol players
             if isinstance(existing, UniversalPlayer):
                 for pid in protocol_player_ids:
@@ -277,7 +277,7 @@ class UniversalPlayerProvider(PlayerProvider):
 
     def get_universal_player(self, player_id: str) -> UniversalPlayer | None:
         """Get a UniversalPlayer by ID if it exists and is managed by this provider."""
-        if player := self.get_endpoint(player_id):
+        if player := self.mass.players.get_protocol(player_id):
             if isinstance(player, UniversalPlayer):
                 return player
         return None

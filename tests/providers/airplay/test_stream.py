@@ -113,7 +113,7 @@ def _make_player() -> MagicMock:
     prov.mass.streams.publish_ip = "192.168.1.99"
     prov.mass.streams.get_source_ip = AsyncMock(return_value="192.168.1.5")
     prov.mass.streams.get_publish_ip = MagicMock(return_value=None)
-    prov.get_endpoint = lambda pid: prov.mass.players.get_player(pid)
+    prov.get_protocol = lambda pid: prov.mass.players.get_player(pid)
     player.provider = prov
     return player
 

@@ -405,7 +405,7 @@ class MockProvider:
         self.unloading = False
         # tests that let their players signal state updates fill this with the
         # players of this provider, the way a real provider reports them
-        self.endpoints: list[Player] = []
+        self.protocols: list[Player] = []
 
 
 class MockPlayer(Player):

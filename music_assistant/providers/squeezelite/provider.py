@@ -190,7 +190,7 @@ class SqueezelitePlayerProvider(PlayerProvider):
             self.mass.create_task(player.setup())
             return
 
-        if not (mass_player := self.get_endpoint(event.player_id)):
+        if not (mass_player := self.get_protocol(event.player_id)):
             return  # guard for unknown player
         player = cast("SqueezelitePlayer", mass_player)
 
@@ -216,7 +216,7 @@ class SqueezelitePlayerProvider(PlayerProvider):
         if not child_player_id:
             raise web.HTTPNotFound(reason="Missing child_player_id parameter")
 
-        if not (sync_parent := self.get_endpoint(player_id)):
+        if not (sync_parent := self.get_protocol(player_id)):
             raise web.HTTPNotFound(reason=f"Unknown player: {player_id}")
         sync_parent = cast("SqueezelitePlayer", sync_parent)
 
@@ -277,8 +277,8 @@ class SqueezelitePlayerProvider(PlayerProvider):
         # a reconnect registers a fresh player, so the leader must let go of the old
         # one or it keeps listing a member that is no longer part of its stream
         if (
-            (player := self.get_endpoint(player_id))
+            (player := self.get_protocol(player_id))
             and (leader_id := player.synced_to)
-            and (leader := self.get_endpoint(leader_id))
+            and (leader := self.get_protocol(leader_id))
         ):
             cast("SqueezelitePlayer", leader).remove_disconnected_member(player_id)

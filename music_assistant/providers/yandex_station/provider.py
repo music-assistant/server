@@ -247,7 +247,7 @@ class YandexStationProvider(PlayerProvider):
         if state_change == ServiceStateChange.Removed:
             player_id = self._mdns_players.get(name)
             if player_id:
-                existing = self.get_endpoint(player_id)
+                existing = self.get_protocol(player_id)
                 if existing and isinstance(existing, YandexStationPlayer):
                     existing._attr_available = False
                     existing.update_state()
@@ -280,7 +280,7 @@ class YandexStationProvider(PlayerProvider):
                 return
 
             # Check if player already registered (cloud-discovered) — connect Glagol
-            existing = self.get_endpoint(player_id)
+            existing = self.get_protocol(player_id)
             if existing and isinstance(existing, YandexStationPlayer):
                 if not existing.glagol.connected:
                     existing.update_connection(host, port)
@@ -364,7 +364,7 @@ class YandexStationProvider(PlayerProvider):
         # The core decides whether the calling user may use the player; it
         # raises InsufficientPermissions under the same rules as its own commands.
         self.mass.players.get_player_state(player_id)
-        player = self.get_endpoint(player_id)
+        player = self.mass.players.get_protocol(player_id)
         if not isinstance(player, YandexStationPlayer):
             msg = f"{player_id} is not a Yandex Station player"
             raise PlayerUnavailableError(msg)
@@ -647,7 +647,7 @@ class YandexStationProvider(PlayerProvider):
             assert self._passport_client is not None  # guaranteed by _init_session()
 
             # Skip if already registered
-            existing = self.get_endpoint(player_id)
+            existing = self.get_protocol(player_id)
             if existing is not None:
                 return
 

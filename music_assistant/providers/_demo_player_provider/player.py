@@ -9,13 +9,13 @@ from music_assistant_models.enums import ConfigEntryType, PlaybackState, PlayerF
 from music_assistant_models.player import PlayerOptionValueType, PlayerSource
 
 from music_assistant.models.player import PlayerMedia
-from music_assistant.models.player_endpoint import PlayerEndpoint
+from music_assistant.models.player_protocol import PlayerProtocol
 
 if TYPE_CHECKING:
     from .provider import DemoPlayerprovider
 
 
-class DemoPlayer(PlayerEndpoint):
+class DemoPlayer(PlayerProtocol):
     """DemoPlayer in Music Assistant."""
 
     def __init__(self, provider: DemoPlayerprovider, player_id: str) -> None:
@@ -341,9 +341,9 @@ class DemoPlayer(PlayerEndpoint):
         self._attr_group_members = [self.player_id, *other_member_ids] if other_member_ids else []
         self.update_state()
         # refresh affected members so their derived synced_to / can_group_with recompute
-        # (the ids passed to set_members are this provider's own ids, so look them up as endpoints)
+        # (the ids passed to set_members are this provider's own ids, so look them up as protocols)
         for member_id in [*(player_ids_to_add or []), *(player_ids_to_remove or [])]:
-            if (member := self.provider.get_endpoint(member_id)) is not None:
+            if (member := self.provider.get_protocol(member_id)) is not None:
                 member.update_state()
 
     async def set_option(self, option_key: str, option_value: PlayerOptionValueType) -> None:

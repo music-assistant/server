@@ -21,7 +21,7 @@ from music_assistant.constants import (
 )
 from music_assistant.helpers.util import is_valid_mac_address
 from music_assistant.models.player import DeviceInfo, PlayerMedia, PlayerSource
-from music_assistant.models.player_endpoint import PlayerEndpoint
+from music_assistant.models.player_protocol import PlayerProtocol
 from music_assistant.providers.bluesound.const import (
     IDLE_POLL_INTERVAL,
     MAX_CONNECTING_POLLS,
@@ -39,7 +39,7 @@ if TYPE_CHECKING:
     from .provider import BluesoundDiscoveryInfo, BluesoundPlayerProvider
 
 
-class BluesoundPlayer(PlayerEndpoint):
+class BluesoundPlayer(PlayerProtocol):
     """Holds the details of the (discovered) BluOS player."""
 
     _attr_trusts_reported_source = True
@@ -219,7 +219,7 @@ class BluesoundPlayer(PlayerEndpoint):
 
         def player_id_to_paired_player(player_id: str) -> PairedPlayer:
             client = cast(
-                "BluesoundPlayer", self.provider.get_endpoint(player_id, raise_unavailable=True)
+                "BluesoundPlayer", self.provider.get_protocol(player_id, raise_unavailable=True)
             )
             return PairedPlayer(client.ip_address, client.port)
 
@@ -233,7 +233,7 @@ class BluesoundPlayer(PlayerEndpoint):
                 except (PlayerUnexpectedResponseError, PlayerUnreachableError) as err:
                     self.logger.debug(f"Could not remove players: {err!s}")
                     continue
-                removed_player = self.provider.get_endpoint(player_id)
+                removed_player = self.provider.get_protocol(player_id)
                 if removed_player:
                     cast("BluesoundPlayer", removed_player)._set_polling_dynamic()
                     removed_player._attr_current_media = None
@@ -248,7 +248,7 @@ class BluesoundPlayer(PlayerEndpoint):
                     self.logger.debug(f"Could not add player {paired_player}: {err!s}")
                     continue
                 self._attr_group_members.append(player_id)
-                added_player = self.provider.get_endpoint(player_id)
+                added_player = self.provider.get_protocol(player_id)
                 if added_player:
                     cast("BluesoundPlayer", added_player)._set_polling_dynamic()
                     added_player.update_state()
@@ -262,7 +262,7 @@ class BluesoundPlayer(PlayerEndpoint):
             return
         provider = cast("BluesoundPlayerProvider", self.provider)
         if (leader_player_id := provider.player_map.get((leader.ip, leader.port))) and (
-            leader_player := provider.get_endpoint(leader_player_id)
+            leader_player := provider.get_protocol(leader_player_id)
         ):
             await leader_player.set_members(None, [self.player_id])
 

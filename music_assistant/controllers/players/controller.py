@@ -151,7 +151,7 @@ if TYPE_CHECKING:
 
     from music_assistant import MusicAssistant
     from music_assistant.helpers.json import SerializableType
-    from music_assistant.models.player_endpoint import PlayerEndpoint
+    from music_assistant.models.player_protocol import PlayerProtocol
 
 CACHE_CATEGORY_PLAYER_POWER = 1
 
@@ -503,16 +503,16 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
             raise PlayerUnavailableError(msg)
         return None
 
-    def get_endpoint(self, endpoint_id: str) -> PlayerEndpoint | None:
+    def get_protocol(self, protocol_id: str) -> PlayerProtocol | None:
         """
-        Return the device object (endpoint) of any player provider by its id.
+        Return the protocol object of any player provider by its id.
 
-        Meant for provider code that needs a device object of another provider;
-        a provider looks up its own endpoints through its own `get_endpoint`.
+        Meant for provider code that needs a protocol object of another provider;
+        a provider looks up its own protocol objects through its own `get_protocol`.
 
-        :param endpoint_id: ID of the endpoint.
+        :param protocol_id: ID of the protocol object.
         """
-        return self.get_player(endpoint_id)
+        return self.get_player(protocol_id)
 
     @api_command("players/get", required_scope=Scope.PLAYERS_READ)
     def get_player_state(
@@ -2232,7 +2232,7 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
             key in changed_values
             for key in ("group_members", "synced_to", ATTR_AVAILABLE, ATTR_REACHABLE)
         ):
-            for prov_player in player.provider.endpoints:
+            for prov_player in player.provider.protocols:
                 self.trigger_player_update(prov_player.player_id, debounce_delay=2)
 
     async def register_player_control(self, player_control: PlayerControl) -> None:

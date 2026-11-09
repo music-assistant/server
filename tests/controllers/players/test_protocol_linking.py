@@ -160,7 +160,7 @@ class MockProvider:
         self.mass = mass or MagicMock()
         self.logger = logging.getLogger(f"test.{domain}")
         # the controller iterates these when a group related field changes
-        self.endpoints: list[Player] = []
+        self.protocols: list[Player] = []
 
 
 class MockPlayer(Player):
@@ -933,6 +933,7 @@ class TestResolveStoredUniversalPlayer:
         mock_mass.players.get_player = MagicMock(
             side_effect=lambda pid, *_args, **_kwargs: registry.get(pid)
         )
+        mock_mass.players.get_protocol = mock_mass.players.get_player
         mock_mass.players.register_or_update = AsyncMock(side_effect=_register)
 
     @staticmethod
@@ -9570,6 +9571,7 @@ class TestEndToEndUniversalPlayerId:
         mock_mass.players = MagicMock()
         mock_mass.players.register_or_update = AsyncMock(side_effect=fake_register_or_update)
         mock_mass.players.get_player = lambda pid, *_args, **_kwargs: controller._players.get(pid)
+        mock_mass.players.get_protocol = mock_mass.players.get_player
         return controller, store
 
     @staticmethod

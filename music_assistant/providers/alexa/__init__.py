@@ -29,7 +29,7 @@ from music_assistant_models.player import DeviceInfo, PlayerMedia
 
 from music_assistant.constants import CONF_PASSWORD, CONF_USERNAME
 from music_assistant.helpers.util import lock
-from music_assistant.models.player_endpoint import PlayerEndpoint
+from music_assistant.models.player_protocol import PlayerProtocol
 from music_assistant.models.player_provider import PlayerProvider
 
 _LOGGER = logging.getLogger(__name__)
@@ -232,7 +232,7 @@ class AlexaDevice:
     _locale: str
 
 
-class AlexaPlayer(PlayerEndpoint):
+class AlexaPlayer(PlayerProtocol):
     """Implementation of an Alexa Player."""
 
     def __init__(

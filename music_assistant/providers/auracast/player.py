@@ -18,7 +18,7 @@ from music_assistant.controllers.streams.audio_processing import get_media_sessi
 from music_assistant.helpers.audio import iter_pcm_slices
 from music_assistant.helpers.ffmpeg import get_ffmpeg_stream
 from music_assistant.models.player import PlayerMedia
-from music_assistant.models.player_endpoint import PlayerEndpoint
+from music_assistant.models.player_protocol import PlayerProtocol
 
 from .broadcaster import (
     BROADCAST_ERRORS,
@@ -59,7 +59,7 @@ CONF_STORED_DEVICE_ADDRESS = "auracast_device_address"
 CONTROLLER_POLL_INTERVAL = 5
 
 
-class AuracastPlayer(PlayerEndpoint):
+class AuracastPlayer(PlayerProtocol):
     """Expose the configured Auracast broadcast as an MA player."""
 
     def __init__(self, provider: AuracastProvider, player_id: str) -> None:

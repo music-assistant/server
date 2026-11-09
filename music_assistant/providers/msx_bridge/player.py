@@ -18,7 +18,7 @@ from music_assistant.constants import (
     CONF_ENTRY_OUTPUT_CODEC_DEFAULT_MP3,
 )
 from music_assistant.models.player import PlayerMedia
-from music_assistant.models.player_endpoint import PlayerEndpoint
+from music_assistant.models.player_protocol import PlayerProtocol
 
 if TYPE_CHECKING:
     from music_assistant_models.config_entries import ConfigEntry
@@ -26,7 +26,7 @@ if TYPE_CHECKING:
     from .provider import MSXBridgeProvider
 
 
-class MSXPlayer(PlayerEndpoint):
+class MSXPlayer(PlayerProtocol):
     """Represents a Smart TV running MSX as a Music Assistant player."""
 
     _skip_ws_depth: int = 0

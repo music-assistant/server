@@ -31,7 +31,7 @@ if TYPE_CHECKING:
     from music_assistant_models.event import MassEvent
 
     from music_assistant.mass import MusicAssistant
-    from music_assistant.models.player_endpoint import PlayerEndpoint
+    from music_assistant.models.player_protocol import PlayerProtocol
     from music_assistant.models.player_provider import PlayerProvider
 
     from .provider import SendspinProvider
@@ -94,7 +94,7 @@ class SendspinBridgeManagerBase[BridgeT: SendspinBridge](ABC):
             return provider.server_api
         return None
 
-    async def evaluate_bridge(self, player: PlayerEndpoint) -> None:
+    async def evaluate_bridge(self, player: PlayerProtocol) -> None:
         """
         Reconcile the Sendspin bridge state for a player.
 
@@ -127,7 +127,7 @@ class SendspinBridgeManagerBase[BridgeT: SendspinBridge](ABC):
         if not self._has_bridge(player_id):
             await self.setup_bridge(player)
 
-    async def setup_bridge(self, player: PlayerEndpoint) -> None:
+    async def setup_bridge(self, player: PlayerProtocol) -> None:
         """
         Set up a Sendspin bridge for the given player.
 
@@ -176,7 +176,7 @@ class SendspinBridgeManagerBase[BridgeT: SendspinBridge](ABC):
                     await bridge.stop()
         removed_any = bridge is not None
         if permanent and (client_id := self._client_ids.get(player_id)):
-            if self.mass.players.get_endpoint(client_id):
+            if self.mass.players.get_protocol(client_id):
                 await self.mass.players.unregister(client_id, permanent=True)
                 removed_any = True
             elif self.mass.config.get(f"{CONF_PLAYERS}/{client_id}"):
@@ -211,7 +211,7 @@ class SendspinBridgeManagerBase[BridgeT: SendspinBridge](ABC):
         await self.stop_all()
 
     @abstractmethod
-    def _bridge_client_id(self, player: PlayerEndpoint) -> str | None:
+    def _bridge_client_id(self, player: PlayerProtocol) -> str | None:
         """
         Return the Sendspin client_id used to bridge the given player.
 
@@ -220,7 +220,7 @@ class SendspinBridgeManagerBase[BridgeT: SendspinBridge](ABC):
         """
 
     @abstractmethod
-    def _create_bridge(self, player: PlayerEndpoint) -> BridgeT:
+    def _create_bridge(self, player: PlayerProtocol) -> BridgeT:
         """
         Create a (not yet started) bridge instance for the given player.
 
@@ -228,7 +228,7 @@ class SendspinBridgeManagerBase[BridgeT: SendspinBridge](ABC):
         """
 
     @abstractmethod
-    def _should_have_bridge(self, player: PlayerEndpoint) -> bool:
+    def _should_have_bridge(self, player: PlayerProtocol) -> bool:
         """
         Return whether provider policy wants a bridge for this player.
 
@@ -239,7 +239,7 @@ class SendspinBridgeManagerBase[BridgeT: SendspinBridge](ABC):
         :param player: The player to evaluate.
         """
 
-    async def _try_claim_existing(self, player: PlayerEndpoint) -> bool:
+    async def _try_claim_existing(self, player: PlayerProtocol) -> bool:
         """
         Claim an already-registered external Sendspin client for this player.
 
@@ -255,11 +255,11 @@ class SendspinBridgeManagerBase[BridgeT: SendspinBridge](ABC):
         """Return whether a bridge is currently in place for the player."""
         return player_id in self._bridges
 
-    def _lifecycle_allows_bridge(self, player: PlayerEndpoint) -> bool:
+    def _lifecycle_allows_bridge(self, player: PlayerProtocol) -> bool:
         """Return whether the current lifecycle state allows a bridge for the player."""
         if self.sendspin_server is None:
             return False
-        if self.provider.get_endpoint(player.player_id) is not player:
+        if self.provider.get_protocol(player.player_id) is not player:
             # not (or no longer) the registered player instance
             return False
         if not self._is_player_enabled(player.player_id):
@@ -281,7 +281,7 @@ class SendspinBridgeManagerBase[BridgeT: SendspinBridge](ABC):
             return True
         return bool(raw_conf.get("enabled", True))
 
-    async def _heal_stale_client_disable(self, player: PlayerEndpoint, client_id: str) -> None:
+    async def _heal_stale_client_disable(self, player: PlayerProtocol, client_id: str) -> None:
         """
         Re-enable a bridge client whose disabled state lost its owning parent.
 
@@ -317,7 +317,7 @@ class SendspinBridgeManagerBase[BridgeT: SendspinBridge](ABC):
             if client_id == player_id:
                 player_id = base_player_id
                 break
-        if player := self.provider.get_endpoint(player_id):
+        if player := self.mass.players.get_protocol(player_id):
             if player.provider is not self.provider:
                 return
             await self.evaluate_bridge(player)
@@ -327,5 +327,5 @@ class SendspinBridgeManagerBase[BridgeT: SendspinBridge](ABC):
 
     async def _on_providers_updated(self, event: MassEvent) -> None:
         """Re-evaluate all bridges when provider availability changes."""
-        for player in self.provider.endpoints:
+        for player in self.provider.protocols:
             await self.evaluate_bridge(player)

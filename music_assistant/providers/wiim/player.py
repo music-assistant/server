@@ -21,7 +21,7 @@ from music_assistant.constants import (
 )
 from music_assistant.helpers.upnp import create_didl_metadata
 from music_assistant.models.player import Player, PlayerMedia
-from music_assistant.models.player_endpoint import PlayerEndpoint
+from music_assistant.models.player_protocol import PlayerProtocol
 
 from .constants import (
     BACKEND_OFFICIAL,
@@ -66,7 +66,7 @@ class _JoinRestartWatch:
     restarted: asyncio.Event = field(default_factory=asyncio.Event)
 
 
-class WiimPlayer(PlayerEndpoint):
+class WiimPlayer(PlayerProtocol):
     """Wiim Player in Music Assistant."""
 
     linkplay_backend = BACKEND_OFFICIAL

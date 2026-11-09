@@ -84,7 +84,7 @@ def _make_environment() -> tuple[
         side_effect=lambda domain: sendspin_provider if domain == "sendspin" else None
     )
     mass.players.get_player = MagicMock(side_effect=registered_players.get)
-    mass.players.get_endpoint = lambda pid: mass.players.get_player(pid)
+    mass.players.get_protocol = lambda pid: mass.players.get_player(pid)
     mass.config.get = MagicMock(
         side_effect=lambda key, default=None: player_configs.get(key, default)
     )
@@ -96,7 +96,7 @@ def _make_environment() -> tuple[
 
     provider = MagicMock()
     provider.mass = mass
-    provider.get_endpoint = lambda pid: mass.players.get_player(pid)
+    provider.get_protocol = lambda pid: mass.players.get_player(pid)
     provider.logger = logging.getLogger("test.bridge_manager")
 
     player = MagicMock()
@@ -104,7 +104,7 @@ def _make_environment() -> tuple[
     player.display_name = "Test Player"
     player.provider = provider
     registered_players["player_1"] = player
-    provider.endpoints = [player]
+    provider.protocols = [player]
 
     manager = FakeBridgeManager(provider)
     return manager, mass, player, registered_players, player_configs
@@ -283,7 +283,8 @@ class TestCastBridgePolicy:
         mass.external_clients = external_clients
         provider = MagicMock()
         provider.mass = mass
-        provider.get_endpoint = lambda pid: mass.players.get_player(pid)
+        provider.get_protocol = lambda pid: mass.players.get_player(pid)
+        mass.players.get_protocol = lambda pid: mass.players.get_player(pid)
         provider.logger = logging.getLogger("test.cast_bridge_manager")
 
         cast_player = MagicMock()
@@ -296,7 +297,7 @@ class TestCastBridgePolicy:
         cast_player.device_info.model = "TestSpeaker"
         cast_player.protocol_parent_id = "parent_1"
         cast_player.provider = provider
-        provider.endpoints = [cast_player]
+        provider.protocols = [cast_player]
 
         manager = CastSendspinBridgeManager(provider)
         return manager, mass, cast_player

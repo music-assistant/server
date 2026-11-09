@@ -11,7 +11,7 @@ from music_assistant_models.errors import PlayerCommandFailed
 from music_assistant_models.player import DeviceInfo, PlayerMedia, PlayerSource
 from pyamplipi.models import MultiZoneUpdate, SourceUpdate, ZoneUpdate
 
-from music_assistant.models.player_endpoint import PlayerEndpoint
+from music_assistant.models.player_protocol import PlayerProtocol
 
 from .constants import (
     AMPLIPI_API_ERRORS,
@@ -47,7 +47,7 @@ PLAYER_FEATURES = {
 }
 
 
-class AmpliPiZonePlayer(PlayerEndpoint):
+class AmpliPiZonePlayer(PlayerProtocol):
     """Representation of a single AmpliPi zone as a Music Assistant player."""
 
     def __init__(self, provider: AmpliPiPlayerProvider, zone_id: int) -> None:

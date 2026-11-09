@@ -32,7 +32,7 @@ def _fake_player(*, flow_underrun: bool = False) -> Any:
     # Typed as Any because the collaborators below are read back as the mocks they are.
     fake = cast("Any", ChromecastPlayer.__new__(ChromecastPlayer))
     fake.mass = MagicMock()
-    fake._provider = MagicMock(get_endpoint=lambda pid: fake.mass.players.get_player(pid))
+    fake._provider = MagicMock(get_protocol=lambda pid: fake.mass.players.get_player(pid))
     fake.logger = MagicMock()
     fake.cc = MagicMock(app_id=MASS_APP_ID)
     fake.update_state = MagicMock()

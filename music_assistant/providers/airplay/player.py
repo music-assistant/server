@@ -30,7 +30,7 @@ from music_assistant.models.player import (
     DeviceInfo,
     PlayerMedia,
 )
-from music_assistant.models.player_endpoint import PlayerEndpoint
+from music_assistant.models.player_protocol import PlayerProtocol
 from music_assistant.models.setup_flow import AbortFlow
 
 from . import announce
@@ -95,7 +95,7 @@ if TYPE_CHECKING:
 _DOCKER_SUBNET = ipaddress.ip_network("172.16.0.0/12")
 
 
-class AirPlayPlayer(PlayerEndpoint):
+class AirPlayPlayer(PlayerProtocol):
     """Base implementation shared by all AirPlay players."""
 
     def __init__(
@@ -769,7 +769,7 @@ class AirPlayPlayer(PlayerEndpoint):
                     # nothing to do: player is already part of the group
                     continue
                 child_player_to_add: AirPlayPlayer | None = cast(
-                    "AirPlayPlayer | None", self.provider.get_endpoint(player_id)
+                    "AirPlayPlayer | None", self.provider.get_protocol(player_id)
                 )
                 if not child_player_to_add:
                     # should not happen, but guard against it
@@ -777,7 +777,7 @@ class AirPlayPlayer(PlayerEndpoint):
 
                 # ensure the child does not have an existing stream session active
                 if child_player_to_add := cast(
-                    "AirPlayPlayer | None", self.provider.get_endpoint(player_id)
+                    "AirPlayPlayer | None", self.provider.get_protocol(player_id)
                 ):
                     if (
                         child_player_to_add.playback_state == PlaybackState.PAUSED
@@ -1390,7 +1390,7 @@ class AirPlayPlayer(PlayerEndpoint):
         group_child_ids = {self.player_id}
         group_child_ids.update(self.group_members)
         for child_id in group_child_ids:
-            if client := cast("AirPlayPlayer | None", self.provider.get_endpoint(child_id)):
+            if client := cast("AirPlayPlayer | None", self.provider.get_protocol(child_id)):
                 sync_clients.append(client)
         return sync_clients
 
@@ -1506,7 +1506,7 @@ class AirPlayPlayer(PlayerEndpoint):
     def _resolve_rejoin_target(self, candidate_ids: list[str]) -> AirPlayPlayer | None:
         """Resolve which player now carries the group's actively playing session."""
         for candidate_id in candidate_ids:
-            candidate = self.provider.get_endpoint(candidate_id)
+            candidate = self.provider.get_protocol(candidate_id)
             if candidate is None or candidate is self:
                 continue
             if not isinstance(candidate, AirPlayPlayer):

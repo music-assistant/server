@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import inspect
 from typing import TYPE_CHECKING
 
 from music_assistant_models.errors import PlayerUnavailableError
@@ -10,7 +11,7 @@ from .provider import Provider
 
 if TYPE_CHECKING:
     from music_assistant.models.player import Player
-    from music_assistant.models.player_endpoint import PlayerEndpoint
+    from music_assistant.models.player_protocol import PlayerProtocol
 
 
 class PlayerProvider(Provider):
@@ -23,26 +24,44 @@ class PlayerProvider(Provider):
     async def loaded_in_mass(self) -> None:
         """Call after the provider has been loaded."""
 
-    def get_endpoint(
-        self, endpoint_id: str, raise_unavailable: bool = False
-    ) -> PlayerEndpoint | None:
+    def get_protocol(
+        self, protocol_id: str, raise_unavailable: bool = False
+    ) -> PlayerProtocol | None:
         """
-        Return the endpoint (device object) with the given id.
+        Return the protocol object with the given id.
 
-        Only pass ids of this provider's own endpoints.
+        Only pass ids of this provider's own protocol objects.
 
-        :param endpoint_id: ID of one of this provider's endpoints.
-        :param raise_unavailable: Raise if the endpoint is unknown, unavailable or disabled.
-        :raises PlayerUnavailableError: If raise_unavailable is set and the endpoint is
+        :param protocol_id: ID of one of this provider's protocol objects.
+        :param raise_unavailable: Raise if the protocol object is unknown, unavailable or disabled.
+        :raises PlayerUnavailableError: If raise_unavailable is set and the protocol object is
             unknown, unavailable or disabled.
         """
-        endpoint = self.mass.players.get_player(endpoint_id)
-        if raise_unavailable and (
-            endpoint is None or not endpoint.state.available or not endpoint.state.enabled
+        protocol = self.mass.players.get_player(protocol_id)
+        if (
+            protocol is not None
+            # a mocked provider (tests) is no owner to compare against
+            and isinstance(protocol.provider, PlayerProvider)
+            and protocol.provider is not self
         ):
-            msg = f"Player {endpoint_id} is not available"
+            # still returned: the warning only surfaces callers passing another provider's id,
+            # so it names the call site
+            caller = frame.f_back if (frame := inspect.currentframe()) else None
+            self.logger.warning(
+                "Provider %s looked up %s, which belongs to provider %s (called from %s:%s)",
+                self.instance_id,
+                protocol_id,
+                protocol.provider.instance_id,
+                caller.f_globals.get("__name__") if caller else "?",
+                caller.f_lineno if caller else "?",
+            )
+            del frame, caller
+        if raise_unavailable and (
+            protocol is None or not protocol.state.available or not protocol.state.enabled
+        ):
+            msg = f"Player {protocol_id} is not available"
             raise PlayerUnavailableError(msg)
-        return endpoint
+        return protocol
 
     def on_player_enabled(self, player_id: str) -> None:
         """Call (by config manager) when a player gets enabled."""
@@ -93,8 +112,8 @@ class PlayerProvider(Provider):
         # there is no need to implement this method.
 
     @property
-    def endpoints(self) -> list[PlayerEndpoint]:
-        """Return all endpoints (device objects) belonging to this provider."""
+    def protocols(self) -> list[PlayerProtocol]:
+        """Return all protocol objects belonging to this provider."""
         # a provider owns these players, so it always sees all of them - narrowing this
         # to what some user happens to see corrupts the provider's own bookkeeping, such
         # as the grouping options it derives from this list. Note this still hides

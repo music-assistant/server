@@ -272,7 +272,7 @@ async def test_reconfigure_releases_running_controller_before_probing_same_port(
         setup_data={"serial_port": "/dev/controller", "baudrate": 1_000_000},
         forms=[answer],
     )
-    session.mass.get_provider.return_value.endpoints = [player]
+    session.mass.get_provider.return_value.protocols = [player]
 
     await setup_flow.run_setup(cast("Any", session))
 
@@ -321,7 +321,7 @@ def create_reconfigure_session(
         setup_data={"serial_port": "/dev/controller", "baudrate": 1_000_000},
         forms=cast("Any", forms),
     )
-    session.mass.get_provider.return_value.endpoints = players
+    session.mass.get_provider.return_value.protocols = players
     return session
 
 

@@ -28,7 +28,7 @@ def _make_dashboards() -> ChromecastDashboards:
         side_effect=lambda _executor, func, *args: func(*args)
     )
     provider.mass.players.get_player.return_value = None
-    provider.get_endpoint = lambda pid: provider.mass.players.get_player(pid)
+    provider.get_protocol = lambda pid: provider.mass.players.get_player(pid)
     return ChromecastDashboards(provider)
 
 

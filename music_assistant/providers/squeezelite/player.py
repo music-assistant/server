@@ -42,7 +42,7 @@ from music_assistant.models.player import (
     DeviceInfo,
     PlayerMedia,
 )
-from music_assistant.models.player_endpoint import PlayerEndpoint
+from music_assistant.models.player_protocol import PlayerProtocol
 
 from .constants import (
     CONF_ENTRY_DISPLAY,
@@ -87,7 +87,7 @@ def is_protocol_only_device(device_model: str) -> bool:
     return any(model.lower() in device_model_lower for model in PROTOCOL_ONLY_MODELS)
 
 
-class SqueezelitePlayer(PlayerEndpoint):
+class SqueezelitePlayer(PlayerProtocol):
     """Squeezelite Player implementation."""
 
     def __init__(
@@ -381,7 +381,7 @@ class SqueezelitePlayer(PlayerEndpoint):
             if player_id == self.player_id or player_id in self.group_members:
                 # nothing to do: player is already part of the group
                 continue
-            child_player = cast("SqueezelitePlayer | None", self.provider.get_endpoint(player_id))
+            child_player = cast("SqueezelitePlayer | None", self.provider.get_protocol(player_id))
             if not child_player:
                 # should not happen, but guard against it
                 continue
@@ -795,7 +795,7 @@ class SqueezelitePlayer(PlayerEndpoint):
     def _get_member_output_codec(self, member_player_id: str, media: PlayerMedia) -> str:
         """Return the stream format to request for a sync group member."""
         if media.media_type == MediaType.AUDIO_SOURCE:
-            member_player = self.provider.get_endpoint(member_player_id)
+            member_player = self.provider.get_protocol(member_player_id)
             if member_player and member_player.config.get_value(
                 CONF_PREFER_WAV_FOR_LIVE_SOURCES, default=False
             ):
