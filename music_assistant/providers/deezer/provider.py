@@ -12,7 +12,7 @@ from __future__ import annotations
 import logging
 from collections.abc import AsyncGenerator, Sequence
 from datetime import datetime
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, NoReturn
 
 from deezer_python_gql import DeezerGQLClient, GraphQLClientAuthError, GraphQLClientError
 from music_assistant_models.config_entries import ConfigEntry
@@ -114,6 +114,12 @@ class DeezerProvider(RecommendationPayloadMixin, MusicProvider):
         """Return True: Deezer serves CD and hi-res FLAC under one format name."""
         return True
 
+    @property
+    def unskippable_sync_errors(self) -> tuple[type[Exception], ...]:
+        """Return the errors a library sync must not swallow as an item failure."""
+        # a rejected ARL fails every item, sync_library unloads the provider instead
+        return (GraphQLClientAuthError, DeezerGWAuthError)
+
     async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
         """Return Config entries to configure this provider."""
         return (
@@ -184,6 +190,13 @@ class DeezerProvider(RecommendationPayloadMixin, MusicProvider):
     async def unload(self, is_removed: bool = False) -> None:
         """Handle unload/close of the provider."""
         await super().unload(is_removed)
+
+    async def sync_library(self, media_type: MediaType) -> None:
+        """Run library sync for this provider."""
+        try:
+            await super().sync_library(media_type)
+        except (GraphQLClientAuthError, DeezerGWAuthError) as err:
+            self._raise_login_failed(err)
 
     # -- Library retrieval --
 
@@ -388,7 +401,10 @@ class DeezerProvider(RecommendationPayloadMixin, MusicProvider):
 
     async def get_stream_details(self, item_id: str, media_type: MediaType) -> StreamDetails:
         """Return the content details for the given track when it will be streamed."""
-        return await self.streaming_manager.get_stream_details(item_id, media_type)
+        try:
+            return await self.streaming_manager.get_stream_details(item_id, media_type)
+        except (GraphQLClientAuthError, DeezerGWAuthError) as err:
+            self._raise_login_failed(err)
 
     async def get_audio_stream(
         self, streamdetails: StreamDetails, seek_position: int = 0
@@ -408,3 +424,29 @@ class DeezerProvider(RecommendationPayloadMixin, MusicProvider):
     async def _fetch_recommendation_payload(self) -> list[RecommendationFolder]:
         """Fetch the recommendation folders fed by the shared gql recommendations payload."""
         return await self.browse_manager._fetch_recommendation_payload()
+
+    def _raise_login_failed(self, err: Exception) -> NoReturn:
+        """
+        Hand the provider back to the user once Deezer rejects the account while it runs.
+
+        Every following call fails the same way until the ARL is replaced. The error is
+        reported like the same failure during setup.
+
+        :param err: The authentication error Deezer returned.
+        """
+        if isinstance(err, DeezerGWAuthError):
+            login_failed = LoginFailed(
+                "Deezer could not establish a playback session for this account.",
+                translation_key="gw_no_session",
+                translation_owner=self.translation_owner,
+            )
+        else:
+            login_failed = LoginFailed(
+                "Deezer could not authenticate with the supplied ARL token.",
+                translation_key="arl_rejected",
+                translation_owner=self.translation_owner,
+            )
+        if self.available:
+            self.logger.error("Deezer rejected the login: %s", err)
+            self.unload_with_error(login_failed)
+        raise login_failed from err
