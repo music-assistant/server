@@ -219,13 +219,13 @@ class AudiobookSyncDetails(LibraryItemSyncDetails):
     resume_position_ms: int | None
     resume_position_timestamp: datetime | None
 
-    def resume_point_changed(self, audiobook: Audiobook) -> bool:
+    def resume_point_changed(self, incoming_audiobook: Audiobook) -> bool:
         """
         Return True when the provider's resume point differs from the stored one and wins.
 
-        :param audiobook: The audiobook as the provider currently reports it.
+        :param incoming_audiobook: The audiobook as the provider currently reports it.
         """
-        provider_point = ResumePoint.from_item(audiobook)
+        provider_point = ResumePoint.from_item(incoming_audiobook)
         stored_point = ResumePoint.from_item(self)
         if provider_point is None or (
             stored_point is not None
