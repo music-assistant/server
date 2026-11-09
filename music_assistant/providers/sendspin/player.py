@@ -87,7 +87,7 @@ from music_assistant_models.media_items import Album, Artist, is_track
 from music_assistant_models.player import DeviceInfo
 from PIL import Image
 
-from music_assistant.constants import CONF_ENTRY_FLOW_MODE_SAMPLE_RATE
+from music_assistant.constants import CONF_ENTRY_FLOW_MODE_SAMPLE_RATE, CONF_PLAYERS
 from music_assistant.controllers.streams.audio_analysis import SMART_FADES_ANALYSIS_DOMAIN
 from music_assistant.helpers.util import is_valid_mac_address
 from music_assistant.models.player import (
@@ -1367,6 +1367,8 @@ class SendspinPlayer(SendspinBasePlayer):
     _published_item: tuple[str, str | None] | None = None
     playback_session: SendspinPlaybackSession
     static_delay_default_ms: int = DEFAULT_SENDSPIN_STATIC_DELAY
+    # output delay the device reported before its player config existed, stored on registration
+    _reported_static_delay: int | None = None
     # HA media_player entity announcements are relayed to (ESPHome-backed devices)
     _hass_announce_entity_id: str | None = None
     # Volume/mute features fixed by a hello command list instead of following client/state
@@ -1532,7 +1534,12 @@ class SendspinPlayer(SendspinBasePlayer):
                 current = self.config.get_value(
                     CONF_SENDSPIN_STATIC_DELAY, self.static_delay_default_ms
                 )
-                if current != delay_ms:
+                if not self.mass.config.get(f"{CONF_PLAYERS}/{self.player_id}"):
+                    # the config is created on registration, which then pushes the configured
+                    # delay to the device: keep this one until then, so the device's own
+                    # delay is stored and pushed instead of the default
+                    self._reported_static_delay = delay_ms
+                elif current != delay_ms:
                     self.mass.config.set_raw_player_config_value(
                         self.player_id, CONF_SENDSPIN_STATIC_DELAY, delay_ms
                     )
@@ -1736,6 +1743,15 @@ class SendspinPlayer(SendspinBasePlayer):
 
     async def on_config_updated(self) -> None:
         """Handle logic when the PlayerConfig is first loaded or updated."""
+        if (reported_delay := self._reported_static_delay) is not None:
+            self._reported_static_delay = None
+            if reported_delay != self.config.get_value(
+                CONF_SENDSPIN_STATIC_DELAY, self.static_delay_default_ms
+            ):
+                # also updates the in-place config entry that _apply_static_delay reads
+                self.mass.config.set_raw_player_config_value(
+                    self.player_id, CONF_SENDSPIN_STATIC_DELAY, reported_delay
+                )
         await self._apply_preferred_format()
         await self._apply_static_delay()
 
