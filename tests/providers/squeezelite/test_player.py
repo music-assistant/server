@@ -104,13 +104,14 @@ def test_group_regular_track_ignores_wav_preference() -> None:
     [
         (MediaType.RADIO, (64, 1)),
         (MediaType.AUDIO_SOURCE, (64, 1)),
+        (MediaType.ANNOUNCEMENT, (64, 1)),
         (MediaType.TRACK, (200, 20)),
     ],
 )
 async def test_live_streams_start_on_a_smaller_buffer(
     media_type: MediaType, expected: tuple[int, int]
 ) -> None:
-    """Radio and AudioSource streams start on a smaller buffer, also when repeated."""
+    """Radio, AudioSource and announcement streams start on a smaller buffer, also when repeated."""
     player, mass = _player_with_mocked_mass()
     player._extra_data = {}
     mass.player_queues.get.return_value = MagicMock(

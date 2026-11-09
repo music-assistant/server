@@ -27,6 +27,10 @@ APP_LAUNCH_TIMEOUT = 30.0
 # follow-up command can reuse the Cast session instead of starting a new one.
 APP_QUIT_DELAY = 10.0
 
+# Seconds a playing app of another party may report nothing playing, as it does while it
+# moves to another track, before that is taken as the end of its playback.
+APP_TRACK_CHANGE_TIME = 5.0
+
 # keepalive media the cast receiver plays while showing a dashboard
 DASHBOARD_KEEPALIVE_SUFFIXES = ("/dashboard-keepalive.mp4", "/keepalive.png")
 

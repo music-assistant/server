@@ -70,7 +70,7 @@ PLAYLIST_MEDIA_TYPES: Final[tuple[MediaType, ...]] = (
 # a new enum value or error code, a change in what an existing field holds, or a command that
 # only the bundled frontend uses: the frontend ships in lockstep with the server and never
 # gates on this.
-API_SCHEMA_VERSION: Final[int] = 104
+API_SCHEMA_VERSION: Final[int] = 105
 
 # MIN_SCHEMA_VERSION is the minimum API schema version that the current server
 # version can work with. Only bump when there are breaking changes to existing
@@ -168,6 +168,7 @@ WILDCARD_BIND_IPS: Final[tuple[str, ...]] = ("0.0.0.0", "::")  # noqa: S104 - th
 # Port used by the built-in Sendspin server (runs next to, not behind, the webserver)
 SENDSPIN_SERVER_PORT: Final[int] = 8927
 CONF_AUTO_PLAY: Final[str] = "auto_play"
+CONF_IDLE_POWER_OFF: Final[str] = "idle_power_off"
 CONF_PLAY_MEDIA_OVERRIDES_GROUP: Final[str] = "play_media_overrides_group"
 CONF_GROUP_MEMBERS: Final[str] = "group_members"
 CONF_DYNAMIC_GROUP_MEMBERS: Final[str] = "dynamic_members"
@@ -453,6 +454,16 @@ CONF_ENTRY_AUTO_PLAY = ConfigEntry(
     key=CONF_AUTO_PLAY,
     type=ConfigEntryType.BOOLEAN,
     default_value=False,
+    depends_on=CONF_POWER_CONTROL,
+    depends_on_value_not="none",
+    category="player_controls",
+)
+
+CONF_ENTRY_IDLE_POWER_OFF = ConfigEntry(
+    key=CONF_IDLE_POWER_OFF,
+    type=ConfigEntryType.INTEGER,
+    default_value=0,
+    range=(0, 1440),
     depends_on=CONF_POWER_CONTROL,
     depends_on_value_not="none",
     category="player_controls",
@@ -987,6 +998,7 @@ ATTR_GROUP_VOLUME_SNAPSHOT: Final[str] = "group_volume_snapshot"
 ATTR_VOLUME_TARGET: Final[str] = "volume_target"
 ATTR_ENABLED: Final[str] = "enabled"
 ATTR_AVAILABLE: Final[str] = "available"
+ATTR_REACHABLE: Final[str] = "reachable"
 ATTR_POWERED: Final[str] = "powered"
 ATTR_MUTE_LOCK: Final[str] = "mute_lock"
 ATTR_ACTIVE_SOURCE: Final[str] = "active_source"
@@ -996,6 +1008,8 @@ ATTR_VOLUME_CONTROL: Final[str] = "volume_control"
 ATTR_POWER_CONTROL: Final[str] = "power_control"
 ATTR_PLAY_ACTION_IN_PROGRESS: Final[str] = "play_action_in_progress"
 ATTR_POWER_OFF_IN_PROGRESS: Final[str] = "power_off_in_progress"
+ATTR_POWER_ON_IN_PROGRESS: Final[str] = "power_on_in_progress"
+ATTR_IDLE_SINCE: Final[str] = "idle_since"
 
 # Album type detection patterns
 LIVE_INDICATORS = [
@@ -1047,6 +1061,14 @@ ACTIVE_PROTOCOL_FEATURES: Final[set[PlayerFeature]] = {
     PlayerFeature.GAPLESS_PLAYBACK,
     PlayerFeature.MULTI_DEVICE_DSP,
     PlayerFeature.PAUSE,
+}
+
+FOREIGN_PROTOCOL_FEATURES: Final[set[PlayerFeature]] = {
+    # Player features that may be copied from the protocol player that plays an app
+    # Music Assistant did not start
+    PlayerFeature.NEXT_PREVIOUS,
+    PlayerFeature.PAUSE,
+    PlayerFeature.SEEK,
 }
 
 PLAYER_CONTROL_PROTOCOL: Final[str] = "follow_protocol"

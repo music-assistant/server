@@ -54,7 +54,10 @@ class StreamFeederMixin(_PlayerQueuesBase):
     """Feed the player's stream: enqueue the next item, preload/prepare its audio, clean up."""
 
     def prepare_next_audio_buffer(
-        self, queue_id: str, queue_item_id: str
+        self,
+        queue_id: str,
+        queue_item_id: str,
+        capacity_wait_timeout: float = STREAM_SLOT_WAIT_TIMEOUT,
     ) -> asyncio.Task[None] | None:
         """
         Prepare the AudioBuffer of the item that follows the given item in the queue.
@@ -64,6 +67,8 @@ class StreamFeederMixin(_PlayerQueuesBase):
 
         :param queue_id: The queue the item belongs to.
         :param queue_item_id: The item whose audio is being streamed or has fully arrived.
+        :param capacity_wait_timeout: Seconds the preparation may wait for a free source
+            stream slot before it gives up.
         :return: The preparation of the next item's audio, or None when nothing needs preparing.
         """
         next_item = self.get_next_item(queue_id, queue_item_id)
@@ -125,7 +130,7 @@ class StreamFeederMixin(_PlayerQueuesBase):
                 await self.mass.streams.audio.get_audio_buffer(
                     prepared_item,
                     reason="prepare_next",
-                    capacity_wait_timeout=STREAM_SLOT_WAIT_TIMEOUT,
+                    capacity_wait_timeout=capacity_wait_timeout,
                     # speculative preparation gives up softly, so it must stay cheap and
                     # harmless: leave the cross-provider search around a stream limit and
                     # stopping a paused queue to the actual playback start

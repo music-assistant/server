@@ -474,16 +474,7 @@ class AlbumsController(MediaControllerBase[Album]):
         if not library_album:
             if provider_instance_id_or_domain == "library":
                 raise MediaNotFoundError(f"Album {item_id} not found in library")
-            # resolved once and then pinned, so the tracks and the album they are backfilled
-            # from come from the same (visible) account even if it drops mid-request
-            provider = self.mass.music.resolve_visible_provider(provider_instance_id_or_domain)
-            tracks = await cached_listing(
-                self.mass,
-                ListingType.ALBUM_TRACKS,
-                create_uri(MediaType.ALBUM, provider.instance_id, item_id),
-                lambda: self._list_provider_album(item_id, provider.instance_id),
-                item_type=Track,
-            )
+            tracks = await self._cached_provider_album(item_id, provider_instance_id_or_domain)
         else:
             # respect the current user's provider filter (if any) for both the
             # in-library tracks and the live provider fetches
@@ -564,6 +555,22 @@ class AlbumsController(MediaControllerBase[Album]):
                 sort_direction=sort_direction,
                 limit=None,
             )
+        )
+
+    async def provider_album_tracks(self, album: Album) -> list[Track]:
+        """
+        Return all tracks of an album a provider lists, as the album's tracks listing does.
+
+        The album goes on the tracks its provider lists without one, so it is not looked up
+        again.
+
+        :param album: The album, as its provider lists it.
+        """
+        if await self.get_visible_library_item_by_prov_id(album.item_id, album.provider):
+            return await self.tracks(album.item_id, album.provider, limit=None)
+        return apply_listing(
+            await self._cached_provider_album(album.item_id, album.provider, album),
+            ListingType.ALBUM_TRACKS,
         )
 
     async def versions(
@@ -916,14 +923,43 @@ class AlbumsController(MediaControllerBase[Album]):
             return await prov.get_album_tracks(item_id)
         return []
 
-    async def _list_provider_album(self, item_id: str, provider_instance_id: str) -> Listing[Track]:
-        """Return the tracks of an album that is not in the library, as the provider lists them."""
+    async def _cached_provider_album(
+        self, item_id: str, provider_instance_id_or_domain: str, album: Album | None = None
+    ) -> list[Track]:
+        """
+        Return the tracks of an album that is not in the library, served from the cache.
+
+        :param item_id: The album id on the provider.
+        :param provider_instance_id_or_domain: The provider the id belongs to.
+        :param album: The album, when the caller holds it already.
+        """
+        # resolved once and then pinned, so the tracks and the album they are backfilled
+        # from come from the same (visible) account even if it drops mid-request
+        provider = self.mass.music.resolve_visible_provider(provider_instance_id_or_domain)
+        return await cached_listing(
+            self.mass,
+            ListingType.ALBUM_TRACKS,
+            create_uri(MediaType.ALBUM, provider.instance_id, item_id),
+            lambda: self._list_provider_album(item_id, provider.instance_id, album),
+            item_type=Track,
+        )
+
+    async def _list_provider_album(
+        self, item_id: str, provider_instance_id: str, album: Album | None = None
+    ) -> Listing[Track]:
+        """
+        Return the tracks of an album that is not in the library, as the provider lists them.
+
+        :param item_id: The album id on the provider.
+        :param provider_instance_id: The provider instance to list the album from.
+        :param album: The album, when the caller holds it already.
+        """
         # the pinned account dropping before the fill is raised, not kept as an empty listing
         prov = cast(
             "MusicProvider", self.mass.music.resolve_visible_provider(provider_instance_id, True)
         )
         album_tracks = await prov.get_album_tracks(item_id)
-        await self._backfill_album_on_tracks(album_tracks, item_id, provider_instance_id)
+        await self._backfill_album_on_tracks(album_tracks, item_id, provider_instance_id, album)
         return Listing(album_tracks)
 
     async def _assemble_album_tracks(
@@ -1071,7 +1107,11 @@ class AlbumsController(MediaControllerBase[Album]):
         return result
 
     async def _backfill_album_on_tracks(
-        self, album_tracks: list[Track], item_id: str, provider_instance: str
+        self,
+        album_tracks: list[Track],
+        item_id: str,
+        provider_instance: str,
+        album: Album | None = None,
     ) -> None:
         """
         Fill in the parent album and its image on provider album tracks that omit them.
@@ -1079,14 +1119,18 @@ class AlbumsController(MediaControllerBase[Album]):
         :param album_tracks: The album tracks as listed by the provider.
         :param item_id: The provider album id.
         :param provider_instance: The exact provider instance the album tracks come from.
+        :param album: The provider album, when the caller holds it already.
         """
         # some album-track listings omit the parent album and its image; backfill both
         # from the provider album so the queue shows the album name and artwork.
         if not album_tracks or (album_tracks[0].album and album_tracks[0].image):
             return
-        prov_album = await self.get_provider_item(
-            item_id, provider_instance, strict_provider_instance=True
-        )
+        prov_album = album
+        if prov_album is None or not (prov_album.image or album_tracks[0].image):
+            # a held album without the image the tracks lack is looked up after all
+            prov_album = await self.get_provider_item(
+                item_id, provider_instance, strict_provider_instance=True
+            )
         album_mapping = ItemMapping.from_item(prov_album)
         for track in album_tracks:
             if prov_album.image and not track.image:
@@ -1623,39 +1667,18 @@ class AlbumsController(MediaControllerBase[Album]):
                 },
             )
         for artist in all_artists:
-            await self._set_album_artist(db_id, artist=artist, overwrite=overwrite)
+            await self._set_album_artist(db_id, artist=artist)
 
-    async def _set_album_artist(
-        self, db_id: int, artist: Artist | ItemMapping, overwrite: bool = False
-    ) -> ItemMapping:
+    async def _set_album_artist(self, db_id: int, artist: Artist | ItemMapping) -> None:
         """Store Album Artist info."""
-        db_artist: Artist | ItemMapping | None = None
-        if artist.provider == "library":
-            db_artist = artist
-        elif existing := await self.mass.music.artists.get_library_item_by_prov_id(
-            artist.item_id, artist.provider
-        ):
-            db_artist = existing
-
-        if not db_artist or overwrite:
-            # Convert ItemMapping to Artist if needed
-            artist_to_add = (
-                self.mass.music.artists.artist_from_item_mapping(artist)
-                if isinstance(artist, ItemMapping)
-                else artist
-            )
-            db_artist = await self.mass.music.artists.add_item_to_library(
-                artist_to_add, overwrite_existing=overwrite
-            )
         # write (or update) record in album_artists table
         await self.mass.music.database.insert_or_replace(
             DB_TABLE_ALBUM_ARTISTS,
             {
                 "album_id": db_id,
-                "artist_id": int(db_artist.item_id),
+                "artist_id": await self.mass.music.artists.get_or_add_library_artist_id(artist),
             },
         )
-        return ItemMapping.from_item(db_artist)
 
     async def _set_album_track(self, db_id: int, db_track_id: int, track: Track) -> None:
         """Store Album Track info."""
