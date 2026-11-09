@@ -203,6 +203,10 @@ async def test_unload_provider_unregisters_hidden_players(
         initialized: bool = True,
     ) -> RecordingPlayer:
         player = RecordingPlayer(provider, player_id)
+        # registration creates the player config
+        mass_minimal.config.create_default_player_config(
+            player_id, provider.instance_id, player.type
+        )
         if initialized:
             player.set_initialized()
         if not enabled:

@@ -1,9 +1,9 @@
 """
 Regression tests for create_default_player_config not corrupting existing configs.
 
-Reproduces music-assistant/support#5745: Player.__init__ calls
-create_default_player_config before provider setup has determined the real
-player type, so the passed type can be a transient class default. For
+Reproduces music-assistant/support#5745: Player.__init__ called
+create_default_player_config before provider setup had determined the real
+player type, so the passed type could be a transient class default. For
 squeezelite protocol players this rewrote the persisted player_type from
 "protocol" to "player" on every client (re)connect. Normally healed right
 after registration, but when registration was interrupted (e.g. shutdown
@@ -27,7 +27,7 @@ async def test_existing_player_type_not_rewritten(mass_minimal: MusicAssistant) 
     )
     assert mass_minimal.config.get(f"{CONF_PLAYERS}/{PLAYER_ID}/player_type") == "protocol"
 
-    # simulate reconnect: Player.__init__ runs with the class default type (player)
+    # a later call with another type
     mass_minimal.config.create_default_player_config(PLAYER_ID, "squeezelite", PlayerType.PLAYER)
 
     assert mass_minimal.config.get(f"{CONF_PLAYERS}/{PLAYER_ID}/player_type") == "protocol"

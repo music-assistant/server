@@ -481,9 +481,6 @@ class Player(ABC):
         self.__attr_active_output_protocol: str | None = None
         self._player_id = player_id
         self._provider = provider
-        self.mass.config.create_default_player_config(
-            player_id, self.provider_id, self.type, self.name, self.enabled_by_default
-        )
         self._config = self.mass.config.get_base_player_config(player_id, self.provider_id)
         self._extra_data: dict[str, Any] = {}
         self._extra_attributes: dict[str, Any] = {}

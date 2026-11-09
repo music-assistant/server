@@ -609,7 +609,7 @@ class RaumfeldPlayerProvider(PlayerProvider):
                 continue
             player = RaumfeldPlayer(provider=self, player_id=player_id, room=room)
             await self.mass.players.register(player)
-            # the config exists now (created in Player.__init__)
+            # the config exists now (created on registration)
             self._ensure_icy_default(player_id)
             self.logger.debug("Registered Raumfeld room '%s' as player %s", room, player_id)
         # a room whose UDN the host no longer lists (e.g. a speaker that dropped to deep

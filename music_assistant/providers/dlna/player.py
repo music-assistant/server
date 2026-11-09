@@ -133,9 +133,9 @@ class DLNAPlayer(PlayerEndpoint):
             # never registered is never unloaded; the host creates a new zone renderer on
             # every regrouping, so each one would leave a subscription behind.
             await self._device_disconnect()
-            # Creating this player already stored a config for it, and an install from
-            # before zone renderers were ignored may still link it to a player that keeps
-            # being restored. Deleting the config drops those links as well.
+            # An install from before zone renderers were ignored may still hold a config
+            # for it, linked to a player that keeps being restored. Deleting the config
+            # drops those links as well.
             self.mass.players.delete_player_config(self.player_id)
             return False
 

@@ -1659,6 +1659,10 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
                 msg = f"Player {player_id} is already registered!"
                 raise AlreadyRegisteredError(msg)
 
+            self.mass.config.create_default_player_config(
+                player_id, player.provider_id, player.type, player.name, player.enabled_by_default
+            )
+
             # ignore disabled players
             if not player.state.enabled:
                 return
