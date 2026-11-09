@@ -9,7 +9,7 @@ DEFAULT_TARGET_LATENCY_MS = 500
 # only known once the client starts streaming, so the stream declares this format
 # upfront and the bridge converts to it.
 OUTPUT_SAMPLE_RATE = 48000
-OUTPUT_BIT_DEPTH = 16
+OUTPUT_BIT_DEPTH = 24
 OUTPUT_CHANNELS = 2
 
 CHUNK_DURATION_MS = 25

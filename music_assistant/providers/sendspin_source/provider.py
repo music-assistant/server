@@ -82,7 +82,7 @@ if TYPE_CHECKING:
     from music_assistant.providers.sendspin.provider import SendspinProvider
 
 OUTPUT_FORMAT = AudioFormat(
-    content_type=ContentType.PCM_S16LE,
+    content_type=ContentType.from_bit_depth(OUTPUT_BIT_DEPTH),
     sample_rate=OUTPUT_SAMPLE_RATE,
     bit_depth=OUTPUT_BIT_DEPTH,
     channels=OUTPUT_CHANNELS,
