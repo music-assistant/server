@@ -50,7 +50,7 @@ from music_assistant.models.music_provider import MusicProvider
 from .base import AudiobookSyncDetails, MediaControllerBase
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping
+    from collections.abc import Iterable, Mapping
 
     from music_assistant_models.auth import User
 
@@ -642,17 +642,7 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
 
     async def _set_playlog(self, db_id: int, media_item: Audiobook) -> None:
         """Update/set the playlog table for the given audiobook db item_id."""
-        # Get user(s)
-        user: User | None = None
-        if session_user := get_current_user():
-            # this is the active session user that triggered the action
-            user = session_user
-        elif provider_user := await self.mass.music._get_user_for_provider(
-            media_item.provider_mappings
-        ):
-            # based on configured provider filter we can try to find a user
-            user = provider_user
-        if user:
+        if user := await self._playlog_user(media_item.provider_mappings):
             user_ids = [user.user_id]
         else:
             # NOTE: if no user was found, we will alter the playlog for all users
@@ -726,17 +716,19 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
             result.update(json_loads(row[column]))
         return UniqueList(sorted(result))
 
-    def _sync_details_query_parts(self) -> tuple[str, str, dict[str, Any]]:
+    async def _sync_details_query_parts(
+        self, provider_mappings: Iterable[ProviderMapping]
+    ) -> tuple[str, str, dict[str, Any]]:
         """Return extra (columns, joins, params) for the audiobooks sync-details query."""
         # the sync loop needs the stored authors/narrators (linked and plain)
         # plus the user-scoped resume state to detect changes on the provider side
         params: dict[str, Any] = {}
-        # mirror base_query: scope the playlog lookup to the session user (if any) and
+        # scope the playlog lookup to the user _set_playlog writes for (if any) and
         # pick at most one row (the most recent) so the join can never fan out
         playlog_user_clause = ""
-        if session_user := get_current_user():
+        if user := await self._playlog_user(provider_mappings):
             playlog_user_clause = "AND p2.userid = :playlog_userid "
-            params["playlog_userid"] = session_user.user_id
+            params["playlog_userid"] = user.user_id
         extra_columns = f"""
             , (
                 SELECT JSON_GROUP_ARRAY(json_array(
@@ -758,10 +750,16 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
             f"LEFT JOIN {DB_TABLE_MEDIA_PROGRESS} AS playlog ON playlog.id = ("
             f"SELECT p2.id FROM {DB_TABLE_MEDIA_PROGRESS} p2 "
             "WHERE p2.item_id = CAST(audiobooks.item_id AS TEXT) "
-            "AND p2.media_type = 'audiobook' "
+            "AND p2.media_type = 'audiobook' AND p2.provider = 'library' "
             f"{playlog_user_clause}ORDER BY p2.timestamp DESC LIMIT 1)"
         )
         return extra_columns, extra_joins, params
+
+    async def _playlog_user(self, provider_mappings: Iterable[ProviderMapping]) -> User | None:
+        """Return the user whose playlog a provider's progress goes to, None for all users."""
+        if session_user := get_current_user():
+            return session_user
+        return await self.mass.music._get_user_for_provider(provider_mappings)
 
     def _parse_sync_details_row(self, db_row: Mapping[str, Any]) -> AudiobookSyncDetails:
         """Parse a raw sync-details db row into an AudiobookSyncDetails object."""

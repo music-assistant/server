@@ -48,7 +48,7 @@ from music_assistant.models.music_provider import (
 from .base import MediaControllerBase, PodcastSyncDetails
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping, Sequence
+    from collections.abc import Iterable, Mapping, Sequence
 
     from music_assistant_models.auth import User
 
@@ -674,7 +674,9 @@ class PodcastsController(MediaControllerBase[Podcast]):
         item.total_episodes = db_row["total_episodes"]
         return item
 
-    def _sync_details_query_parts(self) -> tuple[str, str, dict[str, Any]]:
+    async def _sync_details_query_parts(
+        self, provider_mappings: Iterable[ProviderMapping]
+    ) -> tuple[str, str, dict[str, Any]]:
         """Return extra (columns, joins, params) for the podcasts sync-details query."""
         return f", json_extract({DB_TABLE_PODCASTS}.metadata, '$.genres') AS genres", "", {}
 

@@ -1038,7 +1038,9 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         Resolution order matches get_library_item_by_prov_mappings (instance first,
         then domain).
         """
-        extra_columns, extra_joins, extra_params = self._sync_details_query_parts()
+        extra_columns, extra_joins, extra_params = await self._sync_details_query_parts(
+            provider_mappings
+        )
         base_sql = f"""
             SELECT
                 {self.db_table}.item_id,
@@ -3261,12 +3263,16 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         )
         return True
 
-    def _sync_details_query_parts(self) -> tuple[str, str, dict[str, Any]]:
+    async def _sync_details_query_parts(
+        self, provider_mappings: Iterable[ProviderMapping]
+    ) -> tuple[str, str, dict[str, Any]]:
         """
         Return extra (columns, joins, params) for this media type's sync-details query.
 
         Override in a subclass to select additional lightweight columns needed by the
         library sync change detection for this media type.
+
+        :param provider_mappings: The mappings of the item the provider is syncing.
         """
         return "", "", {}
 
