@@ -288,9 +288,11 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
                         await self.stop(queue.queue_id)
                 except Exception as err:
                     self.logger.warning("Failed to stop queue %s - %s", queue.queue_id, err)
-        # flush any pending (debounced) state writes so the latest queue survives shutdown/update
+        # flush any pending (debounced) state writes so the latest queue survives shutdown/update;
+        # a save that already started is cancelled too, so its older state can't land last
         for queue in self.all():
             self.mass.cancel_timer(f"save_queue_cache_{queue.queue_id}")
+            self.mass.cancel_task(f"save_queue_cache_{queue.queue_id}")
             await self._save_queue_to_cache(queue.queue_id)
 
     async def get_diagnostics(self) -> dict[str, SerializableType]:

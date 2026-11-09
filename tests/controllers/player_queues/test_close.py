@@ -66,3 +66,23 @@ async def test_close_does_not_wait_forever_on_a_stop() -> None:
 
     assert stopped == ["reachable"]
     assert save.await_count == 2
+
+
+async def test_close_cancels_a_running_save_before_the_final_one() -> None:
+    """A save that already started can't overwrite the state written at close."""
+    ctrl, save = _controller()
+    ctrl.stop = AsyncMock()  # type: ignore[method-assign]
+    events: list[str] = []
+    cast("MagicMock", ctrl.mass).cancel_task.side_effect = lambda task_id: events.append(
+        f"cancel {task_id}"
+    )
+    save.side_effect = lambda queue_id: events.append(f"save {queue_id}")
+
+    await ctrl.close()
+
+    assert events == [
+        "cancel save_queue_cache_unreachable",
+        "save unreachable",
+        "cancel save_queue_cache_reachable",
+        "save reachable",
+    ]
