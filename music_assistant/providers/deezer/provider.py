@@ -111,7 +111,7 @@ class DeezerProvider(RecommendationPayloadMixin, MusicProvider):
 
     @property
     def stream_format_supersedes_catalog(self) -> bool:
-        """Return True: Deezer serves CD and hi-res FLAC under one format name."""
+        """Return True: Deezer's format names do not give the full format."""
         return True
 
     @property

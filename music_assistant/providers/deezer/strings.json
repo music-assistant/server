@@ -118,7 +118,7 @@
     }
   },
   "manifest": {
-    "description": "Stream Deezer’s full music catalogue in CD-quality (FLAC) audio."
+    "description": "Stream Deezer’s full music catalogue in FLAC audio, up to 24-bit hi-res."
   },
   "errors": {
     "no_subscription": "This Deezer account has no subscription that Music Assistant can stream from. Deezer Free accounts are not supported; check that the subscription on this specific account is still active.",

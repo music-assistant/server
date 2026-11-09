@@ -66,13 +66,17 @@ def _streaming(
     return streaming, provider
 
 
-async def test_flac_track_reports_real_format(monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.mark.parametrize("track_format", ["FLAC", "FLAC_24"])
+async def test_flac_track_reports_real_format(
+    monkeypatch: pytest.MonkeyPatch, track_format: str
+) -> None:
     """A hi-res FLAC track is declared with the format from its header, which is cached."""
-    streaming, provider = _streaming(monkeypatch, "FLAC", _flac_header(88200, 24, 2))
+    streaming, provider = _streaming(monkeypatch, track_format, _flac_header(88200, 24, 2))
 
     details = await streaming.get_stream_details("1", MediaType.TRACK)
 
     assert (details.audio_format.sample_rate, details.audio_format.bit_depth) == (88200, 24)
+    assert details.size == 1000
     provider.mass.cache.set.assert_awaited_once()
 
 

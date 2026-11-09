@@ -213,7 +213,7 @@ class DeezerStreamingManager:
         ):
             sample_rate, bit_depth, channels = cached
             return sample_rate, bit_depth, channels
-        # Deezer serves CD and hi-res FLAC under the same format name, so the first
+        # Deezer's format names do not give the full format, so the first
         # (encrypted) chunk of the file is fetched and decrypted to read STREAMINFO
         try:
             blowfish_key = self._get_blowfish_key(track_id)

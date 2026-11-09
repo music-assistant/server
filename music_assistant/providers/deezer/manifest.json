@@ -3,7 +3,7 @@
   "domain": "deezer",
   "stage": "stable",
   "name": "Deezer",
-  "description": "Stream Deezer’s full music catalogue in CD-quality (FLAC) audio.",
+  "description": "Stream Deezer’s full music catalogue in FLAC audio, up to 24-bit hi-res.",
   "codeowners": ["@jdaberkow"],
   "tier": "community",
   "credits": [

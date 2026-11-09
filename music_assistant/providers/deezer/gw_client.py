@@ -179,7 +179,8 @@ class GWClient:
                 "media": {
                     "id": last_track.item_id,
                     "type": "song",
-                    "format": last_track.data["format"],
+                    # Deezer drops a listen reported as FLAC_24, a hi-res play counts as FLAC
+                    "format": last_track.data["format"].removesuffix("_24"),
                 },
                 "type": 1,
                 "stat": {
@@ -274,6 +275,8 @@ class GWClient:
             formats.insert(0, {"cipher": "BF_CBC_STRIPE", "format": "MP3_320"})
         if web_qualities["lossless"] or mobile_qualities["lossless"]:
             formats.insert(0, {"cipher": "BF_CBC_STRIPE", "format": "FLAC"})
+            # hi-res comes with lossless, Deezer has no flag for it
+            formats.insert(0, {"cipher": "BF_CBC_STRIPE", "format": "FLAC_24"})
         self.formats = formats
 
         self.user_country = user_data["results"]["COUNTRY"]
