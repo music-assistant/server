@@ -396,17 +396,18 @@ class MusicAssistant:
         LOGGER.info("Stop called, cleaning up...")
         # set state to stopping to signal we're shutting down
         self._set_state(CoreState.STOPPING)
-        # cancel all running tasks and pending timers
-        for task in list(self._tracked_tasks.values()):
-            task.cancel()
-        self._cancel_tracked_timers()
-        # the queues are closed before the providers unload: unloading a player provider
-        # removes the queues of its players, and with them their pending state to persist
+        # the queues are closed first: unloading a player provider removes the queues of its
+        # players (and their pending state to persist), while stopping their playback still
+        # needs the providers' running tasks and the pending player updates
         if (player_queues := getattr(self, "player_queues", None)) is not None:
             try:
                 await player_queues.close()
             except Exception:
                 LOGGER.exception("Error while closing the player_queues controller")
+        # cancel all running tasks and pending timers
+        for task in list(self._tracked_tasks.values()):
+            task.cancel()
+        self._cancel_tracked_timers()
         # cleanup all providers
         prov_ids = list(self._providers)
         results = await asyncio.gather(

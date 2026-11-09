@@ -279,3 +279,25 @@ async def test_stop_cancels_tracked_timers(mass_minimal: MusicAssistant) -> None
 
     callback.assert_not_called()
     assert not mass_minimal._tracked_timers
+
+
+async def test_stop_closes_the_queues_while_tasks_and_timers_still_run(
+    mass: MusicAssistant,
+) -> None:
+    """Stopping the queues' playback still has the running tasks and pending timers."""
+    listener = mass.create_task(asyncio.Event().wait(), task_id="test_listener")
+    mass.call_later(60, MagicMock(), task_id="test_player_update")
+    alive_at_queue_close: list[bool] = []
+    queues_close = mass.player_queues.close
+
+    async def record_queues_close() -> None:
+        alive_at_queue_close.append(
+            not listener.done() and "test_player_update" in mass._tracked_timers
+        )
+        await queues_close()
+
+    with patch.object(mass.player_queues, "close", record_queues_close):
+        await mass.stop()
+
+    assert alive_at_queue_close == [True]
+    assert listener.cancelled()
