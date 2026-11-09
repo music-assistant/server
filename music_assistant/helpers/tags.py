@@ -1116,6 +1116,10 @@ def _parse_mp4_tags(tags: MP4Tags) -> dict[str, Any]:  # noqa: C901, PLR0912, PL
     # Additional freeform tags
     if "----:com.apple.iTunes:ARTISTS" in tags:
         result["artists"] = _decode_mp4_freeform_list(tags["----:com.apple.iTunes:ARTISTS"])
+    if "----:com.apple.iTunes:ALBUMARTISTS" in tags:
+        result["albumartists"] = _decode_mp4_freeform_list(
+            tags["----:com.apple.iTunes:ALBUMARTISTS"]
+        )
     if "----:com.apple.iTunes:BARCODE" in tags:
         result["barcode"] = _decode_mp4_freeform_list(tags["----:com.apple.iTunes:BARCODE"])
     if "----:com.apple.iTunes:ISRC" in tags:
