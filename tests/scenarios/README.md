@@ -20,7 +20,10 @@ tests of the harness itself.
   on it (priority, one protocol per domain), with as many instances as the real domain allows.
 - **Devices**: `provider.protocol(...)` creates a device and its `FakeProtocol`. The scenario sets
   what it reports; its commands are recorded in `protocol.commands` and applied to its state.
-  `role="native"` or `role="audio"` stands for the role of the protocol on its device. A device
+  `role="native"` or `role="audio"` stands for the role of the protocol on its device,
+  `session_only=True` for a protocol that reports it exists only while attached (a browser
+  session; today's server has no attribute for it, the fake keeps the flag). Every fake protocol
+  has one config entry of its own, `FAKE_SETTING`, like a provider setting of the device. A device
   is present from `attach()` until `detach()` (or `set_present()`), and like a real provider the
   fake one attaches the present devices when it loads (boot, reload) and 5 s after a player of it
   gets enabled. A protocol object belongs to one server and provider instance: after a restart or
@@ -64,6 +67,8 @@ tests of the harness itself.
 | `player_of(protocol)` | the id of the player a protocol is attached to, also hidden; None when none |
 | `player(id)`, `queue(id)`, `await player_config(id)` | a player state, a queue, a stored player config |
 | `await player_configs()` | the stored player configs as the settings page lists them, disabled ones included |
+| `protocol_config(protocol_id)` | the stored config values of a protocol object, None when none is stored |
+| `await stored_config_mentioning(text)` | every key and value of the stored config (settings.json) that mentions the text, e.g. a protocol id |
 | `events(*types)`, `clear_events()` | the emitted events in order, from the boot on; repeats of an update event collapsed |
 | `provider(domain_or_id)`, `protocol(protocol_id)` | the loaded fake provider, the current protocol object of a device |
 
@@ -136,5 +141,7 @@ An expected failure only counts when the test module raises it itself, in the te
 and it is no `ScenarioError`: `conftest.py` turns any other into a failure, so a failing harness
 precondition, a server error or a renamed internal can not pass as the expected one.
 `raises=AssertionError` narrows it to the scenario's own asserts; where the target API does not
-exist yet, use `raises=(AssertionError, AttributeError)`. A phase is done when all of its markers
+exist yet, use `raises=(AssertionError, AttributeError)`. A phase PR runs the suite with
+`--runxfail` and checks that no marker is still caught as an `AttributeError`: by then the API a
+scenario assumed exists, or the scenario is rewritten. A phase is done when all of its markers
 are gone; the scenarios of today's behaviour it changes are rewritten in the same PR.

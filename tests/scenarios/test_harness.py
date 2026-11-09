@@ -18,7 +18,14 @@ from music_assistant.controllers.players.controller import PlayerController
 from music_assistant.controllers.players.protocol_linking import ProtocolLinkingMixin
 
 from . import harness
-from .harness import CLOCK_START, Event, Scenario, ScenarioError, xfail_origin_error
+from .harness import (
+    CLOCK_START,
+    FAKE_SETTING,
+    Event,
+    Scenario,
+    ScenarioError,
+    xfail_origin_error,
+)
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Callable, Coroutine
@@ -411,6 +418,8 @@ async def test_player_of_follows_the_attachment(scenario: Scenario) -> None:
 
 async def test_player_configs_lists_the_settings_page(scenario: Scenario) -> None:
     """player_configs() lists stored player configs, disabled ones included, protocol configs not."""
+    # relies on today's config shape, a protocol config under players/ and the protocol id as
+    # the player id, which the record split changes: a harness test may, a scenario may not
     sonos = await scenario.add_provider("sonos")
     airplay = await scenario.add_provider("airplay")
     speaker = sonos.protocol("RINCON_KITCHEN", "Kitchen", identifiers=KITCHEN)
@@ -474,6 +483,49 @@ async def test_player_config_only_misses_an_unstored_player(scenario: Scenario) 
         pytest.raises(KeyError, match="bug in the player config"),
     ):
         await scenario.player_config("RINCON_KITCHEN")
+
+
+async def test_protocol_config_holds_the_protocol_setting(scenario: Scenario) -> None:
+    """A protocol's own setting is stored with its config, which protocol_config() reads back."""
+    sonos = await scenario.add_provider("sonos")
+    speaker = sonos.protocol("RINCON_KITCHEN", "Kitchen", identifiers=KITCHEN)
+    await scenario.attach(speaker)
+
+    assert scenario.protocol_config("unknown") is None
+    assert FAKE_SETTING not in (scenario.protocol_config("RINCON_KITCHEN") or {})
+    await scenario.configure_player("RINCON_KITCHEN", **{FAKE_SETTING: "loud"})
+
+    assert (scenario.protocol_config("RINCON_KITCHEN") or {})[FAKE_SETTING] == "loud"
+
+
+async def test_stored_config_mentions_come_from_the_saved_settings(scenario: Scenario) -> None:
+    """A pending save is written first; every key and value with the text is listed by path."""
+    sonos = await scenario.add_provider("sonos")
+    speaker = sonos.protocol("RINCON_KITCHEN", "Kitchen", identifiers=KITCHEN)
+    await scenario.attach(speaker)
+    await scenario.configure_player("RINCON_KITCHEN", name="Kitchen Sonos")
+
+    mentions = await scenario.stored_config_mentioning("RINCON_KITCHEN")
+
+    assert "players/RINCON_KITCHEN" in mentions
+    assert "players/RINCON_KITCHEN/player_id = 'RINCON_KITCHEN'" in mentions
+    assert (
+        "players/RINCON_KITCHEN/name = 'Kitchen Sonos'"
+        in await scenario.stored_config_mentioning("Kitchen Sonos")
+    )
+    assert await scenario.stored_config_mentioning("nothing like this") == []
+
+
+async def test_session_only_flag_stays_with_the_device(scenario: Scenario) -> None:
+    """A device created session-only reports so on every protocol object of it."""
+    sendspin = await scenario.add_provider("sendspin")
+    browser = sendspin.protocol("sendspin_web", "Web Browser", session_only=True)
+    await scenario.attach(browser)
+
+    assert browser.session_only is True
+    await scenario.restart()
+    assert scenario.protocol("sendspin_web").session_only is True
+    assert scenario.provider("sendspin").protocol("sendspin_app", "App").session_only is False
 
 
 def test_seed_values_delete_nested_keys() -> None:

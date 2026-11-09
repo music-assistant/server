@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from copy import deepcopy
+from typing import Any
 from unittest.mock import ANY
 
 import pytest
@@ -16,6 +18,8 @@ LIVING = {
 }
 TV = {IdentifierType.MAC_ADDRESS: "F4:F5:D8:00:00:02", IdentifierType.IP_ADDRESS: "192.168.1.22"}
 DEN = {IdentifierType.MAC_ADDRESS: "00:11:22:33:44:55", IdentifierType.IP_ADDRESS: "192.168.1.30"}
+# what Sendspin reports for a browser or app session today
+WEB_PLAYER: dict[str, Any] = {"hidden_by_default": True, "private": True}
 
 MEDIA = PlayerMedia(uri="http://ma.local/stream/track.flac")
 
@@ -46,19 +50,17 @@ async def test_player_outlives_its_removed_provider_on_its_other_protocols(
     await scenario.advance(15)
     await scenario.idle()
 
-    players = scenario.players_carrying(living_airplay, living_sendspin)
-    assert players == [
+    # clients resolve the provider a player names: that of its highest-priority protocol left
+    assert scenario.players_carrying(living_airplay, living_sendspin) == [
         VisiblePlayer(
             player_id=player_id,
             name="Living",
             available=True,
             powered=None,
-            provider=ANY,
+            provider="airplay",
             outputs=(("airplay", True), ("sendspin", True)),
         )
     ]
-    # clients resolve the provider a player names, so it is one that is still loaded
-    assert players[0].provider in {"airplay", "sendspin"}
     assert scenario.events(EventType.PLAYER_REMOVED) == []
 
 
@@ -138,6 +140,11 @@ async def test_disabled_by_default_device_is_no_player_until_enabled(
     assert ("play_media", MEDIA) in tv.commands
 
 
+async def _stored_mentions(scenario: Scenario, *texts: str) -> list[str]:
+    """Return everything in the stored config that mentions any of the texts."""
+    return [mention for text in texts for mention in await scenario.stored_config_mentioning(text)]
+
+
 @pytest.mark.xfail(
     strict=True,
     raises=AssertionError,
@@ -147,29 +154,32 @@ async def test_session_only_web_player_exists_while_attached(scenario: Scenario)
     """
     A web player exists while its protocol is attached and leaves nothing behind.
 
-    No stored config, no player once it detaches, a new session replaces the old one, and
-    nothing after a restart. Today Sendspin tells a web player apart by its device info; in
-    the target the protocol reports that it is session-only.
+    The protocol reports that it is session-only. Nothing of it is stored anywhere in the
+    config, no player once it detaches, a new session replaces the old one, and nothing after
+    a restart.
     """
     sendspin = await scenario.add_provider("sendspin")
     browser = sendspin.protocol(
-        "sendspin_web_3f2a", "Web Browser", hidden_by_default=True, private=True
+        "sendspin_web_3f2a", "Web Browser", session_only=True, volume_level=20, **WEB_PLAYER
     )
     await scenario.attach(browser)
     await scenario.idle()
     player_id = scenario.single_player(browser).player_id
 
-    assert await scenario.player_config(player_id) is None
+    assert await _stored_mentions(scenario, player_id, "sendspin_web_3f2a") == []
 
     # the page reloads: a new session connects with the same client id
     reloaded = sendspin.protocol(
-        "sendspin_web_3f2a", "Web Browser", hidden_by_default=True, private=True
+        "sendspin_web_3f2a", "Web Browser", session_only=True, volume_level=35, **WEB_PLAYER
     )
     await scenario.attach(reloaded)
     await scenario.mass.players.play_media(player_id, MEDIA)
     await scenario.settle()
 
     assert [player.player_id for player in scenario.players_carrying(reloaded)] == [player_id]
+    player = scenario.player(player_id)
+    assert player is not None
+    assert player.volume_level == 35
     assert ("play_media", MEDIA) in reloaded.commands
     assert browser.commands == []
 
@@ -177,7 +187,7 @@ async def test_session_only_web_player_exists_while_attached(scenario: Scenario)
     await scenario.idle()
 
     assert scenario.visible_players() == []
-    assert await scenario.player_config(player_id) is None
+    assert await _stored_mentions(scenario, player_id, "sendspin_web_3f2a") == []
 
     await scenario.restart()
     await scenario.idle()
@@ -193,9 +203,7 @@ async def test_customised_session_only_player_keeps_its_config(scenario: Scenari
     It comes back with the config, and still exists only while attached.
     """
     sendspin = await scenario.add_provider("sendspin")
-    browser = sendspin.protocol(
-        "sendspin_web_3f2a", "Web Browser", hidden_by_default=True, private=True
-    )
+    browser = sendspin.protocol("sendspin_web_3f2a", "Web Browser", session_only=True, **WEB_PLAYER)
     await scenario.attach(browser)
     player_id = scenario.single_player(browser).player_id
     await scenario.configure_player(player_id, name="Marcel's browser")
@@ -219,7 +227,7 @@ async def test_customised_session_only_player_keeps_its_config(scenario: Scenari
 
 # the stored config of a protocol-only player as written before the split: a universal player
 # config and the configs of its protocols pointing at it
-PRE_SPLIT_DEN_TV = {
+PRE_SPLIT_DEN_TV: dict[str, dict[str, Any]] = {
     "upf3eba71c": {
         "player_id": "upf3eba71c",
         "provider": "universal_player",
@@ -254,12 +262,22 @@ PRE_SPLIT_DEN_TV = {
         "values": {"protocol_parent_id": "upf3eba71c"},
     },
 }
+# the same config as an interrupted shutdown leaves it: the parent's protocol list never written
+HALF_WRITTEN_DEN_TV = deepcopy(PRE_SPLIT_DEN_TV)
+del HALF_WRITTEN_DEN_TV["upf3eba71c"]["values"]["linked_protocol_ids"]
 
 
+@pytest.mark.parametrize(
+    "stored", [PRE_SPLIT_DEN_TV, HALF_WRITTEN_DEN_TV], ids=["complete", "half_written"]
+)
 async def test_pre_split_universal_player_config_comes_back_as_the_same_player(
-    scenario: Scenario,
+    scenario: Scenario, stored: dict[str, dict[str, Any]]
 ) -> None:
-    """A universal player config from before the split boots as the player with its id and name."""
+    """
+    A universal player config from before the split boots as the player with its id and name.
+
+    Also a half-written one: the boot never fails on it, and the player comes back.
+    """
     airplay = await scenario.add_provider("airplay")
     chromecast = await scenario.add_provider("chromecast")
     airplay.protocol("airplay_den", "Den", role="audio", identifiers=DEN)
@@ -267,7 +285,7 @@ async def test_pre_split_universal_player_config_comes_back_as_the_same_player(
     scenario.set_present("airplay_den", True)
     scenario.set_present("cast_den", True)
 
-    await scenario.seed_config({"players": PRE_SPLIT_DEN_TV})
+    await scenario.seed_config({"players": stored})
     await scenario.idle()
 
     assert scenario.visible_players() == [

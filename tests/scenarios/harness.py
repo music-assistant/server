@@ -22,7 +22,9 @@ from typing import TYPE_CHECKING, Any, Literal, NamedTuple, TypeVar
 from unittest.mock import patch
 
 from aiosqlite.core import Connection as SqliteConnection
+from music_assistant_models.config_entries import ConfigEntry
 from music_assistant_models.enums import (
+    ConfigEntryType,
     EventType,
     IdentifierType,
     PlaybackState,
@@ -99,7 +101,11 @@ DEFAULT_FEATURES = frozenset(
     }
 )
 
+# The one config entry every fake protocol has of its own, for scenarios about protocol config.
+FAKE_SETTING = "fake_setting"
+
 type Role = Literal["native", "audio"]
+type Identifiers = Mapping[IdentifierType, str | list[str] | tuple[str, ...]]
 
 # Today the role of a protocol is its player type. Kept in this one place so the scenarios
 # stay valid when the role becomes an attribute of its own.
@@ -143,6 +149,7 @@ class FakeProtocol(PlayerProtocol):
 
     Commands are applied to the reported state the way a well-behaved device reports them
     back (power, volume, playback), so the server never waits for a device that stays silent.
+    It has one config entry of its own (FAKE_SETTING), like a provider setting of the device.
     An object belongs to the server and provider instance it was created on; after a restart
     or a provider reload, Scenario.protocol() returns the current one.
     """
@@ -158,10 +165,25 @@ class FakeProtocol(PlayerProtocol):
         super().__init__(provider, protocol_id)
         # every command received, as a tuple of the command name and its arguments
         self.commands: list[tuple[Any, ...]] = []
+        # whether the protocol exists only while attached, like a browser session; today's
+        # server has no such attribute to report it on
+        self.session_only = device.session_only
         self._device = device
         self._attr_supported_features = set(DEFAULT_FEATURES)
         self._attr_device_info = DeviceInfo(model=f"Fake {provider.domain}", manufacturer="Fake")
         self._set_reported(identifiers=dict(device.identifiers), **device.state)
+
+    async def get_config_entries(self) -> list[ConfigEntry]:
+        """Return the protocol's own config entry."""
+        return [
+            *await super().get_config_entries(),
+            ConfigEntry(
+                key=FAKE_SETTING,
+                type=ConfigEntryType.STRING,
+                label="Fake setting",
+                required=False,
+            ),
+        ]
 
     async def power(self, powered: bool) -> None:
         """Handle a power command."""
@@ -241,7 +263,9 @@ class FakeProtocol(PlayerProtocol):
         for key, value in state.items():
             if key == "identifiers":
                 for identifier_type, identifier in value.items():
-                    values = identifier if isinstance(identifier, list) else [identifier]
+                    values = (
+                        list(identifier) if isinstance(identifier, list | tuple) else [identifier]
+                    )
                     # a device info keeps one identifier per type today, so of several values
                     # the server sees the last one; None (or no value) drops the identifier
                     for one in values or [None]:
@@ -291,7 +315,8 @@ class FakePlayerProvider(PlayerProvider):
         name: str,
         *,
         role: Role = "native",
-        identifiers: Mapping[IdentifierType, str | list[str]] | None = None,
+        identifiers: Identifiers | None = None,
+        session_only: bool = False,
         **state: Any,
     ) -> FakeProtocol:
         """
@@ -304,12 +329,15 @@ class FakePlayerProvider(PlayerProvider):
         :param identifiers: The device identifiers it reports (MAC, IP, UUID, ...); a list of
             values reports several identifiers of one type, for a device that stands for
             several (sub)devices.
+        :param session_only: Whether the protocol reports that it exists only while attached,
+            like a browser session. Today's server ignores it.
         :param state: Other reported state, as taken by Scenario.report().
         """
         self._devices[protocol_id] = _Device(
             provider_id=self.instance_id,
             state={"name": name, "type": _ROLE_TYPES[role], **state},
             identifiers=dict(identifiers or {}),
+            session_only=session_only,
         )
         self._protocols.pop(protocol_id, None)
         return self._protocol_for(protocol_id)
@@ -641,10 +669,9 @@ class Scenario:
             a None value deletes the key.
         """
         await self._shutdown()
-        settings_file = self._tmp_path / "data" / "settings.json"
-        data = json.loads(settings_file.read_text()) if settings_file.exists() else {}
+        data = json.loads(self._settings_file.read_text()) if self._settings_file.exists() else {}
         _merge(data, values)
-        settings_file.write_text(json.dumps(data))
+        self._settings_file.write_text(json.dumps(data))
         await self._boot()
 
     async def settle(self) -> None:
@@ -770,6 +797,28 @@ class Scenario:
         configs = await self.mass.config.get_player_configs()
         return sorted(configs, key=lambda config: config.player_id)
 
+    def protocol_config(self, protocol_id: str) -> dict[str, Any] | None:
+        """
+        Return the stored config values of a protocol object by key, None when none is stored.
+
+        :param protocol_id: ID of the protocol object.
+        """
+        if (stored := self.mass.config.get(f"{CONF_PLAYERS}/{protocol_id}")) is None:
+            return None
+        return dict(stored.get("values") or {})
+
+    async def stored_config_mentioning(self, text: str) -> list[str]:
+        """
+        Return every key and value of the stored config (settings.json) that mentions a text.
+
+        A key as its path (``players/x``), a value as ``path = value``; for asserting that
+        nothing of a player or protocol is persisted, wherever it would be stored.
+
+        :param text: The text to look for, e.g. a protocol id.
+        """
+        await self.mass.config.async_save()
+        return _mentions(json.loads(self._settings_file.read_text()), text)
+
     def queue(self, queue_id: str) -> PlayerQueue | None:
         """
         Return the queue of a player.
@@ -803,6 +852,11 @@ class Scenario:
     def clear_events(self) -> None:
         """Forget the events emitted so far."""
         self._events.clear()
+
+    @property
+    def _settings_file(self) -> pathlib.Path:
+        """The stored config of the server."""
+        return self._tmp_path / "data" / "settings.json"
 
     async def _boot(self) -> None:
         """Start a server on the scenario's storage, with the power controls registered."""
@@ -1053,7 +1107,10 @@ class _Device:
     provider_id: str
     # reported state by attribute name, as taken by Scenario.report()
     state: dict[str, Any]
-    identifiers: dict[IdentifierType, str | list[str]] = field(default_factory=dict)
+    identifiers: dict[IdentifierType, str | list[str] | tuple[str, ...]] = field(
+        default_factory=dict
+    )
+    session_only: bool = False
     present: bool = False
 
 
@@ -1201,6 +1258,23 @@ def _fake_manifest(manifest: ProviderManifest) -> ProviderManifest:
 def _carried_ids(state: PlayerState) -> set[str]:
     """Return the ids of the protocol objects a player state stands for."""
     return {state.player_id} | {output.output_protocol_id for output in state.output_protocols}
+
+
+def _mentions(value: Any, text: str, path: str = "") -> list[str]:
+    """Return the key paths and the values below a stored value that mention a text."""
+    found: list[str] = []
+    if isinstance(value, dict):
+        for key, child in value.items():
+            child_path = f"{path}/{key}" if path else str(key)
+            if text in str(key):
+                found.append(child_path)
+            found += _mentions(child, text, child_path)
+    elif isinstance(value, list):
+        for index, child in enumerate(value):
+            found += _mentions(child, text, f"{path}[{index}]")
+    elif isinstance(value, str) and text in value:
+        found.append(f"{path} = {value!r}")
+    return found
 
 
 def _merge(target: dict[str, Any], values: dict[str, Any]) -> None:

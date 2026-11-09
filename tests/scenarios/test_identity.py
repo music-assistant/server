@@ -9,14 +9,14 @@ import pytest
 from music_assistant_models.enums import EventType, IdentifierType
 from music_assistant_models.player import PlayerMedia
 
-from .harness import Role, Scenario, ScenarioError, VisiblePlayer
+from .harness import FAKE_SETTING, Role, Scenario, ScenarioError, VisiblePlayer
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
 
     from .harness import FakeProtocol
 
-# a Raspberry Pi running two shairport-sync receivers, one per amplifier
+# a Raspberry Pi running two receivers of one protocol, one per amplifier
 PI = {IdentifierType.MAC_ADDRESS: "B8:27:EB:11:22:33", IdentifierType.IP_ADDRESS: "192.168.1.40"}
 # a multi-zone amplifier: one chassis, one network interface
 CHASSIS = {
@@ -41,26 +41,51 @@ ONE_S_UDN = "uuid:raumfeld-one-s-0003"
 MEDIA = PlayerMedia(uri="http://ma.local/stream/track.flac")
 
 
-async def test_airplay_receivers_on_one_host_stay_separate_players(scenario: Scenario) -> None:
+@pytest.mark.parametrize(
+    ("domain", "kitchen_ids", "den_ids"),
+    [
+        pytest.param(
+            "airplay",
+            {IdentifierType.AIRPLAY_ID: "AA:AA:AA:AA:AA:01"},
+            {IdentifierType.AIRPLAY_ID: "AA:AA:AA:AA:AA:02"},
+            marks=pytest.mark.xfail(
+                strict=True,
+                raises=AssertionError,
+                reason="phase 2 (#416): a protocol-only player names its protocol's provider",
+            ),
+            id="airplay_id",
+        ),
+        pytest.param(
+            "dlna",
+            {IdentifierType.UUID: "uuid:gmrender-0001"},
+            {IdentifierType.UUID: "uuid:gmrender-0002"},
+            marks=pytest.mark.xfail(
+                strict=True,
+                raises=AssertionError,
+                reason="phase 2 (#416): a differing UUID vetoes a match like an AirPlay id does",
+            ),
+            id="uuid",
+        ),
+    ],
+)
+async def test_receivers_on_one_host_stay_separate_players(
+    scenario: Scenario,
+    domain: str,
+    kitchen_ids: dict[IdentifierType, str],
+    den_ids: dict[IdentifierType, str],
+) -> None:
     """
-    Two AirPlay receivers on one host (same IP and MAC, different AirPlay ids) are two players.
+    Two receivers of one protocol on one host (same IP and MAC, different strong ids) are two players.
 
     A differing strong identifier vetoes a match before the MAC or IP fallback, also while the
-    first receiver is away and the player it left behind has no protocol attached.
+    first receiver is away and the player it left behind has no protocol attached. Each player
+    names the provider of its one protocol.
     """
-    airplay = await scenario.add_provider("airplay")
-    kitchen = airplay.protocol(
-        "airplay_kitchen",
-        "Kitchen",
-        role="audio",
-        identifiers={**PI, IdentifierType.AIRPLAY_ID: "AA:AA:AA:AA:AA:01"},
+    provider = await scenario.add_provider(domain)
+    kitchen = provider.protocol(
+        f"{domain}_kitchen", "Kitchen", role="audio", identifiers={**PI, **kitchen_ids}
     )
-    den = airplay.protocol(
-        "airplay_den",
-        "Den",
-        role="audio",
-        identifiers={**PI, IdentifierType.AIRPLAY_ID: "AA:AA:AA:AA:AA:02"},
-    )
+    den = provider.protocol(f"{domain}_den", "Den", role="audio", identifiers={**PI, **den_ids})
     await scenario.attach(kitchen)
     await scenario.advance(15)
     kitchen_id = scenario.single_player(kitchen).player_id
@@ -69,6 +94,7 @@ async def test_airplay_receivers_on_one_host_stay_separate_players(scenario: Sce
     await scenario.attach(den)
     await scenario.advance(15)
     await scenario.attach(kitchen)
+    await scenario.advance(15)
     await scenario.idle()
 
     assert scenario.players_carrying(kitchen) == [
@@ -77,8 +103,8 @@ async def test_airplay_receivers_on_one_host_stay_separate_players(scenario: Sce
             name="Kitchen",
             available=True,
             powered=None,
-            provider=ANY,
-            outputs=(("airplay", True),),
+            provider=domain,
+            outputs=((domain, True),),
         )
     ]
     assert scenario.players_carrying(den) == [
@@ -87,8 +113,8 @@ async def test_airplay_receivers_on_one_host_stay_separate_players(scenario: Sce
             name="Den",
             available=True,
             powered=None,
-            provider=ANY,
-            outputs=(("airplay", True),),
+            provider=domain,
+            outputs=((domain, True),),
         )
     ]
     assert len(scenario.visible_players()) == 2
@@ -162,7 +188,9 @@ async def test_room_of_several_renderers_is_one_player(scenario: Scenario) -> No
     """
     A native room standing for three DLNA renderers is one visible player with one DLNA output.
 
-    The renderers the room stands for are attached hidden, so none of them is a player of its own.
+    The room reports the UUIDs of its renderers among its identifiers; that it claims them by
+    those is the assumed contract. The renderers are attached hidden, so none of them is a
+    player of its own.
     """
     dlna = await scenario.add_provider("dlna")
     raumfeld = await scenario.add_provider("raumfeld")
@@ -235,8 +263,8 @@ async def test_reflashed_device_keeps_its_player(scenario: Scenario) -> None:
     """
     A device re-flashed to another firmware with the same MAC keeps its player.
 
-    The new protocol attaches to it, the id and the custom name stay, and the stale protocol
-    is gone from its outputs.
+    The new protocol attaches to it as an available output and the id and the custom name
+    stay. Whether the stale protocol of the other provider stays listed is not a rule.
     """
     squeezelite = await scenario.add_provider("squeezelite")
     sendspin = await scenario.add_provider("sendspin")
@@ -253,16 +281,44 @@ async def test_reflashed_device_keeps_its_player(scenario: Scenario) -> None:
     await scenario.advance(15)
     await scenario.idle()
 
-    assert scenario.players_carrying(esp_sendspin) == [
-        VisiblePlayer(
-            player_id=player_id,
-            name="Kitchen Speaker",
-            available=True,
-            powered=None,
-            provider="sendspin",
-            outputs=(("sendspin", True),),
-        )
+    players = scenario.players_carrying(esp_sendspin)
+    assert [(p.player_id, p.name, p.provider) for p in players] == [
+        (player_id, "Kitchen Speaker", "sendspin")
     ]
+    assert ("sendspin", True) in players[0].outputs
+
+
+@pytest.mark.xfail(
+    strict=True,
+    raises=AssertionError,
+    reason="phase 2 (#416): a protocol matching an offline one of its provider takes its place",
+)
+async def test_device_with_a_new_protocol_id_keeps_its_player_and_settings(
+    scenario: Scenario,
+) -> None:
+    """
+    A device its provider identifies by a new id (ESPHome: the MAC, then a key) keeps its player.
+
+    The new protocol attaches to the player with the same MAC and inherits the config of the
+    offline protocol it replaces, whose stale config is dropped.
+    """
+    sendspin = await scenario.add_provider("sendspin")
+    by_mac = sendspin.protocol("sendspin_a0b765001122", "esp32-loud", identifiers=ESP32)
+    await scenario.attach(by_mac)
+    player_id = scenario.single_player(by_mac).player_id
+    await scenario.configure_player(player_id, name="Kitchen Speaker", **{FAKE_SETTING: "loud"})
+    await scenario.detach(by_mac)
+
+    by_key = sendspin.protocol("sendspin_key_7f3a9c", "esp32-loud", identifiers=ESP32)
+    await scenario.attach(by_key)
+    await scenario.advance(15)
+    await scenario.idle()
+
+    assert [(p.player_id, p.name) for p in scenario.players_carrying(by_key)] == [
+        (player_id, "Kitchen Speaker")
+    ]
+    assert (scenario.protocol_config("sendspin_key_7f3a9c") or {}).get(FAKE_SETTING) == "loud"
+    assert await scenario.stored_config_mentioning("sendspin_a0b765001122") == []
 
 
 @pytest.mark.parametrize(
@@ -350,7 +406,7 @@ async def test_unused_duplicate_is_merged_into_the_older_player(scenario: Scenar
             name="TV",
             available=True,
             powered=None,
-            provider=ANY,
+            provider="airplay",
             outputs=(("airplay", True), ("chromecast", True)),
         )
     ]
@@ -359,14 +415,17 @@ async def test_unused_duplicate_is_merged_into_the_older_player(scenario: Scenar
     assert resolved.player_id == older_id
 
 
-async def _played(scenario: Scenario, player_id: str) -> None:
-    """Play something on the player and stop it again."""
+async def _played(scenario: Scenario, player_id: str, protocol: FakeProtocol) -> None:
+    """Play something on the player, which reaches its protocol, and stop it again."""
     await scenario.mass.players.play_media(player_id, MEDIA)
     await scenario.mass.players.cmd_stop(player_id)
     await scenario.settle()
+    if ("play_media", MEDIA) not in protocol.commands:
+        msg = f"{protocol.player_id} did not play"
+        raise ScenarioError(msg)
 
 
-async def _renamed(scenario: Scenario, player_id: str) -> None:
+async def _renamed(scenario: Scenario, player_id: str, _protocol: FakeProtocol) -> None:
     """Give the player a custom name."""
     await scenario.configure_player(player_id, name="Kitchen TV")
 
@@ -378,11 +437,11 @@ async def _renamed(scenario: Scenario, player_id: str) -> None:
     reason="phase 2 (#416): only an unused duplicate is merged by itself",
 )
 async def test_used_duplicate_is_not_merged(
-    scenario: Scenario, used: Callable[[Scenario, str], Awaitable[None]]
+    scenario: Scenario, used: Callable[[Scenario, str, FakeProtocol], Awaitable[None]]
 ) -> None:
     """A younger duplicate that has played or was customised stays a player of its own."""
     tv_airplay, tv_cast, older_id, younger_id = await _two_players_for_one_tv(scenario)
-    await used(scenario, younger_id)
+    await used(scenario, younger_id, tv_cast)
 
     await _seen_again_with_its_address(scenario, tv_airplay)
 

@@ -9,7 +9,7 @@ from music_assistant_models.enums import IdentifierType
 from music_assistant_models.errors import PlayerUnavailableError
 from music_assistant_models.player import PlayerMedia
 
-from .harness import Scenario, VisiblePlayer
+from .harness import FakePowerControl, FakeProtocol, Scenario, VisiblePlayer
 
 DEN = {IdentifierType.MAC_ADDRESS: "00:11:22:33:44:55", IdentifierType.IP_ADDRESS: "192.168.1.30"}
 BATHROOM = {
@@ -55,9 +55,28 @@ async def test_player_stays_available_on_its_audio_protocols(scenario: Scenario)
         )
     ]
     await scenario.mass.players.play_media(player_id, MEDIA)
-    await scenario.settle()
+    await scenario.idle()
     assert ("play_media", MEDIA) in den_airplay.commands + den_cast.commands
     assert snapclient.commands == []
+
+
+async def _switched_off_player(scenario: Scenario) -> tuple[FakeProtocol, FakePowerControl, str]:
+    """
+    Return a native player's protocol, its power control and its id, with the device gone.
+
+    The user switched the control off by hand, after which the device dropped off the
+    network. The player is expected to show available and powered off.
+    """
+    squeezelite = await scenario.add_provider("squeezelite")
+    pi = squeezelite.protocol("b8:27:eb:aa:bb:cc", "Bathroom", identifiers=BATHROOM)
+    await scenario.attach(pi)
+    player_id = scenario.single_player(pi).player_id
+    plug = await scenario.add_power_control("switch.bathroom_plug", "Bathroom plug", powered=True)
+    await scenario.configure_player(player_id, power_control=plug.control_id)
+    await scenario.switch(plug, False)
+    await scenario.detach(pi)
+    await scenario.idle()
+    return pi, plug, player_id
 
 
 @pytest.mark.xfail(
@@ -72,15 +91,7 @@ async def test_offline_device_is_powered_on_through_its_power_control(scenario: 
     While the control is off the player shows available and powered off; power on switches
     the control, and the player plays once the device is back.
     """
-    squeezelite = await scenario.add_provider("squeezelite")
-    pi = squeezelite.protocol("b8:27:eb:aa:bb:cc", "Bathroom", identifiers=BATHROOM)
-    await scenario.attach(pi)
-    player_id = scenario.single_player(pi).player_id
-    plug = await scenario.add_power_control("switch.bathroom_plug", "Bathroom plug", powered=True)
-    await scenario.configure_player(player_id, power_control=plug.control_id)
-    await scenario.switch(plug, False)
-    await scenario.detach(pi)
-    await scenario.idle()
+    pi, plug, player_id = await _switched_off_player(scenario)
 
     assert [(p.player_id, p.available, p.powered) for p in scenario.visible_players()] == [
         (player_id, True, False)
@@ -103,8 +114,38 @@ async def test_offline_device_is_powered_on_through_its_power_control(scenario: 
     assert ("play_media", MEDIA) in pi.commands
 
 
+@pytest.mark.xfail(
+    strict=True,
+    raises=AssertionError,
+    reason="phase 1 (#415): a player outlives its detached protocol",
+)
+async def test_play_on_a_switched_off_player_powers_it_on(scenario: Scenario) -> None:
+    """
+    Play on a player whose device is gone but has a power control is accepted: it powers on.
+
+    The play command switches the control, waits for the device and plays, instead of being
+    refused as unavailable.
+    """
+    pi, plug, player_id = await _switched_off_player(scenario)
+
+    assert [(p.player_id, p.available, p.powered) for p in scenario.visible_players()] == [
+        (player_id, True, False)
+    ]
+
+    play = await scenario.command(scenario.mass.players.play_media(player_id, MEDIA))
+
+    assert plug.commands == [True]
+    assert not play.done()
+    await scenario.attach(pi)
+    # the power on looks for the device every 0.5 s
+    await scenario.advance(1)
+    await play
+
+    assert ("play_media", MEDIA) in pi.commands
+
+
 async def _detached_player(scenario: Scenario) -> str:
-    """Return the id of a native player whose device has gone away."""
+    """Return the id of a native player whose device has gone away, without a power control."""
     sonos = await scenario.add_provider("sonos")
     speaker = sonos.protocol("RINCON_DEN", "Den", identifiers=DEN)
     await scenario.attach(speaker)
@@ -126,12 +167,18 @@ async def _detached_player(scenario: Scenario) -> str:
     ],
     ids=["play", "pause", "stop", "volume_set", "volume_mute", "play_media"],
 )
+@pytest.mark.xfail(
+    strict=True,
+    raises=AssertionError,
+    reason="phase 1 (#415): a player outlives its detached protocol",
+)
 async def test_command_to_an_unavailable_player_raises(
     scenario: Scenario, command: str, args: tuple[Any, ...]
 ) -> None:
-    """A command to a player whose device is gone fails as unavailable instead of doing nothing."""
+    """A command to a listed player whose device is gone fails as unavailable, not silently."""
     player_id = await _detached_player(scenario)
 
+    assert [(p.player_id, p.available) for p in scenario.visible_players()] == [(player_id, False)]
     with pytest.raises(PlayerUnavailableError):
         await getattr(scenario.mass.players, command)(player_id, *args)
 
@@ -142,7 +189,12 @@ async def test_command_to_an_unavailable_player_raises(
     reason="phase 1 (#415): a player outlives its detached protocol",
 )
 async def test_power_on_of_an_unavailable_player_is_accepted(scenario: Scenario) -> None:
-    """Power on is the one command an unavailable player takes, so its power control can bring it back."""
+    """
+    Power on is the one command an unavailable player takes.
+
+    Acceptance (no error) is the rule: without a power control nothing else is observable,
+    with one the control brings the device back.
+    """
     player_id = await _detached_player(scenario)
 
     assert [(p.player_id, p.available) for p in scenario.visible_players()] == [(player_id, False)]
