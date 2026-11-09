@@ -272,8 +272,11 @@ class AppleMusicLiveRadioManager:
                         raise AudioError("The live radio decoder stopped")
                     segment = next_key[0]
         except MusicAssistantError as err:
+            # ffmpeg wraps an error of its input, the core needs the original to handle it
+            if isinstance(err.__cause__, MusicAssistantError):
+                err = err.__cause__
             self.state["last_error"] = str(err)
-            raise
+            raise err from None
 
     async def _key_input(
         self,

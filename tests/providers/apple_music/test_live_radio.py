@@ -1,10 +1,12 @@
 """Unit tests for the Apple Music live radio stations."""
 
+import asyncio
 import base64
 import logging
 import struct
 import time
 from collections.abc import AsyncGenerator
+from contextlib import suppress
 from io import BytesIO
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
@@ -21,6 +23,7 @@ from music_assistant_models.errors import (
 from music_assistant_models.streamdetails import StreamDetails
 from mutagen import id3
 
+from music_assistant.helpers.ffmpeg import _raise_feeder_error
 from music_assistant.models.music_provider import ProviderStreamLimitError
 from music_assistant.providers.apple_music.live_radio import (
     RENEW_RETRY_SECONDS,
@@ -114,7 +117,9 @@ class _Live:
         self.radio = _radio()
         self.playlists = playlists
         self.decoders: list[dict[str, Any]] = []
-        self.sleeps: list[float] = []
+        # the segments fetched so far, at each wait of the playlist loop
+        self.sleeps: list[int] = []
+        self.fetched: list[str] = []
         self.segments: dict[str, bytes] = {}
 
         async def fetch(url: str) -> bytes:
@@ -122,6 +127,7 @@ class _Live:
                 text = self.playlists.pop(0) if len(self.playlists) > 1 else self.playlists[0]
                 return text.encode()
             name = url.rsplit("/", 1)[-1]
+            self.fetched.append(name)
             return self.segments.get(name, name.encode())
 
         async def get_license(_data: dict[str, Any], key_uri: str) -> str:
@@ -130,14 +136,39 @@ class _Live:
         async def decoder(
             audio_input: AsyncGenerator[bytes], **kwargs: Any
         ) -> AsyncGenerator[bytes]:
+            # like the real one: the input is read by a task of its own, and an error of
+            # the input comes out wrapped after the output ends
             run: dict[str, Any] = {"args": kwargs["extra_input_args"], "input": []}
             self.decoders.append(run)
-            async for chunk in audio_input:
-                run["input"].append(chunk)
-                yield chunk
+            output: asyncio.Queue[bytes | None] = asyncio.Queue(maxsize=1)
+            failure: list[Exception] = []
 
-        async def sleep(delay: float) -> None:
-            self.sleeps.append(delay)
+            async def feed() -> None:
+                try:
+                    async for chunk in audio_input:
+                        run["input"].append(chunk)
+                        await output.put(chunk)
+                except Exception as err:
+                    failure.append(err)
+                await output.put(None)
+
+            feeder = asyncio.create_task(feed())
+            try:
+                while (chunk := await output.get()) is not None:
+                    yield chunk
+            finally:
+                feeder.cancel()
+                with suppress(asyncio.CancelledError):
+                    await feeder
+                await audio_input.aclose()
+            if failure:
+                _raise_feeder_error(failure[0])
+
+        real_sleep = asyncio.sleep
+
+        async def sleep(_delay: float) -> None:
+            self.sleeps.append(len(self.fetched))
+            await real_sleep(0)
 
         self.radio._fetch = fetch  # type: ignore[method-assign]
         self.radio._get_license = get_license  # type: ignore[method-assign, assignment]
@@ -208,8 +239,8 @@ async def test_a_key_change_starts_a_new_decoder_and_the_stream_goes_on(
     ]
     assert live.decoders[0]["input"] == [b"init_A", b"s12", b"s13", b"s14"]
     assert live.radio.state["key_changes"] == 1
-    # new segments were there each time, so the input was never held back
-    assert live.sleeps == []
+    # the playlist loop only waited once every new segment was handed over
+    assert all(fetched >= live.fetched.index("s17") + 1 for fetched in live.sleeps)
 
 
 @pytest.mark.parametrize("version", [0, 1])
@@ -236,6 +267,19 @@ async def test_a_title_shows_when_its_audio_plays(monkeypatch: pytest.MonkeyPatc
     shown: Any = live.details.stream_metadata
     assert shown.title == "Song"
     assert live.details.data["pending_metadata"] == []
+
+
+async def test_an_error_of_the_input_keeps_its_own_type(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The decoder wraps an input error, the stream passes the original on to the core."""
+    live = _Live(
+        [_media(10, ["A"] * 3), "#EXTM3U\n#EXT-X-MEDIA-SEQUENCE:13\n#EXTINF:16.0,\ns13\n"],
+        monkeypatch,
+    )
+
+    with pytest.raises(UnplayableMediaError, match="no Widevine stream"):
+        await live.read(10)
+
+    assert "no Widevine stream" in live.radio.state["last_error"]
 
 
 @pytest.mark.parametrize(
