@@ -195,20 +195,22 @@ async def test_listen_in_attaches_guest_player() -> None:
 
 
 @pytest.mark.asyncio
-async def test_session_is_dropped_when_its_player_turns_unavailable() -> None:
-    """A session is kept while its player is available and closed once it is not."""
+async def test_session_survives_an_outage_and_ends_when_its_player_is_gone() -> None:
+    """A session outlives its player being unavailable and is closed once the player is gone."""
     plugin = _create_session_test_plugin(SharedPlaybackMode.VENUE.value)
     session = MagicMock()
     session.player_id = "venue_player"
     session.close = AsyncMock()
     plugin._session = session
     player = MagicMock()
-    player.state.available = True
-    cast("MagicMock", plugin.mass.players.get_player).return_value = player
+    player.state.available = False
+    get_player = cast("MagicMock", plugin.mass.players.get_player)
+    get_player.return_value = player
 
     assert await plugin._get_session() is session
+    session.close.assert_not_awaited()
 
-    player.state.available = False
+    get_player.return_value = None
     assert await plugin._get_session() is None
     session.close.assert_awaited_once()
 

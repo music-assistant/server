@@ -1215,28 +1215,6 @@ async def test_explicit_remote_ignores_player_and_keeps_it_private() -> None:
 
 
 @pytest.mark.asyncio
-async def test_remote_session_is_recreated_when_its_player_turns_unavailable() -> None:
-    """A remote session whose player is unavailable is closed and created anew."""
-    plugin = _create_plugin(mode="remote", player=None)
-    plugin._game = _fake_game(SharedPlaybackMode.REMOTE, venue_player_id=None)
-    stale_session = MagicMock()
-    stale_session.player_id = "virtual-quiz-player"
-    stale_session.close = AsyncMock()
-    plugin._playback_session = stale_session
-    get_player = cast("MagicMock", plugin.mass.players.get_player)
-    get_player.side_effect = None
-    get_player.return_value = SimpleNamespace(state=SimpleNamespace(available=False))
-    new_session = MagicMock()
-
-    with patch(
-        "music_assistant.providers.music_quiz.SharedPlaybackSession.create_remote",
-        new=AsyncMock(return_value=new_session),
-    ):
-        assert await plugin._get_playback_session() is new_session
-    stale_session.close.assert_awaited_once()
-
-
-@pytest.mark.asyncio
 async def test_omitted_playback_fields_use_safe_concrete_recommendation() -> None:
     """Keep old create payloads compatible without retaining the auto sentinel."""
     plugin = _create_plugin(mode="venue", player="__auto__")

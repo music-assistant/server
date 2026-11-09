@@ -26,7 +26,6 @@ from music_assistant.constants import CONF_ENABLED
 from music_assistant.controllers.player_queues.helpers import build_queue_item, committed_index
 from music_assistant.helpers import guest_access
 from music_assistant.helpers.config_entries import PLAYBACK_TARGET_TYPES
-from music_assistant.helpers.player import get_available_player
 from music_assistant.helpers.shared_playback import SharedPlaybackMode, SharedPlaybackSession
 from music_assistant.models.plugin import PluginProvider
 
@@ -984,9 +983,9 @@ class PartyPlugin(PluginProvider):
 
         :returns: The session, or None when no session is available.
         """
-        # drop a stale session whose player is gone
+        # drop a stale session whose player no longer exists
         if self._session is not None and (
-            get_available_player(self.mass, self._session.player_id) is None
+            self.mass.players.get_player(self._session.player_id) is None
         ):
             await self._session.close()
             self._session = None
