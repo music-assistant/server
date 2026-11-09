@@ -1,0 +1,18 @@
+{
+  "media": {
+    "folder": {
+      "recently_updated": {
+        "name": "Recently updated"
+      },
+      "all_podcasts": {
+        "name": "All podcasts"
+      },
+      "live_radio": {
+        "name": "Live radio"
+      }
+    }
+  },
+  "manifest": {
+    "description": "Listen to the live radio channels and the podcasts of DR LYD, the audio service of the Danish public broadcaster DR."
+  }
+}
