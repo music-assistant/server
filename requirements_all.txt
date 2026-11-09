@@ -50,7 +50,7 @@ lyricsgenius==3.12.2
 markdownify==1.2.3
 mashumaro==3.20
 modern_colorthief==0.2.1
-music-assistant-frontend==2.17.297.post1
+music-assistant-frontend @ https://github.com/music-assistant/frontend/releases/download/2.17.297.post1/music_assistant_frontend-2.17.297.post1-py3-none-any.whl#sha256=b7a4eb6fb752388fecc4c3a1b4483df2d704132df5d0c6576bbaceaec77bc19e
 music-assistant-models==1.1.205
 mutagen==1.48.1
 niconico.py-ma==2.1.0.post3
