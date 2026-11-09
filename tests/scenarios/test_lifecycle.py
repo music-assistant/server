@@ -46,7 +46,8 @@ async def test_player_outlives_its_removed_provider_on_its_other_protocols(
     await scenario.advance(15)
     await scenario.idle()
 
-    assert scenario.players_carrying(living_airplay, living_sendspin) == [
+    players = scenario.players_carrying(living_airplay, living_sendspin)
+    assert players == [
         VisiblePlayer(
             player_id=player_id,
             name="Living",
@@ -56,6 +57,8 @@ async def test_player_outlives_its_removed_provider_on_its_other_protocols(
             outputs=(("airplay", True), ("sendspin", True)),
         )
     ]
+    # clients resolve the provider a player names, so it is one that is still loaded
+    assert players[0].provider in {"airplay", "sendspin"}
     assert scenario.events(EventType.PLAYER_REMOVED) == []
 
 
@@ -159,11 +162,18 @@ async def test_session_only_web_player_exists_while_attached(scenario: Scenario)
     assert await scenario.player_config(player_id) is None
 
     # the page reloads: a new session connects with the same client id
-    await scenario.attach(browser)
+    reloaded = sendspin.protocol(
+        "sendspin_web_3f2a", "Web Browser", hidden_by_default=True, private=True
+    )
+    await scenario.attach(reloaded)
+    await scenario.mass.players.play_media(player_id, MEDIA)
+    await scenario.settle()
 
-    assert [player.player_id for player in scenario.players_carrying(browser)] == [player_id]
+    assert [player.player_id for player in scenario.players_carrying(reloaded)] == [player_id]
+    assert ("play_media", MEDIA) in reloaded.commands
+    assert browser.commands == []
 
-    await scenario.detach(browser)
+    await scenario.detach(reloaded)
     await scenario.idle()
 
     assert scenario.visible_players() == []
@@ -204,6 +214,71 @@ async def test_customised_session_only_player_keeps_its_config(scenario: Scenari
 
     assert [(p.player_id, p.name) for p in scenario.visible_players()] == [
         (player_id, "Marcel's browser")
+    ]
+
+
+# the stored config of a protocol-only player as written before the split: a universal player
+# config and the configs of its protocols pointing at it
+PRE_SPLIT_DEN_TV = {
+    "upf3eba71c": {
+        "player_id": "upf3eba71c",
+        "provider": "universal_player",
+        "player_type": "player",
+        "enabled": True,
+        "name": "Den TV",
+        "default_name": "Den",
+        "values": {
+            "linked_protocol_ids": ["airplay_den", "cast_den"],
+            "created_at": 1794243987775090000,
+            "device_identifiers": {
+                "mac_address": "00:11:22:33:44:55",
+                "ip_address": "192.168.1.30",
+            },
+            "device_info": {"model": "Fake airplay", "manufacturer": "Fake"},
+        },
+    },
+    "airplay_den": {
+        "player_id": "airplay_den",
+        "provider": "airplay",
+        "player_type": "protocol",
+        "enabled": True,
+        "default_name": "Den",
+        "values": {"protocol_parent_id": "upf3eba71c"},
+    },
+    "cast_den": {
+        "player_id": "cast_den",
+        "provider": "chromecast",
+        "player_type": "protocol",
+        "enabled": True,
+        "default_name": "Den",
+        "values": {"protocol_parent_id": "upf3eba71c"},
+    },
+}
+
+
+async def test_pre_split_universal_player_config_comes_back_as_the_same_player(
+    scenario: Scenario,
+) -> None:
+    """A universal player config from before the split boots as the player with its id and name."""
+    airplay = await scenario.add_provider("airplay")
+    chromecast = await scenario.add_provider("chromecast")
+    airplay.protocol("airplay_den", "Den", role="audio", identifiers=DEN)
+    chromecast.protocol("cast_den", "Den", role="audio", identifiers=DEN)
+    scenario.set_present("airplay_den", True)
+    scenario.set_present("cast_den", True)
+
+    await scenario.seed_config({"players": PRE_SPLIT_DEN_TV})
+    await scenario.idle()
+
+    assert scenario.visible_players() == [
+        VisiblePlayer(
+            player_id="upf3eba71c",
+            name="Den TV",
+            available=True,
+            powered=None,
+            provider=ANY,
+            outputs=(("airplay", True), ("chromecast", True)),
+        )
     ]
 
 

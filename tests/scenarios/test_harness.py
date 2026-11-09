@@ -409,7 +409,7 @@ async def test_player_configs_lists_the_settings_page(scenario: Scenario) -> Non
 
 
 async def test_identifier_list_reports_every_value(scenario: Scenario) -> None:
-    """A list of identifier values is reported value by value, also for a restored device."""
+    """A list of identifier values is reported value by value, an empty one drops the identifier."""
     sonos = await scenario.add_provider("sonos")
     identifiers: dict[IdentifierType, str | list[str]] = {
         IdentifierType.UUID: ["RINCON_A", "RINCON_B"],
@@ -432,6 +432,12 @@ async def test_identifier_list_reports_every_value(scenario: Scenario) -> None:
         await scenario.restart()
         restored = scenario.protocol("RINCON_KITCHEN")
         assert _uuids_reported_to(restored.device_info, add_identifier) == ["RINCON_A", "RINCON_B"]
+
+    await scenario.report(restored, identifiers={IdentifierType.UUID: []})
+    await scenario.restart()
+
+    assert IdentifierType.UUID not in restored.device_info.identifiers
+    assert IdentifierType.UUID not in scenario.protocol("RINCON_KITCHEN").device_info.identifiers
 
 
 async def test_player_config_only_misses_an_unstored_player(scenario: Scenario) -> None:

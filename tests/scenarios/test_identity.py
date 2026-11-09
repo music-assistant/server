@@ -358,8 +358,9 @@ async def test_unused_duplicate_is_merged_into_the_older_player(scenario: Scenar
 
 
 async def _played(scenario: Scenario, player_id: str) -> None:
-    """Play something on the player."""
+    """Play something on the player and stop it again."""
     await scenario.mass.players.play_media(player_id, MEDIA)
+    await scenario.mass.players.cmd_stop(player_id)
     await scenario.settle()
 
 

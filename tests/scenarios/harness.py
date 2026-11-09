@@ -241,9 +241,10 @@ class FakeProtocol(PlayerProtocol):
         for key, value in state.items():
             if key == "identifiers":
                 for identifier_type, identifier in value.items():
-                    # today a device info keeps one identifier per type, so of a list of
-                    # values the server sees the last one
-                    for one in identifier if isinstance(identifier, list) else [identifier]:
+                    values = identifier if isinstance(identifier, list) else [identifier]
+                    # a device info keeps one identifier per type today, so of several values
+                    # the server sees the last one; None (or no value) drops the identifier
+                    for one in values or [None]:
                         self._attr_device_info.add_identifier(identifier_type, one)
                     if identifier:
                         self._device.identifiers[identifier_type] = identifier
