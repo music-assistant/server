@@ -462,6 +462,10 @@ class Player(ABC):
     # on its own source list counts as a takeover of the remembered MA queue. Leave at
     # False for devices that also list the transport our own stream arrives on.
     _attr_trusts_reported_source: bool = False
+    # Class-level default so availability aggregation and the output protocol listing
+    # read safely on players built without Player.__init__ (provider test harnesses).
+    # Safe to share: nothing appends to the list, set_linked_output_protocols rebinds it.
+    __attr_linked_protocols: list[LinkedOutputProtocol] = []  # noqa: RUF012
 
     def __init__(self, provider: PlayerProvider, player_id: str) -> None:
         """Initialize the Player."""
