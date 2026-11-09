@@ -43,6 +43,7 @@ from music_assistant_models.helpers import create_uri
 from music_assistant_models.media_items import AudioFormat, AudioSource, ProviderMapping
 from music_assistant_models.streamdetails import StreamDetails, StreamMetadata
 
+from music_assistant.helpers.player import get_available_player
 from music_assistant.models.plugin import PluginProvider
 from music_assistant.providers.sendspin.constants import (
     CONF_SOURCE_AUTOSTART_TARGET,
@@ -666,10 +667,10 @@ class SendspinSourceProvider(PluginProvider):
         )
         if not target_player_id or target_player_id == SOURCE_AUTOSTART_OFF:
             return None
-        player = self.mass.players.get_player(target_player_id)
+        player = get_available_player(self.mass, target_player_id)
         if player is None:
             self.logger.warning(
-                "Autostart target %s for Sendspin source %s no longer exists",
+                "Autostart target %s for Sendspin source %s is not available",
                 target_player_id,
                 client_id,
             )

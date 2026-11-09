@@ -33,6 +33,7 @@ from music_assistant_models.streamdetails import StreamDetails, StreamMetadata
 from yarl import URL
 
 from music_assistant.constants import CONF_ENTRY_WARN_PREVIEW, WILDCARD_BIND_IPS
+from music_assistant.helpers.player import get_available_player
 from music_assistant.models.plugin import PluginProvider, SourceControlValue
 
 if TYPE_CHECKING:
@@ -1035,10 +1036,10 @@ class AriaCastReceiver(PluginProvider):
         if not player_id or not (player := self.mass.players.get_player(player_id)):
             return None
         if player.type == PlayerType.PROTOCOL and player.protocol_parent_id:
-            if self.mass.players.get_player(player.protocol_parent_id):
+            if get_available_player(self.mass, player.protocol_parent_id):
                 return player.protocol_parent_id
             return None
-        return player_id
+        return player_id if player.state.available else None
 
 
 # ---------------------------------------------------------------------------

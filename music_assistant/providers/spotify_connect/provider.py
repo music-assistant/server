@@ -196,7 +196,8 @@ class SpotifyConnectProvider(PluginProvider):
         # players whose daemon gave up permanently; skipped by reconcile until the
         # player comes back or the provider reloads
         self._failed_player_ids: set[str] = set()
-        self._availability = PlayerAvailabilityTracker(mass)
+        # seeded where the player events are subscribed, so no event is missed in between
+        self._availability: PlayerAvailabilityTracker
         self._reconcile_lock = asyncio.Lock()
         self._unload_called = False
         self._unsubscribe: Callable[[], None] | None = None
@@ -282,6 +283,7 @@ class SpotifyConnectProvider(PluginProvider):
         """Start the Connect daemons and follow the connected players' lifecycle."""
         await super().loaded_in_mass()
         if self._assigned_player_ids:
+            self._availability = PlayerAvailabilityTracker(self.mass)
             self._unsubscribe = self.mass.subscribe(
                 self._on_player_event,
                 event_filter=(
@@ -292,8 +294,8 @@ class SpotifyConnectProvider(PluginProvider):
                 ),
                 id_filter=self._assigned_player_ids,
             )
-        # players register after plugins load, so on a cold boot this typically starts
-        # nothing yet: the PLAYER_ADDED events drive the actual daemon startups
+        # players come online after plugins load, so on a cold boot this typically starts
+        # nothing yet: the events of players becoming available drive the daemon startups
         await self._reconcile()
 
     async def unload(self, is_removed: bool = False) -> None:

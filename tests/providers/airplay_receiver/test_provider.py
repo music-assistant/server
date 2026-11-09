@@ -167,6 +167,19 @@ async def test_reconcile_keeps_daemon_for_temporarily_unavailable_player() -> No
     assert prov._daemons["p1"] is daemon
 
 
+async def test_reconcile_keeps_daemon_for_a_registered_player_turning_unavailable() -> None:
+    """A registered player that turns unavailable keeps its running receiver (stable identity)."""
+    unavailable: set[str] = set()
+    prov, mocks = _reconcile_provider(("p1",), {"p1": "Kitchen"}, unavailable)
+    await prov._reconcile()
+    daemon = prov._daemons["p1"]
+
+    unavailable.add("p1")
+    await prov._on_player_event(MassEvent(event=EventType.PLAYER_UPDATED, object_id="p1"))
+    mocks.stop_receiver.assert_not_awaited()
+    assert prov._daemons["p1"] is daemon
+
+
 async def test_player_removed_event_stops_daemon() -> None:
     """A permanently removed player gets its daemon stopped and dropped."""
     registered = {"p1": "Kitchen"}

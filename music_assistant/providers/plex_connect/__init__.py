@@ -105,7 +105,8 @@ class PlexConnectProvider(PluginProvider):
         self._plextv_register_task: asyncio.Task[None] | None = None
         self._stop_called: bool = False
         self._on_unload_callbacks: list[Callable[..., None]] = []
-        self._availability = PlayerAvailabilityTracker(mass)
+        # seeded where the player events are subscribed, so no event is missed in between
+        self._availability: PlayerAvailabilityTracker
 
     async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
         """Return Config entries to configure this provider."""
@@ -157,7 +158,9 @@ class PlexConnectProvider(PluginProvider):
 
         self.logger.debug(f"Plex provider {self.plex_provider_id} is ready")
 
-        # Subscribe to player events first
+        # Subscribe to player events first; the availability check below must follow
+        # without an await, so the tracker and the check see the same player state
+        self._availability = PlayerAvailabilityTracker(self.mass)
         self._on_unload_callbacks.append(
             self.mass.subscribe(
                 self._on_mass_player_event,

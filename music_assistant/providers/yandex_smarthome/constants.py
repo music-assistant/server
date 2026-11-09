@@ -91,6 +91,7 @@ MAX_PENDING_CODES = 20  # hard cap on concurrent pending authorization codes (Do
 # Timing, in seconds
 # ---------------------------------------------------------------------------
 STATE_REPORT_DELAY = 1.0  # debounce window for batched state reports
+DISCOVERY_DELAY = 2.0  # debounce window for batched device list notifications
 STATE_HEARTBEAT_INTERVAL = 3600  # report all states hourly
 STATE_INITIAL_REPORT_DELAY = 15  # initial report after startup
 CLOUD_RECONNECT_MIN = 2  # initial reconnect delay
