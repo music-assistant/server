@@ -158,6 +158,9 @@ PLAYBACK_START_TIMEOUT = 5.0
 # the per-track updates during playback) collapses into a single write instead of hitting the cache
 # db on every signal_update.
 QUEUE_CACHE_SAVE_DELAY = 5
+# How long the shutdown waits for a playing queue's player to stop, so a player that never
+# answers can't keep the queues from being saved.
+QUEUE_SHUTDOWN_STOP_TIMEOUT = 5
 # Bumped when the on-disk queue cache layout changes in a way older code can't read; a version
 # mismatch makes the restore fall back to a clean queue instead of trusting incompatible data.
 CACHE_FORMAT_VERSION = 1

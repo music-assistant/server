@@ -78,6 +78,7 @@ from music_assistant.controllers.player_queues.constants import (
     PAUSE_TIMEOUT_RANGE,
     PLAYBACK_START_TIMEOUT,
     QUEUE_CACHE_SAVE_DELAY,
+    QUEUE_SHUTDOWN_STOP_TIMEOUT,
     SKIP_END_MARGIN,
 )
 from music_assistant.controllers.player_queues.helpers import (
@@ -282,10 +283,16 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         # stop all playback
         for queue in self.all():
             if queue.state in (PlaybackState.PLAYING, PlaybackState.PAUSED):
-                await self.stop(queue.queue_id)
-        # flush any pending (debounced) state writes so the latest queue survives shutdown/update
+                try:
+                    async with asyncio.timeout(QUEUE_SHUTDOWN_STOP_TIMEOUT):
+                        await self.stop(queue.queue_id)
+                except Exception as err:
+                    self.logger.warning("Failed to stop queue %s - %s", queue.queue_id, err)
+        # flush any pending (debounced) state writes so the latest queue survives shutdown/update;
+        # a save that already started is cancelled too, so its older state can't land last
         for queue in self.all():
             self.mass.cancel_timer(f"save_queue_cache_{queue.queue_id}")
+            self.mass.cancel_task(f"save_queue_cache_{queue.queue_id}")
             await self._save_queue_to_cache(queue.queue_id)
 
     async def get_diagnostics(self) -> dict[str, SerializableType]:
