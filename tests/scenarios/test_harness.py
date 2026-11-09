@@ -25,6 +25,9 @@ if TYPE_CHECKING:
 
 KITCHEN = {IdentifierType.MAC_ADDRESS: "54:78:C9:E6:0D:A0"}
 
+# the stray tasks of the tests, as the loop only keeps a weak reference to a task
+_STRAY_TASKS: list[asyncio.Task[None]] = []
+
 
 async def test_advance_stops_at_every_timer(scenario: Scenario) -> None:
     """Chained timers run at their own deadlines, timers of one deadline in arming order."""
@@ -149,6 +152,58 @@ async def test_idle_fails_while_work_is_due(scenario: Scenario) -> None:
     await scenario.idle()
 
 
+async def test_idle_fails_while_a_protocol_evaluation_is_pending(scenario: Scenario) -> None:
+    """idle() refuses while a protocol waits for its 15 s evaluation."""
+    airplay = await scenario.add_provider("airplay")
+    await scenario.attach(airplay.protocol("airplay_den", "Den", role="audio", identifiers=KITCHEN))
+
+    with pytest.raises(ScenarioError, match="protocol evaluation of airplay_den"):
+        await scenario.idle()
+    await scenario.advance(5)
+    await scenario.idle()
+
+
+async def test_idle_fails_while_a_cached_parent_is_awaited(scenario: Scenario) -> None:
+    """idle() refuses while a protocol waits 45 s for the native player it was linked to."""
+    sonos = await scenario.add_provider("sonos")
+    airplay = await scenario.add_provider("airplay")
+    await scenario.attach(sonos.protocol("RINCON_KITCHEN", "Kitchen", identifiers=KITCHEN))
+    await scenario.attach(
+        airplay.protocol("airplay_kitchen", "K", role="audio", identifiers=KITCHEN)
+    )
+    await scenario.idle()
+    scenario.set_present("RINCON_KITCHEN", False)
+    await scenario.restart()
+
+    with pytest.raises(ScenarioError, match="protocol evaluation of airplay_kitchen"):
+        await scenario.idle()
+    await scenario.advance(35)
+    await scenario.idle()
+
+
+async def test_idle_passes_while_a_player_plays(scenario: Scenario) -> None:
+    """The queue updates of a playing player are background work, not pending work."""
+    sonos = await scenario.add_provider("sonos")
+    speaker = sonos.protocol("RINCON_KITCHEN", "Kitchen", identifiers=KITCHEN)
+    await scenario.attach(speaker)
+    await scenario.report(speaker, playback_state=PlaybackState.PLAYING)
+
+    await scenario.idle()
+
+
+async def test_single_instance_provider_survives_a_restart(scenario: Scenario) -> None:
+    """A provider that allows one instance gets the instance id the server gives it."""
+    kiosk = await scenario.add_provider("fully_kiosk")
+    await scenario.attach(kiosk.protocol("kiosk", "Kiosk", identifiers=KITCHEN))
+
+    await scenario.restart()
+    await scenario.idle()
+
+    assert kiosk.instance_id == "fully_kiosk"
+    assert scenario.protocol("kiosk").provider.instance_id == "fully_kiosk"
+    assert [player.player_id for player in scenario.visible_players()] == ["kiosk"]
+
+
 async def test_server_modules_share_the_clock(scenario: Scenario) -> None:
     """time.monotonic() and time.time() of every server module follow the loop clock."""
     loop = asyncio.get_running_loop()
@@ -196,9 +251,26 @@ async def _fail_unload(scenario: Scenario) -> None:
         await scenario.restart()
 
 
+async def _wait_forever() -> None:
+    """Wait for an event nobody sets."""
+    await asyncio.Event().wait()
+
+
 async def _leave_task(scenario: Scenario) -> None:
     """Leave a task running that is nobody's."""
-    scenario.mass.loop.create_task(asyncio.Event().wait(), name="stray task")
+    _STRAY_TASKS.append(scenario.mass.loop.create_task(_wait_forever(), name="stray task"))
+
+
+async def _leave_failing_task(scenario: Scenario) -> None:
+    """Leave a task running whose cleanup fails when it is cancelled."""
+
+    async def _task() -> None:
+        try:
+            await asyncio.Event().wait()
+        finally:
+            raise ValueError("task cleanup went wrong")
+
+    _STRAY_TASKS.append(scenario.mass.loop.create_task(_task()))
 
 
 async def _fail_command_cleanup(scenario: Scenario) -> None:
@@ -229,6 +301,7 @@ async def _leave_failed_command(scenario: Scenario) -> None:
         (_log_warning, "bug caught and logged"),
         (_fail_unload, "bug in on_provider_unload"),
         (_leave_task, "stray task"),
+        (_leave_failing_task, "task cleanup went wrong"),
         (_fail_command_cleanup, "cleanup went wrong"),
         (_leave_failed_command, "command went wrong"),
     ],

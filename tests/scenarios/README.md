@@ -17,7 +17,7 @@ tests of the harness itself.
   same with values merged into (or, for a None value, deleted from) the stored config.
 - **Providers**: every player provider domain except `universal_player`, `universal_group` and
   `sync_group` loads as a `FakePlayerProvider`. It keeps its real domain, as protocol linking keys
-  on it (priority, one protocol per domain), and a domain can have several instances.
+  on it (priority, one protocol per domain), with as many instances as the real domain allows.
 - **Devices**: `provider.protocol(...)` creates a device and its `FakeProtocol`. The scenario sets
   what it reports; its commands are recorded in `protocol.commands` and applied to its state.
   `role="native"` or `role="audio"` stands for the role of the protocol on its device. A device
@@ -29,7 +29,8 @@ tests of the harness itself.
   and only moves through `advance(seconds)`, which stops at every timer that falls due on the way
   (the 15 s and 45 s protocol evaluation delays, debounces, polls), and `idle()`, which lets 10 s
   pass for the server's debounces and follow-up checks and fails (`ScenarioError`) when the
-  server still has work due within as long, which a scenario lets happen with `advance()`.
+  server still has work due within as long or a protocol evaluation pending at all, which a
+  scenario lets happen with `advance()`.
   Timers due at one time run in the order they were armed. `time.monotonic()` and `time.time()`
   of every server module follow the clock.
 - **Settling**: every action runs what is due at the current time until the loop is quiet:
@@ -70,8 +71,8 @@ For a client command the DSL does not wrap, call the server's own API on `scenar
 What `Scenario._patch_environment()` patches:
 
 - `MusicAssistant.__load_provider_manifests` (private), so a fake domain has a manifest without
-  requirements, dependencies or network discovery that allows several instances; the events of a
-  boot are captured from there on;
+  requirements, dependencies or network discovery; the events of a boot are captured from there
+  on;
 - `music_assistant.mass.load_provider_module`, which returns the fake provider for a fake domain;
 - `MusicAssistant.unload_provider`, to record its failures, which stopping the server drops;
 - `music_assistant.helpers.util.get_mac_address`, the ARP lookup;
@@ -81,8 +82,9 @@ What `Scenario._patch_environment()` patches:
 - `aiosqlite.core.Connection._execute` (private), the thread dispatch of the database, which does
   not go through the loop's executor.
 
-`settle()` and `advance()` read the private `_ready` and `_scheduled` of the event loop, and
-`add_provider()` calls the private `config._create_provider_instance`, the end of the
+`settle()` and `advance()` read the private `_ready` and `_scheduled` of the event loop, `idle()`
+reads the server's `_tracked_timers` and the players controller's `_pending_protocol_evaluations`,
+and `add_provider()` calls the private `config._create_provider_instance`, the end of the
 add-provider setup flow (which itself would import the real provider's setup module). Scenarios
 use none of these.
 

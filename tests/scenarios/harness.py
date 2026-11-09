@@ -74,6 +74,8 @@ IDLE_HORIZON = 10.0
 BACKGROUND_TIMERS = (
     "managed_task_timer_",
     "managed_tasks_signal_event",
+    # re-armed by the poll loop every second while a player plays
+    "queue_on_player_update_",
     "storage_refresh",
     "playlist_metadata_ai_catch_up",
 )
@@ -596,21 +598,28 @@ class Scenario:
         """
         Let the follow-up work on short timers run (debounces), for an assertion of steady state.
 
-        Raises ScenarioError when the server still has work due within the horizon after it,
-        which a scenario lets happen with advance().
+        Raises ScenarioError when the server still has work due within the horizon after it, or
+        a protocol evaluation pending at all, which a scenario lets happen with advance().
 
         :param horizon: Seconds to pass.
         """
         await self.advance(horizon)
         limit = self._clock.now + horizon
-        if pending := sorted(
+        pending = [
             task_id
             for task_id, handle in self.mass._tracked_timers.items()
             if not handle.cancelled()
             and handle.when() <= limit
             and not task_id.startswith(BACKGROUND_TIMERS)
-        ):
-            msg = f"Not idle after {horizon} s, still due within as long: {pending}; use advance()"
+        ]
+        # the protocol evaluation delays (15 s, 45 s) are plain loop timers of the controller
+        pending += [
+            f"protocol evaluation of {player_id}"
+            for player_id, handle in self.mass.players._pending_protocol_evaluations.items()
+            if not handle.cancelled()
+        ]
+        if pending:
+            msg = f"Not idle after {horizon} s, still pending: {sorted(pending)}; use advance()"
             raise ScenarioError(msg)
 
     async def restart(self) -> None:
@@ -792,16 +801,29 @@ class Scenario:
         # stop() leaves the server's own (tracked) timers armed, e.g. a daily one
         for handle in self.mass._tracked_timers.values():
             handle.cancel()
+        # tasks first: their cleanup may arm timers of its own
+        await self._stop_leftover_tasks()
         loop: Any = asyncio.get_running_loop()
         for handle in loop._scheduled:
             if not handle.cancelled():
                 self._errors.messages.append(f"Timer left by the stopped server: {handle}")
                 handle.cancel()
+
+    async def _stop_leftover_tasks(self) -> None:
+        """Cancel the tasks the stopped server left, record them and let their cleanup run."""
         current = asyncio.current_task()
-        for task in asyncio.all_tasks():
-            if task is not current:
-                self._errors.messages.append(f"Task left by the stopped server: {task}")
-                task.cancel()
+        if not (tasks := [task for task in asyncio.all_tasks() if task is not current]):
+            return
+        for task in tasks:
+            self._errors.messages.append(f"Task left by the stopped server: {task}")
+            task.cancel()
+        with self._clock.running():
+            done, still_running = await asyncio.wait(tasks, timeout=SETTLE_TIMEOUT)
+        for task in done:
+            if not task.cancelled() and (error := task.exception()) is not None:
+                self._errors.messages.append(f"Task failed while it was cancelled: {error!r}")
+        for task in still_running:
+            self._errors.messages.append(f"Task did not stop in {SETTLE_TIMEOUT} s: {task}")
 
     async def _cancel_commands(self) -> None:
         """Cancel the commands still running and record the failures nobody awaited."""
@@ -878,8 +900,8 @@ class Scenario:
         Patch what a scenario fakes (the player providers, ARP lookups and the clock) and watch.
 
         Two private pieces are touched. The manifest loading of the server: before any provider
-        loads, a fake domain needs a manifest that allows several instances and has no
-        requirements, dependencies or network discovery; it is also the earliest point of a boot
+        loads, a fake domain needs a manifest without requirements, dependencies or network
+        discovery; it is also the earliest point of a boot
         with the new instance at hand, so the events of the boot itself are captured. And the
         thread dispatch of aiosqlite, which settle() needs to know about, as it does not go
         through the loop's executor.
@@ -1127,7 +1149,6 @@ def _fake_manifest(manifest: ProviderManifest) -> ProviderManifest:
     return replace(
         manifest,
         requirements=[],
-        multi_instance=True,
         builtin=False,
         allow_disable=True,
         depends_on=None,
