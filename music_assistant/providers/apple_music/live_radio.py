@@ -88,7 +88,8 @@ def select_substream(master: str, master_url: str) -> str:
     if not substreams:
         raise UnplayableMediaError("The live stream offers no substream")
     best = max(
-        substreams, key=lambda item: int(cast("dict[str, str]", item.stream_info)["BANDWIDTH"])
+        substreams,
+        key=lambda item: int(cast("dict[str, str]", item.stream_info).get("BANDWIDTH", 0)),
     )
     return urljoin(master_url, best.path)
 
