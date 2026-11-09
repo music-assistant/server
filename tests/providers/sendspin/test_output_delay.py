@@ -24,8 +24,56 @@ def _player(configured_delay: int) -> MagicMock:
     player = MagicMock()
     player.player_id = "p1"
     player.static_delay_default_ms = 0
+    player.config.values = {CONF_SENDSPIN_STATIC_DELAY: MagicMock()}
     player.config.get_value.return_value = configured_delay
     return player
+
+
+def _unregistered_player(mass: MusicAssistant) -> SendspinPlayer:
+    """
+    Return a player that holds the base config it is constructed with.
+
+    :param mass: The Music Assistant instance the player belongs to.
+    """
+    player = object.__new__(SendspinPlayer)
+    player.mass = mass
+    player.logger = logging.getLogger("test.sendspin")
+    player._player_id = "p1"
+    player._config = mass.config.get_base_player_config("p1", "sendspin")
+    mass.players = MagicMock()
+    mass.players.get_player.return_value = player
+    return player
+
+
+def _load_config(mass: MusicAssistant, player: SendspinPlayer) -> PlayerConfig:
+    """
+    Return the player's config with its static delay entry, as registration loads it.
+
+    :param mass: The Music Assistant instance holding the stored config.
+    :param player: The player to load the config for.
+    """
+    entry = ConfigEntry(
+        key=CONF_SENDSPIN_STATIC_DELAY,
+        type=ConfigEntryType.INTEGER,
+        default_value=player.static_delay_default_ms,
+    )
+    return cast("PlayerConfig", PlayerConfig.parse([entry], mass.config.get("players/p1")))
+
+
+async def _run_config_hook(player: SendspinPlayer) -> MagicMock:
+    """
+    Run the hook registration calls once the config is loaded, returning the player role.
+
+    :param player: The player to run the hook on.
+    """
+    player_role = MagicMock()
+    with (
+        patch.object(SendspinPlayer, "_apply_preferred_format", AsyncMock()),
+        patch.object(SendspinPlayer, "_player_role", new_callable=PropertyMock) as role,
+    ):
+        role.return_value = player_role
+        await player.on_config_updated()
+    return player_role
 
 
 def test_device_reported_delay_is_stored() -> None:
@@ -43,46 +91,40 @@ async def test_delay_reported_before_registration_is_stored_and_applied(
     mass_minimal: MusicAssistant,
 ) -> None:
     """A delay reported before the player config exists is stored and pushed on registration."""
-    player = object.__new__(SendspinPlayer)
-    player.mass = mass_minimal
-    player.logger = logging.getLogger("test.sendspin")
-    player._player_id = "p1"
-    player._config = mass_minimal.config.get_base_player_config("p1", "sendspin")
-    mass_minimal.players = MagicMock()
-    mass_minimal.players.get_player.return_value = player
-    player_role = MagicMock()
+    player = _unregistered_player(mass_minimal)
 
     SendspinPlayer.event_cb(player, MagicMock(), OutputDelayChangedEvent(output_delay_ms=120))
     assert mass_minimal.config.get("players/p1") is None
 
-    # registration: create the config, load it with its entries, then the config hook
     mass_minimal.config.create_default_player_config("p1", "sendspin", PlayerType.PROTOCOL)
-    player._config = cast(
-        "PlayerConfig",
-        PlayerConfig.parse(
-            [
-                ConfigEntry(
-                    key=CONF_SENDSPIN_STATIC_DELAY,
-                    type=ConfigEntryType.INTEGER,
-                    default_value=player.static_delay_default_ms,
-                )
-            ],
-            mass_minimal.config.get("players/p1"),
-        ),
-    )
-    with (
-        patch.object(SendspinPlayer, "_apply_preferred_format", AsyncMock()),
-        patch.object(SendspinPlayer, "_player_role", new_callable=PropertyMock) as role,
-    ):
-        role.return_value = player_role
-        await player.on_config_updated()
+    player._config = _load_config(mass_minimal, player)
+    player_role = await _run_config_hook(player)
 
     assert mass_minimal.config.get_raw_player_config_value("p1", CONF_SENDSPIN_STATIC_DELAY) == 120
     player_role.set_output_delay.assert_called_once_with(120)
 
 
-def test_report_with_a_config_drops_an_older_kept_report() -> None:
-    """A report once the config exists supersedes one kept from before it existed."""
+async def test_delay_reported_while_registration_loads_the_config_is_applied(
+    mass_minimal: MusicAssistant,
+) -> None:
+    """A delay reported after the config was created but before it is loaded is not lost."""
+    player = _unregistered_player(mass_minimal)
+    mass_minimal.config.create_default_player_config("p1", "sendspin", PlayerType.PROTOCOL)
+    # registration read the stored config before the report came in
+    loaded_config = _load_config(mass_minimal, player)
+
+    SendspinPlayer.event_cb(player, MagicMock(), OutputDelayChangedEvent(output_delay_ms=120))
+    assert mass_minimal.config.get_raw_player_config_value("p1", CONF_SENDSPIN_STATIC_DELAY) is None
+
+    player._config = loaded_config
+    player_role = await _run_config_hook(player)
+
+    assert mass_minimal.config.get_raw_player_config_value("p1", CONF_SENDSPIN_STATIC_DELAY) == 120
+    player_role.set_output_delay.assert_called_once_with(120)
+
+
+def test_report_with_a_loaded_config_drops_an_older_kept_report() -> None:
+    """A report once the config is loaded supersedes one kept from before."""
     player = _player(configured_delay=0)
     player._reported_static_delay = 80
 

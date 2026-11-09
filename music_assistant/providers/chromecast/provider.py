@@ -262,6 +262,11 @@ class ChromecastProvider(PlayerProvider):
             )
             await castplayer.async_setup()
             await self.mass.players.register_or_update(castplayer)
+            if self.get_endpoint(player_id) is not castplayer:
+                # registration skipped it (e.g. during a teardown): release the connection
+                # setup opened, as only a registered player gets unloaded
+                await castplayer.on_unload()
+                return
             # Set up Sendspin bridge
             await self.bridge_manager.evaluate_bridge(castplayer)
         finally:

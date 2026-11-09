@@ -87,7 +87,7 @@ from music_assistant_models.media_items import Album, Artist, is_track
 from music_assistant_models.player import DeviceInfo
 from PIL import Image
 
-from music_assistant.constants import CONF_ENTRY_FLOW_MODE_SAMPLE_RATE, CONF_PLAYERS
+from music_assistant.constants import CONF_ENTRY_FLOW_MODE_SAMPLE_RATE
 from music_assistant.controllers.streams.audio_analysis import SMART_FADES_ANALYSIS_DOMAIN
 from music_assistant.helpers.util import is_valid_mac_address
 from music_assistant.models.player import (
@@ -1367,7 +1367,7 @@ class SendspinPlayer(SendspinBasePlayer):
     _published_item: tuple[str, str | None] | None = None
     playback_session: SendspinPlaybackSession
     static_delay_default_ms: int = DEFAULT_SENDSPIN_STATIC_DELAY
-    # output delay the device reported before its player config existed, stored on registration
+    # output delay the device reported before its config was loaded, stored once it is
     _reported_static_delay: int | None = None
     # HA media_player entity announcements are relayed to (ESPHome-backed devices)
     _hass_announce_entity_id: str | None = None
@@ -1534,13 +1534,13 @@ class SendspinPlayer(SendspinBasePlayer):
                 current = self.config.get_value(
                     CONF_SENDSPIN_STATIC_DELAY, self.static_delay_default_ms
                 )
-                if not self.mass.config.get(f"{CONF_PLAYERS}/{self.player_id}"):
-                    # the config is created on registration, which then pushes the configured
-                    # delay to the device: keep this one until then, so the device's own
-                    # delay is stored and pushed instead of the default
+                if CONF_SENDSPIN_STATIC_DELAY not in self.config.values:
+                    # registration loads the config and then pushes the configured delay to
+                    # the device; a value stored before that load could miss the loaded copy,
+                    # so keep it until then and the device's own delay is pushed back
                     self._reported_static_delay = delay_ms
                 else:
-                    # an older report kept from before the config existed is outdated now
+                    # an older report kept from before the config was loaded is outdated now
                     self._reported_static_delay = None
                     if current != delay_ms:
                         self.mass.config.set_raw_player_config_value(
