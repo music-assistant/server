@@ -623,6 +623,10 @@ class Scenario:
             msg = f"{player_id} did not start playing"
             raise ScenarioError(msg)
         await task
+        state = self.player(player_id)
+        if state is None or state.playback_state != PlaybackState.PLAYING:
+            msg = f"{player_id} did not start playing"
+            raise ScenarioError(msg)
 
     async def command(self, command: Coroutine[Any, Any, _T]) -> asyncio.Task[_T]:
         """
@@ -863,6 +867,7 @@ class Scenario:
 
         :param queue_id: ID of the queue, which is the id of its player.
         """
+        self.mass.cancel_timer(f"save_queue_cache_{queue_id}")
         await self.mass.player_queues._save_queue_to_cache(queue_id)
         items = await self.mass.cache.get(
             queue_id,
@@ -1269,9 +1274,15 @@ def _patch_module_clocks(clock: _VirtualClock) -> Iterator[None]:
         yield
 
 
-async def _no_audio_buffer(*_args: Any, **_kwargs: Any) -> None:
-    """Decode nothing ahead of playback: no fake protocol fetches audio, so ffmpeg never runs."""
-    return
+async def _no_audio_buffer(*_args: Any, **kwargs: Any) -> None:
+    """
+    Decode nothing ahead of playback: no fake protocol fetches audio, so ffmpeg never runs.
+
+    Serving audio to a protocol is not supported in a scenario and fails loudly.
+    """
+    if kwargs.get("reason") == "streaming":
+        msg = "a scenario cannot serve audio to a protocol"
+        raise ScenarioError(msg)
 
 
 def _runnable() -> int:

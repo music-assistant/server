@@ -92,7 +92,8 @@ What `Scenario._patch_environment()` patches:
 - `MusicAssistant.unload_provider`, to record its failures, which stopping the server drops;
 - `music_assistant.helpers.util.get_mac_address`, the ARP lookup;
 - `StreamsAudio.get_audio_buffer`, the audio a queue decodes (with ffmpeg) ahead of playback:
-  nothing is decoded, as no fake protocol fetches audio;
+  nothing is decoded, as no fake protocol fetches audio, and serving audio to a protocol fails
+  with `ScenarioError`;
 - `time` and `run_in_executor` of the test's event loop, `asyncio.events.TimerHandle` (for the
   arming order) and the `time` (or `time()` and `monotonic()`) names of every loaded server
   module, for the clock and for knowing about thread work;
