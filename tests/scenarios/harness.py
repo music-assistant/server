@@ -43,7 +43,7 @@ from tests.conftest import full_mass_context
 
 if TYPE_CHECKING:
     import pathlib
-    from collections.abc import Callable, Coroutine, Iterator
+    from collections.abc import Callable, Coroutine, Iterator, Mapping
 
     import pytest
     from music_assistant_models.config_entries import PlayerConfig, ProviderConfig
@@ -241,7 +241,10 @@ class FakeProtocol(PlayerProtocol):
         for key, value in state.items():
             if key == "identifiers":
                 for identifier_type, identifier in value.items():
-                    self._attr_device_info.add_identifier(identifier_type, identifier)
+                    # today a device info keeps one identifier per type, so of a list of
+                    # values the server sees the last one
+                    for one in identifier if isinstance(identifier, list) else [identifier]:
+                        self._attr_device_info.add_identifier(identifier_type, one)
                     if identifier:
                         self._device.identifiers[identifier_type] = identifier
                     else:
@@ -287,7 +290,7 @@ class FakePlayerProvider(PlayerProvider):
         name: str,
         *,
         role: Role = "native",
-        identifiers: dict[IdentifierType, str] | None = None,
+        identifiers: Mapping[IdentifierType, str | list[str]] | None = None,
         **state: Any,
     ) -> FakeProtocol:
         """
@@ -297,7 +300,9 @@ class FakePlayerProvider(PlayerProvider):
         :param name: The name the device reports.
         :param role: ``"native"`` for the vendor's own control plane, ``"audio"`` for an audio
             protocol of a device (AirPlay, Cast, DLNA, ...).
-        :param identifiers: The device identifiers it reports (MAC, IP, UUID, ...).
+        :param identifiers: The device identifiers it reports (MAC, IP, UUID, ...); a list of
+            values reports several identifiers of one type, for a device that stands for
+            several (sub)devices.
         :param state: Other reported state, as taken by Scenario.report().
         """
         self._devices[protocol_id] = _Device(
@@ -489,7 +494,7 @@ class Scenario:
         :param state: Values by attribute name without the ``_attr_`` prefix (``available``,
             ``powered``, ``volume_level``, ``playback_state``, ``supported_features``, ...),
             plus ``identifiers`` (merged into the reported device info, a None value drops
-            one). A role changes with attach().
+            one, a list of values reports several of one type). A role changes with attach().
         """
         self._check_current(protocol)
         if "type" in state:
@@ -741,6 +746,11 @@ class Scenario:
         if self.mass.config.get(f"{CONF_PLAYERS}/{player_id}") is None:
             return None
         return await self.mass.config.get_player_config(player_id)
+
+    async def player_configs(self) -> list[PlayerConfig]:
+        """Return the stored player configs as the settings page lists them, by player id."""
+        configs = await self.mass.config.get_player_configs()
+        return sorted(configs, key=lambda config: config.player_id)
 
     def queue(self, queue_id: str) -> PlayerQueue | None:
         """
@@ -1025,7 +1035,7 @@ class _Device:
     provider_id: str
     # reported state by attribute name, as taken by Scenario.report()
     state: dict[str, Any]
-    identifiers: dict[IdentifierType, str] = field(default_factory=dict)
+    identifiers: dict[IdentifierType, str | list[str]] = field(default_factory=dict)
     present: bool = False
 
 

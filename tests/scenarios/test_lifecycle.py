@@ -1,0 +1,241 @@
+"""When a player comes into being and when it goes: providers, disabled devices, sessions, restarts."""
+
+from __future__ import annotations
+
+from unittest.mock import ANY
+
+import pytest
+from music_assistant_models.enums import EventType, IdentifierType
+from music_assistant_models.player import PlayerMedia
+
+from .harness import Event, Role, Scenario, VisiblePlayer
+
+LIVING = {
+    IdentifierType.MAC_ADDRESS: "A8:40:41:00:00:01",
+    IdentifierType.IP_ADDRESS: "192.168.1.21",
+}
+TV = {IdentifierType.MAC_ADDRESS: "F4:F5:D8:00:00:02", IdentifierType.IP_ADDRESS: "192.168.1.22"}
+DEN = {IdentifierType.MAC_ADDRESS: "00:11:22:33:44:55", IdentifierType.IP_ADDRESS: "192.168.1.30"}
+
+MEDIA = PlayerMedia(uri="http://ma.local/stream/track.flac")
+
+
+@pytest.mark.xfail(
+    strict=True,
+    raises=AssertionError,
+    reason="phase 1 (#415): a player is not owned by a provider instance",
+)
+async def test_player_outlives_its_removed_provider_on_its_other_protocols(
+    scenario: Scenario,
+) -> None:
+    """A player whose native provider is removed stays, with its id, carried by its audio protocols."""
+    wiim = await scenario.add_provider("wiim")
+    airplay = await scenario.add_provider("airplay")
+    sendspin = await scenario.add_provider("sendspin")
+    living = wiim.protocol("wiim_living", "Living", identifiers=LIVING)
+    living_airplay = airplay.protocol("airplay_living", "Living", role="audio", identifiers=LIVING)
+    living_sendspin = sendspin.protocol(
+        "sendspin_living", "Living", role="audio", identifiers=LIVING
+    )
+    for protocol in (living, living_airplay, living_sendspin):
+        await scenario.attach(protocol)
+    player_id = scenario.single_player(living, living_airplay, living_sendspin).player_id
+    scenario.clear_events()
+
+    await scenario.remove_provider(wiim)
+    await scenario.advance(15)
+    await scenario.idle()
+
+    assert scenario.players_carrying(living_airplay, living_sendspin) == [
+        VisiblePlayer(
+            player_id=player_id,
+            name="Living",
+            available=True,
+            powered=None,
+            provider=ANY,
+            outputs=(("airplay", True), ("sendspin", True)),
+        )
+    ]
+    assert scenario.events(EventType.PLAYER_REMOVED) == []
+
+
+async def test_player_without_other_protocols_goes_with_its_removed_provider(
+    scenario: Scenario,
+) -> None:
+    """A player left without any protocol config when its provider is removed is removed with it."""
+    wiim = await scenario.add_provider("wiim")
+    living = wiim.protocol("wiim_living", "Living", identifiers=LIVING)
+    await scenario.attach(living)
+    player_id = scenario.single_player(living).player_id
+    scenario.clear_events()
+
+    await scenario.remove_provider(wiim)
+    await scenario.idle()
+
+    assert scenario.visible_players() == []
+    assert scenario.queue(player_id) is None
+    assert await scenario.player_config(player_id) is None
+    assert scenario.events(EventType.PLAYER_REMOVED) == [Event(EventType.PLAYER_REMOVED, player_id)]
+
+
+@pytest.mark.parametrize(
+    ("domain", "role"),
+    [("airplay", "audio"), ("chromecast", "native")],
+    ids=["airplay_mac", "cast_tv"],
+)
+@pytest.mark.xfail(
+    strict=True,
+    raises=AssertionError,
+    reason="phase 1 (#415): no player for a disabled-by-default device until the user enables it",
+)
+async def test_disabled_by_default_device_is_no_player_until_enabled(
+    scenario: Scenario, domain: str, role: Role
+) -> None:
+    """
+    A device that is disabled by default is listed in the settings only.
+
+    Once the user enables it, the player appears with its queue and plays.
+    """
+    provider = await scenario.add_provider(domain)
+    tv = provider.protocol(
+        f"{domain}_tv", "Living Room TV", role=role, identifiers=TV, enabled_by_default=False
+    )
+    await scenario.attach(tv)
+    await scenario.advance(15)
+    await scenario.idle()
+
+    assert scenario.visible_players() == []
+    assert scenario.events(EventType.PLAYER_ADDED) == []
+    listed = [
+        config
+        for config in await scenario.player_configs()
+        if config.default_name == "Living Room TV"
+    ]
+    assert [config.enabled for config in listed] == [False]
+
+    await scenario.enable(listed[0].player_id)
+    await scenario.advance(15)
+    await scenario.idle()
+
+    assert scenario.players_carrying(tv) == [
+        VisiblePlayer(
+            player_id=ANY,
+            name="Living Room TV",
+            available=True,
+            powered=None,
+            provider=domain,
+            outputs=((domain, True),),
+        )
+    ]
+    player_id = scenario.single_player(tv).player_id
+    assert scenario.queue(player_id) is not None
+    assert scenario.events(EventType.PLAYER_ADDED) == [Event(EventType.PLAYER_ADDED, player_id)]
+    await scenario.mass.players.play_media(player_id, MEDIA)
+    await scenario.settle()
+    assert ("play_media", MEDIA) in tv.commands
+
+
+@pytest.mark.xfail(
+    strict=True,
+    raises=AssertionError,
+    reason="phase 1 (#415): a session-only protocol leaves no persisted player behind",
+)
+async def test_session_only_web_player_exists_while_attached(scenario: Scenario) -> None:
+    """
+    A web player exists while its protocol is attached and leaves nothing behind.
+
+    No stored config, no player once it detaches, a new session replaces the old one, and
+    nothing after a restart. Today Sendspin tells a web player apart by its device info; in
+    the target the protocol reports that it is session-only.
+    """
+    sendspin = await scenario.add_provider("sendspin")
+    browser = sendspin.protocol(
+        "sendspin_web_3f2a", "Web Browser", hidden_by_default=True, private=True
+    )
+    await scenario.attach(browser)
+    await scenario.idle()
+    player_id = scenario.single_player(browser).player_id
+
+    assert await scenario.player_config(player_id) is None
+
+    # the page reloads: a new session connects with the same client id
+    await scenario.attach(browser)
+
+    assert [player.player_id for player in scenario.players_carrying(browser)] == [player_id]
+
+    await scenario.detach(browser)
+    await scenario.idle()
+
+    assert scenario.visible_players() == []
+    assert await scenario.player_config(player_id) is None
+
+    await scenario.restart()
+    await scenario.idle()
+
+    assert scenario.visible_players() == []
+    assert await scenario.player_configs() == []
+
+
+async def test_customised_session_only_player_keeps_its_config(scenario: Scenario) -> None:
+    """
+    A session-only player the user customised keeps its config while it is away.
+
+    It comes back with the config, and still exists only while attached.
+    """
+    sendspin = await scenario.add_provider("sendspin")
+    browser = sendspin.protocol(
+        "sendspin_web_3f2a", "Web Browser", hidden_by_default=True, private=True
+    )
+    await scenario.attach(browser)
+    player_id = scenario.single_player(browser).player_id
+    await scenario.configure_player(player_id, name="Marcel's browser")
+
+    await scenario.detach(browser)
+    await scenario.restart()
+    await scenario.idle()
+
+    assert scenario.visible_players() == []
+    assert [(c.player_id, c.name) for c in await scenario.player_configs()] == [
+        (player_id, "Marcel's browser")
+    ]
+
+    await scenario.attach(scenario.protocol("sendspin_web_3f2a"))
+    await scenario.idle()
+
+    assert [(p.player_id, p.name) for p in scenario.visible_players()] == [
+        (player_id, "Marcel's browser")
+    ]
+
+
+async def test_protocol_only_player_is_restored_with_its_id_after_a_restart(
+    scenario: Scenario,
+) -> None:
+    """A player without a native protocol comes back after a restart with its id, name and protocols."""
+    airplay = await scenario.add_provider("airplay")
+    chromecast = await scenario.add_provider("chromecast")
+    den_airplay = airplay.protocol("airplay_den", "Den", role="audio", identifiers=DEN)
+    den_cast = chromecast.protocol("cast_den", "Den", role="audio", identifiers=DEN)
+    await scenario.attach(den_airplay)
+    await scenario.attach(den_cast)
+    await scenario.advance(15)
+    player_id = scenario.single_player(den_airplay, den_cast).player_id
+    await scenario.configure_player(player_id, name="Den TV")
+    await scenario.idle()
+
+    await scenario.restart()
+    await scenario.idle()
+
+    assert scenario.visible_players() == [
+        VisiblePlayer(
+            player_id=player_id,
+            name="Den TV",
+            available=True,
+            powered=None,
+            provider=ANY,
+            outputs=(("airplay", True), ("chromecast", True)),
+        )
+    ]
+    await scenario.mass.players.play_media(player_id, MEDIA)
+    await scenario.settle()
+    den_airplay, den_cast = scenario.protocol("airplay_den"), scenario.protocol("cast_den")
+    assert ("play_media", MEDIA) in den_airplay.commands + den_cast.commands

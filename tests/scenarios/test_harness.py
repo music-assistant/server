@@ -12,6 +12,7 @@ from unittest.mock import patch
 
 import pytest
 from music_assistant_models.enums import EventType, IdentifierType, PlaybackState
+from music_assistant_models.player import DeviceInfo
 
 from music_assistant.controllers.players.controller import PlayerController
 from music_assistant.controllers.players.protocol_linking import ProtocolLinkingMixin
@@ -387,6 +388,50 @@ async def test_restart_leaves_nothing_of_the_old_server(scenario: Scenario) -> N
     with pytest.raises(ScenarioError, match=r"scenario\.protocol"):
         await scenario.attach(speaker)
     await scenario.attach(scenario.protocol("RINCON_KITCHEN"))
+
+
+async def test_player_configs_lists_the_settings_page(scenario: Scenario) -> None:
+    """player_configs() lists stored player configs, disabled ones included, protocol configs not."""
+    sonos = await scenario.add_provider("sonos")
+    airplay = await scenario.add_provider("airplay")
+    speaker = sonos.protocol("RINCON_KITCHEN", "Kitchen", identifiers=KITCHEN)
+    await scenario.attach(speaker)
+    await scenario.attach(
+        airplay.protocol("airplay_kitchen", "K", role="audio", identifiers=KITCHEN)
+    )
+    await scenario.disable("RINCON_KITCHEN")
+    await scenario.idle()
+
+    assert await scenario.player_config("airplay_kitchen") is not None
+    assert [(c.player_id, c.enabled) for c in await scenario.player_configs()] == [
+        ("RINCON_KITCHEN", False)
+    ]
+
+
+async def test_identifier_list_reports_every_value(scenario: Scenario) -> None:
+    """A list of identifier values is reported value by value, also for a restored device."""
+    sonos = await scenario.add_provider("sonos")
+    identifiers: dict[IdentifierType, str | list[str]] = {
+        IdentifierType.UUID: ["RINCON_A", "RINCON_B"],
+        IdentifierType.IP_ADDRESS: "1.2.3.4",
+    }
+
+    def _uuids_reported_to(device_info: DeviceInfo, add_identifier: Any) -> list[str]:
+        return [
+            call.args[2]
+            for call in add_identifier.call_args_list
+            if call.args[0] is device_info and call.args[1] == IdentifierType.UUID
+        ]
+
+    with patch.object(
+        DeviceInfo, "add_identifier", autospec=True, side_effect=DeviceInfo.add_identifier
+    ) as add_identifier:
+        speaker = sonos.protocol("RINCON_KITCHEN", "Kitchen", identifiers=identifiers)
+        assert _uuids_reported_to(speaker.device_info, add_identifier) == ["RINCON_A", "RINCON_B"]
+        await scenario.attach(speaker)
+        await scenario.restart()
+        restored = scenario.protocol("RINCON_KITCHEN")
+        assert _uuids_reported_to(restored.device_info, add_identifier) == ["RINCON_A", "RINCON_B"]
 
 
 async def test_player_config_only_misses_an_unstored_player(scenario: Scenario) -> None:

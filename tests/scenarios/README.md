@@ -49,7 +49,7 @@ tests of the harness itself.
 |---|---|
 | `add_provider(domain)`, `reload_provider(provider)`, `remove_provider(provider)` | load a new fake provider instance, reload one, remove one as a user does |
 | `attach(protocol, role=None)`, `detach(protocol)` | the provider found the device (again, possibly in a new role), or lost it |
-| `report(protocol, **state)` | the device reports new state (`available`, `powered`, `identifiers`, ...) |
+| `report(protocol, **state)` | the device reports new state (`available`, `powered`, `identifiers`, ...); a list of identifier values reports several of one type |
 | `remove(player_id)`, `enable(id)`, `disable(id)`, `configure_player(id, **values)` | what a user does with a player |
 | `add_power_control(id, name)`, `switch(control, powered)` | an external power control (select it with `configure_player(id, power_control=...)`), switched by hand |
 | `command(coro)` | run a server call that may wait for the clock in the background; await the task once it is done |
@@ -62,6 +62,7 @@ tests of the harness itself.
 | `players_carrying(*protocols)` | the visible players carrying these protocols |
 | `single_player(*protocols)` | the one visible player carrying them, a precondition (raises `ScenarioError`) |
 | `player(id)`, `queue(id)`, `await player_config(id)` | a player state, a queue, a stored player config |
+| `await player_configs()` | the stored player configs as the settings page lists them, disabled ones included |
 | `events(*types)`, `clear_events()` | the emitted events in order, from the boot on; repeats of an update event collapsed |
 | `provider(domain_or_id)`, `protocol(protocol_id)` | the loaded fake provider, the current protocol object of a device |
 
