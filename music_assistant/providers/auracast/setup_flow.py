@@ -29,7 +29,7 @@ from .constants import (
 from .validators import validate_baudrate, validate_broadcast_name, validate_manufacturer_data
 
 if TYPE_CHECKING:
-    from music_assistant.models.player import Player
+    from music_assistant.models.player_endpoint import PlayerEndpoint
     from music_assistant.models.player_provider import PlayerProvider
     from music_assistant.models.setup_flow import SetupSession
 
@@ -47,7 +47,7 @@ async def run_setup(session: SetupSession) -> None:
 
     :param session: The setup session driving the flow.
     """
-    released_players: list[Player] = []
+    released_players: list[PlayerEndpoint] = []
     finished = False
     try:
         await _configure_controller(session, released_players)
@@ -58,7 +58,9 @@ async def run_setup(session: SetupSession) -> None:
             await asyncio.shield(_restore_players(released_players))
 
 
-async def _configure_controller(session: SetupSession, released_players: list[Player]) -> None:
+async def _configure_controller(
+    session: SetupSession, released_players: list[PlayerEndpoint]
+) -> None:
     """
     Ask for the controller settings until they verify and the setup finishes.
 
@@ -188,7 +190,7 @@ async def _verify_controller(
     setup_data: dict[str, Any],
     current_port: str,
     current_baudrate: int,
-    released_players: list[Player],
+    released_players: list[PlayerEndpoint],
 ) -> None:
     """
     Check that the selected port holds a controller able to broadcast Auracast.
@@ -225,19 +227,19 @@ async def _verify_controller(
     LOGGER.debug("Verified Auracast controller on %s (stack=%s)", port, result.controller_stack)
 
 
-async def _release_running_controller(session: SetupSession) -> list[Player]:
+async def _release_running_controller(session: SetupSession) -> list[PlayerEndpoint]:
     """Power off the configured provider's players so the broadcaster releases the serial port."""
     instance_id = session.context.instance_id
     provider = session.mass.get_provider(instance_id) if instance_id else None
     if provider is None:
         return []
-    released = [player for player in cast("PlayerProvider", provider).players if player.powered]
+    released = [player for player in cast("PlayerProvider", provider).endpoints if player.powered]
     for player in released:
         await player.power(False)
     return released
 
 
-async def _restore_players(players: list[Player]) -> None:
+async def _restore_players(players: list[PlayerEndpoint]) -> None:
     """Power the players back on, resuming the broadcast that setup interrupted."""
     for player in players:
         await player.power(True)

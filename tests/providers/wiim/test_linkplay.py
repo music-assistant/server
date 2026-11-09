@@ -147,7 +147,7 @@ def mock_provider() -> MagicMock:
     provider = MagicMock()
     provider.instance_id = "wiim_test"
     provider.domain = "wiim"
-    provider.players = []
+    provider.endpoints = []
     provider.native_groups = _mock_native_groups()
     provider.mass = MagicMock()
     provider.mass.players = MagicMock()
@@ -582,7 +582,7 @@ class TestRefreshResilience:
             description_url="http://192.168.1.50:49152/description.xml",
         )
         player.update_state = MagicMock()  # type: ignore[misc,method-assign]
-        mock_provider.players = [player]
+        mock_provider.endpoints = [player]
         assert player._linkplay_available is False
         await player.setup()
         mock_client.get_device_info_model.assert_awaited_once()
@@ -600,7 +600,7 @@ class TestAddressChange:
         new_client = MagicMock(host="192.168.1.99")
         new_client.get_device_info_model = AsyncMock(return_value=SimpleNamespace(uuid=""))
         new_client.get_slaves_info = AsyncMock(return_value=_slaves([]))
-        mock_provider.players = [player]
+        mock_provider.endpoints = [player]
         with patch(
             "music_assistant.providers.wiim.linkplay_player.WiiMClient", return_value=new_client
         ):
@@ -633,7 +633,7 @@ class TestProviderRouting:
         self, mock_provider: MagicMock, mock_client: MagicMock, mock_upnp_device: MagicMock
     ) -> None:
         """A reachable generic LinkPlay device is registered as a shell."""
-        mock_provider.players = []
+        mock_provider.endpoints = []
         registered: list[Any] = []
         mock_provider.mass.players.register_or_update = AsyncMock(
             side_effect=lambda p: registered.append(p)

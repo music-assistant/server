@@ -106,7 +106,7 @@ def mock_provider(mock_controller: MagicMock) -> MagicMock:
     provider.manifest.domain = "wiim"
     provider.mass = MagicMock()
     provider.mass.players = MagicMock()
-    provider.players = []
+    provider.endpoints = []
     provider.native_groups = _mock_native_groups()
 
     config = MagicMock()

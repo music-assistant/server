@@ -475,7 +475,7 @@ class RaumfeldPlayerProvider(PlayerProvider):
                 task.cancel()
         self._update_task = None
         self._zone_watch_task = None
-        for player in self.players:
+        for player in self.endpoints:
             if isinstance(player, RaumfeldPlayer):
                 player.set_available(False)
 
@@ -490,7 +490,7 @@ class RaumfeldPlayerProvider(PlayerProvider):
 
     async def _load_library_sources(self) -> None:
         """Read each room's station buttons, and offer them as sources."""
-        for player in self.players:
+        for player in self.endpoints:
             if isinstance(player, RaumfeldPlayer):
                 await self.refresh_station_buttons(player)
 
@@ -598,7 +598,7 @@ class RaumfeldPlayerProvider(PlayerProvider):
             if (player_id := self._room_player_id(room)) is None:
                 continue
             present.add(player_id)
-            if (existing := self.mass.players.get_player(player_id)) is not None:
+            if (existing := self.get_endpoint(player_id)) is not None:
                 # already registered (e.g. after a reconnect): mark it available and, since
                 # the player_id is tied to the hardware, follow a room rename by refreshing
                 # the stored room name (used for host calls) and the display name
@@ -615,7 +615,7 @@ class RaumfeldPlayerProvider(PlayerProvider):
         # a room whose UDN the host no longer lists (e.g. a speaker that dropped to deep
         # standby or left the network) is gone until it returns; show it as unavailable.
         # Match on the stable player_id, never the room name, so a rename does not orphan it.
-        for known in self.players:
+        for known in self.endpoints:
             if isinstance(known, RaumfeldPlayer) and known.player_id not in present:
                 known.set_available(False)
 
@@ -629,7 +629,7 @@ class RaumfeldPlayerProvider(PlayerProvider):
         await asyncio.gather(
             self.room_events.refresh(locations), self.room_transport_events.refresh(locations)
         )
-        for player in self.players:
+        for player in self.endpoints:
             if isinstance(player, RaumfeldPlayer):
                 location = self.room_renderer_location(player.room)
                 player.set_rendering_events(
@@ -643,7 +643,7 @@ class RaumfeldPlayerProvider(PlayerProvider):
         """Follow the events of every zone renderer, and tell each room whether its zone's come in."""
         self._zone_event_locations = self._zone_locations()
         await self.zone_events.refresh(self._zone_event_locations)
-        for player in self.players:
+        for player in self.endpoints:
             if not isinstance(player, RaumfeldPlayer):
                 continue
             zone = self.get_zone_for_room(player.room)
@@ -666,13 +666,13 @@ class RaumfeldPlayerProvider(PlayerProvider):
         )
         if state := changes.get("TransportState"):
             self.logger.debug("Zone %s reports %s", rooms, state)
-        for player in self.players:
+        for player in self.endpoints:
             if isinstance(player, RaumfeldPlayer) and player.room in rooms:
                 player.zone_event(location)
 
     def _handle_room_event(self, location: str, changes: dict[str, str]) -> None:
         """Pass a room renderer's volume and mute event on to the room's player."""
-        for player in self.players:
+        for player in self.endpoints:
             if (
                 isinstance(player, RaumfeldPlayer)
                 and self.room_renderer_location(player.room) == location
@@ -682,7 +682,7 @@ class RaumfeldPlayerProvider(PlayerProvider):
 
     def _handle_room_transport_event(self, location: str, _changes: dict[str, str]) -> None:
         """Have a room read what its own renderer plays, after it reported a change."""
-        for player in self.players:
+        for player in self.endpoints:
             if (
                 isinstance(player, RaumfeldPlayer)
                 and self.room_renderer_location(player.room) == location
@@ -692,7 +692,7 @@ class RaumfeldPlayerProvider(PlayerProvider):
 
     def _handle_rooms_changed(self, rooms: set[str]) -> None:
         """Have rooms read, after the host reported a new power state or Spotify session."""
-        for player in self.players:
+        for player in self.endpoints:
             if isinstance(player, RaumfeldPlayer) and player.room in rooms:
                 player.state_event()
 
@@ -738,7 +738,7 @@ class RaumfeldPlayerProvider(PlayerProvider):
         # rooms that play on, as MA does when a leader leaves its group; mirroring the zones
         # first would leave those rooms playing a queue that no player shows.
         undecided = False
-        for player in list(self.players):
+        for player in list(self.endpoints):
             if not isinstance(player, RaumfeldPlayer):
                 continue
             handing_over = await player.leave_group_if_dropped()
@@ -778,10 +778,10 @@ class RaumfeldPlayerProvider(PlayerProvider):
     def _shown_groups(self) -> frozenset[frozenset[str]]:
         """Return the sync groups Music Assistant shows right now, as sets of rooms."""
         groups = set()
-        for player in self.players:
+        for player in self.endpoints:
             if not isinstance(player, RaumfeldPlayer) or not player.leads_group:
                 continue
-            members = (self.mass.players.get_player(pid) for pid in player.group_members)
+            members = (self.get_endpoint(pid) for pid in player.group_members)
             groups.add(
                 frozenset(member.room for member in members if isinstance(member, RaumfeldPlayer))
             )
@@ -791,7 +791,7 @@ class RaumfeldPlayerProvider(PlayerProvider):
         """Return the registered player of a room, or ``None``."""
         if (player_id := self._room_player_id(room)) is None:
             return None
-        player = self.mass.players.get_player(player_id)
+        player = self.get_endpoint(player_id)
         return player if isinstance(player, RaumfeldPlayer) else None
 
     async def _queue_owners(self) -> dict[frozenset[str], str] | None:
@@ -852,7 +852,7 @@ class RaumfeldPlayerProvider(PlayerProvider):
         # a circular group with the new leader. A follower plays its leader's queue, so the
         # next item of its own queue goes, before an end watch could start it later on.
         followers = {member_id for members in groups.values() for member_id in members[1:]}
-        for player in self.players:
+        for player in self.endpoints:
             if isinstance(player, RaumfeldPlayer):
                 player.set_group_members(groups.get(player.player_id, []))
                 if player.player_id in followers:
@@ -874,7 +874,7 @@ class RaumfeldPlayerProvider(PlayerProvider):
         members = [
             member
             for member_id in member_ids
-            if isinstance(member := self.mass.players.get_player(member_id), RaumfeldPlayer)
+            if isinstance(member := self.get_endpoint(member_id), RaumfeldPlayer)
         ]
         if claimants := self._queue_claimants(members):
             return claimants[0].player_id
@@ -887,7 +887,7 @@ class RaumfeldPlayerProvider(PlayerProvider):
         """Return the members that play a queue Music Assistant started, followers left out."""
         following = {
             member_id
-            for player in self.players
+            for player in self.endpoints
             if isinstance(player, RaumfeldPlayer) and player.leads_group
             for member_id in player.group_members[1:]
         }

@@ -146,6 +146,7 @@ def _player(
     player._config.get_value.side_effect = lambda key, default=None: config_values.get(key, default)
     player._provider = MagicMock()
     player._provider.server_api.get_client.return_value = client
+    player._provider.get_endpoint = lambda pid: player.mass.players.get_player(pid)
     player.mass = MagicMock()
     player.mass.streams.audio = audio
     player.mass.players.get_player.return_value = player

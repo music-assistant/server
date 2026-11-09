@@ -25,6 +25,7 @@ def _make_dashboards(player: FullyKioskPlayer | None = None) -> FullyKioskDashbo
     provider.domain = "fully_kiosk"
     provider.translation_owner = "provider.fully_kiosk"
     provider.mass.players.get_player.return_value = player
+    provider.get_endpoint = lambda pid: provider.mass.players.get_player(pid)
     provider.mass.dashboard.register_dashboard_handler.return_value = MagicMock()
     return FullyKioskDashboards(provider)
 

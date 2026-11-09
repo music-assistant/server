@@ -8,13 +8,14 @@ from music_assistant_models.config_entries import ConfigEntry
 from music_assistant_models.enums import ConfigEntryType, PlaybackState, PlayerFeature
 from music_assistant_models.player import PlayerOptionValueType, PlayerSource
 
-from music_assistant.models.player import Player, PlayerMedia
+from music_assistant.models.player import PlayerMedia
+from music_assistant.models.player_endpoint import PlayerEndpoint
 
 if TYPE_CHECKING:
     from .provider import DemoPlayerprovider
 
 
-class DemoPlayer(Player):
+class DemoPlayer(PlayerEndpoint):
     """DemoPlayer in Music Assistant."""
 
     def __init__(self, provider: DemoPlayerprovider, player_id: str) -> None:
@@ -340,6 +341,7 @@ class DemoPlayer(Player):
         self._attr_group_members = [self.player_id, *other_member_ids] if other_member_ids else []
         self.update_state()
         # refresh affected members so their derived synced_to / can_group_with recompute
+        # (group members are user-facing players, so they come from the players controller)
         for member_id in [*(player_ids_to_add or []), *(player_ids_to_remove or [])]:
             if (member := self.mass.players.get_player(member_id)) is not None:
                 member.update_state()

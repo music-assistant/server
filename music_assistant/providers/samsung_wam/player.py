@@ -11,7 +11,7 @@ from music_assistant_models.player import DeviceInfo, PlayerMedia
 
 from music_assistant.constants import CONF_ENTRY_ENABLE_ICY_METADATA_HIDDEN
 from music_assistant.helpers.util import is_valid_mac_address
-from music_assistant.models.player import Player
+from music_assistant.models.player_endpoint import PlayerEndpoint
 
 from .consts import (
     CONF_ENTRY_HTTP_PROFILE_WAM,
@@ -32,7 +32,7 @@ if TYPE_CHECKING:
     from .provider import SamsungWamProvider
 
 
-class WamPlayer(Player):
+class WamPlayer(PlayerEndpoint):
     """Representation of a Samsung WAM speaker."""
 
     def __init__(

@@ -85,7 +85,7 @@ class DemoPlayerprovider(PlayerProvider):
         # relevant or leave out completely if not needed.
         # it will be called when the provider is unloaded from Music Assistant.
         # this means also when the provider is getting reloaded
-        for player in self.players:
+        for player in self.endpoints:
             # if you have any cleanup logic for the players, you can do that here.
             # e.g. disconnecting from the player, closing connections, etc.
             self.logger.debug("Unloading player %s", player.name)
@@ -139,7 +139,9 @@ class DemoPlayerprovider(PlayerProvider):
         # handle removed player
         if state_change == ServiceStateChange.Removed:
             # check if the player manager has an existing entry for this player
-            if mass_player := self.mass.players.get_player(player_id):
+            # note: look up your own player objects (endpoints) through the provider,
+            # mass.players.get_player is meant for the user-facing player (its state).
+            if mass_player := self.get_endpoint(player_id):
                 # the player has become unavailable
                 self.logger.debug("Player offline: %s", mass_player.display_name)
                 await self.mass.players.unregister(player_id)
@@ -150,7 +152,7 @@ class DemoPlayerprovider(PlayerProvider):
         # check if we have an existing player in the player manager
         # note that you can use this point to update the player connection info
         # if that changed (e.g. ip address)
-        if mass_player := self.mass.players.get_player(player_id):
+        if mass_player := self.get_endpoint(player_id):
             # existing player found in the player manager,
             # this is an existing player that has been updated/reconnected
             # or simply a re-announcement on mdns.

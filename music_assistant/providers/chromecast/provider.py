@@ -127,7 +127,7 @@ class ChromecastProvider(PlayerProvider):
 
     async def get_diagnostics(self) -> dict[str, SerializableType]:
         """Return diagnostics info for this provider to include in diagnostics reports."""
-        cast_players = [player for player in self.players if isinstance(player, ChromecastPlayer)]
+        cast_players = [player for player in self.endpoints if isinstance(player, ChromecastPlayer)]
         models: dict[str, int] = {}
         for cast_player in cast_players:
             model_name = cast_player.cast_info.model_name
@@ -185,7 +185,7 @@ class ChromecastProvider(PlayerProvider):
             self.mass.loop.call_soon_threadsafe(self.dashboards.register, disc_uuid, disc_info)
 
             # If player already registered, just update cast info (fast path)
-            castplayer = self.mass.players.get_player(player_id)
+            castplayer = self.get_endpoint(player_id)
             if castplayer:
                 assert isinstance(castplayer, ChromecastPlayer)  # for type checking
                 castplayer.cast_info.update(disc_info)
@@ -295,7 +295,7 @@ class ChromecastProvider(PlayerProvider):
     async def _recheck_multichannel_child(self, player_id: str, disc_info: CastInfo) -> None:
         """Re-evaluate a player and remove it if it is a passive multichannel endpoint."""
         try:
-            castplayer = self.mass.players.get_player(player_id)
+            castplayer = self.get_endpoint(player_id)
             if not isinstance(castplayer, ChromecastPlayer):
                 return
             castplayer.last_multichannel_check = time.monotonic()
@@ -303,7 +303,7 @@ class ChromecastProvider(PlayerProvider):
             await asyncio.to_thread(
                 cast_info.fill_out_missing_chromecast_info, self.mass.discovery.aiozc.zeroconf
             )
-            if cast_info.is_multichannel_child and self.mass.players.get_player(player_id):
+            if cast_info.is_multichannel_child and self.get_endpoint(player_id):
                 self.logger.info(
                     "Removing %s as it is now identified as a passive (multichannel) endpoint",
                     castplayer.cast_info.friendly_name,

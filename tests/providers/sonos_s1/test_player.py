@@ -77,6 +77,8 @@ def _make_player(mass: MusicAssistant, uid: str, name: str) -> SonosPlayer:
     provider = MagicMock()
     provider.mass = mass
     provider.topology_condition = asyncio.Condition()
+    provider.get_endpoint = lambda pid: mass.players.get_player(pid)
+    provider.endpoints = []
     return SonosPlayer(provider=provider, soco=_make_soco(uid, name), fixed_volume=False)
 
 

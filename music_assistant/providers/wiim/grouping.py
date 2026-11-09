@@ -235,7 +235,7 @@ class NativeGroupCoordinator:
                 return False
             # the player may have been unregistered/replaced during the await; never apply
             # a stale device response to a different registered instance
-            if self._mass.players.get_player(player.player_id) is not player:
+            if self._provider.get_endpoint(player.player_id) is not player:
                 return False
             # reuse the capabilities this read detected so a later fresh command client (the
             # official backend builds one per call) does not re-probe the device
@@ -331,7 +331,7 @@ class NativeGroupCoordinator:
                 for follower_id in self.members_of(member.player_id):
                     if follower_id == member.player_id:
                         continue
-                    follower = self._mass.players.get_player(follower_id)
+                    follower = self._provider.get_endpoint(follower_id)
                     if getattr(follower, "linkplay_backend", None) in _NATIVE_BACKENDS:
                         followers.append(cast("NativePlayer", follower))
             await self._acquire_rebuild_locks(stack, followers, held)
@@ -499,7 +499,7 @@ class NativeGroupCoordinator:
         """Return this provider's players that belong to either native backend."""
         return [
             cast("NativePlayer", player)
-            for player in self._provider.players
+            for player in self._provider.endpoints
             if getattr(player, "linkplay_backend", None) in _NATIVE_BACKENDS
         ]
 
@@ -651,7 +651,7 @@ class NativeGroupCoordinator:
 
         :param player_id: The member id supplied to the grouping command.
         """
-        member = self._mass.players.get_player(player_id)
+        member = self._provider.get_endpoint(player_id)
         if getattr(member, "linkplay_backend", None) not in _NATIVE_BACKENDS:
             raise PlayerCommandFailed(f"Cannot group unknown or unsupported player {player_id}")
         return cast("NativePlayer", member)

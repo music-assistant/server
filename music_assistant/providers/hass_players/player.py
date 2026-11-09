@@ -28,10 +28,10 @@ from music_assistant.helpers.datetime import from_iso_string
 from music_assistant.models.player import (
     AnnouncementFeature,
     DeviceInfo,
-    Player,
     PlayerMedia,
     PlayerSource,
 )
+from music_assistant.models.player_endpoint import PlayerEndpoint
 from music_assistant.models.player_provider import PlayerProvider
 from music_assistant.providers.hass.constants import (
     OFF_STATES,
@@ -57,7 +57,7 @@ if TYPE_CHECKING:
 DEFAULT_PLAYER_CONFIG_ENTRIES = (CONF_ENTRY_OUTPUT_CODEC_DEFAULT_MP3,)
 
 
-class HomeAssistantPlayer(Player):
+class HomeAssistantPlayer(PlayerEndpoint):
     """Home Assistant Player implementation."""
 
     # the wrapped entity keeps reporting an abandoned external session as paused, and

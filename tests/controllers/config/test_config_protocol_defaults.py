@@ -61,7 +61,7 @@ class _TestProvider:
         # registered in mass._providers, so the stand-in must survive the provider
         # bookkeeping that mass.stop()/unload_provider applies to every provider
         self.type = ProviderType.PLAYER
-        self.players: list[Player] = []
+        self.endpoints: list[Player] = []
 
     async def unload(self, is_removed: bool = False) -> None:
         """Unload the provider (nothing to clean up)."""

@@ -31,7 +31,8 @@ from music_assistant.constants import (
     VERBOSE_LOG_LEVEL,
 )
 from music_assistant.helpers.upnp import create_didl_metadata
-from music_assistant.models.player import DeviceInfo, Player, PlayerMedia
+from music_assistant.models.player import DeviceInfo, PlayerMedia
+from music_assistant.models.player_endpoint import PlayerEndpoint
 
 from .constants import (
     AVAILABILITY_TIMEOUT,
@@ -69,7 +70,7 @@ class SonosSubscriptionsFailed(PlayerCommandFailed):
     """Subscription creation failed."""
 
 
-class SonosPlayer(Player):
+class SonosPlayer(PlayerEndpoint):
     """Sonos Player implementation for S1 speakers."""
 
     def __init__(
@@ -327,12 +328,12 @@ class SonosPlayer(Player):
 
         if player_ids_to_remove:
             for player_id in player_ids_to_remove:
-                if player_to_remove := cast("SonosPlayer", self.mass.players.get_player(player_id)):
+                if player_to_remove := cast("SonosPlayer", self.provider.get_endpoint(player_id)):
                     await player_to_remove._unjoin()
 
         if player_ids_to_add:
             for player_id in player_ids_to_add:
-                if player_to_add := cast("SonosPlayer", self.mass.players.get_player(player_id)):
+                if player_to_add := cast("SonosPlayer", self.provider.get_endpoint(player_id)):
                     await player_to_add._join(self.soco)
 
     def schedule_poll(self) -> None:
@@ -530,7 +531,7 @@ class SonosPlayer(Player):
             group_members_ids = []
 
             for uid in group:
-                speaker = self.mass.players.get_player(uid)
+                speaker = self.provider.get_endpoint(uid)
                 if speaker:
                     group_members_ids.append(uid)
                 else:
@@ -592,7 +593,7 @@ class SonosPlayer(Player):
         except TimeoutError:
             self.logger.warning("Timeout waiting for target groups %s", groups)
 
-        if players := self.mass.players.all_players(provider_filter=_provider.instance_id):
+        if players := _provider.endpoints:
             any_speaker = cast("SonosPlayer", players[0])
             any_speaker.soco.zone_group_state.clear_cache()
 

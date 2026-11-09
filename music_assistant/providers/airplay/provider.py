@@ -317,7 +317,7 @@ class AirPlayProvider(PlayerProvider):
         player_id = f"ap{raw_id.lower()}"
         # handle removed player
         if state_change == ServiceStateChange.Removed:
-            if _player := self.mass.players.get_player(player_id):
+            if _player := self.get_endpoint(player_id):
                 # the player has become unavailable
                 self.logger.debug("Player offline: %s", _player.display_name)
                 # Remove the Sendspin bridge first
@@ -328,7 +328,7 @@ class AirPlayProvider(PlayerProvider):
         # handle update for existing device
         assert info is not None  # type guard
         player: AirPlayPlayer | None
-        if player := cast("AirPlayPlayer | None", self.mass.players.get_player(player_id)):
+        if player := cast("AirPlayPlayer | None", self.get_endpoint(player_id)):
             # update the latest discovery info for existing player
             player.set_discovery_info(info, display_name)
             # only control players can ever be dashboard endpoints
@@ -393,11 +393,11 @@ class AirPlayProvider(PlayerProvider):
 
     def get_players(self) -> list[AirPlayPlayer]:
         """Return all airplay players belonging to this instance."""
-        return cast("list[AirPlayPlayer]", self.players)
+        return cast("list[AirPlayPlayer]", self.endpoints)
 
     def get_player(self, player_id: str) -> AirPlayPlayer | None:
         """Return AirplayPlayer by id."""
-        return cast("AirPlayPlayer | None", self.mass.players.get_player(player_id))
+        return cast("AirPlayPlayer | None", self.get_endpoint(player_id))
 
     async def resolve_image(self, path: str) -> bytes:
         """
@@ -494,7 +494,7 @@ class AirPlayProvider(PlayerProvider):
 
         # Final check before registration to handle race conditions
         # (multiple MDNS events processed in parallel for same device)
-        if self.mass.players.get_player(player_id):
+        if self.get_endpoint(player_id):
             self.logger.debug(
                 "Player %s already registered during setup, skipping registration", player_id
             )

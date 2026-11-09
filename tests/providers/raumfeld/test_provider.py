@@ -275,6 +275,7 @@ def _zone_provider(
     provider.mass = mass
     for player in players.values():
         player.mass = mass
+        player._provider = provider
         # a zone's renderer runs on the host: each test sets what the zones answer there
         player._read_transport = lambda zone: _host_mock(provider).zone_transport(zone)  # type: ignore[method-assign]
         player._read_position = lambda zone: _host_mock(provider).zone_position(zone)  # type: ignore[method-assign]
@@ -295,7 +296,9 @@ def _groups(players: dict[str, RaumfeldPlayer]) -> dict[str, list[str]]:
 def _sync(provider: RaumfeldPlayerProvider, players: dict[str, RaumfeldPlayer]) -> None:
     """Run a group sync with the provider's players in place."""
     with patch.object(
-        RaumfeldPlayerProvider, "players", new_callable=lambda: property(lambda _: players.values())
+        RaumfeldPlayerProvider,
+        "endpoints",
+        new_callable=lambda: property(lambda _: players.values()),
     ):
         provider._sync_groups()
 
@@ -349,7 +352,9 @@ def test_merged_groups_end_up_with_a_single_leader() -> None:
 async def _follow(provider: RaumfeldPlayerProvider, players: dict[str, RaumfeldPlayer]) -> None:
     """Run one look of the zone watcher with the provider's players in place."""
     with patch.object(
-        RaumfeldPlayerProvider, "players", new_callable=lambda: property(lambda _: players.values())
+        RaumfeldPlayerProvider,
+        "endpoints",
+        new_callable=lambda: property(lambda _: players.values()),
     ):
         await provider._follow_zones()
 
@@ -1070,7 +1075,7 @@ async def test_the_periodic_read_keeps_the_buttons_of_a_room_it_cannot_read() ->
     player.set_station_buttons = MagicMock()  # type: ignore[method-assign]
     with (
         patch.object(
-            RaumfeldPlayerProvider, "players", new_callable=PropertyMock, return_value=[player]
+            RaumfeldPlayerProvider, "endpoints", new_callable=PropertyMock, return_value=[player]
         ),
         patch.object(provider, "_read_station_buttons", AsyncMock(side_effect=[None, []])),
     ):
@@ -1518,7 +1523,7 @@ def test_a_room_event_reaches_that_rooms_player() -> None:
     bar = MagicMock(spec=RaumfeldPlayer, room="Bar")
     bank = MagicMock(spec=RaumfeldPlayer, room="Bank")
     with patch.object(
-        RaumfeldPlayerProvider, "players", new_callable=PropertyMock, return_value=[bar, bank]
+        RaumfeldPlayerProvider, "endpoints", new_callable=PropertyMock, return_value=[bar, bank]
     ):
         provider._handle_room_event("http://192.168.1.42/bar.xml", {"Volume": "44"})
     bar.set_rendering_events.assert_called_once_with(True)
@@ -1549,7 +1554,7 @@ async def test_a_resync_tells_each_room_whether_its_events_come_in() -> None:
     bar = MagicMock(spec=RaumfeldPlayer, room="Bar")
     bank = MagicMock(spec=RaumfeldPlayer, room="Bank")
     with patch.object(
-        RaumfeldPlayerProvider, "players", new_callable=PropertyMock, return_value=[bar, bank]
+        RaumfeldPlayerProvider, "endpoints", new_callable=PropertyMock, return_value=[bar, bank]
     ):
         await provider._resync()
     assert set(provider.room_events.refresh.await_args.args[0]) == {
@@ -1586,7 +1591,7 @@ def test_a_zone_event_has_the_rooms_of_that_zone_read() -> None:
     )
     players = [MagicMock(spec=RaumfeldPlayer, room=room) for room in ("Bar", "Sofa", "Bank")]
     with patch.object(
-        RaumfeldPlayerProvider, "players", new_callable=PropertyMock, return_value=players
+        RaumfeldPlayerProvider, "endpoints", new_callable=PropertyMock, return_value=players
     ):
         provider._handle_zone_event(_ZONE_LOCATION, {"TransportState": "PLAYING"})
     players[0].zone_event.assert_called_once_with(_ZONE_LOCATION)
@@ -1604,7 +1609,7 @@ def test_a_room_transport_event_has_that_room_read() -> None:
     bar = MagicMock(spec=RaumfeldPlayer, room="Bar")
     bank = MagicMock(spec=RaumfeldPlayer, room="Bank")
     with patch.object(
-        RaumfeldPlayerProvider, "players", new_callable=PropertyMock, return_value=[bar, bank]
+        RaumfeldPlayerProvider, "endpoints", new_callable=PropertyMock, return_value=[bar, bank]
     ):
         provider._handle_room_transport_event(_LOCATION, {"TransportState": "PAUSED_PLAYBACK"})
     bank.set_room_transport_events.assert_called_once_with(True)
@@ -1618,7 +1623,7 @@ def test_a_room_the_host_reports_changed_is_read() -> None:
     bar = MagicMock(spec=RaumfeldPlayer, room="Bar")
     bank = MagicMock(spec=RaumfeldPlayer, room="Bank")
     with patch.object(
-        RaumfeldPlayerProvider, "players", new_callable=PropertyMock, return_value=[bar, bank]
+        RaumfeldPlayerProvider, "endpoints", new_callable=PropertyMock, return_value=[bar, bank]
     ):
         provider._handle_rooms_changed({"Bank"})
     bank.state_event.assert_called_once_with()

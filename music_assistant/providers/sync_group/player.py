@@ -24,6 +24,7 @@ from music_assistant.constants import (
 from music_assistant.controllers.players.constants import PlayerLockPurpose
 from music_assistant.helpers.config_entries import PLAYBACK_TARGET_TYPES
 from music_assistant.models.player import DeviceInfo, Player, PlayerMedia
+from music_assistant.models.player_endpoint import PlayerEndpoint
 
 from .constants import (
     CONF_ALLOWED_MEMBERS,
@@ -46,7 +47,7 @@ if TYPE_CHECKING:
     from .provider import SyncGroupProvider
 
 
-class SyncGroupPlayer(Player):
+class SyncGroupPlayer(PlayerEndpoint):
     """Sync Group Player implementation."""
 
     _attr_type: PlayerType = PlayerType.GROUP

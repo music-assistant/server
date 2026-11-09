@@ -149,7 +149,7 @@ class BoseSoundTouchProvider(PlayerProvider):
             return
 
         player_id = f"{PLAYER_ID_PREFIX}{info.device_id}"
-        if existing := self.mass.players.get_player(player_id):
+        if existing := self.get_endpoint(player_id):
             # already known: refresh its address and bail out
             assert isinstance(existing, BoseSoundTouchPlayer)
             existing.update_ip_address(ip_address)
@@ -172,7 +172,7 @@ class BoseSoundTouchProvider(PlayerProvider):
 
     def _get_player_by_ip(self, ip_address: str) -> BoseSoundTouchPlayer | None:
         """Return an existing SoundTouch player with the given IP address (if any)."""
-        for player in self.players:
+        for player in self.endpoints:
             if isinstance(player, BoseSoundTouchPlayer) and player.ip_address == ip_address:
                 return player
         return None

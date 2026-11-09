@@ -21,7 +21,8 @@ from music_assistant_models.player import PlayerSource
 
 from music_assistant.constants import VERBOSE_LOG_LEVEL
 from music_assistant.helpers.upnp import create_didl_metadata
-from music_assistant.models.player import DeviceInfo, Player
+from music_assistant.models.player import DeviceInfo
+from music_assistant.models.player_endpoint import PlayerEndpoint
 
 from .constants import COMMAND_REFRESH_DELAYS, PLAYER_CONFIG_ENTRIES
 
@@ -64,7 +65,7 @@ def catch_request_errors[DLNAPlayerT: "DLNAPlayer", **P, R](
     return wrapper
 
 
-class DLNAPlayer(Player):
+class DLNAPlayer(PlayerEndpoint):
     """
     DLNA Player.
 

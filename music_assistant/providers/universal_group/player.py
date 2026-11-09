@@ -36,7 +36,8 @@ from music_assistant.controllers.players.constants import PlayerLockPurpose
 from music_assistant.controllers.streams.audio_processing import get_media_session_id
 from music_assistant.helpers.audio import get_mime_type
 from music_assistant.helpers.util import TaskManager
-from music_assistant.models.player import DeviceInfo, Player, PlayerMedia
+from music_assistant.models.player import DeviceInfo, PlayerMedia
+from music_assistant.models.player_endpoint import PlayerEndpoint
 
 from .constants import (
     CONF_ENTRY_UGP_OUTPUT_FORMAT,
@@ -64,7 +65,7 @@ BASE_FEATURES = {
 }
 
 
-class UniversalGroupPlayer(Player):
+class UniversalGroupPlayer(PlayerEndpoint):
     """Universal Group Player implementation."""
 
     _attr_type: PlayerType = PlayerType.GROUP
@@ -598,7 +599,7 @@ class UniversalGroupPlayer(Player):
         # encoded stream.
         child_player_id = request.query.get("player_id")
 
-        if not (ugp_player := self.mass.players.get_player(ugp_player_id)):
+        if not (ugp_player := self.provider.get_endpoint(ugp_player_id)):
             raise web.HTTPNotFound(reason=f"Unknown UGP player: {ugp_player_id}")
         if not self.stream or self.stream.done:
             raise web.HTTPNotFound(body=f"There is no active UGP stream for {ugp_player_id}!")
