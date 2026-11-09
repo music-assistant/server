@@ -113,72 +113,26 @@ def _radio() -> AppleMusicLiveRadioManager:
 class _Live:
     """A live radio manager on scripted playlists, with a decoder that passes its input on."""
 
-    def __init__(self, playlists: list[str], monkeypatch: pytest.MonkeyPatch) -> None:
+    def __init__(
+        self, playlists: list[str], monkeypatch: pytest.MonkeyPatch, real_decoder: bool = False
+    ) -> None:
         self.radio = _radio()
         self.playlists = playlists
         self.decoders: list[dict[str, Any]] = []
         # the segments fetched so far, at each wait of the playlist loop
         self.sleeps: list[int] = []
         self.fetched: list[str] = []
+        # how often a request of the named file fails before it works
+        self.failures: dict[str, int] = {}
         # each license request as (key name, segments fetched before it)
         self.licenses: list[tuple[str, int]] = []
         self.segments: dict[str, bytes] = {}
-
-        async def fetch(url: str) -> bytes:
-            if url == MEDIA_URL:
-                text = self.playlists.pop(0) if len(self.playlists) > 1 else self.playlists[0]
-                return text.encode()
-            name = url.rsplit("/", 1)[-1]
-            self.fetched.append(name)
-            return self.segments.get(name, name.encode())
-
-        async def get_license(_data: dict[str, Any], key_uri: str) -> tuple[str, float]:
-            # the key of key name A is aaaa..., a valid hex key for ffmpeg
-            name = base64.b64decode(key_uri.rsplit(",", 1)[-1]).decode()[-1]
-            self.licenses.append((name, len(self.fetched)))
-            return name.lower() * 32, 780.0
-
-        async def decoder(
-            audio_input: AsyncGenerator[bytes], **kwargs: Any
-        ) -> AsyncGenerator[bytes]:
-            # like the real one: the input is read by a task of its own, and an error of
-            # the input comes out wrapped after the output ends
-            run: dict[str, Any] = {"args": kwargs["extra_input_args"], "input": []}
-            self.decoders.append(run)
-            output: asyncio.Queue[bytes | None] = asyncio.Queue(maxsize=1)
-            failure: list[Exception] = []
-
-            async def feed() -> None:
-                try:
-                    async for chunk in audio_input:
-                        run["input"].append(chunk)
-                        await output.put(chunk)
-                except Exception as err:
-                    failure.append(err)
-                await output.put(None)
-
-            feeder = asyncio.create_task(feed())
-            try:
-                while (chunk := await output.get()) is not None:
-                    yield chunk
-            finally:
-                feeder.cancel()
-                with suppress(asyncio.CancelledError):
-                    await feeder
-                await audio_input.aclose()
-            if failure:
-                _raise_feeder_error(failure[0])
-
-        real_sleep = asyncio.sleep
-
-        async def sleep(_delay: float) -> None:
-            self.sleeps.append(len(self.fetched))
-            await real_sleep(0)
-
-        self.radio._fetch = fetch  # type: ignore[method-assign]
-        self.radio._get_license = get_license  # type: ignore[method-assign, assignment]
-        monkeypatch.setattr(f"{MODULE}.get_ffmpeg_stream", decoder)
-        monkeypatch.setattr(f"{MODULE}.asyncio.sleep", sleep)
+        self._real_sleep = asyncio.sleep
+        self.radio._fetch = self._fetch  # type: ignore[method-assign]
+        self.radio._get_license = self._get_license  # type: ignore[method-assign, assignment]
+        if not real_decoder:
+            monkeypatch.setattr(f"{MODULE}.get_ffmpeg_stream", self._decoder)
+        monkeypatch.setattr(f"{MODULE}.asyncio.sleep", self._sleep)
         self.details = StreamDetails(
             provider="am",
             item_id="ra.1",
@@ -192,6 +146,58 @@ class _Live:
                 "renew_at": None,
             },
         )
+
+    async def _fetch(self, url: str) -> bytes:
+        if url == MEDIA_URL:
+            text = self.playlists.pop(0) if len(self.playlists) > 1 else self.playlists[0]
+            return text.encode()
+        name = url.rsplit("/", 1)[-1]
+        self.fetched.append(name)
+        if self.failures.get(name):
+            self.failures[name] -= 1
+            raise UnplayableMediaError("Live radio request failed: HTTP 503")
+        return self.segments.get(name, name.encode())
+
+    async def _get_license(self, _data: dict[str, Any], key_uri: str) -> tuple[str, float]:
+        # the key of key name A is aaaa..., a valid hex key for ffmpeg
+        name = base64.b64decode(key_uri.rsplit(",", 1)[-1]).decode()[-1]
+        self.licenses.append((name, len(self.fetched)))
+        return name.lower() * 32, 780.0
+
+    async def _decoder(
+        self, audio_input: AsyncGenerator[bytes], **kwargs: Any
+    ) -> AsyncGenerator[bytes]:
+        # like the real one: the input is read by a task of its own, and an error of the
+        # input comes out wrapped after the output ends
+        run: dict[str, Any] = {"args": kwargs["extra_input_args"], "input": []}
+        self.decoders.append(run)
+        output: asyncio.Queue[bytes | None] = asyncio.Queue(maxsize=1)
+        failure: list[Exception] = []
+
+        async def feed() -> None:
+            try:
+                async for chunk in audio_input:
+                    run["input"].append(chunk)
+                    await output.put(chunk)
+            except Exception as err:
+                failure.append(err)
+            await output.put(None)
+
+        feeder = asyncio.create_task(feed())
+        try:
+            while (chunk := await output.get()) is not None:
+                yield chunk
+        finally:
+            feeder.cancel()
+            with suppress(asyncio.CancelledError):
+                await feeder
+            await audio_input.aclose()
+        if failure:
+            _raise_feeder_error(failure[0])
+
+    async def _sleep(self, delay: float) -> None:
+        self.sleeps.append(len(self.fetched))
+        await self._real_sleep(min(delay, 0.01))
 
     async def read(self, count: int) -> list[bytes]:
         chunks: list[bytes] = []
@@ -219,6 +225,23 @@ def test_the_media_playlist_keeps_the_widevine_key() -> None:
         _wv("B"),
     ]
     assert segment_uri(playlist.segments[2].map_line) == "init_B"
+
+
+def test_a_clear_segment_does_not_inherit_the_previous_key() -> None:
+    """A METHOD=NONE line ends the key, so the segment after it has none."""
+    text = _media(1, ["A"]) + "#EXT-X-KEY:METHOD=NONE\n#EXTINF:16.0,\ns2\n"
+    encrypted, clear = WidevinePlaylistParser(text).parse().segments
+    assert segment_uri(encrypted.key_line) == _wv("A")
+    with pytest.raises(UnplayableMediaError):
+        segment_uri(clear.key_line)
+
+
+async def test_a_failing_init_segment_is_tried_again(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The init segment gets the same retries as a media segment."""
+    live = _Live([_media(10, ["A"] * 3)], monkeypatch)
+    live.failures = {"init_A": 1}
+
+    assert await live.read(2) == [b"init_A", b"s10"]
 
 
 @pytest.mark.parametrize(("is_live", "dynamic"), [(True, False), (False, True)])

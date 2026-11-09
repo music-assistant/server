@@ -73,7 +73,11 @@ class WidevinePlaylistParser(HLSMediaPlaylistParser):
 
     def process_line(self, line: str) -> None:
         """Process a single line from the playlist, skipping the keys of other DRM systems."""
-        if line.startswith("#EXT-X-KEY:") and WIDEVINE_KEY_FORMAT not in line:
+        if (
+            line.startswith("#EXT-X-KEY:")
+            and WIDEVINE_KEY_FORMAT not in line
+            and "METHOD=NONE" not in line
+        ):
             return
         super().process_line(line)
 
@@ -255,9 +259,11 @@ class AppleMusicLiveRadioManager:
                         )
                         data["key_uri"] = key_uri
                         data["renew_at"] = _renewal_time(renew_after)
-                    init = await self._fetch(
+                    init = await self._fetch_segment(
                         urljoin(data["media_url"], segment_uri(segment.map_line))
                     )
+                    if init is None:
+                        raise UnplayableMediaError("The live radio init segment is not available")
                     next_key: list[HLSMediaSegment] = []
                     async with aclosing(
                         get_ffmpeg_stream(
@@ -455,7 +461,7 @@ class AppleMusicLiveRadioManager:
         return WidevinePlaylistParser((await self._fetch(url)).decode()).parse()
 
     async def _fetch_segment(self, url: str) -> bytes | None:
-        """Return a media segment, None when it stayed unavailable after some retries."""
+        """Return an init or media segment, None when it stayed unavailable after some retries."""
         for attempt in range(1, SEGMENT_RETRIES + 1):
             try:
                 return await self._fetch(url)
