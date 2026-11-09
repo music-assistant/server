@@ -32,7 +32,8 @@ from pychromecast.socket_client import CONNECTION_STATUS_CONNECTED, CONNECTION_S
 
 from music_assistant.constants import MASS_LOGO_ONLINE, VERBOSE_LOG_LEVEL
 from music_assistant.helpers.util import is_valid_mac_address
-from music_assistant.models.player import DeviceInfo, Player, PlayerMedia
+from music_assistant.models.player import DeviceInfo, PlayerMedia
+from music_assistant.models.player_endpoint import PlayerEndpoint
 
 from .constants import (
     APP_LAUNCH_TIMEOUT,
@@ -66,7 +67,7 @@ if TYPE_CHECKING:
     from .provider import ChromecastProvider
 
 
-class ChromecastPlayer(Player):
+class ChromecastPlayer(PlayerEndpoint):
     """Chromecast Player."""
 
     active_cast_group: str | None = None
@@ -664,7 +665,7 @@ class ChromecastPlayer(Player):
         # handle player playing from a group
         group_player: ChromecastPlayer | None = None
         if self.active_cast_group is not None:
-            player_obj = self.mass.players.get_player(self.active_cast_group)
+            player_obj = self.provider.get_endpoint(self.active_cast_group)
             if not isinstance(player_obj, ChromecastPlayer):
                 return
             group_player = player_obj
@@ -854,7 +855,7 @@ class ChromecastPlayer(Player):
         if self.type != PlayerType.GROUP or not self.powered:
             return
         for child_id in self.group_members:
-            if child := self.mass.players.get_player(child_id):
+            if child := self.provider.get_endpoint(child_id):
                 assert isinstance(child, ChromecastPlayer)  # for type checking
                 if not child.cast_info.is_multichannel_group:
                     continue

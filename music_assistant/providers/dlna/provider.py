@@ -63,7 +63,7 @@ class DLNAPlayerProvider(PlayerProvider):
                 "eventing": not player.force_poll,
                 "last_seen_age_sec": round(now - player.last_seen),
             }
-            for player in self.players
+            for player in self.endpoints
             if isinstance(player, DLNAPlayer)
         ]
         return {
@@ -103,7 +103,7 @@ class DLNAPlayerProvider(PlayerProvider):
             if udn in self._ignored_udns:
                 return
 
-            if dlna_player := self.mass.players.get_player(udn):
+            if dlna_player := self.get_endpoint(udn):
                 # existing player
                 assert isinstance(dlna_player, DLNAPlayer)
                 if dlna_player.description_url == description_url and dlna_player.available:

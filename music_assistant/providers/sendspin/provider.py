@@ -85,7 +85,7 @@ from music_assistant.helpers.guest_access import (
 from music_assistant.helpers.util import format_ip_for_url, is_valid_mac_address
 from music_assistant.helpers.virtual_player import cleanup_virtual_player
 from music_assistant.mass import MusicAssistant
-from music_assistant.models.player import Player
+from music_assistant.models.player_endpoint import PlayerEndpoint
 from music_assistant.models.player_provider import PlayerProvider
 from music_assistant.providers.sendspin.bridge_role import (
     BRIDGE_BIT_DEPTH,
@@ -566,7 +566,7 @@ class SendspinProvider(PlayerProvider):
         # replay the add event so re-enabling takes effect immediately.
         if (
             self.server_api.get_client(player_id) is not None
-            and self.mass.players.get_player(player_id) is None
+            and self.get_endpoint(player_id) is None
         ):
             event_version = self._begin_client_event(player_id)
             self.mass.create_task(self._handle_client_added(player_id, event_version))
@@ -611,7 +611,7 @@ class SendspinProvider(PlayerProvider):
         :param client_id: The bridge client_id for which the default applies.
         :param default_ms: Model-specific default static delay in milliseconds.
         """
-        existing = self.mass.players.get_player(client_id)
+        existing = self.get_endpoint(client_id)
         if isinstance(existing, SendspinPlayer):
             existing.static_delay_default_ms = default_ms
             # If no user-set value exists, push the new default to the device now
@@ -660,7 +660,7 @@ class SendspinProvider(PlayerProvider):
             on, establishing the derived-transport edge for protocol linking.
         :return: True if a matching SendspinPlayer was found and updated.
         """
-        player = self.mass.players.get_player(client_id)
+        player = self.get_endpoint(client_id)
         if not isinstance(player, SendspinPlayer):
             return False
         for id_type, id_value in identifiers.items():
@@ -1192,7 +1192,7 @@ class SendspinProvider(PlayerProvider):
         self._hass_auto_pairer.close()
         if self._running_pairing_evictions:
             await asyncio.gather(*self._running_pairing_evictions, return_exceptions=True)
-        player_ids = [player.player_id for player in self.players]
+        player_ids = [player.player_id for player in self.endpoints]
         # Stop the Sendspin server. A failed start already cleaned up after itself,
         # and closing it then raises (aiosendspin keeps a stale site reference).
         if not self._server_start_failed:
@@ -1286,7 +1286,7 @@ class SendspinProvider(PlayerProvider):
         """Re-apply the HA enrichment to all registered players that report a MAC address (in place)."""
         players = [
             player
-            for player in self.players
+            for player in self.endpoints
             if isinstance(player, SendspinBasePlayer) and _reported_mac_address(player)
         ]
         if not players:
@@ -1300,7 +1300,7 @@ class SendspinProvider(PlayerProvider):
         self,
         client_id: str,
         sendspin_client: SendspinClient,
-        existing_player: Player | None,
+        existing_player: PlayerEndpoint | None,
         initial_hello: ClientHelloPayload | None = None,
     ) -> SendspinBasePlayer:
         """
@@ -1564,7 +1564,7 @@ class SendspinProvider(PlayerProvider):
         """Re-evaluate a registered player after a pairing/trust change (in place)."""
         if client_id in self._held_elsewhere:
             await self._refresh_held_trust(client_id)
-        player = self.mass.players.get_player(client_id)
+        player = self.get_endpoint(client_id)
         if not isinstance(player, SendspinBasePlayer) or not player.initialized.is_set():
             return
         # A trust change (de)activates roles; role instances are recreated on activation,
@@ -1605,7 +1605,7 @@ class SendspinProvider(PlayerProvider):
 
     def _refresh_player_state(self, client_id: str) -> None:
         """Recalculate a registered player's state for its client's new connection."""
-        player = self.mass.players.get_player(client_id)
+        player = self.get_endpoint(client_id)
         if isinstance(player, SendspinBasePlayer) and player.initialized.is_set():
             player.update_state()
 
@@ -1663,7 +1663,7 @@ class SendspinProvider(PlayerProvider):
             client = self.server_api.get_client(client_id)
             if client is None or not client.is_connected:
                 return None
-            player = self.mass.players.get_player(client_id)
+            player = self.get_endpoint(client_id)
             if isinstance(player, SendspinBasePlayer) and player.initialized.is_set():
                 return player
             return None
@@ -1711,7 +1711,7 @@ class SendspinProvider(PlayerProvider):
                 self.logger.debug("Ignoring disabled sendspin client: %s", client_id)
                 return
             await self._auto_trust_guest_access(client_id, sendspin_client, event_version)
-            existing_player = self.mass.players.get_player(client_id)
+            existing_player = self.get_endpoint(client_id)
             preserved_identifiers = (
                 dict(existing_player.device_info.identifiers) if existing_player is not None else {}
             )
@@ -1747,7 +1747,7 @@ class SendspinProvider(PlayerProvider):
                 player._unsubscribe_client_callbacks()
             else:
                 # register skips a disabled player and any player during shutdown
-                if mac_player_id and self.mass.players.get_player(client_id) is player:
+                if mac_player_id and self.get_endpoint(client_id) is player:
                     self.mass.players.delete_player_config(
                         mac_player_id, replacement_player_id=client_id
                     )
@@ -1840,7 +1840,7 @@ class SendspinProvider(PlayerProvider):
             if not self._is_current_client_event(client_id, event_version):
                 self.logger.debug("Skipping stale update event for %s", client_id)
                 return
-            existing_player = self.mass.players.get_player(client_id)
+            existing_player = self.get_endpoint(client_id)
             if not isinstance(existing_player, SendspinBasePlayer):
                 return
             previous_device_info = existing_player.device_info
@@ -1974,7 +1974,7 @@ class SendspinProvider(PlayerProvider):
         """Forward a queue change to the Sendspin players, so repeat and shuffle stay current."""
         if (queue_id := event.object_id) is None:
             return
-        for player in self.players:
+        for player in self.endpoints:
             if isinstance(player, SendspinPlayer):
                 player.on_queue_updated(queue_id)
 

@@ -64,7 +64,6 @@ async def timer_mass() -> AsyncGenerator[MusicAssistant]:
     mass._tracked_tasks = {}
     mass.config = MagicMock()
     mass.players = MagicMock()
-    mass.players.all_players.return_value = []
     yield mass
     for handle in mass._tracked_timers.values():
         handle.cancel()
@@ -77,6 +76,8 @@ def _make_player(mass: MusicAssistant, uid: str, name: str) -> SonosPlayer:
     provider = MagicMock()
     provider.mass = mass
     provider.topology_condition = asyncio.Condition()
+    provider.get_endpoint = lambda pid: mass.players.get_player(pid)
+    provider.endpoints = []
     return SonosPlayer(provider=provider, soco=_make_soco(uid, name), fixed_volume=False)
 
 

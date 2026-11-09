@@ -54,6 +54,7 @@ def _player_with_mocked_mass() -> tuple[SqueezelitePlayer, MagicMock]:
     """Return an uninitialized SqueezelitePlayer alongside its mocked mass instance."""
     player = SqueezelitePlayer.__new__(SqueezelitePlayer)
     player.mass = mass = MagicMock()
+    player._provider = MagicMock(get_endpoint=lambda pid: mass.players.get_player(pid))
     return player, mass
 
 

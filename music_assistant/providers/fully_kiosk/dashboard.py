@@ -55,7 +55,7 @@ class FullyKioskDashboards:
             return
         # a connect awaiting the device response may resolve after the player was
         # removed; never resurrect an endpoint for it
-        if self.mass.players.get_player(player.player_id) is not player:
+        if self.provider.get_endpoint(player.player_id) is not player:
             return
         device = DashboardDevice(
             dashboard_id=player.player_id,
@@ -91,7 +91,7 @@ class FullyKioskDashboards:
         self, player_id: str, dashboard: DashboardType, target_player_id: str | None
     ) -> None:
         """Wake a Fully Kiosk device and load a Music Assistant dashboard in its webview."""
-        player = self.mass.players.get_player(player_id)
+        player = self.provider.get_endpoint(player_id)
         if not isinstance(player, FullyKioskPlayer) or player.fully_kiosk is None:
             raise PlayerUnavailableError(f"Fully Kiosk device {player_id} is no longer available")
         client = player.fully_kiosk
@@ -117,7 +117,7 @@ class FullyKioskDashboards:
 
     async def _on_hide(self, player_id: str) -> None:
         """Return a Fully Kiosk device's webview to its configured start page."""
-        player = self.mass.players.get_player(player_id)
+        player = self.provider.get_endpoint(player_id)
         if not isinstance(player, FullyKioskPlayer) or player.fully_kiosk is None:
             # nothing connected to this device: it can't be showing a dashboard
             return

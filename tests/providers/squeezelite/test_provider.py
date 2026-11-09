@@ -51,6 +51,7 @@ async def test_multi_client_stream_content_type_describes_output_format(
     provider.mass.players.get_player.side_effect = lambda pid: (
         sync_parent if pid == "leader" else child
     )
+    provider.get_endpoint = lambda pid: provider.mass.players.get_player(pid)
     provider.mass.streams.audio.get_output_format = AsyncMock(return_value=output_format)
     provider.mass.streams.audio.get_player_output_plan.return_value = MagicMock(filter_params=[])
     request = MagicMock(method="GET")
@@ -74,6 +75,7 @@ def _synced_member() -> tuple[MagicMock, SqueezelitePlayer, MagicMock]:
     provider = MagicMock()
     provider.mass.closing = False
     provider.mass.players.get_player.side_effect = {"leader": leader, "member": member}.get
+    provider.get_endpoint = lambda pid: provider.mass.players.get_player(pid)
     provider._release_from_sync_leader = partial(
         SqueezelitePlayerProvider._release_from_sync_leader, provider
     )

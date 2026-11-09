@@ -4,10 +4,13 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from music_assistant_models.errors import PlayerUnavailableError
+
 from .provider import Provider
 
 if TYPE_CHECKING:
     from music_assistant.models.player import Player
+    from music_assistant.models.player_endpoint import PlayerEndpoint
 
 
 class PlayerProvider(Provider):
@@ -19,6 +22,27 @@ class PlayerProvider(Provider):
 
     async def loaded_in_mass(self) -> None:
         """Call after the provider has been loaded."""
+
+    def get_endpoint(
+        self, endpoint_id: str, raise_unavailable: bool = False
+    ) -> PlayerEndpoint | None:
+        """
+        Return the endpoint (device object) with the given id.
+
+        Only pass ids of this provider's own endpoints.
+
+        :param endpoint_id: ID of one of this provider's endpoints.
+        :param raise_unavailable: Raise if the endpoint is unknown, unavailable or disabled.
+        :raises PlayerUnavailableError: If raise_unavailable is set and the endpoint is
+            unknown, unavailable or disabled.
+        """
+        endpoint = self.mass.players.get_player(endpoint_id)
+        if raise_unavailable and (
+            endpoint is None or not endpoint.state.available or not endpoint.state.enabled
+        ):
+            msg = f"Player {endpoint_id} is not available"
+            raise PlayerUnavailableError(msg)
+        return endpoint
 
     def on_player_enabled(self, player_id: str) -> None:
         """Call (by config manager) when a player gets enabled."""
@@ -69,8 +93,8 @@ class PlayerProvider(Provider):
         # there is no need to implement this method.
 
     @property
-    def players(self) -> list[Player]:
-        """Return all players belonging to this provider."""
+    def endpoints(self) -> list[PlayerEndpoint]:
+        """Return all endpoints (device objects) belonging to this provider."""
         # a provider owns these players, so it always sees all of them - narrowing this
         # to what some user happens to see corrupts the provider's own bookkeeping, such
         # as the grouping options it derives from this list. Note this still hides

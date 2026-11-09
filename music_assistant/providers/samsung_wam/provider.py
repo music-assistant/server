@@ -35,7 +35,7 @@ class SamsungWamProvider(PlayerProvider):
 
     def get_players(self) -> list[WamPlayer]:
         """Return all registered WAM players."""
-        return cast("list[WamPlayer]", self.players)
+        return cast("list[WamPlayer]", self.endpoints)
 
     def get_player(self, player_id: str) -> WamPlayer | None:
         """
@@ -44,7 +44,7 @@ class SamsungWamProvider(PlayerProvider):
         :param player_id: The player ID to look up.
         :return: The matching WamPlayer, or None if not found.
         """
-        return cast("WamPlayer | None", self.mass.players.get_player(player_id))
+        return cast("WamPlayer | None", self.get_endpoint(player_id))
 
     async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
         """Return all config entries for this provider."""

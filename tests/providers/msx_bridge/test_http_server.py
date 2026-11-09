@@ -926,7 +926,7 @@ async def test_websocket_rejects_cross_origin_browser(
                 },
             )
         assert err.value.status == 403
-        assert provider.players == []
+        assert provider.endpoints == []
     finally:
         await client.close()
 

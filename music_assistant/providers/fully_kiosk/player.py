@@ -27,7 +27,8 @@ from music_assistant.constants import (
     CONF_USE_SSL,
     CONF_VERIFY_SSL,
 )
-from music_assistant.models.player import DeviceInfo, Player, PlayerMedia
+from music_assistant.models.player import DeviceInfo, PlayerMedia
+from music_assistant.models.player_endpoint import PlayerEndpoint
 from music_assistant.models.setup_flow import SetupFlowError
 
 if TYPE_CHECKING:
@@ -70,7 +71,7 @@ def _build_fingerprint(value: str) -> Fingerprint:
     return Fingerprint(digest)
 
 
-class FullyKioskPlayer(Player):
+class FullyKioskPlayer(PlayerEndpoint):
     """FullyKiosk Player implementation."""
 
     _attr_poll_interval = 10

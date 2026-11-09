@@ -40,7 +40,7 @@ class _TestProvider:
         self.manifest.domain = domain
         self.manifest.type = ProviderType.PLAYER
         self.type = ProviderType.PLAYER
-        self.players: list[Player] = []
+        self.endpoints: list[Player] = []
 
     async def unload(self, is_removed: bool = False) -> None:
         """Unload the provider (nothing to clean up)."""

@@ -114,7 +114,7 @@ class SonosPlayerProvider(PlayerProvider):
 
     async def get_diagnostics(self) -> dict[str, SerializableType]:
         """Return diagnostics info for this provider to include in diagnostics reports."""
-        sonos_players = [player for player in self.players if isinstance(player, SonosPlayer)]
+        sonos_players = [player for player in self.endpoints if isinstance(player, SonosPlayer)]
         # active_output_protocol holds "native" or the player id of the protocol player in use
         active_protocols = [
             player.active_output_protocol
@@ -142,7 +142,7 @@ class SonosPlayerProvider(PlayerProvider):
         if state_change == ServiceStateChange.Removed:
             # a portable withdraws its announcement as it goes to sleep, long before the
             # websocket heartbeat notices
-            sonos_player = self.mass.players.get_player(name.split("@", 1)[0])
+            sonos_player = self.get_endpoint(name.split("@", 1)[0])
             if isinstance(sonos_player, SonosPlayer):
                 self.mass.create_task(sonos_player.on_mdns_goodbye())
             return
@@ -154,7 +154,7 @@ class SonosPlayerProvider(PlayerProvider):
         player_id = info.decoded_properties["uuid"]
         assert isinstance(player_id, str)  # for type checking
         # handle update for existing device
-        if sonos_player := self.mass.players.get_player(player_id):
+        if sonos_player := self.get_endpoint(player_id):
             assert isinstance(sonos_player, SonosPlayer), (
                 "Player ID already exists but is not a SonosPlayer"
             )
@@ -184,7 +184,7 @@ class SonosPlayerProvider(PlayerProvider):
 
     def _handle_queue_items_updated(self, event: MassEvent) -> None:
         """Tell the speakers playing a queue that its contents changed."""
-        for player in self.players:
+        for player in self.endpoints:
             if not isinstance(player, SonosPlayer) or player.cloud_queue_id != event.object_id:
                 continue
             # invalidate straight away, so a window served before the command goes out does
@@ -207,7 +207,7 @@ class SonosPlayerProvider(PlayerProvider):
 
     async def _setup_player(self, player_id: str, name: str, info: AsyncServiceInfo) -> None:
         """Handle setup of a new player that is discovered using mdns."""
-        if self.mass.players.get_player(player_id):
+        if self.get_endpoint(player_id):
             # set up in the meantime: this announcement arrived while an earlier
             # setup (mdns or manual IP) was still running
             self.logger.debug("Ignoring %s in discovery as it is already set up.", name)

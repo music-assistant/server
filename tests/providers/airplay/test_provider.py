@@ -77,7 +77,7 @@ def test_remote_pause_routes_to_sendspin_session() -> None:
     sync_leader = MagicMock()
     sync_leader.protocol_parent_id = "sendspin-session"
     sync_leader.player_id = "sendspin-leader"
-    players.get_player.side_effect = {
+    players.get_endpoint.side_effect = {
         "sendspin-bridge": bridge_player,
         "sendspin-leader": sync_leader,
     }.get

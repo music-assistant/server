@@ -64,14 +64,14 @@ class MPDPlayerProvider(PlayerProvider):
         entries = cast("list[str]", self.config.get_value(CONF_MANUAL_IPS) or [])
         new_ids = {f"mpd_{h}_{p}" for h, p in (_parse_host_entry(e) for e in entries)}
 
-        for player in self.players:
+        for player in self.endpoints:
             if player.player_id not in new_ids:
                 await self.mass.players.unregister(player.player_id)
 
         for entry in entries:
             host, port = _parse_host_entry(entry)
             player_id = f"mpd_{host}_{port}"
-            if self.mass.players.get_player(player_id):
+            if self.get_endpoint(player_id):
                 continue
             player = MPDPlayer(provider=self, player_id=player_id, host=host, port=port)
             await self.mass.players.register(player)
@@ -82,7 +82,7 @@ class MPDPlayerProvider(PlayerProvider):
         for entry in entries:
             host, port = _parse_host_entry(entry)
             player_id = f"mpd_{host}_{port}"
-            if self.mass.players.get_player(player_id):
+            if self.get_endpoint(player_id):
                 continue
             player = MPDPlayer(provider=self, player_id=player_id, host=host, port=port)
             await self.mass.players.register(player)
@@ -90,7 +90,7 @@ class MPDPlayerProvider(PlayerProvider):
     async def remove_player(self, player_id: str) -> None:
         """Remove a player and persist that removal in the provider config."""
         host_port: tuple[str, int] | None = None
-        if player := self.mass.players.get_player(player_id):
+        if player := self.get_endpoint(player_id):
             if isinstance(player, MPDPlayer):
                 host_port = (player.host, player.port)
         if host_port is None:

@@ -34,7 +34,8 @@ from music_assistant.constants import (
 )
 from music_assistant.helpers.upnp import AVTransport
 from music_assistant.helpers.util import format_ip_for_url
-from music_assistant.models.player import Player, PlayerMedia
+from music_assistant.models.player import PlayerMedia
+from music_assistant.models.player_endpoint import PlayerEndpoint
 
 from .client import RECONNECT_DELAY, STRING_ENCODING
 from .client.schema.enums import Key, PlayStatus, SourceStatus
@@ -64,7 +65,7 @@ if TYPE_CHECKING:
     from .provider import BoseSoundTouchProvider
 
 
-class BoseSoundTouchPlayer(Player):
+class BoseSoundTouchPlayer(PlayerEndpoint):
     """Bose SoundTouch player in Music Assistant."""
 
     def __init__(
@@ -279,7 +280,7 @@ class BoseSoundTouchPlayer(Player):
         def get_zone(player_ids: list[str]) -> Zone:
             members: list[ZoneMember] = []
             for player_id in player_ids:
-                player = self.mass.players.get_player(player_id)
+                player = self.provider.get_endpoint(player_id)
                 if isinstance(player, BoseSoundTouchPlayer) and (ip_address := player.ip_address):
                     members.append(ZoneMember(ip=ip_address, mac=player.device_id))
             return Zone(

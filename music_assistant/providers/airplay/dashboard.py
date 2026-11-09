@@ -97,7 +97,7 @@ class AirPlayDashboards:
         """Evaluate a player's eligibility and (un)register it accordingly."""
         if self._unloaded:
             return
-        player = self.mass.players.get_player(player_id)
+        player = self.provider.get_endpoint(player_id)
         if not isinstance(player, AirPlayControlPlayer):
             self.unregister(player_id)
             return
@@ -166,7 +166,7 @@ class AirPlayDashboards:
         :param target_player_id: Player to show, required when the dashboard is NOW_PLAYING.
         :raises PlayerUnavailableError: If the Apple TV is gone or the launch fails.
         """
-        player = self.mass.players.get_player(player_id)
+        player = self.provider.get_endpoint(player_id)
         if not isinstance(player, AirPlayControlPlayer):
             raise PlayerUnavailableError(f"Apple TV {player_id} is no longer available")
         target_url = await self.mass.dashboard.resolve_dashboard_url(

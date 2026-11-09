@@ -69,7 +69,7 @@ class SonosCloudQueue:
         if len(path_parts) != 4 or path_parts[0] != "sonos_queue":
             return web.Response(status=404)
         player_id = path_parts[1]
-        if not (sonos_player := self.mass.players.get_player(player_id)):
+        if not (sonos_player := self.provider.get_endpoint(player_id)):
             return web.Response(status=501)
         if TYPE_CHECKING:
             assert isinstance(sonos_player, SonosPlayer)

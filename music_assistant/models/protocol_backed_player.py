@@ -16,6 +16,7 @@ from music_assistant_models.enums import PlaybackState, PlayerFeature
 
 from music_assistant.constants import EXTERNAL_SOURCES
 from music_assistant.models.player import Player
+from music_assistant.models.player_endpoint import PlayerEndpoint
 
 if TYPE_CHECKING:
     from music_assistant_models.enums import RepeatMode
@@ -34,7 +35,7 @@ FORWARDED_FEATURES = {
 }
 
 
-class ProtocolBackedPlayer(Player):
+class ProtocolBackedPlayer(PlayerEndpoint):
     """
     Base for players whose playback is delegated to linked protocol players.
 

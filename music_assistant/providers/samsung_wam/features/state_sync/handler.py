@@ -225,7 +225,7 @@ class StateSyncHandler(WamPlayerFeatureBase):
             return
         if not self.player.connected or self.player.synced_to:
             return
-        if self.mass.players.get_player(self.player.player_id) is not self.player:
+        if self.player.provider.get_endpoint(self.player.player_id) is not self.player:
             return
 
         self._terminating_wifi_stream = True
@@ -288,7 +288,7 @@ class StateSyncHandler(WamPlayerFeatureBase):
 
             # Guard against the case where this player instance has been replaced (e.g. after
             # a provider restart). Continuing would leave a dangling pywam connection open
-            if self.mass.players.get_player(self.player.player_id) is not self.player:
+            if self.player.provider.get_endpoint(self.player.player_id) is not self.player:
                 raise ConnectionError("Player instance superseded; aborting reconnect")  # noqa: TRY301 - triggers disconnect cleanup below
 
             self.suppress_speaker_status_events(new_speaker)

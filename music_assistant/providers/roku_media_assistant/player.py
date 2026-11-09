@@ -10,7 +10,8 @@ from urllib.parse import urlencode
 from music_assistant_models.enums import MediaType, PlaybackState, PlayerFeature
 
 from music_assistant.constants import CONF_ENTRY_HTTP_PROFILE
-from music_assistant.models.player import Player, PlayerMedia
+from music_assistant.models.player import PlayerMedia
+from music_assistant.models.player_endpoint import PlayerEndpoint
 
 from .constants import CONF_ROKU_APP_ID
 
@@ -31,7 +32,7 @@ def parse_app_ids(value: object) -> list[str]:
     return [app_id.strip() for app_id in value.split(",") if app_id.strip()]
 
 
-class MediaAssistantPlayer(Player):
+class MediaAssistantPlayer(PlayerEndpoint):
     """MediaAssistantPlayer in Music Assistant."""
 
     def __init__(

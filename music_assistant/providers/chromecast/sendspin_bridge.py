@@ -82,6 +82,7 @@ if TYPE_CHECKING:
     from pychromecast.generated.cast_channel_pb2 import CastMessage
 
     from music_assistant.models.player import Player
+    from music_assistant.models.player_endpoint import PlayerEndpoint
     from music_assistant.providers.sendspin.provider import SendspinProvider
 
     from .player import ChromecastPlayer
@@ -852,7 +853,7 @@ class SendspinBridgeManager(SendspinBridgeManagerBase[SendspinChromecastBridge])
             )
         )
 
-    async def evaluate_bridge(self, player: Player) -> None:
+    async def evaluate_bridge(self, player: PlayerEndpoint) -> None:
         """
         Reconcile the Sendspin bridge state for a Chromecast player.
 
@@ -903,7 +904,7 @@ class SendspinBridgeManager(SendspinBridgeManagerBase[SendspinChromecastBridge])
                 with suppress(Exception):
                     await sendspin_server.remove_client(claimed_client_id)
             if permanent:
-                if self.mass.players.get_player(claimed_client_id):
+                if self.mass.players.get_endpoint(claimed_client_id):
                     await self.mass.players.unregister(claimed_client_id, permanent=True)
                 else:
                     self.mass.players.delete_player_config(claimed_client_id)
@@ -932,11 +933,11 @@ class SendspinBridgeManager(SendspinBridgeManagerBase[SendspinChromecastBridge])
                 return bridge
         return None
 
-    def _bridge_client_id(self, player: Player) -> str | None:
+    def _bridge_client_id(self, player: PlayerEndpoint) -> str | None:
         """Return the Sendspin client_id used to bridge a Chromecast player."""
         return get_bridge_client_id(cast("ChromecastPlayer", player))
 
-    def _create_bridge(self, player: Player) -> SendspinChromecastBridge:
+    def _create_bridge(self, player: PlayerEndpoint) -> SendspinChromecastBridge:
         """Create a bridge instance for a Chromecast player."""
         cast_player = cast("ChromecastPlayer", player)
         bridge_client_id = get_bridge_client_id(cast_player)
@@ -955,7 +956,7 @@ class SendspinBridgeManager(SendspinBridgeManagerBase[SendspinChromecastBridge])
         """Return whether a bridge or claimed client is in place for the player."""
         return player_id in self._bridges or player_id in self._claimed_clients
 
-    def _should_have_bridge(self, player: Player) -> bool:
+    def _should_have_bridge(self, player: PlayerEndpoint) -> bool:
         """
         Return whether this cast player should have a Sendspin bridge.
 
@@ -1004,7 +1005,7 @@ class SendspinBridgeManager(SendspinBridgeManagerBase[SendspinChromecastBridge])
         # registered a client for this device.
         return not self._has_foreign_bridge_client(cast_player.player_id, bridge_client_id)
 
-    async def _try_claim_existing(self, player: Player) -> bool:
+    async def _try_claim_existing(self, player: PlayerEndpoint) -> bool:
         """
         Claim a Sendspin client that connected on its own (JS Cast receiver).
 
@@ -1100,7 +1101,7 @@ class SendspinBridgeManager(SendspinBridgeManagerBase[SendspinChromecastBridge])
                 with suppress(Exception):
                     unsub()
             self._claimed_clients.pop(cast_player.player_id, None)
-            if self.mass.players.get_player(cast_player.player_id) is not cast_player:
+            if self.provider.get_endpoint(cast_player.player_id) is not cast_player:
                 return
             if cast_player.player_id in self._bridges:
                 return
@@ -1164,7 +1165,7 @@ class SendspinBridgeManager(SendspinBridgeManagerBase[SendspinChromecastBridge])
 
     def _schedule_bridge_evaluations(self, match_ids: set[str]) -> None:
         """Schedule reconciliation for Cast bridges matching a player ID."""
-        for player in self.provider.players:
+        for player in self.provider.endpoints:
             cast_player = cast("ChromecastPlayer", player)
             if cast_player.player_id in match_ids or (
                 cast_player.protocol_parent_id and cast_player.protocol_parent_id in match_ids
@@ -1183,7 +1184,7 @@ class SendspinBridgeManager(SendspinBridgeManagerBase[SendspinChromecastBridge])
         """
         while player_id in self._pending_bridge_evaluations:
             self._pending_bridge_evaluations.discard(player_id)
-            player = self.mass.players.get_player(player_id)
+            player = self.provider.get_endpoint(player_id)
             if player is None or player.provider is not self.provider:
                 return
             await self.evaluate_bridge(player)

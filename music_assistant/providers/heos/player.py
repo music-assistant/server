@@ -21,7 +21,8 @@ from pyheos import Heos, HeosError, const
 from pyheos import PlayState as HeosPlayState
 
 from music_assistant.constants import EXTERNAL_PAUSE_IDLE_TIMEOUT, VERBOSE_LOG_LEVEL
-from music_assistant.models.player import Player, PlayerMedia
+from music_assistant.models.player import PlayerMedia
+from music_assistant.models.player_endpoint import PlayerEndpoint
 from music_assistant.providers.heos.helpers import media_uri_from_now_playing_media
 
 from .constants import (
@@ -50,7 +51,7 @@ PLAYER_FEATURES = {
 }
 
 
-class HeosPlayer(Player):
+class HeosPlayer(PlayerEndpoint):
     """HeosPlayer in Music Assistant."""
 
     # HEOS keeps a source it loaded itself reported as paused once the app walked away,
