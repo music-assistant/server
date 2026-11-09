@@ -1907,6 +1907,14 @@ class LocalFileSystemProvider(MusicProvider):
             )
             try:
                 artist = await self.get_artist(artist_path)
+                # one library artist can be linked to several folders of this source
+                # and the overwrite below would drop all but this one
+                artist.provider_mappings.update(
+                    mapping
+                    for mapping in db_artist.provider_mappings
+                    if mapping.provider_instance == self.instance_id
+                    and mapping not in artist.provider_mappings
+                )
                 await self.mass.music.artists.update_item_in_library(
                     db_artist.item_id, artist, overwrite=True
                 )

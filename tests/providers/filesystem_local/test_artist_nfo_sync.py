@@ -157,3 +157,32 @@ async def test_a_sync_without_changes_leaves_the_artist_alone(
         await _sync(provider)
 
     update_item_in_library.assert_not_awaited()
+
+
+async def test_an_edited_artist_nfo_keeps_the_artists_other_folders(
+    mass: MusicAssistant, tmp_path: Path
+) -> None:
+    """An artist.nfo edit keeps the links of the artist's other folders on the same source."""
+    for genre, album in (("Rock", "A Night at the Opera"), ("Jazz", "Innuendo")):
+        album_folder = tmp_path / genre / "Queen" / album
+        album_folder.mkdir(parents=True)
+        (album_folder / "Track.mp3").write_bytes(b"dummy audio")
+    _write_artist_nfo(tmp_path / "Rock" / "Queen", "Bio A", 1_900_000_000)
+    provider = await _load_provider(mass, tmp_path)
+    await _sync(provider)
+    artist = await mass.music.artists.get_library_item_by_prov_id("Rock/Queen", INSTANCE_ID)
+    assert artist is not None
+    assert {mapping.item_id for mapping in artist.provider_mappings} == {
+        "Rock/Queen",
+        "Jazz/Queen",
+    }
+
+    _write_artist_nfo(tmp_path / "Rock" / "Queen", "Bio B", 2_000_000_000)
+    await _sync(provider)
+
+    artist = await mass.music.artists.get_library_item(artist.item_id)
+    assert {mapping.item_id for mapping in artist.provider_mappings} == {
+        "Rock/Queen",
+        "Jazz/Queen",
+    }
+    assert artist.metadata.description == "Bio B"
