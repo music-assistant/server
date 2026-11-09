@@ -314,6 +314,10 @@ def parse_value(
         # happens if value_type is not a class
         pass
 
+    # JSON sends whole numbers as ints, accept them where a float is expected (but not bools)
+    if value_type is float and type(value) is int:
+        return float(value)
+
     if allow_value_convert:
         value = _convert_common_value(value, value_type)
 
