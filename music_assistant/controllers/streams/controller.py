@@ -1137,33 +1137,7 @@ class StreamsController(CoreController):
             standard_crossfade_duration = self.mass.config.get_raw_core_config_value(
                 CONF_PLAYER_QUEUES, CONF_CROSSFADE_DURATION, 8
             )
-            if queue_item.streamdetails.tail_overlap is not None:
-                # a declared overlap plays into the item it was planned against,
-                # whatever the queue's crossfade setting
-                crossfade_mode = CrossfadeMode.VOICE_OVER
-            elif queue_item.media_type != MediaType.TRACK:
-                crossfade_mode = CrossfadeMode.DISABLED
-            else:
-                # a realtime source gets a fade decided from what its boundary
-                # can actually deliver (see _select_buffered_crossfade)
-                crossfade_mode = self.get_crossfade_mode(queue)
-            if (
-                crossfade_mode != CrossfadeMode.DISABLED
-                and PlayerFeature.GAPLESS_PLAYBACK not in player.supported_features
-            ):
-                if crossfade_mode == CrossfadeMode.VOICE_OVER:
-                    self.logger.debug(
-                        "Ignoring the tail overlap of %s: player %s does not play gapless",
-                        queue_item.name,
-                        player.display_name,
-                    )
-                else:
-                    self.logger.warning(
-                        "Crossfade disabled: Player %s does not support gapless playback, "
-                        "consider enabling flow mode to enable crossfade on this player.",
-                        player.display_name,
-                    )
-                crossfade_mode = CrossfadeMode.DISABLED
+            crossfade_mode = self._select_item_crossfade_mode(queue, queue_item, player)
             # the item before may have mixed (or be mixing) a fade into this one,
             # which only the smart fade stream plays
             fade_in_pending = self.audio.fade_into_pending(queue_id, queue_item.queue_item_id)
@@ -2589,6 +2563,46 @@ class StreamsController(CoreController):
             mapping.provider_instance == provider_instance
             for mapping in media_item.provider_mappings
         )
+
+    def _select_item_crossfade_mode(
+        self, queue: PlayerQueue, queue_item: QueueItem, player: PlayerProtocol
+    ) -> CrossfadeMode:
+        """
+        Return how the stream of a single queue item mixes its end into the next item.
+
+        :param queue: The queue the item plays on.
+        :param queue_item: The item about to be streamed, with its stream details resolved.
+        :param player: The player that plays the item.
+        """
+        assert queue_item.streamdetails is not None
+        if queue_item.streamdetails.tail_overlap is not None:
+            # a declared overlap plays into the item it was planned against,
+            # whatever the queue's crossfade setting
+            crossfade_mode = CrossfadeMode.VOICE_OVER
+        elif queue_item.media_type != MediaType.TRACK:
+            crossfade_mode = CrossfadeMode.DISABLED
+        else:
+            # a realtime source gets a fade decided from what its boundary
+            # can actually deliver (see _select_buffered_crossfade)
+            crossfade_mode = self.get_crossfade_mode(queue)
+        if (
+            crossfade_mode != CrossfadeMode.DISABLED
+            and PlayerFeature.GAPLESS_PLAYBACK not in player.supported_features
+        ):
+            if crossfade_mode == CrossfadeMode.VOICE_OVER:
+                self.logger.debug(
+                    "Ignoring the tail overlap of %s: player %s does not play gapless",
+                    queue_item.name,
+                    player.display_name,
+                )
+            else:
+                self.logger.warning(
+                    "Crossfade disabled: Player %s does not support gapless playback, "
+                    "consider enabling flow mode to enable crossfade on this player.",
+                    player.display_name,
+                )
+            crossfade_mode = CrossfadeMode.DISABLED
+        return crossfade_mode
 
     def _update_audio_processing_context(
         self,
