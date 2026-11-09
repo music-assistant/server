@@ -158,6 +158,7 @@ class _FakePlayer:
         self.display_name = display_name or player_id
         self.protocol_parent_id = protocol_parent_id
         self.queue = _FakeQueue(player_id, state)
+        self.state = SimpleNamespace(available=True)
 
 
 class _FakePlayers:

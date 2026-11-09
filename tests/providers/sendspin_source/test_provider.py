@@ -794,6 +794,18 @@ async def test_delayed_autostart_stream_cannot_override_manual_selection(
 
 
 @pytest.mark.usefixtures("fast_autostart")
+async def test_autostart_skips_an_unavailable_target(fake_client: _FakeClient) -> None:
+    """A configured target that is registered but unavailable is not played to."""
+    provider = await make_provider([fake_client])
+    get_config(provider).values[("client-1", CONF_SOURCE_AUTOSTART_TARGET)] = "client-1"
+    get_players(provider).players["client-1"].state.available = False
+    fake_client.emit(_signal(SignalState.ABSENT))
+    fake_client.emit(_signal(SignalState.PRESENT))
+    await _settle()
+    assert get_queues(provider).played == []
+
+
+@pytest.mark.usefixtures("fast_autostart")
 async def test_autostart_stays_off_without_a_configured_target(fake_client: _FakeClient) -> None:
     """With no target configured the signal is observed but never acted on."""
     provider = await make_provider([fake_client])

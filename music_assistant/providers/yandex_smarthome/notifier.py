@@ -21,7 +21,10 @@ if TYPE_CHECKING:
 
 from music_assistant_models.enums import EventType
 
+from music_assistant.helpers.player import PlayerAvailabilityTracker
+
 from .constants import (
+    DISCOVERY_DELAY,
     STATE_HEARTBEAT_INTERVAL,
     STATE_INITIAL_REPORT_DELAY,
     STATE_REPORT_DELAY,
@@ -74,9 +77,11 @@ class StateNotifier:
 
         self._dirty_player_ids: set[str] = set()
         self._flush_handle: asyncio.TimerHandle | None = None
+        self._discovery_handle: asyncio.TimerHandle | None = None
         self._initial_report_handle: asyncio.TimerHandle | None = None
         self._heartbeat_task: asyncio.Task[None] | None = None
         self._unsub: Callable[[], None] | None = None
+        self._availability = PlayerAvailabilityTracker(mass)
 
         # Dedupe state-callback errors by fingerprint. Yandex's backend
         # returns transient HTTP 5xx for ~1-2 minutes after a freshly
@@ -128,6 +133,9 @@ class StateNotifier:
         if self._flush_handle:
             self._flush_handle.cancel()
             self._flush_handle = None
+        if self._discovery_handle:
+            self._discovery_handle.cancel()
+            self._discovery_handle = None
         if self._heartbeat_task is not None:
             if not self._heartbeat_task.done():
                 self._heartbeat_task.cancel()
@@ -143,8 +151,10 @@ class StateNotifier:
 
     def _on_player_event(self, event: MassEvent) -> None:
         """Handle player state change — mark player as dirty for batched reporting."""
-        if event.event in (EventType.PLAYER_ADDED, EventType.PLAYER_REMOVED):
+        # the device list changes when a player comes back or is removed
+        if self._availability.became_available(event) or event.event == EventType.PLAYER_REMOVED:
             self._schedule_discovery()
+        if event.event in (EventType.PLAYER_ADDED, EventType.PLAYER_REMOVED):
             return
 
         # PLAYER_UPDATED — event.data is the Player (state) dataclass
@@ -344,11 +354,17 @@ class StateNotifier:
     # -----------------------------------------------------------------------
 
     def _schedule_discovery(self) -> None:
-        """Notify Yandex that the device list has changed."""
-        self._mass.create_task(self._send_discovery())
+        """Notify Yandex that the device list has changed, once per debounce window."""
+        if self._discovery_handle is not None:
+            return  # already scheduled
+        self._discovery_handle = self._mass.loop.call_later(
+            DISCOVERY_DELAY,
+            lambda: self._mass.create_task(self._send_discovery()),
+        )
 
     async def _send_discovery(self) -> None:
         """POST discovery notification to Yandex."""
+        self._discovery_handle = None
         discovery_url = self._callback_url.removesuffix("/state") + "/discovery"
         payload = {
             "ts": time.time(),

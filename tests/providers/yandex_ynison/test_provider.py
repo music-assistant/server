@@ -411,6 +411,26 @@ class TestPlayerSelection:
 
         assert provider._get_target_player_id() is None
 
+    def test_specific_player_unavailable(self) -> None:
+        """Returns None when the configured player is registered but unavailable."""
+        provider = _make_provider("my-player")
+        player = MagicMock()
+        player.state.available = False
+        provider.mass.players.get_player.return_value = player  # type: ignore[attr-defined]
+
+        assert provider._get_target_player_id() is None
+
+    def test_unavailable_active_player_falls_back_to_configured_player(self) -> None:
+        """An active player that turned unavailable is dropped for the configured player."""
+        provider = _make_provider("my-player")
+        provider._active_player_id = "active-one"
+        players = {"active-one": MagicMock(), "my-player": MagicMock()}
+        players["active-one"].state.available = False
+        provider.mass.players.get_player.side_effect = players.get  # type: ignore[attr-defined]
+
+        assert provider._get_target_player_id() == "my-player"
+        assert provider._active_player_id is None
+
     def test_active_player_takes_priority(self) -> None:
         """Active player takes priority over auto selection."""
         provider = _make_provider()

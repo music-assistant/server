@@ -95,6 +95,16 @@ async def test_create_venue_unknown_player() -> None:
         await SharedPlaybackSession.create_venue(mass, "unknown_player")
 
 
+async def test_create_venue_unavailable_player() -> None:
+    """Creating a venue session for a registered but unavailable player raises."""
+    venue_player = _create_venue_player()
+    venue_player.state.available = False
+    mass = _create_mock_mass(venue_player)
+
+    with pytest.raises(SetupFailedError):
+        await SharedPlaybackSession.create_venue(mass, "venue_player")
+
+
 async def test_venue_can_listen_in_feature_detection() -> None:
     """Listen-in is only possible when the venue player can group with the web player."""
     venue_player = _create_venue_player(can_group_with={"web_player_1"})

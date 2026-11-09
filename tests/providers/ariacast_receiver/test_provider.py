@@ -108,6 +108,26 @@ def test_target_player_is_none_while_the_protocol_parent_is_unavailable() -> Non
     assert provider._get_target_player_id() is None
 
 
+def test_target_player_is_none_while_configured_player_is_offline() -> None:
+    """A registered but unavailable configured player yields no target."""
+    provider = _make_provider()
+    player = MagicMock()
+    player.state.available = False
+    _register_players(provider, {"player1": player})
+
+    assert provider._get_target_player_id() is None
+
+
+def test_target_player_is_none_while_the_protocol_parent_is_offline() -> None:
+    """A protocol player whose parent is registered but unavailable yields no target."""
+    provider = _make_provider()
+    parent = MagicMock()
+    parent.state.available = False
+    _register_players(provider, {"player1": _protocol_player("parent1"), "parent1": parent})
+
+    assert provider._get_target_player_id() is None
+
+
 def test_unlinked_protocol_player_is_its_own_target() -> None:
     """A protocol player without a parent keeps its queue and stays the target."""
     provider = _make_provider()
