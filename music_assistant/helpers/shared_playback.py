@@ -33,6 +33,7 @@ from music_assistant_models.errors import (
     UnsupportedFeaturedException,
 )
 
+from music_assistant.helpers.player import get_available_player
 from music_assistant.helpers.util import join_task
 from music_assistant.helpers.virtual_player import cleanup_virtual_player
 
@@ -92,10 +93,10 @@ class SharedPlaybackSession:
         :param mass: MusicAssistant instance.
         :param venue_player_id: The player_id of the player that owns the queue
             and plays out loud.
-        :raises SetupFailedError: If the venue player is unknown.
+        :raises SetupFailedError: If the venue player is unknown or unavailable.
         :return: The created session.
         """
-        if mass.players.get_player(venue_player_id) is None:
+        if get_available_player(mass, venue_player_id) is None:
             raise SetupFailedError(f"Venue player {venue_player_id} is not available")
         return cls(mass, SharedPlaybackMode.VENUE, venue_player_id)
 

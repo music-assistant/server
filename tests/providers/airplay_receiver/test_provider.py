@@ -10,6 +10,7 @@ from unittest.mock import AsyncMock, MagicMock
 from music_assistant_models.enums import EventType
 from music_assistant_models.event import MassEvent
 
+from music_assistant.helpers.player import PlayerAvailabilityTracker
 from music_assistant.providers.airplay_receiver import (
     AirPlayReceiverProvider,
     airplay_receiver_ports,
@@ -65,12 +66,14 @@ class _ReconcileMocks:
 def _reconcile_provider(
     assigned: tuple[str, ...],
     registered: dict[str, str],
+    unavailable: set[str] | None = None,
 ) -> tuple[AirPlayReceiverProvider, _ReconcileMocks]:
     """
     Build a bare provider with the real reconcile logic and mocked daemon control.
 
     :param assigned: The connected player ids the provider was loaded with.
     :param registered: Currently registered player ids mapped to their display name.
+    :param unavailable: Registered player ids that are currently unavailable.
     """
     prov = AirPlayReceiverProvider.__new__(AirPlayReceiverProvider)
     prov.logger = MagicMock()
@@ -90,9 +93,11 @@ def _reconcile_provider(
         player = MagicMock()
         player.player_id = player_id
         player.display_name = registered[player_id]
+        player.state.available = player_id not in (unavailable or set())
         return player
 
     mass.players.get_player.side_effect = get_player
+    prov._availability = PlayerAvailabilityTracker(mass)
 
     def start_receiver(player: MagicMock, airplay_name: str) -> None:
         # stop_called / active_player_id are spelled out: a bare MagicMock attribute is
@@ -264,6 +269,50 @@ async def test_player_added_gives_a_failed_receiver_a_fresh_start() -> None:
     assert "p1" not in prov._failed_player_ids
     mocks.start_receiver.assert_called_once()
     assert "p1" in prov._daemons
+
+
+async def test_reconcile_waits_for_an_unavailable_player() -> None:
+    """A registered but unavailable player gets its receiver once it turns available."""
+    unavailable = {"p1"}
+    prov, mocks = _reconcile_provider(("p1",), {"p1": "Kitchen"}, unavailable)
+
+    await prov._reconcile()
+    mocks.start_receiver.assert_not_called()
+
+    unavailable.clear()
+    await prov._reconcile()
+    mocks.start_receiver.assert_called_once()
+    assert "p1" in prov._daemons
+
+
+async def test_player_turning_available_gives_a_failed_receiver_a_fresh_start() -> None:
+    """A registered player that comes back lifts the block and starts its receiver again."""
+    unavailable = {"p1"}
+    prov, mocks = _reconcile_provider(("p1",), {"p1": "Kitchen"}, unavailable)
+    prov._failed_player_ids = {"p1"}
+
+    await prov._on_player_event(MassEvent(event=EventType.PLAYER_UPDATED, object_id="p1"))
+    assert prov._failed_player_ids == {"p1"}
+
+    unavailable.clear()
+    await prov._on_player_event(MassEvent(event=EventType.PLAYER_UPDATED, object_id="p1"))
+
+    assert "p1" not in prov._failed_player_ids
+    mocks.start_receiver.assert_called_once()
+    assert "p1" in prov._daemons
+
+
+async def test_update_of_an_available_player_keeps_a_failed_receiver_blocked() -> None:
+    """A player that stayed available does not lift the block of its failed receiver."""
+    prov, mocks = _reconcile_provider(("p1",), {"p1": "Kitchen"})
+    mocks.mass.players.iter_players.return_value = [mocks.mass.players.get_player("p1")]
+    prov._availability = PlayerAvailabilityTracker(mocks.mass)
+    prov._failed_player_ids = {"p1"}
+
+    await prov._on_player_event(MassEvent(event=EventType.PLAYER_UPDATED, object_id="p1"))
+
+    assert prov._failed_player_ids == {"p1"}
+    mocks.start_receiver.assert_not_called()
 
 
 async def test_give_up_on_a_replaced_receiver_is_a_noop() -> None:

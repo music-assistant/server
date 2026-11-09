@@ -41,6 +41,7 @@ from ya_passport_auth import SecretStr
 
 from music_assistant.controllers.streams.constants import STREAM_SLOT_PLAYBACK_WAIT_TIMEOUT
 from music_assistant.helpers.ffmpeg import get_ffmpeg_stream
+from music_assistant.helpers.player import get_available_player
 from music_assistant.helpers.throttle_retry import (
     RequestPriority,
     ThrottlerManager,
@@ -663,7 +664,7 @@ class YandexYnisonProvider(PluginProvider):
                 # physical consumer may be a bridge whose id differs from the
                 # configured owner and may already be `_active_player_id` on a
                 # repeated callback.
-                if self.mass.players.get_player(locked_owner_id) and self._idempotent(
+                if get_available_player(self.mass, locked_owner_id) and self._idempotent(
                     "source_redirect", locked_owner_id
                 ):
                     self.logger.debug(
@@ -1488,18 +1489,18 @@ class YandexYnisonProvider(PluginProvider):
 
     def _get_target_player_id(self) -> str | None:
         """Determine the target player ID for playback."""
-        # If there's an active player, validate it still exists
+        # If there's an active player, validate it is still available
         if self._active_player_id:
-            if self.mass.players.get_player(self._active_player_id):
+            if get_available_player(self.mass, self._active_player_id):
                 return self._active_player_id
             self._active_player_id = None
 
         # The configured player is mandatory; never redirect to another player.
-        if self.mass.players.get_player(self._default_player_id):
+        if get_available_player(self.mass, self._default_player_id):
             return self._default_player_id
 
         self.logger.warning(
-            "Configured default player '%s' no longer exists",
+            "Configured default player '%s' is not available",
             self._default_player_id,
         )
         return None

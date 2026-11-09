@@ -21,6 +21,8 @@ if TYPE_CHECKING:
 
 from music_assistant_models.enums import EventType
 
+from music_assistant.helpers.player import PlayerAvailabilityTracker
+
 from .constants import (
     STATE_HEARTBEAT_INTERVAL,
     STATE_INITIAL_REPORT_DELAY,
@@ -77,6 +79,7 @@ class StateNotifier:
         self._initial_report_handle: asyncio.TimerHandle | None = None
         self._heartbeat_task: asyncio.Task[None] | None = None
         self._unsub: Callable[[], None] | None = None
+        self._availability = PlayerAvailabilityTracker(mass)
 
         # Dedupe state-callback errors by fingerprint. Yandex's backend
         # returns transient HTTP 5xx for ~1-2 minutes after a freshly
@@ -143,8 +146,10 @@ class StateNotifier:
 
     def _on_player_event(self, event: MassEvent) -> None:
         """Handle player state change — mark player as dirty for batched reporting."""
-        if event.event in (EventType.PLAYER_ADDED, EventType.PLAYER_REMOVED):
+        # the device list changes when a player comes back or is removed
+        if self._availability.became_available(event) or event.event == EventType.PLAYER_REMOVED:
             self._schedule_discovery()
+        if event.event in (EventType.PLAYER_ADDED, EventType.PLAYER_REMOVED):
             return
 
         # PLAYER_UPDATED — event.data is the Player (state) dataclass

@@ -54,11 +54,12 @@ class MockEvent:
 
     event: str
     data: Any = None
+    object_id: str | None = None
 
 
-def _event(event: str, data: Any = None) -> MassEvent:
+def _event(event: str, data: Any = None, object_id: str | None = None) -> MassEvent:
     """Build a MockEvent viewed through the real MassEvent type."""
-    return cast("MassEvent", MockEvent(event=event, data=data))
+    return cast("MassEvent", MockEvent(event=event, data=data, object_id=object_id))
 
 
 def _make_mass(players: list[MockPlayer] | None = None) -> MagicMock:
@@ -194,7 +195,7 @@ class TestStateNotifierEvents:
         mass = _make_mass()
         notifier = _make_notifier(mass=mass)
 
-        event = _event(event=EventType.PLAYER_ADDED, data=MockPlayer())
+        event = _event(event=EventType.PLAYER_ADDED, data=MockPlayer(), object_id="p1")
         notifier._on_player_event(event)
 
         # Discovery triggers create_task
@@ -209,6 +210,22 @@ class TestStateNotifierEvents:
         notifier._on_player_event(event)
 
         mass.create_task.assert_called()
+
+    def test_on_player_turning_available_triggers_discovery(self) -> None:
+        """A registered player that comes back triggers discovery, its next update does not."""
+        mass = _make_mass()
+        player = MockPlayer(player_id="p1", available=False)
+        mass.players.get_player = MagicMock(return_value=player)
+        notifier = _make_notifier(mass=mass)
+        event = _event(event=EventType.PLAYER_UPDATED, data=player, object_id="p1")
+
+        notifier._on_player_event(event)
+        mass.create_task.assert_not_called()
+
+        player.available = True
+        notifier._on_player_event(event)
+        notifier._on_player_event(event)
+        mass.create_task.assert_called_once()
 
     def test_on_none_data_ignored(self) -> None:
         """Test on none data ignored."""

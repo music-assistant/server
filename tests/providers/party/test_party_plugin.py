@@ -194,6 +194,25 @@ async def test_listen_in_attaches_guest_player() -> None:
     session.add_guest_listener.assert_awaited_once_with("web_player_1")
 
 
+@pytest.mark.asyncio
+async def test_session_is_dropped_when_its_player_turns_unavailable() -> None:
+    """A session is kept while its player is available and closed once it is not."""
+    plugin = _create_session_test_plugin(SharedPlaybackMode.VENUE.value)
+    session = MagicMock()
+    session.player_id = "venue_player"
+    session.close = AsyncMock()
+    plugin._session = session
+    player = MagicMock()
+    player.state.available = True
+    cast("MagicMock", plugin.mass.players.get_player).return_value = player
+
+    assert await plugin._get_session() is session
+
+    player.state.available = False
+    assert await plugin._get_session() is None
+    session.close.assert_awaited_once()
+
+
 @pytest.mark.parametrize("mode", [SharedPlaybackMode.VENUE.value, SharedPlaybackMode.REMOTE.value])
 @pytest.mark.asyncio
 async def test_get_party_config_exposes_mode(mode: str) -> None:

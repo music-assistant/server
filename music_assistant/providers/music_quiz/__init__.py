@@ -88,6 +88,7 @@ from music_assistant.controllers.webserver.helpers.auth_middleware import (
 from music_assistant.helpers import guest_access
 from music_assistant.helpers.config_entries import PLAYBACK_TARGET_TYPES
 from music_assistant.helpers.json import SerializableType
+from music_assistant.helpers.player import get_available_player
 from music_assistant.helpers.plugin_engines import (
     create_ai_engine_config_entries,
     get_ai_engines,
@@ -1682,9 +1683,9 @@ class MusicQuizPlugin(PluginProvider):
             quiz_type = get_quiz_type(game.quiz_type)(self.mass, game.config)
             if not quiz_type.uses_audio:
                 return None
-        # drop a stale session whose player no longer exists
+        # drop a stale session whose player is gone
         if self._playback_session is not None and (
-            self.mass.players.get_player(self._playback_session.player_id) is None
+            get_available_player(self.mass, self._playback_session.player_id) is None
         ):
             await self._playback_session.close()
             self._playback_session = None

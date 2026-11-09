@@ -43,6 +43,7 @@ from music_assistant.helpers.config_entries import (
     resolve_publish_name,
 )
 from music_assistant.helpers.named_pipe import AsyncNamedPipeWriter
+from music_assistant.helpers.player import PlayerAvailabilityTracker, get_available_player
 from music_assistant.helpers.process import AsyncProcess, check_output
 from music_assistant.helpers.util import interface_name_for_ip
 from music_assistant.models.plugin import PluginProvider, SourceControlValue
@@ -160,8 +161,9 @@ class AirPlayReceiverProvider(PluginProvider):
         self._shairport_bin: str | None = None
         self._daemons: dict[str, _ReceiverDaemon] = {}
         # players whose daemon gave up permanently; skipped by reconcile until the
-        # player re-registers or the provider reloads
+        # player comes back or the provider reloads
         self._failed_player_ids: set[str] = set()
+        self._availability = PlayerAvailabilityTracker(mass)
         self._reconcile_lock = asyncio.Lock()
         self._unload_called = False
         self._unsubscribe: Callable[[], None] | None = None
@@ -389,6 +391,8 @@ class AirPlayReceiverProvider(PluginProvider):
         """Reconcile the receiver daemons after a connected player's lifecycle event."""
         if self._unload_called:
             return
+        # a removal passes the tracker too, so the player's return is recognized
+        came_available = self._availability.became_available(event)
         if event.event == EventType.PLAYER_REMOVED:
             # permanent removal: stop the daemon; a temporarily unavailable player
             # (which fires only PLAYER_UPDATED) keeps its running daemon so the
@@ -401,8 +405,8 @@ class AirPlayReceiverProvider(PluginProvider):
                     self._clear_active_player(daemon)
                     await self._stop_receiver(daemon)
             return
-        if event.event == EventType.PLAYER_ADDED and event.object_id:
-            # a re-registered player earns a permanently failed daemon a fresh start
+        if came_available and event.object_id:
+            # a player that comes back earns a permanently failed daemon a fresh start
             self._failed_player_ids.discard(event.object_id)
         await self._reconcile()
 
@@ -410,7 +414,7 @@ class AirPlayReceiverProvider(PluginProvider):
         """
         Align the running receiver daemons with the connected players.
 
-        Starts a daemon for every connected player that is registered, and restarts
+        Starts a daemon for every connected player that is available, and restarts
         a daemon whose advertised name drifted from the player's current name.
         """
         async with self._reconcile_lock:
@@ -420,11 +424,11 @@ class AirPlayReceiverProvider(PluginProvider):
             for player_id in self._assigned_player_ids:
                 if player_id in self._failed_player_ids:
                     # this daemon gave up permanently; blocked from restarts until the
-                    # player re-registers or the provider reloads
+                    # player comes back or the provider reloads
                     continue
-                player = self.mass.players.get_player(player_id)
+                player = get_available_player(self.mass, player_id)
                 if player is None:
-                    # not (yet) registered: never start a daemon for it; an already
+                    # not available (yet): never start a daemon for it; an already
                     # running one is deliberately kept (see _on_player_event)
                     continue
                 airplay_name = resolve_publish_name(template, player.display_name)
@@ -447,7 +451,7 @@ class AirPlayReceiverProvider(PluginProvider):
         """
         Create the receiver state for a connected player and start its daemon.
 
-        :param player: The (registered) player this receiver plays on.
+        :param player: The (available) player this receiver plays on.
         :param airplay_name: The name to advertise in the AirPlay device list.
         """
         player_id = player.player_id
