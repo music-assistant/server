@@ -132,6 +132,12 @@ class TracksController(MediaControllerBase[Track]):
         # register (extra) api handlers
         api_base = self.api_base
         self.mass.register_api_command(
+            f"music/{api_base}/letter_index",
+            self.letter_index,
+            required_scope=Scope.LIBRARY_READ,
+            allow_impersonation=True,
+        )
+        self.mass.register_api_command(
             f"music/{api_base}/track_versions", self.versions, required_scope=Scope.LIBRARY_READ
         )
         self.mass.register_api_command(
@@ -341,18 +347,9 @@ class TracksController(MediaControllerBase[Track]):
         if reachable_via is not None and not reachable_via:
             return []
         extra_query_params: dict[str, Any] = {}
-        extra_query_parts: list[str] = []
-        extra_join_parts: list[str] = []
-
         # Apply explicit content filter
-        if explicit is not None:
-            if explicit:
-                extra_query_parts.append("json_extract(tracks.metadata, '$.explicit') = 1")
-            else:
-                extra_query_parts.append(
-                    "(json_extract(tracks.metadata, '$.explicit') IS NULL "
-                    "OR json_extract(tracks.metadata, '$.explicit') = 0)"
-                )
+        extra_query_parts = self._library_filter_parts(explicit)
+        extra_join_parts: list[str] = []
 
         artist_join_added = False
         if field == SortField.ARTIST_NAME:
@@ -447,6 +444,50 @@ class TracksController(MediaControllerBase[Track]):
                 if _track.uri not in existing_uris:
                     result.append(_track)
         return result
+
+    async def letter_index(
+        self,
+        favorite: bool | None = None,
+        search: str | None = None,
+        provider: str | list[str] | None = None,
+        genre: int | list[int] | None = None,
+        played_only: bool = False,
+        explicit: bool | None = None,
+        *,
+        sort_field: SortField | None = None,
+        sort_direction: SortDirection | None = None,
+        reachable_via: list[str] | None = None,
+    ) -> list[dict[str, str | int]]:
+        """
+        Return where each starting letter begins in the in-database tracks listing.
+
+        Each entry holds a letter ("A" to "Z", or "#" for anything else) and the offset of
+        its first track in ``library_items`` for the same arguments, in listing order.
+        Empty when sorted on anything but name or sort name, or when searching.
+
+        :param favorite: Only include the current user's likes (True) or dislikes (False).
+        :param search: Filter by search query.
+        :param provider: Filter by provider instance ID (single string or list).
+        :param genre: Filter by genre id(s).
+        :param played_only: Filter to only played tracks.
+        :param explicit: Filter by explicit content (True=only explicit, False=no explicit, None=all).
+        :param sort_field: Sort field to use.
+        :param sort_direction: Sort direction, the field's default when omitted.
+        :param reachable_via: Restrict results to items with a provider mapping reachable
+            through one of these provider instance ids, see `library_items`.
+        """
+        return await self._library_letter_index(
+            self._library_filter_parts(explicit),
+            {},
+            favorite=favorite,
+            search=search,
+            provider=provider,
+            genre=genre,
+            played_only=played_only,
+            sort_field=sort_field,
+            sort_direction=sort_direction,
+            reachable_via=reachable_via,
+        )
 
     async def versions(
         self,
@@ -1785,6 +1826,18 @@ class TracksController(MediaControllerBase[Track]):
                 "artist_id": await self.mass.music.artists.get_or_add_library_artist_id(artist),
             },
         )
+
+    @staticmethod
+    def _library_filter_parts(explicit: bool | None) -> list[str]:
+        """Return the WHERE conditions of the track-specific library listing filters."""
+        if explicit is None:
+            return []
+        if explicit:
+            return ["json_extract(tracks.metadata, '$.explicit') = 1"]
+        return [
+            "(json_extract(tracks.metadata, '$.explicit') IS NULL "
+            "OR json_extract(tracks.metadata, '$.explicit') = 0)"
+        ]
 
     def _get_sort_sql(self, field: SortField, direction: SortDirection | None) -> str:
         """Return the ORDER BY clause for a sort field, ARTIST_NAME through the artists join."""

@@ -2814,6 +2814,60 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
 
         return sql_query, base_query_params
 
+    @final
+    async def _library_letter_index(
+        self,
+        query_parts: list[str],
+        query_params: dict[str, Any],
+        favorite: bool | None,
+        search: str | None,
+        provider: str | list[str] | None,
+        genre: int | list[int] | None,
+        played_only: bool,
+        sort_field: SortField | None,
+        sort_direction: SortDirection | None,
+        reachable_via: list[str] | None,
+    ) -> list[dict[str, str | int]]:
+        """
+        Return the row offset where each starting letter begins in a library listing.
+
+        Matches the order and paging of ``library_items`` for the same arguments. Empty
+        unless the listing is sorted by name or sort name without a search.
+
+        :param query_parts: The WHERE conditions of the media type's own listing filters.
+        :param query_params: The bound params of those conditions.
+        """
+        field, direction = self.resolve_sort(sort_field, sort_direction)
+        if search or field not in (SortField.NAME, SortField.SORT_NAME):
+            return []
+        reachable_via = self._resolve_reachable_via(reachable_via)
+        if reachable_via is not None and not reachable_via:
+            return []
+        self._apply_filters(
+            query_parts=query_parts,
+            query_params=query_params,
+            favorite=favorite,
+            search=None,
+            genre_ids=self._preprocess_genre_ids(genre),
+            provider_filter=self._provider_filter_considering_reachability(provider, reachable_via),
+            played_only=played_only,
+            in_library_only=True,
+            reachable_via=reachable_via,
+        )
+        # the name columns only hold lowercase a-z and 0-9, so every letter is one run of rows
+        name_column = BASE_SORT_FIELD_SQL[field].format(prefix=f"{self.db_table}.")
+        first_char = f"substr({name_column}, 1, 1)"
+        sql_query = (
+            "SELECT letter, MIN(row_num) - 1 AS first_row FROM ("
+            f"SELECT CASE WHEN {first_char} BETWEEN 'a' AND 'z' "
+            f"THEN upper({first_char}) ELSE '#' END AS letter, "
+            f"ROW_NUMBER() OVER (ORDER BY {self._get_sort_sql(field, direction)}) AS row_num "
+            f"FROM {self.db_table} WHERE {' AND '.join(self._clean_query_parts(query_parts))}) "
+            "GROUP BY letter ORDER BY first_row"
+        )
+        rows = await self.mass.music.database.get_rows_from_query(sql_query, query_params, limit=0)
+        return [{"letter": row["letter"], "offset": row["first_row"]} for row in rows]
+
     def _seeded_random_sort_sql(
         self,
         field: SortField,
