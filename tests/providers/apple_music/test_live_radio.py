@@ -3,11 +3,15 @@
 import asyncio
 import base64
 import logging
+import shutil
 import struct
+import subprocess
 import time
 from collections.abc import AsyncGenerator
-from contextlib import suppress
+from contextlib import aclosing, suppress
 from io import BytesIO
+from itertools import pairwise
+from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
@@ -23,6 +27,7 @@ from music_assistant_models.errors import (
 from music_assistant_models.streamdetails import StreamDetails
 from mutagen import id3
 
+from music_assistant.helpers import ffmpeg
 from music_assistant.helpers.ffmpeg import _raise_feeder_error
 from music_assistant.models.music_provider import ProviderStreamLimitError
 from music_assistant.providers.apple_music.live_radio import (
@@ -295,6 +300,100 @@ async def test_a_title_shows_when_its_audio_plays(monkeypatch: pytest.MonkeyPatc
     shown: Any = live.details.stream_metadata
     assert shown.title == "Song"
     assert live.details.data["pending_metadata"] == []
+
+
+def _fragmented_aac(tmp_path: Path) -> tuple[bytes, list[bytes]]:
+    """Return the init segment and three segments of a 6 second clear AAC fMP4 from ffmpeg."""
+    path = tmp_path / "clear.mp4"
+    subprocess.run(  # noqa: S603
+        [  # noqa: S607
+            "ffmpeg",
+            "-loglevel",
+            "error",
+            "-f",
+            "lavfi",
+            "-i",
+            "sine=frequency=440:sample_rate=48000:duration=6",
+            "-ac",
+            "2",
+            "-c:a",
+            "aac",
+            "-b:a",
+            "256k",
+            "-f",
+            "mp4",
+            "-movflags",
+            "+frag_keyframe+empty_moov+default_base_moof",
+            "-frag_duration",
+            "2000000",
+            str(path),
+        ],
+        check=True,
+    )
+    data = path.read_bytes()
+    boxes: list[tuple[bytes, bytes]] = []
+    position = 0
+    while position < len(data):
+        size, name = struct.unpack(">I4s", data[position : position + 8])
+        boxes.append((name, data[position : position + size]))
+        position += size
+    init = b"".join(box for name, box in boxes if name in (b"ftyp", b"moov"))
+    fragments = [
+        moof + mdat
+        for (first, moof), (second, mdat) in pairwise(boxes)
+        if (first, second) == (b"moof", b"mdat")
+    ]
+    # ffmpeg may close with a short fragment, a segment can hold more than one
+    return init, [*fragments[:2], b"".join(fragments[2:])]
+
+
+@pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="ffmpeg not installed")
+async def test_a_key_change_through_real_ffmpeg_keeps_the_pcm_continuous(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The first ffmpeg flushes all of its audio at the key change, and none is left over."""
+    init, fragments = _fragmented_aac(tmp_path)
+    assert len(fragments) == 3
+    live = _Live(
+        [_media(10, ["A"] * 3), _media(10, ["A"] * 3 + ["B"] * 3)], monkeypatch, real_decoder=True
+    )
+    live.segments = {"init_A": init, "init_B": init}
+    for index, fragment in enumerate(fragments * 2):
+        live.segments[f"s{10 + index}"] = fragment
+    processes: list[ffmpeg.FFMpeg] = []
+
+    class RecordedFFMpeg(ffmpeg.FFMpeg):
+        async def start(self) -> None:
+            processes.append(self)
+            await super().start()
+
+    monkeypatch.setattr(ffmpeg, "FFMpeg", RecordedFFMpeg)
+    per_decoder: list[int] = []
+    real_decoder = ffmpeg.get_ffmpeg_stream
+
+    async def counting_decoder(
+        audio_input: AsyncGenerator[bytes], **kwargs: Any
+    ) -> AsyncGenerator[bytes]:
+        per_decoder.append(0)
+        index = len(per_decoder) - 1
+        async with aclosing(real_decoder(audio_input, **kwargs)) as pcm:
+            async for chunk in pcm:
+                per_decoder[index] += len(chunk)
+                yield chunk
+
+    monkeypatch.setattr(f"{MODULE}.get_ffmpeg_stream", counting_decoder)
+    second_per_second = 48000 * 2 * 4
+
+    stream = live.radio.get_audio_stream(live.details)
+    async for _chunk in stream:
+        if len(per_decoder) == 2 and per_decoder[1] >= second_per_second:
+            break
+    await stream.aclose()
+
+    # all 6 seconds of the first key came out, the AAC priming adds a few milliseconds
+    assert per_decoder[0] / second_per_second == pytest.approx(6.0, abs=0.1)
+    assert len(processes) == 2
+    assert all(process.returncode is not None for process in processes)
 
 
 async def test_an_error_of_the_input_keeps_its_own_type(monkeypatch: pytest.MonkeyPatch) -> None:
