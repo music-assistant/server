@@ -46,7 +46,7 @@ CONF_ENTRY_DISPLAY = ConfigEntry(
 CONF_ENTRY_VISUALIZATION = ConfigEntry(
     key=CONF_VISUALIZATION,
     type=ConfigEntryType.STRING,
-    default_value=DEFAULT_VISUALIZATION,
+    default_value=DEFAULT_VISUALIZATION.value,
     options=[
         ConfigValueOption(x.value, title=x.name.replace("_", " ").title())
         for x in SlimVisualisationType
