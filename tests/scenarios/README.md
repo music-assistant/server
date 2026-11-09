@@ -27,15 +27,21 @@ tests of the harness itself.
   a reload, `scenario.protocol(protocol_id)` returns the current one.
 - **Time**: a virtual clock, starting at 1000.0. It stands still, also while the server works,
   and only moves through `advance(seconds)`, which stops at every timer that falls due on the way
-  (the 15 s and 45 s protocol evaluation delays, debounces, polls), and `idle()`, which lets 6 s
-  pass for the server's debounces and follow-up checks. `time.monotonic()` and `time.time()` of
-  every server module follow it.
+  (the 15 s and 45 s protocol evaluation delays, debounces, polls), and `idle()`, which lets 10 s
+  pass for the server's debounces and follow-up checks and fails (`ScenarioError`) when the
+  server still has work due within as long, which a scenario lets happen with `advance()`.
+  Timers due at one time run in the order they were armed. `time.monotonic()` and `time.time()`
+  of every server module follow the clock.
 - **Settling**: every action runs what is due at the current time until the loop is quiet:
   nothing runnable, no timer due, no work in a thread. What the server put on a timer only runs
   as the clock moves, so assert steady state, or that something did not happen, after `idle()`.
-- **Failures**: a failure the server only logs (an ERROR record, a record with a traceback, an
-  "Exception in task") and a failed `command()` that is never awaited fail the scenario when it
-  closes; `expect_log(substring)` allows one on purpose.
+  A server call that waits for the clock (a timeout, a delay, a device to come online) never
+  returns when it is awaited directly: run it with `command()`, move the clock, and await the
+  task once it is done.
+- **Failures**: when the scenario closes, it fails (`ScenarioError`) on every warning or worse
+  the server logged (except the banners of a boot), every asyncio error, a provider that failed
+  to unload, a `command()` that failed and was never awaited or failed in its cleanup, and any
+  task or timer left once the server stopped; `expect_log(substring)` allows a log on purpose.
 - **ARP**: `scenario.arp[ip] = mac` is the MAC address an IP address resolves to.
 
 | Action | Does |
@@ -45,7 +51,7 @@ tests of the harness itself.
 | `report(protocol, **state)` | the device reports new state (`available`, `powered`, `identifiers`, ...) |
 | `remove(player_id)`, `enable(id)`, `disable(id)`, `configure_player(id, **values)` | what a user does with a player |
 | `add_power_control(id, name)`, `switch(control, powered)` | an external power control (select it with `configure_player(id, power_control=...)`), switched by hand |
-| `command(coro)` | run a command in the background, e.g. one that waits for a device; await the task |
+| `command(coro)` | run a server call that may wait for the clock in the background; await the task once it is done |
 | `advance(seconds)`, `idle()`, `settle()` | let time pass, let the debounces run, run what is due now |
 | `restart()`, `seed_config(values)` | boot again on the stored config, optionally changed first |
 
@@ -67,10 +73,11 @@ What `Scenario._patch_environment()` patches:
   requirements, dependencies or network discovery that allows several instances; the events of a
   boot are captured from there on;
 - `music_assistant.mass.load_provider_module`, which returns the fake provider for a fake domain;
+- `MusicAssistant.unload_provider`, to record its failures, which stopping the server drops;
 - `music_assistant.helpers.util.get_mac_address`, the ARP lookup;
-- `time` and `run_in_executor` of the test's event loop, and the `time` (or `time()` and
-  `monotonic()`) names of every loaded server module, for the clock and for knowing about thread
-  work;
+- `time` and `run_in_executor` of the test's event loop, `asyncio.events.TimerHandle` (for the
+  arming order) and the `time` (or `time()` and `monotonic()`) names of every loaded server
+  module, for the clock and for knowing about thread work;
 - `aiosqlite.core.Connection._execute` (private), the thread dispatch of the database, which does
   not go through the loop's executor.
 
@@ -121,9 +128,9 @@ pass (issue numbers refer to music-assistant/backlog):
 ```
 
 The marker is strict, so a scenario that starts to pass fails the run until its marker is removed.
-An expected failure only counts when the test module raises it itself, in the test (not a fixture):
-`conftest.py` turns any other into a failure, so a failing harness precondition (`ScenarioError`),
-a server error or a renamed internal can not pass as the expected one. `raises=AssertionError`
-narrows it to the scenario's own asserts; leave it out only where the target API does not exist
-yet and an AttributeError in the test is the expected failure. A phase is done when all of its
-markers are gone; the scenarios of today's behaviour it changes are rewritten in the same PR.
+An expected failure only counts when the test module raises it itself, in the test (not a fixture),
+and it is no `ScenarioError`: `conftest.py` turns any other into a failure, so a failing harness
+precondition, a server error or a renamed internal can not pass as the expected one.
+`raises=AssertionError` narrows it to the scenario's own asserts; where the target API does not
+exist yet, use `raises=(AssertionError, AttributeError)`. A phase is done when all of its markers
+are gone; the scenarios of today's behaviour it changes are rewritten in the same PR.

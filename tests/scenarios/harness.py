@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import itertools
 import json
 import logging
 import sys
@@ -33,6 +34,7 @@ from music_assistant_models.enums import (
 from music_assistant_models.player import DeviceInfo
 from music_assistant_models.player_control import PlayerControl
 
+from music_assistant.constants import CONF_PLAYERS
 from music_assistant.helpers.util import load_provider_module
 from music_assistant.mass import MusicAssistant
 from music_assistant.models.player_protocol import PlayerProtocol
@@ -65,13 +67,26 @@ CLOCK_START = 1000.0
 
 # Seconds idle() lets pass by default: past the server's debounces and follow-up checks
 # (0.25 s to 5 s), short of the 15 s protocol evaluation delay.
-IDLE_HORIZON = 6.0
+IDLE_HORIZON = 10.0
+
+# Tracked server timers of background work that keeps coming back while the server runs
+# (scheduled tasks and the task list they update), which idle() ignores.
+BACKGROUND_TIMERS = (
+    "managed_task_timer_",
+    "managed_tasks_signal_event",
+    "storage_refresh",
+    "playlist_metadata_ai_catch_up",
+)
 
 # Real seconds settle() waits for the loop to become quiet before it fails.
 SETTLE_TIMEOUT = 5.0
 
-# The log records that tell of a failure in the server's background work.
-LOGGERS_WATCHED = ("music_assistant", "asyncio")
+# The warnings every boot logs, which are no failure of a scenario.
+BOOT_LOGS = (
+    "not installed through one of the supported installation methods",
+    "Started streamserver on",
+    "SETUP REQUIRED",
+)
 
 DEFAULT_FEATURES = frozenset(
     {
@@ -96,7 +111,7 @@ _real_monotonic = time.monotonic
 
 
 class ScenarioError(Exception):
-    """A precondition of a scenario does not hold, which is never an expected failure."""
+    """The harness or a precondition of a scenario failed, which is never an expected failure."""
 
 
 class Event(NamedTuple):
@@ -232,7 +247,7 @@ class FakeProtocol(PlayerProtocol):
                 continue
             if not hasattr(self, f"_attr_{key}"):
                 msg = f"{type(self).__name__} reports no state named {key!r}"
-                raise AttributeError(msg)
+                raise ScenarioError(msg)
             setattr(self, f"_attr_{key}", value)
             self._device.state[key] = value
 
@@ -369,23 +384,23 @@ class Scenario:
         """
         Stop the server and undo what the scenario patched.
 
-        Raises a RuntimeError when the server's background work failed (see expect_log()).
+        Raises ScenarioError when the server logged a warning or worse that is not expected (see
+        expect_log()), or left work running.
         """
         try:
             await self._shutdown()
         finally:
             self._patches.close()
+        allowed = (*BOOT_LOGS, *self._expected_logs)
         if errors := [
-            error
-            for error in self._errors.messages
-            if not any(expected in error for expected in self._expected_logs)
+            error for error in self._errors.messages if not any(text in error for text in allowed)
         ]:
-            msg = "The server's background work failed:\n" + "\n".join(errors)
-            raise RuntimeError(msg)
+            msg = "The server reported a failure:\n" + "\n".join(errors)
+            raise ScenarioError(msg)
 
     def expect_log(self, substring: str) -> None:
         """
-        Allow a failure log record the scenario causes on purpose.
+        Allow a warning (or worse) the scenario causes on purpose.
 
         :param substring: Part of the message of the record to allow.
         """
@@ -399,10 +414,10 @@ class Scenario:
         """
         if domain in REAL_PLAYER_PROVIDERS:
             msg = f"{domain} keeps its real implementation"
-            raise ValueError(msg)
+            raise ScenarioError(msg)
         if self.mass.get_provider_manifest(domain).type != ProviderType.PLAYER:
             msg = f"{domain} is no player provider"
-            raise ValueError(msg)
+            raise ScenarioError(msg)
         # the step the add-provider setup flow ends in for a provider without setup input;
         # the flow itself would import the setup module of the real provider
         config: ProviderConfig = await self.mass.config._create_provider_instance(domain, {})
@@ -477,7 +492,7 @@ class Scenario:
         self._check_current(protocol)
         if "type" in state:
             msg = "a role changes with attach(protocol, role=...)"
-            raise ValueError(msg)
+            raise ScenarioError(msg)
         protocol._set_reported(**state)
         protocol.update_state()
         await self.settle()
@@ -548,10 +563,11 @@ class Scenario:
 
     async def command(self, command: Coroutine[Any, Any, _T]) -> asyncio.Task[_T]:
         """
-        Start a command in the background and settle; await the returned task for its outcome.
+        Start a command in the background and settle; await the task once it is done.
 
-        For a command that waits for the clock or a device, e.g. a power on through an external
-        power control. A failure of a command that is never awaited fails the scenario.
+        Run every server call that may wait for the clock (a timeout, a delay, a device to come
+        online) this way: the clock only moves through advance(), so awaiting such a call
+        directly never returns. A failure of a command that is never awaited fails the scenario.
 
         :param command: The command, e.g. ``scenario.mass.players.cmd_power(player_id, True)``.
         """
@@ -580,9 +596,22 @@ class Scenario:
         """
         Let the follow-up work on short timers run (debounces), for an assertion of steady state.
 
+        Raises ScenarioError when the server still has work due within the horizon after it,
+        which a scenario lets happen with advance().
+
         :param horizon: Seconds to pass.
         """
         await self.advance(horizon)
+        limit = self._clock.now + horizon
+        if pending := sorted(
+            task_id
+            for task_id, handle in self.mass._tracked_timers.items()
+            if not handle.cancelled()
+            and handle.when() <= limit
+            and not task_id.startswith(BACKGROUND_TIMERS)
+        ):
+            msg = f"Not idle after {horizon} s, still due within as long: {pending}; use advance()"
+            raise ScenarioError(msg)
 
     async def restart(self) -> None:
         """Stop the server and start a new one on the same storage (settings.json and cache)."""
@@ -607,25 +636,20 @@ class Scenario:
         """
         Run what is due now until the loop is quiet, without moving the clock.
 
-        Quiet: nothing runnable, no timer due and no work in a thread. Raises a RuntimeError
+        Quiet: nothing runnable, no timer due and no work in a thread. Raises ScenarioError
         when the loop does not get quiet.
         """
         deadline = _real_monotonic() + SETTLE_TIMEOUT
-        quiet_checks = 0
-        while quiet_checks < 2:
-            # two passes per check: what a callback hands to call_soon runs on the next one
-            await asyncio.sleep(0)
+        while True:
             await asyncio.sleep(0)
             if not (runnable := _runnable()) and not self._threads_busy:
-                quiet_checks += 1
-                continue
-            quiet_checks = 0
+                return
             if _real_monotonic() > deadline:
                 msg = (
                     f"The loop did not get quiet in {SETTLE_TIMEOUT} s: {runnable} runnable, "
                     f"{self._threads_busy} thread jobs"
                 )
-                raise RuntimeError(msg)
+                raise ScenarioError(msg)
             if not runnable:
                 # only thread work is left, which reports back through the loop: nothing on
                 # the loop can run meanwhile, and a loop timer would wait for the clock
@@ -649,10 +673,10 @@ class Scenario:
         provider = self.mass.get_provider(instance_id_or_domain)
         if provider is None:
             msg = f"No provider {instance_id_or_domain} is loaded"
-            raise LookupError(msg)
+            raise ScenarioError(msg)
         if not isinstance(provider, FakePlayerProvider):
             msg = f"{instance_id_or_domain} is no fake provider"
-            raise TypeError(msg)
+            raise ScenarioError(msg)
         return provider
 
     def visible_players(self) -> list[VisiblePlayer]:
@@ -701,14 +725,13 @@ class Scenario:
 
     async def player_config(self, player_id: str) -> PlayerConfig | None:
         """
-        Return the stored config of a player, as clients read it.
+        Return the stored config of a player as clients read it, None when none is stored.
 
         :param player_id: ID of the player.
         """
-        try:
-            return await self.mass.config.get_player_config(player_id)
-        except KeyError:
+        if self.mass.config.get(f"{CONF_PLAYERS}/{player_id}") is None:
             return None
+        return await self.mass.config.get_player_config(player_id)
 
     def queue(self, queue_id: str) -> PlayerQueue | None:
         """
@@ -755,24 +778,45 @@ class Scenario:
         await self.settle()
 
     async def _shutdown(self) -> None:
-        """Stop the running server, if any, with nothing of it left running."""
-        for task in self._commands:
-            if task.done() and not task.cancelled() and getattr(task, "_log_traceback", False):
-                self._errors.messages.append(f"Command {task.get_coro()!r}: {task.exception()!r}")
-            task.cancel()
-        await asyncio.gather(*self._commands, return_exceptions=True)
-        self._commands.clear()
-        if self._unsubscribe is not None:
-            self._unsubscribe()
-            self._unsubscribe = None
-        if self._server is None:
-            return
-        server, self._server = self._server, None
+        """Stop the running server, if any, and report what of it is left running."""
         # stopping waits on timeouts of its own, so real time runs, but the clock does not move
         with self._clock.running():
+            await self._cancel_commands()
+            if self._unsubscribe is not None:
+                self._unsubscribe()
+                self._unsubscribe = None
+            if self._server is None:
+                return
+            server, self._server = self._server, None
             await server.aclose()
+        # stop() leaves the server's own (tracked) timers armed, e.g. a daily one
         for handle in self.mass._tracked_timers.values():
             handle.cancel()
+        loop: Any = asyncio.get_running_loop()
+        for handle in loop._scheduled:
+            if not handle.cancelled():
+                self._errors.messages.append(f"Timer left by the stopped server: {handle}")
+                handle.cancel()
+        current = asyncio.current_task()
+        for task in asyncio.all_tasks():
+            if task is not current:
+                self._errors.messages.append(f"Task left by the stopped server: {task}")
+                task.cancel()
+
+    async def _cancel_commands(self) -> None:
+        """Cancel the commands still running and record the failures nobody awaited."""
+        running = [task for task in self._commands if not task.done()]
+        for task in self._commands - set(running):
+            if not task.cancelled() and getattr(task, "_log_traceback", False):
+                self._errors.messages.append(f"Command {task.get_coro()!r}: {task.exception()!r}")
+        for task in running:
+            task.cancel()
+        for task, result in zip(
+            running, await asyncio.gather(*running, return_exceptions=True), strict=True
+        ):
+            if isinstance(result, BaseException) and not isinstance(result, asyncio.CancelledError):
+                self._errors.messages.append(f"Command {task.get_coro()!r}: {result!r}")
+        self._commands.clear()
 
     async def _register_power_control(self, control: FakePowerControl) -> None:
         """Register a power control on the running server."""
@@ -806,7 +850,7 @@ class Scenario:
                 f"{protocol.player_id} belongs to a server or provider instance that is gone, "
                 f"use scenario.protocol({protocol.player_id!r})"
             )
-            raise RuntimeError(msg)
+            raise ScenarioError(msg)
 
     def _on_event(self, event: MassEvent) -> None:
         """Capture an event the server emitted."""
@@ -831,7 +875,7 @@ class Scenario:
     @contextlib.contextmanager
     def _patch_environment(self) -> Iterator[None]:
         """
-        Patch what a scenario fakes: the player providers, ARP lookups and the clock.
+        Patch what a scenario fakes (the player providers, ARP lookups and the clock) and watch.
 
         Two private pieces are touched. The manifest loading of the server: before any provider
         loads, a fake domain needs a manifest that allows several instances and has no
@@ -842,6 +886,7 @@ class Scenario:
         """
         fake_domains: set[str] = set()
         load_manifests = MusicAssistant._MusicAssistant__load_provider_manifests  # type: ignore[attr-defined]
+        unload_provider = MusicAssistant.unload_provider
         sqlite_execute: Any = SqliteConnection._execute
         loop = asyncio.get_running_loop()
         run_in_executor = loop.run_in_executor
@@ -872,21 +917,28 @@ class Scenario:
         async def _arp_lookup(ip_address: str) -> str | None:
             return self.arp.get(ip_address)
 
+        async def _unload_provider(mass: MusicAssistant, *args: Any, **kwargs: Any) -> None:
+            # the server stops its providers in a gather that drops their errors
+            try:
+                await unload_provider(mass, *args, **kwargs)
+            except Exception as err:
+                self._errors.messages.append(f"Unloading provider {args}: {err!r}")
+                raise
+
         def _thread_done(_future: asyncio.Future[Any]) -> None:
             self._threads_busy -= 1
 
-        def _run_in_executor(executor: Any, func: Callable[..., Any], *args: Any) -> Any:
-            future = run_in_executor(executor, func, *args)
+        def _track(operation: asyncio.Future[_T]) -> asyncio.Future[_T]:
+            # a cancelled caller leaves the thread running, so it counts until it is done
             self._threads_busy += 1
-            future.add_done_callback(_thread_done)
-            return future
+            operation.add_done_callback(_thread_done)
+            return asyncio.shield(operation)
+
+        def _run_in_executor(executor: Any, func: Callable[..., Any], *args: Any) -> Any:
+            return _track(run_in_executor(executor, func, *args))
 
         async def _sqlite_execute(connection: SqliteConnection, *args: Any, **kwargs: Any) -> Any:
-            self._threads_busy += 1
-            try:
-                return await sqlite_execute(connection, *args, **kwargs)
-            finally:
-                self._threads_busy -= 1
+            return await _track(asyncio.ensure_future(sqlite_execute(connection, *args, **kwargs)))
 
         with contextlib.ExitStack() as stack:
             stack.enter_context(
@@ -895,10 +947,12 @@ class Scenario:
                 )
             )
             stack.enter_context(patch("music_assistant.mass.load_provider_module", _load_module))
+            stack.enter_context(patch.object(MusicAssistant, "unload_provider", _unload_provider))
             stack.enter_context(patch("music_assistant.helpers.util.get_mac_address", _arp_lookup))
             stack.enter_context(patch.object(SqliteConnection, "_execute", _sqlite_execute))
             stack.enter_context(patch.object(loop, "run_in_executor", _run_in_executor))
             stack.enter_context(patch.object(loop, "time", self._clock.time))
+            stack.enter_context(patch("asyncio.events.TimerHandle", _ArmedTimerHandle))
             stack.enter_context(_patch_module_clocks(self._clock))
             stack.enter_context(self._errors.watching())
             yield
@@ -908,8 +962,9 @@ def xfail_origin_error(test_path: pathlib.Path, call: pytest.CallInfo[None]) -> 
     """
     Return why an expected failure does not count, or None when it does.
 
-    It counts only when it is raised in the call phase by the test module itself, so a failure
-    in the harness, in a fixture or in the server can not pass as the expected one.
+    It counts only when it is raised in the call phase by the test module itself and is no
+    ScenarioError, so a failure in the harness, in a fixture or in the server can not pass as the
+    expected one.
 
     :param test_path: Path of the test module.
     :param call: The call info of the test phase that failed.
@@ -917,7 +972,11 @@ def xfail_origin_error(test_path: pathlib.Path, call: pytest.CallInfo[None]) -> 
     if call.excinfo is None:
         return None
     origin = call.excinfo.traceback[-1]
-    if call.when == "call" and str(origin.path) == str(test_path):
+    if (
+        call.when == "call"
+        and str(origin.path) == str(test_path)
+        and not call.excinfo.errisinstance(ScenarioError)
+    ):
         return None
     return (
         f"[xfail for the wrong reason] {call.excinfo.typename} in {call.when} at "
@@ -983,7 +1042,7 @@ class _ClockedTime:
 
 
 class _ErrorLog(logging.Handler):
-    """Collects the log records that tell of a failure in the server's background work."""
+    """Collects the warnings (and worse) of the server and the errors of asyncio."""
 
     def __init__(self) -> None:
         """Initialize the handler."""
@@ -992,20 +1051,39 @@ class _ErrorLog(logging.Handler):
 
     def emit(self, record: logging.LogRecord) -> None:
         """Keep a record that tells of a failure."""
-        message = record.getMessage()
-        if record.levelno >= logging.ERROR or record.exc_info or "Exception in task" in message:
-            self.messages.append(f"{record.levelname} {record.name}: {message}")
+        if record.name.startswith("asyncio") and record.levelno < logging.ERROR:
+            return
+        self.messages.append(f"{record.levelname} {record.name}: {record.getMessage()}")
 
     @contextlib.contextmanager
     def watching(self) -> Iterator[None]:
-        """Collect the records of the watched loggers in this context."""
-        for name in LOGGERS_WATCHED:
-            logging.getLogger(name).addHandler(self)
+        """Collect the records of the server and asyncio loggers in this context."""
+        loggers = [logging.getLogger(name) for name in ("music_assistant", "asyncio")]
+        for logger in loggers:
+            logger.addHandler(self)
         try:
             yield
         finally:
-            for name in LOGGERS_WATCHED:
-                logging.getLogger(name).removeHandler(self)
+            for logger in loggers:
+                logger.removeHandler(self)
+
+
+class _ArmedTimerHandle(asyncio.TimerHandle):
+    """A loop timer that runs after the timers armed before it for the same time."""
+
+    __slots__ = ("_armed",)
+    _arming = itertools.count()
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        """Initialize the timer as the next one armed."""
+        super().__init__(*args, **kwargs)
+        self._armed = next(self._arming)
+
+    def __lt__(self, other: object) -> bool:
+        """Order by due time, then by arming order."""
+        if not isinstance(other, asyncio.TimerHandle):
+            return NotImplemented
+        return (self.when(), self._armed) < (other.when(), getattr(other, "_armed", -1))
 
 
 @contextlib.contextmanager
@@ -1028,8 +1106,11 @@ def _patch_module_clocks(clock: _VirtualClock) -> Iterator[None]:
 def _runnable() -> int:
     """Return how many callbacks the loop can run now, due timers included."""
     loop: Any = asyncio.get_running_loop()
-    now = loop.time()
-    due = sum(1 for handle in loop._scheduled if not handle.cancelled() and handle.when() <= now)
+    # the rule the loop itself applies to its timers
+    end_time = loop.time() + loop._clock_resolution
+    due = sum(
+        1 for handle in loop._scheduled if not handle.cancelled() and handle.when() < end_time
+    )
     return len(loop._ready) + due
 
 
