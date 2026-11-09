@@ -2264,6 +2264,9 @@ def _registering_provider(
     """
     provider = _moving_provider(rooms)
     provider.config = MagicMock(instance_id="raumfeld")
+    # the software versions are covered by their own tests
+    provider._versions_read = set(rooms)
+    provider._room_versions = {}
     registry = {player.player_id: player for player in registered}
     players = cast("MagicMock", provider.mass).players
     players.iter_players.side_effect = lambda **_: list(registry.values())
