@@ -1804,8 +1804,9 @@ class SendspinPlayer(SendspinBasePlayer):
     ) -> None:
         """Handle SET_MEMBERS command on the player."""
         for player_id in player_ids_to_remove or []:
-            self.mass.players.get_player(player_id, raise_unavailable=True)
-            member_player = cast("SendspinPlayer", self.provider.get_endpoint(player_id))
+            member_player = cast(
+                "SendspinPlayer", self.provider.get_endpoint(player_id, raise_unavailable=True)
+            )
 
             # Dynamic leader switch: transfer the active playback session to the
             # next remaining group member before removing ourselves from the group.
@@ -1842,8 +1843,10 @@ class SendspinPlayer(SendspinBasePlayer):
         pending_cast: list[tuple[SendspinPlayer, asyncio.Future[None]]] = []
         try:
             for player_id in player_ids_to_add or []:
-                self.mass.players.get_player(player_id, raise_unavailable=True)
-                member_player = cast("SendspinPlayer", self.provider.get_endpoint(player_id))
+                member_player = cast(
+                    "SendspinPlayer",
+                    self.provider.get_endpoint(player_id, raise_unavailable=True),
+                )
                 if (
                     self.api.group.has_active_stream
                     and bridge_manager
@@ -2899,13 +2902,11 @@ class SendspinVisualizerPlayer(SendspinBasePlayer):
     ) -> None:
         """Handle SET_MEMBERS command for the visualizer player."""
         for player_id in player_ids_to_remove or []:
-            self.mass.players.get_player(player_id, raise_unavailable=True)
-            member = self.provider.get_endpoint(player_id)
+            member = self.provider.get_endpoint(player_id, raise_unavailable=True)
             if isinstance(member, SendspinBasePlayer):
                 await self.api.group.remove_client(member.api)
         for player_id in player_ids_to_add or []:
-            self.mass.players.get_player(player_id, raise_unavailable=True)
-            member = self.provider.get_endpoint(player_id)
+            member = self.provider.get_endpoint(player_id, raise_unavailable=True)
             if isinstance(member, SendspinBasePlayer):
                 await self.api.group.add_client(member.api)
 

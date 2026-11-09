@@ -341,9 +341,9 @@ class DemoPlayer(PlayerEndpoint):
         self._attr_group_members = [self.player_id, *other_member_ids] if other_member_ids else []
         self.update_state()
         # refresh affected members so their derived synced_to / can_group_with recompute
-        # (group members are user-facing players, so they come from the players controller)
+        # (the ids passed to set_members are this provider's own ids, so look them up as endpoints)
         for member_id in [*(player_ids_to_add or []), *(player_ids_to_remove or [])]:
-            if (member := self.mass.players.get_player(member_id)) is not None:
+            if (member := self.provider.get_endpoint(member_id)) is not None:
                 member.update_state()
 
     async def set_option(self, option_key: str, option_value: PlayerOptionValueType) -> None:

@@ -64,7 +64,6 @@ async def timer_mass() -> AsyncGenerator[MusicAssistant]:
     mass._tracked_tasks = {}
     mass.config = MagicMock()
     mass.players = MagicMock()
-    mass.players.all_players.return_value = []
     yield mass
     for handle in mass._tracked_timers.values():
         handle.cancel()

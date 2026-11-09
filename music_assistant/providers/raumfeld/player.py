@@ -885,7 +885,7 @@ class RaumfeldPlayer(PlayerEndpoint):
             )
             self.update_state()
         for pid in [*(player_ids_to_add or []), *(player_ids_to_remove or [])]:
-            if (member := self.mass.players.get_player(pid)) is not None:
+            if (member := self.provider.get_endpoint(pid)) is not None:
                 member.update_state()
         if player_ids_to_add and self.plays_own_queue:
             # on its own, so waiting for the host to hook the rooms in holds up nothing

@@ -218,8 +218,9 @@ class BluesoundPlayer(PlayerEndpoint):
             return
 
         def player_id_to_paired_player(player_id: str) -> PairedPlayer:
-            self.mass.players.get_player(player_id, raise_unavailable=True)
-            client = cast("BluesoundPlayer", self.provider.get_endpoint(player_id))
+            client = cast(
+                "BluesoundPlayer", self.provider.get_endpoint(player_id, raise_unavailable=True)
+            )
             return PairedPlayer(client.ip_address, client.port)
 
         if player_ids_to_remove:
