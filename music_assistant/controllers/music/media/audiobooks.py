@@ -685,7 +685,7 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
                 },
             )
             seconds_played = int((media_item.resume_position_ms or 0) / 1000)
-            # abort if nothing changed, or Music Assistant's own record wins
+            # skip the user if nothing changed, or Music Assistant's own record wins
             if cur_entry and (
                 (
                     parse_optional_bool(cur_entry["fully_played"]) == media_item.fully_played
@@ -695,7 +695,7 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
                 or select_resume_point(provider_point, ResumePoint.from_playlog_row(cur_entry))
                 is not provider_point
             ):
-                return
+                continue
 
             await self.mass.music.database.insert(
                 DB_TABLE_MEDIA_PROGRESS,

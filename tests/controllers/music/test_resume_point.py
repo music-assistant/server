@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from typing import Any, cast
+from unittest.mock import AsyncMock
 
 import pytest
 from music_assistant_models.auth import User, UserRole
@@ -102,37 +104,14 @@ async def test_library_sync_only_writes_a_winning_resume_point(
     expected_seconds: int,
 ) -> None:
     """A library sync overwrites the user's progress only where the provider's wins."""
-    mapping = ProviderMapping(
-        item_id="book_1", provider_domain="test_prov", provider_instance="test_prov"
-    )
     set_current_user(User(user_id="reader", username="reader", role=UserRole.USER))
     try:
-        book = await music_mass.music.audiobooks.add_item_to_library(
-            Audiobook(
-                item_id="book_1", provider="test_prov", name="Book", provider_mappings={mapping}
-            )
-        )
-        await music_mass.music.database.insert(
-            DB_TABLE_MEDIA_PROGRESS,
-            {
-                "item_id": book.item_id,
-                "provider": "library",
-                "media_type": MediaType.AUDIOBOOK.value,
-                "name": "Book",
-                "userid": "reader",
-                "seconds_played": 30,
-                "fully_played": False,
-                "timestamp": int(MID.timestamp()),
-            },
-        )
+        book = await music_mass.music.audiobooks.add_item_to_library(_book())
+        await _add_progress(music_mass, book.item_id, "reader", 30)
 
         updated = await music_mass.music.audiobooks.update_item_in_library(
             book.item_id,
-            Audiobook(
-                item_id="book_1",
-                provider="test_prov",
-                name="Book",
-                provider_mappings={mapping},
+            _book(
                 fully_played=False,
                 resume_position_ms=provider_seconds * 1000,
                 resume_position_timestamp=provider_timestamp,
@@ -142,3 +121,58 @@ async def test_library_sync_only_writes_a_winning_resume_point(
         set_current_user(None)
 
     assert updated.resume_position_ms == expected_seconds * 1000
+
+
+async def test_library_sync_reaches_every_user(music_mass: MusicAssistant) -> None:
+    """A user whose own progress wins does not keep the provider's from the next user."""
+    cast("AsyncMock", music_mass.webserver.auth.list_users).return_value = [
+        User(user_id=user_id, username=user_id, role=UserRole.USER)
+        for user_id in ("reader_a", "reader_b")
+    ]
+    book = await music_mass.music.audiobooks.add_item_to_library(_book())
+    await _add_progress(music_mass, book.item_id, "reader_a", 30)
+    await _add_progress(music_mass, book.item_id, "reader_b", 5)
+
+    await music_mass.music.audiobooks.update_item_in_library(
+        book.item_id, _book(fully_played=False, resume_position_ms=10_000)
+    )
+
+    rows = await music_mass.music.database.get_rows(
+        DB_TABLE_MEDIA_PROGRESS, {"item_id": book.item_id, "provider": "library"}
+    )
+    assert {row["userid"]: row["seconds_played"] for row in rows} == {
+        "reader_a": 30,
+        "reader_b": 10,
+    }
+
+
+def _book(**resume: Any) -> Audiobook:
+    return Audiobook(
+        item_id="book_1",
+        provider="test_prov",
+        name="Book",
+        provider_mappings={
+            ProviderMapping(
+                item_id="book_1", provider_domain="test_prov", provider_instance="test_prov"
+            )
+        },
+        **resume,
+    )
+
+
+async def _add_progress(
+    music_mass: MusicAssistant, item_id: str, userid: str, seconds_played: int
+) -> None:
+    await music_mass.music.database.insert(
+        DB_TABLE_MEDIA_PROGRESS,
+        {
+            "item_id": item_id,
+            "provider": "library",
+            "media_type": MediaType.AUDIOBOOK.value,
+            "name": "Book",
+            "userid": userid,
+            "seconds_played": seconds_played,
+            "fully_played": False,
+            "timestamp": int(MID.timestamp()),
+        },
+    )
