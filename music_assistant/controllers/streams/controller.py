@@ -1998,12 +1998,11 @@ class StreamsController(CoreController):
             queue_item = self.mass.player_queues.get_item(media.source_id, media.queue_item_id)
             assert queue_item
             assert queue  # the item was found in that queue's data, so the queue exists
-            if queue_item.streamdetails and queue_item.streamdetails.tail_overlap is not None:
-                self.logger.debug(
-                    "Ignoring the tail overlap of %s: a direct PCM stream of a single item "
-                    "never mixes its boundary",
-                    queue_item.name,
-                )
+            crossfade_mode = (
+                self._select_item_crossfade_mode(queue, queue_item, protocol_player)
+                if protocol_player is not None and queue_item.streamdetails is not None
+                else CrossfadeMode.DISABLED
+            )
             mix_overlay = overlay_mixed_in(queue, queue_item, flow_mode=False)
             self._update_audio_processing_context(
                 queue=queue,
@@ -2012,17 +2011,37 @@ class StreamsController(CoreController):
                 overlay_enabled=mix_overlay,
                 session_id=queue_session_id,
             )
-            inner_stream = self.audio.get_queue_item_stream(
-                queue_item=queue_item,
-                pcm_format=pcm_format,
-                seek_position=(
-                    int(queue_item.streamdetails.seek_position) if queue_item.streamdetails else 0
-                ),
-                playback_speed=cast(
-                    "float", queue_item.extra_attributes.get("playback_speed", 1.0)
-                ),
-                session_id=queue_session_id,
-            )
+            inner_stream: AsyncGenerator[bytes]
+            if protocol_player is not None and (
+                crossfade_mode != CrossfadeMode.DISABLED
+                # the item before may have mixed (or be mixing) a fade into this one,
+                # which only the smart fade stream plays
+                or self.audio.fade_into_pending(queue_id, queue_item.queue_item_id)
+            ):
+                inner_stream = self.audio.get_queue_item_stream_with_smartfade(
+                    player=protocol_player,
+                    queue_item=queue_item,
+                    pcm_format=pcm_format,
+                    crossfade_mode=crossfade_mode,
+                    standard_crossfade_duration=self.mass.config.get_raw_core_config_value(
+                        CONF_PLAYER_QUEUES, CONF_CROSSFADE_DURATION, 8
+                    ),
+                    session_id=queue_session_id,
+                )
+            else:
+                inner_stream = self.audio.get_queue_item_stream(
+                    queue_item=queue_item,
+                    pcm_format=pcm_format,
+                    seek_position=(
+                        int(queue_item.streamdetails.seek_position)
+                        if queue_item.streamdetails
+                        else 0
+                    ),
+                    playback_speed=cast(
+                        "float", queue_item.extra_attributes.get("playback_speed", 1.0)
+                    ),
+                    session_id=queue_session_id,
+                )
             if mix_overlay:
                 inner_stream = self.audio.get_overlay_mixed_stream(queue, inner_stream, pcm_format)
             # mirror the on_source_selected/unselected lifecycle the HTTP route
@@ -2040,8 +2059,12 @@ class StreamsController(CoreController):
             # the HTTP route and the flow stream record the first chunk that goes out to the
             # player; this stream is handed to the player provider itself, so record it here, on
             # the final stream: an overlay mix that fails before emitting audio served nothing
-            inner_stream = self._mark_served_on_first_chunk(
-                inner_stream, queue_item, queue_session_id
+            inner_stream = self._follow_single_item_stream(
+                inner_stream,
+                queue_item,
+                queue_session_id,
+                loads_next=protocol_player is not None
+                and protocol_player.supports_feature(PlayerFeature.ENQUEUE),
             )
             return self._count_as_output_stream(inner_stream)
         # assume url or some other direct path
@@ -2522,27 +2545,51 @@ class StreamsController(CoreController):
         finally:
             self._active_output_streams -= 1
 
-    async def _mark_served_on_first_chunk(
-        self, inner: AsyncGenerator[bytes], queue_item: QueueItem, session_id: str | None
+    async def _follow_single_item_stream(
+        self,
+        inner: AsyncGenerator[bytes],
+        queue_item: QueueItem,
+        session_id: str | None,
+        *,
+        loads_next: bool,
     ) -> AsyncGenerator[bytes]:
         """
-        Forward a single-item stream, recording the item as served to the player on its first chunk.
+        Forward a single-item stream, reporting its first chunk to the queue.
 
         :param inner: The queue item stream to forward.
         :param queue_item: The queue item the stream carries.
         :param session_id: The queue session the stream was requested for, if the request named
-            one; a stream left over from a superseded load records nothing.
+            one; a stream left over from a superseded load records nothing. The stream ends once
+            its session is no longer current.
+        :param loads_next: Report the item as loaded in the player's buffer, so the queue hands
+            the player the item after it.
         """
+        queue_data = self.mass.player_queues.queue_data_or_none(queue_item.queue_id)
         served = False
         async with aclosing(inner):
             async for chunk in inner:
+                if (
+                    session_id is not None
+                    and queue_data is not None
+                    and queue_data.session_id != session_id
+                ):
+                    self.logger.debug(
+                        "Ending stream for %s: session %s is no longer current",
+                        queue_item.name,
+                        session_id,
+                    )
+                    break
                 if not served:
                     served = True
-                    queue_data = self.mass.player_queues.queue_data_or_none(queue_item.queue_id)
-                    if queue_data is not None and session_id in (None, queue_data.session_id):
-                        self.mass.player_queues.mark_item_served(
-                            queue_item.queue_id, queue_item.queue_item_id
-                        )
+                    if queue_data is not None:
+                        if loads_next:
+                            self.mass.player_queues.track_loaded_in_buffer(
+                                queue_item.queue_id, queue_item.queue_item_id
+                            )
+                        else:
+                            self.mass.player_queues.mark_item_served(
+                                queue_item.queue_id, queue_item.queue_item_id
+                            )
                 yield chunk
 
     def _served_by(self, queue_item: QueueItem | None, provider_instance: str) -> bool:
