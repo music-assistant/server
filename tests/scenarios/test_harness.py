@@ -124,6 +124,33 @@ async def test_settle_waits_for_thread_work_of_a_cancelled_caller(scenario: Scen
     assert done == [True]
 
 
+async def test_restart_waits_for_thread_work_of_the_stopped_server(
+    scenario: Scenario, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Thread work still in flight at a restart finishes before the next boot starts."""
+    done: list[bool] = []
+    done_at_boot: list[list[bool]] = []
+    boot = scenario._boot
+
+    def _work() -> None:
+        # outlasts the server stop, so only the wait for thread work lets it finish first
+        time.sleep(0.5)
+        done.append(True)
+
+    async def _recording_boot() -> None:
+        done_at_boot.append(list(done))
+        await boot()
+
+    monkeypatch.setattr(scenario, "_boot", _recording_boot)
+    task = asyncio.ensure_future(asyncio.to_thread(_work))
+    await asyncio.sleep(0)
+    task.cancel()
+    await asyncio.gather(task, return_exceptions=True)
+    await scenario.restart()
+
+    assert done_at_boot == [[True]]
+
+
 async def test_settle_fails_on_runaway_work(
     scenario: Scenario, monkeypatch: pytest.MonkeyPatch
 ) -> None:

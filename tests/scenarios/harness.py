@@ -803,6 +803,7 @@ class Scenario:
             handle.cancel()
         # tasks first: their cleanup may arm timers of its own
         await self._stop_leftover_tasks()
+        await self._wait_for_thread_work()
         loop: Any = asyncio.get_running_loop()
         for handle in loop._scheduled:
             if not handle.cancelled():
@@ -824,6 +825,17 @@ class Scenario:
                 self._errors.messages.append(f"Task failed while it was cancelled: {error!r}")
         for task in still_running:
             self._errors.messages.append(f"Task did not stop in {SETTLE_TIMEOUT} s: {task}")
+
+    async def _wait_for_thread_work(self) -> None:
+        """Let thread work of the stopped server finish, so it cannot touch the next boot."""
+        deadline = _real_monotonic() + SETTLE_TIMEOUT
+        with self._clock.running():
+            while self._threads_busy and _real_monotonic() < deadline:
+                await asyncio.sleep(0.005)
+        if self._threads_busy:
+            self._errors.messages.append(
+                f"{self._threads_busy} thread jobs still running {SETTLE_TIMEOUT} s after stop"
+            )
 
     async def _cancel_commands(self) -> None:
         """Cancel the commands still running and record the failures nobody awaited."""
