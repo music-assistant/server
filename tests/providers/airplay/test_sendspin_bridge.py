@@ -13,6 +13,8 @@ tests are deterministic and independent of the host wall-clock:
 * anchoring against the binary: the commanded instant honours the join headroom,
   the receiver's clock-ready projection and the content Sendspin already
   scheduled, and the content is then mapped onto the instant the binary acked;
+  the group's now-playing metadata is forwarded ahead of that START, so the
+  receiver's first display is the track and not the binary's placeholder;
 * the timeline alignment that keeps every chunk at the byte offset its timestamp
   claims, so a discontinuity in the Sendspin timeline does not shift the device
   off the group's clock for the rest of the stream;
@@ -38,7 +40,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from aiosendspin.clock import ManualClock
-from aiosendspin.server.roles import AudioChunk
+from aiosendspin.server.roles import AudioChunk, MetadataGroupRole
+from aiosendspin.server.roles.metadata import Metadata
 from music_assistant_models.enums import PlaybackState
 
 from music_assistant.providers.airplay.constants import (
@@ -632,6 +635,114 @@ async def test_a_failed_warm_handover_releases_the_latch_before_its_cold_retry()
 
     cold_stream.connect.assert_awaited_once_with(False)
     cast("MagicMock", bridge.airplay_player).release_foreign_mute_latch.assert_called_once_with()
+
+
+def _make_metadata_group(
+    *,
+    group_name: str = "Living Room",
+    metadata: Metadata | None = None,
+    track_progress_ms: int | None = None,
+) -> MagicMock:
+    """Build a SendspinGroup mock whose metadata role answers with the given state."""
+    role = MagicMock(spec=MetadataGroupRole)
+    role.metadata = metadata
+    role.track_progress = track_progress_ms
+    group = MagicMock()
+    group.group_id = "group-1"
+    group.group_name = group_name
+    group.group_role = MagicMock(return_value=role)
+    return group
+
+
+def _make_group_forwarding_bridge(group: MagicMock) -> tuple[SendspinAirPlayBridge, MagicMock]:
+    """Build a bridge that owns an anchored-but-not-yet-started stream and group."""
+    bridge = _make_bridge(clock_now_us=SENDSPIN_EPOCH_US)
+    bridge._drop_until_us = SENDSPIN_EPOCH_US + COLD_LEAD_MS * 1_000
+    bridge._airplay_stream_start_task = asyncio.current_task()
+    stream = _make_anchor_stream()
+    bridge._airplay_stream = stream
+    bridge._sendspin_client = MagicMock(group=group)
+    stream.send_metadata = AsyncMock()
+    return bridge, stream
+
+
+async def test_anchor_forwards_group_metadata_ahead_of_the_start() -> None:
+    """
+    The anchor hands the group's now-playing metadata to the stream before START.
+
+    A bridged stream never rides the queue's own metadata path, and the binary
+    carries whatever it already holds into its first-START placeholder, so a
+    receiver shows the binary's build name unless real metadata landed first.
+    """
+    bridge, stream = _make_group_forwarding_bridge(
+        _make_metadata_group(
+            metadata=Metadata(
+                title="Kid Myself",
+                artist="John Morgan",
+                album="An Album",
+                artwork_url="https://example/art.jpg",
+                track_duration=183_500,
+                playback_speed=1000,
+                track_progress=42_000,
+            ),
+            track_progress_ms=42_000,
+        )
+    )
+    calls: list[str] = []
+
+    async def _record_start(start_unix_ms: int = 0, **_kwargs: object) -> int:
+        calls.append("start")
+        return start_unix_ms
+
+    stream.start = AsyncMock(side_effect=_record_start)
+    stream.send_metadata = AsyncMock(side_effect=lambda *_a, **_kw: calls.append("metadata"))
+
+    with patch(
+        "music_assistant.providers.airplay.sendspin_bridge.cli_clock_time",
+        return_value=UNIX_NOW_S,
+    ):
+        assert await bridge._anchor_stream(stream, warm=False) is True
+
+    assert calls == ["metadata", "start"]
+    progress, media = stream.send_metadata.await_args.args
+    assert progress == 42
+    assert (media.title, media.artist, media.album) == ("Kid Myself", "John Morgan", "An Album")
+    assert media.duration == 183
+    assert media.image_url == "https://example/art.jpg"
+    assert media.queue_item_id
+    stream.send_metadata.assert_awaited_once()
+    assert stream.send_metadata.await_args.kwargs["defer_artwork_followup"] is True
+
+
+async def test_anchor_forwards_the_group_name_when_the_group_has_no_metadata() -> None:
+    """A source publishing no now-playing item still gets an identity over the placeholder."""
+    bridge, stream = _make_group_forwarding_bridge(_make_metadata_group())
+
+    with patch(
+        "music_assistant.providers.airplay.sendspin_bridge.cli_clock_time",
+        return_value=UNIX_NOW_S,
+    ):
+        assert await bridge._anchor_stream(stream, warm=False) is True
+
+    progress, media = stream.send_metadata.await_args.args
+    assert progress is None
+    assert media.title == "Living Room"
+
+
+async def test_a_failing_metadata_forward_never_costs_the_anchor_its_speaker() -> None:
+    """Now-playing text is cosmetic: its failure must not abort the anchor."""
+    group = _make_metadata_group()
+    group.group_role = MagicMock(side_effect=RuntimeError("role exploded"))
+    bridge, stream = _make_group_forwarding_bridge(group)
+
+    with patch(
+        "music_assistant.providers.airplay.sendspin_bridge.cli_clock_time",
+        return_value=UNIX_NOW_S,
+    ):
+        assert await bridge._anchor_stream(stream, warm=False) is True
+
+    stream.send_metadata.assert_not_awaited()
+    stream.start.assert_awaited_once()
 
 
 async def test_a_superseded_cold_start_never_reaches_the_receiver() -> None:

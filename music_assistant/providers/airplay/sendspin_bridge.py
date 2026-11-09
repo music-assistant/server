@@ -27,7 +27,9 @@ from aiosendspin.models.core import ClientHelloPayload
 from aiosendspin.models.core import DeviceInfo as SendspinDeviceInfo
 from aiosendspin.models.player import ClientHelloPlayerSupport, SupportedAudioFormat
 from aiosendspin.models.types import AudioCodec, PlayerCommand
+from aiosendspin.server.roles import MetadataGroupRole
 from music_assistant_models.enums import IdentifierType, PlaybackState
+from music_assistant_models.player import PlayerMedia
 
 from music_assistant.constants import CONF_SYNC_ADJUST
 from music_assistant.helpers.util import is_valid_mac_address
@@ -61,6 +63,7 @@ if TYPE_CHECKING:
         SendspinServer,
     )
     from aiosendspin.server.roles import AudioChunk
+    from aiosendspin.server.roles.metadata import Metadata
 
     from music_assistant.models.player import Player
     from music_assistant.providers.sendspin.provider import SendspinProvider
@@ -883,6 +886,62 @@ class SendspinAirPlayBridge:
             )
             return False
 
+    async def _push_group_metadata(self, stream: AirPlayStream) -> None:
+        """
+        Forward the group's now-playing metadata to the stream ahead of its START.
+
+        A bridged stream is not fed by the normal playback path: at connect time
+        the player's own media is not yet populated, and no media-update fires
+        for the track the group was already playing, so the receiver keeps the
+        CLI binary's first-START placeholder ("cliairplay") until the first
+        track change. The group's metadata role holds the truth the instant the
+        stream anchors, so it is read here; delivered ahead of the anchor's
+        START it also lets the binary's placeholder carry the real title.
+
+        :param stream: The connected AirPlay stream about to be anchored.
+        """
+        try:
+            group = self.sendspin_group
+            if group is None:
+                return
+            role = group.group_role("metadata")
+            metadata: Metadata | None = None
+            progress_ms: int | None = None
+            if isinstance(role, MetadataGroupRole):
+                metadata = role.metadata
+                progress_ms = role.track_progress
+            if metadata is None or not (metadata.title or metadata.artist):
+                # A source that publishes no now-playing item still gets a
+                # stable identity over the binary's build-name placeholder.
+                media = PlayerMedia(
+                    uri=f"sendspin://group/{group.group_id}",
+                    title=group.group_name or "Sendspin stream",
+                )
+                progress = None
+            else:
+                media = PlayerMedia(
+                    uri=f"sendspin://group/{group.group_id}",
+                    title=metadata.title or group.group_name or "Sendspin stream",
+                    artist=metadata.artist,
+                    album=metadata.album,
+                    duration=metadata.track_duration // 1000 if metadata.track_duration else None,
+                    image_url=metadata.artwork_url,
+                    queue_item_id=f"sendspin:{metadata.title}|{metadata.artist}|{metadata.album}",
+                )
+                progress = progress_ms // 1000 if progress_ms is not None else None
+            # Same budget discipline as the stream's own pre-START push: artwork
+            # that misses the bundle follows on a background task rather than
+            # holding up the anchor the group is waiting on.
+            await stream.send_metadata(progress, media, defer_artwork_followup=True)
+        except Exception:
+            # Now-playing text is cosmetic: a bridge that cannot read it must
+            # still play, so this never travels up into the anchor path.
+            self.logger.debug(
+                "Could not forward group metadata to %s",
+                self.airplay_player.display_name,
+                exc_info=True,
+            )
+
     async def _anchor_stream(self, stream: AirPlayStream, *, warm: bool) -> bool:
         """
         Anchor a connected stream on the Sendspin timeline and release the writer.
@@ -897,6 +956,12 @@ class SendspinAirPlayBridge:
             queued audio the new anchor has to clear.
         :return: True when the stream is anchored, False when superseded.
         """
+        # Now-playing metadata rides before the clock settle and the START
+        # below: the binary carries whatever it already holds into its
+        # first-START placeholder, so the receiver shows the group's real
+        # title from the first instant of the session, not from the first
+        # track change.
+        await self._push_group_metadata(stream)
         readiness, ready_at_unix_ms = await stream.wait_clock_ready(
             timeout=AIRPLAY_CLOCK_READY_TIMEOUT_MS / 1000
         )
