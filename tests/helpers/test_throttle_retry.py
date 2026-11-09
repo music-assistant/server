@@ -572,13 +572,13 @@ class TestSetRateLimit:
         throttler.set_rate_limit(rate_limit=30, period=30)
         assert throttler.cooldown_remaining == pytest.approx(3600)
 
-    async def test_rate_limit_holds_back_a_second_call(self) -> None:
+    async def test_rate_limit_holds_back_a_second_call(self, fake_clock: FakeClock) -> None:
         """A second call within the period waits for a free slot."""
         throttler = ThrottlerManager(rate_limit=1, period=0.2)
         async with throttler.acquire() as delay:
             assert delay == 0
         async with throttler.acquire() as delay:
-            assert delay >= 0.2
+            assert delay == pytest.approx(0.2)
 
     async def test_new_rate_limit_applies(self) -> None:
         """A raised rate limit lets a second call within the period through right away."""

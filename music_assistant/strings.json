@@ -60,6 +60,10 @@
       "label": "Automatically play (resume on power on)",
       "description": "When this player is turned ON, automatically start playing (if there are items in the queue)."
     },
+    "idle_power_off": {
+      "label": "Power off when idle (minutes)",
+      "description": "Turn this player off once it has been stopped for this many minutes. Set to 0 to never turn it off automatically.\n\nMusic Assistant only sees playback it knows about, so a device that is in use in another way, such as a TV or receiver on another input, may be turned off while in use."
+    },
     "crossfade_different_sample_rates": {
       "label": "Allow crossfades between tracks of different sample rates",
       "description": "Enable this option to allow crossfades between tracks that have different sample rates (e.g. 44.1kHz to 48kHz). \n\n Disable this option if you experience audio glitches during transitions between tracks."
@@ -324,6 +328,7 @@
     },
     "power_control": {
       "label": "Power Control",
+      "description": "A Home Assistant entity chosen here, such as a smart plug, is also used to turn on this player when it is offline.",
       "options": {
         "native": "Native power control",
         "none": "None",
@@ -451,6 +456,13 @@
     },
     "tts_engine_unavailable": {
       "label": "No text-to-speech engine is available. Set up a plugin that provides text-to-speech, for example the Home Assistant plugin with a TTS entity."
+    },
+    "image_engine": {
+      "label": "Image engine",
+      "description": "The image generation engine used for this feature."
+    },
+    "image_engine_unavailable": {
+      "label": "No image engine is available. Set up a plugin that can generate images, for example the Home Assistant plugin with an AI task entity that supports images, or the OpenAI Compatible plugin with an image model selected."
     }
   },
   "config_categories": {
@@ -1231,9 +1243,11 @@
     "role_in_use": "This role is still assigned to one or more users. Give them another role first.",
     "role_scope_not_allowed": "A custom role can not be granted this permission.",
     "playlist_not_owned": "Only the owner of this playlist may change it.",
+    "playlist_changed": "The playlist changed in the meantime. Please try again.",
     "playlist_follows_source": "This playlist follows the sharing of its music source.",
     "playlist_owner_must_be_member": "Only a member can own a playlist",
     "source_available_to_everyone": "{0} is always available to everyone",
+    "provider_can_not_be_disabled": "{0} cannot be disabled",
     "source_sharing_owner_only": "Only the owner of a music source may share it",
     "source_owner_change_admin_only": "Only an administrator can change who owns a music source",
     "source_no_owner_admin_only": "Only an administrator can manage a music source that has no owner",
@@ -1245,6 +1259,7 @@
     "login_failed": "Login failed. Please check your credentials and try again.",
     "audio_error": "An error occurred while processing audio.",
     "provider_stream_limit": "{0} has reached its limit of {1} simultaneous streams. Stop playback on another player and try again.",
+    "provider_stream_held": "{0} is already playing on {1}. Stop playback there first.",
     "queue_empty": "The queue is empty.",
     "unsupported_feature": "This feature is not supported.",
     "unsupported_system": "This is not supported on this system.",

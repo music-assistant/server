@@ -72,7 +72,9 @@
     "description": "Stream music from your OpenSubsonic compatible server — your own cloud jukebox."
   },
   "errors": {
+    "certificate_not_trusted": "The certificate of {0} is not trusted.",
     "connect_failed": "Failed to connect to {0}, check your settings.",
-    "create_playlist_failed": "Failed to create playlist with name '{0}'."
+    "create_playlist_failed": "Failed to create playlist with name '{0}'.",
+    "secure_connection_failed": "Could not open a secure connection to {0}. If the server only serves plain http, use an http:// address."
   }
 }

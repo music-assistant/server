@@ -339,12 +339,25 @@ async def test_a_kept_session_on_another_account_forces_a_repair(
     assert setup_data[CONF_SOLOIST_SESSION_DIR] == "spotify/pairing/flow1"
 
 
-async def test_a_fresh_setup_preselects_librespot(
+async def test_a_fresh_setup_preselects_soloist(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A fresh install lands on librespot: the short path, no consent or pairing."""
+    """A fresh install lands on soloist, the engine that serves every account."""
     monkeypatch.setattr(setup_flow, "verify_platform_supported", MagicMock())
     session = _make_session(tmp_path, [{CONF_PLAYBACK_BACKEND: BACKEND_LIBRESPOT}])
+    monkeypatch.setattr(setup_flow, "_authorize_playback", AsyncMock(return_value="creds"))
+    await setup_flow._setup_playback(session, {}, "spotify-user")
+    entries = session.form.await_args_list[0].args[0]
+    assert entries[0].value == BACKEND_SOLOIST
+
+
+async def test_a_reconfigure_without_a_stored_choice_preselects_librespot(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An instance predating the backend choice runs librespot, so a reconfigure keeps it there."""
+    monkeypatch.setattr(setup_flow, "verify_platform_supported", MagicMock())
+    session = _make_session(tmp_path, [{CONF_PLAYBACK_BACKEND: BACKEND_LIBRESPOT}])
+    session.context.kind = "reconfigure"
     monkeypatch.setattr(setup_flow, "_authorize_playback", AsyncMock(return_value="creds"))
     await setup_flow._setup_playback(session, {}, "spotify-user")
     entries = session.form.await_args_list[0].args[0]
@@ -358,7 +371,7 @@ async def test_backend_choice_uses_expanded_options_for_card_rendering(
     The backend choice shows options as expanded cards with descriptions.
 
     The single ConfigEntry uses expanded_options=True for visual grouping,
-    preselects the stored choice or librespot by default.
+    preselects the stored choice or soloist by default.
     """
     monkeypatch.setattr(setup_flow, "verify_platform_supported", MagicMock())
     session = _make_session(tmp_path, [{CONF_PLAYBACK_BACKEND: BACKEND_LIBRESPOT}])
@@ -370,7 +383,7 @@ async def test_backend_choice_uses_expanded_options_for_card_rendering(
     assert entry.key == CONF_PLAYBACK_BACKEND
     assert entry.expanded_options is True
     assert [opt.value for opt in entry.options] == [BACKEND_SOLOIST, BACKEND_LIBRESPOT]
-    assert entry.default_value == BACKEND_LIBRESPOT
+    assert entry.default_value == BACKEND_SOLOIST
 
 
 async def test_a_stored_choice_is_preselected(
@@ -387,6 +400,7 @@ async def test_a_stored_choice_is_preselected(
             {CONF_SOLOIST_API_KEY: "k" * 20},
         ],
     )
+    session.context.kind = "reconfigure"
     await setup_flow._setup_playback(
         session, {CONF_PLAYBACK_BACKEND: BACKEND_SOLOIST}, "spotify-user"
     )
@@ -478,6 +492,7 @@ def _make_session(tmp_path: Path, form_answers: list[dict[str, Any]]) -> MagicMo
     session.form = AsyncMock(side_effect=form_answers)
     session.progress_until = AsyncMock(side_effect=_run_awaitable)
     session.mass.storage_path = str(tmp_path)
+    session.context.kind = "setup"
     session.context.instance_id = None
     session.flow_id = "flow1"
     return session

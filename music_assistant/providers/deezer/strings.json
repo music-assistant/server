@@ -2,11 +2,15 @@
   "config_entries": {
     "arl_token": {
       "label": "ARL token",
-      "description": "Your Deezer ARL cookie token. When changing these settings later, leave it empty to keep the token you already saved. See https://www.dumpmedia.com/deezplus/deezer-arl.html"
+      "description": "Your Deezer ARL cookie token. When changing these settings later, leave it empty to keep the token you already saved."
     },
     "family_profile": {
       "label": "Deezer profile",
       "description": "The profile of your Deezer Family whose library this source uses."
+    },
+    "sync_queue": {
+      "label": "Continue in the Deezer app",
+      "description": "Save what plays from Deezer in Music Assistant as your Deezer queue, so the Deezer app continues it the next time you open it. Uses an unofficial Deezer interface."
     }
   },
   "setup_flow": {

@@ -14,6 +14,7 @@ from music_assistant_models.constants import (
 from music_assistant_models.enums import PlayerFeature, PlayerType
 
 from music_assistant.constants import (
+    CONF_IDLE_POWER_OFF,
     CONF_MUTE_CONTROL,
     CONF_POWER_CONTROL,
     CONF_VOLUME_CONTROL,
@@ -130,3 +131,11 @@ async def test_group_player_only_gets_a_power_control(mass_minimal: MusicAssista
     """A group's volume and mute go to its members, so it is only offered the power control."""
     entries = _entries_by_key(mass_minimal, _ALL_FEATURES, player_type=PlayerType.GROUP)
     assert set(entries) == {CONF_POWER_CONTROL}
+
+
+async def test_idle_power_off_follows_the_power_control(mass_minimal: MusicAssistant) -> None:
+    """A player gets the idle power off time, which needs a power control to act through."""
+    entry = _entries_by_key(mass_minimal, _ALL_FEATURES)[CONF_IDLE_POWER_OFF]
+    assert entry.default_value == 0
+    assert entry.depends_on == CONF_POWER_CONTROL
+    assert entry.depends_on_value_not == PLAYER_CONTROL_NONE

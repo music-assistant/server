@@ -479,7 +479,7 @@ class MediaResolver:
         podcast: Podcast | None,
         episode: PodcastEpisode | str | None,
         userid: str | None = None,
-        start_from_beginning: bool = False,
+        start_position: float | None = None,
     ) -> UniqueList[PodcastEpisode]:
         """
         Return the next episode(s) and resume point for the given podcast.
@@ -490,8 +490,8 @@ class MediaResolver:
             a case-insensitive substring of an episode name, or one of the
             reserved lowercase keywords `"latest"` / `"newest"`.
         :param userid: User whose resume position should be applied.
-        :param start_from_beginning: When True, the resolved episode starts at position 0,
-            ignoring any saved resume position. The stored progress itself is left untouched.
+        :param start_position: Position in seconds the resolved episode starts at, instead of
+            any saved resume position. The stored progress itself is left untouched.
         """
         if podcast is None and isinstance(episode, str | NoneType):
             raise InvalidDataError("Either podcast or episode must be provided")
@@ -502,7 +502,7 @@ class MediaResolver:
                 "Fetching resume point to play for Podcast episode %s",
                 episode.name,
             )
-            await self._set_episode_resume_point(episode, userid, start_from_beginning)
+            await self._set_episode_resume_point(episode, userid, start_position)
             return UniqueList([episode])
         # podcast with optional start episode requested
         self.logger.debug(
@@ -523,7 +523,7 @@ class MediaResolver:
                 raise InvalidDataError(
                     f"Unable to resolve episode to play for Podcast {podcast.name}"
                 )
-            await self._set_episode_resume_point(latest, userid, start_from_beginning)
+            await self._set_episode_resume_point(latest, userid, start_position)
             return UniqueList([latest])
         # if a episode was provided, a user explicitly selected a episode to play
         # so we need to find the index of the episode in the list
@@ -568,10 +568,10 @@ class MediaResolver:
                 resolved_episode = next((x for x in all_episodes), None)
         if resolved_episode is None:
             raise InvalidDataError(f"Unable to resolve episode to play for Podcast {podcast.name}")
-        if start_from_beginning:
-            # play the resolved episode from position 0 without touching stored progress
+        if start_position is not None:
+            # play the resolved episode from the position without touching stored progress
             resolved_episode.fully_played = False
-            resolved_episode.resume_position_ms = 0
+            resolved_episode.resume_position_ms = int(start_position * 1000)
         # get the index of the episode
         episode_index = all_episodes.index(resolved_episode)
         # return the (remaining) episode(s) to play
@@ -726,17 +726,17 @@ class MediaResolver:
         return list(audiobooks) + books_with_collection_sorted
 
     async def _set_episode_resume_point(
-        self, episode: PodcastEpisode, userid: str | None, start_from_beginning: bool
+        self, episode: PodcastEpisode, userid: str | None, start_position: float | None
     ) -> None:
         """
         Apply the resume point to a resolved podcast episode.
 
-        When start_from_beginning is set the episode starts at position 0 and the resume
-        lookup is skipped; the stored progress itself is left untouched.
+        A given start position replaces it and skips the resume lookup; the stored progress
+        itself is left untouched.
         """
-        if start_from_beginning:
+        if start_position is not None:
             episode.fully_played = False
-            episode.resume_position_ms = 0
+            episode.resume_position_ms = int(start_position * 1000)
             return
         fully_played, resume_position_ms = await self.mass.music.get_resume_position(
             episode, userid=userid
@@ -1087,10 +1087,10 @@ class MediaResolver:
         queue_id: str | None = None,
         sort_field: SortField | None = None,
         sort_direction: SortDirection | None = None,
-        start_from_beginning: bool = False,
         keep_preceding_items: bool = False,
         artist_tracks: list[Track] | None = None,
         played_copy: tuple[str, str] | None = None,
+        start_position: float | None = None,
     ) -> list[ResolvedItem]:
         """
         Resolve/unwrap media items to enqueue, each with the origin it was played from.
@@ -1109,7 +1109,6 @@ class MediaResolver:
         :param sort_field: For a playlist/album, the sort field of its tracks listing to play
             the tracks in before applying start_item; the listing's default when omitted.
         :param sort_direction: Sort direction, the field's default when omitted.
-        :param start_from_beginning: Ignore any saved resume position for a podcast episode.
         :param keep_preceding_items: For a playlist/album, move the tracks before start_item
             behind the rest instead of dropping them, so the full item is returned with
             start_item first.
@@ -1118,6 +1117,8 @@ class MediaResolver:
         :param played_copy: For an audiobook played on its own, the (provider instance, item id)
             of the copy the play request named, which the library item it resolved to no longer
             names.
+        :param start_position: Position in seconds to start an audiobook or episode at, or the
+            episode a podcast resolves to, instead of its resume position.
         """
         # resolve Itemmapping to full media item
         if isinstance(media_item, ItemMapping):
@@ -1166,10 +1167,13 @@ class MediaResolver:
             return self._played_from(media_item, genre_tracks, pin=False)
         if media_item.media_type == MediaType.AUDIOBOOK:
             media_item = cast("Audiobook", media_item)
-            # ensure we grab the correct/latest resume point info
-            media_item.resume_position_ms = await self.get_audiobook_resume_point(
-                media_item, start_item, userid=userid, pinned=played_copy
-            )
+            if start_position is not None:
+                media_item.resume_position_ms = int(start_position * 1000)
+            else:
+                # ensure we grab the correct/latest resume point info
+                media_item.resume_position_ms = await self.get_audiobook_resume_point(
+                    media_item, start_item, userid=userid, pinned=played_copy
+                )
             return [ResolvedItem(media_item, self._pinned_origin(played_copy))]
         if media_item.media_type == MediaType.COLLECTION:
             collection_item_media_type = get_collection_item_media_type_from_item_id(
@@ -1201,7 +1205,7 @@ class MediaResolver:
         if media_item.media_type == MediaType.PODCAST:
             media_item = cast("Podcast", media_item)
             episodes = await self.get_next_podcast_episodes(
-                media_item, start_item, userid=userid, start_from_beginning=start_from_beginning
+                media_item, start_item, userid=userid, start_position=start_position
             )
             self._mark_container_played(media_item, episodes, userid, queue_id)
             return self._played_from(media_item, episodes)
@@ -1210,12 +1214,12 @@ class MediaResolver:
             return [
                 ResolvedItem(episode, self._pinned_origin(self._own_copy(episode)))
                 for episode in await self.get_next_podcast_episodes(
-                    None, media_item, userid=userid, start_from_beginning=start_from_beginning
+                    None, media_item, userid=userid, start_position=start_position
                 )
             ]
         if media_item.media_type == MediaType.FOLDER:
             media_item = cast("BrowseFolder", media_item)
-            return await self._get_folder_items(media_item, userid, queue_id, start_from_beginning)
+            return await self._get_folder_items(media_item, userid, queue_id)
         if is_finite_radio(media_item):
             # resolved up front like a playlist instead of played as a live stream
             radio_tracks = await self.get_tracks_for_playback(media_item)
@@ -1231,7 +1235,6 @@ class MediaResolver:
         folder: BrowseFolder,
         userid: str | None = None,
         queue_id: str | None = None,
-        start_from_beginning: bool = False,
     ) -> list[ResolvedItem]:
         """Fetch the playable items for the given browse folder, each played from that folder."""
         self.logger.info(
@@ -1251,12 +1254,7 @@ class MediaResolver:
             try:
                 # recursively resolve every child, so a folder of podcast episodes or
                 # radio stations plays just like a folder of tracks
-                resolved = await self._resolve_media_items(
-                    item,
-                    userid=userid,
-                    queue_id=queue_id,
-                    start_from_beginning=start_from_beginning,
-                )
+                resolved = await self._resolve_media_items(item, userid=userid, queue_id=queue_id)
             except MediaNotFoundError:
                 # best-effort: skip child items/subfolders that are empty or unreachable
                 # so a single bad entry does not abort playback of the whole folder

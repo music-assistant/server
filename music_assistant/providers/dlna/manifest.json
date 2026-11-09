@@ -5,6 +5,7 @@
   "name": "DLNA",
   "description": "Stream music to supported UPnP/DLNA-compatible devices.",
   "codeowners": ["@music-assistant"],
+  "tier": "core",
   "credits": [
     "[Asyncio UPnP Client library by Steven Looman](https://github.com/StevenLooman/async_upnp_client)"
   ],

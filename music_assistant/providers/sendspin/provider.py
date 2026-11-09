@@ -148,6 +148,10 @@ SESSION_PAIRING_EVICTION_GRACE = 120.0
 HELD_ELSEWHERE_GOODBYE_REASONS = frozenset(
     {GoodbyeReason.ANOTHER_SERVER, GoodbyeReason.CONCURRENT_ATTEMPT}
 )
+# The device refused this server and will not reconnect on its own, so it is paired by dialing it.
+REFUSED_GOODBYE_REASONS = frozenset(
+    {GoodbyeReason.UNPAIRED, GoodbyeReason.PAIRING_REQUIRED, GoodbyeReason.UNAUTHORIZED}
+)
 
 PIN_REQUEST_FEEDBACK_TIMEOUT = 2
 PIN_RETRY_IDLE_TIMEOUT = 300
@@ -380,6 +384,7 @@ class SendspinProvider(PlayerProvider):
     _held_elsewhere: set[str]
     _held_unapproved: set[str]
     _held_paired: set[str]
+    _refused_here: dict[str, GoodbyeReason]
     _unencrypted_clients: set[str]
     _unloading: bool
     _hass_available: bool
@@ -408,6 +413,7 @@ class SendspinProvider(PlayerProvider):
         self._held_elsewhere = set()
         self._held_unapproved = set()
         self._held_paired = set()
+        self._refused_here = {}
         self._unencrypted_clients = set()
         self._pin_sessions: dict[str, PinPairingSession] = {}
         self._pending_pairing_evictions: set[str] = set()
@@ -538,8 +544,12 @@ class SendspinProvider(PlayerProvider):
                 self.mass.loop.call_soon(self._hass_auto_pairer.on_client_connected, client_id)
             case ClientDisconnectedEvent(client_id, goodbye_reason):
                 self._set_held_elsewhere(
-                    client_id, held=goodbye_reason in HELD_ELSEWHERE_GOODBYE_REASONS
+                    client_id,
+                    held=goodbye_reason in HELD_ELSEWHERE_GOODBYE_REASONS | REFUSED_GOODBYE_REASONS,
                 )
+                if goodbye_reason in REFUSED_GOODBYE_REASONS and client_id in self._held_elsewhere:
+                    self._refused_here[client_id] = goodbye_reason
+                    self.mass.loop.call_soon(self._refresh_player_state, client_id)
                 self._pending_pairing_evictions.add(client_id)
                 self.mass.call_later(
                     SESSION_PAIRING_EVICTION_GRACE,
@@ -779,13 +789,21 @@ class SendspinProvider(PlayerProvider):
         """Return whether the given player_id belongs to a registered virtual player."""
         return player_id in self._virtual_players
 
+    def is_held_elsewhere(self, client_id: str) -> bool:
+        """Return whether another server holds this client."""
+        return client_id in self._held_elsewhere and client_id not in self._refused_here
+
     def is_held_unapproved(self, client_id: str) -> bool:
-        """Return whether another server holds this client, neither paired nor approved here."""
+        """Return whether the client is held elsewhere or refused us, unpaired and unapproved."""
         return client_id in self._held_unapproved
 
     def is_held_unpaired(self, client_id: str) -> bool:
-        """Return whether another server holds this client and this server has not paired it."""
+        """Return whether the client is held elsewhere or refused us, and is not paired here."""
         return client_id in self._held_elsewhere and client_id not in self._held_paired
+
+    def refused_reason(self, client_id: str) -> GoodbyeReason | None:
+        """Return why this client refused this server, while it will not reconnect on its own."""
+        return self._refused_here.get(client_id)
 
     def get_pin_session(self, client_id: str) -> PinPairingSession | None:
         """Return the in-flight or just-finished PIN pairing session for a client."""
@@ -944,6 +962,11 @@ class SendspinProvider(PlayerProvider):
             await self.server_api.trust_unpaired(
                 client_id, approved_roles=frozenset({"source"} if allow_input else ())
             )
+            # A device that refused this server only comes back when dialed.
+            if client_id in self._refused_here and (
+                url := self.server_api.get_client_url(client_id)
+            ):
+                self.server_api.connect_to_client(url)
         else:
             await self.server_api.untrust_unpaired(client_id)
         await self._refresh_player(client_id)
@@ -1560,6 +1583,7 @@ class SendspinProvider(PlayerProvider):
         self._held_elsewhere.discard(client_id)
         self._held_unapproved.discard(client_id)
         self._held_paired.discard(client_id)
+        self._refused_here.pop(client_id, None)
 
     async def _refresh_held_trust(self, client_id: str) -> None:
         store = self.server_api.pairing_store

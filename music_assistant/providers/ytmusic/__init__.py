@@ -19,9 +19,9 @@ from typing import TYPE_CHECKING, Any, cast
 from urllib.parse import parse_qs, unquote, urlparse
 
 import ytmusicapi
-from aiohttp import ClientError, ClientSession, ClientTimeout, DummyCookieJar
+from aiohttp import ClientError
 from duration_parser import parse as parse_str_duration
-from music_assistant_models.config_entries import ConfigEntry
+from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption
 from music_assistant_models.enums import (
     AlbumType,
     ConfigEntryType,
@@ -70,7 +70,6 @@ from music_assistant.constants import (
 )
 from music_assistant.controllers.cache import use_cache
 from music_assistant.controllers.music.constants import CACHE_CATEGORY_SEARCH_RESULTS
-from music_assistant.helpers.aiohttp_client import create_clientsession
 from music_assistant.helpers.util import (
     import_module_in_thread,
     infer_album_type,
@@ -118,15 +117,13 @@ if TYPE_CHECKING:
 CONF_INCLUDE_VIDEOS = "include_videos_in_search"
 CONF_COOKIE = "cookie"
 CONF_PO_TOKEN_SERVER_URL = "po_token_server_url"  # noqa: S105 - URL
+CONF_STREAM_PROFILE = "stream_profile"
+STREAM_PROFILE_STABLE = "stable"
+STREAM_PROFILE_FAST = "fast"
 DEFAULT_PO_TOKEN_SERVER_URL = "http://127.0.0.1:4416"  # noqa: S105 - URL
 
 YTM_DOMAIN = "https://music.youtube.com"
 YTM_COOKIE_DOMAIN = ".youtube.com"
-ROTATE_COOKIES_URL = "https://accounts.youtube.com/RotateCookies"
-# the interval YouTube's own pages refresh the session at
-ROTATE_COOKIES_INTERVAL = 600
-# a refresh is best effort, so a stalled one must not hold up provider setup
-ROTATE_COOKIES_TIMEOUT = 15
 YTM_BASE_URL = f"{YTM_DOMAIN}/youtubei/v1/"
 VARIOUS_ARTISTS_YTM_ID = "UCUTXlgdcKU5vfzFqHOWIvkA"
 # Playlist ID's are not unique across instances for lists like 'Liked videos', 'SuperMix' etc.
@@ -206,8 +203,6 @@ class YoutubeMusicProvider(RecommendationPayloadMixin, MusicProvider):
     _yt_user: str | None
     _cookie: str
     _yt_dlp_module = None
-    _rotate_session: ClientSession | None = None
-    _keep_alive_task: asyncio.Task[None] | None = None
 
     @property
     def max_concurrent_streams(self) -> int:
@@ -222,6 +217,16 @@ class YoutubeMusicProvider(RecommendationPayloadMixin, MusicProvider):
                 key=CONF_INCLUDE_VIDEOS,
                 type=ConfigEntryType.BOOLEAN,
                 default_value=False,
+            ),
+            ConfigEntry(
+                key=CONF_STREAM_PROFILE,
+                type=ConfigEntryType.STRING,
+                options=[
+                    ConfigValueOption(STREAM_PROFILE_STABLE),
+                    ConfigValueOption(STREAM_PROFILE_FAST),
+                ],
+                default_value=STREAM_PROFILE_STABLE,
+                advanced=True,
             ),
         )
 
@@ -257,32 +262,8 @@ class YoutubeMusicProvider(RecommendationPayloadMixin, MusicProvider):
                 break
         else:
             self.language = "en"
-        self._rotate_session = create_clientsession(
-            self.mass,
-            cookie_jar=DummyCookieJar(),
-            timeout=ClientTimeout(total=ROTATE_COOKIES_TIMEOUT),
-        )
-        try:
-            # a cookie that sat unused (e.g. while MA was offline) needs fresh timestamps first
-            with suppress(ClientError, TimeoutError):
-                await self._rotate_cookies()
-            has_premium = await self._user_has_ytm_premium()
-        except BaseException:
-            # the provider is only registered once init succeeds, so unload won't run
-            await self._rotate_session.close()
-            raise
-        if not has_premium:
-            await self._rotate_session.close()
+        if not await self._user_has_ytm_premium():
             raise LoginFailed("User does not have Youtube Music Premium")
-        self._keep_alive_task = self.mass.create_task(self._keep_session_alive())
-
-    async def unload(self, is_removed: bool = False) -> None:
-        """Handle unload/close of the provider."""
-        if self._keep_alive_task:
-            self._keep_alive_task.cancel()
-        if self._rotate_session and not self._rotate_session.closed:
-            await self._rotate_session.close()
-        await super().unload(is_removed)
 
     async def update_config(self, config: ProviderConfig, changed_keys: set[str]) -> None:
         """Handle a config update."""
@@ -1049,6 +1030,7 @@ class YoutubeMusicProvider(RecommendationPayloadMixin, MusicProvider):
     def _initialize_headers(self) -> None:
         """Initialize the headers to include in the requests."""
         headers = {
+            # mimics a browser on the YouTube Music website, which has no public API
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:72.0) Gecko/20100101 Firefox/72.0",
             "Accept": "*/*",
             "Accept-Language": "en-US,en;q=0.5",
@@ -1350,6 +1332,22 @@ class YoutubeMusicProvider(RecommendationPayloadMixin, MusicProvider):
         self, item_id: str, *, require_login: bool = False
     ) -> dict[str, Any]:
         """Figure out the stream URL to use and return the highest quality."""
+        youtube_args: dict[str, list[str]] = {
+            "skip": ["translated_subs", "dash"],
+            "player_client": ["web_music"],
+        }
+        # Login checks and brand accounts need the webpage and config that fast skips.
+        # Premium web_music formats stream without a GVS PO token; missing_pot keeps them.
+        if (
+            self.config.get_value(CONF_STREAM_PROFILE) == STREAM_PROFILE_FAST
+            and not require_login
+            and self._yt_user is None
+        ):
+            youtube_args |= {
+                "player_skip": ["webpage", "configs", "initial_data"],
+                "fetch_pot": ["never"],
+                "formats": ["missing_pot"],
+            }
 
         def _extract_best_stream_url_format() -> tuple[dict[str, Any], dict[str, str]]:
             if self._yt_dlp_module is None:
@@ -1365,10 +1363,7 @@ class YoutubeMusicProvider(RecommendationPayloadMixin, MusicProvider):
                     "youtubepot-bgutilhttp": {
                         "base_url": [self._po_token_server_url],
                     },
-                    "youtube": {
-                        "skip": ["translated_subs", "dash"],
-                        "player_client": ["web_music"],
-                    },
+                    "youtube": youtube_args,
                 },
             }
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -1394,19 +1389,19 @@ class YoutubeMusicProvider(RecommendationPayloadMixin, MusicProvider):
                 )
                 if not stream_format:
                     raise UnplayableMediaError("No stream formats found")
-                rotated: dict[str, str] = {}
+                changed: dict[str, str] = {}
                 if _has_login_cookie(ydl.cookiejar):
-                    # only what YouTube changed, so a rotation that ran meanwhile isn't undone
-                    rotated = {
+                    # only what YouTube changed, so cookies another stream stored aren't undone
+                    changed = {
                         cookie.name: cookie.value
                         for cookie in ydl.cookiejar
                         if cookie.domain.endswith("youtube.com")
                         and sent.get(cookie.name) != cookie.value
                     }
-                return stream_format, rotated
+                return stream_format, changed
 
-        stream_format, rotated = await asyncio.to_thread(_extract_best_stream_url_format)
-        self._store_cookies(rotated)
+        stream_format, changed = await asyncio.to_thread(_extract_best_stream_url_format)
+        self._store_cookies(changed)
         return stream_format
 
     def _get_item_mapping(self, media_type: MediaType, key: str, name: str) -> ItemMapping:
@@ -1438,44 +1433,9 @@ class YoutubeMusicProvider(RecommendationPayloadMixin, MusicProvider):
             self.logger.debug("PO Token server ping failed: %s", err)
             return False
 
-    async def _keep_session_alive(self) -> None:
-        """Keep the YouTube session from expiring while the provider is loaded."""
-        while True:
-            await asyncio.sleep(ROTATE_COOKIES_INTERVAL)
-            try:
-                await self._rotate_cookies()
-            except LoginFailed as err:
-                self.unload_with_error(err)
-                return
-            except (ClientError, TimeoutError) as err:
-                self.logger.debug("Could not refresh the YouTube session: %s", err)
-
-    async def _rotate_cookies(self) -> None:
-        """Refresh the session's short-lived cookies, like an open YouTube tab does."""
-        assert self._rotate_session is not None
-        async with self._rotate_session.post(
-            ROTATE_COOKIES_URL,
-            data='[000,"-0000000000000000000"]',
-            headers={
-                "Content-Type": "application/json",
-                "Origin": "https://accounts.youtube.com",
-                "Cookie": self._cookie,
-            },
-        ) as response:
-            if response.status == 401:
-                raise LoginFailed(
-                    "Your YouTube Music cookies have expired. "
-                    "Please reconfigure this provider with fresh cookies, "
-                    "and close the browser window you exported them from right away.",
-                    translation_key="cookies_expired",
-                    translation_owner=self.translation_owner,
-                )
-            response.raise_for_status()
-            self._store_cookies({name: morsel.value for name, morsel in response.cookies.items()})
-
     def _store_cookies(self, updates: dict[str, str]) -> None:
         """
-        Merge cookies YouTube set into the stored cookie, so the session stays valid.
+        Merge cookies YouTube changed during playback into the stored cookie.
 
         :param updates: Cookie names and values YouTube returned.
         """

@@ -94,6 +94,7 @@ class SqueezelitePlayerProvider(PlayerProvider):
         """Call after the provider has been loaded."""
         await super().loaded_in_mass()
         assert self.slimproto is not None  # for type checker
+        self.slimproto.cli.display_name_lookup = self._lookup_display_name
         # subscribe before starting the socket server: aioslimproto does not buffer
         # events, so a client connecting before we subscribe would be missed entirely
         self.slimproto.subscribe(self._handle_slimproto_event)
@@ -127,6 +128,11 @@ class SqueezelitePlayerProvider(PlayerProvider):
             slimplayer.player_id, CONF_SYNC_ADJUST, 0
         )
         return int(slimplayer.elapsed_milliseconds - sync_delay)
+
+    def _lookup_display_name(self, player_id: str) -> str | None:
+        """Return Music Assistant's display name for a player, or None if it does not know it."""
+        mass_player = self.mass.players.get_player(player_id)
+        return mass_player.display_name if mass_player else None
 
     async def _validate_all_ports(
         self, control_port: int, telnet_port: int | None, json_port: int | None
