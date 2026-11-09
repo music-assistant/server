@@ -8,6 +8,7 @@ import os
 from typing import TYPE_CHECKING, Any, cast
 
 import aiofiles
+from aiohttp import ClientTimeout
 from aiohttp.client_exceptions import ClientError
 from music_assistant_models.enums import ContentType, StreamType
 from music_assistant_models.errors import MediaNotFoundError
@@ -30,6 +31,8 @@ from .helpers.utils import is_library_id
 
 if TYPE_CHECKING:
     from .provider import AppleMusicProvider
+
+LICENSE_TIMEOUT = ClientTimeout(total=20)
 
 
 class AppleMusicStreamingManager:
@@ -128,8 +131,25 @@ class AppleMusicStreamingManager:
             ),
         }
 
-    def create_cdm(self) -> Cdm:
-        """Return a Widevine CDM on the device files of this provider."""
+    async def get_content_key(
+        self,
+        license_url: str,
+        pssh: PSSH,
+        request: dict[str, Any],
+        headers: dict[str, str] | None = None,
+        ssl: bool = True,
+    ) -> tuple[str, dict[str, Any]]:
+        """
+        Return the content key from a Widevine license of this account, with Apple's answer.
+
+        :param license_url: The license server to ask.
+        :param pssh: The Widevine PSSH of the content.
+        :param request: The fields the license server needs next to the challenge.
+        :param headers: Headers to send next to the decryption headers.
+        :param ssl: Whether the certificate of the license server is checked.
+        :raises MediaNotFoundError: If the answer holds no license or no content key.
+        :raises ClientResponseError: If the license server answers with an HTTP error.
+        """
         device = Device(
             client_id=self._decrypt_client_id,
             private_key=self._decrypt_private_key,
@@ -137,7 +157,38 @@ class AppleMusicStreamingManager:
             security_level=3,
             flags={},
         )
-        return Cdm.from_device(device)
+        cdm = Cdm.from_device(device)
+        session_id = cdm.open()
+        try:
+            challenge = cdm.get_license_challenge(session_id, pssh)
+            body = {
+                "challenge": base64.b64encode(challenge).decode("utf-8"),
+                "key-system": "com.widevine.alpha",
+                **request,
+            }
+            async with (
+                self.api.throttler.acquire(),
+                self.provider.mass.http_session.post(
+                    license_url,
+                    data=json.dumps(body),
+                    headers={**self.decryption_headers, **(headers or {})},
+                    ssl=ssl,
+                    timeout=LICENSE_TIMEOUT,
+                ) as response,
+            ):
+                response.raise_for_status()
+                answer = cast("dict[str, Any]", await response.json(loads=json_loads))
+            if not answer.get("license"):
+                raise MediaNotFoundError(
+                    f"No license (status {answer.get('status')}, error {answer.get('errorCode')})"
+                )
+            cdm.parse_license(session_id, answer["license"])
+            key = next((key for key in cdm.get_keys(session_id) if key.type == "CONTENT"), None)
+            if not key:
+                raise MediaNotFoundError("The license holds no content key")
+            return key.key.hex(), answer
+        finally:
+            cdm.close(session_id)
 
     async def _fetch_song_stream_metadata(self, song_id: str) -> dict[str, Any]:
         """Get the stream metadata for a song from Apple Music."""
@@ -199,19 +250,12 @@ class AppleMusicStreamingManager:
         ):
             self.logger.debug("Decryption key for %s found in cache.", item_id)
             return cast("str", decryption_key)
-        pssh = self._build_pssh(key_id)
-        cdm = self.create_cdm()
-        session_id = cdm.open()
-        try:
-            challenge = cdm.get_license_challenge(session_id, pssh)
-            track_license = await self._get_license(challenge, license_url, uri, item_id)
-            cdm.parse_license(session_id, track_license)
-            key = next((key for key in cdm.get_keys(session_id) if key.type == "CONTENT"), None)
-            if not key:
-                raise MediaNotFoundError(f"Unable to get decryption key for song {item_id}.")
-            decryption_key = key.key.hex()
-        finally:
-            cdm.close(session_id)
+        decryption_key, _ = await self.get_content_key(
+            license_url,
+            self._build_pssh(key_id),
+            {"uri": uri, "adamId": item_id, "isLibrary": False, "user-initiated": True},
+            ssl=False,
+        )
         self.provider.mass.create_task(
             self.provider.mass.cache.set(
                 key=item_id,
@@ -231,27 +275,3 @@ class AppleMusicStreamingManager:
         pssh_data.key_ids.append(key_id)
         init_data = base64.b64encode(pssh_data.SerializeToString()).decode("utf-8")
         return PSSH.new(system_id=PSSH.SystemId.Widevine, init_data=init_data)
-
-    async def _get_license(self, challenge: bytes, license_url: str, uri: str, item_id: str) -> str:
-        """Request a Widevine license from Apple Music."""
-        challenge_b64 = base64.b64encode(challenge).decode("utf-8")
-        data = {
-            "challenge": challenge_b64,
-            "key-system": "com.widevine.alpha",
-            "uri": uri,
-            "adamId": item_id,
-            "isLibrary": False,
-            "user-initiated": True,
-        }
-        async with self.provider.mass.http_session.post(
-            license_url,
-            data=json.dumps(data),
-            headers=self.decryption_headers,
-            ssl=False,
-        ) as response:
-            response.raise_for_status()
-            content = await response.json(loads=json_loads)
-            track_license = content.get("license")
-            if not track_license:
-                raise MediaNotFoundError(f"No license found for song {item_id}.")
-            return cast("str", track_license)

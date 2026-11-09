@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import base64
 import logging
 import re
 import struct
@@ -16,7 +15,11 @@ from urllib.parse import urljoin
 
 from aiohttp import ClientError, ClientResponseError, ClientTimeout
 from music_assistant_models.enums import ContentType, MediaType, StreamType
-from music_assistant_models.errors import MusicAssistantError, UnplayableMediaError
+from music_assistant_models.errors import (
+    MediaNotFoundError,
+    MusicAssistantError,
+    UnplayableMediaError,
+)
 from music_assistant_models.media_items import AudioFormat, Radio
 from music_assistant_models.streamdetails import StreamDetails, StreamMetadata
 from pywidevine import PSSH
@@ -646,75 +649,36 @@ class AppleMusicLiveRadioManager:
         streaming = self.provider.streaming_manager
         if not streaming.cdm_available or not segment.widevine_uri:
             raise UnplayableMediaError("Widevine CDM files are not available for live radio")
-        cdm = streaming.create_cdm()
-        session_id = cdm.open()
+        started = time.monotonic()
         try:
-            pssh = PSSH(segment.widevine_uri.split("base64,", 1)[-1])
-            challenge = cdm.get_license_challenge(session_id, pssh)
-            body = {
-                "challenge": base64.b64encode(challenge).decode(),
-                "uri": segment.widevine_uri,
-                "key-system": "com.widevine.alpha",
-                "event": "beats1",
-            }
-            started = time.monotonic()
-            async with (
-                self.provider.api_client.throttler.acquire(),
-                self.mass.http_session.post(
-                    key_server_url,
-                    json=body,
-                    headers={
-                        **streaming.decryption_headers,
-                        "x-apple-music-user-token": cast("str", self.provider.music_user_token),
-                        "x-apple-renewal": "true",
-                    },
-                    timeout=_CDN_TIMEOUT,
-                ) as response,
-            ):
-                # a rate limit passes, any other client error is Apple's answer to this account
-                if 400 <= response.status < 500 and response.status != 429:
-                    self.monitor.event(
-                        "license_refused", level=logging.ERROR, http_status=response.status
-                    )
-                    raise UnplayableMediaError(
-                        f"Apple refused the live radio license (HTTP {response.status})"
-                    )
-                response.raise_for_status()
-                answer = await response.json(content_type=None)
-            status = answer.get("status")
-            renew_after = float(answer.get("renew-after") or 0)
-            self.monitor.event(
-                "license_renewed" if renewal else "license",
-                status=status,
-                error_code=answer.get("errorCode"),
-                renew_after=renew_after,
-                ms=int((time.monotonic() - started) * 1000),
+            key, answer = await streaming.get_content_key(
+                key_server_url,
+                PSSH(segment.widevine_uri.split("base64,", 1)[-1]),
+                {"uri": segment.widevine_uri, "event": "beats1"},
+                headers={
+                    "x-apple-music-user-token": cast("str", self.provider.music_user_token),
+                    "x-apple-renewal": "true",
+                },
             )
-            if status != 0 or not answer.get("license"):
-                self.monitor.event(
-                    "license_refused",
-                    level=logging.ERROR,
-                    status=status,
-                    error_code=answer.get("errorCode"),
-                )
+        except ClientResponseError as err:
+            # a rate limit passes, any other client error is Apple's answer to this account
+            if 400 <= err.status < 500 and err.status != 429:
+                self.monitor.event("license_refused", level=logging.ERROR, http_status=err.status)
                 raise UnplayableMediaError(
-                    f"Apple refused the live radio license (status {status}, "
-                    f"error {answer.get('errorCode')})"
-                )
-            cdm.parse_license(session_id, answer["license"])
-            keys = [key for key in cdm.get_keys(session_id) if key.type == "CONTENT"]
-            if not keys:
-                raise UnplayableMediaError("The live radio license holds no content key")
-            if segment.key_id and keys[0].kid.hex != segment.key_id:
-                self.monitor.event(
-                    "license_key_mismatch",
-                    level=logging.WARNING,
-                    expected=segment.key_id[:8],
-                    got=keys[0].kid.hex[:8],
-                )
-            return keys[0].key.hex(), renew_after
-        finally:
-            cdm.close(session_id)
+                    f"Apple refused the live radio license (HTTP {err.status})"
+                ) from None
+            raise
+        except MediaNotFoundError as err:
+            self.monitor.event("license_refused", level=logging.ERROR, error=str(err))
+            raise UnplayableMediaError(f"Apple refused the live radio license: {err}") from None
+        renew_after = float(answer.get("renew-after") or 0)
+        self.monitor.event(
+            "license_renewed" if renewal else "license",
+            status=answer.get("status"),
+            renew_after=renew_after,
+            ms=int((time.monotonic() - started) * 1000),
+        )
+        return key, renew_after
 
 
 def _describe_error(err: Exception) -> str:

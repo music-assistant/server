@@ -11,7 +11,11 @@ from unittest.mock import ANY, AsyncMock, MagicMock
 import pytest
 from aiohttp import ClientError, ClientResponseError
 from music_assistant_models.enums import MediaType, StreamType
-from music_assistant_models.errors import ResourceTemporarilyUnavailable, UnplayableMediaError
+from music_assistant_models.errors import (
+    MediaNotFoundError,
+    ResourceTemporarilyUnavailable,
+    UnplayableMediaError,
+)
 from music_assistant_models.streamdetails import StreamDetails, StreamMetadata
 
 from music_assistant.providers.apple_music.live_radio import (
@@ -428,23 +432,18 @@ async def test_a_refused_license_renewal_ends_the_stream(monkeypatch: pytest.Mon
     assert harness.radio._get_license.await_count == 1
 
 
-def _cdm(harness: _Harness) -> MagicMock:
-    """Return the CDM that the license code of the live radio manager gets."""
-    streaming: Any = harness.radio.provider.streaming_manager
-    return cast("MagicMock", streaming.create_cdm.return_value)
-
-
-def _license_harness(monkeypatch: pytest.MonkeyPatch, status: int) -> tuple[_Harness, LiveSegment]:
-    """Return a harness whose license request gets the given HTTP status."""
+def _license_harness(monkeypatch: pytest.MonkeyPatch, answer: Any) -> tuple[_Harness, LiveSegment]:
+    """Return a harness whose license request gives the given answer or error."""
     harness = _Harness([_playlist(10, 3)], monkeypatch)
     monkeypatch.setattr(f"{MODULE}.PSSH", MagicMock())
     provider: Any = harness.radio.provider
-    provider.streaming_manager.create_cdm.return_value.get_license_challenge.return_value = b"c"
-    provider.streaming_manager.decryption_headers = {}
     provider.music_user_token = "token"
-    response = MagicMock(status=status)
-    response.raise_for_status.side_effect = _http_error(status)
-    harness.radio.mass.http_session.post.return_value.__aenter__.return_value = response  # type: ignore[attr-defined]
+    get_content_key = AsyncMock()
+    if isinstance(answer, Exception):
+        get_content_key.side_effect = answer
+    else:
+        get_content_key.return_value = ("aabb", answer)
+    provider.streaming_manager.get_content_key = get_content_key
     return harness, LiveSegment(0, "", 0, None, "k1", WV, None)
 
 
@@ -453,7 +452,7 @@ async def test_a_license_http_refusal_is_not_retried(
     monkeypatch: pytest.MonkeyPatch, status: int
 ) -> None:
     """A client error from the key server is Apple's answer, so renewing does not catch it."""
-    harness, segment = _license_harness(monkeypatch, status)
+    harness, segment = _license_harness(monkeypatch, _http_error(status))
     with pytest.raises(UnplayableMediaError, match=f"HTTP {status}"):
         await harness.radio._get_license("https://key.example", segment, renewal=True)
     assert "license_refused" in harness.events()
@@ -464,7 +463,7 @@ async def test_a_license_server_problem_stays_temporary(
     monkeypatch: pytest.MonkeyPatch, status: int
 ) -> None:
     """A rate limit or a server error stays a ClientError, which renewing tries again."""
-    harness, segment = _license_harness(monkeypatch, status)
+    harness, segment = _license_harness(monkeypatch, _http_error(status))
     with pytest.raises(ClientResponseError):
         await harness.radio._get_license("https://key.example", segment, renewal=True)
     assert "license_refused" not in harness.events()
@@ -912,16 +911,8 @@ async def test_a_granted_license_gives_the_key_of_the_segment(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Loading a key stores it with its encryption settings and the renewal interval."""
-    harness, segment = _license_harness(monkeypatch, 200)
+    harness, segment = _license_harness(monkeypatch, {"status": 0, "renew-after": 780})
     segment.init_url = "init"
-    response = harness.radio.mass.http_session.post.return_value.__aenter__.return_value  # type: ignore[attr-defined]
-    response.raise_for_status.side_effect = None
-    response.json = AsyncMock(return_value={"status": 0, "license": "granted", "renew-after": 780})
-    cdm = _cdm(harness)
-    cdm.get_keys.return_value = [
-        MagicMock(type="SIGNING"),
-        MagicMock(type="CONTENT", key=bytes.fromhex("aabb"), kid=MagicMock(hex="k1")),
-    ]
     encryption = MagicMock(key_id="k1")
     monkeypatch.setattr(f"{MODULE}.parse_init_segment", MagicMock(return_value=encryption))
     data: dict[str, Any] = {"key_server_url": "https://key.example", "keys": {}, "renew_at": None}
@@ -931,38 +922,21 @@ async def test_a_granted_license_gives_the_key_of_the_segment(
 
     assert data["keys"]["k1"] == (bytes.fromhex("aabb"), encryption)
     assert data["renew_at"] == pytest.approx(time.monotonic() + 780.0, abs=5)
-    cdm.parse_license.assert_called_once()
-    cdm.close.assert_called_once()
-    post = cast("MagicMock", harness.radio.mass.http_session.post)
-    assert post.call_args.args == ("https://key.example",)
-    body = post.call_args.kwargs["json"]
-    assert body["key-system"] == "com.widevine.alpha"
-    assert body["uri"] == WV
-    assert post.call_args.kwargs["headers"]["x-apple-music-user-token"] == "token"
-    assert "license_key_mismatch" not in harness.events()
+    get_content_key: Any = harness.radio.provider.streaming_manager.get_content_key
+    assert get_content_key.await_args.args[0] == "https://key.example"
+    assert get_content_key.await_args.args[2] == {"uri": WV, "event": "beats1"}
+    assert get_content_key.await_args.kwargs["headers"]["x-apple-music-user-token"] == "token"
     assert "init_key_mismatch" not in harness.events()
 
 
-@pytest.mark.parametrize(
-    "answer",
-    [{"status": 1, "errorCode": 5, "license": "x"}, {"status": 0}],
-    ids=["refused", "no-license"],
-)
-async def test_an_answer_without_a_license_is_a_refusal(
-    monkeypatch: pytest.MonkeyPatch, answer: dict[str, Any]
-) -> None:
-    """Apple can refuse inside a successful HTTP answer, the CDM session is closed anyway."""
-    harness, segment = _license_harness(monkeypatch, 200)
-    response = harness.radio.mass.http_session.post.return_value.__aenter__.return_value  # type: ignore[attr-defined]
-    response.raise_for_status.side_effect = None
-    response.json = AsyncMock(return_value=answer)
-    cdm = _cdm(harness)
+async def test_an_answer_without_a_license_is_a_refusal(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Apple can refuse inside a successful HTTP answer."""
+    harness, segment = _license_harness(monkeypatch, MediaNotFoundError("No license"))
 
     with pytest.raises(UnplayableMediaError):
         await harness.radio._get_license("https://key.example", segment)
 
     assert "license_refused" in harness.events()
-    cdm.close.assert_called_once()
 
 
 async def test_a_new_key_does_not_hold_back_the_audio_on_the_current_key(
