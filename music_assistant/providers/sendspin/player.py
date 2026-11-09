@@ -19,6 +19,7 @@ from aiosendspin.models.management import (
     SetStaticPairingCodeConfig,
 )
 from aiosendspin.models.types import (
+    ArtworkSource,
     GoodbyeReason,
     PairAbortReason,
     PairMethod,
@@ -1500,6 +1501,11 @@ class SendspinPlayer(SendspinBasePlayer):
     _published_metadata: Metadata | None = None
     # Server-clock time that metadata takes effect at, when it was scheduled ahead.
     _published_effective_us: int | None = None
+    # Queue item id, server-clock start and start position in ms of the metadata scheduled
+    # on the group.
+    _scheduled_item: tuple[str | None, int, int] | None = None
+    # Album artwork URL scheduled on the group, and the server-clock time it takes effect.
+    _scheduled_artwork: tuple[str | None, int] | None = None
     playback_session: SendspinPlaybackSession
     # set once the format a client asks for could not be read from its player role
     _requested_format_unreadable: ClassVar[bool] = False
@@ -2150,6 +2156,17 @@ class SendspinPlayer(SendspinBasePlayer):
         # queue may only now place the track in the flow stream.
         self._schedule_position_republish()
 
+    def on_upcoming_item_changed(self) -> None:
+        """Schedule the metadata of the item that plays next in the playback session."""
+        # legacy clients never get the next item's metadata ahead
+        if self.synced_to is not None or self.requires_flow_mode:
+            return
+        self.mass.create_task(
+            self._schedule_upcoming_metadata(),
+            task_id=f"sendspin_upcoming_metadata_{self.protocol_id}",
+            abort_existing=True,
+        )
+
     def on_queue_updated(self, queue_id: str) -> None:
         """Push the repeat and shuffle state of the queue this player is playing."""
         current_media = self._player_media
@@ -2232,6 +2249,9 @@ class SendspinPlayer(SendspinBasePlayer):
                 self._published_item = (current_media.uri, current_media.queue_item_id)
                 self._published_metadata = metadata
                 self._published_effective_us = timestamp_us
+                # this metadata replaces the scheduled metadata
+                self._scheduled_item = None
+        self.on_upcoming_item_changed()
 
         if not self._metadata_publish_allowed(generation):
             return
@@ -2815,6 +2835,7 @@ class SendspinPlayer(SendspinBasePlayer):
             else:
                 await artwork_role.set_album_artwork(image)
                 self.last_sent_artwork_url = artwork_url
+                self._scheduled_artwork = None
 
     async def _send_album_artwork(
         self, current_media: PlayerMedia, *, generation: int | None = None
@@ -2826,6 +2847,7 @@ class SendspinPlayer(SendspinBasePlayer):
         :param generation: Metadata generation allowed to publish.
         """
         generation = self._metadata_generation if generation is None else generation
+        self._settle_scheduled_artwork()
         # image_url is resolved per-source upstream (radio / Spotify Connect / queue items).
         artwork_url = current_media.image_url
         if self._metadata_publish_allowed(generation) and artwork_url != self.last_sent_artwork_url:
@@ -2855,6 +2877,104 @@ class SendspinPlayer(SendspinBasePlayer):
             return None
         # decode through the guard so undecodable art (e.g. SVG) is skipped, not crashed
         return await self._decode_artwork(image_data)
+
+    async def _schedule_upcoming_metadata(self) -> None:
+        """Schedule the metadata and album artwork of the next session item at its start."""
+        generation = self._metadata_generation
+        published_item = self._published_item
+        upcoming = self.playback_session.upcoming_item()
+        # Clients hold one scheduled update, so wait until the playing item is published.
+        if self._metadata_update_pending():
+            return
+        if (
+            upcoming is None
+            or published_item is None
+            or published_item[1] != upcoming[0].queue_item_id
+        ):
+            await self._cancel_upcoming_metadata(generation)
+            return
+        _, media, start_us = upcoming
+        if (
+            (player := self.player) is None
+            or not media.source_id
+            or not media.queue_item_id
+            or (queue := self.mass.player_queues.get(media.source_id)) is None
+            or (queue_item := self.mass.player_queues.get_item(queue.queue_id, media.queue_item_id))
+            is None
+        ):
+            await self._cancel_upcoming_metadata(generation)
+            return
+        next_media = player.queue_item_media(queue, queue_item)
+        self._settle_scheduled_artwork()
+        artwork: tuple[str | None, int] | None = None
+        if next_media.image_url != self.last_sent_artwork_url:
+            artwork = (next_media.image_url, start_us)
+        # A crossfade starts the item's own audio past its start.
+        start_ms = (
+            int(queue_item.streamdetails.seek_position * 1000) if queue_item.streamdetails else 0
+        )
+        scheduled_item = (media.queue_item_id, start_us, start_ms)
+        if self._scheduled_item == scheduled_item and self._scheduled_artwork == artwork:
+            return
+        album_artist = await self._album_artist(queue_item)
+        metadata = replace(
+            self._build_current_media_metadata(
+                next_media, queue_item, album_artist, is_playing=self._player_playing
+            ),
+            track_progress=start_ms,
+        )
+        image: Image.Image | None = None
+        if artwork is not None and artwork != self._scheduled_artwork and next_media.image_url:
+            image = await self._fetch_album_artwork(next_media.image_url)
+            if image is None:
+                artwork = None
+        async with self._metadata_lock:
+            if (
+                not self._metadata_publish_allowed(generation)
+                or self._published_item != published_item
+            ):
+                return
+            if (metadata_role := self._metadata_role) is not None:
+                metadata_role.set_metadata(metadata, timestamp_us=start_us)
+                self._scheduled_item = scheduled_item
+            if (artwork_role := self._artwork_role) is not None and (
+                artwork != self._scheduled_artwork
+            ):
+                # aiosendspin takes the change before it sends, so record it before awaiting
+                self._scheduled_artwork = artwork
+                if artwork is None:
+                    await artwork_role.cancel_scheduled(ArtworkSource.ALBUM)
+                else:
+                    await artwork_role.set_album_artwork(image, timestamp_us=start_us)
+
+    async def _cancel_upcoming_metadata(self, generation: int) -> None:
+        """
+        Cancel the metadata and album artwork scheduled for the next item.
+
+        :param generation: Metadata generation allowed to publish.
+        """
+        self._settle_scheduled_artwork()
+        if self._scheduled_item is None and self._scheduled_artwork is None:
+            return
+        async with self._metadata_lock:
+            if not self._metadata_publish_allowed(generation):
+                return
+            if (metadata_role := self._metadata_role) is not None:
+                metadata_role.cancel_scheduled()
+            scheduled_artwork, self._scheduled_artwork = self._scheduled_artwork, None
+            self._scheduled_item = None
+            if scheduled_artwork is not None and (artwork_role := self._artwork_role):
+                await artwork_role.cancel_scheduled(ArtworkSource.ALBUM)
+
+    def _settle_scheduled_artwork(self) -> None:
+        """Count the scheduled album artwork as sent once its start time has passed."""
+        if self._scheduled_artwork is None:
+            return
+        artwork_url, start_us = self._scheduled_artwork
+        provider = cast("SendspinProvider", self.provider)
+        if start_us <= provider.server_api.clock.now_us():
+            self.last_sent_artwork_url = artwork_url
+            self._scheduled_artwork = None
 
     async def _album_artist(self, queue_item: QueueItem | None) -> str | None:
         """
@@ -3011,6 +3131,8 @@ class SendspinPlayer(SendspinBasePlayer):
         self._published_item = None
         self._published_metadata = None
         self._published_effective_us = None
+        self._scheduled_item = None
+        self._scheduled_artwork = None
         self._last_beat_queue_item_id = None
         self._last_beat_anchor_us = None
 
@@ -3290,6 +3412,8 @@ class SendspinPlayer(SendspinBasePlayer):
             metadata_role.set_metadata(metadata, timestamp_us=timestamp_us)
             self._published_metadata = metadata
             self._published_effective_us = timestamp_us
+            self._scheduled_item = None
+        self.on_upcoming_item_changed()
 
     async def _send_beat_schedule(
         self,

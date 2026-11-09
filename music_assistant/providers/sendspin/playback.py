@@ -388,6 +388,23 @@ class SendspinPlaybackSession:
                 start_us = item_start_us
         return start_us
 
+    def upcoming_item(self) -> tuple[PlayerMedia, PlayerMedia, int] | None:
+        """Return the item playing now, the item after it, and the server-clock time it starts."""
+        push_stream = self._push_stream
+        if push_stream is None or (anchor_us := self._timeline_start_us) is None:
+            return None
+        playing_offset_us, playing = self._playing_item(anchor_us, push_stream.now_us())
+        if playing is None:
+            return None
+        return next(
+            (
+                (playing, media, anchor_us + offset_us)
+                for offset_us, media in self._started_items()
+                if offset_us > playing_offset_us
+            ),
+            None,
+        )
+
     def set_next_media(self, media: PlayerMedia) -> bool:
         """
         Hand over the item to play after the one playing now.
@@ -890,6 +907,7 @@ class SendspinPlaybackSession:
         produced_us = 0
         last_elapsed_update_s: float | None = None
         reported_anchor_us: int | None = None
+        reported_upcoming: tuple[PlayerMedia | None, float | None] = (None, None)
 
         async def _produce_pending_chunks() -> None:
             item_media: PlayerMedia | None = media
@@ -1052,8 +1070,8 @@ class SendspinPlaybackSession:
         item_start_task_id = f"sendspin_item_start_{uuid4().hex}"
 
         async def _report_timeline(anchor_us: int, now_us: int) -> None:
-            nonlocal last_elapsed_update_s, reported_anchor_us, first_heard_scheduled
-            nonlocal first_heard_reported, report_when_heard
+            nonlocal last_elapsed_update_s, reported_anchor_us, reported_upcoming
+            nonlocal first_heard_scheduled, first_heard_reported, report_when_heard
             # The first commit reports too, since beats published before it were timed
             # from an estimated start. Later moves are compared against the last reported
             # anchor so small ones add up.
@@ -1120,6 +1138,14 @@ class SendspinPlaybackSession:
                 self.player.on_first_audio_heard()
             if timeline_changed:
                 self.player.on_flow_timeline_changed()
+            upcoming = self._upcoming_item_start()
+            if (
+                timeline_changed
+                or upcoming[0] is not reported_upcoming[0]
+                or upcoming[1] != reported_upcoming[1]
+            ):
+                reported_upcoming = upcoming
+                self.player.on_upcoming_item_changed()
             # A move queued behind the playing audio must apply even if no commit follows.
             async with self._state_lock:
                 move_start_us = self._queued_move_start_us_locked(now_us, reported_anchor_us)
@@ -1372,6 +1398,7 @@ class SendspinPlaybackSession:
             await self._clear_join_catchup()
             await self._clear_member_pipelines()
             await self._reset_session_state()
+            self.player.on_upcoming_item_changed()
             # Only emit a group STOP when MA stream playback reached natural EOF.
             # Skip this on cancellation/error paths to avoid stop-event races with transitions.
             if producer_stopped_cleanly and not self._cancel_requested:
@@ -2026,6 +2053,14 @@ class SendspinPlaybackSession:
     def _started_items(self) -> list[tuple[int, PlayerMedia]]:
         """Return the session's items with their starts, without one that sent no audio yet."""
         return [item for item in self._item_starts if item[1] is not self._opening_item]
+
+    def _upcoming_item_start(self) -> tuple[PlayerMedia | None, float | None]:
+        """Return the item after the one playing now, if any, and the file position it starts at."""
+        if (upcoming := self.upcoming_item()) is None:
+            return None, None
+        # A crossfade into the item moves its start once its stream starts.
+        streamdetails = self._get_start_streamdetails(upcoming[1])
+        return upcoming[1], None if streamdetails is None else streamdetails.seek_position
 
     def _takes_handovers(self, media: PlayerMedia) -> bool:
         """

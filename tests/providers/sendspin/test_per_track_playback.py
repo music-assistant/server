@@ -394,6 +394,7 @@ async def test_an_item_does_not_play_before_its_source_sends_audio(
         await asyncio.sleep(0)
 
     assert session._playing_item(_T0, after_first_us) == (0, first)
+    assert session.upcoming_item() is None
     source_ready.set()
     await asyncio.wait_for(playback, timeout=5)
 
@@ -554,6 +555,23 @@ def test_a_next_item_replaces_one_sent_ahead_only_by_restarting() -> None:
     assert session.set_next_media(_media("item-3")) is False
     cast("Any", session)._item_starts = [(0, playing)]
     assert session.set_next_media(_media("item-3")) is True
+
+
+def test_the_upcoming_item_is_the_one_after_the_item_playing_now() -> None:
+    """Each item is upcoming until it plays, from before the first one starts."""
+    first, second, third = _media("item-1"), _media("item-2"), _media("item-3")
+    session = SendspinPlaybackSession(_player())
+    push_stream = _FakePushStream()
+    session_state = cast("Any", session)
+    session_state._push_stream = push_stream
+    session_state._timeline_start_us = _T0
+    session._item_starts = [(0, first), (3_000_000, second), (5_000_000, third)]
+
+    assert session.upcoming_item() == (first, second, _T0 + 3_000_000)
+    push_stream.now = _T0 + 3_000_000
+    assert session.upcoming_item() == (second, third, _T0 + 5_000_000)
+    push_stream.now = _T0 + 5_000_000
+    assert session.upcoming_item() is None
 
 
 def test_a_repeated_item_follows_its_own_pass_sent_ahead() -> None:
