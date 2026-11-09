@@ -47,6 +47,7 @@ from music_assistant_models.media_items import (
     UniqueList,
 )
 from music_assistant_models.streamdetails import StreamDetails
+from yarl import URL
 
 from music_assistant.constants import (
     CONF_PASSWORD,
@@ -178,7 +179,11 @@ class OpenSonicProvider(MusicProvider):
     async def handle_async_init(self) -> None:
         """Set up the music provider and test the connection."""
         port = self.get_setup_value(CONF_PORT)
-        port = int(str(port)) if port is not None else 443
+        if port is not None:
+            port = int(str(port))
+        else:
+            # the scheme's default port (80/443), 443 when the url carries no scheme
+            port = URL(str(self.get_setup_value(CONF_BASE_URL))).port or 443
         path = self.get_setup_value(CONF_PATH)
 
         if path is None:

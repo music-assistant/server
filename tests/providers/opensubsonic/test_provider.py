@@ -613,3 +613,36 @@ async def test_tls_failures_raise_translated_login_failed(
     assert exc_info.value.translation_key == translation_key
     assert exc_info.value.translation_args == ["https://sonic.local"]
     assert exc_info.value.__cause__ is error
+
+
+@pytest.mark.parametrize(
+    ("base_url", "port", "expected_port"),
+    [
+        ("http://sonic.local", None, 80),
+        ("https://sonic.local", None, 443),
+        ("sonic.local", None, 443),
+        ("http://sonic.local", 4533, 4533),
+    ],
+)
+async def test_port_defaults_to_the_url_scheme(
+    provider: OpenSonicProvider,
+    monkeypatch: pytest.MonkeyPatch,
+    base_url: str,
+    port: int | None,
+    expected_port: int,
+) -> None:
+    """Without a configured port the connection uses the default port of the url scheme."""
+    setup_data = {CONF_BASE_URL: base_url, "api_key": "key", "port": port}
+    monkeypatch.setattr(
+        provider, "get_setup_value", lambda key, default=None: setup_data.get(key, default)
+    )
+    connection = Mock()
+    connection.return_value.ping = AsyncMock(return_value=False)
+    monkeypatch.setattr(
+        "music_assistant.providers.opensubsonic.sonic_provider.SonicConnection", connection
+    )
+
+    with pytest.raises(LoginFailed):
+        await provider.handle_async_init()
+
+    assert connection.call_args.kwargs["port"] == expected_port
