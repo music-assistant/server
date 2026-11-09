@@ -4,18 +4,20 @@ from __future__ import annotations
 
 import asyncio
 import pathlib
+import ssl
 from datetime import datetime
 from typing import Any
 from unittest.mock import AsyncMock, Mock
 
 import pytest
+from aiohttp import ClientConnectorCertificateError, ClientConnectorSSLError
 from libopensonic.errors import DataNotFoundError
 from libopensonic.media import PodcastChannel
 from music_assistant_models.enums import ContentType, ImageType, MediaType, StreamType
 from music_assistant_models.errors import LoginFailed, MediaNotFoundError
 
 from music_assistant.providers.opensubsonic.parsers import EP_CHAN_SEP
-from music_assistant.providers.opensubsonic.sonic_provider import OpenSonicProvider
+from music_assistant.providers.opensubsonic.sonic_provider import CONF_BASE_URL, OpenSonicProvider
 
 
 def _make_task_capturer() -> tuple[list[asyncio.Future[Any]], Mock]:
@@ -569,3 +571,45 @@ async def test_legacy_auth_follows_setup_data(
         await provider.handle_async_init()
 
     assert connection.call_args.kwargs["legacy_auth"] is True
+
+
+@pytest.mark.parametrize(
+    ("error", "translation_key"),
+    [
+        (
+            ClientConnectorSSLError(
+                Mock(), ssl.SSLError(1, "[SSL: WRONG_VERSION_NUMBER] wrong version number")
+            ),
+            "secure_connection_failed",
+        ),
+        (
+            ClientConnectorCertificateError(
+                Mock(), ssl.SSLCertVerificationError("self-signed certificate")
+            ),
+            "certificate_not_trusted",
+        ),
+    ],
+)
+async def test_tls_failures_raise_translated_login_failed(
+    provider: OpenSonicProvider,
+    monkeypatch: pytest.MonkeyPatch,
+    error: Exception,
+    translation_key: str,
+) -> None:
+    """A failed TLS connection surfaces as a translated LoginFailed naming the server."""
+    setup_data = {CONF_BASE_URL: "https://sonic.local", "api_key": "key"}
+    monkeypatch.setattr(
+        provider, "get_setup_value", lambda key, default=None: setup_data.get(key, default)
+    )
+    connection = Mock()
+    connection.return_value.ping = AsyncMock(side_effect=error)
+    monkeypatch.setattr(
+        "music_assistant.providers.opensubsonic.sonic_provider.SonicConnection", connection
+    )
+
+    with pytest.raises(LoginFailed) as exc_info:
+        await provider.handle_async_init()
+
+    assert exc_info.value.translation_key == translation_key
+    assert exc_info.value.translation_args == ["https://sonic.local"]
+    assert exc_info.value.__cause__ is error

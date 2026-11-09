@@ -5,7 +5,11 @@ from __future__ import annotations
 from datetime import datetime
 from typing import TYPE_CHECKING, Any, ParamSpec, TypeVar
 
-from aiohttp import ClientResponseError
+from aiohttp import (
+    ClientConnectorCertificateError,
+    ClientConnectorSSLError,
+    ClientResponseError,
+)
 from libopensonic import AsyncConnection as SonicConnection
 from libopensonic import Extensions as OpenSubsonicExtensions
 from libopensonic.errors import (
@@ -213,20 +217,7 @@ class OpenSonicProvider(MusicProvider):
                 translation_args=[self.get_setup_value(CONF_BASE_URL)],
             )
 
-        try:
-            success = await self.conn.ping()
-            if not success:
-                raise CredentialError  # noqa: TRY301 - converted to LoginFailed below
-        except (AuthError, CredentialError) as e:
-            msg = (
-                f"Failed to connect to {self.get_setup_value(CONF_BASE_URL)}, check your settings."
-            )
-            raise LoginFailed(
-                msg,
-                translation_key="connect_failed",
-                translation_owner=self.translation_owner,
-                translation_args=[self.get_setup_value(CONF_BASE_URL)],
-            ) from e
+        await self._verify_connection()
 
         try:
             extensions: list[OpenSubsonicExtension] = await self.conn.get_open_subsonic_extensions()
@@ -1110,3 +1101,35 @@ class OpenSonicProvider(MusicProvider):
         for sonic_album in albums:
             recent.items.append(parse_album(self.logger, self.instance_id, sonic_album))
         return recent
+
+    async def _verify_connection(self) -> None:
+        """Ping the server, raising LoginFailed with a translated reason when that fails."""
+        base_url = self.get_setup_value(CONF_BASE_URL)
+        try:
+            success = await self.conn.ping()
+            if not success:
+                raise CredentialError  # noqa: TRY301 - converted to LoginFailed below
+        except (AuthError, CredentialError) as e:
+            msg = f"Failed to connect to {base_url}, check your settings."
+            translation_key = "connect_failed"
+            cause: Exception = e
+        except ClientConnectorCertificateError as e:
+            msg = f"The certificate of {base_url} is not trusted."
+            translation_key = "certificate_not_trusted"
+            cause = e
+        except ClientConnectorSSLError as e:
+            # also raised when an https url points at a server that only speaks plain http
+            msg = (
+                f"Could not open a secure connection to {base_url}. "
+                "If the server only serves plain http, use an http:// address."
+            )
+            translation_key = "secure_connection_failed"
+            cause = e
+        else:
+            return
+        raise LoginFailed(
+            msg,
+            translation_key=translation_key,
+            translation_owner=self.translation_owner,
+            translation_args=[base_url],
+        ) from cause
