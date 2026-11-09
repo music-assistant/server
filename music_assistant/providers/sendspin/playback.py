@@ -1311,7 +1311,7 @@ class SendspinPlaybackSession:
         from .player import SendspinPlayer  # noqa: PLC0415 - player.py imports this module
 
         for player_id in player_ids:
-            player = self.player.provider.get_endpoint(player_id)
+            player = self.player.provider.get_protocol(player_id)
             if isinstance(player, SendspinPlayer):
                 await player.follow_session_sample_rate(self._start_streamdetails)
 

@@ -206,7 +206,7 @@ class MusicCastProvider(PlayerProvider):
             ):
                 super().on_player_enabled(player_id)
                 return
-            if self.get_endpoint(player_id) is None:
+            if self.get_protocol(player_id) is None:
                 player = await self._setup_zone_player(musiccast_player_helper, zone_device)
                 await self.mass.players.register_or_update(player)
                 setattr(musiccast_player_helper, f"player_{zone_device.zone_name}", player)
@@ -277,6 +277,6 @@ class MusicCastProvider(PlayerProvider):
 
     def _on_udp_update(self, player_id: str, physical_device: MusicCastPhysicalDevice) -> None:
         # resolved per update: a re-enabled player replaces the disabled one without a new callback
-        player = self.get_endpoint(player_id)
+        player = self.get_protocol(player_id)
         if isinstance(player, MusicCastPlayer) and player.physical_device is physical_device:
             player._non_async_udp_callback(physical_device)

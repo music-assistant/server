@@ -62,7 +62,7 @@ def _bind_player(mass: MusicAssistant | MagicMock) -> tuple[SonosPlayer, MagicMo
     player._queue_session_id = None
     player._hand_over_tasks = set()
     player.client = client
-    player._provider = MagicMock(get_endpoint=lambda pid: player.mass.players.get_player(pid))
+    player._provider = MagicMock(get_protocol=lambda pid: player.mass.players.get_player(pid))
     player._on_unload_callbacks = []
     player.update_state = MagicMock()  # type: ignore[misc, method-assign]
     return player, client
@@ -293,7 +293,7 @@ async def test_sendspin_bridge_over_airplay_schedules_the_airplay_group_restore(
     timer_mass.players.get_player.side_effect = lambda pid: (
         airplay_player if pid == "airplay_player" else None
     )
-    timer_mass.players.get_endpoint = timer_mass.players.get_player
+    timer_mass.players.get_protocol = timer_mass.players.get_player
     output_protocol = OutputProtocol(
         output_protocol_id="sendspin_bridge",
         name="Sendspin",
@@ -429,7 +429,7 @@ def _connected_player() -> tuple[SonosPlayer, MagicMock, MagicMock]:
     player._attr_group_members = []
     player._attr_can_group_with = set()
     player._provider = MagicMock(
-        instance_id="sonos", get_endpoint=lambda pid: player.mass.players.get_player(pid)
+        instance_id="sonos", get_protocol=lambda pid: player.mass.players.get_player(pid)
     )
     return player, mass, client
 
@@ -1047,7 +1047,7 @@ def _wakeable_player() -> tuple[SonosPlayer, MagicMock]:
     player._config = MagicMock()
     player._config.name = None
     player._provider = MagicMock(
-        instance_id="sonos", get_endpoint=lambda pid: player.mass.players.get_player(pid)
+        instance_id="sonos", get_protocol=lambda pid: player.mass.players.get_player(pid)
     )
     return player, mass
 

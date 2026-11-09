@@ -482,7 +482,7 @@ class MSXHTTPServer:
 
     async def _handle_root(self, request: web.Request) -> web.Response:
         """Serve status dashboard."""
-        players = self.provider.endpoints
+        players = self.provider.protocols
         # base is derived from the Host header, so escape it before embedding in HTML
         prefix = self._get_prefix(request)
         base = html_escape(prefix)
@@ -1137,7 +1137,7 @@ code {{ background: #f5f5f5; padding: 2px 6px; border-radius: 3px; word-break: b
         from_playlist = request.query.get("from_playlist") == "1"
         requested_queue_item_id = request.query.get("queue_item_id")
 
-        player = self.provider.get_endpoint(player_id)
+        player = self.provider.get_protocol(player_id)
         if not player or not isinstance(player, MSXPlayer) or not player.config.enabled:
             return web.Response(status=404, text="Player not found")
         if rejected := self._reject_invalid_stream_token(request, player_id):
@@ -1179,7 +1179,7 @@ code {{ background: #f5f5f5; padding: 2px 6px; border-radius: 3px; word-break: b
             {
                 "status": "ok",
                 "provider": "msx_bridge",
-                "players": len(self.provider.endpoints),
+                "players": len(self.provider.protocols),
             }
         )
 
@@ -1230,7 +1230,7 @@ code {{ background: #f5f5f5; padding: 2px 6px; border-radius: 3px; word-break: b
                 self._ws_clients.pop(player_id, None)
                 self._client_prefixes.pop(player_id, None)
                 # Notify the player that its last WS client disconnected
-                offline_player = self.provider.get_endpoint(player_id)
+                offline_player = self.provider.get_protocol(player_id)
                 if offline_player and isinstance(offline_player, MSXPlayer):
                     offline_player.on_ws_disconnected()
             logger.debug("WebSocket client disconnected for player %s", player_id)
@@ -1247,7 +1247,7 @@ code {{ background: #f5f5f5; padding: 2px 6px; border-radius: 3px; word-break: b
 
     async def _cmd_pause_no_echo(self, player_id: str) -> None:
         """Pause player without echoing back to MSX."""
-        player = self.provider.get_endpoint(player_id)
+        player = self.provider.get_protocol(player_id)
         if not (player and isinstance(player, MSXPlayer)):
             return
         with player.suppress_ws_notify():
@@ -1255,7 +1255,7 @@ code {{ background: #f5f5f5; padding: 2px 6px; border-radius: 3px; word-break: b
 
     async def _cmd_play_no_echo(self, player_id: str) -> None:
         """Resume player without echoing back to MSX."""
-        player = self.provider.get_endpoint(player_id)
+        player = self.provider.get_protocol(player_id)
         if not (player and isinstance(player, MSXPlayer)):
             return
         with player.suppress_ws_notify():
@@ -1317,12 +1317,12 @@ code {{ background: #f5f5f5; padding: 2px 6px; border-radius: 3px; word-break: b
         if msg_type == "position":
             position = msg.get("position")
             if _is_finite_position(position):
-                player = self.provider.get_endpoint(player_id)
+                player = self.provider.get_protocol(player_id)
                 if player and isinstance(player, MSXPlayer):
                     player.update_position(float(position))
                     self.provider.on_player_activity(player_id)
         elif msg_type == "pause":
-            player = self.provider.get_endpoint(player_id)
+            player = self.provider.get_protocol(player_id)
             if player and isinstance(player, MSXPlayer):
                 position = msg.get("position")
                 if _is_finite_position(position):
@@ -1330,13 +1330,13 @@ code {{ background: #f5f5f5; padding: 2px 6px; border-radius: 3px; word-break: b
                 self.provider.mass.create_task(self._cmd_pause_no_echo(player_id))
                 self.provider.on_player_activity(player_id)
         elif msg_type == "resume":
-            player = self.provider.get_endpoint(player_id)
+            player = self.provider.get_protocol(player_id)
             if player and isinstance(player, MSXPlayer):
                 self.provider.mass.create_task(self._cmd_play_no_echo(player_id))
                 self.provider.on_player_activity(player_id)
         elif msg_type == "seek":
             position = msg.get("position")
-            player = self.provider.get_endpoint(player_id)
+            player = self.provider.get_protocol(player_id)
             if player and isinstance(player, MSXPlayer) and _is_finite_position(position):
                 player.note_tv_seek(float(position))
                 self.provider.on_player_activity(player_id)
@@ -1349,7 +1349,7 @@ code {{ background: #f5f5f5; padding: 2px 6px; border-radius: 3px; word-break: b
         """Stream audio from MA to the TV using internal API."""
         player_id = _strip_known_extension(request.match_info["player_id"])
 
-        player = self.provider.get_endpoint(player_id)
+        player = self.provider.get_protocol(player_id)
         if not player or not isinstance(player, MSXPlayer) or not player.config.enabled:
             return web.Response(status=404, text="Player not found")
         if rejected := self._reject_invalid_stream_token(request, player_id):
@@ -1816,7 +1816,7 @@ code {{ background: #f5f5f5; padding: 2px 6px; border-radius: 3px; word-break: b
 
     def _get_msx_player(self, player_id: str) -> MSXPlayer | None:
         """Return the MSXPlayer for player_id if it belongs to this provider, else None."""
-        player = self.provider.get_endpoint(player_id)
+        player = self.provider.get_protocol(player_id)
         if (
             isinstance(player, MSXPlayer)
             and player.provider == self.provider

@@ -33,7 +33,7 @@ if TYPE_CHECKING:
     from music_assistant_models.config_entries import ConfigEntry
     from zeroconf.asyncio import AsyncServiceInfo
 
-    from music_assistant.models.player_endpoint import PlayerEndpoint
+    from music_assistant.models.player_protocol import PlayerProtocol
 
 # UPnP description.xml ports used by LinkPlay devices, tried in addition to the
 # mDNS-advertised port: 49152 serves the description, 59152 is the advertised UPnP port.
@@ -99,7 +99,7 @@ class WiimProvider(PlayerProvider):
         # Try to get player_id from mDNS properties first (avoids a network call)
         udn = info.decoded_properties.get("uuid") if info.decoded_properties else None
         player_id = f"{PLAYER_ID_PREFIX}{udn}" if udn else None
-        if player_id and (mass_player := self.get_endpoint(player_id)):
+        if player_id and (mass_player := self.get_protocol(player_id)):
             await self._handle_known_player_address(mass_player, cur_address, locations)
             self.mass.players.trigger_player_update(player_id)
             return
@@ -247,7 +247,7 @@ class WiimProvider(PlayerProvider):
             return
 
         player_id = f"{PLAYER_ID_PREFIX}{upnp_device.udn}"
-        if (existing := self.get_endpoint(player_id)) is not None:
+        if (existing := self.get_protocol(player_id)) is not None:
             # Already registered; the fast path may have missed, so still reconcile a
             # moved device here using the description we just probed.
             await self._reconcile_player_address(
@@ -263,7 +263,7 @@ class WiimProvider(PlayerProvider):
             )
 
     async def _handle_known_player_address(
-        self, mass_player: PlayerEndpoint, cur_address: str, locations: tuple[str, ...]
+        self, mass_player: PlayerProtocol, cur_address: str, locations: tuple[str, ...]
     ) -> None:
         """Reconcile an already-registered player with its current mDNS address."""
         if cur_address == mass_player.device_info.ip_address:
@@ -278,7 +278,7 @@ class WiimProvider(PlayerProvider):
 
     async def _reconcile_player_address(
         self,
-        mass_player: PlayerEndpoint,
+        mass_player: PlayerProtocol,
         cur_address: str,
         upnp_device: UpnpDevice,
         matched_location: str,

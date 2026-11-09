@@ -83,7 +83,7 @@ class AuracastProvider(PlayerProvider):
 
     async def unload(self, is_removed: bool = False) -> None:
         """Unregister the player and release any active Bluetooth transport."""
-        for player in self.endpoints:
+        for player in self.protocols:
             await self.mass.players.unregister(player.player_id)
 
 

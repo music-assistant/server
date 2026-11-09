@@ -1452,7 +1452,7 @@ def _make_idle_player(player_id: str = "test_player") -> AirPlayPlayer:
     # the synced_to property scans all players of the provider
     _players_mock(player).iter_players.return_value = []
     provider = cast("MagicMock", player.provider)
-    provider.get_endpoint = lambda pid: player.mass.players.get_player(pid)
+    provider.get_protocol = lambda pid: player.mass.players.get_player(pid)
     player._attr_group_members = []
     player._attr_playback_state = PlaybackState.IDLE
     player.stream = None

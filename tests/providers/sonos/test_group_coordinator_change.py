@@ -119,7 +119,7 @@ class _Household:
         """Create a connected SonosPlayer with a mocked client."""
         player = SonosPlayer.__new__(SonosPlayer)
         player.mass = self.mass
-        player._provider = MagicMock(get_endpoint=lambda pid: player.mass.players.get_player(pid))
+        player._provider = MagicMock(get_protocol=lambda pid: player.mass.players.get_player(pid))
         player.logger = logging.getLogger("test.sonos.player")
         player._player_id = player_id
         player._attr_name = player_id

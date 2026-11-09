@@ -44,6 +44,9 @@ def _make_provider(
     mass.players.get_player = MagicMock(side_effect=lambda pid: (players or {}).get(pid))
     provider.mass = mass
     provider._unregister_api_commands = []
+    for player in (players or {}).values():
+        if isinstance(player, YandexStationPlayer):
+            player._provider = provider
     return provider
 
 

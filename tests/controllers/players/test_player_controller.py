@@ -908,7 +908,7 @@ class TestUnscopedPlayerLookups:
             player.update_state(signal_event=False)
 
         with _restricted_user(["plain"]):
-            owned = set(PlayerProvider.endpoints.fget(provider))  # type: ignore[attr-defined]
+            owned = set(PlayerProvider.protocols.fget(provider))  # type: ignore[attr-defined]
 
         assert owned == {plain, protocol}
 
@@ -4293,7 +4293,7 @@ class TestOfflinePowerControl:
         peer = MockPlayer(player.provider, "peer", "Peer")  # type: ignore[arg-type]
         peer.set_initialized()
         controller._players["peer"] = peer
-        cast("MockProvider", player.provider).endpoints = [player, peer]
+        cast("MockProvider", player.provider).protocols = [player, peer]
         controller.trigger_player_update = MagicMock()  # type: ignore[method-assign]
         controller._forward_state_update = MagicMock()  # type: ignore[method-assign]
 
@@ -5481,7 +5481,7 @@ class TestGroupVolumeReference:
         group._attr_group_members = list(members)
         players = {"group": group, **members}
         controller._players = dict(players)
-        provider.endpoints = list(players.values())
+        provider.protocols = list(players.values())
         mock_mass.players = controller
         mock_mass.player_queues.get = MagicMock(return_value=None)
         for player in players.values():

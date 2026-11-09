@@ -52,7 +52,7 @@ from music_assistant.constants import (
 from music_assistant.helpers.util import is_valid_mac_address
 from music_assistant.helpers.wake_on_lan import send_magic_packet
 from music_assistant.models.player import AnnouncementFeature, PlayerSource
-from music_assistant.models.player_endpoint import PlayerEndpoint
+from music_assistant.models.player_protocol import PlayerProtocol
 from music_assistant.providers.sonos.const import (
     DEVICE_FEATURE_WAKEABLE,
     NON_HIRES_MODELS,
@@ -128,7 +128,7 @@ FINISHED_CLIP_STATES = (
 SESSION_EVICTED_ERROR = "ERROR_SESSION_EVICTED"
 
 
-class SonosPlayer(PlayerEndpoint):
+class SonosPlayer(PlayerProtocol):
     """Holds the details of the (discovered) Sonosplayer."""
 
     _attr_external_pause_idle_timeout = EXTERNAL_PAUSE_IDLE_TIMEOUT
@@ -903,7 +903,7 @@ class SonosPlayer(PlayerEndpoint):
         """
         sonos_player = self.client.player
         if not sonos_player.is_coordinator and sonos_player.group:
-            coordinator = self.provider.get_endpoint(sonos_player.group.coordinator_id)
+            coordinator = self.provider.get_protocol(sonos_player.group.coordinator_id)
             if (
                 not isinstance(coordinator, SonosPlayer)
                 or not coordinator.available
@@ -1048,7 +1048,7 @@ class SonosPlayer(PlayerEndpoint):
             # player is group child (synced to another player)
             group_parent = cast(
                 "SonosPlayer | None",
-                self.provider.get_endpoint(self.group_controller.coordinator_id),
+                self.provider.get_protocol(self.group_controller.coordinator_id),
             )
             if not group_parent or not group_parent.client or not group_parent.client.player:
                 # handle race condition where the group parent is not yet discovered
@@ -1244,7 +1244,7 @@ class SonosPlayer(PlayerEndpoint):
                 await self.client.connect()
             except (ConnectionFailed, CannotConnect, ClientError) as err:
                 self.logger.warning("Failed to connect to Sonos player: %s", err)
-                if not retry_on_fail or not self.provider.get_endpoint(self.player_id):
+                if not retry_on_fail or not self.provider.get_protocol(self.player_id):
                     raise
                 if self._sleeps_as_power_off:
                     # a portable that stopped answering has gone to sleep; power() wakes it
@@ -1300,7 +1300,7 @@ class SonosPlayer(PlayerEndpoint):
             init_ready_wait.cancel()
         if init_ready.is_set():
             return
-        if retry_on_fail and self.provider.get_endpoint(self.player_id):
+        if retry_on_fail and self.provider.get_protocol(self.player_id):
             # the listener's own cleanup schedules the retry
             return
         msg = f"Sonos player {self.player_id} disconnected during initialization"
@@ -1424,7 +1424,7 @@ class SonosPlayer(PlayerEndpoint):
         new_coordinator_id = data.get("playerId")
         if not new_coordinator_id or new_coordinator_id == self.player_id:
             return
-        new_coordinator = self.provider.get_endpoint(new_coordinator_id)
+        new_coordinator = self.provider.get_protocol(new_coordinator_id)
         if not isinstance(new_coordinator, SonosPlayer) or not new_coordinator.connected:
             self.logger.debug(
                 "The group of %s moved to %s, which Music Assistant does not control",
@@ -1779,7 +1779,7 @@ class SonosPlayer(PlayerEndpoint):
         derived_from = output_protocol.derived_from
         if not derived_from or derived_from == "native":
             return False
-        base_player = self.mass.players.get_endpoint(derived_from)
+        base_player = self.mass.players.get_protocol(derived_from)
         return base_player is not None and base_player.provider.domain == "airplay"
 
     async def _wait_for_group_members(

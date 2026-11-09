@@ -297,7 +297,7 @@ def _sync(provider: RaumfeldPlayerProvider, players: dict[str, RaumfeldPlayer]) 
     """Run a group sync with the provider's players in place."""
     with patch.object(
         RaumfeldPlayerProvider,
-        "endpoints",
+        "protocols",
         new_callable=lambda: property(lambda _: players.values()),
     ):
         provider._sync_groups()
@@ -353,7 +353,7 @@ async def _follow(provider: RaumfeldPlayerProvider, players: dict[str, RaumfeldP
     """Run one look of the zone watcher with the provider's players in place."""
     with patch.object(
         RaumfeldPlayerProvider,
-        "endpoints",
+        "protocols",
         new_callable=lambda: property(lambda _: players.values()),
     ):
         await provider._follow_zones()
@@ -1075,7 +1075,7 @@ async def test_the_periodic_read_keeps_the_buttons_of_a_room_it_cannot_read() ->
     player.set_station_buttons = MagicMock()  # type: ignore[method-assign]
     with (
         patch.object(
-            RaumfeldPlayerProvider, "endpoints", new_callable=PropertyMock, return_value=[player]
+            RaumfeldPlayerProvider, "protocols", new_callable=PropertyMock, return_value=[player]
         ),
         patch.object(provider, "_read_station_buttons", AsyncMock(side_effect=[None, []])),
     ):
@@ -1313,6 +1313,8 @@ async def test_a_room_that_cannot_hook_in_leaves_the_others_waited_for() -> None
     """One room dropping the stream does not end the wait for another still hooking in."""
     bar, _, _ = _joined_group(lambda sofa: _allow(sofa, 96000), stream_started_in_group=False)
     rooms = {"raumfeld_sofa": _player("Sofa"), "raumfeld_kitchen": _player("Kitchen")}
+    for room in rooms.values():
+        room._provider = bar.provider
     states = {
         "http://sofa/ctrl": iter(
             [{"TransportState": "NO_MEDIA_PRESENT", "TransportStatus": "buffer underrun"}]
@@ -1523,7 +1525,7 @@ def test_a_room_event_reaches_that_rooms_player() -> None:
     bar = MagicMock(spec=RaumfeldPlayer, room="Bar")
     bank = MagicMock(spec=RaumfeldPlayer, room="Bank")
     with patch.object(
-        RaumfeldPlayerProvider, "endpoints", new_callable=PropertyMock, return_value=[bar, bank]
+        RaumfeldPlayerProvider, "protocols", new_callable=PropertyMock, return_value=[bar, bank]
     ):
         provider._handle_room_event("http://192.168.1.42/bar.xml", {"Volume": "44"})
     bar.set_rendering_events.assert_called_once_with(True)
@@ -1554,7 +1556,7 @@ async def test_a_resync_tells_each_room_whether_its_events_come_in() -> None:
     bar = MagicMock(spec=RaumfeldPlayer, room="Bar")
     bank = MagicMock(spec=RaumfeldPlayer, room="Bank")
     with patch.object(
-        RaumfeldPlayerProvider, "endpoints", new_callable=PropertyMock, return_value=[bar, bank]
+        RaumfeldPlayerProvider, "protocols", new_callable=PropertyMock, return_value=[bar, bank]
     ):
         await provider._resync()
     assert set(provider.room_events.refresh.await_args.args[0]) == {
@@ -1591,7 +1593,7 @@ def test_a_zone_event_has_the_rooms_of_that_zone_read() -> None:
     )
     players = [MagicMock(spec=RaumfeldPlayer, room=room) for room in ("Bar", "Sofa", "Bank")]
     with patch.object(
-        RaumfeldPlayerProvider, "endpoints", new_callable=PropertyMock, return_value=players
+        RaumfeldPlayerProvider, "protocols", new_callable=PropertyMock, return_value=players
     ):
         provider._handle_zone_event(_ZONE_LOCATION, {"TransportState": "PLAYING"})
     players[0].zone_event.assert_called_once_with(_ZONE_LOCATION)
@@ -1609,7 +1611,7 @@ def test_a_room_transport_event_has_that_room_read() -> None:
     bar = MagicMock(spec=RaumfeldPlayer, room="Bar")
     bank = MagicMock(spec=RaumfeldPlayer, room="Bank")
     with patch.object(
-        RaumfeldPlayerProvider, "endpoints", new_callable=PropertyMock, return_value=[bar, bank]
+        RaumfeldPlayerProvider, "protocols", new_callable=PropertyMock, return_value=[bar, bank]
     ):
         provider._handle_room_transport_event(_LOCATION, {"TransportState": "PAUSED_PLAYBACK"})
     bank.set_room_transport_events.assert_called_once_with(True)
@@ -1623,7 +1625,7 @@ def test_a_room_the_host_reports_changed_is_read() -> None:
     bar = MagicMock(spec=RaumfeldPlayer, room="Bar")
     bank = MagicMock(spec=RaumfeldPlayer, room="Bank")
     with patch.object(
-        RaumfeldPlayerProvider, "endpoints", new_callable=PropertyMock, return_value=[bar, bank]
+        RaumfeldPlayerProvider, "protocols", new_callable=PropertyMock, return_value=[bar, bank]
     ):
         provider._handle_rooms_changed({"Bank"})
     bank.state_event.assert_called_once_with()
@@ -2234,6 +2236,11 @@ async def test_a_new_room_gets_the_icy_default_only_once_registered(registers: b
         if registers:
             registry[player.player_id] = player
 
+    def build_player(**kwargs: Any) -> RaumfeldPlayer:
+        player = _player(kwargs["room"])
+        player._provider = kwargs["provider"]
+        return player
+
     players = cast("MagicMock", provider.mass.players)
     players.register = AsyncMock(side_effect=register)
     players.get_player.side_effect = registry.get
@@ -2244,7 +2251,7 @@ async def test_a_new_room_gets_the_icy_default_only_once_registered(registers: b
         patch.object(provider, "_assign_room_ids"),
         patch(
             "music_assistant.providers.raumfeld.provider.RaumfeldPlayer",
-            side_effect=lambda **kwargs: _player(kwargs["room"]),
+            side_effect=build_player,
         ),
     ):
         await provider._sync_rooms()

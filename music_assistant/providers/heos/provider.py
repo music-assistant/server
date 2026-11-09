@@ -206,7 +206,7 @@ class HeosPlayerProvider(PlayerProvider):
         self.logger.debug("Controller event received: %s", event)
 
         if event == const.EVENT_GROUPS_CHANGED:
-            for player in self.endpoints:
+            for player in self.protocols:
                 assert isinstance(player, HeosPlayer)  # for type checking
                 await player.build_group_list()
 
@@ -263,7 +263,7 @@ class HeosPlayerProvider(PlayerProvider):
         """Handle unload/close of the provider."""
         await self._disconnect_controllers()
 
-        for player in self.endpoints:
+        for player in self.protocols:
             self.logger.debug("Unloading player %s", player.name)
             await self.mass.players.unregister(player.player_id)
 
@@ -284,7 +284,7 @@ class HeosPlayerProvider(PlayerProvider):
     async def _on_heos_disconnected(self) -> None:
         """Mark all HEOS players unavailable when the controller loses connection."""
         self.logger.warning("HEOS controller disconnected, marking players unavailable")
-        for player in self.endpoints:
+        for player in self.protocols:
             assert isinstance(player, HeosPlayer)
             player.set_device_info()
             player.update_state()
@@ -300,7 +300,7 @@ class HeosPlayerProvider(PlayerProvider):
             devices = await self._heos.get_players()
             for device in devices.values():
                 player_id = str(device.player_id)
-                if player := cast("HeosPlayer", self.get_endpoint(player_id)):
+                if player := cast("HeosPlayer", self.get_protocol(player_id)):
                     self.logger.debug(
                         "Updating existing HEOS player: %s (%s)", device.name, player_id
                     )

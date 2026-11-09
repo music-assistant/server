@@ -26,7 +26,7 @@ def _player_mock() -> MagicMock:
     mock.playback_session.cancel = AsyncMock()
     mock.api.group.stop = AsyncMock()
     mock.api.group.remove_client = AsyncMock()
-    mock.provider.get_endpoint = lambda pid, **_: mock.mass.players.get_player(pid)
+    mock.provider.get_protocol = lambda pid, **_: mock.mass.players.get_player(pid)
     return mock
 
 

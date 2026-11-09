@@ -63,7 +63,7 @@ if TYPE_CHECKING:
     from aiosendspin.server.roles import AudioChunk
 
     from music_assistant.models.player import Player
-    from music_assistant.models.player_endpoint import PlayerEndpoint
+    from music_assistant.models.player_protocol import PlayerProtocol
     from music_assistant.providers.sendspin.provider import SendspinProvider
 
     from .player import AirPlayPlayer
@@ -1759,12 +1759,12 @@ class SendspinBridgeManager(SendspinBridgeManagerBase[SendspinAirPlayBridge]):
             return None
         if not (bridge_client_id := bridge.bridge_client_id):
             return None
-        if not (bridge_player := self.mass.players.get_endpoint(bridge_client_id)):
+        if not (bridge_player := self.mass.players.get_protocol(bridge_client_id)):
             return None
 
         sync_leader_id = bridge_player.synced_to
         if sync_leader_id:
-            if sync_leader := self.mass.players.get_endpoint(sync_leader_id):
+            if sync_leader := self.mass.players.get_protocol(sync_leader_id):
                 return sync_leader.protocol_parent_id or sync_leader.player_id
             return sync_leader_id
         return bridge_player.protocol_parent_id or bridge_player.player_id
@@ -1781,11 +1781,11 @@ class SendspinBridgeManager(SendspinBridgeManagerBase[SendspinAirPlayBridge]):
             return True
         return False
 
-    def _bridge_client_id(self, player: PlayerEndpoint) -> str | None:
+    def _bridge_client_id(self, player: PlayerProtocol) -> str | None:
         """Return the Sendspin client_id used to bridge an AirPlay player."""
         return get_bridge_client_id(cast("AirPlayPlayer", player))
 
-    def _create_bridge(self, player: PlayerEndpoint) -> SendspinAirPlayBridge:
+    def _create_bridge(self, player: PlayerProtocol) -> SendspinAirPlayBridge:
         """Create a bridge instance for an AirPlay player."""
         sendspin_server = self.sendspin_server
         assert sendspin_server is not None  # guaranteed by _lifecycle_allows_bridge
@@ -1795,7 +1795,7 @@ class SendspinBridgeManager(SendspinBridgeManagerBase[SendspinAirPlayBridge]):
             sendspin_server,
         )
 
-    def _should_have_bridge(self, player: PlayerEndpoint) -> bool:
+    def _should_have_bridge(self, player: PlayerProtocol) -> bool:
         """Return whether an AirPlay player should have a Sendspin bridge."""
         return get_bridge_client_id(cast("AirPlayPlayer", player)) is not None
 

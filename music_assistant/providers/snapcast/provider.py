@@ -358,7 +358,7 @@ class SnapCastProvider(PlayerProvider):
         for snap_client in self._snapserver.clients:
             if not (player_id := self._get_ma_id(snap_client.identifier)):
                 continue
-            if not (player := self.get_endpoint(player_id)):
+            if not (player := self.get_protocol(player_id)):
                 continue
             if player.playback_state != PlaybackState.PLAYING:
                 continue
@@ -594,7 +594,7 @@ class SnapCastProvider(PlayerProvider):
         if not self.mass.config.get_raw_player_config_value(player_id, CONF_ENABLED, True):
             self.logger.debug("Ignoring disabled snapcast player: %s", player_id)
             return None
-        player = self.get_endpoint(player_id)
+        player = self.get_protocol(player_id)
         if not player:
             snap_client = self._snapserver.client(self._get_snapclient_id(player_id))
             player = SnapCastPlayer(
@@ -775,7 +775,7 @@ class SnapCastProvider(PlayerProvider):
             for client_id in group_members:
                 if (ma_player_id := self._get_ma_id(client_id)) is None:
                     continue
-                if ma_player := cast("SnapCastPlayer", self.get_endpoint(ma_player_id)):
+                if ma_player := cast("SnapCastPlayer", self.get_protocol(ma_player_id)):
                     client = self._snapserver.client(client_id)
                     if client is not None:
                         if client.group is not None:
@@ -960,7 +960,7 @@ class SnapCastProvider(PlayerProvider):
         if player_id is None:
             return None
 
-        if ma_player := self.get_endpoint(player_id):
+        if ma_player := self.get_protocol(player_id):
             assert isinstance(ma_player, SnapCastPlayer)  # for type checking
             return ma_player
 

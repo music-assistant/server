@@ -32,7 +32,7 @@ from music_assistant.constants import (
     EXTERNAL_PAUSE_IDLE_TIMEOUT,
 )
 from music_assistant.helpers.upnp import create_didl_metadata
-from music_assistant.models.player_endpoint import PlayerEndpoint
+from music_assistant.models.player_protocol import PlayerProtocol
 
 from .constants import (
     CONF_RESTART_ON_JOIN,
@@ -206,7 +206,7 @@ def _near_track_end(pos: dict[str, str]) -> bool:
     return not duration or elapsed >= duration - NEAR_END_WINDOW
 
 
-class RaumfeldPlayer(PlayerEndpoint):
+class RaumfeldPlayer(PlayerProtocol):
     """A single Raumfeld room, exposed to Music Assistant as a player."""
 
     _attr_type = PlayerType.PLAYER
@@ -489,7 +489,7 @@ class RaumfeldPlayer(PlayerEndpoint):
         # the rates each of its rooms plays.
         rates = set(self._configured_sample_rates())
         for pid in self._attr_group_members[1:]:
-            if isinstance(member := self.provider.get_endpoint(pid), RaumfeldPlayer):
+            if isinstance(member := self.provider.get_protocol(pid), RaumfeldPlayer):
                 rates &= set(member._configured_sample_rates())
         return sorted(rates) or [(44100, 16)]
 
@@ -885,7 +885,7 @@ class RaumfeldPlayer(PlayerEndpoint):
             )
             self.update_state()
         for pid in [*(player_ids_to_add or []), *(player_ids_to_remove or [])]:
-            if (member := self.provider.get_endpoint(pid)) is not None:
+            if (member := self.provider.get_protocol(pid)) is not None:
                 member.update_state()
         if player_ids_to_add and self.plays_own_queue:
             # on its own, so waiting for the host to hook the rooms in holds up nothing
@@ -1006,7 +1006,7 @@ class RaumfeldPlayer(PlayerEndpoint):
             if not self._reading_is_current(generation):
                 self.update_state()
                 return
-            leader = self.provider.get_endpoint(self.synced_to)
+            leader = self.provider.get_protocol(self.synced_to)
             self._attr_playback_state = leader.playback_state if leader else PlaybackState.IDLE
             # the leader has this room read after each read of the zone it made on an event
             evented = self._rendering_events and self._zone_events is not None
@@ -1526,11 +1526,11 @@ class RaumfeldPlayer(PlayerEndpoint):
             # the other rooms keep sharing a zone on the host, so they stay a group here,
             # led by one of them
             if len(remaining) > 1:
-                new_leader = self.provider.get_endpoint(remaining[0])
+                new_leader = self.provider.get_protocol(remaining[0])
                 if isinstance(new_leader, RaumfeldPlayer):
                     new_leader.set_group_members(remaining)
             return False
-        leader = self.provider.get_endpoint(self.synced_to)
+        leader = self.provider.get_protocol(self.synced_to)
         if isinstance(leader, RaumfeldPlayer):
             remaining = [pid for pid in leader.group_members if pid != self.player_id]
             leader.set_group_members(remaining if len(remaining) > 1 else [])
@@ -1589,7 +1589,7 @@ class RaumfeldPlayer(PlayerEndpoint):
         waiting = {
             url
             for pid in player_ids
-            if isinstance(room := self.provider.get_endpoint(pid), RaumfeldPlayer)
+            if isinstance(room := self.provider.get_protocol(pid), RaumfeldPlayer)
             and (url := self.raumfeld.room_transport_url(room.room)) is not None
         }
         if not waiting:
@@ -1695,7 +1695,7 @@ class RaumfeldPlayer(PlayerEndpoint):
         # set on the room that lags (it is that room's speaker the user hears behind) or on
         # the leader, whose stream is the one that restarts
         for pid in self._attr_group_members or [self.player_id]:
-            room = self if pid == self.player_id else self.provider.get_endpoint(pid)
+            room = self if pid == self.player_id else self.provider.get_protocol(pid)
             if (
                 isinstance(room, RaumfeldPlayer)
                 and room.config.get_value(CONF_RESTART_ON_JOIN, False) is True
@@ -2179,7 +2179,7 @@ class RaumfeldPlayer(PlayerEndpoint):
         if not self.leads_group:
             return
         for member_id in self._attr_group_members[1:]:
-            member = self.provider.get_endpoint(member_id)
+            member = self.provider.get_protocol(member_id)
             if isinstance(member, RaumfeldPlayer):
                 member._start_event_poll()
 
@@ -2502,5 +2502,5 @@ class RaumfeldPlayer(PlayerEndpoint):
 
     def _player_id_to_room(self, player_id: str) -> str | None:
         """Resolve a MA player_id of this provider back to its Raumfeld room name."""
-        player = self.provider.get_endpoint(player_id)
+        player = self.provider.get_protocol(player_id)
         return player.room if isinstance(player, RaumfeldPlayer) else None

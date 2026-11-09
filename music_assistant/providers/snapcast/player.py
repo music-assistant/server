@@ -15,7 +15,7 @@ from propcache import under_cached_property as cached_property
 from music_assistant.constants import CONF_ENTRY_HTTP_PROFILE_HIDDEN
 from music_assistant.helpers.util import is_valid_mac_address
 from music_assistant.models.player import Player
-from music_assistant.models.player_endpoint import PlayerEndpoint
+from music_assistant.models.player_protocol import PlayerProtocol
 from music_assistant.providers.snapcast.constants import (
     SNAPCLIENT_LIVENESS_POLL_INTERVAL,
     SNAPCLIENT_STALE_THRESHOLD,
@@ -59,7 +59,7 @@ class TrackedPlayerState(TypedDict, total=False):
     grp_member_avail: list[bool]
 
 
-class SnapCastPlayer(PlayerEndpoint):
+class SnapCastPlayer(PlayerProtocol):
     """SnapCastPlayer."""
 
     def __init__(
@@ -109,7 +109,7 @@ class SnapCastPlayer(PlayerEndpoint):
         if len(grp_player_ids) < 2 or grp_name not in grp_player_ids:
             return None
 
-        if leader_player := self.provider.get_endpoint(grp_name):
+        if leader_player := self.provider.get_protocol(grp_name):
             return grp_name if leader_player.available else None
 
         return None
@@ -511,7 +511,7 @@ class SnapCastPlayer(PlayerEndpoint):
                 pl.available
                 for cl_id in members
                 if (pl_id := self.snap_provider._get_ma_id(cl_id))
-                and (pl := self.provider.get_endpoint(pl_id))
+                and (pl := self.provider.get_protocol(pl_id))
             ],
         }
 
@@ -645,11 +645,11 @@ class SnapCastPlayer(PlayerEndpoint):
             if (ma_id := self.snap_provider._get_ma_id(client_id))
         ]
 
-    def _get_players_of_curr_group(self) -> list[PlayerEndpoint]:
+    def _get_players_of_curr_group(self) -> list[PlayerProtocol]:
         return [
             ma_player
             for ma_id in self._get_player_ids_of_curr_group()
-            if (ma_player := self.provider.get_endpoint(ma_id))
+            if (ma_player := self.provider.get_protocol(ma_id))
         ]
 
     async def _publish_state(self) -> None:

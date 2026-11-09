@@ -54,7 +54,7 @@ def _flow_player() -> RaumfeldPlayer:
     mass = MagicMock()
     mass.streams.base_url = BASE_URL
     player.mass = mass
-    player._provider = MagicMock(get_endpoint=lambda pid: player.mass.players.get_player(pid))
+    player._provider = MagicMock(get_protocol=lambda pid: player.mass.players.get_player(pid))
     return player
 
 
@@ -271,7 +271,7 @@ def _follower(leader_state: PlaybackState) -> RaumfeldPlayer:
     provider.host.power_state.return_value = "ACTIVE"
     provider.host.plays_spotify_connect.return_value = False
     provider.room_renderer_location.return_value = None
-    provider.get_endpoint = lambda pid: player.mass.players.get_player(pid)
+    provider.get_protocol = lambda pid: player.mass.players.get_player(pid)
     player._provider = provider
     player._power_changed_at = 0.0
     leader = MagicMock()
@@ -323,7 +323,7 @@ def test_player_id_to_room_ignores_other_providers() -> None:
     mass = MagicMock()
     mass.players.get_player = MagicMock(return_value=foreign)
     player.mass = mass
-    player._provider = MagicMock(get_endpoint=lambda pid: mass.players.get_player(pid))
+    player._provider = MagicMock(get_protocol=lambda pid: mass.players.get_player(pid))
     assert player._player_id_to_room("dlna_kitchen") is None
 
 
@@ -845,7 +845,7 @@ def _external_player() -> tuple[RaumfeldPlayer, MagicMock]:
     provider.zone_location.return_value = _ZONE
     provider.room_renderer_location.return_value = _RENDERER
     provider.room_transport_url.return_value = "http://192.168.1.42:54730/AVTransport/ctrl"
-    provider.get_endpoint = lambda pid: player.mass.players.get_player(pid)
+    provider.get_protocol = lambda pid: player.mass.players.get_player(pid)
     player._provider = provider
     return player, host
 

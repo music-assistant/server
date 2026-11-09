@@ -22,7 +22,7 @@ from music_assistant.constants import (
     CONF_ENTRY_PREFER_WAV_FOR_LIVE_SOURCES_DEFAULT_ENABLED,
     CONF_PASSWORD,
 )
-from music_assistant.models.player_endpoint import PlayerEndpoint
+from music_assistant.models.player_protocol import PlayerProtocol
 from music_assistant.models.setup_flow import SetupFlowError
 
 from .constants import (
@@ -38,7 +38,7 @@ if TYPE_CHECKING:
     from .provider import MPDPlayerProvider
 
 
-class MPDPlayer(PlayerEndpoint):
+class MPDPlayer(PlayerProtocol):
     """Represents a single MPD server as a Music Assistant player."""
 
     _attr_poll_interval = ELAPSED_POLL_INTERVAL

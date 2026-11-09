@@ -160,7 +160,7 @@ class MockProvider:
         self.mass = mass or MagicMock()
         self.logger = logging.getLogger(f"test.{domain}")
         # the controller iterates these when a group related field changes
-        self.endpoints: list[Player] = []
+        self.protocols: list[Player] = []
 
 
 class MockPlayer(Player):

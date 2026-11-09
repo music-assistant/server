@@ -129,7 +129,7 @@ def _fast_membership_verify(monkeypatch: pytest.MonkeyPatch) -> None:
 def _make_coordinator(*players: MagicMock) -> tuple[NativeGroupCoordinator, MagicMock]:
     """Create a coordinator over a provider whose player list is the given players."""
     provider = MagicMock()
-    provider.endpoints = list(players)
+    provider.protocols = list(players)
     provider.mass = MagicMock()
     provider.logger = MagicMock()
     provider.wiim_controller = MagicMock(
@@ -137,7 +137,7 @@ def _make_coordinator(*players: MagicMock) -> tuple[NativeGroupCoordinator, Magi
     )
     by_id = {player.player_id: player for player in players}
     provider.mass.players.get_player.side_effect = by_id.get
-    provider.get_endpoint = lambda pid: provider.mass.players.get_player(pid)
+    provider.get_protocol = lambda pid: provider.mass.players.get_player(pid)
     return NativeGroupCoordinator(provider), provider
 
 
@@ -370,7 +370,7 @@ class TestSelfHealing:
         assert coordinator.members_of(LEADER_ID) == []  # follower not registered yet
 
         follower = _make_player(FOLLOWER_ID, BACKEND_GENERIC)
-        provider.endpoints.append(follower)
+        provider.protocols.append(follower)
         await coordinator.reconcile()
 
         assert coordinator.members_of(LEADER_ID) == [LEADER_ID, FOLLOWER_ID]
@@ -1015,7 +1015,7 @@ class TestMixedGrouping:
 
         # the leader is unregistered before the member's next live read; the recorded
         # self-follower role keeps the member suppressed rather than groupable
-        provider.endpoints.remove(leader)
+        provider.protocols.remove(leader)
         coordinator.unregister(LEADER_ID)
         await coordinator.reconcile()
 
@@ -1161,7 +1161,7 @@ class TestRegistrationCleanup:
         coordinator.set_leader_slaves(LEADER_ID, [FOLLOWER_HTTP_UUID])
         await coordinator.reconcile()
 
-        provider.endpoints.remove(leader)
+        provider.protocols.remove(leader)
         coordinator.unregister(LEADER_ID)
         await coordinator.reconcile()
 
@@ -1175,7 +1175,7 @@ class TestRegistrationCleanup:
         coordinator.set_leader_slaves(LEADER_ID, [FOLLOWER_HTTP_UUID])
         await coordinator.reconcile()
 
-        provider.endpoints.remove(leader)  # gone, but no explicit unregister
+        provider.protocols.remove(leader)  # gone, but no explicit unregister
         await coordinator.reconcile()
 
         assert LEADER_ID not in coordinator._raw_slaves  # pruned

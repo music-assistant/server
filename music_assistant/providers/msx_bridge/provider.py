@@ -161,7 +161,7 @@ class MSXBridgeProvider(PlayerProvider):
         if pending_event := self._pending_unregisters.get(player_id):
             self.logger.debug("Waiting for pending unregister of %s before registering", player_id)
             await pending_event.wait()
-        existing = self.get_endpoint(player_id)
+        existing = self.get_protocol(player_id)
         if existing and isinstance(existing, MSXPlayer):
             if ip_address and not existing.device_info.ip_address:
                 existing.device_info.ip_address = ip_address
@@ -183,7 +183,7 @@ class MSXBridgeProvider(PlayerProvider):
         """Record activity for a player (extends idle timeout)."""
         # Monotonic: a wall-clock NTP step must not age players past the cutoff
         self._player_last_activity[player_id] = time.monotonic()
-        player = self.get_endpoint(player_id)
+        player = self.get_protocol(player_id)
         if isinstance(player, MSXPlayer):
             player.mark_available()
 
@@ -412,7 +412,7 @@ class MSXBridgeProvider(PlayerProvider):
                 break
             now = time.monotonic()
             cutoff = now - (timeout_minutes * 60)
-            for player in list(self.endpoints):
+            for player in list(self.protocols):
                 if not isinstance(player, MSXPlayer):
                     continue
                 last = self._player_last_activity.get(player.player_id, 0)

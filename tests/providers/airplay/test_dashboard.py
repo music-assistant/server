@@ -24,7 +24,7 @@ def _make_dashboards() -> AirPlayDashboards:
     provider.domain = "airplay"
     provider.translation_owner = "provider.airplay"
     provider.mass.players.get_player.return_value = None
-    provider.get_endpoint = lambda pid: provider.mass.players.get_player(pid)
+    provider.get_protocol = lambda pid: provider.mass.players.get_player(pid)
     provider.mass.dashboard.register_dashboard_handler.return_value = MagicMock()
     return AirPlayDashboards(provider)
 

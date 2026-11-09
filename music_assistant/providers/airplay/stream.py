@@ -1473,7 +1473,7 @@ class AirPlayStream:
                     was_leader = bool(player.group_members)
                     if player.synced_to:
                         rejoin_candidates = [player.synced_to]
-                        if leader := player.provider.get_endpoint(player.synced_to):
+                        if leader := player.provider.get_protocol(player.synced_to):
                             rejoin_candidates += [
                                 member_id
                                 for member_id in leader.group_members

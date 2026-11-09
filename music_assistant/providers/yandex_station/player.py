@@ -35,7 +35,7 @@ from music_assistant.constants import (
 )
 from music_assistant.helpers.config_entries import PLAYBACK_TARGET_TYPES
 from music_assistant.models.player import DeviceInfo, PlayerMedia
-from music_assistant.models.player_endpoint import PlayerEndpoint
+from music_assistant.models.player_protocol import PlayerProtocol
 
 from . import protobuf
 from .alice import AliceActivity, AliceTracker, AliceUpdate
@@ -187,7 +187,7 @@ def _update_form(name: str, **kwargs: str) -> dict[str, Any]:
     }
 
 
-class YandexStationPlayer(PlayerEndpoint):
+class YandexStationPlayer(PlayerProtocol):
     """Represents a single Yandex Station smart speaker."""
 
     def __init__(
