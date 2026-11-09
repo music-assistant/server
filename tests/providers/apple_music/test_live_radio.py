@@ -120,6 +120,8 @@ class _Live:
         # the segments fetched so far, at each wait of the playlist loop
         self.sleeps: list[int] = []
         self.fetched: list[str] = []
+        # each license request as (key name, segments fetched before it)
+        self.licenses: list[tuple[str, int]] = []
         self.segments: dict[str, bytes] = {}
 
         async def fetch(url: str) -> bytes:
@@ -130,8 +132,11 @@ class _Live:
             self.fetched.append(name)
             return self.segments.get(name, name.encode())
 
-        async def get_license(_data: dict[str, Any], key_uri: str) -> str:
-            return f"key-{base64.b64decode(key_uri.rsplit(',', 1)[-1]).decode()[-1]}"
+        async def get_license(_data: dict[str, Any], key_uri: str) -> tuple[str, float]:
+            # the key of key name A is aaaa..., a valid hex key for ffmpeg
+            name = base64.b64decode(key_uri.rsplit(",", 1)[-1]).decode()[-1]
+            self.licenses.append((name, len(self.fetched)))
+            return name.lower() * 32, 780.0
 
         async def decoder(
             audio_input: AsyncGenerator[bytes], **kwargs: Any
@@ -182,7 +187,7 @@ class _Live:
             data={
                 "media_url": MEDIA_URL,
                 "key_server_url": "https://key.example",
-                "keys": {_wv("A"): "key-A"},
+                "keys": {_wv("A"): ("a" * 32, 780.0)},
                 "key_uri": _wv("A"),
                 "renew_at": None,
             },
@@ -234,8 +239,8 @@ async def test_a_key_change_starts_a_new_decoder_and_the_stream_goes_on(
 
     assert chunks == [b"init_A", b"s12", b"s13", b"s14", b"init_B", b"s15", b"s16", b"s17"]
     assert [run["args"] for run in live.decoders] == [
-        ["-decryption_key", "key-A"],
-        ["-decryption_key", "key-B"],
+        ["-decryption_key", "a" * 32],
+        ["-decryption_key", "b" * 32],
     ]
     assert live.decoders[0]["input"] == [b"init_A", b"s12", b"s13", b"s14"]
     assert live.radio.state["key_changes"] == 1
@@ -322,33 +327,88 @@ async def test_a_license_sets_its_renewal() -> None:
     streaming.get_content_key = AsyncMock(return_value=("aabb", {"renew-after": 780}))
     data: dict[str, Any] = {"key_server_url": "https://key.example", "renew_at": None}
 
-    assert await radio._get_license(data, _wv("A")) == "aabb"
+    assert await radio._get_license(data, _wv("A")) == ("aabb", 780.0)
 
     request = streaming.get_content_key.await_args
     assert request.args[2] == {"uri": _wv("A"), "event": "beats1"}
     assert request.kwargs["headers"]["x-apple-renewal"] == "true"
-    assert data["renew_at"] == pytest.approx(time.monotonic() + 780, abs=5)
+    # only the key that plays sets the renewal, see test_the_next_key_is_licensed_once_ahead
+    assert data["renew_at"] is None
 
 
 @pytest.mark.parametrize(
-    ("error", "stops"),
+    ("answer", "next_renewal"),
     [
-        (ProviderStreamLimitError(MagicMock(max_concurrent_streams=1), None), True),
-        (UnplayableMediaError("HTTP 503"), False),
+        (ProviderStreamLimitError(MagicMock(max_concurrent_streams=1), None), None),
+        (UnplayableMediaError("HTTP 503"), RENEW_RETRY_SECONDS),
+        (("aabb", 780.0), 780),
     ],
+    ids=["refused", "failed", "renewed"],
 )
-async def test_a_renewal_stops_only_when_apple_refuses_it(error: Exception, stops: bool) -> None:
+async def test_a_renewal_stops_only_when_apple_refuses_it(
+    answer: Any, next_renewal: int | None
+) -> None:
     """A refused renewal ends the stream, a failed one is tried again later."""
     radio = _radio()
-    radio._get_license = AsyncMock(side_effect=error)  # type: ignore[method-assign]
+    radio._get_license = AsyncMock(side_effect=[answer])  # type: ignore[method-assign]
     data: dict[str, Any] = {"key_uri": _wv("A"), "renew_at": 0}
 
-    if stops:
+    if next_renewal is None:
         with pytest.raises(ProviderStreamLimitError):
             await radio._renew_license(data)
     else:
         await radio._renew_license(data)
-        assert data["renew_at"] > time.monotonic() + RENEW_RETRY_SECONDS - 5
+        assert data["renew_at"] == pytest.approx(time.monotonic() + next_renewal, abs=5)
+
+
+async def test_the_next_key_is_licensed_once_ahead(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The next key's license comes before the first segment, its renewal from the change."""
+    live = _Live([_media(10, ["A", "A", "B"])], monkeypatch)
+    live.details.data["renew_at"] = renew_of_a = time.monotonic() + 999
+    renew_at_while_a_plays: list[float] = []
+    live.segments = {"s11": b"s11"}
+    fetch = live.radio._fetch
+
+    async def watching_fetch(url: str) -> bytes:
+        if url.endswith("/s11"):
+            renew_at_while_a_plays.append(live.details.data["renew_at"])
+        return await fetch(url)
+
+    live.radio._fetch = watching_fetch  # type: ignore[method-assign]
+
+    chunks = await live.read(5)
+
+    assert chunks == [b"init_A", b"s10", b"s11", b"init_B", b"s12"]
+    assert live.licenses == [("B", 0)]
+    assert renew_at_while_a_plays == [renew_of_a]
+    assert live.details.data["renew_at"] == pytest.approx(time.monotonic() + 780, abs=5)
+
+
+async def test_a_segment_without_a_key_does_not_stop_the_license_ahead() -> None:
+    """The segment fails when it is reached, the key ahead of it is still prepared."""
+    radio = _radio()
+    radio._get_license = AsyncMock(return_value=("bb", 780.0))  # type: ignore[method-assign]
+    clear, next_key = WidevinePlaylistParser(_media(1, ["A", "B"])).parse().segments
+    clear.key_line = None
+    data: dict[str, Any] = {"key_uri": _wv("A"), "keys": {_wv("A"): ("aa", 780.0)}}
+
+    await radio._prepare_next_key(data, [clear, next_key])
+
+    assert data["keys"] == {_wv("A"): ("aa", 780.0), _wv("B"): ("bb", 780.0)}
+
+
+async def test_the_playlist_loop_renews_the_license_when_it_is_due(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A renewal is asked for in the playlist loop once its time has come."""
+    live = _Live([_media(10, ["A"] * 3)], monkeypatch)
+    live.details.data["renew_at"] = 0
+    renew = AsyncMock()
+    live.radio._renew_license = renew  # type: ignore[method-assign]
+
+    await live.read(2)
+
+    renew.assert_awaited_once_with(live.details.data)
 
 
 async def test_stream_details_hold_the_stream_and_the_license_of_this_account() -> None:
@@ -363,7 +423,7 @@ async def test_stream_details_hold_the_stream_and_the_license_of_this_account() 
     )
     pages = {ASSET["url"]: MASTER, "https://primary.example/index_1.m3u8": _media(1, ["A", "B"])}
     radio._fetch = AsyncMock(side_effect=lambda url: pages[url].encode())  # type: ignore[method-assign]
-    radio._get_license = AsyncMock(return_value="key-B")  # type: ignore[method-assign]
+    radio._get_license = AsyncMock(return_value=("bb", 780.0))  # type: ignore[method-assign]
 
     details = await radio.get_stream_details("ra.1")
 
@@ -372,7 +432,8 @@ async def test_stream_details_hold_the_stream_and_the_license_of_this_account() 
     assert details.decoded_audio_format is not None
     assert details.decoded_audio_format.content_type == ContentType.PCM_F32LE
     assert details.data["media_url"] == "https://primary.example/index_1.m3u8"
-    assert details.data["keys"] == {_wv("B"): "key-B"}
+    assert details.data["keys"] == {_wv("B"): ("bb", 780.0)}
+    assert details.data["renew_at"] == pytest.approx(time.monotonic() + 780, abs=5)
     assert api.get_data.await_args_list[1].kwargs == {
         "keyFormat": "web",
         "id": "ra.1",

@@ -205,6 +205,7 @@ class AppleMusicLiveRadioManager:
             "renew_at": None,
         }
         data["keys"][key_uri] = await self._get_license(data, key_uri)
+        data["renew_at"] = _renewal_time(data["keys"][key_uri][1])
         return StreamDetails(
             provider=self.provider.instance_id,
             item_id=station_id,
@@ -244,14 +245,16 @@ class AppleMusicLiveRadioManager:
                 segment = await anext(new_segments)
                 while True:
                     key_uri = segment_uri(segment.key_line)
+                    if not data["keys"].get(key_uri):
+                        data["keys"][key_uri] = await self._get_license(data, key_uri)
+                    key, renew_after = data["keys"][key_uri]
                     if key_uri != data["key_uri"]:
                         self.state["key_changes"] += 1
                         self.logger.debug(
                             "Live radio of %s moves to a new key", streamdetails.item_id
                         )
                         data["key_uri"] = key_uri
-                    if not data["keys"].get(key_uri):
-                        data["keys"][key_uri] = await self._get_license(data, key_uri)
+                        data["renew_at"] = _renewal_time(renew_after)
                     init = await self._fetch(
                         urljoin(data["media_url"], segment_uri(segment.map_line))
                     )
@@ -263,7 +266,7 @@ class AppleMusicLiveRadioManager:
                                 content_type=ContentType.MP4, codec_type=ContentType.AAC
                             ),
                             output_format=live_pcm_format(),
-                            extra_input_args=["-decryption_key", data["keys"][key_uri]],
+                            extra_input_args=["-decryption_key", key],
                         )
                     ) as pcm:
                         async for chunk in pcm:
@@ -329,19 +332,25 @@ class AppleMusicLiveRadioManager:
                             "Live radio skipped %s segments", new[0][0] - next_sequence
                         )
                 await self._prepare_next_key(data, [segment for _, segment in new])
+            if data["renew_at"] is not None and time.monotonic() >= data["renew_at"]:
+                await self._renew_license(data)
             # a stream that stops moving is ended by the core's stall timeout, which restarts it
             for sequence, segment in new:
                 next_sequence = sequence + 1
                 yield segment
-            if data["renew_at"] is not None and time.monotonic() >= data["renew_at"]:
-                await self._renew_license(data)
             # sending is paced by the consumer, a wait after it could leave the decoder empty
             if not new:
                 await asyncio.sleep(target / 2)
 
     async def _prepare_next_key(self, data: dict[str, Any], ahead: list[HLSMediaSegment]) -> None:
         """Get the license of a key that comes up, so the change of key has no gap."""
-        upcoming = {data["key_uri"], *(segment_uri(segment.key_line) for segment in ahead)}
+        upcoming = {data["key_uri"]}
+        for segment in ahead:
+            try:
+                upcoming.add(segment_uri(segment.key_line))
+            except UnplayableMediaError:
+                # the segment itself fails when the stream reaches it
+                continue
         data["keys"] = {uri: key for uri, key in data["keys"].items() if uri in upcoming}
         for key_uri in upcoming - data["keys"].keys():
             # one try ahead of time, the change of key asks again if this one fails
@@ -354,16 +363,18 @@ class AppleMusicLiveRadioManager:
     async def _renew_license(self, data: dict[str, Any]) -> None:
         """Renew the license of the current key like Apple's own client does."""
         try:
-            await self._get_license(data, data["key_uri"])
+            _, renew_after = await self._get_license(data, data["key_uri"])
         except ProviderStreamLimitError:
             raise
         except MusicAssistantError as err:
             self.logger.warning("Live radio license renewal failed: %s", err)
             data["renew_at"] = time.monotonic() + RENEW_RETRY_SECONDS
+        else:
+            data["renew_at"] = _renewal_time(renew_after)
 
-    async def _get_license(self, data: dict[str, Any], key_uri: str) -> str:
+    async def _get_license(self, data: dict[str, Any], key_uri: str) -> tuple[str, float]:
         """
-        Return the content key of a key uri from the license of this account.
+        Return the content key of a key uri and the renewal interval of its license.
 
         :raises ProviderStreamLimitError: If Apple refuses this account the license.
         """
@@ -405,9 +416,7 @@ class AppleMusicLiveRadioManager:
             raise UnplayableMediaError(str(err)) from None
         except (ClientError, TimeoutError, ValueError) as err:
             raise UnplayableMediaError(f"Live radio license failed: {type(err).__name__}") from None
-        renew_after = float(answer.get("renew-after") or 0)
-        data["renew_at"] = time.monotonic() + renew_after if renew_after else None
-        return key
+        return key, float(answer.get("renew-after") or 0)
 
     async def _update_stream_metadata(
         self, streamdetails: StreamDetails, elapsed_time: int
@@ -469,3 +478,8 @@ class AppleMusicLiveRadioManager:
                 f"HTTP {err.status}" if isinstance(err, ClientResponseError) else type(err).__name__
             )
             raise UnplayableMediaError(f"Live radio request failed: {reason}") from None
+
+
+def _renewal_time(renew_after: float) -> float | None:
+    """Return when a license with the given renewal interval is renewed, None for never."""
+    return time.monotonic() + renew_after if renew_after else None
