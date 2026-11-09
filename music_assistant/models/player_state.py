@@ -48,6 +48,7 @@ if TYPE_CHECKING:
         PlayerSoundMode,
     )
     from music_assistant_models.player_queue import PlayerQueue
+    from music_assistant_models.queue_item import QueueItem
     from music_assistant_models.streamdetails import StreamMetadata
 
     from music_assistant.controllers.players.audio_sources import AudioSourceSession
@@ -567,6 +568,88 @@ def reconcile_position_anchor(
     if force_adopt or jumped or prev_playing != new_playing:
         return new_position, new_timestamp, jumped
     return prev_position, prev_timestamp, False
+
+
+def queue_item_media(
+    queue: PlayerQueue,
+    queue_item: QueueItem,
+    stream_metadata: StreamMetadata | None,
+    item_image_url: str | None,
+    media_item_image_url: str | None,
+) -> PlayerMedia:
+    """
+    Return a queue item as the media a player shows while it plays it, without a palette.
+
+    :param queue: The queue the item belongs to.
+    :param queue_item: The queue item to describe.
+    :param stream_metadata: What the stream of the item plays, as shown.
+    :param item_image_url: Url of the image of the queue item.
+    :param media_item_image_url: Url of the image of the media item it holds.
+    """
+    if stream_metadata:
+        # handle stream metadata (e.g. for radio stream)
+        image_url = stream_metadata.image_url or item_image_url
+        elapsed_time, elapsed_time_last_updated = _resolve_position(
+            stream_metadata.elapsed_time,
+            stream_metadata.elapsed_time_last_updated,
+            # a duration is the song's, and how long the stream has played is no
+            # position in that song
+            None if stream_metadata.duration else queue.elapsed_time,
+            queue.elapsed_time_last_updated,
+        )
+        return PlayerMedia(
+            uri=queue_item.uri,
+            media_type=queue_item.media_type,
+            title=stream_metadata.title or queue_item.name,
+            artist=stream_metadata.artist,
+            album=stream_metadata.album or stream_metadata.description or queue_item.name,
+            image_url=image_url,
+            duration=stream_metadata.duration or queue_item.duration,
+            source_id=queue.queue_id,
+            queue_item_id=queue_item.queue_item_id,
+            elapsed_time=elapsed_time,
+            elapsed_time_last_updated=elapsed_time_last_updated,
+        )
+    if media_item := queue_item.media_item:
+        # normal media item
+        # we use getattr here to avoid issues with different media item types
+        version = getattr(media_item, "version", None)
+        album = getattr(media_item, "album", None)
+        podcast = getattr(media_item, "podcast", None)
+        metadata = getattr(media_item, "metadata", None)
+        description = getattr(metadata, "description", None) if metadata else None
+        if description:
+            # descriptions may contain HTML markup; the OSD shows plain text
+            description = html_to_markdown(description)
+        image_url = media_item_image_url or item_image_url
+        return PlayerMedia(
+            uri=str(media_item.uri),
+            media_type=media_item.media_type,
+            title=f"{media_item.name} ({version})" if version else media_item.name,
+            # a podcast episode has no artists, the podcast name takes the artist line
+            artist=getattr(media_item, "artist_str", None) or (podcast.name if podcast else None),
+            album=album.name if album else None if podcast else description,
+            album_artist=getattr(album, "artist_str", None),
+            image_url=image_url,
+            duration=media_item.duration,
+            source_id=queue.queue_id,
+            queue_item_id=queue_item.queue_item_id,
+            elapsed_time=int(queue.elapsed_time),
+            elapsed_time_last_updated=queue.elapsed_time_last_updated,
+        )
+
+    # fallback to basic current item details
+    return PlayerMedia(
+        uri=queue_item.uri,
+        media_type=queue_item.media_type,
+        title=queue_item.name,
+        image_url=item_image_url,
+        duration=queue_item.duration,
+        source_id=queue.queue_id,
+        queue_item_id=queue_item.queue_item_id,
+        elapsed_time=int(queue.elapsed_time),
+        elapsed_time_last_updated=queue.elapsed_time_last_updated,
+    )
 
 
 def _reachable(inputs: StateInputs) -> bool:
@@ -1122,74 +1205,15 @@ def _queue_media(inputs: StateInputs, active_queue: QueueSnapshot) -> PlayerMedi
     if not (current_item := queue.current_item):
         # queue is active but no current item
         return None
-    item_image_url = active_queue.item_image_url
-    if stream_metadata := active_queue.stream_metadata:
-        # handle stream metadata (e.g. for radio stream)
-        image_url = stream_metadata.image_url or item_image_url
-        elapsed_time, elapsed_time_last_updated = _resolve_position(
-            stream_metadata.elapsed_time,
-            stream_metadata.elapsed_time_last_updated,
-            # a duration is the song's, and how long the stream has played is no
-            # position in that song
-            None if stream_metadata.duration else queue.elapsed_time,
-            queue.elapsed_time_last_updated,
-        )
-        return PlayerMedia(
-            uri=current_item.uri,
-            media_type=current_item.media_type,
-            title=stream_metadata.title or current_item.name,
-            artist=stream_metadata.artist,
-            album=stream_metadata.album or stream_metadata.description or current_item.name,
-            image_url=image_url,
-            palette=_resolved_palette(inputs, image_url),
-            duration=stream_metadata.duration or current_item.duration,
-            source_id=queue.queue_id,
-            queue_item_id=current_item.queue_item_id,
-            elapsed_time=elapsed_time,
-            elapsed_time_last_updated=elapsed_time_last_updated,
-        )
-    if media_item := current_item.media_item:
-        # normal media item
-        # we use getattr here to avoid issues with different media item types
-        version = getattr(media_item, "version", None)
-        album = getattr(media_item, "album", None)
-        podcast = getattr(media_item, "podcast", None)
-        metadata = getattr(media_item, "metadata", None)
-        description = getattr(metadata, "description", None) if metadata else None
-        if description:
-            # descriptions may contain HTML markup; the OSD shows plain text
-            description = html_to_markdown(description)
-        image_url = active_queue.media_item_image_url or item_image_url
-        return PlayerMedia(
-            uri=str(media_item.uri),
-            media_type=media_item.media_type,
-            title=f"{media_item.name} ({version})" if version else media_item.name,
-            # a podcast episode has no artists, the podcast name takes the artist line
-            artist=getattr(media_item, "artist_str", None) or (podcast.name if podcast else None),
-            album=album.name if album else None if podcast else description,
-            album_artist=getattr(album, "artist_str", None),
-            image_url=image_url,
-            palette=_resolved_palette(inputs, image_url),
-            duration=media_item.duration,
-            source_id=queue.queue_id,
-            queue_item_id=current_item.queue_item_id,
-            elapsed_time=int(queue.elapsed_time),
-            elapsed_time_last_updated=queue.elapsed_time_last_updated,
-        )
-
-    # fallback to basic current item details
-    return PlayerMedia(
-        uri=current_item.uri,
-        media_type=current_item.media_type,
-        title=current_item.name,
-        image_url=item_image_url,
-        palette=_resolved_palette(inputs, item_image_url),
-        duration=current_item.duration,
-        source_id=queue.queue_id,
-        queue_item_id=current_item.queue_item_id,
-        elapsed_time=int(queue.elapsed_time),
-        elapsed_time_last_updated=queue.elapsed_time_last_updated,
+    media = queue_item_media(
+        queue,
+        current_item,
+        active_queue.stream_metadata,
+        active_queue.item_image_url,
+        active_queue.media_item_image_url,
     )
+    media.palette = _resolved_palette(inputs, media.image_url)
+    return media
 
 
 def _session_media(
