@@ -1663,13 +1663,9 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
                 msg = f"Player {player_id} is already registered!"
                 raise AlreadyRegisteredError(msg)
 
-            created = self.mass.config.create_default_player_config(
+            self.mass.config.create_default_player_config(
                 player_id, player.provider_id, player.type, player.name, player.enabled_by_default
             )
-            if created and not player.enabled_by_default:
-                # a new player that is disabled by default only gets its config: as for any
-                # disabled player, its provider registers it once the user enables it
-                return
 
             # ignore disabled players
             if not player.state.enabled:
@@ -2577,8 +2573,8 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
                 )
             if not (player_enabled and player):
                 return  # enabling/disabling a player will be handled by the provider
-            # a provider can register a player while its config is disabled, so a registered
-            # player takes the enabled config like any other config change
+            # a player can be registered while disabled (e.g. a new player that is disabled
+            # by default), so it takes the enabled config like any other config change
 
         if not player:
             return  # guard against player not being registered (yet)
