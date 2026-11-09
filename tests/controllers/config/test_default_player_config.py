@@ -1,15 +1,9 @@
 """
-Regression tests for create_default_player_config not corrupting existing configs.
+Tests for create_default_player_config.
 
-Reproduces music-assistant/support#5745: Player.__init__ called
-create_default_player_config before provider setup had determined the real
-player type, so the passed type could be a transient class default. For
-squeezelite protocol players this rewrote the persisted player_type from
-"protocol" to "player" on every client (re)connect. Normally healed right
-after registration, but when registration was interrupted (e.g. shutdown
-while clients reconnect) the corrupted row hit disk and the universal player
-restore logic deleted the wrapping universal player config on next startup,
-wiping all user customizations.
+An existing stored player_type is never rewritten (support#5745), the default name
+of an existing config follows the player while a name the user set stays, and a new
+config stores the name as its default name only.
 """
 
 from music_assistant_models.enums import PlayerType

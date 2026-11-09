@@ -81,6 +81,16 @@ async def test_delay_reported_before_registration_is_stored_and_applied(
     player_role.set_output_delay.assert_called_once_with(120)
 
 
+def test_report_with_a_config_drops_an_older_kept_report() -> None:
+    """A report once the config exists supersedes one kept from before it existed."""
+    player = _player(configured_delay=0)
+    player._reported_static_delay = 80
+
+    SendspinPlayer.event_cb(player, MagicMock(), OutputDelayChangedEvent(output_delay_ms=120))
+
+    assert player._reported_static_delay is None
+
+
 def test_unchanged_delay_is_not_stored_again() -> None:
     """A report matching the stored setting writes nothing."""
     player = _player(configured_delay=120)

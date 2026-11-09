@@ -1,48 +1,28 @@
 """Tests for the player config being created when a player registers."""
 
-import logging
 from unittest.mock import MagicMock
 
+from music_assistant_models.config_entries import ProviderConfig
 from music_assistant_models.enums import PlayerFeature, PlayerType, ProviderType
+from music_assistant_models.provider import ProviderManifest
 
 from music_assistant.constants import CONF_PLAYERS
 from music_assistant.mass import MusicAssistant
 from music_assistant.models.player import Player
+from music_assistant.models.player_provider import PlayerProvider
 
 PLAYER_ID = "test_player"
-
-
-class _TestProvider:
-    """Minimal player provider stand-in backed by the real MusicAssistant."""
-
-    def __init__(self, mass: MusicAssistant) -> None:
-        """Initialize the test provider."""
-        self.mass = mass
-        self.domain = "test"
-        self.instance_id = "test--instance"
-        self.translation_owner = "provider.test"
-        self.name = "Test"
-        self.available = True
-        self.unloading = False
-        self.logger = logging.getLogger("test.test")
-        self.manifest = MagicMock()
-        self.manifest.domain = self.domain
-        self.manifest.type = ProviderType.PLAYER
-        self.type = ProviderType.PLAYER
-        self.endpoints: list[Player] = []
-
-    async def unload(self, is_removed: bool = False) -> None:
-        """Unload the provider (nothing to clean up)."""
 
 
 class _TestPlayer(Player):
     """Minimal concrete player that sets its attributes after the base constructor."""
 
-    def __init__(self, provider: _TestProvider, enabled_by_default: bool = True) -> None:
+    def __init__(self, provider: PlayerProvider, enabled_by_default: bool = True) -> None:
         """Initialize the test player."""
-        super().__init__(provider, PLAYER_ID)  # type: ignore[arg-type]
+        super().__init__(provider, PLAYER_ID)
         self._attr_name = "Kitchen"
-        self._attr_type = PlayerType.PLAYER
+        # not the class default, so a stored type can only come from the final attributes
+        self._attr_type = PlayerType.STEREO_PAIR
         self._attr_enabled_by_default = enabled_by_default
         self._attr_available = True
         self._attr_supported_features = {PlayerFeature.PLAY_MEDIA}
@@ -51,9 +31,33 @@ class _TestPlayer(Player):
         """Stop playback, required abstract method."""
 
 
-def _register_provider(mass: MusicAssistant) -> _TestProvider:
-    provider = _TestProvider(mass)
-    mass._providers[provider.instance_id] = provider  # type: ignore[assignment]
+def _register_provider(mass: MusicAssistant) -> PlayerProvider:
+    """
+    Load a bare player provider into the given Music Assistant instance.
+
+    :param mass: The Music Assistant instance to load the provider into.
+    """
+    provider = PlayerProvider(
+        mass,
+        manifest=ProviderManifest(
+            type=ProviderType.PLAYER,
+            domain="test",
+            name="Test",
+            description="Test player provider",
+            codeowners=["@music-assistant"],
+        ),
+        config=ProviderConfig(
+            values={},
+            type=ProviderType.PLAYER,
+            domain="test",
+            instance_id="test--instance",
+            name="Test",
+        ),
+    )
+    provider.available = True
+    # enabling a player starts a discovery, which has nothing to find here
+    provider.on_player_enabled = MagicMock()  # type: ignore[method-assign]
+    mass._providers[provider.instance_id] = provider
     return provider
 
 
@@ -76,15 +80,19 @@ async def test_registering_a_player_creates_its_default_config(mass: MusicAssist
     assert raw_conf["enabled"] is True
     assert raw_conf["default_name"] == "Kitchen"
     assert raw_conf["name"] is None
-    assert raw_conf["player_type"] == PlayerType.PLAYER
+    assert raw_conf["player_type"] == PlayerType.STEREO_PAIR
     assert player.state.enabled is True
 
 
-async def test_registering_a_player_disabled_by_default(mass: MusicAssistant) -> None:
-    """A new player that is disabled by default gets a disabled config on registration."""
+async def test_a_player_disabled_by_default_is_enabled_in_place(mass: MusicAssistant) -> None:
+    """A new player that is disabled by default is enabled as soon as the user enables it."""
     player = _TestPlayer(_register_provider(mass), enabled_by_default=False)
 
     await mass.players.register(player)
-
     assert mass.config.get(f"{CONF_PLAYERS}/{PLAYER_ID}/enabled") is False
     assert player.state.enabled is False
+
+    await mass.config.save_player_config(PLAYER_ID, {"enabled": True})
+
+    assert mass.players.get_player(PLAYER_ID) is player
+    assert player.state.enabled is True

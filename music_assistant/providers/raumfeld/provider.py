@@ -609,9 +609,11 @@ class RaumfeldPlayerProvider(PlayerProvider):
                 continue
             player = RaumfeldPlayer(provider=self, player_id=player_id, room=room)
             await self.mass.players.register(player)
-            # the config exists now (created on registration)
-            self._ensure_icy_default(player_id)
-            self.logger.debug("Registered Raumfeld room '%s' as player %s", room, player_id)
+            # registration creates the config; a room that did not register (e.g. while
+            # the provider unloads) has no config to store the default in
+            if self.get_endpoint(player_id) is player:
+                self._ensure_icy_default(player_id)
+                self.logger.debug("Registered Raumfeld room '%s' as player %s", room, player_id)
         # a room whose UDN the host no longer lists (e.g. a speaker that dropped to deep
         # standby or left the network) is gone until it returns; show it as unavailable.
         # Match on the stable player_id, never the room name, so a rename does not orphan it.

@@ -1539,10 +1539,13 @@ class SendspinPlayer(SendspinBasePlayer):
                     # delay to the device: keep this one until then, so the device's own
                     # delay is stored and pushed instead of the default
                     self._reported_static_delay = delay_ms
-                elif current != delay_ms:
-                    self.mass.config.set_raw_player_config_value(
-                        self.player_id, CONF_SENDSPIN_STATIC_DELAY, delay_ms
-                    )
+                else:
+                    # an older report kept from before the config existed is outdated now
+                    self._reported_static_delay = None
+                    if current != delay_ms:
+                        self.mass.config.set_raw_player_config_value(
+                            self.player_id, CONF_SENDSPIN_STATIC_DELAY, delay_ms
+                        )
             case _:
                 super().event_cb(client, event)
 

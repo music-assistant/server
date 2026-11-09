@@ -19,7 +19,7 @@ from music_assistant_models.enums import IdentifierType, PlaybackState, PlayerFe
 from music_assistant_models.errors import PlayerUnavailableError
 from music_assistant_models.player import PlayerSource
 
-from music_assistant.constants import VERBOSE_LOG_LEVEL
+from music_assistant.constants import CONF_PLAYERS, VERBOSE_LOG_LEVEL
 from music_assistant.helpers.upnp import create_didl_metadata
 from music_assistant.models.player import DeviceInfo
 from music_assistant.models.player_endpoint import PlayerEndpoint
@@ -136,7 +136,8 @@ class DLNAPlayer(PlayerEndpoint):
             # An install from before zone renderers were ignored may still hold a config
             # for it, linked to a player that keeps being restored. Deleting the config
             # drops those links as well.
-            self.mass.players.delete_player_config(self.player_id)
+            if self.mass.config.get(f"{CONF_PLAYERS}/{self.player_id}"):
+                self.mass.players.delete_player_config(self.player_id)
             return False
 
         self.set_static_attributes()
