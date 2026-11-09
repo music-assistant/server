@@ -15,7 +15,7 @@ from datetime import datetime
 from typing import TYPE_CHECKING, NoReturn
 
 from deezer_python_gql import DeezerGQLClient, GraphQLClientAuthError, GraphQLClientError
-from music_assistant_models.config_entries import ConfigEntry
+from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption
 from music_assistant_models.enums import ConfigEntryType, MediaType, ProviderFeature
 from music_assistant_models.errors import LoginFailed
 
@@ -25,7 +25,7 @@ from music_assistant.models.music_provider import MusicProvider
 from music_assistant.models.recommendation_payload import RecommendationPayloadMixin
 
 from .browse import DeezerBrowseManager
-from .constants import CONF_SYNC_QUEUE, DECRYPT_KEY_ERROR, DECRYPT_KEY_LENGTH
+from .constants import CONF_QUALITY, CONF_SYNC_QUEUE, DECRYPT_KEY_ERROR, DECRYPT_KEY_LENGTH
 from .gw_client import (
     DeezerGWAuthError,
     DeezerGWError,
@@ -125,6 +125,16 @@ class DeezerProvider(RecommendationPayloadMixin, MusicProvider):
         return (
             CONF_ENTRY_UNOFFICIAL_PROVIDER,
             ConfigEntry(
+                key=CONF_QUALITY,
+                type=ConfigEntryType.STRING,
+                default_value="FLAC_24",
+                options=[
+                    ConfigValueOption("FLAC_24"),
+                    ConfigValueOption("FLAC"),
+                    ConfigValueOption("MP3_320"),
+                ],
+            ),
+            ConfigEntry(
                 key=CONF_SYNC_QUEUE,
                 type=ConfigEntryType.BOOLEAN,
                 default_value=False,
@@ -137,6 +147,7 @@ class DeezerProvider(RecommendationPayloadMixin, MusicProvider):
         arl_token = str(self.get_setup_value(CONF_ARL_TOKEN))
         # a Family profile has no ARL of its own, it is reached through the admin's ARL
         family_profile = str(self.get_setup_value(CONF_FAMILY_PROFILE) or "")
+        quality = str(self.config.get_value(CONF_QUALITY))
 
         try:
             self.gql_client = DeezerGQLClient(
@@ -148,7 +159,9 @@ class DeezerProvider(RecommendationPayloadMixin, MusicProvider):
                 msg = "Authentication returned no user data"
                 raise GraphQLClientError(msg)  # noqa: TRY301 - converted to LoginFailed below
             self.user_id = me.id
-            self.gw_client = GWClient(self.mass.http_session, arl_token, family_profile)
+            self.gw_client = GWClient(
+                self.mass.http_session, arl_token, family_profile, max_format=quality
+            )
             await self.gw_client.setup()
         except DeezerGWNoSubscriptionError as err:
             self.logger.error("Deezer account has no streamable subscription: %s", err)
