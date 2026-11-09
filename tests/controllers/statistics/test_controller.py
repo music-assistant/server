@@ -1,6 +1,6 @@
 """Tests for statistics backed by completed play history."""
 
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
 from datetime import UTC, datetime
 from unittest.mock import AsyncMock, patch
@@ -13,7 +13,7 @@ from music_assistant_models.errors import (
     InvalidDataError,
     UserNotFoundError,
 )
-from music_assistant_models.media_items import AudioFormat
+from music_assistant_models.media_items import AudioFormat, ItemMapping
 
 from music_assistant.constants import (
     DB_TABLE_ALBUM_TRACKS,
@@ -68,12 +68,162 @@ async def _insert_plays(mass: MusicAssistant, user: User, timestamps: tuple[str,
         )
 
 
+@pytest.mark.parametrize("timezone", ["UTC", "Europe/Berlin"])
+@pytest.mark.parametrize("requested_type", [MediaType.TRACK, MediaType.ALBUM, MediaType.ARTIST])
+async def test_item_history_matches_counts_and_time_series(
+    mass: MusicAssistant, timezone: str, requested_type: MediaType
+) -> None:
+    """Item filters agree across counts, dated events and local buckets without duplicate credits."""
+    user = await mass.webserver.auth.create_user("item-history")
+    other_user = await mass.webserver.auth.create_user("other-history")
+    ids = {}
+    for media_type, table in (
+        (MediaType.ALBUM, DB_TABLE_ALBUMS),
+        (MediaType.ARTIST, DB_TABLE_ARTISTS),
+        (MediaType.TRACK, DB_TABLE_TRACKS),
+    ):
+        ids[media_type] = await mass.music.database.insert(
+            table,
+            {
+                "name": media_type.value,
+                "sort_name": media_type.value,
+                "search_name": media_type.value,
+                "search_sort_name": media_type.value,
+                "metadata": "{}",
+                **({"album_type": "album"} if media_type == MediaType.ALBUM else {}),
+                **(
+                    {"artist_type": ArtistType.SINGER.value}
+                    if media_type == MediaType.ARTIST
+                    else {}
+                ),
+                **({"duration": 180} if media_type == MediaType.TRACK else {}),
+            },
+        )
+        for instance in ("test--one", "test--two"):
+            await mass.music.database.insert(
+                DB_TABLE_PROVIDER_MAPPINGS,
+                {
+                    "media_type": media_type.value,
+                    "item_id": ids[media_type],
+                    "provider_domain": "test",
+                    "provider_instance": instance,
+                    "provider_item_id": f"provider-{media_type.value}",
+                    "audio_format": serialize_to_json(AudioFormat().to_dict()),
+                },
+            )
+    await mass.music.database.insert(
+        DB_TABLE_ALBUM_TRACKS,
+        {
+            "track_id": ids[MediaType.TRACK],
+            "album_id": ids[MediaType.ALBUM],
+            "disc_number": 2,
+            "track_number": 1,
+        },
+    )
+    artist_credits = [
+        {"item_id": str(ids[MediaType.ARTIST]), "provider": "library", "name": "artist"},
+        {"item_id": "provider-artist", "provider": "test--one", "name": "artist"},
+    ]
+    instant = datetime(2026, 11, 8, 23, 30, tzinfo=UTC).timestamp()
+    for index, (item_id, provider, owner, media_type) in enumerate(
+        (
+            ("provider-track", "test--one", user, MediaType.TRACK),
+            ("provider-track", "test", user, MediaType.TRACK),
+            (str(ids[MediaType.TRACK]), "library", user, MediaType.TRACK),
+            ("provider-track", "test--one", other_user, MediaType.TRACK),
+            (str(ids[MediaType.ALBUM]), "library", user, MediaType.ALBUM),
+            ("unrelated", "test--one", user, MediaType.TRACK),
+        )
+    ):
+        await mass.music.database.insert(
+            DB_TABLE_PLAY_HISTORY,
+            {
+                "item_id": item_id,
+                "provider": provider,
+                "userid": owner.user_id,
+                "media_type": media_type.value,
+                "name": f"Play {index}",
+                "timestamp": instant,
+                "artists": serialize_to_json(artist_credits if index < 5 else []),
+            },
+        )
+    with _as_user(user), _frozen_now("2026-11-09T12:00:00"):
+        for item_id, provider in (
+            (str(ids[requested_type]), "library"),
+            (f"provider-{requested_type.value}", "test--one"),
+            (f"provider-{requested_type.value}", "test"),
+        ):
+            history = await mass.statistics.get_play_history(
+                item_id=item_id,
+                provider=provider,
+                media_type=requested_type,
+            )
+            series = await mass.statistics.get_plays_over_time(
+                period="month",
+                timezone=timezone,
+                item_id=item_id,
+                provider=provider,
+                media_type=requested_type,
+            )
+            assert len(history) == 3
+            assert len({entry.event_id for entry in history}) == 3
+            assert [entry.name for entry in history] == ["Play 2", "Play 1", "Play 0"]
+            assert all(entry.played_at == instant for entry in history)
+            assert sum(point.value for point in series) == 3
+            assert await mass.statistics.get_play_count(item_id, provider, requested_type) == 3
+            page = await mass.statistics.get_play_history(
+                limit=1,
+                offset=1,
+                item_id=item_id,
+                provider=provider,
+                media_type=requested_type,
+            )
+            assert page[0].event_id == history[1].event_id
+            today = await mass.statistics.get_play_history(
+                item_id=item_id,
+                provider=provider,
+                media_type=requested_type,
+                period="today",
+                timezone=timezone,
+            )
+            assert len(today) == (3 if timezone == "Europe/Berlin" else 0)
+
+
+@pytest.mark.parametrize(
+    ("item_id", "provider", "media_type"),
+    [
+        ("1", None, None),
+        (None, "library", None),
+        (None, None, MediaType.TRACK),
+        ("1", "library", MediaType.PLAYLIST),
+    ],
+)
+async def test_item_history_rejects_incomplete_filters(
+    mass: MusicAssistant, item_id: str | None, provider: str | None, media_type: MediaType | None
+) -> None:
+    """Neither history nor trend silently ignores a partial or unsupported item filter."""
+    user = await mass.webserver.auth.create_user("invalid-item-filter")
+    with _as_user(user):
+        for handler in (mass.statistics.get_play_history, mass.statistics.get_plays_over_time):
+            with pytest.raises(InvalidDataError):
+                await handler(item_id=item_id, provider=provider, media_type=media_type)
+
+
 async def test_statistics_api_registration_is_unchanged(mass: MusicAssistant) -> None:
     """All statistics mixins retain their registered commands, parameters and scopes."""
     expected_parameters = {
         "statistics/top_items": ("media_type", "period", "limit", "timezone", "users", "all_users"),
         "statistics/genre_distribution": ("period", "limit", "timezone", "users", "all_users"),
-        "statistics/plays_over_time": ("period", "granularity", "timezone", "users", "all_users"),
+        "statistics/plays_over_time": (
+            "period",
+            "granularity",
+            "timezone",
+            "users",
+            "all_users",
+            "item_id",
+            "provider",
+            "media_type",
+        ),
         "statistics/listening_activity": ("period", "timezone", "users", "all_users"),
         "statistics/listening_time": (
             "period",
@@ -84,7 +234,17 @@ async def test_statistics_api_registration_is_unchanged(mass: MusicAssistant) ->
             "all_users",
         ),
         "statistics/decade_distribution": ("period", "limit", "timezone", "users", "all_users"),
-        "statistics/play_history": ("limit", "media_types", "played_after_timestamp", "offset"),
+        "statistics/play_history": (
+            "limit",
+            "media_types",
+            "played_after_timestamp",
+            "offset",
+            "item_id",
+            "provider",
+            "media_type",
+            "period",
+            "timezone",
+        ),
         "statistics/play_count": ("item_id", "provider", "media_type", "users", "all_users"),
     }
     commands = {
@@ -859,7 +1019,7 @@ async def test_statistics_preserve_unavailable_library_history(
     ):
         ranking = await mass.statistics.get_top_items(media_type, period="all_time")
         history = await mass.statistics.get_play_history(media_types=[media_type])
-        responses = [[result.item for result in ranking], history]
+        responses: list[Sequence[ItemMapping]] = [[result.item for result in ranking], history]
 
     for items in responses:
         assert {item.name: item.available for item in items} == {

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import time
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
@@ -16,7 +16,8 @@ from music_assistant_models.errors import (
 )
 from music_assistant_models.helpers import get_global_cache_value
 
-from music_assistant.constants import DB_TABLE_PROVIDER_MAPPINGS
+from music_assistant.constants import DB_TABLE_ALBUM_TRACKS, DB_TABLE_PROVIDER_MAPPINGS
+from music_assistant.controllers.statistics.queries import PROVIDER_MAPPING_JOIN
 from music_assistant.controllers.webserver.helpers.auth_middleware import (
     get_current_user,
     has_scope,
@@ -42,6 +43,108 @@ class _StatisticsBase(CoreController):
     """Shared state and helpers for statistics logic mixins."""
 
     domain: str = "statistics"
+
+    async def _get_item_history_filter(
+        self, item_id: str | None, provider: str | None, media_type: MediaType | None
+    ) -> tuple[str, dict[str, str]]:
+        """Return a completed-event filter for a track, album or credited artist."""
+        if item_id is None and provider is None and media_type is None:
+            return "", {}
+        if (
+            not item_id
+            or not provider
+            or media_type is None
+            or media_type
+            not in (
+                MediaType.TRACK,
+                MediaType.ALBUM,
+                MediaType.ARTIST,
+            )
+        ):
+            raise InvalidDataError(
+                "Item filters require item_id, provider and track, album or artist"
+            )
+        if provider != "library":
+            rows = await self.mass.music.database.get_rows_from_query(
+                f"SELECT mappings.item_id FROM {DB_TABLE_PROVIDER_MAPPINGS} AS mappings "
+                f"WHERE {PROVIDER_MAPPING_JOIN.format(mapping='mappings', media_type=':filter_media_type', item_id=':filter_item_id', provider=':filter_provider')}",
+                {
+                    "filter_media_type": media_type.value,
+                    "filter_item_id": item_id,
+                    "filter_provider": provider,
+                },
+                limit=1,
+            )
+            if rows:
+                item_id, provider = str(rows[0]["item_id"]), "library"
+        params = {"filter_item_id": item_id, "filter_provider": provider}
+        mapping_join = PROVIDER_MAPPING_JOIN.format(
+            mapping="item_mapping",
+            media_type="'track'",
+            item_id="history.item_id",
+            provider="history.provider",
+        )
+        track_identity = """
+            CASE WHEN history.provider = 'library' THEN history.item_id
+                ELSE CAST(item_mapping.item_id AS TEXT) END
+        """
+        if media_type == MediaType.TRACK:
+            return (
+                f"""
+                AND (
+                    (history.media_type = 'track' AND history.item_id = :filter_item_id
+                        AND history.provider = :filter_provider)
+                    OR (:filter_provider = 'library' AND history.media_type = 'track'
+                        AND EXISTS (
+                            SELECT 1 FROM {DB_TABLE_PROVIDER_MAPPINGS} AS item_mapping
+                            WHERE {mapping_join}
+                                AND CAST(item_mapping.item_id AS TEXT) = :filter_item_id
+                        ))
+                )
+            """,
+                params,
+            )
+        if media_type == MediaType.ALBUM:
+            return (
+                f"""
+                AND history.media_type = 'track'
+                AND :filter_provider = 'library'
+                AND EXISTS (
+                    SELECT 1 FROM (SELECT 1) AS reference
+                    LEFT JOIN {DB_TABLE_PROVIDER_MAPPINGS} AS item_mapping ON {mapping_join}
+                    INNER JOIN {DB_TABLE_ALBUM_TRACKS} AS album_tracks
+                        ON CAST(album_tracks.track_id AS TEXT) = {track_identity}
+                    WHERE CAST(album_tracks.album_id AS TEXT) = :filter_item_id
+                )
+            """,
+                params,
+            )
+        artist_id = "json_extract(artist_data.value, '$.item_id')"
+        artist_provider = "json_extract(artist_data.value, '$.provider')"
+        artist_mapping_join = PROVIDER_MAPPING_JOIN.format(
+            mapping="artist_mapping",
+            media_type="'artist'",
+            item_id=artist_id,
+            provider=artist_provider,
+        )
+        return (
+            f"""
+            AND history.media_type = 'track'
+            AND EXISTS (
+                SELECT 1 FROM json_each(history.artists) AS artist_data
+                LEFT JOIN {DB_TABLE_PROVIDER_MAPPINGS} AS artist_mapping ON {artist_mapping_join}
+                WHERE (
+                    CASE WHEN {artist_provider} = 'library' THEN {artist_id}
+                        ELSE COALESCE(CAST(artist_mapping.item_id AS TEXT), {artist_id}) END
+                ) = :filter_item_id
+                AND (
+                    CASE WHEN {artist_provider} = 'library' OR artist_mapping.item_id IS NOT NULL
+                        THEN 'library' ELSE {artist_provider} END
+                ) = :filter_provider
+            )
+        """,
+            params,
+        )
 
     async def _get_statistics_user_ids(self, users: list[str] | None, all_users: bool) -> list[str]:
         current_user = get_current_user()
@@ -77,7 +180,7 @@ class _StatisticsBase(CoreController):
             user_ids.append(resolved.user_id)
         return user_ids
 
-    async def _set_library_item_availability(self, items: list[ItemMapping]) -> None:
+    async def _set_library_item_availability(self, items: Sequence[ItemMapping]) -> None:
         """Apply current library availability to historical item references."""
         library_items: dict[MediaType, list[ItemMapping]] = {}
         provider_items: dict[MediaType, list[ItemMapping]] = {}
