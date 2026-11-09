@@ -2,12 +2,14 @@
 
 from collections.abc import AsyncGenerator
 from pathlib import Path
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
 from music_assistant.constants import MEDIA_ITEM_DB_TABLES
 from music_assistant.controllers.metadata.controller import _duplicate_album_sibling_guard
 from music_assistant.controllers.music import MusicController
+from music_assistant.controllers.music.migrations import migrate_database
 from music_assistant.helpers.database import DatabaseConnection
 
 
@@ -26,10 +28,11 @@ async def controller(tmp_path: Path) -> AsyncGenerator[MusicController]:
 
 
 @pytest.mark.parametrize("legacy_column", [None, "name COLLATE NOCASE", "search_name"])
-async def test_search_name_index_survives_legacy_index_name(
-    controller: MusicController, legacy_column: str | None
+@pytest.mark.parametrize("search_index_exists", [False, True])
+async def test_migration_replaces_legacy_name_index(
+    controller: MusicController, legacy_column: str | None, search_index_exists: bool
 ) -> None:
-    """Create the normalized-name index on fresh and both historical database layouts."""
+    """Migrate both legacy index layouts without leaving redundant indexes."""
     database = controller.database
     if legacy_column is not None:
         for table in MEDIA_ITEM_DB_TABLES:
@@ -37,24 +40,27 @@ async def test_search_name_index_survives_legacy_index_name(
                 f"CREATE INDEX {table}_name_nocase_idx ON {table}({legacy_column})"
             )
 
+    if search_index_exists:
+        for table in MEDIA_ITEM_DB_TABLES:
+            await database.execute(f"CREATE INDEX {table}_search_name_idx ON {table}(search_name)")
+
+    mass = MagicMock()
+    mass.cache.clear = AsyncMock()
     for _ in range(2):
+        await migrate_database(
+            mass, database, MagicMock(), prev_version=72, create_tables=AsyncMock()
+        )
         await controller._MusicDatabaseSetupMixin__create_database_indexes()  # type: ignore[attr-defined]
         for table in MEDIA_ITEM_DB_TABLES:
             indexes = await database.get_rows_from_query(f"PRAGMA index_list({table})", limit=0)
+            assert f"{table}_name_nocase_idx" not in {index["name"] for index in indexes}
             indexed_columns = []
             for index in indexes:
                 columns = await database.get_rows_from_query(
                     f"PRAGMA index_info({index['name']})", limit=0
                 )
                 indexed_columns.append([column["name"] for column in columns])
-            assert ["search_name"] in indexed_columns
-            if legacy_column is not None:
-                legacy_columns = await database.get_rows_from_query(
-                    f"PRAGMA index_info({table}_name_nocase_idx)", limit=0
-                )
-                assert [column["name"] for column in legacy_columns] == [
-                    "name" if legacy_column == "name COLLATE NOCASE" else "search_name"
-                ]
+            assert indexed_columns.count(["search_name"]) == 1
 
 
 async def test_reconciliation_after_upgrade_avoids_quadratic_album_scan(
