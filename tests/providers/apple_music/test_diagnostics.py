@@ -67,7 +67,7 @@ async def test_library_listing_snapshot_lands_in_diagnostics() -> None:
         item
         async for item in AppleMusicProvider._counted_listing(provider, MediaType.TRACK, _items())
     ]
-    provider.live_radio_manager.monitor.as_dict.return_value = {"sessions": []}
+    provider.live_radio_manager.state = {"station_id": None}
     diagnostics = await AppleMusicProvider.get_diagnostics(provider)
 
     assert synced == ["a", "b"]
@@ -86,5 +86,5 @@ async def test_library_listing_snapshot_lands_in_diagnostics() -> None:
             "me/ratings/songs?ids": {"attempts": 1},
         },
         "last_library_listings": {"track": track_listing},
-        "live_radio": {"sessions": []},
+        "live_radio": {"station_id": None},
     }

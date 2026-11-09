@@ -117,7 +117,7 @@ class AppleMusicProvider(RecommendationPayloadMixin, MusicProvider):
             "requests_since": self.api_client.request_counter.started_at,
             "requests": self.api_client.request_counter.as_dict(),
             "last_library_listings": self._last_library_listings,
-            "live_radio": self.live_radio_manager.monitor.as_dict(),
+            "live_radio": self.live_radio_manager.state,
         }
 
     async def handle_async_init(self) -> None:
