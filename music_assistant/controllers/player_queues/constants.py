@@ -77,6 +77,13 @@ CONF_CROSSFADE_ENABLED = "crossfade_enabled"
 DEFAULT_AUTOPLAY_ENABLED = False
 DEFAULT_CROSSFADE_ENABLED = False
 
+# seconds a queue may stay paused before it is stopped. Capped a minute below the 5 minutes
+# after which an unread AudioBuffer releases its audio (a longer pause could not resume), and
+# not every player can stay paused for long
+CONF_PAUSE_TIMEOUT = "pause_timeout"
+DEFAULT_PAUSE_TIMEOUT = 30
+PAUSE_TIMEOUT_RANGE = (30, 240)
+
 CONF_SMART_SHUFFLE_LABEL = "smart_shuffle_label"
 CONF_SMART_SHUFFLE_ENABLED = "smart_shuffle_enabled"
 CONF_SMART_SHUFFLE_OPTIMIZE_SMART_FADES = "smart_shuffle_optimize_smart_fades"
