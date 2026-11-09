@@ -28,11 +28,11 @@ The heavy lifting (managed binary install with 90-day build expiry, WebSocket cl
 audio prefs, wire models) is shared infrastructure owned by the Spotify Connect provider
 (`providers/spotify_connect/soloist/`) — do not duplicate it here.
 
-- **Setup**: explicit backend choice → ToS warning/consent → personal API key (created
+- **Setup**: explicit backend choice → download consent → personal API key (created
   with a Premium account) → `soloist --pair` against a flow-private data dir, which the
   provider adopts into `<storage>/spotify/<instance_id>/soloist-data` on the next load.
-  Existing configs without a backend value keep using librespot, and a fresh setup
-  preselects it too.
+  A fresh setup preselects Soloist; existing configs without a backend value keep using
+  librespot, and a reconfigure preselects that for them.
 - **The pairing has to be the same account as the sign-in**, or the library and the audio
   come from different places. The engine records the paired account as its per-user state
   directory (`settings/Users/<username>-user`, the canonical username, i.e. the signed-in
@@ -87,9 +87,10 @@ audio prefs, wire models) is shared infrastructure owned by the Spotify Connect 
 - **One engine run per playback session**: a run is one ordinary-mode daemon, started
   with shuffle, repeat-context and repeat-track off, that plays a queue's items one after
   another. While an item streams, the track that follows it is fed into the engine's own
-  queue (`add_to_queue`). When the engine moves on to it, the capture is cut at the
-  engine's exact track length counted from the item's first sample, and the rest goes to
-  the next item, which the queue then claims from the running engine. Every item has its
+  queue (`add_to_queue`) in the item's last seconds (see crossfade below). When the
+  engine moves on to it, the capture is cut at the engine's exact track length counted
+  from the item's first sample, and the rest goes to the next item, which the queue then
+  claims from the running engine. Every item has its
   own cushion and its own stream, so the outgoing one drains while the next one renders.
   Seeks, skips and jumps to an item that was not fed (an episode, which the engine will
   not take into its queue) move the same engine: sink suspended, FIFO drained, command confirmed, sink resumed. A fed
@@ -117,12 +118,17 @@ audio prefs, wire models) is shared infrastructure owned by the Spotify Connect 
   takes the device over: that fails the item being streamed and the queue moves on. A
   pause from the app or Web API stalls the stream, so the run stops the queue on it. Play
   in Music Assistant resumes at the same position; play in the Spotify app does not.
-- **The engine never crossfades**: its own crossfade is written off in the prefs before
-  every spawn, so each track's audio arrives clean from its first sample. Music Assistant
-  mixes the boundary itself from the tail it holds back, which is what keeps waveforms,
-  beat grids and light sync aligned with what is heard — a fade baked into the bytes
-  would shift every track's start against its analysis. It also means smart fades work
-  on Spotify audio.
+- **The engine must not crossfade**: Music Assistant mixes the boundary itself from the
+  tail it holds back, which is what keeps waveforms, beat grids and light sync aligned
+  with what is heard — a fade baked into the bytes would shift every track's start
+  against its analysis. It also means smart fades work on Spotify audio. Crossfade is
+  written off in the prefs before every spawn, but the engine follows the crossfade in
+  the account's Spotify playback settings on queued boundaries once those settings hold
+  one, and the user keeps that setting for their own Spotify apps. It only crossfades
+  into an item queued earlier than about that crossfade length plus 9 s before the end,
+  so the run holds the next item back and queues it in the current one's last 8 s
+  (`_FEED_LEAD_S`): the two then play back to back. A seek back out of that window
+  skips onto the queued item to take it off the engine and plays the track afresh.
 - **Pacing**: the capture FIFO is reader-clocked — how fast it is read *is* how fast
   the engine plays, because the pipe sink applies no rate limit of its own (read
   unpaced, PulseAudio renders silence rather than pushing back, and the run runs

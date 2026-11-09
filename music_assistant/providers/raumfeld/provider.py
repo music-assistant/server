@@ -7,13 +7,13 @@ Raumfeld exposes a central *RaumfeldHost* webservice that manages the system's
 * each Raumfeld **room** as a stable Music Assistant :class:`RaumfeldPlayer`
 * each Raumfeld **zone** as a Music Assistant sync-group (leader + members)
 
-All device communication goes through the ``hassfeld`` library, which wraps the
-Raumfeld host's UPnP/OpenHome services and keeps an in-memory model of the
-current rooms/zones that we read from and act on.
+A :class:`RaumfeldHost` keeps an in-memory model of the host's current rooms, zones and
+devices, which we read from; commands go to the host's web service and to the UPnP
+services of its renderers.
 
 A background supervisor owns the host connection: it never hard-fails on a
-(temporarily) unreachable host, and it stops the update loop when the host drops
-so hassfeld's long-polling can't flood the log while the host is offline.
+(temporarily) unreachable host, and it stops following the host when it drops, until it
+can be reached again.
 """
 
 from __future__ import annotations
@@ -25,7 +25,6 @@ from typing import TYPE_CHECKING, cast
 from urllib.parse import urljoin, urlparse
 
 import aiohttp
-import hassfeld
 from async_upnp_client.exceptions import UpnpError
 
 from music_assistant.constants import (
@@ -53,6 +52,12 @@ from .constants import (
     UNLOAD_TIMEOUT,
     ZONE_WATCH_INTERVAL,
 )
+from .events import (
+    ROOM_EVENTS_PATH,
+    ROOM_TRANSPORT_EVENTS_PATH,
+    ZONE_EVENTS_PATH,
+    RendererEvents,
+)
 from .helpers import (
     discover_hosts,
     host_is_valid,
@@ -64,8 +69,15 @@ from .helpers import (
     room_udn_to_player_id,
     serial_to_player_id,
 )
+from .host import RaumfeldHost
 from .player import RaumfeldPlayer
-from .upnp import SERVICE_CONTENT_DIRECTORY, browse, get_action
+from .upnp import (
+    SERVICE_AV_TRANSPORT,
+    SERVICE_CONTENT_DIRECTORY,
+    SERVICE_RENDERING_CONTROL,
+    browse,
+    get_action,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -76,7 +88,14 @@ if TYPE_CHECKING:
 class RaumfeldPlayerProvider(PlayerProvider):
     """Player provider for Teufel Raumfeld multiroom devices."""
 
-    host: hassfeld.RaumfeldHost
+    host: RaumfeldHost
+    # the volume and mute events of the rooms' own renderers, and their transport events
+    # (what Spotify Connect plays on a room outside any zone)
+    room_events: RendererEvents
+    room_transport_events: RendererEvents
+    # the transport events of the zone renderers, and the zones last subscribed to
+    zone_events: RendererEvents
+    _zone_event_locations: set[str]
     _host_address: str
     _host_port: int
     _supervisor_task: asyncio.Task[None] | None = None
@@ -147,12 +166,9 @@ class RaumfeldPlayerProvider(PlayerProvider):
 
         :param zone: The rooms of the zone.
         """
-        try:
-            zone_udn = self.host.roomlst_to_zoneudn(zone)
-            location: str | None = self.host.resolve["udn_to_devloc"].get(zone_udn)
-        except KeyError, AttributeError:
+        if (zone_udn := self.host.zone_udn(zone)) is None:
             return None
-        return location
+        return self.host.location(zone_udn)
 
     @property
     def group_change_settling(self) -> bool:
@@ -185,6 +201,21 @@ class RaumfeldPlayerProvider(PlayerProvider):
         self._room_transport_paths = {}
         self._room_ids = {}
         self._shared_serial_warned = set()
+        # empty until connected; replaced by a fresh one on every connect
+        self.host = RaumfeldHost(self.mass.http_session, self._host_url, self._handle_rooms_changed)
+        self.room_events = RendererEvents(
+            self.mass, ROOM_EVENTS_PATH, SERVICE_RENDERING_CONTROL, self._handle_room_event
+        )
+        self.room_transport_events = RendererEvents(
+            self.mass,
+            ROOM_TRANSPORT_EVENTS_PATH,
+            SERVICE_AV_TRANSPORT,
+            self._handle_room_transport_event,
+        )
+        self.zone_events = RendererEvents(
+            self.mass, ZONE_EVENTS_PATH, SERVICE_AV_TRANSPORT, self._handle_zone_event
+        )
+        self._zone_event_locations = set()
         # a background supervisor owns the connection so a missing or (temporarily)
         # unreachable host never leaves the provider permanently unavailable
         self._supervisor_task = self.mass.create_task(self._supervise())
@@ -199,11 +230,20 @@ class RaumfeldPlayerProvider(PlayerProvider):
         for task in tasks:
             task.cancel()
         if tasks:
-            # let them finish, so hassfeld's long-poll has ended before the provider is gone
+            # let them finish, so following the host has ended before the provider is gone
             await asyncio.wait(tasks, timeout=UNLOAD_TIMEOUT)
         self._supervisor_task = None
         self._update_task = None
         self._zone_watch_task = None
+        try:
+            async with asyncio.timeout(UNLOAD_TIMEOUT):
+                await asyncio.gather(
+                    self.room_events.close(),
+                    self.room_transport_events.close(),
+                    self.zone_events.close(),
+                )
+        except TimeoutError:
+            self.logger.debug("Ending the Raumfeld renderer events took too long")
 
     def get_zone_for_room(self, room: str) -> list[str] | None:
         """
@@ -222,13 +262,9 @@ class RaumfeldPlayerProvider(PlayerProvider):
 
         :param room: The Raumfeld room name to look up.
         """
-        try:
-            resolve = self.host.resolve
-            room_udn = resolve["room_to_udn"].get(room)
-            rend_udn = resolve["roomudn_to_rendudn"].get(room_udn) if room_udn else None
-            return resolve["udn_to_devloc"].get(rend_udn) if rend_udn else None
-        except KeyError, AttributeError:
+        if (renderer_udn := self.host.renderer_udn(room)) is None:
             return None
+        return self.host.location(renderer_udn)
 
     def resolve_room_renderer(self, room: str) -> tuple[str | None, str | None]:
         """
@@ -236,13 +272,8 @@ class RaumfeldPlayerProvider(PlayerProvider):
 
         :param room: The Raumfeld room name to look up.
         """
-        try:
-            resolve = self.host.resolve
-            room_udn = resolve["room_to_udn"].get(room)
-            rend_udn = resolve["roomudn_to_rendudn"].get(room_udn) if room_udn else None
-            devloc = resolve["udn_to_devloc"].get(rend_udn) if rend_udn else None
-        except KeyError, AttributeError:
-            return None, None
+        rend_udn = self.host.renderer_udn(room)
+        devloc = self.host.location(rend_udn) if rend_udn else None
         uuid = rend_udn.removeprefix("uuid:") if rend_udn else None
         ip_address = urlparse(devloc).hostname if devloc else None
         return uuid, ip_address
@@ -254,9 +285,11 @@ class RaumfeldPlayerProvider(PlayerProvider):
         :param object_id: The library object to browse.
         :param children: Whether to list its children rather than describe it.
         :raises UpnpError: When the host's media server rejects the request.
+        :raises KeyError: When the host lists no media server.
         """
-        location = self.host.resolve["udn_to_devloc"][self.host.media_server_udn]
-        return await browse(self.mass.http_session, location, object_id, children)
+        return await browse(
+            self.mass.http_session, self._media_server_location(), object_id, children
+        )
 
     async def create_zone(self, rooms: list[str]) -> None:
         """
@@ -276,7 +309,7 @@ class RaumfeldPlayerProvider(PlayerProvider):
         :param zone: The rooms of the zone to add it to.
         :raises KeyError: When the host does not know the room or the zone.
         """
-        if (zone_udn := self.host.roomlst_to_zoneudn(zone)) is None:
+        if (zone_udn := self.host.zone_udn(zone)) is None:
             raise KeyError(f"No zone of {', '.join(zone)}")
         await webservice.connect_room_to_zone(
             self.mass.http_session, self._host_url, self._known_room_udn(room), zone_udn
@@ -333,16 +366,18 @@ class RaumfeldPlayerProvider(PlayerProvider):
                 if not self._connected:
                     await self._try_connect()
                 elif self._update_task is None or self._update_task.done():
-                    # hassfeld's update loop exited (it swallows a disconnect and returns,
-                    # freezing state) - drop so the next cycle reconnects and recreates it
-                    await self._disconnect("host connection lost")
+                    # following the host ended (it stopped answering), which would freeze
+                    # its state - drop so the next cycle reconnects and follows it again
+                    await self._disconnect(f"stopped answering ({self._follow_error()})")
                 elif not await host_is_valid(
                     self.mass.http_session, self._host_address, self._host_port
                 ):
                     # one missed answer is a slow host; only a run of them is a lost one
                     self._host_check_failures += 1
                     if self._host_check_failures >= HOST_CHECK_FAILURES:
-                        await self._disconnect("host connection lost")
+                        await self._disconnect(
+                            f"did not answer {HOST_CHECK_FAILURES} health checks in a row"
+                        )
                 else:
                     self._host_check_failures = 0
                     # host still healthy: re-sync so a room that (re)appeared or vanished
@@ -354,7 +389,7 @@ class RaumfeldPlayerProvider(PlayerProvider):
             except HOST_ERRORS as err:
                 self.logger.debug("Raumfeld supervisor error: %r", err)
             except Exception:
-                # anything else (say a hassfeld change that raises something new) must not
+                # anything else (an answer from the host nobody expected) must not
                 # end the supervisor, or the provider would never reconnect this session
                 self.logger.exception("Unexpected error in the Raumfeld connection supervisor")
             await asyncio.sleep(RECONNECT_INTERVAL)
@@ -371,15 +406,11 @@ class RaumfeldPlayerProvider(PlayerProvider):
             self.logger.debug("Raumfeld host %s not reachable yet; will retry", self._host_address)
             return
         # a fresh host object avoids stale state left by a previous failed attempt
-        self.host = hassfeld.RaumfeldHost(
-            self._host_address, self._host_port, session=self.mass.http_session
-        )
-        self._update_task = self.mass.create_task(
-            self.host.async_update_all(self.mass.http_session)
-        )
+        self.host = RaumfeldHost(self.mass.http_session, self._host_url, self._handle_rooms_changed)
+        self._update_task = self.mass.create_task(self.host.run())
         try:
             async with asyncio.timeout(INITIAL_UPDATE_TIMEOUT):
-                await self.host.async_wait_initial_update()
+                await self.host.wait_ready()
         except TimeoutError:
             self.logger.warning(
                 "Timed out waiting for initial data from Raumfeld host %s; will retry",
@@ -451,6 +482,8 @@ class RaumfeldPlayerProvider(PlayerProvider):
     async def _resync(self) -> None:
         """Periodic re-sync: register rooms that (re)appeared and mark vanished ones gone."""
         await self._sync_rooms()
+        await self._refresh_room_events()
+        await self._refresh_zone_events()
         if time.time() - self._library_read_at >= LIBRARY_REFRESH_INTERVAL:
             self._library_read_at = time.time()
             await self._load_library_sources()
@@ -473,10 +506,9 @@ class RaumfeldPlayerProvider(PlayerProvider):
         if renderer_uuid is None:
             return None
         try:
-            location = self.host.resolve["udn_to_devloc"][self.host.media_server_udn]
             action = await get_action(
                 self.mass.http_session,
-                location,
+                self._media_server_location(),
                 SERVICE_CONTENT_DIRECTORY,
                 "GetStationButtonAssignment",
             )
@@ -587,12 +619,92 @@ class RaumfeldPlayerProvider(PlayerProvider):
             if isinstance(known, RaumfeldPlayer) and known.player_id not in present:
                 known.set_available(False)
 
+    async def _refresh_room_events(self) -> None:
+        """Follow the events of every room's own renderer, and tell each room which come in."""
+        locations = [
+            location
+            for room in self.host.get_rooms()
+            if (location := self.room_renderer_location(room)) is not None
+        ]
+        await asyncio.gather(
+            self.room_events.refresh(locations), self.room_transport_events.refresh(locations)
+        )
+        for player in self.players:
+            if isinstance(player, RaumfeldPlayer):
+                location = self.room_renderer_location(player.room)
+                player.set_rendering_events(
+                    location is not None and self.room_events.follows(location)
+                )
+                player.set_room_transport_events(
+                    location is not None and self.room_transport_events.follows(location)
+                )
+
+    async def _refresh_zone_events(self) -> None:
+        """Follow the events of every zone renderer, and tell each room whether its zone's come in."""
+        self._zone_event_locations = self._zone_locations()
+        await self.zone_events.refresh(self._zone_event_locations)
+        for player in self.players:
+            if not isinstance(player, RaumfeldPlayer):
+                continue
+            zone = self.get_zone_for_room(player.room)
+            location = self.zone_location(zone) if zone else None
+            followed = location is not None and self.zone_events.follows(location)
+            player.set_zone_events(location if followed else None)
+
+    def _zone_locations(self) -> set[str]:
+        """Return the description URLs of the zone renderers the host lists."""
+        return {
+            location
+            for zone in self.host.get_zones()
+            if (location := self.zone_location(zone)) is not None
+        }
+
+    def _handle_zone_event(self, location: str, changes: dict[str, str]) -> None:
+        """Have the rooms of a zone read it, after it reported a change."""
+        rooms = next(
+            (zone for zone in self.host.get_zones() if self.zone_location(zone) == location), []
+        )
+        if state := changes.get("TransportState"):
+            self.logger.debug("Zone %s reports %s", rooms, state)
+        for player in self.players:
+            if isinstance(player, RaumfeldPlayer) and player.room in rooms:
+                player.zone_event(location)
+
+    def _handle_room_event(self, location: str, changes: dict[str, str]) -> None:
+        """Pass a room renderer's volume and mute event on to the room's player."""
+        for player in self.players:
+            if (
+                isinstance(player, RaumfeldPlayer)
+                and self.room_renderer_location(player.room) == location
+            ):
+                player.set_rendering_events(True)
+                player.apply_rendering_event(changes)
+
+    def _handle_room_transport_event(self, location: str, _changes: dict[str, str]) -> None:
+        """Have a room read what its own renderer plays, after it reported a change."""
+        for player in self.players:
+            if (
+                isinstance(player, RaumfeldPlayer)
+                and self.room_renderer_location(player.room) == location
+            ):
+                player.set_room_transport_events(True)
+                player.state_event()
+
+    def _handle_rooms_changed(self, rooms: set[str]) -> None:
+        """Have rooms read, after the host reported a new power state or Spotify session."""
+        for player in self.players:
+            if isinstance(player, RaumfeldPlayer) and player.room in rooms:
+                player.state_event()
+
     async def _watch_zones(self) -> None:
         """Follow zone changes made outside Music Assistant (e.g. in the Raumfeld app)."""
         while True:
             await asyncio.sleep(ZONE_WATCH_INTERVAL)
             try:
                 await self._follow_zones()
+                if self._zone_locations() != self._zone_event_locations:
+                    # a zone was made or ended: follow its events right away
+                    await self._refresh_zone_events()
             except asyncio.CancelledError:
                 raise
             except HOST_ERRORS as err:
@@ -819,19 +931,33 @@ class RaumfeldPlayerProvider(PlayerProvider):
                 )
         self._room_ids = ids
 
+    def _follow_error(self) -> str:
+        """Return why following the host ended, for the log."""
+        task = self._update_task
+        if task is None or not task.done() or task.cancelled() or task.exception() is None:
+            return "no reason given"
+        error = task.exception()
+        # the host model ends with a group holding the error of the read that gave up
+        while isinstance(error, BaseExceptionGroup) and error.exceptions:
+            error = error.exceptions[0]
+        return repr(error)
+
     def _room_udn(self, room: str) -> str | None:
         """Return the room UDN the host reports for a room, or ``None``."""
-        try:
-            udn: str | None = self.host.resolve["room_to_udn"].get(room)
-        except KeyError, AttributeError:
-            return None
-        return udn
+        return self.host.room_udn(room)
 
     def _known_room_udn(self, room: str) -> str:
         """Return the room UDN the host reports for a room, raising ``KeyError`` if none."""
         if (udn := self._room_udn(room)) is None:
             raise KeyError(f"Unknown room {room}")
         return udn
+
+    def _media_server_location(self) -> str:
+        """Return the description URL of the host's media server, raising ``KeyError`` if none."""
+        udn = self.host.media_server_udn
+        if udn is None or (location := self.host.location(udn)) is None:
+            raise KeyError("The Raumfeld host lists no media server")
+        return location
 
     @property
     def _host_url(self) -> str:
@@ -840,13 +966,7 @@ class RaumfeldPlayerProvider(PlayerProvider):
 
     def _room_renderer_udn(self, room: str) -> str | None:
         """Return the UDN of a room's own renderer as the host reports it, or ``None``."""
-        if (room_udn := self._room_udn(room)) is None:
-            return None
-        try:
-            renderer_udn: str | None = self.host.resolve["roomudn_to_rendudn"].get(room_udn)
-        except KeyError, AttributeError:
-            return None
-        return renderer_udn
+        return self.host.renderer_udn(room)
 
     def _forget_moved_renderers(self, rooms: list[str]) -> None:
         """
@@ -928,14 +1048,9 @@ class RaumfeldPlayerProvider(PlayerProvider):
 
     def _zone_rooms_leader_first(self, zone_rooms: list[str]) -> list[str]:
         """Return the zone's rooms ordered with the coordinator (leader) first."""
-        try:
-            resolve = self.host.resolve
-            zone_udn = self.host.roomlst_to_zoneudn(zone_rooms)
-            udn_order = resolve["zoneudn_to_roomudnlst"].get(zone_udn) or []
-            udn_to_room = {udn: room for room, udn in resolve["room_to_udn"].items()}
-        except KeyError, AttributeError:
+        if (zone_udn := self.host.zone_udn(zone_rooms)) is None:
             return list(zone_rooms)
-        ordered = [udn_to_room[udn] for udn in udn_order if udn in udn_to_room]
+        ordered = [room for room in self.host.zone_rooms(zone_udn) if room in zone_rooms]
         # keep any room the coordinator list didn't cover
         ordered += [room for room in zone_rooms if room not in ordered]
-        return ordered or list(zone_rooms)
+        return ordered

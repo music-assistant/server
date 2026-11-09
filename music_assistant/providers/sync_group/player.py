@@ -170,7 +170,7 @@ class SyncGroupPlayer(Player):
         # group. A dormant group derives all of its features from the configured members.
         for member_id in self.group_members:
             member_player = self.mass.players.get_player(member_id)
-            if member_player and member_player.state.available:
+            if member_player and member_player.available_for_playback:
                 for feature in member_features:
                     if feature in member_player.state.supported_features:
                         base_features.add(feature)
@@ -250,7 +250,7 @@ class SyncGroupPlayer(Player):
         can_group_with: set[str] = set()
         for member_id in member_ids:
             member_player = self.mass.players.get_player(member_id)
-            if not member_player or not member_player.state.available:
+            if not member_player or not member_player.available_for_playback:
                 continue
             if not member_player.state.can_group_with and member_player.state.synced_to:
                 # slaved: its compatibility list is empty for now, it can tell us nothing
@@ -878,7 +878,7 @@ class SyncGroupPlayer(Player):
                 if member_id == leader.player_id or member_id in leader.state.can_group_with:
                     continue
                 member = self.mass.players.get_player(member_id)
-                if member is None or not member.state.available:
+                if member is None or not member.available_for_playback:
                     continue
                 self.logger.warning(
                     "Removing %s from group %s: it can not be grouped with %s",
@@ -992,7 +992,7 @@ class SyncGroupPlayer(Player):
                         )
                 except Exception as err:
                     self.logger.log(
-                        logging.WARNING if group_leader.state.available else logging.DEBUG,
+                        logging.WARNING if group_leader.available_for_playback else logging.DEBUG,
                         "Could not ungroup the members of %s while dissolving group %s: %s",
                         group_leader.display_name,
                         self.display_name,
@@ -1033,7 +1033,7 @@ class SyncGroupPlayer(Player):
             collection (e.g. the ones a live session already feeds). Outranks
             ``preferred_protocol_domain``.
         """
-        if self.group_members and self.sync_leader and self.sync_leader.state.available:
+        if self.group_members and self.sync_leader and self.sync_leader.available_for_playback:
             # current leader is still available, no need to select a new one
             return self.sync_leader
         # with selecting a new leader, we prioritize the static group members
@@ -1043,7 +1043,7 @@ class SyncGroupPlayer(Player):
             member_player
             for member_id in group_members
             if (member_player := self.mass.players.get_player(member_id))
-            and member_player.state.available
+            and member_player.available_for_playback
             and member_player.state.type in PLAYBACK_TARGET_TYPES
         ]
         preferred_ids = set(preferred_member_ids or ())
@@ -1138,7 +1138,7 @@ class SyncGroupPlayer(Player):
         """
         for member_id in self._attr_group_members:
             member = self.mass.players.get_player(member_id)
-            if member is None or not member.state.available:
+            if member is None or not member.available_for_playback:
                 continue
             paths = member.playback_domains
             if paths and domain not in paths:
@@ -1210,7 +1210,7 @@ class SyncGroupPlayer(Player):
             if member_id == sync_leader.player_id:
                 continue
             member = self.mass.players.get_player(member_id)
-            if member is None or not member.state.available:
+            if member is None or not member.available_for_playback:
                 continue
             # a leader always lists itself alongside its members; only adopt one that
             # holds members of this group, never a group formed outside of MA
@@ -1328,7 +1328,7 @@ class SyncGroupPlayer(Player):
                 await self.mass.players._handle_cmd_stop(leader.player_id)
         except Exception as err:
             self.logger.log(
-                logging.WARNING if leader.state.available else logging.DEBUG,
+                logging.WARNING if leader.available_for_playback else logging.DEBUG,
                 "Could not stop departing leader %s of group %s: %s",
                 leader.display_name,
                 self.display_name,
@@ -1350,7 +1350,7 @@ class SyncGroupPlayer(Player):
         :param timeout: Seconds to wait for the first state propagation.
         """
         member = self.mass.players.get_player(member_id)
-        if member is None or not member.state.available:
+        if member is None or not member.available_for_playback:
             # a member that is gone can neither report the unsync nor be released
             return True
         async with self.mass.players.wait_for_player_update(

@@ -140,6 +140,11 @@ def output_pacing_args(profile: PacingProfile = PacingProfile.DEFAULT) -> list[s
 # the webserver shutdown timeout so a lead-out never stalls a restart of the server.
 FLOW_STREAM_LEAD_OUT_SECONDS: Final[int] = 8
 
+# Write size for ICY-framed flow streams. Writes are sized independently of the
+# metadata interval, so the player buffer grows with the encoder's output instead
+# of in interval-sized steps (1.5s of FLAC per step at a 256000 byte interval).
+ICY_WRITE_SIZE: Final[int] = 16384
+
 
 # Configuration keys
 CONF_BUFFER_SIZE: Final[str] = "buffer_size"
@@ -191,6 +196,10 @@ VOICE_OVER_RAMP: Final[float] = 0.4
 
 # Maximum wait for a provider source-stream slot before a speculative attempt gives up.
 STREAM_SLOT_WAIT_TIMEOUT: Final[float] = 5.0
+
+# Seconds an AudioBuffer may go unread before it releases its audio. The queue's pause timeout
+# is capped below this, as a paused player could not continue on a released buffer.
+BUFFER_INACTIVITY_TIMEOUT: Final[int] = 300
 
 # Total capacity budget when an actual playback start retries/reselects provider mappings.
 STREAM_SLOT_PLAYBACK_WAIT_TIMEOUT: Final[float] = 15.0
