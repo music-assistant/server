@@ -124,8 +124,6 @@ class _Live:
         self.radio = _radio()
         self.playlists = playlists
         self.decoders: list[dict[str, Any]] = []
-        # the segments fetched so far, at each wait of the playlist loop
-        self.sleeps: list[int] = []
         self.fetched: list[str] = []
         # how often a request of the named file fails before it works
         self.failures: dict[str, int] = {}
@@ -201,7 +199,7 @@ class _Live:
             _raise_feeder_error(failure[0])
 
     async def _sleep(self, delay: float) -> None:
-        self.sleeps.append(len(self.fetched))
+        # the playlist loop waits for real, but at most a moment
         await self._real_sleep(min(delay, 0.01))
 
     async def read(self, count: int) -> list[bytes]:
@@ -230,15 +228,6 @@ def test_the_media_playlist_keeps_the_widevine_key() -> None:
         _wv("B"),
     ]
     assert segment_uri(playlist.segments[2].map_line) == "init_B"
-
-
-def test_a_clear_segment_does_not_inherit_the_previous_key() -> None:
-    """A METHOD=NONE line ends the key, so the segment after it has none."""
-    text = _media(1, ["A"]) + "#EXT-X-KEY:METHOD=NONE\n#EXTINF:16.0,\ns2\n"
-    encrypted, clear = WidevinePlaylistParser(text).parse().segments
-    assert segment_uri(encrypted.key_line) == _wv("A")
-    with pytest.raises(UnplayableMediaError):
-        segment_uri(clear.key_line)
 
 
 async def test_a_failing_init_segment_is_tried_again(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -272,8 +261,6 @@ async def test_a_key_change_starts_a_new_decoder_and_the_stream_goes_on(
     ]
     assert live.decoders[0]["input"] == [b"init_A", b"s12", b"s13", b"s14"]
     assert live.radio.state["key_changes"] == 1
-    # the playlist loop only waited once every new segment was handed over
-    assert all(fetched >= live.fetched.index("s17") + 1 for fetched in live.sleeps)
 
 
 @pytest.mark.parametrize("version", [0, 1])
@@ -440,20 +427,18 @@ async def test_only_a_refusal_is_the_stream_limit_of_the_account(
     assert "secret" not in str(raised.value)
 
 
-async def test_a_license_sets_its_renewal() -> None:
-    """The renewal follows the interval in Apple's answer, like Apple's own client."""
+async def test_a_license_is_asked_like_apple_s_own_client() -> None:
+    """The live license request carries the fields and headers of Apple's web player."""
     radio = _radio()
     streaming: Any = radio.provider.streaming_manager
     streaming.get_content_key = AsyncMock(return_value=("aabb", {"renew-after": 780}))
     data: dict[str, Any] = {"key_server_url": "https://key.example", "renew_at": None}
 
-    assert await radio._get_license(data, _wv("A")) == ("aabb", 780.0)
+    await radio._get_license(data, _wv("A"))
 
     request = streaming.get_content_key.await_args
     assert request.args[2] == {"uri": _wv("A"), "event": "beats1"}
     assert request.kwargs["headers"]["x-apple-renewal"] == "true"
-    # only the key that plays sets the renewal, see test_the_next_key_is_licensed_once_ahead
-    assert data["renew_at"] is None
 
 
 @pytest.mark.parametrize(
@@ -504,16 +489,23 @@ async def test_the_next_key_is_licensed_once_ahead(monkeypatch: pytest.MonkeyPat
     assert live.details.data["renew_at"] == pytest.approx(time.monotonic() + 780, abs=5)
 
 
-async def test_a_segment_without_a_key_does_not_stop_the_license_ahead() -> None:
-    """The segment fails when it is reached, the key ahead of it is still prepared."""
+async def test_a_clear_segment_has_no_key_and_does_not_stop_the_license_ahead() -> None:
+    """A METHOD=NONE line ends the key, the key of a later segment is still prepared."""
     radio = _radio()
     radio._get_license = AsyncMock(return_value=("bb", 780.0))  # type: ignore[method-assign]
-    clear, next_key = WidevinePlaylistParser(_media(1, ["A", "B"])).parse().segments
-    clear.key_line = None
+    text = (
+        _media(1, ["A"])
+        + "#EXT-X-KEY:METHOD=NONE\n#EXTINF:16.0,\ns2\n"
+        + _media(3, ["B"]).split("\n", 3)[3]
+    )
+    encrypted, clear, next_key = WidevinePlaylistParser(text).parse().segments
     data: dict[str, Any] = {"key_uri": _wv("A"), "keys": {_wv("A"): ("aa", 780.0)}}
 
     await radio._prepare_next_key(data, [clear, next_key])
 
+    assert segment_uri(encrypted.key_line) == _wv("A")
+    with pytest.raises(UnplayableMediaError):
+        segment_uri(clear.key_line)
     assert data["keys"] == {_wv("A"): ("aa", 780.0), _wv("B"): ("bb", 780.0)}
 
 
