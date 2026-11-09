@@ -43,7 +43,6 @@ LIVE_RADIO_FILTER = "apple-music-live-radio"
 WIDEVINE_KEY_FORMAT = "urn:uuid:edef8ba9-79d6-4ace-a3c8-27dcd51d21ed"
 # segments behind the live edge to start from, as the HLS specification asks of a client
 START_SEGMENTS = 3
-MIN_STALL_SECONDS = 45
 DEFAULT_TARGET_DURATION = 16.0
 SEGMENT_RETRIES = 3
 RENEW_RETRY_SECONDS = 60
@@ -307,7 +306,6 @@ class AppleMusicLiveRadioManager:
         """Yield each new segment of the live playlist once, from a few segments back."""
         next_sequence: int | None = None
         target = DEFAULT_TARGET_DURATION
-        last_new_segment = time.monotonic()
         while True:
             new: list[tuple[int, HLSMediaSegment]] = []
             try:
@@ -328,13 +326,10 @@ class AppleMusicLiveRadioManager:
                             "Live radio skipped %s segments", new[0][0] - next_sequence
                         )
                 await self._prepare_next_key(data, [segment for _, segment in new])
-            stalled = time.monotonic() - last_new_segment
-            if stalled > max(3 * target, MIN_STALL_SECONDS):
-                raise UnplayableMediaError(f"No new live radio segment for {int(stalled)} seconds")
+            # a stream that stops moving is ended by the core's stall timeout, which restarts it
             for sequence, segment in new:
                 next_sequence = sequence + 1
                 yield segment
-                last_new_segment = time.monotonic()
             if data["renew_at"] is not None and time.monotonic() >= data["renew_at"]:
                 await self._renew_license(data)
             # sending is paced by the consumer, a wait after it could leave the decoder empty

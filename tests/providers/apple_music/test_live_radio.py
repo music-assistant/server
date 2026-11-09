@@ -238,21 +238,6 @@ async def test_a_title_shows_when_its_audio_plays(monkeypatch: pytest.MonkeyPatc
     assert live.details.data["pending_metadata"] == []
 
 
-async def test_a_playlist_without_new_segments_stalls_into_an_error(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """A stream that stops moving fails, so the core restarts it on fresh stream details."""
-    live = _Live([_media(10, ["A"] * 3)], monkeypatch)
-    monkeypatch.setattr(f"{MODULE}.MIN_STALL_SECONDS", 0)
-    monkeypatch.setattr(f"{MODULE}.DEFAULT_TARGET_DURATION", 0)
-    live.radio._fetch_playlist = AsyncMock(side_effect=UnplayableMediaError("HTTP 404"))  # type: ignore[method-assign]
-
-    with pytest.raises(UnplayableMediaError, match="No new live radio segment"):
-        await live.read(1)
-
-    assert "No new live radio segment" in live.radio.state["last_error"]
-
-
 @pytest.mark.parametrize(
     ("error", "expected"),
     [
