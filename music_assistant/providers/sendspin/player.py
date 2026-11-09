@@ -95,6 +95,7 @@ from PIL import Image
 
 from music_assistant.constants import (
     CONF_ALLOW_AUDIO_ANALYSIS,
+    CONF_ENTRY_CROSSFADE_DIFFERENT_SAMPLE_RATES,
     CONF_ENTRY_FLOW_MODE_SAMPLE_RATE,
 )
 from music_assistant.controllers.streams.audio_analysis import SMART_FADES_ANALYSIS_DOMAIN
@@ -186,6 +187,10 @@ _OUTPUT_DELAY_COMMANDS = frozenset({PlayerCommand.SET_OUTPUT_DELAY, PlayerComman
 # Config constants for Sendspin audio format
 CONF_PREFERRED_SENDSPIN_FORMAT = "preferred_sendspin_format"
 SENDSPIN_FORMAT_AUTOMATIC = "automatic"
+# Every item of a session is sent at the session sample rate, so a crossfade never spans two.
+_CROSSFADE_DIFFERENT_SAMPLE_RATES_HIDDEN = ConfigEntry.from_dict(
+    {**CONF_ENTRY_CROSSFADE_DIFFERENT_SAMPLE_RATES.to_dict(), "hidden": True}
+)
 
 # Player types that can render a line-in, so groups and pairs stay selectable.
 SOURCE_AUTOSTART_TARGET_TYPES = {
@@ -1513,11 +1518,6 @@ class SendspinPlayer(SendspinBasePlayer):
     # bridge reads it
     session_bit_depth: int | None = None
 
-    @property
-    def requires_flow_mode(self) -> bool:
-        """Return if the player requires flow mode."""
-        return True
-
     def __init__(
         self,
         provider: SendspinProvider,
@@ -1534,6 +1534,13 @@ class SendspinPlayer(SendspinBasePlayer):
             PlayerFeature.SET_MEMBERS,
             PlayerFeature.MULTI_DEVICE_DSP,
         }
+        if not provider.server_api.allow_noncompliant_clients:
+            # Legacy clients keep the flow stream, which restarts where the sample rate
+            # setting of a player asks for another rate.
+            self._attr_supported_features |= {
+                PlayerFeature.ENQUEUE,
+                PlayerFeature.GAPLESS_PLAYBACK,
+            }
         self._metadata_generation = 0
         self._content_takeover_pending = False
         self._metadata_lock = asyncio.Lock()
@@ -1858,6 +1865,25 @@ class SendspinPlayer(SendspinBasePlayer):
                 task_id=f"sendspin_metadata_{self.protocol_id}",
                 abort_existing=True,
             )
+
+    async def enqueue_next_media(self, media: PlayerMedia) -> None:
+        """Handle enqueuing of the next queue item on the player."""
+        if self.playback_session.set_next_media(media):
+            return
+        if not media.source_id or (queue := self.mass.player_queues.get(media.source_id)) is None:
+            return
+        # Restart from the current position like a seek, after which the queue hands over the
+        # new next item again.
+        self.logger.debug(
+            "The stream cannot take the next item anymore, restarting %s at %.1fs",
+            self.display_name,
+            queue.corrected_elapsed_time,
+        )
+        position = int(queue.corrected_elapsed_time)
+        if queue.current_item is not None and queue.current_item.duration:
+            # the position can run past the reported duration, which a seek refuses
+            position = min(position, queue.current_item.duration)
+        self.mass.create_task(self.mass.player_queues.seek(queue.queue_id, position))
 
     async def on_config_updated(self) -> None:
         """Handle logic when the PlayerConfig is first loaded or updated."""
@@ -2272,6 +2298,7 @@ class SendspinPlayer(SendspinBasePlayer):
                 sample_rate_entry.depends_on = CONF_PREFERRED_SENDSPIN_FORMAT
                 sample_rate_entry.depends_on_value = SENDSPIN_FORMAT_AUTOMATIC
                 entries.append(sample_rate_entry)
+        entries.append(_CROSSFADE_DIFFERENT_SAMPLE_RATES_HIDDEN)
 
         if player_role is not None and not _OUTPUT_DELAY_COMMANDS.isdisjoint(
             player_role.state_supported_commands
@@ -3164,12 +3191,17 @@ class SendspinPlayer(SendspinBasePlayer):
         """
         Return the server-clock time the current track's audio starts, and its seek position.
 
-        None until the first chunk commits, or while the flow log hasn't recorded the track.
+        None until the first chunk commits, or while the track's start isn't known yet.
 
         :param queue: The queue the track plays from.
         :param queue_item: The track playing now.
         :param now_us: The server clock now.
         """
+        if queue is not None and not queue.flow_mode and not self.requires_flow_mode:
+            item_start_us = self.playback_session.item_start_us(queue_item.queue_item_id, now_us)
+            if item_start_us is None or queue_item.streamdetails is None:
+                return None
+            return item_start_us, queue_item.streamdetails.seek_position
         timeline_start_us = self.playback_session.flow_track_anchor_us(0)
         if timeline_start_us is None:
             return None

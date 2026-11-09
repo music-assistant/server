@@ -15,6 +15,7 @@ from aiosendspin.server.audio import AudioFormat as SendspinAudioFormat
 from aiosendspin.server.push_stream import MAIN_CHANNEL, PushStream, StreamStoppedError
 from aiosendspin.server.roles.player.v1 import PlayerV1Role
 from music_assistant_models.enums import ContentType, MediaType, SpeakerChannel
+from music_assistant_models.errors import MusicAssistantError
 from music_assistant_models.media_items.audio_format import AudioFormat
 
 from music_assistant.constants import (
@@ -36,7 +37,7 @@ from music_assistant.providers.sendspin.bridge_role import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Awaitable, Callable, Iterable
+    from collections.abc import AsyncGenerator, Awaitable, Callable, Coroutine, Iterable
 
     from music_assistant_models.streamdetails import StreamDetails
 
@@ -92,6 +93,11 @@ _PRODUCER_BUFFER_LIMIT_US = 30_000_000
 _START_QUEUE_US = 500_000
 # Commits from the start of a stream in which a moved play timeline is logged.
 _START_LOG_COMMITS = 20
+# How long the session waits, after its audio played out, for a next item the queue still names.
+_LATE_HANDOVER_TIMEOUT_S = 10
+# How long before its audio plays out a session stops waiting for an item added after its last
+# one, which leaves the end of that audio the lead time the players need.
+_LAST_AUDIO_LEAD_US = 5_000_000
 # Start join promotion once catchup processor lag is within this window of the history tail.
 _JOIN_PROMOTE_ARM_WINDOW_US = 2_000_000
 # Accept catchup output within this margin of the promotion target.
@@ -340,6 +346,15 @@ class SendspinPlaybackSession:
         self._start_streamdetails: StreamDetails | None = None
         # whether the session blends the audio of its items, and whether it mixes an overlay in
         self._start_mixes: tuple[bool, bool] = (False, False)
+        # the session's items in play order, each with where its audio starts in the session audio
+        self._item_starts: list[tuple[int, PlayerMedia]] = []
+        # the opened item whose source sent no audio yet
+        self._opening_item: PlayerMedia | None = None
+        # the item the queue handed over to play after the last opened one
+        self._next_media: PlayerMedia | None = None
+        self._next_media_ready = asyncio.Event()
+        # the session sent the end of its audio, so it plays no further item
+        self._audio_ended = False
 
     def flow_track_anchor_us(self, track_start_offset_us: int) -> int | None:
         """
@@ -353,6 +368,50 @@ class SendspinPlaybackSession:
         if self._timeline_start_us is None:
             return None
         return self._timeline_start_us + track_start_offset_us
+
+    def item_start_us(self, queue_item_id: str, now_us: int) -> int | None:
+        """
+        Return the server-clock time where the given queue item's audio starts playing.
+
+        :param queue_item_id: The queue item to look up among this session's items.
+        :param now_us: The current server-clock time, which picks the pass of a repeated item
+            that plays by then.
+        """
+        if self._timeline_start_us is None:
+            return None
+        start_us: int | None = None
+        for offset_us, media in self._item_starts:
+            item_start_us = self._timeline_start_us + offset_us
+            if media.queue_item_id == queue_item_id and (
+                start_us is None or item_start_us <= now_us
+            ):
+                start_us = item_start_us
+        return start_us
+
+    def set_next_media(self, media: PlayerMedia) -> bool:
+        """
+        Hand over the item to play after the one playing now.
+
+        :param media: The item that follows the playing one.
+        :return: False when the session cannot play it next, because another item was already
+            sent ahead in its place or the end of its audio was sent. Only a restart from the
+            current position plays it then.
+        """
+        if self._audio_ended:
+            return False
+        current = self.player.current_media
+        opened = [item for _, item in self._item_starts]
+        if opened and opened[-1] is not current and any(item is current for item in opened):
+            # the last opened item does not play yet, so it was sent ahead
+            sent_ahead = opened[-1]
+            if media.queue_item_id != sent_ahead.queue_item_id:
+                return False
+            # the same item is handed over again, unless the queue repeats it after itself
+            if self._following_item_id(sent_ahead) != media.queue_item_id:
+                return True
+        self._next_media = media
+        self._next_media_ready.set()
+        return True
 
     # -- Public API ------------------------------------------------------------
 
@@ -371,6 +430,8 @@ class SendspinPlaybackSession:
         :param new_player: The SendspinPlayer that will take over as session owner.
         """
         old_leader_id = self.player.protocol_id
+        # the session follows its items through the player's current media
+        new_player._attr_current_media = self.player.current_media
         self.player = new_player
         # Release the old leader's DSP pipeline -- it's no longer in the group
         # and _refresh_member_mappings won't touch it since it only iterates
@@ -423,6 +484,10 @@ class SendspinPlaybackSession:
                 raise RuntimeError("playback already active")
             await self.cancel("restart requested", keep_stream=True)
         self._cancel_requested = False
+        self._item_starts = []
+        self._audio_ended = False
+        self._next_media = None
+        self._next_media_ready.clear()
         self.playback_task = asyncio.create_task(self._run_playback(media))
         self._attach_task_exception_logger(self.playback_task, "playback")
 
@@ -821,23 +886,104 @@ class SendspinPlaybackSession:
         start_queued = asyncio.Event()
         if self._plays_live_audio(media):
             start_queued.set()
+        # where the next produced chunk starts in the session audio
+        produced_us = 0
         last_elapsed_update_s: float | None = None
         reported_anchor_us: int | None = None
 
         async def _produce_pending_chunks() -> None:
-            nonlocal pending_duration_us
-            audio_source = (
-                source_stream.stream(self._pcm_format)
-                if source_stream is not None
-                else self.player.mass.streams.get_stream(
-                    media,
-                    self._pcm_format,
-                    self.player.protocol_id,
-                    flow_restart=flow_restart,
+            item_media: PlayerMedia | None = media
+            while item_media is not None:
+                item_start_us = produced_us
+                self._opening_item = item_media
+                try:
+                    await _produce_item_chunks(item_media)
+                finally:
+                    # an item that ends without audio still takes its turn, so the queue moves on
+                    self._opening_item = None
+                if (
+                    produced_us == item_start_us
+                    and len(self._item_starts) > 1
+                    and item_media.source_id
+                    and item_media.queue_item_id
+                ):
+                    # The queue hands over the item after this one once this one loads, which
+                    # its stream only reports with its first audio.
+                    self.player.mass.player_queues.track_loaded_in_buffer(
+                        item_media.source_id, item_media.queue_item_id
+                    )
+                item_media = await _next_item_media(item_media)
+            self._audio_ended = True
+
+        async def _next_item_media(item_media: PlayerMedia) -> PlayerMedia | None:
+            while True:
+                if not self._next_media_ready.is_set():
+                    if not self._takes_handovers(item_media):
+                        return None
+                    # the queue hands over the next item once the last one plays, or once one is
+                    # added after it, so wait for it until the audio sent so far is about to end
+                    await _wait_for_handover(_play_out(_LAST_AUDIO_LEAD_US))
+                if not self._next_media_ready.is_set() and self._following_item_id(item_media):
+                    # the item after a short one is handed over once that one plays, which can be
+                    # after its audio played out, so it follows after a gap
+                    await _wait_for_handover(_late_handover())
+                self._next_media_ready.clear()
+                next_media, self._next_media = self._next_media, None
+                # drop an item handed over before the queue changed, and wait for the one that
+                # follows now, which the queue hands over only when there is one
+                if next_media is None or next_media.queue_item_id == self._following_item_id(
+                    item_media
+                ):
+                    return next_media
+
+        async def _wait_for_handover(deadline: Coroutine[Any, Any, None]) -> None:
+            waiters = {
+                asyncio.create_task(self._next_media_ready.wait()),
+                asyncio.create_task(deadline),
+            }
+            try:
+                await asyncio.wait({*waiters, commit_task}, return_when=asyncio.FIRST_COMPLETED)
+            finally:
+                for waiter in waiters:
+                    waiter.cancel()
+                await asyncio.gather(*waiters, return_exceptions=True)
+
+        async def _late_handover() -> None:
+            await _play_out(0)
+            await asyncio.sleep(_LATE_HANDOVER_TIMEOUT_S)
+
+        async def _play_out(lead_us: int) -> None:
+            # Timed from the clock: a member's DSP holds back the last chunk until more
+            # audio follows, so the commits never catch up while this waits.
+            while True:
+                anchor_us = self._timeline_start_us
+                # before the first commit, nothing played yet
+                remaining_us = (
+                    produced_us
+                    if anchor_us is None
+                    else anchor_us + produced_us - push_stream.now_us()
                 )
-            )
+                if remaining_us <= lead_us:
+                    return
+                await asyncio.sleep((remaining_us - lead_us) / 1_000_000)
+
+        async def _produce_item_chunks(item_media: PlayerMedia) -> None:
+            nonlocal pending_duration_us, produced_us
+            self._item_starts.append((produced_us, item_media))
+            audio_source: AsyncGenerator[bytes] | None = None
             completed = False
             try:
+                await self._load_item_streamdetails(item_media)
+                audio_source = (
+                    source_stream.stream(self._pcm_format)
+                    if source_stream is not None
+                    else self.player.mass.streams.get_stream(
+                        item_media,
+                        self._pcm_format,
+                        self.player.protocol_id,
+                        flow_restart=flow_restart,
+                    )
+                )
                 async for chunk in audio_source:
                     if not chunk:
                         continue
@@ -851,12 +997,14 @@ class SendspinPlaybackSession:
                             continue
                         await self._refresh_member_mappings()
                         pending = _PendingChunk(pcm=slice_chunk, duration_us=duration_us)
+                        self._opening_item = None
                         await pending_chunks.put(pending)
                         pending_backlog.append(pending)
                         pending_duration_us += duration_us
                         # A full queue blocks the producer, so it cannot grow any further.
                         if pending_duration_us >= _START_QUEUE_US or pending_chunks.full():
                             start_queued.set()
+                        produced_us += duration_us
                         join_pending_ids, pipelines = await self._snapshot_active_pipelines()
                         transform_pipelines: list[_MemberPipeline] = []
                         for member_id, pipeline in pipelines:
@@ -882,8 +1030,13 @@ class SendspinPlaybackSession:
                 completed = True
                 # A source shorter than the start queue plays what it has.
                 start_queued.set()
+            except MusicAssistantError as err:
+                # an item that fails after another one keeps that one's audio playing
+                if len(self._item_starts) == 1:
+                    raise
+                self.player.logger.warning("Skipping %s: %s", item_media.uri, err)
             finally:
-                if not completed:
+                if not completed and audio_source is not None:
                     close_task = asyncio.create_task(audio_source.aclose())
                     try:
                         await asyncio.shield(close_task)
@@ -896,6 +1049,7 @@ class SendspinPlaybackSession:
         first_heard_scheduled = False
         first_heard_reported = False
         report_when_heard = False
+        item_start_task_id = f"sendspin_item_start_{uuid4().hex}"
 
         async def _report_timeline(anchor_us: int, now_us: int) -> None:
             nonlocal last_elapsed_update_s, reported_anchor_us, first_heard_scheduled
@@ -926,11 +1080,30 @@ class SendspinPlaybackSession:
                     )
             elif not first_heard_reported and first_heard_scheduled:
                 heard = True
-            elapsed_real_s = max(0.0, stream_position_s)
-            # A rebase can step the position backward, which would keep the gate shut.
+            item_offset_us, item_media = self._playing_item(anchor_us, now_us)
+            shown = next(
+                (
+                    (index, offset_us)
+                    for index, (offset_us, media) in enumerate(self._item_starts)
+                    if media is self.player.current_media
+                ),
+                None,
+            )
+            # An item only takes over from an earlier item of this session the player shows.
+            item_changed = shown is not None and any(
+                media is item_media for _, media in self._item_starts[shown[0] + 1 :]
+            )
+            if item_changed:
+                self.player._attr_current_media = item_media
+            elif shown is not None:
+                # A schedule moved on after the audio ran out can put an earlier item at now.
+                item_offset_us = shown[1]
+            elapsed_real_s = max(0.0, (now_us - anchor_us - item_offset_us) / 1_000_000)
+            # A rebase or a new item can step the position back, which would keep the gate shut.
             if (
                 timeline_changed
                 or heard
+                or item_changed
                 or last_elapsed_update_s is None
                 or elapsed_real_s - last_elapsed_update_s >= 1.0
             ):
@@ -958,6 +1131,15 @@ class SendspinPlaybackSession:
                     _apply_queued_move,
                     task_id=anchor_move_task_id,
                 )
+            # The next item can start while nothing is committed, like after the last item.
+            if (next_item_start_us := self._next_item_start_us(anchor_us, now_us)) is None:
+                self.player.mass.cancel_timer(item_start_task_id)
+            else:
+                self.player.mass.call_later(
+                    (next_item_start_us - now_us) / 1_000_000,
+                    _apply_item_start,
+                    task_id=item_start_task_id,
+                )
 
         async def _report_when_heard() -> None:
             nonlocal report_when_heard
@@ -977,6 +1159,10 @@ class SendspinPlaybackSession:
                 anchor_us = self._playing_timeline_start_us_locked(now_us)
                 self._timeline_start_us = anchor_us
             await _report_timeline(anchor_us, now_us)
+
+        async def _apply_item_start() -> None:
+            if (anchor_us := self._timeline_start_us) is not None:
+                await _report_timeline(anchor_us, push_stream.now_us())
 
         def _take_start_queue(first: _PendingChunk) -> tuple[_PendingChunk, bool]:
             """
@@ -1172,7 +1358,7 @@ class SendspinPlaybackSession:
                     # non-clean stop so we skip group.stop() below
                     # and let the new playback handle the transition.
                     producer_stopped_cleanly = False
-            for task_id in (anchor_move_task_id, first_heard_task_id):
+            for task_id in (anchor_move_task_id, first_heard_task_id, item_start_task_id):
                 self.player.mass.cancel_timer(task_id)
                 self.player.mass.cancel_task(task_id)
             with suppress(Exception):
@@ -1518,6 +1704,14 @@ class SendspinPlaybackSession:
             overlay_mixed_in(queue, queue_item, flow_mode=flow_mode),
         )
 
+    async def _load_item_streamdetails(self, media: PlayerMedia) -> None:
+        """Resolve the stream details of a queue item that has none yet."""
+        if not media.source_id or not media.queue_item_id:
+            return
+        queue_item = self.player.mass.player_queues.get_item(media.source_id, media.queue_item_id)
+        if queue_item is not None and queue_item.streamdetails is None:
+            await self.player.mass.streams.audio.get_stream_details(queue_item=queue_item)
+
     async def _follow_session_sample_rate(self, player_ids: Iterable[str]) -> None:
         """Let the given players' Sendspin formats follow the sample rate of this session."""
         from .player import SendspinPlayer  # noqa: PLC0415 - player.py imports this module
@@ -1786,6 +1980,7 @@ class SendspinPlaybackSession:
             self._history.clear()
             self._start_streamdetails = None
             self._start_mixes = (False, False)
+            self._item_starts = []
             # Drop cached DSP decisions so next playback reflects latest config.
             self._pipeline_config_cache.clear()
 
@@ -1811,6 +2006,70 @@ class SendspinPlaybackSession:
             if chunk.start_time_us + chunk.duration_us > now_us:
                 return chunk.timeline_start_us
         return self._history[-1].timeline_start_us
+
+    def _playing_item(self, anchor_us: int, now_us: int) -> tuple[int, PlayerMedia | None]:
+        """
+        Return where the item playing at ``now_us`` starts in the session audio, and its media.
+
+        Before the first item plays, that is the first item.
+
+        :param anchor_us: Server-clock time where the session audio starts.
+        :param now_us: The server-clock time to look up.
+        """
+        playing: tuple[int, PlayerMedia | None] = (0, None)
+        for offset_us, media in self._started_items() or self._item_starts[:1]:
+            if playing[1] is not None and anchor_us + offset_us > now_us:
+                break
+            playing = (offset_us, media)
+        return playing
+
+    def _started_items(self) -> list[tuple[int, PlayerMedia]]:
+        """Return the session's items with their starts, without one that sent no audio yet."""
+        return [item for item in self._item_starts if item[1] is not self._opening_item]
+
+    def _takes_handovers(self, media: PlayerMedia) -> bool:
+        """
+        Return whether the queue hands over items to play after the given one.
+
+        :param media: An item of this session.
+        """
+        if not media.source_id or not media.queue_item_id or self.player.requires_flow_mode:
+            return False
+        queue_data = self.player.mass.player_queues.queue_data_or_none(media.source_id)
+        if queue_data is None or queue_data.session_id != self._queue_session_id:
+            # the queue stopped or started something else, which ended this session's stream
+            return False
+        # a flow stream carries the rest of the queue itself
+        return not queue_data.queue.flow_mode
+
+    def _following_item_id(self, media: PlayerMedia) -> str | None:
+        """
+        Return the queue item the queue hands over to play after the given one, if any.
+
+        :param media: An item of this session.
+        """
+        if not media.source_id or not media.queue_item_id or not self._takes_handovers(media):
+            return None
+        following = self.player.mass.player_queues.get_next_item(
+            media.source_id, media.queue_item_id
+        )
+        return None if following is None else following.queue_item_id
+
+    def _next_item_start_us(self, anchor_us: int, now_us: int) -> int | None:
+        """
+        Return the server-clock time where the first item after ``now_us`` starts, if any.
+
+        :param anchor_us: Server-clock time where the session audio starts.
+        :param now_us: The current server-clock time.
+        """
+        return next(
+            (
+                anchor_us + offset_us
+                for offset_us, _ in self._started_items()
+                if anchor_us + offset_us > now_us
+            ),
+            None,
+        )
 
     def _queued_move_start_us_locked(self, now_us: int, reported_anchor_us: int) -> int | None:
         """Return when the first unplayed chunk that moves the reported anchor starts playing."""

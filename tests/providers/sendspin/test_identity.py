@@ -55,7 +55,9 @@ async def _sendspin(scenario: Scenario) -> FakePlayerProvider:
     provider = await scenario.add_provider("sendspin")
     clients: dict[str, Any] = {}
     cast("Any", provider).clients = clients
-    cast("Any", provider).server_api = SimpleNamespace(get_client=clients.get)
+    cast("Any", provider).server_api = SimpleNamespace(
+        get_client=clients.get, allow_noncompliant_clients=True
+    )
     cast("Any", provider).is_virtual_player = lambda _client_id: False
     cast("Any", provider).is_held_unapproved = lambda _client_id: False
     cast("Any", provider)._device_role = SendspinProvider._device_role.__get__(provider)

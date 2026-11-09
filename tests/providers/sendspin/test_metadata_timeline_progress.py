@@ -90,7 +90,7 @@ def _metadata() -> Metadata:
 
 
 def _queue() -> PlayerQueue:
-    return cast("PlayerQueue", SimpleNamespace(queue_id="queue-1"))
+    return cast("PlayerQueue", SimpleNamespace(queue_id="queue-1", flow_mode=True))
 
 
 def test_position_comes_from_when_the_track_is_heard(monkeypatch: pytest.MonkeyPatch) -> None:

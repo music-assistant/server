@@ -111,7 +111,7 @@ async def test_a_rebase_moves_the_published_beats_by_the_anchor_delta(
     )
 
     await player._send_beat_schedule(
-        cast("PlayerQueue", SimpleNamespace(queue_id="q1")),
+        cast("PlayerQueue", SimpleNamespace(queue_id="q1", flow_mode=True)),
         _queue_item(),
         _PROGRESS_MS,
         True,
@@ -142,7 +142,7 @@ async def test_a_track_change_during_the_analysis_await_drops_the_stale_publish(
     )
 
     await player._send_beat_schedule(
-        cast("PlayerQueue", SimpleNamespace(queue_id="q1")),
+        cast("PlayerQueue", SimpleNamespace(queue_id="q1", flow_mode=True)),
         _queue_item(),
         _PROGRESS_MS,
         True,
