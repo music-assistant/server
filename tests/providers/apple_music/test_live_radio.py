@@ -10,9 +10,10 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-from aiohttp import ClientError, ClientResponseError
+from aiohttp import ClientError, ClientResponseError, ContentTypeError
 from music_assistant_models.enums import ContentType, MediaType, StreamType
 from music_assistant_models.errors import (
+    LoginFailed,
     MediaNotFoundError,
     ResourceTemporarilyUnavailable,
     UnplayableMediaError,
@@ -31,6 +32,7 @@ from music_assistant.providers.apple_music.live_radio import (
 )
 from music_assistant.providers.apple_music.parsers import parse_station
 from music_assistant.providers.apple_music.provider import AppleMusicProvider
+from music_assistant.providers.apple_music.streaming import LicenseRefusedError
 
 MODULE = "music_assistant.providers.apple_music.live_radio"
 MASTER = """#EXTM3U
@@ -255,24 +257,33 @@ async def test_a_playlist_without_new_segments_stalls_into_an_error(
     ("error", "expected"),
     [
         (_http_error(403), ProviderStreamLimitError),
-        (MediaNotFoundError("No license (status 1, error 5)"), ProviderStreamLimitError),
+        (LicenseRefusedError("live radio", 1, 5), ProviderStreamLimitError),
+        (_http_error(401), LoginFailed),
+        (_http_error(404), UnplayableMediaError),
         (_http_error(429), UnplayableMediaError),
         (_http_error(503), UnplayableMediaError),
+        (ContentTypeError(MagicMock(), (), status=200), UnplayableMediaError),
+        (MediaNotFoundError("Unable to get decryption key for live radio"), UnplayableMediaError),
     ],
+    ids=["403", "refused", "401", "404", "429", "503", "content-type", "no-content-key"],
 )
-async def test_a_refused_license_is_the_stream_limit_of_the_account(
-    error: Exception, expected: type[Exception]
+async def test_only_a_refusal_is_the_stream_limit_of_the_account(
+    error: Exception, expected: type[Exception], caplog: pytest.LogCaptureFixture
 ) -> None:
-    """Apple's refusal is not retried by the radio restart, a server problem is."""
+    """Apple's refusal is not retried by the radio restart, any other problem may be."""
     radio = _radio()
     streaming: Any = radio.provider.streaming_manager
     streaming.get_content_key = AsyncMock(side_effect=error)
     data = {"key_server_url": "https://key.example", "renew_at": None}
+    caplog.set_level(logging.DEBUG)
 
     with pytest.raises(expected) as raised:
         await radio._get_license(data, _wv("A"))
 
     assert raised.type is expected
+    assert streaming.get_content_key.await_args.kwargs["check_status"] is True
+    assert "secret" not in caplog.text
+    assert "secret" not in str(raised.value)
 
 
 async def test_a_license_sets_its_renewal() -> None:

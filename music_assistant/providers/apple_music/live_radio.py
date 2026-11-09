@@ -11,10 +11,11 @@ from io import BytesIO
 from typing import TYPE_CHECKING, Any, cast
 from urllib.parse import urljoin
 
-from aiohttp import ClientError, ClientResponseError, ClientTimeout
+from aiohttp import ClientError, ClientResponseError, ClientTimeout, ContentTypeError
 from music_assistant_models.enums import ContentType, MediaType, StreamType
 from music_assistant_models.errors import (
     AudioError,
+    LoginFailed,
     MediaNotFoundError,
     MusicAssistantError,
     UnplayableMediaError,
@@ -31,6 +32,7 @@ from music_assistant.models.music_provider import ProviderStreamLimitError
 
 from .constants import PARSED_ITEM_CACHE_CHECKSUM
 from .parsers import parse_station
+from .streaming import LicenseRefusedError
 
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator
@@ -375,21 +377,35 @@ class AppleMusicLiveRadioManager:
                 data["key_server_url"],
                 PSSH(key_uri.split("base64,", 1)[-1]),
                 {"uri": key_uri, "event": "beats1"},
+                "live radio",
                 headers={
                     "x-apple-music-user-token": cast("str", self.provider.music_user_token),
                     "x-apple-renewal": "true",
                 },
+                check_status=True,
             )
-        except (ClientResponseError, MediaNotFoundError) as err:
-            if isinstance(err, ClientResponseError) and (err.status == 429 or err.status >= 500):
-                raise UnplayableMediaError(
-                    f"Live radio license failed: HTTP {err.status}"
-                ) from None
+        except LicenseRefusedError as err:
             # Apple refuses the license while this account plays elsewhere
-            reason = f"HTTP {err.status}" if isinstance(err, ClientResponseError) else str(err)
-            self.logger.warning("Apple refused the live radio license: %s", reason)
+            self.logger.debug(
+                "Live radio license refused: status %s, error %s", err.status, err.error_code
+            )
             raise ProviderStreamLimitError(self.provider, None) from None
-        except (ClientError, TimeoutError) as err:
+        except ClientResponseError as err:
+            # the text of this error holds the url, so only its status is passed on
+            self.logger.debug("Live radio license failed: HTTP %s", err.status)
+            if isinstance(err, ContentTypeError):
+                raise UnplayableMediaError("Live radio license answer was not readable") from None
+            if err.status == 401:
+                raise LoginFailed(
+                    "Apple Music denied the live radio license: the account needs to be "
+                    "signed in again"
+                ) from None
+            if err.status == 403:
+                raise ProviderStreamLimitError(self.provider, None) from None
+            raise UnplayableMediaError(f"Live radio license failed: HTTP {err.status}") from None
+        except MediaNotFoundError as err:
+            raise UnplayableMediaError(str(err)) from None
+        except (ClientError, TimeoutError, ValueError) as err:
             raise UnplayableMediaError(f"Live radio license failed: {type(err).__name__}") from None
         renew_after = float(answer.get("renew-after") or 0)
         data["renew_at"] = time.monotonic() + renew_after if renew_after else None

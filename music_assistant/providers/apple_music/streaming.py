@@ -35,6 +35,22 @@ if TYPE_CHECKING:
 LICENSE_TIMEOUT = ClientTimeout(total=20)
 
 
+class LicenseRefusedError(MediaNotFoundError):
+    """Apple answered a license request without a license for this account."""
+
+    def __init__(self, label: str, status: Any, error_code: Any) -> None:
+        """
+        Initialize the error.
+
+        :param label: The item the license was for, for the message.
+        :param status: The status in Apple's answer.
+        :param error_code: The error code in Apple's answer.
+        """
+        super().__init__(f"No license found for {label} (status {status}, error {error_code})")
+        self.status = status
+        self.error_code = error_code
+
+
 class AppleMusicStreamingManager:
     """Handles stream URL resolution and Widevine decryption."""
 
@@ -136,8 +152,10 @@ class AppleMusicStreamingManager:
         license_url: str,
         pssh: PSSH,
         request: dict[str, Any],
+        label: str,
         headers: dict[str, str] | None = None,
         ssl: bool = True,
+        check_status: bool = False,
     ) -> tuple[str, dict[str, Any]]:
         """
         Return the content key from a Widevine license of this account, with Apple's answer.
@@ -145,9 +163,13 @@ class AppleMusicStreamingManager:
         :param license_url: The license server to ask.
         :param pssh: The Widevine PSSH of the content.
         :param request: The fields the license server needs next to the challenge.
+        :param label: The item the license is for, for the error messages.
         :param headers: Headers to send next to the decryption headers.
         :param ssl: Whether the certificate of the license server is checked.
-        :raises MediaNotFoundError: If the answer holds no license or no content key.
+        :param check_status: Treat a non-zero status in the answer as a refusal, even when
+            the answer also holds a license.
+        :raises LicenseRefusedError: If the answer holds no license or is refused.
+        :raises MediaNotFoundError: If the license holds no content key.
         :raises ClientResponseError: If the license server answers with an HTTP error.
         """
         device = Device(
@@ -177,15 +199,16 @@ class AppleMusicStreamingManager:
                 ) as response,
             ):
                 response.raise_for_status()
-                answer = cast("dict[str, Any]", await response.json(loads=json_loads))
-            if not answer.get("license"):
-                raise MediaNotFoundError(
-                    f"No license (status {answer.get('status')}, error {answer.get('errorCode')})"
+                answer = cast(
+                    "dict[str, Any]", await response.json(loads=json_loads, content_type=None)
                 )
+            status = answer.get("status")
+            if not answer.get("license") or (check_status and status not in (0, None)):
+                raise LicenseRefusedError(label, status, answer.get("errorCode"))
             cdm.parse_license(session_id, answer["license"])
             key = next((key for key in cdm.get_keys(session_id) if key.type == "CONTENT"), None)
             if not key:
-                raise MediaNotFoundError("The license holds no content key")
+                raise MediaNotFoundError(f"Unable to get decryption key for {label}.")
             return key.key.hex(), answer
         finally:
             cdm.close(session_id)
@@ -254,6 +277,7 @@ class AppleMusicStreamingManager:
             license_url,
             self._build_pssh(key_id),
             {"uri": uri, "adamId": item_id, "isLibrary": False, "user-initiated": True},
+            f"song {item_id}",
             ssl=False,
         )
         self.provider.mass.create_task(
