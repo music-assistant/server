@@ -396,14 +396,30 @@ class MusicAssistant:
         LOGGER.info("Stop called, cleaning up...")
         # set state to stopping to signal we're shutting down
         self._set_state(CoreState.STOPPING)
-        # cancel all running tasks
+        # cancel all running tasks and pending timers
         for task in list(self._tracked_tasks.values()):
             task.cancel()
+        for timer in self._tracked_timers.values():
+            timer.cancel()
+        self._tracked_timers.clear()
+        # the queues are closed before the providers unload: unloading a player provider
+        # removes the queues of its players, and with them their pending state to persist
+        if (player_queues := getattr(self, "player_queues", None)) is not None:
+            try:
+                await player_queues.close()
+            except Exception:
+                LOGGER.exception("Error while closing the player_queues controller")
         # cleanup all providers
-        await asyncio.gather(
-            *[self.unload_provider(prov_id) for prov_id in list(self._providers.keys())],
+        prov_ids = list(self._providers)
+        results = await asyncio.gather(
+            *[self.unload_provider(prov_id) for prov_id in prov_ids],
             return_exceptions=True,
         )
+        for prov_id, result in zip(prov_ids, results, strict=True):
+            if isinstance(result, Exception):
+                LOGGER.error(
+                    "Error while unloading provider %s: %s", prov_id, result, exc_info=result
+                )
         # stop core controllers, cache and config last because the others rely on them.
         # a failed startup may not have created (or fully set up) every controller, so
         # each one is closed independently: leaving a database open here would keep its
@@ -415,7 +431,6 @@ class MusicAssistant:
             "tasks",
             "metadata",
             "music",
-            "player_queues",
             "players",
             "translations",
             "diagnostics",
