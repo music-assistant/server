@@ -317,7 +317,7 @@ class SendspinBridgeManagerBase[BridgeT: SendspinBridge](ABC):
             if client_id == player_id:
                 player_id = base_player_id
                 break
-        if player := self.provider.get_protocol(player_id):
+        if player := self.mass.players.get_protocol(player_id):
             if player.provider is not self.provider:
                 return
             await self.evaluate_bridge(player)

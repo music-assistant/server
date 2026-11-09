@@ -284,6 +284,7 @@ class TestCastBridgePolicy:
         provider = MagicMock()
         provider.mass = mass
         provider.get_protocol = lambda pid: mass.players.get_player(pid)
+        mass.players.get_protocol = lambda pid: mass.players.get_player(pid)
         provider.logger = logging.getLogger("test.cast_bridge_manager")
 
         cast_player = MagicMock()
