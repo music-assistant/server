@@ -350,14 +350,14 @@ class AudioTags:
     @property
     def artists(self) -> tuple[str, ...]:
         """Return track artists."""
-        # Preferred path when unambiguously separated artist names are available
-        # Vorbis: multiple ARTIST fields, ID3: TXXX:ARTISTS or multi-value TPE1
-        # APEv2: null-separated ARTISTS tag (if present), MP4: not supported
+        # Preferred path when unambiguously separated artist names are
+        # available. While all formats support multi-value fields, we also
+        # handle textual fields split with semicolons.
         if tag := self.tags.get("artists"):
             mb_id_count = len(self.musicbrainz_artistids)
-            # Runtime check: mutagen returns list[str] for Vorbis multi-field
+            # Runtime check: mutagen returns list[str] for multi-field
             if isinstance(tag, list) and len(tag) > 1:
-                # Multiple ARTIST fields from Vorbis - already separated, no splitting needed
+                # Already separated, no splitting needed
                 artists = clean_tuple(tag)
             elif mb_id_count == 1:
                 # Single MB ID confirms single artist - don't split
@@ -367,8 +367,6 @@ class AudioTags:
                 artists = split_items(tag)
             return artists
         # Fallback to single artist string, splitting if necessary
-        # All formats: parser returns artist (singular)
-        # APEv2: also falls through here if no ARTISTS tag present
         if tag := self.tags.get("artist"):
             mb_id_count = len(self.musicbrainz_artistids)
             if mb_id_count == 1:
@@ -434,13 +432,14 @@ class AudioTags:
     @property
     def album_artists(self) -> tuple[str, ...]:
         """Return (all) album artists (if any)."""
-        # Preferred path when unambiguously separated album artist names are available
-        # Vorbis: multiple ALBUMARTIST fields, ID3: multi-value TPE2
+        # Preferred path when unambiguously separated album artist names are
+        # available. While all formats support multi-value fields, we also
+        # handle textual fields split with semicolons.
         if tag := self.tags.get("albumartists"):
             mb_id_count = len(self.musicbrainz_albumartistids)
-            # Runtime check: mutagen returns list[str] for Vorbis multi-field
+            # Runtime check: mutagen returns list[str] for multi-field
             if isinstance(tag, list) and len(tag) > 1:
-                # Multiple ALBUMARTIST fields from Vorbis - already separated, no splitting needed
+                # Already separated, no splitting needed
                 artists = clean_tuple(tag)
             elif mb_id_count == 1:
                 # Single MB ID confirms single artist - don't split
@@ -450,7 +449,6 @@ class AudioTags:
                 artists = split_items(tag)
             return artists
         # Fallback to single album artist string, splitting if necessary
-        # All formats: parser returns albumartist (singular)
         if tag := self.tags.get("albumartist"):
             mb_id_count = len(self.musicbrainz_albumartistids)
             if mb_id_count == 1:
