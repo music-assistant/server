@@ -6,6 +6,8 @@ from enum import StrEnum
 
 from music_assistant_models.enums import AlbumType, MediaType
 
+from music_assistant.controllers.streams.constants import BUFFER_INACTIVITY_TIMEOUT
+
 CONF_DEFAULT_ENQUEUE_SELECT_ARTIST = "default_enqueue_select_artist"
 CONF_DEFAULT_ENQUEUE_SELECT_ALBUM = "default_enqueue_select_album"
 
@@ -77,12 +79,12 @@ CONF_CROSSFADE_ENABLED = "crossfade_enabled"
 DEFAULT_AUTOPLAY_ENABLED = False
 DEFAULT_CROSSFADE_ENABLED = False
 
-# seconds a queue may stay paused before it is stopped. Capped a minute below the 5 minutes
-# after which an unread AudioBuffer releases its audio (a longer pause could not resume), and
-# not every player can stay paused for long
+# seconds a queue may stay paused before it is stopped. Capped a minute below the time after
+# which an unread AudioBuffer releases its audio (a longer pause could not resume), and not
+# every player can stay paused for long
 CONF_PAUSE_TIMEOUT = "pause_timeout"
 DEFAULT_PAUSE_TIMEOUT = 30
-PAUSE_TIMEOUT_RANGE = (30, 240)
+PAUSE_TIMEOUT_RANGE = (30, BUFFER_INACTIVITY_TIMEOUT - 60)
 
 CONF_SMART_SHUFFLE_LABEL = "smart_shuffle_label"
 CONF_SMART_SHUFFLE_ENABLED = "smart_shuffle_enabled"

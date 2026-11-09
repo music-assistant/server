@@ -207,7 +207,9 @@ else goes, including what sessions that ended earlier left behind: sessions rota
 so a claim that is no longer current marks audio nobody will come back for. A clear or a replace
 drops the items themselves, so all of their audio goes with them.
 
-A paused queue keeps its session and its buffers until the pause watcher stops it after 30 seconds.
+A paused queue keeps its session and its buffers until the pause watcher stops it once the
+configured pause timeout passes (30 seconds by default, at most 4 minutes, so before an unread
+buffer releases its audio).
 When playback on another queue finds no free provider stream slot and one of those buffers holds
 one, the paused queue is stopped right away. It resumes later from where it was paused, with a new
 source stream. Preparing the next track ahead of time never stops a paused queue. A player that

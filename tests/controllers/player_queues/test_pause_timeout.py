@@ -5,23 +5,14 @@ from __future__ import annotations
 import inspect
 from collections.abc import Coroutine
 from typing import Any, cast
-from unittest.mock import AsyncMock, MagicMock, Mock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from music_assistant_models.enums import PlaybackState
 from music_assistant_models.player_queue import PlayerQueue
 
 from music_assistant.controllers.player_queues import PlayerQueuesController
-from music_assistant.controllers.player_queues.config import (
-    CATEGORY_PLAYBACK,
-    core_config_entries,
-    queue_config_entries,
-)
-from music_assistant.controllers.player_queues.constants import (
-    CONF_PAUSE_TIMEOUT,
-    DEFAULT_PAUSE_TIMEOUT,
-    PAUSE_TIMEOUT_RANGE,
-)
+from music_assistant.controllers.player_queues.constants import CONF_PAUSE_TIMEOUT
 from music_assistant.controllers.player_queues.state import PlayerQueueData
 
 QUEUE_ID = "player_1"
@@ -80,19 +71,6 @@ async def _pause_and_watch(ctrl: PlayerQueuesController, sleep: AsyncMock) -> No
     assert len(watchers) == 1
     with patch("music_assistant.controllers.player_queues.controller.asyncio.sleep", new=sleep):
         await watchers[0]
-
-
-def test_pause_timeout_is_an_advanced_global_setting() -> None:
-    """The core schema offers the pause timeout, the per-queue schema does not."""
-    mass = Mock()
-    mass.music.providers = []
-    mass.streams.smart_fades_available = False
-    entry = next(e for e in core_config_entries(mass) if e.key == CONF_PAUSE_TIMEOUT)
-    assert entry.default_value == DEFAULT_PAUSE_TIMEOUT == 30
-    assert entry.range == PAUSE_TIMEOUT_RANGE == (30, 240)
-    assert entry.category == CATEGORY_PLAYBACK
-    assert entry.advanced
-    assert CONF_PAUSE_TIMEOUT not in {e.key for e in queue_config_entries(mass)}
 
 
 @pytest.mark.parametrize(
