@@ -5,7 +5,7 @@ import inspect
 import logging
 import re
 from collections.abc import Awaitable, Iterator
-from typing import Any
+from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import UUID
 
@@ -1989,6 +1989,52 @@ class TestParentAvailabilityWithLinkedOutputs:
             native_player, PlayerFeature.PLAY_MEDIA, require_active=False
         )
         assert target == native_player
+
+    def _grouping_setup(
+        self, mock_mass: MagicMock, *, parent_own_up: bool, child_own_up: bool
+    ) -> tuple[PlayerController, MockPlayer, MockPlayer]:
+        """Add a same-provider sibling whose own transport state is set per test."""
+        controller, native_player, _ = self._setup(mock_mass, native_available=parent_own_up)
+        child = MockPlayer(
+            cast("MockProvider", native_player.provider),
+            "snap_kitchen",
+            "Kitchen",
+            identifiers={IdentifierType.MAC_ADDRESS: "11:22:33:44:55:66"},
+        )
+        child._attr_supported_features.add(PlayerFeature.PLAY_MEDIA)
+        child._attr_available = child_own_up
+        controller._players["snap_kitchen"] = child
+        return controller, native_player, child
+
+    def test_native_grouping_rejected_while_parent_own_transport_down(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """Native grouping must not be chosen onto a parent whose transport is gone."""
+        controller, native_player, child = self._grouping_setup(
+            mock_mass, parent_own_up=False, child_own_up=True
+        )
+        # the aggregate keeps the parent a valid grouping endpoint...
+        assert native_player.available is True
+        # ...but native grouping rides the parent's own transport
+        assert controller._can_use_native_grouping(child, native_player, True) is False
+
+    def test_native_grouping_rejected_while_child_own_transport_down(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """A member whose own transport is gone cannot hold up a native group."""
+        controller, native_player, child = self._grouping_setup(
+            mock_mass, parent_own_up=True, child_own_up=False
+        )
+        assert controller._can_use_native_grouping(child, native_player, True) is False
+
+    def test_native_grouping_allowed_while_both_own_transports_up(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """The gate only excludes dead own transports."""
+        controller, native_player, child = self._grouping_setup(
+            mock_mass, parent_own_up=True, child_own_up=True
+        )
+        assert controller._can_use_native_grouping(child, native_player, True) is True
 
 
 class TestGetControlTarget:

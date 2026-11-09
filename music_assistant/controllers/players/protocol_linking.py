@@ -2463,6 +2463,11 @@ class ProtocolLinkingMixin:
         """Check if child can be grouped with parent using native grouping."""
         if not parent_supports_native:
             return False
+        # Native grouping is carried by the members' own transports: while either
+        # side's own transport is down, the native group cannot be formed or held
+        # up, and grouping must fall through to the protocol path instead.
+        if not (parent_player.own_available and child_player.own_available):
+            return False
         return (
             parent_player.is_native_group_compatible(child_player)
             or child_player.player_id in parent_player._attr_can_group_with
