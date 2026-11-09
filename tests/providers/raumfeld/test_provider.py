@@ -2096,6 +2096,281 @@ async def test_following_that_ended_without_an_error_gives_no_reason(ending: str
     assert provider._follow_error() == "no reason given"
 
 
+async def test_a_host_that_cannot_be_read_is_tried_again() -> None:
+    """A host error during a cycle does not end the supervisor."""
+    provider, check = _supervised([True, True])
+    provider._resync = AsyncMock(  # type: ignore[method-assign]
+        side_effect=[aiohttp.ClientConnectionError("gone"), None]
+    )
+    await _supervise_cycles(provider, check, 2)
+    assert provider._resync.await_count == 2
+
+
+async def test_an_unexpected_error_does_not_end_the_supervisor() -> None:
+    """An answer nobody expected is logged, and the next cycle runs as usual."""
+    provider, check = _supervised([True, True])
+    provider._resync = AsyncMock(  # type: ignore[method-assign]
+        side_effect=[RuntimeError("odd answer"), None]
+    )
+    await _supervise_cycles(provider, check, 2)
+    assert provider._resync.await_count == 2
+    cast("MagicMock", provider.logger).exception.assert_called_once()
+
+
+async def test_a_provider_that_is_not_connected_tries_to_connect() -> None:
+    """Each cycle without a connection makes one attempt to connect."""
+    provider, check = _supervised([])
+    provider._connected = False
+    provider._try_connect = AsyncMock()  # type: ignore[method-assign]
+    await _supervise_cycles(provider, check, 2)
+    assert provider._try_connect.await_count == 2
+    check.assert_not_called()
+
+
+def _connecting_provider(address: str = "192.168.1.41") -> RaumfeldPlayerProvider:
+    """Build a provider that is not connected yet, with its host at the given address."""
+    provider = RaumfeldPlayerProvider.__new__(RaumfeldPlayerProvider)
+    provider._connected = False
+    provider._host_address = address
+    provider._host_port = 47365
+    provider._host_check_failures = 0
+    provider._update_task = None
+    provider._zone_watch_task = None
+    provider._pending_zones = frozenset()
+    provider.config = MagicMock(instance_id="raumfeld")
+    provider.mass = MagicMock()
+    provider.mass.cache.delete = AsyncMock()
+
+    def create_task(coro: Any) -> MagicMock:
+        if asyncio.iscoroutine(coro):
+            coro.close()
+        return MagicMock(done=MagicMock(return_value=False))
+
+    provider.mass.create_task = MagicMock(side_effect=create_task)
+    provider.mass.players.iter_players.return_value = []
+    provider.logger = MagicMock()
+    provider._follow_moved_host = AsyncMock(return_value=False)  # type: ignore[method-assign]
+    provider._load_line_in = AsyncMock()  # type: ignore[method-assign]
+    provider._resync = AsyncMock()  # type: ignore[method-assign]
+    provider._sync_groups = MagicMock()  # type: ignore[method-assign]
+    return provider
+
+
+async def test_no_connection_is_tried_without_a_host_address() -> None:
+    """Without an address there is nothing to reach, so the host is not asked."""
+    provider = _connecting_provider(address="")
+    check = AsyncMock(return_value=True)
+    with patch("music_assistant.providers.raumfeld.provider.host_is_valid", check):
+        await provider._try_connect()
+    check.assert_not_called()
+    assert not provider._connected
+
+
+async def test_a_host_that_does_not_answer_is_not_connected() -> None:
+    """A host that does not answer, and was not found elsewhere, leaves the rooms alone."""
+    provider = _connecting_provider()
+    with (
+        patch(
+            "music_assistant.providers.raumfeld.provider.host_is_valid",
+            AsyncMock(return_value=False),
+        ),
+        patch("music_assistant.providers.raumfeld.provider.RaumfeldHost") as host_cls,
+    ):
+        await provider._try_connect()
+    host_cls.assert_not_called()
+    provider._resync.assert_not_awaited()  # type: ignore[attr-defined]
+    assert not provider._connected
+
+
+async def test_a_host_that_answers_registers_its_rooms_and_groups() -> None:
+    """Connecting reads the Line-In inputs and rooms, takes over the zones and watches them."""
+    provider = _connecting_provider()
+    with (
+        patch(
+            "music_assistant.providers.raumfeld.provider.host_is_valid",
+            AsyncMock(return_value=True),
+        ),
+        patch("music_assistant.providers.raumfeld.provider.RaumfeldHost") as host_cls,
+    ):
+        host_cls.return_value.wait_ready = AsyncMock()
+        await provider._try_connect()
+    assert host_cls.call_args.args[1] == "http://192.168.1.41:47365"
+    provider._load_line_in.assert_awaited_once()  # type: ignore[attr-defined]
+    provider._resync.assert_awaited_once()  # type: ignore[attr-defined]
+    provider._sync_groups.assert_called_once_with()  # type: ignore[attr-defined]
+    assert provider._pending_zones is None
+    assert provider._zone_watch_task is not None
+    assert provider._connected
+
+
+async def test_a_host_that_sends_no_data_in_time_is_dropped() -> None:
+    """A host that answers but never sends its rooms is let go, to be tried again."""
+    provider = _connecting_provider()
+    with (
+        patch(
+            "music_assistant.providers.raumfeld.provider.host_is_valid",
+            AsyncMock(return_value=True),
+        ),
+        patch("music_assistant.providers.raumfeld.provider.RaumfeldHost") as host_cls,
+    ):
+        host_cls.return_value.wait_ready = AsyncMock(side_effect=TimeoutError)
+        provider._disconnect = AsyncMock()  # type: ignore[method-assign]
+        await provider._try_connect()
+    provider._disconnect.assert_awaited_once_with("initial update timed out")
+    provider._resync.assert_not_awaited()  # type: ignore[attr-defined]
+    assert not provider._connected
+
+
+def _running_tasks(provider: RaumfeldPlayerProvider) -> tuple[MagicMock, MagicMock]:
+    """Give the provider a running update task and zone watcher, and return them."""
+    update_task = MagicMock(done=MagicMock(return_value=False))
+    zone_watch_task = MagicMock(done=MagicMock(return_value=False))
+    provider._update_task = update_task
+    provider._zone_watch_task = zone_watch_task
+    return update_task, zone_watch_task
+
+
+async def test_a_lost_host_stops_following_and_shows_its_rooms_unavailable() -> None:
+    """Dropping the host ends its tasks and marks every room unavailable."""
+    provider = _connecting_provider()
+    provider._connected = True
+    update_task, zone_watch_task = _running_tasks(provider)
+    provider._host_check_failures = 2
+    bar = _player("Bar")
+    bar._attr_available = True
+    bar._playback_generation = 0
+    cast("MagicMock", provider.mass).players.iter_players.return_value = [bar]
+
+    await provider._disconnect("did not answer")
+
+    update_task.cancel.assert_called_once()
+    zone_watch_task.cancel.assert_called_once()
+    assert provider._update_task is None
+    assert provider._zone_watch_task is None
+    assert provider._host_check_failures == 0
+    assert not bar.available
+    assert not provider._connected
+    cast("MagicMock", provider.logger).warning.assert_called_once()
+
+
+async def test_dropping_a_host_that_was_not_connected_does_not_warn() -> None:
+    """A connect attempt that fails is not reported as a lost host."""
+    provider = _connecting_provider()
+    await provider._disconnect("initial update timed out")
+    cast("MagicMock", provider.logger).warning.assert_not_called()
+
+
+def _registering_provider(
+    rooms: dict[str, tuple[str, str]], registered: list[RaumfeldPlayer]
+) -> tuple[RaumfeldPlayerProvider, dict[str, RaumfeldPlayer]]:
+    """
+    Build a provider whose host reports the given rooms, with the given players registered.
+
+    :param rooms: Room name -> (room UDN, renderer UDN of the speaker in it).
+    :param registered: The players Music Assistant already has for this provider.
+    """
+    provider = _moving_provider(rooms)
+    provider.config = MagicMock(instance_id="raumfeld")
+    registry = {player.player_id: player for player in registered}
+    for player in registered:
+        player._provider = provider
+    players = cast("MagicMock", provider.mass).players
+    players.iter_players.side_effect = lambda **_: list(registry.values())
+    players.get_player.side_effect = registry.get
+
+    async def register(player: RaumfeldPlayer) -> None:
+        registry[player.player_id] = player
+
+    players.register = AsyncMock(side_effect=register)
+    return provider, registry
+
+
+def _registered(room: str, player_id: str) -> RaumfeldPlayer:
+    """Build a registered player for a room, available until told otherwise."""
+    player = _player(room)
+    player._player_id = player_id
+    player._attr_name = room
+    player._attr_available = True
+    player._playback_generation = 0
+    return player
+
+
+def _init_player(
+    self: RaumfeldPlayer, provider: RaumfeldPlayerProvider, player_id: str, room: str, **_: Any
+) -> None:
+    """Stand in for the player's constructor, which needs a running Music Assistant."""
+    self._provider = provider
+    self._player_id = player_id
+    self.room = room
+
+
+async def test_a_new_room_is_registered_under_its_speakers_serial() -> None:
+    """A room the host reports for the first time gets a player named after its speaker."""
+    provider, registry = _registering_provider({"Marshall": ("uuid:5e1d", "uuid:pi4")}, [])
+    with patch.object(RaumfeldPlayer, "__init__", _init_player):
+        await provider._sync_rooms()
+    assert list(registry) == ["raumfeld_d83addda8e62"]
+    assert registry["raumfeld_d83addda8e62"].room == "Marshall"
+
+
+async def test_a_known_room_is_available_again_under_its_new_name() -> None:
+    """A speaker that returns in a renamed room keeps its player, which takes the new name."""
+    marshall = _registered("Marshall", "raumfeld_d83addda8e62")
+    marshall._attr_available = False
+    provider, registry = _registering_provider(
+        {"Werkplaats": ("uuid:5e1d", "uuid:pi4")}, [marshall]
+    )
+    await provider._sync_rooms()
+    assert list(registry) == ["raumfeld_d83addda8e62"]
+    cast("MagicMock", provider.mass).players.register.assert_not_awaited()
+    assert marshall.room == "Werkplaats"
+    assert marshall._attr_name == "Werkplaats"
+    assert marshall.available
+
+
+async def test_a_room_the_host_no_longer_lists_is_unavailable() -> None:
+    """A speaker gone from the host keeps its player, shown as unavailable."""
+    marshall = _registered("Marshall", "raumfeld_d83addda8e62")
+    kitchen = _registered("Keuken", "raumfeld_b827eb57daf9")
+    provider, registry = _registering_provider(
+        {"Marshall": ("uuid:5e1d", "uuid:pi4")}, [marshall, kitchen]
+    )
+    await provider._sync_rooms()
+    assert set(registry) == {"raumfeld_d83addda8e62", "raumfeld_b827eb57daf9"}
+    assert marshall.available
+    assert not kitchen.available
+
+
+async def test_a_room_whose_serial_cannot_be_read_waits_to_be_registered() -> None:
+    """A room is only registered once its speaker's serial is known, so its id never changes."""
+    provider, registry = _registering_provider({"Marshall": ("uuid:5e1d", "uuid:pi4")}, [])
+    get = cast("MagicMock", provider.mass).http_session.get
+    get.side_effect = aiohttp.ClientConnectionError("asleep")
+    await provider._sync_rooms()
+    assert registry == {}
+
+
+async def test_a_room_sharing_a_serial_falls_back_to_its_room_udn() -> None:
+    """Of two rooms with the same serial, the first by room UDN keeps it, once and for all."""
+    provider, _ = _provider(_DEVICE_DESCRIPTION)
+    provider._room_ids = {}
+    provider._shared_serial_warned = set()
+    provider.host = _host(
+        {"TV": ("uuid:room-b", "uuid:r2"), "Bar": ("uuid:room-a", "uuid:r1")},
+        {"uuid:r1": _LOCATION, "uuid:r2": "http://192.168.1.41:50000/virtual.xml"},
+    )
+
+    assert await _room_ids(provider) == {
+        "TV": "raumfeld_room-b",
+        "Bar": "raumfeld_04a316f3b6c4",
+    }
+    assert await _room_ids(provider) == {
+        "TV": "raumfeld_room-b",
+        "Bar": "raumfeld_04a316f3b6c4",
+    }
+    cast("MagicMock", provider.logger).warning.assert_called_once()
+
+
 @contextlib.contextmanager
 def _moved_host(
     found: list[str], answering: set[str]
