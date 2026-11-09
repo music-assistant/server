@@ -277,6 +277,7 @@ async def test_report_requested_during_a_playback_command_is_discarded(method: s
         patch.object(player, "_send_to_open_screen", AsyncMock(return_value=False)),
         patch.object(alexa, "api_request", AsyncMock(return_value="{}")),
         patch.object(alexa, "get_playback_state", AsyncMock(side_effect=slow_lookup)),
+        patch("music_assistant.providers.alexa.time.time", return_value=NOW),
         patch.object(player, "update_state") as update_state,
     ):
         if method == "play_media":
@@ -284,12 +285,15 @@ async def test_report_requested_during_a_playback_command_is_discarded(method: s
         else:
             await getattr(player, method)()
         state = player.playback_state
+        position = player._attr_elapsed_time
         update_state.reset_mock()
         answer.set()
         await lookups[0]
     update_state.assert_not_called()
     assert player.playback_state == state
-    assert player._attr_elapsed_time == 0
+    # The command's own position stands, not the late report's 125 s.
+    assert player._attr_elapsed_time == position
+    assert position == (600 if method in ("play", "pause") else 0)
 
 
 async def test_paused_report_moves_the_queue_without_a_playing_blip() -> None:
@@ -360,3 +364,36 @@ async def test_playback_commands_do_not_vouch_for_the_paused_position(method: st
         else:
             await getattr(player, method)()
     assert not player.paused_position_reliable
+
+
+async def _send(player: AlexaPlayer, provider: Any, method: str, at: float) -> None:
+    """Run a playback command from MA as if it finished at the given time."""
+    provider.get_intent_utterance = AsyncMock(return_value="ask music assistant to resume")
+    api = MagicMock(run_custom=AsyncMock())
+    with (
+        patch.object(AlexaPlayer, "api", new_callable=PropertyMock, return_value=api),
+        patch.object(player, "_send_to_open_screen", AsyncMock(return_value=False)),
+        patch("music_assistant.providers.alexa.time.time", return_value=at),
+        patch.object(player, "update_state"),
+    ):
+        await getattr(player, method)()
+
+
+async def test_resume_after_a_reported_pause_continues_from_the_paused_offset() -> None:
+    """A long pause must not be added to the position when MA resumes the Echo."""
+    player, provider = _player()
+    await _correct(player, _report(activity="STOPPED", offsetMs=90_500))
+    await _send(player, provider, "play", NOW + 600)
+    assert player.playback_state == PlaybackState.PLAYING
+    assert player._attr_elapsed_time == pytest.approx(90.5)
+    assert player._attr_elapsed_time_last_updated == NOW + 600
+
+
+async def test_resume_after_a_pause_from_ma_continues_where_it_paused() -> None:
+    """MA's own pause freezes the clock estimate, and the resume continues from it."""
+    player, provider = _player()  # playing for 600 s by MA's clock
+    await _send(player, provider, "pause", NOW)
+    assert player._attr_elapsed_time == pytest.approx(600)
+    await _send(player, provider, "play", NOW + 300)
+    assert player._attr_elapsed_time == pytest.approx(600)
+    assert player._attr_elapsed_time_last_updated == NOW + 300

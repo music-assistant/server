@@ -360,6 +360,7 @@ class AlexaPlayer(Player):
         # Reports requested while the command was out describe the state before it.
         self._playback_generation += 1
         self._attr_paused_position_reliable = False
+        self._hold_position()
         self._attr_playback_state = PlaybackState.PLAYING
         self.update_state()
 
@@ -375,6 +376,7 @@ class AlexaPlayer(Player):
         # Reports requested while the command was out describe the state before it.
         self._playback_generation += 1
         self._attr_paused_position_reliable = False
+        self._hold_position()
         self._attr_playback_state = PlaybackState.PAUSED
         self.update_state()
 
@@ -636,6 +638,22 @@ class AlexaPlayer(Player):
         # The Echo's paused offset is its real position, so the queue may follow it.
         self._attr_paused_position_reliable = state == PlaybackState.PAUSED
         self.update_state()
+
+    def _hold_position(self) -> None:
+        """
+        Keep the position reached so far as the anchor from now on.
+
+        A pause freezes the clock estimate where it is, and a resume continues from the
+        paused position (also one the Echo reported) instead of adding the paused time.
+        """
+        now = time.time()
+        if (
+            self._attr_playback_state == PlaybackState.PLAYING
+            and self._attr_elapsed_time is not None
+            and self._attr_elapsed_time_last_updated is not None
+        ):
+            self._attr_elapsed_time += now - self._attr_elapsed_time_last_updated
+        self._attr_elapsed_time_last_updated = now
 
     async def _read_volume(self) -> None:
         """Read the Echo's volume back from Amazon."""
