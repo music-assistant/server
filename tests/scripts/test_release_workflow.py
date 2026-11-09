@@ -723,12 +723,59 @@ def test_dependency_auto_merge_commit_author_contract(
     assert is_trusted_author is trusted
 
 
+_FRONTEND_WHEEL = (
+    "music-assistant-frontend @ https://github.com/music-assistant/frontend/releases/download/"
+    "2.17.361/music_assistant_frontend-2.17.361-py3-none-any.whl#sha256=" + "a" * 64
+)
+
+
+@pytest.mark.parametrize(
+    ("line", "allowed"),
+    [
+        (f'+  "{_FRONTEND_WHEEL}",', True),
+        (f"-{_FRONTEND_WHEEL}", True),
+        ('+  "music-assistant-models==1.1.237",', True),
+        ("-music-assistant-models==1.1.236", True),
+        ("+music-assistant-frontend==2.17.361", False),
+        (f"+{_FRONTEND_WHEEL.replace('github.com', 'example.com')}", False),
+        (f"+{_FRONTEND_WHEEL.removesuffix('a')}", False),
+        (f"+{_FRONTEND_WHEEL.split('#', maxsplit=1)[0]}", False),
+        (f"+{_FRONTEND_WHEEL}; python_version >= '3.14'", False),
+        ("+music-assistant-models @ https://github.com/music-assistant/models/x.whl", False),
+    ],
+)
+def test_dependency_auto_merge_pin_line(line: str, allowed: bool) -> None:
+    """Allow only a models version pin or a frontend release wheel pinned by sha256."""
+    workflow = yaml.safe_load(DEPENDENCY_AUTO_MERGE_WORKFLOW.read_text(encoding="utf-8"))
+    result = subprocess.run(  # noqa: S603
+        ["grep", "-qE", workflow["env"]["PIN_LINE"]],  # noqa: S607
+        input=line,
+        text=True,
+        check=False,
+    )
+
+    assert (result.returncode == 0) is allowed
+
+
+def test_dependency_auto_merge_verifies_each_package_at_its_source() -> None:
+    """Check the models pin on PyPI and the frontend pin against its release asset digest."""
+    workflow = yaml.safe_load(DEPENDENCY_AUTO_MERGE_WORKFLOW.read_text(encoding="utf-8"))
+    steps = {step["name"]: step for step in workflow["jobs"]["auto-merge"]["steps"]}
+
+    pypi_step = steps["Wait for package availability on PyPI"]
+    assert pypi_step["if"] == "steps.package.outputs.package == 'music-assistant-models'"
+    asset_step = steps["Verify frontend release asset"]
+    assert asset_step["if"] == "steps.package.outputs.package == 'music-assistant-frontend'"
+    assert ".immutable // false" in asset_step["run"]
+    assert '"sha256:$SHA256"' in asset_step["run"]
+
+
 def test_dependency_auto_merge_enforces_app_bot_identity_contract() -> None:
     """Ensure the workflow enforces the tested App bot identity contract."""
     workflow_text = DEPENDENCY_AUTO_MERGE_WORKFLOW.read_text(encoding="utf-8")
     workflow = yaml.safe_load(workflow_text)
     assert workflow_text.count("musicassistant-bot[bot]") == 1
-    assert workflow["env"] == {
+    assert {name: value for name, value in workflow["env"].items() if name != "PIN_LINE"} == {
         "EXPECTED_APP_BOT_LOGIN": "musicassistant-bot[bot]",
         "EXPECTED_APP_BOT_LOGIN_ENCODED": "musicassistant-bot%5Bbot%5D",
         "EXPECTED_APP_BOT_ID": "304008617",
