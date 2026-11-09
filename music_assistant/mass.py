@@ -399,9 +399,7 @@ class MusicAssistant:
         # cancel all running tasks and pending timers
         for task in list(self._tracked_tasks.values()):
             task.cancel()
-        for timer in self._tracked_timers.values():
-            timer.cancel()
-        self._tracked_timers.clear()
+        self._cancel_tracked_timers()
         # the queues are closed before the providers unload: unloading a player provider
         # removes the queues of its players, and with them their pending state to persist
         if (player_queues := getattr(self, "player_queues", None)) is not None:
@@ -450,6 +448,8 @@ class MusicAssistant:
             await self._http_session.close()
         if self._http_session_no_ssl and not self._http_session_no_ssl.closed:
             await self._http_session_no_ssl.close()
+        # the teardown above can schedule new timers (e.g. when stopping playback)
+        self._cancel_tracked_timers()
         self._set_state(CoreState.STOPPED)
 
     @property
@@ -1676,6 +1676,12 @@ class MusicAssistant:
             await mkdirs(self.storage_path)
         if not await isdir(self.cache_path):
             await mkdirs(self.cache_path)
+
+    def _cancel_tracked_timers(self) -> None:
+        """Cancel all pending timers scheduled with call_later."""
+        for timer in self._tracked_timers.values():
+            timer.cancel()
+        self._tracked_timers.clear()
 
     def _set_state(self, new_state: CoreState) -> None:
         """Set new state and signal state change."""
