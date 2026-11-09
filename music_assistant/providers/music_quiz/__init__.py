@@ -1506,23 +1506,28 @@ class MusicQuizPlugin(PluginProvider):
         :param track_uri: URI of the first round's track.
         """
         with _system_auth_context():
+            if (game := self._game) is None:
+                return
+            if game.config.playback_mode == SharedPlaybackMode.VENUE:
+                venue = self.mass.players.get_player(game.config.venue_player_id or "")
+                # a venue that is playing or paused (e.g. a party while the lobby is open) is
+                # left alone, without a session either: a lobby teardown stops the session's
+                # playback. Its first round then starts without prepared audio.
+                if (
+                    venue is None
+                    or not venue.state.available
+                    or venue.state.playback_state != PlaybackState.IDLE
+                ):
+                    return
             session = await self._get_playback_session()
             if session is None:
                 return
-            player = self.mass.players.get_player(session.player_id)
-            # a target that is playing or paused (e.g. a party while the lobby is open) is left
-            # alone, its first round then starts without prepared audio
-            if (
-                player is None
-                or not player.state.available
-                or player.state.playback_state != PlaybackState.IDLE
-            ):
-                return
             try:
-                # the first round replaces the queue anyway, staging takes it over a bit earlier
+                # starting the game replaces the queue anyway, staging takes it over a bit earlier;
+                # replace_next (unlike add) also drops the autoplay seeds of what played before
                 self.mass.player_queues.clear(session.queue_id, skip_stop=True)
                 await self.mass.player_queues.play_media(
-                    session.queue_id, track_uri, option=QueueOption.ADD
+                    session.queue_id, track_uri, option=QueueOption.REPLACE_NEXT
                 )
                 staged_item = next(iter(self.mass.player_queues.items(session.queue_id)), None)
                 if staged_item is None or not await self._is_round_track(staged_item, track_uri):
