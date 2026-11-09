@@ -198,11 +198,11 @@ async def test_a_withdrawn_announcement_is_handed_to_the_player() -> None:
     player = MagicMock(spec=SonosPlayer)
     goodbye = object()
     player.on_mdns_goodbye = MagicMock(return_value=goodbye)
-    mass.players.get_player.return_value = player
+    mass.players.get_protocol.return_value = player
 
     await provider.on_mdns_service_state_change(
         "RINCON_C438750D189C01400@Move 2._sonos._tcp.local.", ServiceStateChange.Removed, None
     )
 
-    mass.players.get_player.assert_called_once_with("RINCON_C438750D189C01400")
+    mass.players.get_protocol.assert_called_once_with("RINCON_C438750D189C01400")
     mass.create_task.assert_called_once_with(goodbye)

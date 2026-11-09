@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import inspect
 from typing import TYPE_CHECKING
 
 from music_assistant_models.errors import PlayerUnavailableError
@@ -43,13 +44,18 @@ class PlayerProvider(Provider):
             and isinstance(protocol.provider, PlayerProvider)
             and protocol.provider is not self
         ):
-            # still returned: the warning only surfaces callers passing another provider's id
+            # still returned: the warning only surfaces callers passing another provider's id,
+            # so it names the call site
+            caller = frame.f_back if (frame := inspect.currentframe()) else None
             self.logger.warning(
-                "Provider %s looked up %s, which belongs to provider %s",
+                "Provider %s looked up %s, which belongs to provider %s (called from %s:%s)",
                 self.instance_id,
                 protocol_id,
                 protocol.provider.instance_id,
+                caller.f_globals.get("__name__") if caller else "?",
+                caller.f_lineno if caller else "?",
             )
+            del frame, caller
         if raise_unavailable and (
             protocol is None or not protocol.state.available or not protocol.state.enabled
         ):

@@ -42,6 +42,7 @@ def _make_provider(
     mass = MagicMock()
     mass.register_api_command = MagicMock(side_effect=lambda *_a, **_kw: MagicMock())
     mass.players.get_player = MagicMock(side_effect=lambda pid: (players or {}).get(pid))
+    mass.players.get_protocol = mass.players.get_player
     provider.mass = mass
     provider._unregister_api_commands = []
     for player in (players or {}).values():

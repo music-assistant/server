@@ -364,7 +364,7 @@ class YandexStationProvider(PlayerProvider):
         # The core decides whether the calling user may use the player; it
         # raises InsufficientPermissions under the same rules as its own commands.
         self.mass.players.get_player_state(player_id)
-        player = self.get_protocol(player_id)
+        player = self.mass.players.get_protocol(player_id)
         if not isinstance(player, YandexStationPlayer):
             msg = f"{player_id} is not a Yandex Station player"
             raise PlayerUnavailableError(msg)

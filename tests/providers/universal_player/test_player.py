@@ -79,6 +79,7 @@ def _register_players(mass: MagicMock, *players: MagicMock) -> None:
     """Make the given players resolvable by id on the mass mock."""
     registry = {player.player_id: player for player in players}
     mass.players.get_player = MagicMock(side_effect=lambda pid, *_a, **_kw: registry.get(pid))
+    mass.players.get_protocol = mass.players.get_player
 
 
 def _make_chromecast_player(

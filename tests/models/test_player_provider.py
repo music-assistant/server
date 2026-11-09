@@ -58,6 +58,8 @@ def test_get_protocol_of_another_provider_warns() -> None:
     assert "test--own" in message
     assert "test--other" in message
     assert PLAYER_ID in message
+    # names the call site, so a misclassified lookup can be found
+    assert f"called from {__name__}:" in message
 
 
 def test_get_protocol_of_own_provider_does_not_warn() -> None:

@@ -142,7 +142,8 @@ class SonosPlayerProvider(PlayerProvider):
         if state_change == ServiceStateChange.Removed:
             # a portable withdraws its announcement as it goes to sleep, long before the
             # websocket heartbeat notices
-            sonos_player = self.get_protocol(name.split("@", 1)[0])
+            # an S1 speaker announces on the same service type, so the id can be foreign
+            sonos_player = self.mass.players.get_protocol(name.split("@", 1)[0])
             if isinstance(sonos_player, SonosPlayer):
                 self.mass.create_task(sonos_player.on_mdns_goodbye())
             return

@@ -1184,7 +1184,7 @@ class SendspinBridgeManager(SendspinBridgeManagerBase[SendspinChromecastBridge])
         """
         while player_id in self._pending_bridge_evaluations:
             self._pending_bridge_evaluations.discard(player_id)
-            player = self.mass.players.get_protocol(player_id)
+            player = self.provider.get_protocol(player_id)
             if player is None or player.provider is not self.provider:
                 return
             await self.evaluate_bridge(player)
