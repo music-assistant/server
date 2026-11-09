@@ -25,20 +25,23 @@ async def test_native_device_attaches_as_available_player(scenario: Scenario) ->
     speaker = sonos.protocol("RINCON_KITCHEN", "Kitchen", identifiers=KITCHEN)
 
     await scenario.attach(speaker)
+    await scenario.idle()
 
-    player = scenario.assert_single_player(speaker)
-    assert player == VisiblePlayer(
-        player_id=ANY,
-        name="Kitchen",
-        available=True,
-        powered=None,
-        provider="sonos",
-        outputs=(("sonos", True),),
-    )
-    assert scenario.queue(player.player_id) is not None
+    assert scenario.players_carrying(speaker) == [
+        VisiblePlayer(
+            player_id=ANY,
+            name="Kitchen",
+            available=True,
+            powered=None,
+            provider="sonos",
+            outputs=(("sonos", True),),
+        )
+    ]
+    player_id = scenario.single_player(speaker).player_id
+    assert scenario.queue(player_id) is not None
     assert scenario.events(EventType.PLAYER_ADDED, EventType.QUEUE_ADDED) == [
-        Event(EventType.PLAYER_ADDED, player.player_id),
-        Event(EventType.QUEUE_ADDED, player.player_id),
+        Event(EventType.PLAYER_ADDED, player_id),
+        Event(EventType.QUEUE_ADDED, player_id),
     ]
 
 
@@ -61,19 +64,20 @@ async def test_airplay_and_cast_of_one_device_become_one_player(scenario: Scenar
     assert scenario.visible_players() == []
 
     await scenario.advance(0.1)
+    await scenario.idle()
 
-    player = scenario.assert_single_player(den_airplay, den_cast)
-    assert player == VisiblePlayer(
-        player_id=ANY,
-        name="Den",
-        available=True,
-        powered=None,
-        provider="universal_player",
-        outputs=(("airplay", True), ("chromecast", True)),
-    )
-    assert scenario.events(EventType.PLAYER_ADDED) == [
-        Event(EventType.PLAYER_ADDED, player.player_id)
+    assert scenario.players_carrying(den_airplay, den_cast) == [
+        VisiblePlayer(
+            player_id=ANY,
+            name="Den",
+            available=True,
+            powered=None,
+            provider="universal_player",
+            outputs=(("airplay", True), ("chromecast", True)),
+        )
     ]
+    player_id = scenario.single_player(den_airplay, den_cast).player_id
+    assert scenario.events(EventType.PLAYER_ADDED) == [Event(EventType.PLAYER_ADDED, player_id)]
 
 
 async def test_detached_native_player_vanishes_also_after_restart(scenario: Scenario) -> None:
@@ -86,10 +90,11 @@ async def test_detached_native_player_vanishes_also_after_restart(scenario: Scen
     sonos = await scenario.add_provider("sonos")
     speaker = sonos.protocol("RINCON_KITCHEN", "Kitchen", identifiers=KITCHEN)
     await scenario.attach(speaker)
-    player_id = scenario.assert_single_player(speaker).player_id
+    player_id = scenario.single_player(speaker).player_id
     scenario.clear_events()
 
     await scenario.detach(speaker)
+    await scenario.idle()
 
     assert scenario.visible_players() == []
     assert scenario.queue(player_id) is None
@@ -99,6 +104,7 @@ async def test_detached_native_player_vanishes_also_after_restart(scenario: Scen
     assert await scenario.player_config(player_id) is not None
 
     await scenario.restart()
+    await scenario.idle()
 
     assert scenario.provider(sonos.instance_id).available
     assert scenario.visible_players() == []
@@ -114,10 +120,11 @@ async def test_detached_native_player_stays_listed_unavailable(scenario: Scenari
     sonos = await scenario.add_provider("sonos")
     speaker = sonos.protocol("RINCON_KITCHEN", "Kitchen", identifiers=KITCHEN)
     await scenario.attach(speaker)
-    player_id = scenario.assert_single_player(speaker).player_id
+    player_id = scenario.single_player(speaker).player_id
     scenario.clear_events()
 
     await scenario.detach(speaker)
+    await scenario.idle()
 
     assert [(player.player_id, player.available) for player in scenario.visible_players()] == [
         (player_id, False)

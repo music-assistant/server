@@ -3,7 +3,7 @@ Scenario harness for the player lifecycle: fake player providers on a real serve
 
 A scenario boots a real MusicAssistant on a temporary storage folder, loads fake player
 providers that impersonate real provider domains, and drives it through the entry points a
-real provider or client uses. See README.md in this folder.
+real provider or client uses, on a virtual clock. See README.md in this folder.
 """
 
 from __future__ import annotations
@@ -11,13 +11,16 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
+import logging
+import sys
 import time
 from dataclasses import dataclass, field, replace
 from functools import partial
-from types import SimpleNamespace
+from types import ModuleType, SimpleNamespace
 from typing import TYPE_CHECKING, Any, Literal, NamedTuple, TypeVar
 from unittest.mock import patch
 
+from aiosqlite.core import Connection as SqliteConnection
 from music_assistant_models.enums import (
     EventType,
     IdentifierType,
@@ -40,6 +43,7 @@ if TYPE_CHECKING:
     import pathlib
     from collections.abc import Callable, Coroutine, Iterator
 
+    import pytest
     from music_assistant_models.config_entries import PlayerConfig, ProviderConfig
     from music_assistant_models.event import MassEvent
     from music_assistant_models.player import Player as PlayerState
@@ -53,21 +57,21 @@ _T = TypeVar("_T")
 # Player providers that keep their real implementation, as they own no device.
 REAL_PLAYER_PROVIDERS = frozenset({"universal_player", "universal_group", "sync_group"})
 
-# Modules of the players code whose time.monotonic() follows the loop clock.
-MONOTONIC_MODULES = (
-    "music_assistant.controllers.players.controller",
-    "music_assistant.providers.sync_group.player",
-)
-
 # The provider instance that owns the fake power controls: one that is always loaded.
 POWER_CONTROL_PROVIDER = "builtin"
 
-# Seconds of loop time per step of advance(): fine enough to keep the order of the server's
-# debounce timers (0.25 s and up).
-TICK = 0.1
+# Loop time at the start of every scenario.
+CLOCK_START = 1000.0
 
-# Real seconds settle() waits for work that does not wait for the clock, before it fails.
+# Seconds idle() lets pass by default: past the server's debounces and follow-up checks
+# (0.25 s to 5 s), short of the 15 s protocol evaluation delay.
+IDLE_HORIZON = 6.0
+
+# Real seconds settle() waits for the loop to become quiet before it fails.
 SETTLE_TIMEOUT = 5.0
+
+# The log records that tell of a failure in the server's background work.
+LOGGERS_WATCHED = ("music_assistant", "asyncio")
 
 DEFAULT_FEATURES = frozenset(
     {
@@ -86,6 +90,13 @@ _ROLE_TYPES: dict[Role, PlayerType] = {
     "native": PlayerType.PLAYER,
     "audio": PlayerType.PROTOCOL,
 }
+
+# the real clock, for the harness's own time limits
+_real_monotonic = time.monotonic
+
+
+class ScenarioError(Exception):
+    """A precondition of a scenario does not hold, which is never an expected failure."""
 
 
 class Event(NamedTuple):
@@ -322,9 +333,9 @@ class Scenario:
     """
     A real server with fake player providers, driven the way providers and clients drive it.
 
-    Every action waits until the server finished the work it started, so its outcome can be
-    asserted right after. The event loop clock stands still, also while the server works, and
-    only moves through advance().
+    The event loop clock is virtual: it stands still, also while the server works, and only
+    moves through advance() and idle(). Every action settles what is due at the current time;
+    what the server put on a timer (debounces, delays) runs once the clock gets there.
     """
 
     def __init__(self, tmp_path: pathlib.Path) -> None:
@@ -337,13 +348,17 @@ class Scenario:
         # the fake ARP table: IP address -> MAC address the server resolves it to
         self.arp: dict[str, str] = {}
         self._tmp_path = tmp_path
+        self._clock = _VirtualClock()
         self._events: list[Event] = []
+        self._unsubscribe: Callable[[], None] | None = None
         self._devices: dict[str, _Device] = {}
         self._power_controls: dict[str, FakePowerControl] = {}
         self._commands: set[asyncio.Task[Any]] = set()
+        self._threads_busy = 0
+        self._errors = _ErrorLog()
+        self._expected_logs: list[str] = []
         self._patches = contextlib.ExitStack()
         self._server: contextlib.AsyncExitStack | None = None
-        self._clock: _LoopClock
 
     async def start(self) -> None:
         """Boot the server."""
@@ -351,14 +366,30 @@ class Scenario:
         await self._boot()
 
     async def close(self) -> None:
-        """Stop the server and undo what the scenario patched."""
+        """
+        Stop the server and undo what the scenario patched.
+
+        Raises a RuntimeError when the server's background work failed (see expect_log()).
+        """
         try:
-            for task in self._commands:
-                task.cancel()
-            await asyncio.gather(*self._commands, return_exceptions=True)
             await self._shutdown()
         finally:
             self._patches.close()
+        if errors := [
+            error
+            for error in self._errors.messages
+            if not any(expected in error for expected in self._expected_logs)
+        ]:
+            msg = "The server's background work failed:\n" + "\n".join(errors)
+            raise RuntimeError(msg)
+
+    def expect_log(self, substring: str) -> None:
+        """
+        Allow a failure log record the scenario causes on purpose.
+
+        :param substring: Part of the message of the record to allow.
+        """
+        self._expected_logs.append(substring)
 
     async def add_provider(self, domain: str) -> FakePlayerProvider:
         """
@@ -475,6 +506,8 @@ class Scenario:
         """
         Enable a player the way a user does.
 
+        Its device comes back once its provider looks for devices again, 5 s later (idle()).
+
         :param player_id: ID of the player.
         """
         await self.configure_player(player_id, enabled=True)
@@ -515,10 +548,10 @@ class Scenario:
 
     async def command(self, command: Coroutine[Any, Any, _T]) -> asyncio.Task[_T]:
         """
-        Start a command in the background and let it run until it waits; await the task after.
+        Start a command in the background and settle; await the returned task for its outcome.
 
         For a command that waits for the clock or a device, e.g. a power on through an external
-        power control. settle() waits for the work the command starts, not for the command.
+        power control. A failure of a command that is never awaited fails the scenario.
 
         :param command: The command, e.g. ``scenario.mass.players.cmd_power(player_id, True)``.
         """
@@ -529,17 +562,27 @@ class Scenario:
 
     async def advance(self, seconds: float) -> None:
         """
-        Move the loop clock forward, running every timer that falls due on the way.
+        Move the clock forward, stopping at every timer that falls due on the way.
 
-        The players code's time.monotonic() follows the loop clock; the wall clock
-        (``time.time()``) does not move.
+        time.monotonic() and time.time() of the server code follow the clock.
 
         :param seconds: Seconds to pass.
         """
-        target = self._clock.time() + seconds
-        while (now := self._clock.time()) < target:
-            self._clock.advance(min(TICK, target - now))
+        target = self._clock.now + seconds
+        await self.settle()
+        while (due := _next_timer()) is not None and due <= target:
+            self._clock.now = max(self._clock.now, due)
             await self.settle()
+        self._clock.now = target
+        await self.settle()
+
+    async def idle(self, horizon: float = IDLE_HORIZON) -> None:
+        """
+        Let the follow-up work on short timers run (debounces), for an assertion of steady state.
+
+        :param horizon: Seconds to pass.
+        """
+        await self.advance(horizon)
 
     async def restart(self) -> None:
         """Stop the server and start a new one on the same storage (settings.json and cache)."""
@@ -562,29 +605,31 @@ class Scenario:
 
     async def settle(self) -> None:
         """
-        Let the server finish the work that is due now, without moving the clock.
+        Run what is due now until the loop is quiet, without moving the clock.
 
-        Raises a RuntimeError when work that does not wait for the clock keeps running.
+        Quiet: nothing runnable, no timer due and no work in a thread. Raises a RuntimeError
+        when the loop does not get quiet.
         """
-        loop = asyncio.get_running_loop()
-        deadline = time.monotonic() + SETTLE_TIMEOUT
+        deadline = _real_monotonic() + SETTLE_TIMEOUT
         quiet_checks = 0
         while quiet_checks < 2:
             # two passes per check: what a callback hands to call_soon runs on the next one
             await asyncio.sleep(0)
             await asyncio.sleep(0)
-            if not (busy := self._busy_tasks()):
+            if not (runnable := _runnable()) and not self._threads_busy:
                 quiet_checks += 1
                 continue
             quiet_checks = 0
-            if time.monotonic() > deadline:
+            if _real_monotonic() > deadline:
                 msg = (
-                    f"Still running after {SETTLE_TIMEOUT} s without waiting for the clock: {busy}"
+                    f"The loop did not get quiet in {SETTLE_TIMEOUT} s: {runnable} runnable, "
+                    f"{self._threads_busy} thread jobs"
                 )
                 raise RuntimeError(msg)
-            # the loop clock stands still, so a real pause bounds the wait, not a loop timeout
-            pause = loop.run_in_executor(None, time.sleep, 0.005)
-            await asyncio.wait({*busy, pause}, return_when=asyncio.FIRST_COMPLETED)
+            if not runnable:
+                # only thread work is left, which reports back through the loop: nothing on
+                # the loop can run meanwhile, and a loop timer would wait for the clock
+                time.sleep(0.001)  # noqa: ASYNC251
 
     def protocol(self, protocol_id: str) -> FakeProtocol:
         """
@@ -614,6 +659,37 @@ class Scenario:
         """Return the players clients see (`players/all`), ordered by name and id."""
         players = [self._visible(state) for state in self.mass.players.all_player_states()]
         return sorted(players, key=lambda player: (player.name, player.player_id))
+
+    def players_carrying(self, *protocols: FakeProtocol) -> list[VisiblePlayer]:
+        """
+        Return the visible players that carry any of the given protocols.
+
+        A player carries a protocol when it is that protocol or lists it as an output.
+
+        :param protocols: The protocol objects of one device.
+        """
+        protocol_ids = {protocol.player_id for protocol in protocols}
+        return [
+            self._visible(state)
+            for state in self.mass.players.all_player_states()
+            if protocol_ids & _carried_ids(state)
+        ]
+
+    def single_player(self, *protocols: FakeProtocol) -> VisiblePlayer:
+        """
+        Return the one visible player carrying the given protocols, a precondition of a scenario.
+
+        Raises ScenarioError when there is not exactly one; where that is what the scenario is
+        about, assert on players_carrying() in the test instead.
+
+        :param protocols: The protocol objects of one device.
+        """
+        players = self.players_carrying(*protocols)
+        if len(players) != 1 or any(self.players_carrying(p) != players for p in protocols):
+            ids = sorted(protocol.player_id for protocol in protocols)
+            msg = f"Expected one player carrying all of {ids}: {players}"
+            raise ScenarioError(msg)
+        return players[0]
 
     def player(self, player_id: str) -> PlayerState | None:
         """
@@ -646,8 +722,9 @@ class Scenario:
         """
         Return the events emitted since the start or the last clear_events(), in order.
 
-        Consecutive repeats of an update event (``*_UPDATED``) for one object are collapsed,
-        so the result reads as a sequence of transitions; other events are all listed.
+        The events of each boot are included. Consecutive repeats of an update event
+        (``*_UPDATED``) for one object are collapsed, so the result reads as a sequence of
+        transitions; other events are all listed.
 
         :param event_types: Only return events of these types (all when omitted).
         :param object_id: Only return events for this object (player id, queue id, ...).
@@ -667,42 +744,35 @@ class Scenario:
         """Forget the events emitted so far."""
         self._events.clear()
 
-    def assert_single_player(self, *protocols: FakeProtocol) -> VisiblePlayer:
-        """
-        Assert that exactly one visible player carries the given protocols, and return it.
-
-        A player carries a protocol when it is that protocol or lists it as an output.
-
-        :param protocols: The protocol objects of one device.
-        """
-        protocol_ids = {protocol.player_id for protocol in protocols}
-        carriers = [
-            state
-            for state in self.mass.players.all_player_states()
-            if protocol_ids & _carried_ids(state)
-        ]
-        found = [self._visible(state) for state in carriers]
-        assert len(carriers) == 1, f"expected one player for {sorted(protocol_ids)}: {found}"
-        assert protocol_ids <= _carried_ids(carriers[0]), (
-            f"{carriers[0].player_id} does not carry all of {sorted(protocol_ids)}"
-        )
-        return found[0]
-
     async def _boot(self) -> None:
         """Start a server on the scenario's storage, with the power controls registered."""
         self._server = contextlib.AsyncExitStack()
         self.mass = await self._server.enter_async_context(full_mass_context(self._tmp_path))
+        # modules a boot imported read the clock as well
+        self._patches.enter_context(_patch_module_clocks(self._clock))
         for control in self._power_controls.values():
             await self._register_power_control(control)
         await self.settle()
 
     async def _shutdown(self) -> None:
-        """Stop the running server, if any."""
-        if self._server is not None:
-            server, self._server = self._server, None
-            # stopping waits on timeouts of its own, which need real time to pass
-            with self._clock.running():
-                await server.aclose()
+        """Stop the running server, if any, with nothing of it left running."""
+        for task in self._commands:
+            if task.done() and not task.cancelled() and getattr(task, "_log_traceback", False):
+                self._errors.messages.append(f"Command {task.get_coro()!r}: {task.exception()!r}")
+            task.cancel()
+        await asyncio.gather(*self._commands, return_exceptions=True)
+        self._commands.clear()
+        if self._unsubscribe is not None:
+            self._unsubscribe()
+            self._unsubscribe = None
+        if self._server is None:
+            return
+        server, self._server = self._server, None
+        # stopping waits on timeouts of its own, so real time runs, but the clock does not move
+        with self._clock.running():
+            await server.aclose()
+        for handle in self.mass._tracked_timers.values():
+            handle.cancel()
 
     async def _register_power_control(self, control: FakePowerControl) -> None:
         """Register a power control on the running server."""
@@ -742,18 +812,6 @@ class Scenario:
         """Capture an event the server emitted."""
         self._events.append(Event(event.event, event.object_id))
 
-    def _busy_tasks(self) -> set[asyncio.Task[Any]]:
-        """Return the running tasks that do not wait for the clock, except the commands."""
-        current = asyncio.current_task()
-        return {
-            task
-            for task in asyncio.all_tasks()
-            if task is not current
-            and not task.done()
-            and task not in self._commands
-            and not _waits_for_clock(task)
-        }
-
     def _visible(self, state: PlayerState) -> VisiblePlayer:
         """Return the visible record of a player state."""
         provider = self.mass.get_provider(state.provider, return_unavailable=True)
@@ -775,18 +833,21 @@ class Scenario:
         """
         Patch what a scenario fakes: the player providers, ARP lookups and the clock.
 
-        The manifest loading is the one private piece of the server touched here: before any
-        provider loads, a fake domain needs a manifest that allows several instances and has
-        no requirements, dependencies or network discovery. It is also the earliest point of
-        a boot with the new instance at hand, so the events of the boot itself are captured.
+        Two private pieces are touched. The manifest loading of the server: before any provider
+        loads, a fake domain needs a manifest that allows several instances and has no
+        requirements, dependencies or network discovery; it is also the earliest point of a boot
+        with the new instance at hand, so the events of the boot itself are captured. And the
+        thread dispatch of aiosqlite, which settle() needs to know about, as it does not go
+        through the loop's executor.
         """
         fake_domains: set[str] = set()
         load_manifests = MusicAssistant._MusicAssistant__load_provider_manifests  # type: ignore[attr-defined]
+        sqlite_execute: Any = SqliteConnection._execute
         loop = asyncio.get_running_loop()
-        self._clock = _LoopClock(loop.time)
+        run_in_executor = loop.run_in_executor
 
         async def _load_manifests(mass: MusicAssistant) -> None:
-            mass.subscribe(self._on_event)
+            self._unsubscribe = mass.subscribe(self._on_event)
             await load_manifests(mass)
             manifests = mass._provider_manifests
             for domain, manifest in list(manifests.items()):
@@ -811,6 +872,22 @@ class Scenario:
         async def _arp_lookup(ip_address: str) -> str | None:
             return self.arp.get(ip_address)
 
+        def _thread_done(_future: asyncio.Future[Any]) -> None:
+            self._threads_busy -= 1
+
+        def _run_in_executor(executor: Any, func: Callable[..., Any], *args: Any) -> Any:
+            future = run_in_executor(executor, func, *args)
+            self._threads_busy += 1
+            future.add_done_callback(_thread_done)
+            return future
+
+        async def _sqlite_execute(connection: SqliteConnection, *args: Any, **kwargs: Any) -> Any:
+            self._threads_busy += 1
+            try:
+                return await sqlite_execute(connection, *args, **kwargs)
+            finally:
+                self._threads_busy -= 1
+
         with contextlib.ExitStack() as stack:
             stack.enter_context(
                 patch.object(
@@ -819,10 +896,33 @@ class Scenario:
             )
             stack.enter_context(patch("music_assistant.mass.load_provider_module", _load_module))
             stack.enter_context(patch("music_assistant.helpers.util.get_mac_address", _arp_lookup))
+            stack.enter_context(patch.object(SqliteConnection, "_execute", _sqlite_execute))
+            stack.enter_context(patch.object(loop, "run_in_executor", _run_in_executor))
             stack.enter_context(patch.object(loop, "time", self._clock.time))
-            for module in MONOTONIC_MODULES:
-                stack.enter_context(patch(f"{module}.time", _LoopTime(self._clock)))
+            stack.enter_context(_patch_module_clocks(self._clock))
+            stack.enter_context(self._errors.watching())
             yield
+
+
+def xfail_origin_error(test_path: pathlib.Path, call: pytest.CallInfo[None]) -> str | None:
+    """
+    Return why an expected failure does not count, or None when it does.
+
+    It counts only when it is raised in the call phase by the test module itself, so a failure
+    in the harness, in a fixture or in the server can not pass as the expected one.
+
+    :param test_path: Path of the test module.
+    :param call: The call info of the test phase that failed.
+    """
+    if call.excinfo is None:
+        return None
+    origin = call.excinfo.traceback[-1]
+    if call.when == "call" and str(origin.path) == str(test_path):
+        return None
+    return (
+        f"[xfail for the wrong reason] {call.excinfo.typename} in {call.when} at "
+        f"{origin.path}:{origin.lineno + 1}: {call.excinfo.value}"
+    )
 
 
 @dataclass
@@ -836,69 +936,109 @@ class _Device:
     present: bool = False
 
 
-class _LoopClock:
-    """The loop clock of a scenario: it stands still, except where real time is let through."""
+class _VirtualClock:
+    """The clock of a scenario: it stands still, except while real time is let through."""
 
-    def __init__(self, real_time: Callable[[], float]) -> None:
-        """
-        Initialize the clock at the current time.
-
-        :param real_time: The real clock of the loop.
-        """
-        self._real_time = real_time
-        self._now = real_time()
+    def __init__(self) -> None:
+        """Initialize the clock at its start time."""
+        self.now = CLOCK_START
+        self._wall_start = time.time()
         self._running_since: float | None = None
 
     def time(self) -> float:
-        """Return the current loop time."""
+        """Return the current time, as loop.time() and time.monotonic() of the server."""
         if self._running_since is None:
-            return self._now
-        return self._now + self._real_time() - self._running_since
+            return self.now
+        return self.now + _real_monotonic() - self._running_since
 
-    def advance(self, seconds: float) -> None:
-        """
-        Move the clock forward.
-
-        :param seconds: Seconds to pass.
-        """
-        self._now += seconds
+    def wall_time(self) -> float:
+        """Return the current wall clock time, as time.time() of the server."""
+        return self._wall_start + self.time() - CLOCK_START
 
     @contextlib.contextmanager
     def running(self) -> Iterator[None]:
-        """Let real time pass on the clock while in this context."""
-        self._running_since = self._real_time()
+        """Let real time pass in this context; the clock is back where it stood after it."""
+        self._running_since = _real_monotonic()
         try:
             yield
         finally:
-            self._now = self.time()
             self._running_since = None
 
 
-class _LoopTime:
-    """The time module as the players code sees it, with monotonic() on the loop clock."""
+class _ClockedTime:
+    """The time module as the server code sees it: monotonic() and time() read the clock."""
 
-    def __init__(self, clock: _LoopClock) -> None:
+    def __init__(self, clock: _VirtualClock) -> None:
         """
         Initialize the module stand-in.
 
-        :param clock: The loop clock monotonic() reads.
+        :param clock: The clock to read.
         """
         self.monotonic = clock.time
+        self.time = clock.wall_time
 
     def __getattr__(self, name: str) -> Any:
         """Return everything else from the time module."""
         return getattr(time, name)
 
 
-def _waits_for_clock(task: asyncio.Task[Any]) -> bool:
-    """Return whether a task waits in asyncio.sleep() for the loop clock to move."""
-    awaited: Any = task.get_coro()
-    while awaited is not None:
-        if getattr(awaited, "cr_code", None) is asyncio.sleep.__code__:
-            # sleep(0) only yields to the loop, so that task has work due now
-            return bool(awaited.cr_frame.f_locals["delay"] > 0)
-        awaited = getattr(awaited, "cr_await", None)
-    return False
+class _ErrorLog(logging.Handler):
+    """Collects the log records that tell of a failure in the server's background work."""
+
+    def __init__(self) -> None:
+        """Initialize the handler."""
+        super().__init__(level=logging.WARNING)
+        self.messages: list[str] = []
+
+    def emit(self, record: logging.LogRecord) -> None:
+        """Keep a record that tells of a failure."""
+        message = record.getMessage()
+        if record.levelno >= logging.ERROR or record.exc_info or "Exception in task" in message:
+            self.messages.append(f"{record.levelname} {record.name}: {message}")
+
+    @contextlib.contextmanager
+    def watching(self) -> Iterator[None]:
+        """Collect the records of the watched loggers in this context."""
+        for name in LOGGERS_WATCHED:
+            logging.getLogger(name).addHandler(self)
+        try:
+            yield
+        finally:
+            for name in LOGGERS_WATCHED:
+                logging.getLogger(name).removeHandler(self)
+
+
+@contextlib.contextmanager
+def _patch_module_clocks(clock: _VirtualClock) -> Iterator[None]:
+    """Let every loaded server module read the time from the clock."""
+    clocked = _ClockedTime(clock)
+    stand_ins = ((time, clocked), (time.time, clocked.time), (time.monotonic, clocked.monotonic))
+    with contextlib.ExitStack() as stack:
+        for module_name, module in list(sys.modules.items()):
+            if not module_name.startswith("music_assistant") or not isinstance(module, ModuleType):
+                continue
+            for name in ("time", "monotonic"):
+                value = getattr(module, name, None)
+                for real, stand_in in stand_ins:
+                    if value is real:
+                        stack.enter_context(patch.object(module, name, stand_in))
+        yield
+
+
+def _runnable() -> int:
+    """Return how many callbacks the loop can run now, due timers included."""
+    loop: Any = asyncio.get_running_loop()
+    now = loop.time()
+    due = sum(1 for handle in loop._scheduled if not handle.cancelled() and handle.when() <= now)
+    return len(loop._ready) + due
+
+
+def _next_timer() -> float | None:
+    """Return when the next timer of the loop falls due, if there is one."""
+    loop: Any = asyncio.get_running_loop()
+    return min(
+        (handle.when() for handle in loop._scheduled if not handle.cancelled()), default=None
+    )
 
 
 def _fake_manifest(manifest: ProviderManifest) -> ProviderManifest:
@@ -926,7 +1066,9 @@ def _merge(target: dict[str, Any], values: dict[str, Any]) -> None:
     for key, value in values.items():
         if value is None:
             target.pop(key, None)
-        elif isinstance(value, dict) and isinstance(target.get(key), dict):
+        elif isinstance(value, dict):
+            if not isinstance(target.get(key), dict):
+                target[key] = {}
             _merge(target[key], value)
         else:
             target[key] = value
