@@ -22,7 +22,9 @@ from typing import TYPE_CHECKING, Any, Literal, NamedTuple, TypeVar
 from unittest.mock import patch
 
 from aiosqlite.core import Connection as SqliteConnection
+from music_assistant_models.config_entries import ConfigEntry
 from music_assistant_models.enums import (
+    ConfigEntryType,
     EventType,
     IdentifierType,
     PlaybackState,
@@ -33,8 +35,11 @@ from music_assistant_models.enums import (
 )
 from music_assistant_models.player import DeviceInfo
 from music_assistant_models.player_control import PlayerControl
+from music_assistant_models.queue_item import QueueItem
 
 from music_assistant.constants import CONF_PLAYERS
+from music_assistant.controllers.player_queues.constants import CACHE_CATEGORY_PLAYER_QUEUE_ITEMS
+from music_assistant.controllers.streams.audio import StreamsAudio
 from music_assistant.helpers.util import load_provider_module
 from music_assistant.mass import MusicAssistant
 from music_assistant.models.player_protocol import PlayerProtocol
@@ -43,7 +48,7 @@ from tests.conftest import full_mass_context
 
 if TYPE_CHECKING:
     import pathlib
-    from collections.abc import Callable, Coroutine, Iterator
+    from collections.abc import Callable, Coroutine, Iterator, Mapping
 
     import pytest
     from music_assistant_models.config_entries import PlayerConfig, ProviderConfig
@@ -61,6 +66,12 @@ REAL_PLAYER_PROVIDERS = frozenset({"universal_player", "universal_group", "sync_
 
 # The provider instance that owns the fake power controls: one that is always loaded.
 POWER_CONTROL_PROVIDER = "builtin"
+
+# The music provider play() plays from: the server's own test provider, whose fake media items
+# need no network, loaded on first use.
+MUSIC_PROVIDER = "test"
+# The track play() plays.
+TEST_TRACK_URI = f"{MUSIC_PROVIDER}://track/0_0_0"
 
 # Loop time at the start of every scenario.
 CLOCK_START = 1000.0
@@ -99,7 +110,11 @@ DEFAULT_FEATURES = frozenset(
     }
 )
 
+# The one config entry every fake protocol has of its own, for scenarios about protocol config.
+FAKE_SETTING = "fake_setting"
+
 type Role = Literal["native", "audio"]
+type Identifiers = Mapping[IdentifierType, str | list[str] | tuple[str, ...]]
 
 # Today the role of a protocol is its player type. Kept in this one place so the scenarios
 # stay valid when the role becomes an attribute of its own.
@@ -143,6 +158,7 @@ class FakeProtocol(PlayerProtocol):
 
     Commands are applied to the reported state the way a well-behaved device reports them
     back (power, volume, playback), so the server never waits for a device that stays silent.
+    It has one config entry of its own (FAKE_SETTING), like a provider setting of the device.
     An object belongs to the server and provider instance it was created on; after a restart
     or a provider reload, Scenario.protocol() returns the current one.
     """
@@ -158,10 +174,25 @@ class FakeProtocol(PlayerProtocol):
         super().__init__(provider, protocol_id)
         # every command received, as a tuple of the command name and its arguments
         self.commands: list[tuple[Any, ...]] = []
+        # whether the protocol exists only while attached, like a browser session; today's
+        # server has no such attribute to report it on
+        self.session_only = device.session_only
         self._device = device
         self._attr_supported_features = set(DEFAULT_FEATURES)
         self._attr_device_info = DeviceInfo(model=f"Fake {provider.domain}", manufacturer="Fake")
         self._set_reported(identifiers=dict(device.identifiers), **device.state)
+
+    async def get_config_entries(self) -> list[ConfigEntry]:
+        """Return the protocol's own config entry."""
+        return [
+            *await super().get_config_entries(),
+            ConfigEntry(
+                key=FAKE_SETTING,
+                type=ConfigEntryType.STRING,
+                label="Fake setting",
+                required=False,
+            ),
+        ]
 
     async def power(self, powered: bool) -> None:
         """Handle a power command."""
@@ -241,7 +272,13 @@ class FakeProtocol(PlayerProtocol):
         for key, value in state.items():
             if key == "identifiers":
                 for identifier_type, identifier in value.items():
-                    self._attr_device_info.add_identifier(identifier_type, identifier)
+                    values = (
+                        list(identifier) if isinstance(identifier, list | tuple) else [identifier]
+                    )
+                    # a device info keeps one identifier per type today, so of several values
+                    # the server sees the last one; None (or no value) drops the identifier
+                    for one in values or [None]:
+                        self._attr_device_info.add_identifier(identifier_type, one)
                     if identifier:
                         self._device.identifiers[identifier_type] = identifier
                     else:
@@ -287,7 +324,8 @@ class FakePlayerProvider(PlayerProvider):
         name: str,
         *,
         role: Role = "native",
-        identifiers: dict[IdentifierType, str] | None = None,
+        identifiers: Identifiers | None = None,
+        session_only: bool = False,
         **state: Any,
     ) -> FakeProtocol:
         """
@@ -297,13 +335,18 @@ class FakePlayerProvider(PlayerProvider):
         :param name: The name the device reports.
         :param role: ``"native"`` for the vendor's own control plane, ``"audio"`` for an audio
             protocol of a device (AirPlay, Cast, DLNA, ...).
-        :param identifiers: The device identifiers it reports (MAC, IP, UUID, ...).
+        :param identifiers: The device identifiers it reports (MAC, IP, UUID, ...); a list of
+            values reports several identifiers of one type, for a device that stands for
+            several (sub)devices.
+        :param session_only: Whether the protocol reports that it exists only while attached,
+            like a browser session. Today's server ignores it.
         :param state: Other reported state, as taken by Scenario.report().
         """
         self._devices[protocol_id] = _Device(
             provider_id=self.instance_id,
             state={"name": name, "type": _ROLE_TYPES[role], **state},
             identifiers=dict(identifiers or {}),
+            session_only=session_only,
         )
         self._protocols.pop(protocol_id, None)
         return self._protocol_for(protocol_id)
@@ -489,7 +532,7 @@ class Scenario:
         :param state: Values by attribute name without the ``_attr_`` prefix (``available``,
             ``powered``, ``volume_level``, ``playback_state``, ``supported_features``, ...),
             plus ``identifiers`` (merged into the reported device info, a None value drops
-            one). A role changes with attach().
+            one, a list of values reports several of one type). A role changes with attach().
         """
         self._check_current(protocol)
         if "type" in state:
@@ -563,6 +606,28 @@ class Scenario:
         self._set_power(control, powered)
         await self.settle()
 
+    async def play(self, player_id: str) -> None:
+        """
+        Play a track on a player through its queue, the way a client does.
+
+        The track is one of the server's own test music provider (see MUSIC_PROVIDER), loaded
+        on first use; no audio is decoded for it. Returns once the player reports that it
+        plays, and raises ScenarioError when it does not get there.
+
+        :param player_id: ID of the player, which is the id of its queue.
+        """
+        if self.mass.get_provider(MUSIC_PROVIDER) is None:
+            await self.mass.config._create_provider_instance(MUSIC_PROVIDER, {})
+        task = await self.command(self.mass.player_queues.play_media(player_id, TEST_TRACK_URI))
+        if not task.done():
+            msg = f"{player_id} did not start playing"
+            raise ScenarioError(msg)
+        await task
+        state = self.player(player_id)
+        if state is None or state.playback_state != PlaybackState.PLAYING:
+            msg = f"{player_id} did not start playing"
+            raise ScenarioError(msg)
+
     async def command(self, command: Coroutine[Any, Any, _T]) -> asyncio.Task[_T]:
         """
         Start a command in the background and settle; await the task once it is done.
@@ -635,10 +700,9 @@ class Scenario:
             a None value deletes the key.
         """
         await self._shutdown()
-        settings_file = self._tmp_path / "data" / "settings.json"
-        data = json.loads(settings_file.read_text()) if settings_file.exists() else {}
+        data = json.loads(self._settings_file.read_text()) if self._settings_file.exists() else {}
         _merge(data, values)
-        settings_file.write_text(json.dumps(data))
+        self._settings_file.write_text(json.dumps(data))
         await self._boot()
 
     async def settle(self) -> None:
@@ -708,6 +772,23 @@ class Scenario:
             if protocol_ids & _carried_ids(state)
         ]
 
+    def player_of(self, protocol: FakeProtocol) -> str | None:
+        """
+        Return the id of the player a protocol is attached to, also when it is attached hidden.
+
+        None when the protocol is attached to no player. A protocol listed as an output is
+        carried by that player (see players_carrying()).
+
+        :param protocol: The protocol object of a device.
+        """
+        if (registered := self.mass.players.get_protocol(protocol.player_id)) is None:
+            return None
+        if registered.protocol_parent_id is not None:
+            return registered.protocol_parent_id
+        # a protocol without a parent stands as a player of its own when clients see it
+        listed = {state.player_id for state in self.mass.players.all_player_states()}
+        return registered.player_id if registered.player_id in listed else None
+
     def single_player(self, *protocols: FakeProtocol) -> VisiblePlayer:
         """
         Return the one visible player carrying the given protocols, a precondition of a scenario.
@@ -742,6 +823,33 @@ class Scenario:
             return None
         return await self.mass.config.get_player_config(player_id)
 
+    async def player_configs(self) -> list[PlayerConfig]:
+        """Return the stored player configs as the settings page lists them, by player id."""
+        configs = await self.mass.config.get_player_configs()
+        return sorted(configs, key=lambda config: config.player_id)
+
+    def protocol_config(self, protocol_id: str) -> dict[str, Any] | None:
+        """
+        Return the stored config values of a protocol object by key, None when none is stored.
+
+        :param protocol_id: ID of the protocol object.
+        """
+        if (stored := self.mass.config.get(f"{CONF_PLAYERS}/{protocol_id}")) is None:
+            return None
+        return dict(stored.get("values") or {})
+
+    async def stored_config_mentioning(self, text: str) -> list[str]:
+        """
+        Return every key and value of the stored config (settings.json) that mentions a text.
+
+        A key as its path (``players/x``), a value as ``path = value``; for asserting that
+        nothing of a player or protocol is persisted, wherever it would be stored.
+
+        :param text: The text to look for, e.g. a protocol id.
+        """
+        await self.mass.config.async_save()
+        return _mentions(json.loads(self._settings_file.read_text()), text)
+
     def queue(self, queue_id: str) -> PlayerQueue | None:
         """
         Return the queue of a player.
@@ -749,6 +857,26 @@ class Scenario:
         :param queue_id: ID of the queue, which is the id of its player.
         """
         return self.mass.player_queues.get(queue_id)
+
+    async def saved_queue(self, queue_id: str) -> list[str] | None:
+        """
+        Return the URIs of the saved items of a queue, None when none were ever saved.
+
+        The saved items are what the queue is restored from after a restart; a queue that never
+        held an item has none. A pending (debounced) save is written first.
+
+        :param queue_id: ID of the queue, which is the id of its player.
+        """
+        self.mass.cancel_timer(f"save_queue_cache_{queue_id}")
+        await self.mass.player_queues._save_queue_to_cache(queue_id)
+        items = await self.mass.cache.get(
+            queue_id,
+            provider=self.mass.player_queues.domain,
+            category=CACHE_CATEGORY_PLAYER_QUEUE_ITEMS,
+        )
+        if items is None:
+            return None
+        return [QueueItem.from_cache(dict(item)).uri for item in items]
 
     def events(self, *event_types: EventType, object_id: str | None = None) -> list[Event]:
         """
@@ -775,6 +903,11 @@ class Scenario:
     def clear_events(self) -> None:
         """Forget the events emitted so far."""
         self._events.clear()
+
+    @property
+    def _settings_file(self) -> pathlib.Path:
+        """The stored config of the server."""
+        return self._tmp_path / "data" / "settings.json"
 
     async def _boot(self) -> None:
         """Start a server on the scenario's storage, with the power controls registered."""
@@ -983,6 +1116,7 @@ class Scenario:
             stack.enter_context(patch("music_assistant.mass.load_provider_module", _load_module))
             stack.enter_context(patch.object(MusicAssistant, "unload_provider", _unload_provider))
             stack.enter_context(patch("music_assistant.helpers.util.get_mac_address", _arp_lookup))
+            stack.enter_context(patch.object(StreamsAudio, "get_audio_buffer", _no_audio_buffer))
             stack.enter_context(patch.object(SqliteConnection, "_execute", _sqlite_execute))
             stack.enter_context(patch.object(loop, "run_in_executor", _run_in_executor))
             stack.enter_context(patch.object(loop, "time", self._clock.time))
@@ -1025,7 +1159,10 @@ class _Device:
     provider_id: str
     # reported state by attribute name, as taken by Scenario.report()
     state: dict[str, Any]
-    identifiers: dict[IdentifierType, str] = field(default_factory=dict)
+    identifiers: dict[IdentifierType, str | list[str] | tuple[str, ...]] = field(
+        default_factory=dict
+    )
+    session_only: bool = False
     present: bool = False
 
 
@@ -1137,6 +1274,17 @@ def _patch_module_clocks(clock: _VirtualClock) -> Iterator[None]:
         yield
 
 
+async def _no_audio_buffer(*_args: Any, **kwargs: Any) -> None:
+    """
+    Decode nothing ahead of playback: no fake protocol fetches audio, so ffmpeg never runs.
+
+    Serving audio to a protocol is not supported in a scenario and fails loudly.
+    """
+    if kwargs.get("reason") == "streaming":
+        msg = "a scenario cannot serve audio to a protocol"
+        raise ScenarioError(msg)
+
+
 def _runnable() -> int:
     """Return how many callbacks the loop can run now, due timers included."""
     loop: Any = asyncio.get_running_loop()
@@ -1173,6 +1321,23 @@ def _fake_manifest(manifest: ProviderManifest) -> ProviderManifest:
 def _carried_ids(state: PlayerState) -> set[str]:
     """Return the ids of the protocol objects a player state stands for."""
     return {state.player_id} | {output.output_protocol_id for output in state.output_protocols}
+
+
+def _mentions(value: Any, text: str, path: str = "") -> list[str]:
+    """Return the key paths and the values below a stored value that mention a text."""
+    found: list[str] = []
+    if isinstance(value, dict):
+        for key, child in value.items():
+            child_path = f"{path}/{key}" if path else str(key)
+            if text in str(key):
+                found.append(child_path)
+            found += _mentions(child, text, child_path)
+    elif isinstance(value, list):
+        for index, child in enumerate(value):
+            found += _mentions(child, text, f"{path}[{index}]")
+    elif isinstance(value, str) and text in value:
+        found.append(f"{path} = {value!r}")
+    return found
 
 
 def _merge(target: dict[str, Any], values: dict[str, Any]) -> None:
