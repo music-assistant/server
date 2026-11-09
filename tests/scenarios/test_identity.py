@@ -2,18 +2,18 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, NamedTuple
 from unittest.mock import ANY
 
 import pytest
 from music_assistant_models.enums import EventType, IdentifierType
 
-from .harness import FAKE_SETTING, Role, Scenario, ScenarioError, VisiblePlayer
+from .harness import FAKE_SETTING, Event, Role, Scenario, ScenarioError, VisiblePlayer
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
 
-    from .harness import FakeProtocol
+    from .harness import FakePlayerProvider, FakeProtocol
 
 # a Raspberry Pi running two receivers of one protocol, one per amplifier
 PI = {IdentifierType.MAC_ADDRESS: "B8:27:EB:11:22:33", IdentifierType.IP_ADDRESS: "192.168.1.40"}
@@ -24,13 +24,23 @@ CHASSIS = {
 }
 # an ESP32 speaker, identified by its MAC under any firmware
 ESP32 = {IdentifierType.MAC_ADDRESS: "A0:B7:65:00:11:22", IdentifierType.IP_ADDRESS: "192.168.1.70"}
-# a TV with a Cast receiver and an AirPlay receiver
-TV_IP = "192.168.1.60"
-TV_CAST = {
-    IdentifierType.CAST_UUID: "6f0c1a2b-3c4d-4e5f-8a9b-0c1d2e3f4a5b",
-    IdentifierType.IP_ADDRESS: TV_IP,
-}
-TV_AIRPLAY_ID = "C0:FF:EE:00:00:01"
+
+
+class _Tv(NamedTuple):
+    """A TV with a Cast receiver and an AirPlay receiver, by what they report."""
+
+    name: str
+    ip: str
+    cast_uuid: str
+    airplay_id: str
+
+
+LIVING_TV = _Tv(
+    "Living TV", "192.168.1.60", "6f0c1a2b-3c4d-4e5f-8a9b-0c1d2e3f4a5b", "C0:FF:EE:00:00:01"
+)
+BEDROOM_TV = _Tv(
+    "Bedroom TV", "192.168.1.61", "9d8e7f6a-5b4c-4d3e-af21-0b9c8d7e6f5a", "C0:FF:EE:00:00:02"
+)
 # the Raumfeld host and the renderers of its room
 HOST_IP = "192.168.1.80"
 CONNECTOR_UDN = "uuid:raumfeld-connector-0001"
@@ -343,7 +353,15 @@ async def test_role_flip_of_a_protocol_keeps_its_player(
 ) -> None:
     """A protocol that attaches again in another role stays on its player: no second one, no new id."""
     chromecast = await scenario.add_provider("chromecast")
-    tv = chromecast.protocol("cast_tv", "TV", role=first_role, identifiers=TV_CAST)
+    tv = chromecast.protocol(
+        LIVING_TV.cast_uuid,
+        LIVING_TV.name,
+        role=first_role,
+        identifiers={
+            IdentifierType.CAST_UUID: LIVING_TV.cast_uuid,
+            IdentifierType.IP_ADDRESS: LIVING_TV.ip,
+        },
+    )
     await scenario.attach(tv)
     await scenario.advance(15)
     player_id = scenario.single_player(tv).player_id
@@ -357,20 +375,32 @@ async def test_role_flip_of_a_protocol_keeps_its_player(
     assert scenario.events(EventType.PLAYER_ADDED, EventType.PLAYER_REMOVED) == []
 
 
+class _TwoPlayers(NamedTuple):
+    """The two players the receivers of one TV ended up as, the AirPlay one older."""
+
+    airplay: FakeProtocol
+    cast: FakeProtocol
+    older_id: str
+    younger_id: str
+
+
 async def _two_players_for_one_tv(
-    scenario: Scenario,
-) -> tuple[FakeProtocol, FakeProtocol, str, str]:
+    scenario: Scenario, airplay: FakePlayerProvider, chromecast: FakePlayerProvider, tv: _Tv
+) -> _TwoPlayers:
     """
     Let the AirPlay and the Cast receiver of one TV end up as two players, the AirPlay one older.
 
     The AirPlay receiver advertises no usable address at first, so nothing ties the two together.
     """
-    airplay = await scenario.add_provider("airplay")
-    chromecast = await scenario.add_provider("chromecast")
     tv_airplay = airplay.protocol(
-        "airplay_tv", "TV", role="audio", identifiers={IdentifierType.AIRPLAY_ID: TV_AIRPLAY_ID}
+        tv.airplay_id, tv.name, role="audio", identifiers={IdentifierType.AIRPLAY_ID: tv.airplay_id}
     )
-    tv_cast = chromecast.protocol("cast_tv", "TV", role="audio", identifiers=TV_CAST)
+    tv_cast = chromecast.protocol(
+        tv.cast_uuid,
+        tv.name,
+        role="audio",
+        identifiers={IdentifierType.CAST_UUID: tv.cast_uuid, IdentifierType.IP_ADDRESS: tv.ip},
+    )
     await scenario.attach(tv_airplay)
     await scenario.advance(15)
     older_id = scenario.single_player(tv_airplay).player_id
@@ -378,14 +408,14 @@ async def _two_players_for_one_tv(
     await scenario.advance(15)
     younger_id = scenario.single_player(tv_cast).player_id
     if younger_id == older_id:
-        msg = "the receivers were matched at first sight"
+        msg = f"the receivers of {tv.name} were matched at first sight"
         raise ScenarioError(msg)
-    return tv_airplay, tv_cast, older_id, younger_id
+    return _TwoPlayers(tv_airplay, tv_cast, older_id, younger_id)
 
 
-async def _seen_again_with_its_address(scenario: Scenario, protocol: FakeProtocol) -> None:
+async def _seen_again_with_its_address(scenario: Scenario, protocol: FakeProtocol, ip: str) -> None:
     """Let the receiver report its address and be found again by its provider."""
-    await scenario.report(protocol, identifiers={IdentifierType.IP_ADDRESS: TV_IP})
+    await scenario.report(protocol, identifiers={IdentifierType.IP_ADDRESS: ip})
     await scenario.detach(protocol)
     await scenario.attach(protocol)
     await scenario.idle()
@@ -403,41 +433,43 @@ async def test_unused_duplicate_is_merged_into_the_older_player(scenario: Scenar
     The identifiers were incomplete at first sight. The younger player is unused, so it is
     merged by itself, and its id keeps resolving to the player.
     """
-    tv_airplay, tv_cast, older_id, younger_id = await _two_players_for_one_tv(scenario)
+    airplay = await scenario.add_provider("airplay")
+    chromecast = await scenario.add_provider("chromecast")
+    tv = await _two_players_for_one_tv(scenario, airplay, chromecast, LIVING_TV)
 
-    await _seen_again_with_its_address(scenario, tv_airplay)
+    await _seen_again_with_its_address(scenario, tv.airplay, LIVING_TV.ip)
 
-    assert scenario.players_carrying(tv_airplay, tv_cast) == [
+    assert scenario.players_carrying(tv.airplay, tv.cast) == [
         VisiblePlayer(
-            player_id=older_id,
-            name="TV",
+            player_id=tv.older_id,
+            name=LIVING_TV.name,
             available=True,
             powered=None,
             provider=ANY,
             outputs=(("airplay", True), ("chromecast", True)),
         )
     ]
-    resolved = scenario.player(younger_id)
+    resolved = scenario.player(tv.younger_id)
     assert resolved is not None
-    assert resolved.player_id == older_id
+    assert resolved.player_id == tv.older_id
 
 
-async def _played(scenario: Scenario, player_id: str, protocol: FakeProtocol) -> None:
-    """Play through the player's queue, which reaches its protocol, and stop; the queue is saved."""
-    await scenario.play(player_id)
-    await scenario.mass.player_queues.stop(player_id)
+async def _played(scenario: Scenario, players: _TwoPlayers) -> None:
+    """Play through the younger player's queue, which reaches its receiver, and stop; the queue is saved."""
+    await scenario.play(players.younger_id)
+    await scenario.mass.player_queues.stop(players.younger_id)
     await scenario.idle()
-    if not any(command[0] == "play_media" for command in protocol.commands):
-        msg = f"{protocol.player_id} did not play"
+    if not any(command[0] == "play_media" for command in players.cast.commands):
+        msg = f"{players.cast.player_id} did not play"
         raise ScenarioError(msg)
-    if not await scenario.saved_queue(player_id):
-        msg = f"the queue of {player_id} was not saved"
+    if not await scenario.saved_queue(players.younger_id):
+        msg = f"the queue of {players.younger_id} was not saved"
         raise ScenarioError(msg)
 
 
-async def _renamed(scenario: Scenario, player_id: str, _protocol: FakeProtocol) -> None:
-    """Give the player a custom name."""
-    await scenario.configure_player(player_id, name="Kitchen TV")
+async def _renamed(scenario: Scenario, players: _TwoPlayers) -> None:
+    """Give the younger player a custom name."""
+    await scenario.configure_player(players.younger_id, name="Kitchen TV")
 
 
 @pytest.mark.parametrize("used", [_played, _renamed], ids=["played", "renamed"])
@@ -447,13 +479,35 @@ async def _renamed(scenario: Scenario, player_id: str, _protocol: FakeProtocol) 
     reason="phase 2 (#416): only an unused duplicate is merged by itself",
 )
 async def test_used_duplicate_is_not_merged(
-    scenario: Scenario, used: Callable[[Scenario, str, FakeProtocol], Awaitable[None]]
+    scenario: Scenario, used: Callable[[Scenario, _TwoPlayers], Awaitable[None]]
 ) -> None:
-    """A younger duplicate that has played or was customised stays a player of its own."""
-    tv_airplay, tv_cast, older_id, younger_id = await _two_players_for_one_tv(scenario)
-    await used(scenario, younger_id, tv_cast)
+    """
+    A younger duplicate that has played or was customised stays a player of its own.
 
-    await _seen_again_with_its_address(scenario, tv_airplay)
+    The unused younger duplicate of a second TV in the same session is merged, as the
+    control: the scenario only holds when the merge policy tells the two apart, neither when
+    nothing merges nor when everything does.
+    """
+    airplay = await scenario.add_provider("airplay")
+    chromecast = await scenario.add_provider("chromecast")
+    living = await _two_players_for_one_tv(scenario, airplay, chromecast, LIVING_TV)
+    bedroom = await _two_players_for_one_tv(scenario, airplay, chromecast, BEDROOM_TV)
+    await used(scenario, bedroom)
+    scenario.clear_events()
 
-    assert [player.player_id for player in scenario.players_carrying(tv_airplay)] == [older_id]
-    assert [player.player_id for player in scenario.players_carrying(tv_cast)] == [younger_id]
+    await _seen_again_with_its_address(scenario, living.airplay, LIVING_TV.ip)
+    await _seen_again_with_its_address(scenario, bedroom.airplay, BEDROOM_TV.ip)
+
+    # the unused duplicate is merged: its id becomes a legacy id of the older player
+    assert [p.player_id for p in scenario.players_carrying(living.airplay, living.cast)] == [
+        living.older_id
+    ]
+    resolved = scenario.player(living.younger_id)
+    assert resolved is not None
+    assert resolved.player_id == living.older_id
+    assert scenario.events(EventType.PLAYER_REMOVED, object_id=living.younger_id) == [
+        Event(EventType.PLAYER_REMOVED, living.younger_id)
+    ]
+    # the used duplicate is kept
+    assert [p.player_id for p in scenario.players_carrying(bedroom.airplay)] == [bedroom.older_id]
+    assert [p.player_id for p in scenario.players_carrying(bedroom.cast)] == [bedroom.younger_id]
