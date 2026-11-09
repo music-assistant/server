@@ -608,12 +608,14 @@ class PlayerConfigMixin:
         name: str | None = None,
         enabled: bool = True,
         values: dict[str, ConfigValueType] | None = None,
-    ) -> None:
+    ) -> bool:
         """
         Create default/empty PlayerConfig.
 
         This is meant as helper to create default configs when a player is registered.
         Called by the player manager on player register.
+
+        :return: True if a new config was created, False if the player already had one.
         """
         # return early if a usable (mapping) config already exists; a non-mapping root is
         # corrupt and falls through to be overwritten by the default write below
@@ -630,7 +632,7 @@ class PlayerConfigMixin:
                 self.set(f"{CONF_PLAYERS}/{player_id}/default_name", name)
             # player_type is deliberately not updated here: type changes are persisted
             # by update_state
-            return
+            return False
         # config does not yet exist, create a default one.
         # the name is stored as the default name only: a stored (custom) name means
         # the user renamed the player and must keep shadowing the default name.
@@ -651,6 +653,7 @@ class PlayerConfigMixin:
             conf_key,
             default_conf_raw,
         )
+        return True
 
     def set_raw_player_config_value(self, player_id: str, key: str, value: ConfigValueType) -> None:
         """
