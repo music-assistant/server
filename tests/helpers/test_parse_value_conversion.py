@@ -7,6 +7,7 @@ import logging
 from typing import get_type_hints
 
 import pytest
+from music_assistant_models.config_entries import ConfigValueType
 
 from music_assistant.helpers.api import parse_arguments, parse_value
 
@@ -101,7 +102,7 @@ def test_rejected_optional_value_is_left_out_of_the_log(
 
 @pytest.mark.parametrize("value", [2346, 0])
 def test_int_accepted_for_optional_float(value: int) -> None:
-    """A JSON int is accepted for an optional float annotation without conversion."""
+    """A JSON int is accepted for an optional float annotation."""
     result = parse_value("start_position", value, float | None)
     assert isinstance(result, float)
     assert result == float(value)
@@ -128,3 +129,17 @@ def test_ints_accepted_for_optional_float_list() -> None:
     result = parse_value("seed_weights", [1, 2], list[float] | None)
     assert result == [1.0, 2.0]
     assert all(isinstance(item, float) for item in result)
+
+
+def test_int_stays_int_for_config_value() -> None:
+    """An int config value is not turned into a float by the float member of the union."""
+    result = parse_value("baudrate", 115200, ConfigValueType)
+    assert type(result) is int
+    assert result == 115200
+
+
+def test_int_list_stays_int_list_for_config_value() -> None:
+    """A list of int config values is not turned into a list of floats."""
+    result = parse_value("ports", [1, 2], ConfigValueType)
+    assert result == [1, 2]
+    assert all(type(item) is int for item in result)
