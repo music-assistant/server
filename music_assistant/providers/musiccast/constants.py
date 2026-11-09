@@ -10,20 +10,14 @@ from aiomusiccast.capabilities import TextSensor as MCTextSensor
 from music_assistant.constants import (
     CONF_ENTRY_HTTP_PROFILE_DEFAULT_2,
     CONF_ENTRY_ICY_METADATA_HIDDEN_DISABLED,
-    CONF_ENTRY_OUTPUT_CODEC_DEFAULT_MP3,
     create_sample_rates_config_entry,
 )
 
 # Constants for players
 # both the http profile and icy didn't matter for me testing it.
-# MusicCast firmware fills a buffer worth many seconds of audio before it starts playing
-# a lossless (WAV/FLAC) stream it does not know the length of, which on a live radio
-# stream only arrives in real time: measured on an RX-V485, audio started 10-11 s after
-# the play command with WAV or FLAC and about 1 s with MP3. Lossless stays selectable.
 PLAYER_CONFIG_ENTRIES = [
     CONF_ENTRY_HTTP_PROFILE_DEFAULT_2,
     CONF_ENTRY_ICY_METADATA_HIDDEN_DISABLED,
-    CONF_ENTRY_OUTPUT_CODEC_DEFAULT_MP3,
     create_sample_rates_config_entry(max_sample_rate=192000, max_bit_depth=24),
 ]
 # player id is {device_id}{ZONE_SPLITTER}{zone_name}
