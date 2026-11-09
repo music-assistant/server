@@ -20,11 +20,7 @@ from music_assistant.helpers.api import redact_json_secrets
 from music_assistant.helpers.json import json_dumps, json_loads
 from music_assistant.helpers.throttle_retry import RequestPriority, set_request_priority
 
-from .auth import (
-    authenticate_request,
-    impersonate_home_assistant_user,
-    is_request_from_home_assistant,
-)
+from .auth import authenticate_request, impersonate_home_assistant_user
 from .registry import TOOLS, ToolError
 from .tools import INSTRUCTIONS
 
@@ -62,28 +58,14 @@ class MCPTransport:
 
     async def handle_request(self, request: web.Request) -> web.Response:
         """
-        Handle a request to the public MCP endpoint, which needs a bearer token.
+        Handle a request to the MCP endpoint, which needs a bearer token.
 
         :param request: The aiohttp request.
         """
-        return await self._handle(request, from_home_assistant=False)
-
-    async def handle_home_assistant_request(self, request: web.Request) -> web.Response:
-        """
-        Handle a request to the private MCP endpoint that only Home Assistant knows.
-
-        Home Assistant on the host reaches it without a token; any other caller needs one.
-
-        :param request: The aiohttp request.
-        """
-        return await self._handle(request, await is_request_from_home_assistant(request))
-
-    async def _handle(self, request: web.Request, from_home_assistant: bool) -> web.Response:
-        """Handle a request to one of the MCP endpoints."""
         set_current_peer_address(request.remote)
         if request.method != "POST":
             return web.Response(status=405, headers={"Allow": "POST"})
-        if refusal := await self._refuse_request(request, from_home_assistant):
+        if refusal := await self._refuse_request(request):
             return refusal
         protocol_version = request.headers.get("MCP-Protocol-Version", DEFAULT_PROTOCOL_VERSION)
         if protocol_version not in SUPPORTED_PROTOCOL_VERSIONS:
@@ -106,15 +88,13 @@ class MCPTransport:
             return web.Response(status=202)
         return await self._handle_request_message(message, protocol_version)
 
-    async def _refuse_request(
-        self, request: web.Request, from_home_assistant: bool
-    ) -> web.Response | None:
+    async def _refuse_request(self, request: web.Request) -> web.Response | None:
         """Authenticate the request and return the response refusing it, None to accept it."""
-        if not from_home_assistant and not self._origin_allowed(request.headers.get("Origin")):
+        if not self._origin_allowed(request.headers.get("Origin")):
             return web.Response(status=403, text="Origin not allowed")
         if not self.mass.webserver.auth.has_users:
             return web.Response(status=503, text="Setup required")
-        if await authenticate_request(self.mass, request, from_home_assistant) is None:
+        if await authenticate_request(request) is None:
             return web.Response(
                 status=401,
                 text="Authentication required",
