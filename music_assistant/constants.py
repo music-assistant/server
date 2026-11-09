@@ -168,6 +168,7 @@ WILDCARD_BIND_IPS: Final[tuple[str, ...]] = ("0.0.0.0", "::")  # noqa: S104 - th
 # Port used by the built-in Sendspin server (runs next to, not behind, the webserver)
 SENDSPIN_SERVER_PORT: Final[int] = 8927
 CONF_AUTO_PLAY: Final[str] = "auto_play"
+CONF_IDLE_POWER_OFF: Final[str] = "idle_power_off"
 CONF_PLAY_MEDIA_OVERRIDES_GROUP: Final[str] = "play_media_overrides_group"
 CONF_GROUP_MEMBERS: Final[str] = "group_members"
 CONF_DYNAMIC_GROUP_MEMBERS: Final[str] = "dynamic_members"
@@ -453,6 +454,16 @@ CONF_ENTRY_AUTO_PLAY = ConfigEntry(
     key=CONF_AUTO_PLAY,
     type=ConfigEntryType.BOOLEAN,
     default_value=False,
+    depends_on=CONF_POWER_CONTROL,
+    depends_on_value_not="none",
+    category="player_controls",
+)
+
+CONF_ENTRY_IDLE_POWER_OFF = ConfigEntry(
+    key=CONF_IDLE_POWER_OFF,
+    type=ConfigEntryType.INTEGER,
+    default_value=0,
+    range=(0, 1440),
     depends_on=CONF_POWER_CONTROL,
     depends_on_value_not="none",
     category="player_controls",
@@ -998,6 +1009,7 @@ ATTR_POWER_CONTROL: Final[str] = "power_control"
 ATTR_PLAY_ACTION_IN_PROGRESS: Final[str] = "play_action_in_progress"
 ATTR_POWER_OFF_IN_PROGRESS: Final[str] = "power_off_in_progress"
 ATTR_POWER_ON_IN_PROGRESS: Final[str] = "power_on_in_progress"
+ATTR_IDLE_SINCE: Final[str] = "idle_since"
 
 # Album type detection patterns
 LIVE_INDICATORS = [
