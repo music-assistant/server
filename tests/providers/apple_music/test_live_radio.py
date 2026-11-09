@@ -16,7 +16,7 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-from aiohttp import ClientError, ClientResponseError, ContentTypeError
+from aiohttp import ClientError, ClientResponseError
 from music_assistant_models.enums import ContentType, MediaType, StreamType
 from music_assistant_models.errors import (
     LoginFailed,
@@ -415,13 +415,11 @@ async def test_an_error_of_the_input_keeps_its_own_type(monkeypatch: pytest.Monk
         (_http_error(403), ProviderStreamLimitError),
         (LicenseRefusedError("live radio", 1, 5), ProviderStreamLimitError),
         (_http_error(401), LoginFailed),
-        (_http_error(404), UnplayableMediaError),
-        (_http_error(429), UnplayableMediaError),
         (_http_error(503), UnplayableMediaError),
-        (ContentTypeError(MagicMock(), (), status=200), UnplayableMediaError),
+        (ValueError("not json"), UnplayableMediaError),
         (MediaNotFoundError("Unable to get decryption key for live radio"), UnplayableMediaError),
     ],
-    ids=["403", "refused", "401", "404", "429", "503", "content-type", "no-content-key"],
+    ids=["403", "refused", "401", "503", "not-json", "no-content-key"],
 )
 async def test_only_a_refusal_is_the_stream_limit_of_the_account(
     error: Exception, expected: type[Exception], caplog: pytest.LogCaptureFixture

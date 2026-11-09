@@ -92,6 +92,21 @@ async def test_a_non_zero_status_with_a_license_is_refused_only_when_asked(
         assert key == "aabb"
 
 
+async def test_an_empty_answer_is_an_error_naming_the_item(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An empty body reads as None, which is no license answer at all."""
+    manager, cdm = _manager(monkeypatch, {})
+    response = manager.provider.mass.http_session.post.return_value.__aenter__.return_value
+    response.json = AsyncMock(return_value=None)
+
+    with pytest.raises(MediaNotFoundError, match="license answer for song 1") as err:
+        await manager.get_content_key("https://key.example", MagicMock(), {}, "song 1")
+
+    assert not isinstance(err.value, LicenseRefusedError)
+    cdm.close.assert_called_once_with("session")
+
+
 async def test_a_license_without_a_content_key_names_the_item(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

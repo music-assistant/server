@@ -11,7 +11,7 @@ from io import BytesIO
 from typing import TYPE_CHECKING, Any, cast
 from urllib.parse import urljoin
 
-from aiohttp import ClientError, ClientResponseError, ClientTimeout, ContentTypeError
+from aiohttp import ClientError, ClientResponseError, ClientTimeout
 from music_assistant_models.enums import ContentType, MediaType, StreamType
 from music_assistant_models.errors import (
     AudioError,
@@ -375,8 +375,6 @@ class AppleMusicLiveRadioManager:
         except ClientResponseError as err:
             # the text of this error holds the url, so only its status is passed on
             self.logger.debug("Live radio license failed: HTTP %s", err.status)
-            if isinstance(err, ContentTypeError):
-                raise UnplayableMediaError("Live radio license answer was not readable") from None
             if err.status == 401:
                 raise LoginFailed(
                     "Apple Music denied the live radio license: the account needs to be "

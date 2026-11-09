@@ -169,7 +169,7 @@ class AppleMusicStreamingManager:
         :param check_status: Treat a non-zero status in the answer as a refusal, even when
             the answer also holds a license.
         :raises LicenseRefusedError: If the answer holds no license or is refused.
-        :raises MediaNotFoundError: If the license holds no content key.
+        :raises MediaNotFoundError: If the answer is not readable or holds no content key.
         :raises ClientResponseError: If the license server answers with an HTTP error.
         """
         device = Device(
@@ -199,9 +199,9 @@ class AppleMusicStreamingManager:
                 ) as response,
             ):
                 response.raise_for_status()
-                answer = cast(
-                    "dict[str, Any]", await response.json(loads=json_loads, content_type=None)
-                )
+                answer = await response.json(loads=json_loads, content_type=None)
+            if not isinstance(answer, dict):
+                raise MediaNotFoundError(f"Unable to read the license answer for {label}.")
             status = answer.get("status")
             if not answer.get("license") or (check_status and status not in (0, None)):
                 raise LicenseRefusedError(label, status, answer.get("errorCode"))
