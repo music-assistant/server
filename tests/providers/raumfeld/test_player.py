@@ -369,6 +369,7 @@ def test_room_on_the_host_gets_its_ip_identifier() -> None:
     assert player.device_info.identifiers[IdentifierType.IP_ADDRESS] == "192.168.1.41"
     assert player.device_info.model == "Raumfeld Soundbar"
     assert player.device_info.software_version == "2.21.0"
+    assert player.powered is False
 
 
 def test_a_software_version_read_later_is_shown() -> None:
@@ -380,7 +381,6 @@ def test_a_software_version_read_later_is_shown() -> None:
         player.set_software_version("2.22.0")
     assert player.device_info.software_version == "2.22.0"
     update_state.assert_called_once()
-    assert player.powered is False
 
 
 _RENDERER = "http://192.168.1.42:54730/renderer.xml"
