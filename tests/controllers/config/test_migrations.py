@@ -1870,3 +1870,30 @@ def test_migrate_raumfeld_icy_basic_noop_without_raumfeld() -> None:
     data: dict[str, Any] = {"players": {"sonos_kitchen": {"provider": "sonos"}}}
     assert _migrate_raumfeld_icy_basic(data) is False
     assert "raumfeld_icy_basic_migrated" not in data
+
+
+def test_migrate_provider_setup_data_moves_opensubsonic_legacy_auth() -> None:
+    """A legacy auth choice stored as an Open Subsonic option moves to setup_data unencrypted."""
+    data: dict[str, Any] = {
+        "providers": {
+            "opensubsonic--a": {
+                "domain": "opensubsonic",
+                "values": {"enable_legacy_auth": True, "enable_radio_stations": False},
+                "setup_data": {"baseURL": ENCRYPT_SUFFIX + "https://sonic.local"},
+            },
+            "opensubsonic--b": {
+                "domain": "opensubsonic",
+                "values": {"enable_legacy_auth": False},
+                # a choice already collected by the setup flow wins
+                "setup_data": {"enable_legacy_auth": True},
+            },
+        }
+    }
+    assert migrate_provider_setup_data(data, _fake_encrypt) is True
+    first = data["providers"]["opensubsonic--a"]
+    assert first["values"] == {"enable_radio_stations": False}
+    assert first["setup_data"]["enable_legacy_auth"] is True
+    second = data["providers"]["opensubsonic--b"]
+    assert second["values"] == {}
+    assert second["setup_data"]["enable_legacy_auth"] is True
+    assert migrate_provider_setup_data(data, _fake_encrypt) is False

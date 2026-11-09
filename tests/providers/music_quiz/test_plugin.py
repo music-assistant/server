@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import time
-from collections.abc import AsyncGenerator, Coroutine
+from collections.abc import AsyncGenerator, Coroutine, Iterator
+from contextlib import contextmanager
 from types import SimpleNamespace
 from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock, call, patch
@@ -25,7 +26,6 @@ from music_assistant_models.errors import (
     AudioError,
     InvalidDataError,
     MediaNotFoundError,
-    QueueEmpty,
 )
 from music_assistant_models.media_items import Playlist, ProviderMapping, Track
 
@@ -34,6 +34,7 @@ from music_assistant.controllers.music.recency import RecencySnapshot
 from music_assistant.controllers.webserver.helpers.auth_middleware import (
     current_user,
     impersonated_user,
+    sendspin_player_id,
 )
 from music_assistant.controllers.webserver.helpers.auth_middleware import (
     get_current_user as get_auth_current_user,
@@ -45,6 +46,7 @@ from music_assistant.models.plugin import AIEngine, PluginProvider
 from music_assistant.providers.music_quiz import (
     ASSUMED_AUDIO_START_LATENCY,
     CONF_AI_ENGINE,
+    MIN_REVEAL_SECONDS,
     MUSIC_QUIZ_GUEST_USER,
     PLAYBACK_PREFERENCE_CACHE_EXPIRATION,
     PLAYBACK_PREFERENCE_CACHE_KEY,
@@ -121,6 +123,7 @@ def _make_venue_player(  # noqa: PLR0913
     available: bool = True,
     enabled: bool = True,
     hidden: bool = False,
+    private: bool = False,
     needs_setup: bool = False,
     player_type: PlayerType = PlayerType.PLAYER,
     features: set[PlayerFeature] | None = None,
@@ -141,6 +144,7 @@ def _make_venue_player(  # noqa: PLR0913
     return SimpleNamespace(
         player_id=player_id,
         display_name=name,
+        private=private,
         playback_state=playback_state,
         is_native_player=is_native_player,
         provider=SimpleNamespace(domain=provider_domain),
@@ -158,6 +162,16 @@ def _make_venue_player(  # noqa: PLR0913
         ),
         extra_data={},
     )
+
+
+@contextmanager
+def _connected_on(client_player_id: str) -> Iterator[None]:
+    """Act as an API caller whose connection announced the given client player."""
+    token = sendspin_player_id.set(client_player_id)
+    try:
+        yield
+    finally:
+        sendspin_player_id.reset(token)
 
 
 def _make_round(round_index: int, suggestion_count: int = 4) -> MusicQuizRound:
@@ -809,6 +823,110 @@ async def test_playback_options_include_protocol_wrapped_speakers() -> None:
     assert options["venue_available"] is True
     assert options["default_venue_player_id"] == "universal_kitchen"
     assert options["venue_players"] == [{"player_id": "universal_kitchen", "name": "Kitchen"}]
+
+
+@pytest.mark.asyncio
+async def test_playback_options_offer_only_the_callers_own_hidden_web_player() -> None:
+    """Offer the caller's own hidden web player, but no other hidden player nor as default."""
+    plugin = _create_plugin(player="__auto__")
+    speaker = _make_venue_player("speaker", "Speaker")
+    own_web_player = _make_venue_player(
+        "own_web", "Browser", provider_domain="sendspin", hidden=True, private=True
+    )
+    other_web_player = _make_venue_player(
+        "other_web", "Other Browser", provider_domain="sendspin", hidden=True, private=True
+    )
+    cast("MagicMock", plugin.mass.players.all_players).return_value = [
+        speaker,
+        own_web_player,
+        other_web_player,
+    ]
+
+    other_caller_options = await plugin.playback_options()
+    with _connected_on("own_web"):
+        own_caller_options = await plugin.playback_options()
+
+    assert other_caller_options["venue_players"] == [{"player_id": "speaker", "name": "Speaker"}]
+    assert own_caller_options == {
+        "default_playback_mode": "venue",
+        "default_venue_player_id": "speaker",
+        "venue_available": True,
+        "remote_available": True,
+        "venue_players": [
+            {"player_id": "own_web", "name": "Browser"},
+            {"player_id": "speaker", "name": "Speaker"},
+        ],
+    }
+
+
+@pytest.mark.parametrize(
+    ("preference", "default_mode", "default_player_id"),
+    [
+        (None, "remote", None),
+        ({"playback_mode": "venue", "venue_player_id": "own_web"}, "venue", "own_web"),
+    ],
+)
+@pytest.mark.asyncio
+async def test_own_hidden_web_player_is_only_recommended_when_remembered(
+    preference: dict[str, str] | None,
+    default_mode: str,
+    default_player_id: str | None,
+) -> None:
+    """Keep remote as default without speakers until the own web player was picked before."""
+    plugin = _create_plugin(mode=None, player=None)
+    web_player = _make_venue_player(
+        "own_web", "Browser", provider_domain="sendspin", hidden=True, private=True
+    )
+    cast("MagicMock", plugin.mass.players.all_players).return_value = [web_player]
+    cast("AsyncMock", plugin.mass.cache.get).return_value = preference
+
+    with _connected_on("own_web"):
+        options = await plugin.playback_options()
+
+    assert options == {
+        "default_playback_mode": default_mode,
+        "default_venue_player_id": default_player_id,
+        "venue_available": True,
+        "remote_available": True,
+        "venue_players": [{"player_id": "own_web", "name": "Browser"}],
+    }
+
+
+@pytest.mark.asyncio
+async def test_chosen_hidden_web_player_stays_the_venue_player() -> None:
+    """Keep a hidden web player picked by its own client as venue player for the game."""
+    plugin = _create_plugin(player="__auto__")
+    web_player = _make_venue_player(
+        "own_web", "Browser", provider_domain="sendspin", hidden=True, private=True
+    )
+    cast("MagicMock", plugin.mass.players.all_players).return_value = [web_player]
+
+    with pytest.raises(MusicQuizNoPlaybackTargetError):
+        await plugin.create_game(
+            source_uris=["library://playlist/1"],
+            playback_mode="venue",
+            venue_player_id="own_web",
+        )
+    with _connected_on("own_web"):
+        await plugin.create_game(
+            source_uris=["library://playlist/1"],
+            playback_mode="venue",
+            venue_player_id="own_web",
+        )
+
+    game = plugin._game
+    assert game is not None
+    assert game.config.venue_player_id == "own_web"
+    selected_player = plugin._validate_playback_config(game.config)
+    assert selected_player is not None
+    assert selected_player.player_id == "own_web"
+    session = MagicMock()
+    with patch(
+        "music_assistant.providers.music_quiz.SharedPlaybackSession.create_venue",
+        new=AsyncMock(return_value=session),
+    ) as create_venue:
+        assert await plugin._get_playback_session() is session
+    create_venue.assert_awaited_once_with(plugin.mass, "own_web")
 
 
 @pytest.mark.asyncio
@@ -5747,10 +5865,11 @@ async def test_prefetch_enqueues_next_track_for_preloading() -> None:
         enqueued.append((track_uri, option))
 
     cast("MagicMock", plugin.mass.player_queues).play_media = AsyncMock(side_effect=_play_media)
+    cast("MagicMock", plugin.mass.player_queues).get_next_item = MagicMock(return_value=None)
+    cast("MagicMock", plugin.mass.player_queues).prepare_next_audio_buffer = MagicMock()
     cast("MagicMock", plugin.mass.player_queues).get = MagicMock(
         return_value=SimpleNamespace(current_item=SimpleNamespace(queue_item_id="item-current"))
     )
-    cast("MagicMock", plugin.mass.player_queues).load_next_queue_item = AsyncMock()
     plugin._enqueue_track = MusicQuizPlugin._enqueue_track.__get__(  # type: ignore[method-assign]
         plugin,
         MusicQuizPlugin,
@@ -5782,8 +5901,8 @@ async def test_prefetch_round_starts_warm_task() -> None:
     plugin = _create_plugin()
     warmed: list[str] = []
 
-    async def _warm(task: asyncio.Task[MusicQuizRound]) -> None:
-        game_round = await task
+    async def _warm(track_known: asyncio.Future[MusicQuizRound]) -> None:
+        game_round = await track_known
         assert game_round.track_uri is not None
         warmed.append(game_round.track_uri)
 
@@ -5795,6 +5914,70 @@ async def test_prefetch_round_starts_warm_task() -> None:
         await plugin._warm_next_track_task
 
     assert warmed == ["library://track/1"]
+
+
+@pytest.mark.asyncio
+async def test_warm_next_track_starts_before_the_lyrics_prefetch_completes() -> None:
+    """The next track is warmed as soon as it is chosen, not once its lyrics have arrived."""
+    plugin = _create_plugin()
+    next_lyrics_started = asyncio.Event()
+    continue_next_lyrics = asyncio.Event()
+
+    async def _fetch_lyrics(track_uri: str) -> None:
+        if track_uri == "library://track/0":
+            return
+        next_lyrics_started.set()
+        await continue_next_lyrics.wait()
+
+    plugin._fetch_lyrics = AsyncMock(side_effect=_fetch_lyrics)  # type: ignore[method-assign]
+    warmed: list[str | None] = []
+
+    async def _warm(track_known: asyncio.Future[MusicQuizRound]) -> None:
+        warmed.append((await track_known).track_uri)
+
+    plugin._warm_next_track = _warm  # type: ignore[method-assign]
+
+    await _create_started_game(plugin, player_names=(), round_count=2)
+    await next_lyrics_started.wait()
+    warm_task = plugin._warm_next_track_task
+    assert warm_task is not None
+    await warm_task
+    assert warmed == ["library://track/1"]
+    next_round_task = plugin._next_round_task
+    assert next_round_task is not None
+    assert not next_round_task.done()
+
+    continue_next_lyrics.set()
+    await next_round_task
+
+
+@pytest.mark.asyncio
+async def test_warm_next_track_gives_up_when_the_round_cannot_be_prepared() -> None:
+    """A failed round preparation ends the warm-up without queueing anything."""
+
+    async def _prepare_round(round_index: int, _previous: list[MusicQuizRound]) -> MusicQuizRound:
+        if round_index == 1:
+            raise MediaNotFoundError("no tracks left")
+        return _make_round(round_index)
+
+    with patch(
+        "music_assistant.providers.music_quiz.quiz_types.guess_the_song."
+        "GuessTheSongQuizType.prepare_round",
+        new=AsyncMock(side_effect=_prepare_round),
+    ):
+        plugin = _create_plugin()
+        enqueue_track = AsyncMock()
+        plugin._enqueue_track = enqueue_track  # type: ignore[method-assign]
+        await _create_started_game(plugin, player_names=(), round_count=2)
+        warm_task = plugin._warm_next_track_task
+        next_round_task = plugin._next_round_task
+        assert warm_task is not None
+        assert next_round_task is not None
+        await warm_task
+        with pytest.raises(MediaNotFoundError):
+            await next_round_task
+
+    enqueue_track.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -5823,6 +6006,74 @@ async def test_advance_uses_queued_item_when_available() -> None:
     assert await plugin._advance_to_queued_track("library://track/warm") is True
     play_index.assert_awaited_once_with("venue_player", "item-warm")
     cast("AsyncMock", session.restore_guest_listeners).assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_advance_uses_a_queue_item_resolved_to_the_library_track() -> None:
+    """A round track that is in the library is queued as its library item, which still starts."""
+    plugin = _create_plugin()
+    session = _mock_playback_session("venue_player", "venue_player")
+    plugin._playback_session = session
+    plugin._get_playback_session = AsyncMock(return_value=session)  # type: ignore[method-assign]
+    get_player = cast("MagicMock", plugin.mass.players.get_player)
+    get_player.side_effect = None
+    get_player.return_value = SimpleNamespace(state=SimpleNamespace(available=True), extra_data={})
+
+    queued_item = MagicMock()
+    queued_item.queue_item_id = "item-library"
+    queued_item.available = True
+    queued_item.uri = "library://track/5"
+    queued_item.media_item = _library_track_mapped_to("spotify--test", "abc")
+    cast("MagicMock", plugin.mass.player_queues).items = MagicMock(return_value=[queued_item])
+    play_index = AsyncMock()
+    cast("MagicMock", plugin.mass.player_queues).play_index = play_index
+
+    plugin._advance_to_queued_track = (  # type: ignore[method-assign]
+        MusicQuizPlugin._advance_to_queued_track.__get__(plugin, MusicQuizPlugin)
+    )
+
+    assert await plugin._advance_to_queued_track("spotify--test://track/abc") is True
+    play_index.assert_awaited_once_with("venue_player", "item-library")
+
+
+@pytest.mark.asyncio
+async def test_advance_falls_back_when_neither_uri_nor_mapping_matches() -> None:
+    """A library item that maps to another track is not mistaken for the round's track."""
+    plugin = _create_plugin()
+    session = _mock_playback_session("venue_player", "venue_player")
+    plugin._playback_session = session
+
+    queued_item = MagicMock()
+    queued_item.queue_item_id = "item-other"
+    queued_item.available = True
+    queued_item.uri = "library://track/5"
+    queued_item.media_item = _library_track_mapped_to("spotify--test", "other")
+    cast("MagicMock", plugin.mass.player_queues).items = MagicMock(return_value=[queued_item])
+    play_index = AsyncMock()
+    cast("MagicMock", plugin.mass.player_queues).play_index = play_index
+
+    plugin._advance_to_queued_track = (  # type: ignore[method-assign]
+        MusicQuizPlugin._advance_to_queued_track.__get__(plugin, MusicQuizPlugin)
+    )
+
+    assert await plugin._advance_to_queued_track("spotify--test://track/abc") is False
+    play_index.assert_not_awaited()
+
+
+def _library_track_mapped_to(provider_instance: str, item_id: str) -> Track:
+    """Return a library track whose only provider mapping points at the given provider item."""
+    return Track(
+        item_id="5",
+        provider="library",
+        name="Library Track",
+        provider_mappings={
+            ProviderMapping(
+                item_id=item_id,
+                provider_domain=provider_instance.split("--", 1)[0],
+                provider_instance=provider_instance,
+            )
+        },
+    )
 
 
 @pytest.mark.asyncio
@@ -5897,18 +6148,28 @@ async def test_advancing_from_reveal_cancels_the_track_end_stop() -> None:
 
 
 @pytest.mark.asyncio
-async def test_warm_next_track_triggers_stream_resolution() -> None:
-    """Warming the next track resolves its stream details instead of waiting on the player event."""
+async def test_warm_next_track_prepares_the_next_audio_buffer() -> None:
+    """Warming the next track buffers its audio behind the playing item, before it is requested."""
     plugin = _create_plugin()
     session = _mock_playback_session("venue_player", "venue_player")
     plugin._playback_session = session
+    game = _fake_game()
+    game.config.answer_duration = 20
+    game.rounds.append(_make_round(0))
+    game.current_round_index = 0
+    plugin._game = game
 
     cast("MagicMock", plugin.mass.player_queues).play_media = AsyncMock()
     current_item = SimpleNamespace(queue_item_id="item-current")
     queue = SimpleNamespace(current_item=current_item)
     cast("MagicMock", plugin.mass.player_queues).get = MagicMock(return_value=queue)
-    load_next_queue_item = AsyncMock()
-    cast("MagicMock", plugin.mass.player_queues).load_next_queue_item = load_next_queue_item
+    cast("MagicMock", plugin.mass.player_queues).get_next_item = MagicMock(
+        return_value=SimpleNamespace(queue_item_id="item-warm", uri="library://track/warm")
+    )
+    prepare_next_audio_buffer = MagicMock(return_value=None)
+    cast(
+        "MagicMock", plugin.mass.player_queues
+    ).prepare_next_audio_buffer = prepare_next_audio_buffer
 
     prepared = MusicQuizRound(
         round_index=1,
@@ -5922,23 +6183,28 @@ async def test_warm_next_track_triggers_stream_resolution() -> None:
 
     await plugin._warm_next_track(task)
 
-    load_next_queue_item.assert_awaited_once_with("venue_player", "item-current")
+    # the preparation may wait for a source slot until the next round can start at the
+    # earliest: the answer window plus the shortest reveal
+    prepare_next_audio_buffer.assert_called_once_with(
+        "venue_player", "item-current", capacity_wait_timeout=20.0 + MIN_REVEAL_SECONDS
+    )
 
 
 @pytest.mark.asyncio
-async def test_warm_next_track_swallows_queue_empty() -> None:
-    """A lost preload race must not raise out of the background warm-up task."""
+async def test_warm_next_track_prepares_nothing_without_a_playing_item() -> None:
+    """A queue without a current item has nothing to prepare the next track behind."""
     plugin = _create_plugin()
     session = _mock_playback_session("venue_player", "venue_player")
     plugin._playback_session = session
+    plugin._game = _fake_game()
 
     cast("MagicMock", plugin.mass.player_queues).play_media = AsyncMock()
-    current_item = SimpleNamespace(queue_item_id="item-current")
-    queue = SimpleNamespace(current_item=current_item)
+    queue = SimpleNamespace(current_item=None)
     cast("MagicMock", plugin.mass.player_queues).get = MagicMock(return_value=queue)
-    cast("MagicMock", plugin.mass.player_queues).load_next_queue_item = AsyncMock(
-        side_effect=QueueEmpty("nothing queued")
-    )
+    prepare_next_audio_buffer = MagicMock(return_value=None)
+    cast(
+        "MagicMock", plugin.mass.player_queues
+    ).prepare_next_audio_buffer = prepare_next_audio_buffer
 
     prepared = MusicQuizRound(
         round_index=1,
@@ -5951,3 +6217,119 @@ async def test_warm_next_track_swallows_queue_empty() -> None:
     )
 
     await plugin._warm_next_track(task)
+
+    prepare_next_audio_buffer.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_warm_next_track_prepares_a_queue_item_resolved_to_the_library_track() -> None:
+    """A round track that is in the library is queued as its library item and still warmed."""
+    plugin = _create_plugin()
+    session = _mock_playback_session("venue_player", "venue_player")
+    plugin._playback_session = session
+    game = _fake_game()
+    game.rounds.append(_make_round(0))
+    game.current_round_index = 0
+    plugin._game = game
+
+    cast("MagicMock", plugin.mass.player_queues).play_media = AsyncMock()
+    queue = SimpleNamespace(current_item=SimpleNamespace(queue_item_id="item-current"))
+    cast("MagicMock", plugin.mass.player_queues).get = MagicMock(return_value=queue)
+    cast("MagicMock", plugin.mass.player_queues).get_next_item = MagicMock(
+        return_value=SimpleNamespace(
+            queue_item_id="item-library",
+            uri="library://track/5",
+            media_item=_library_track_mapped_to("spotify--test", "abc"),
+        )
+    )
+    prepare_next_audio_buffer = MagicMock(return_value=None)
+    cast(
+        "MagicMock", plugin.mass.player_queues
+    ).prepare_next_audio_buffer = prepare_next_audio_buffer
+
+    prepared = MusicQuizRound(
+        round_index=1,
+        track_uri="spotify--test://track/abc",
+        answer_label="Warm Track",
+        answer_state=MultipleChoiceRoundState(suggestions=[]),
+    )
+    task: asyncio.Task[MusicQuizRound] = asyncio.get_running_loop().create_task(
+        _immediate(prepared)
+    )
+
+    await plugin._warm_next_track(task)
+
+    prepare_next_audio_buffer.assert_called_once()
+    assert prepare_next_audio_buffer.call_args.args == ("venue_player", "item-current")
+
+
+@pytest.mark.asyncio
+async def test_warm_next_track_skips_preparation_when_another_item_is_next() -> None:
+    """Items behind the playing one (autoplay, an earlier game) are not prepared by mistake."""
+    plugin = _create_plugin()
+    session = _mock_playback_session("venue_player", "venue_player")
+    plugin._playback_session = session
+    game = _fake_game()
+    game.rounds.append(_make_round(0))
+    game.current_round_index = 0
+    plugin._game = game
+
+    cast("MagicMock", plugin.mass.player_queues).play_media = AsyncMock()
+    queue = SimpleNamespace(current_item=SimpleNamespace(queue_item_id="item-current"))
+    cast("MagicMock", plugin.mass.player_queues).get = MagicMock(return_value=queue)
+    cast("MagicMock", plugin.mass.player_queues).get_next_item = MagicMock(
+        return_value=SimpleNamespace(
+            queue_item_id="item-autoplay", uri="library://track/other", media_item=None
+        )
+    )
+    prepare_next_audio_buffer = MagicMock(return_value=None)
+    cast(
+        "MagicMock", plugin.mass.player_queues
+    ).prepare_next_audio_buffer = prepare_next_audio_buffer
+
+    prepared = MusicQuizRound(
+        round_index=1,
+        track_uri="library://track/warm",
+        answer_label="Warm Track",
+        answer_state=MultipleChoiceRoundState(suggestions=[]),
+    )
+    task: asyncio.Task[MusicQuizRound] = asyncio.get_running_loop().create_task(
+        _immediate(prepared)
+    )
+
+    await plugin._warm_next_track(task)
+
+    prepare_next_audio_buffer.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_cancelling_the_prefetch_before_its_track_is_known_cancels_the_warm_up() -> None:
+    """A prefetch cancelled while the quiz type still picks the track takes the warm-up with it."""
+    prepare_started = asyncio.Event()
+    continue_prepare = asyncio.Event()
+
+    async def _prepare_round(round_index: int, _previous: list[MusicQuizRound]) -> MusicQuizRound:
+        if round_index == 1:
+            prepare_started.set()
+            await continue_prepare.wait()
+        return _make_round(round_index)
+
+    with patch(
+        "music_assistant.providers.music_quiz.quiz_types.guess_the_song."
+        "GuessTheSongQuizType.prepare_round",
+        new=AsyncMock(side_effect=_prepare_round),
+    ):
+        plugin = _create_plugin()
+        await _create_started_game(plugin, player_names=(), round_count=2)
+        await prepare_started.wait()
+        warm_task = plugin._warm_next_track_task
+        next_round_task = plugin._next_round_task
+        assert warm_task is not None
+        assert next_round_task is not None
+
+        plugin._cancel_next_round_task()
+        continue_prepare.set()
+        await asyncio.gather(warm_task, next_round_task, return_exceptions=True)
+
+    assert warm_task.cancelled()
+    assert next_round_task.cancelled()

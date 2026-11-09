@@ -43,6 +43,7 @@ from music_assistant.constants import (
     CONF_ENTRY_FLOW_MODE,
     CONF_ENTRY_FLOW_MODE_SAMPLE_RATE,
     CONF_ENTRY_HTTP_PROFILE,
+    CONF_ENTRY_IDLE_POWER_OFF,
     CONF_ENTRY_MAX_VOLUME,
     CONF_ENTRY_MIN_VOLUME,
     CONF_ENTRY_OUTPUT_CHANNELS,
@@ -965,6 +966,7 @@ class PlayerConfigMixin:
             # toggle (Fake control) and auto-starting playback there causes
             # surprise playback when the user just wanted to pin the group.
             CONF_ENTRY_AUTO_PLAY,
+            CONF_ENTRY_IDLE_POWER_OFF,
         ]
 
     async def _create_output_protocol_config_entries(  # noqa: PLR0915

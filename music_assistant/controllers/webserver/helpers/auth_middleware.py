@@ -34,6 +34,9 @@ if TYPE_CHECKING:
 
 # Context key for storing authenticated user in request
 USER_CONTEXT_KEY = "authenticated_user"
+# API websocket query parameter and Sendspin auth message field with which a browser
+# identifies itself over Home Assistant Ingress
+INGRESS_CLIENT_KEY: Final = "ingress_client_key"
 
 _GUEST_SCOPES: Final[frozenset[Scope]] = frozenset(
     {
