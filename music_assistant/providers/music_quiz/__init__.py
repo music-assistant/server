@@ -68,7 +68,12 @@ from music_assistant_models.config_entries import (
     ConfigEntry,
     ProviderConfig,
 )
-from music_assistant_models.enums import ConfigEntryType, ProviderFeature, QueueOption
+from music_assistant_models.enums import (
+    ConfigEntryType,
+    PlaybackState,
+    ProviderFeature,
+    QueueOption,
+)
 from music_assistant_models.errors import (
     AudioError,
     InvalidDataError,
@@ -80,6 +85,7 @@ from music_assistant_models.errors import (
 from music_assistant_models.media_items import Track
 
 from music_assistant.constants import ATTR_ANNOUNCEMENT_IN_PROGRESS, CONF_ENABLED
+from music_assistant.controllers.streams.constants import STREAM_SLOT_WAIT_TIMEOUT
 from music_assistant.controllers.webserver.helpers.auth_middleware import (
     current_user,
     impersonated_user,
@@ -249,6 +255,8 @@ class MusicQuizPlugin(PluginProvider):
         self._playback_lock = asyncio.Lock()
         self._next_round_task: asyncio.Task[MusicQuizRound] | None = None
         self._warm_next_track_task: asyncio.Task[None] | None = None
+        # queue item of the first round's track, staged on the playback target in the lobby
+        self._staged_item_id: str | None = None
         self._reveal_playback_task: asyncio.Task[None] | None = None
         self._unregister_handles: list[Callable[[], None]] = []
         # public state is broadcast from sync code paths that cannot await the join URL,
@@ -479,6 +487,7 @@ class MusicQuizPlugin(PluginProvider):
                 self._answer_type = answer_strategy
                 self._next_round_task = initial_round_task
                 self._signal_game_updated()
+            self._warm_first_round(initial_round_task.result())
             await self._store_playback_preference(
                 game_config.playback_mode,
                 remembered_venue_player_id,
@@ -552,6 +561,7 @@ class MusicQuizPlugin(PluginProvider):
                 self._schedule_presence_expiry(now)
                 if auto_start and _has_active_players(game, now):
                     self._schedule_replay_auto_start(game, now)
+                self._warm_first_round(initial_round_task.result())
             finally:
                 # a failed preparation keeps the previous game, so clear and
                 # broadcast here too or clients wait on the preparing state forever
@@ -979,7 +989,7 @@ class MusicQuizPlugin(PluginProvider):
             if track_uri in rejected_uris:
                 quiz_type.reject_track(track_uri)
                 continue
-            if await self._advance_to_queued_track(track_uri):
+            if await self._advance_to_queued_track(track_uri, round_index):
                 return next_round
             try:
                 # This public queue operation is both the production resolution boundary and
@@ -1290,6 +1300,15 @@ class MusicQuizPlugin(PluginProvider):
                     self._warm_next_track(track_known)
                 )
 
+    def _warm_first_round(self, first_round: MusicQuizRound) -> None:
+        """Queue and buffer the first round's track in the background while the lobby is open."""
+        _, quiz_type, _ = self._require_game_strategies()
+        if not quiz_type.plays_track_before_answering or first_round.track_uri is None:
+            return
+        self._warm_next_track_task = self.mass.create_task(
+            self._warm_first_track(first_round.track_uri)
+        )
+
     async def _get_prepared_round(self, round_index: int) -> MusicQuizRound:
         """Return the (prefetched) round with the given index."""
         game, quiz_type, _ = self._require_game_strategies()
@@ -1317,6 +1336,7 @@ class MusicQuizPlugin(PluginProvider):
             self._warm_next_track_task.cancel()
             self._warm_next_track_task.add_done_callback(_consume_task_exception)
             self._warm_next_track_task = None
+        self._staged_item_id = None
         if self._next_round_task is not None:
             self._next_round_task.cancel()
             # retrieve the result/exception once the task settles so a prefetch that
@@ -1479,6 +1499,49 @@ class MusicQuizPlugin(PluginProvider):
                 session.queue_id, track_uri, option=QueueOption.ADD
             )
 
+    async def _warm_first_track(self, track_uri: str) -> None:
+        """
+        Queue the first round's track on an idle playback target and buffer its audio.
+
+        :param track_uri: URI of the first round's track.
+        """
+        with _system_auth_context():
+            session = await self._get_playback_session()
+            if session is None:
+                return
+            player = self.mass.players.get_player(session.player_id)
+            # a target that is playing or paused (e.g. a party while the lobby is open) is left
+            # alone, its first round then starts without prepared audio
+            if (
+                player is None
+                or not player.state.available
+                or player.state.playback_state != PlaybackState.IDLE
+            ):
+                return
+            try:
+                # the first round replaces the queue anyway, staging takes it over a bit earlier
+                self.mass.player_queues.clear(session.queue_id, skip_stop=True)
+                await self.mass.player_queues.play_media(
+                    session.queue_id, track_uri, option=QueueOption.ADD
+                )
+                staged_item = next(iter(self.mass.player_queues.items(session.queue_id)), None)
+                if staged_item is None or not await self._is_round_track(staged_item, track_uri):
+                    return
+                self._staged_item_id = staged_item.queue_item_id
+                # A cold start decodes the track at full speed while the player has no lead
+                # yet; buffering it in the lobby lets the first round start from audio already
+                # in hand. Best effort: audio that is missing or lapsed in a long lobby is
+                # resolved on demand when the round starts.
+                await self.mass.streams.audio.get_audio_buffer(
+                    staged_item,
+                    reason="prepare_next",
+                    capacity_wait_timeout=STREAM_SLOT_WAIT_TIMEOUT,
+                    allow_provider_match=False,
+                    stop_paused_queues=False,
+                )
+            except MusicAssistantError as err:
+                self.logger.debug("Could not prepare the first Music Quiz track: %s", err)
+
     async def _warm_next_track(self, track_known: asyncio.Future[MusicQuizRound]) -> None:
         """
         Queue the prefetched round's track and buffer its audio before it plays.
@@ -1530,15 +1593,26 @@ class MusicQuizPlugin(PluginProvider):
                 ),
             )
 
-    async def _advance_to_queued_track(self, track_uri: str) -> bool:
-        """Start an already-queued track; False when the caller must fall back."""
+    async def _advance_to_queued_track(self, track_uri: str, round_index: int) -> bool:
+        """
+        Start the round's track from the queue when the game already queued it.
+
+        :param track_uri: URI of the round's track.
+        :param round_index: Index of the round being started.
+        :return: False when the caller must start the track itself.
+        """
         with _system_auth_context():
             session = self._playback_session
             if session is None:
                 return False
+            items = self.mass.player_queues.items(session.queue_id)
+            if round_index == 0:
+                # before the first round the queue holds whatever the target played last, of
+                # which only the item staged in the lobby belongs to the game
+                items = [item for item in items if item.queue_item_id == self._staged_item_id]
             # matched per item: the queue's next-item helpers silently skip unplayable items
             queued_item: QueueItem | None = None
-            for item in self.mass.player_queues.items(session.queue_id):
+            for item in items:
                 if item.available and await self._is_round_track(item, track_uri):
                     queued_item = item
                     break
