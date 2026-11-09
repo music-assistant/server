@@ -714,6 +714,23 @@ class Scenario:
             if protocol_ids & _carried_ids(state)
         ]
 
+    def player_of(self, protocol: FakeProtocol) -> str | None:
+        """
+        Return the id of the player a protocol is attached to, also when it is attached hidden.
+
+        None when the protocol is attached to no player. A protocol listed as an output is
+        carried by that player (see players_carrying()).
+
+        :param protocol: The protocol object of a device.
+        """
+        if (registered := self.mass.players.get_protocol(protocol.player_id)) is None:
+            return None
+        if registered.protocol_parent_id is not None:
+            return registered.protocol_parent_id
+        # a protocol without a parent stands as a player of its own when clients see it
+        listed = {state.player_id for state in self.mass.players.all_player_states()}
+        return registered.player_id if registered.player_id in listed else None
+
     def single_player(self, *protocols: FakeProtocol) -> VisiblePlayer:
         """
         Return the one visible player carrying the given protocols, a precondition of a scenario.

@@ -222,6 +222,8 @@ async def test_room_of_several_renderers_is_one_player(scenario: Scenario) -> No
             outputs=(("dlna", True), ("raumfeld", True)),
         )
     ]
+    room_id = scenario.player_of(living)
+    assert {scenario.player_of(renderer) for renderer in (connector, one_m, one_s)} == {room_id}
 
 
 @pytest.mark.xfail(

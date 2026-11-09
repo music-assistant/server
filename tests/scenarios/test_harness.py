@@ -390,6 +390,25 @@ async def test_restart_leaves_nothing_of_the_old_server(scenario: Scenario) -> N
     await scenario.attach(scenario.protocol("RINCON_KITCHEN"))
 
 
+async def test_player_of_follows_the_attachment(scenario: Scenario) -> None:
+    """A protocol is attached to its own player, to the player it links to, or to none."""
+    sonos = await scenario.add_provider("sonos")
+    airplay = await scenario.add_provider("airplay")
+    speaker = sonos.protocol("RINCON_KITCHEN", "Kitchen", identifiers=KITCHEN)
+    kitchen_airplay = airplay.protocol("airplay_kitchen", "K", role="audio", identifiers=KITCHEN)
+    den_airplay = airplay.protocol("airplay_den", "Den", role="audio")
+    await scenario.attach(speaker)
+    await scenario.attach(kitchen_airplay)
+    await scenario.attach(den_airplay)
+
+    assert scenario.player_of(speaker) == "RINCON_KITCHEN"
+    assert scenario.player_of(kitchen_airplay) == "RINCON_KITCHEN"
+    assert scenario.player_of(den_airplay) is None
+    await scenario.detach(speaker)
+    assert scenario.player_of(speaker) is None
+    await scenario.advance(15)
+
+
 async def test_player_configs_lists_the_settings_page(scenario: Scenario) -> None:
     """player_configs() lists stored player configs, disabled ones included, protocol configs not."""
     sonos = await scenario.add_provider("sonos")

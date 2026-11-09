@@ -61,6 +61,7 @@ tests of the harness itself.
 | `visible_players()` | the `players/all` listing as `VisiblePlayer` records |
 | `players_carrying(*protocols)` | the visible players carrying these protocols |
 | `single_player(*protocols)` | the one visible player carrying them, a precondition (raises `ScenarioError`) |
+| `player_of(protocol)` | the id of the player a protocol is attached to, also hidden; None when none |
 | `player(id)`, `queue(id)`, `await player_config(id)` | a player state, a queue, a stored player config |
 | `await player_configs()` | the stored player configs as the settings page lists them, disabled ones included |
 | `events(*types)`, `clear_events()` | the emitted events in order, from the boot on; repeats of an update event collapsed |
