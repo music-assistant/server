@@ -18,6 +18,7 @@ from music_assistant_models.enums import (
     PlayerFeature,
     PlayerType,
 )
+from music_assistant_models.errors import PlayerCommandFailed
 from music_assistant_models.media_items import AudioSource
 from music_assistant_models.media_items.provider_mapping import ProviderMapping
 from music_assistant_models.player import PlayerMedia
@@ -4007,6 +4008,139 @@ class TestProtocolSwitchingDuringPlayback:
         ]
         assert leader.active_output_protocol == "bridge_leader"
         controller.cmd_resume.assert_not_awaited()
+
+    def _build_protocol_group(
+        self, mock_mass: MagicMock
+    ) -> tuple[PlayerController, dict[str, MockPlayer]]:
+        """
+        Build a leader playing over AirPlay with one AirPlay member and an idle Sendspin player.
+
+        The leader and the member each have an AirPlay output and a Sendspin bridge.
+
+        :param mock_mass: The mocked MusicAssistant instance.
+        :return: The controller and its players by ID.
+        """
+        controller = PlayerController(mock_mass)
+        sonos_provider = MockProvider("sonos", instance_id="sonos", mass=mock_mass)
+        wiim_provider = MockProvider("wiim", instance_id="wiim", mass=mock_mass)
+        airplay_provider = MockProvider("airplay", instance_id="airplay", mass=mock_mass)
+        sendspin_provider = MockProvider("sendspin", instance_id="sendspin", mass=mock_mass)
+
+        leader = MockPlayer(sonos_provider, "leader", "Living Room")
+        leader._attr_supported_features.add(PlayerFeature.SET_MEMBERS)
+        member = MockPlayer(wiim_provider, "member", "Kitchen")
+        joiner = MockPlayer(sendspin_provider, "joiner", "Bedroom")
+        joiner._attr_supported_features.add(PlayerFeature.PLAY_MEDIA)
+        players = [leader, member, joiner]
+        for parent in (leader, member):
+            protocol_players = (
+                MockPlayer(
+                    airplay_provider,
+                    f"{parent.player_id}_airplay",
+                    parent.display_name,
+                    player_type=PlayerType.PROTOCOL,
+                ),
+                MockPlayer(
+                    sendspin_provider,
+                    f"{parent.player_id}_bridge",
+                    parent.display_name,
+                    player_type=PlayerType.PROTOCOL,
+                ),
+            )
+            for protocol_player in protocol_players:
+                protocol_player._attr_supported_features.add(PlayerFeature.SET_MEMBERS)
+                protocol_player.set_protocol_parent_id(parent.player_id)
+            parent.set_linked_output_protocols(
+                [
+                    LinkedOutputProtocol(
+                        output_protocol_id=f"{parent.player_id}_airplay",
+                        protocol_domain="airplay",
+                        priority=10,
+                    ),
+                    LinkedOutputProtocol(
+                        output_protocol_id=f"{parent.player_id}_bridge",
+                        protocol_domain="sendspin",
+                        priority=40,
+                    ),
+                ]
+            )
+            players.extend(protocol_players)
+
+        mock_mass.players = controller
+        controller._players = {player.player_id: player for player in players}
+        leader_airplay = controller._players["leader_airplay"]
+        leader_airplay._attr_group_members = ["leader_airplay", "member_airplay"]
+        leader_airplay._attr_playback_state = PlaybackState.PLAYING
+        for player in players:
+            player.update_state(signal_event=False)
+        leader.set_active_output_protocol("leader_airplay")
+        member.set_active_output_protocol("member_airplay")
+        return controller, {player.player_id: player for player in players}
+
+    async def test_resume_after_switch_plays_through_the_new_protocol(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """
+        The resume after a protocol switch plays through the protocol that took over.
+
+        The members of the stopped protocol group are re-added on the new protocol after the
+        resume, so the stopped group must no longer count as grouped when the resume picks
+        the output.
+        """
+        controller, players = self._build_protocol_group(mock_mass)
+        leader = players["leader"]
+
+        selected_on_resume: list[str] = []
+
+        async def record_resume(player_id: str) -> None:
+            for player in players.values():
+                player.update_state(signal_event=False)
+            selected_on_resume.append(
+                controller._select_best_output_protocol(controller._players[player_id])[0].player_id
+            )
+
+        controller._handle_cmd_stop = AsyncMock()  # type: ignore[method-assign]
+        controller.cmd_resume = AsyncMock(side_effect=record_resume)  # type: ignore[method-assign]
+        controller._handle_set_members = AsyncMock()  # type: ignore[method-assign]
+
+        await controller._forward_protocol_set_members(
+            parent_player=leader,
+            parent_protocol_player=controller._players["leader_bridge"],
+            protocol_members_to_add=["joiner"],
+            protocol_members_to_remove=[],
+        )
+
+        assert selected_on_resume == ["leader_bridge"]
+
+    async def test_switch_that_would_strand_a_member_is_refused(self, mock_mass: MagicMock) -> None:
+        """
+        A player whose protocol a grouped member cannot follow is not added to the group.
+
+        The re-added member would move the group back onto a protocol the new player cannot
+        join, which hands the output back and forth without end.
+        """
+        controller, players = self._build_protocol_group(mock_mass)
+        players["member_bridge"]._attr_available = False
+        for player in players.values():
+            player.update_state(signal_event=False)
+        controller._handle_cmd_stop = AsyncMock()  # type: ignore[method-assign]
+        controller.cmd_resume = AsyncMock()  # type: ignore[method-assign]
+        controller._handle_set_members = AsyncMock()  # type: ignore[method-assign]
+
+        with pytest.raises(PlayerCommandFailed) as err:
+            await controller._forward_protocol_set_members(
+                parent_player=players["leader"],
+                parent_protocol_player=players["leader_bridge"],
+                protocol_members_to_add=["joiner"],
+                protocol_members_to_remove=[],
+            )
+
+        assert (
+            err.value.translation_key,
+            players["leader"].active_output_protocol,
+            players["leader_bridge"].group_members,
+            controller._handle_cmd_stop.await_count,
+        ) == ("member_cannot_follow_protocol", "leader_airplay", [], 0)
 
     async def test_joining_member_protocol_is_active_before_its_stream_starts(
         self, mock_mass: MagicMock

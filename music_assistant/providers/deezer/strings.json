@@ -2,7 +2,7 @@
   "config_entries": {
     "arl_token": {
       "label": "ARL token",
-      "description": "Your Deezer ARL cookie token. When changing these settings later, leave it empty to keep the token you already saved. See https://www.dumpmedia.com/deezplus/deezer-arl.html"
+      "description": "Your Deezer ARL cookie token. When changing these settings later, leave it empty to keep the token you already saved."
     },
     "family_profile": {
       "label": "Deezer profile",

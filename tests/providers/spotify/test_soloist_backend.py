@@ -36,6 +36,7 @@ from music_assistant.providers.spotify.backends import StreamSupersededError
 from music_assistant.providers.spotify.backends import soloist as soloist_backend
 from music_assistant.providers.spotify.backends.soloist import (
     _BYTES_PER_SECOND,
+    _FEED_LEAD_S,
     _FRAME_BYTES,
     _MAX_LEAD_TRIM_S,
     _MAX_SWITCH_TRIM_S,
@@ -1883,6 +1884,306 @@ async def test_feeding_without_a_run_is_a_no_op(tmp_path: Path) -> None:
     assert backend._run is None
 
 
+async def _hold(run: _EngineRun, uri: str = TRACK_B) -> None:
+    """Hint an item while the current one, 2 s longer than the feed lead, has just started."""
+    length_ms = int((_FEED_LEAD_S + 2) * 1000)
+    await run._handle_event(
+        _playback_event("playing", uri=TRACK_A, position_ms=0, duration_ms=length_ms)
+    )
+    await run.feed_next(cast("str", run.current_item.media_key), uri)
+
+
+async def _run_feeds(run: _EngineRun) -> None:
+    """Let the feeds the capture scheduled reach the engine."""
+    await asyncio.gather(*run._tasks)
+
+
+async def test_a_hint_is_held_until_the_items_last_seconds(tmp_path: Path) -> None:
+    """Queued earlier, the account's own Spotify crossfade would blend the two tracks."""
+    run = _live_run(tmp_path)
+    await _hold(run)
+    await _capture(run, _audio(1.9))
+    await _run_feeds(run)
+    _client(run).add_to_queue.assert_not_called()
+    assert _fed(run) is None
+
+    await _capture(run, _audio(0.2))
+    await _run_feeds(run)
+    _client(run).add_to_queue.assert_awaited_once_with(TRACK_B)
+    assert run._fed is not None
+    assert run._fed.spotify_uri == TRACK_B
+
+
+async def test_a_hint_for_another_item_replaces_the_held_one(tmp_path: Path) -> None:
+    """The queue changed before the engine was given anything: the latest hint counts."""
+    run = _live_run(tmp_path)
+    await _hold(run)
+    await run.feed_next(cast("str", run.current_item.media_key), TRACK_C)
+    await _capture(run, _audio(2.1))
+    await _run_feeds(run)
+    _client(run).add_to_queue.assert_awaited_once_with(TRACK_C)
+
+
+async def test_a_hint_the_engine_cannot_take_drops_the_held_one(tmp_path: Path) -> None:
+    """The held track is no longer next, so the engine is given nothing."""
+    run = _live_run(tmp_path)
+    await _hold(run)
+    await run.feed_next(cast("str", run.current_item.media_key), "spotify:episode:eee")
+    assert run._pending_feed is None
+    await _capture(run, _audio(2.1))
+    await _run_feeds(run)
+    _client(run).add_to_queue.assert_not_called()
+
+
+async def test_a_seek_back_out_of_the_window_takes_the_fed_item_off_the_engine(
+    tmp_path: Path,
+) -> None:
+    """Left queued that far ahead, it would be crossfaded into; the next hint holds it anew."""
+    run = _live_run(tmp_path)
+    await _hold(run)
+    await _capture(run, _audio(2.1))
+    await _run_feeds(run)
+    await run._handle_event(_queue_event(("q1", TRACK_B)))
+    client = _client(run)
+    client.skip_next.side_effect = lambda **_: run._observe_engine_item(TRACK_B, announced=True)
+    client.play.side_effect = lambda played, **_: run._observe_engine_item(played, announced=True)
+
+    item = await run.move_to(TRACK_A, 0, _streamdetails_for(uri=TRACK_A))
+    moves = [entry for entry in client.mock_calls if entry[0] in ("skip_next", "play", "seek")]
+    assert moves == [call.skip_next(), call.play(TRACK_A)]
+    assert run._fed is None
+    assert run.current_item is item
+    assert not item.fed
+
+    await run._handle_event(_queue_event())
+    await run.feed_next(cast("str", item.media_key), TRACK_B)
+    assert run._pending_feed == TRACK_B
+    client.add_to_queue.assert_awaited_once()
+
+
+async def test_a_seek_back_keeps_the_length_the_skipped_track_overwrote(tmp_path: Path) -> None:
+    """The skipped track's report must not leave the replayed one without a length."""
+    run = _live_run(tmp_path)
+    await _hold(run)
+    await _capture(run, _audio(2.1))
+    await _run_feeds(run)
+    await run._handle_event(_queue_event(("q1", TRACK_B)))
+    client = _client(run)
+
+    async def skip(**_: Any) -> None:
+        await run._handle_event(
+            _playback_event("playing", uri=TRACK_B, position_ms=0, duration_ms=200_000)
+        )
+
+    client.skip_next.side_effect = skip
+    client.play.side_effect = lambda played, **_: run._observe_engine_item(played, announced=True)
+    _confirm_seeks(run)
+    item = await run.move_to(TRACK_A, 0, _streamdetails_for(uri=TRACK_A))
+    assert item.engine_duration_ms == int((_FEED_LEAD_S + 2) * 1000)
+
+    # fed again in its last seconds and seeked back again before the engine described it
+    await run._handle_event(_queue_event())
+    await run.feed_next(cast("str", item.media_key), TRACK_B)
+    await _capture(run, _audio(2.1))
+    await _run_feeds(run)
+    await run._handle_event(_queue_event(("q2", TRACK_B)))
+    await run.move_to(TRACK_A, 0, _streamdetails_for(uri=TRACK_A))
+    assert client.add_to_queue.await_count == 2
+    assert client.skip_next.await_count == 2
+
+
+async def test_a_seek_back_after_the_app_removed_the_fed_item_stays_in_place(
+    tmp_path: Path,
+) -> None:
+    """With the entry gone from the engine's queue there is nothing to skip onto."""
+    run = _live_run(tmp_path)
+    await _hold(run)
+    await _capture(run, _audio(2.1))
+    await _run_feeds(run)
+    await run._handle_event(_queue_event(("q1", TRACK_B)))
+    # removed in the Spotify app: the entry leaves while the engine stays on the track
+    await run._handle_event(_queue_event())
+    _confirm_seeks(run)
+    client = _client(run)
+
+    await run.move_to(TRACK_A, 0, _streamdetails_for(uri=TRACK_A))
+    client.skip_next.assert_not_called()
+    client.play.assert_not_called()
+    client.seek.assert_awaited_with(0)
+
+
+async def test_a_seek_back_before_the_queue_report_leaves_the_fed_item_tracked(
+    tmp_path: Path,
+) -> None:
+    """An entry the engine has not confirmed yet cannot be skipped onto, so it is kept."""
+    run = _live_run(tmp_path)
+    await _hold(run)
+    await _capture(run, _audio(2.1))
+    await _run_feeds(run)
+    _confirm_seeks(run)
+    client = _client(run)
+
+    await run.move_to(TRACK_A, 1_000, _streamdetails_for(uri=TRACK_A))
+    client.skip_next.assert_not_called()
+    client.play.assert_not_called()
+    assert run._fed is not None
+    assert run._fed.spotify_uri == TRACK_B
+
+
+@pytest.mark.parametrize(
+    "length_ms",
+    [
+        # the hint comes in the item's last seconds
+        int((_FEED_LEAD_S + 1) * 1000),
+        # the engine has not reported the exact length
+        None,
+    ],
+)
+async def test_a_hint_is_fed_at_once(tmp_path: Path, length_ms: int | None) -> None:
+    """With the end close or of unknown distance, nothing is held back."""
+    run = _live_run(tmp_path)
+    await run._handle_event(
+        _playback_event("playing", uri=TRACK_A, position_ms=0, duration_ms=length_ms)
+    )
+    await _capture(run, _audio(1.5))
+    await run.feed_next(cast("str", run.current_item.media_key), TRACK_B)
+    _client(run).add_to_queue.assert_awaited_once_with(TRACK_B)
+    assert run._pending_feed is None
+
+
+async def test_a_hint_after_a_seek_into_the_last_seconds_is_fed_at_once(tmp_path: Path) -> None:
+    """The seeked item starts inside the window."""
+    run = _live_run(tmp_path)
+    await run._handle_event(_playback_event("playing", uri=TRACK_A, duration_ms=180_000))
+    _confirm_seeks(run)
+    seek_ms = 180_000 - int(_FEED_LEAD_S * 1000)
+    item = await run.move_to(TRACK_A, seek_ms, _streamdetails_for(uri=TRACK_A))
+    await run.feed_next(cast("str", item.media_key), TRACK_B)
+    _client(run).add_to_queue.assert_awaited_once_with(TRACK_B)
+
+
+async def test_the_held_item_is_dropped_when_the_item_ends(tmp_path: Path) -> None:
+    """With nothing queued the engine ran past the item, which is over."""
+    run = _live_run(tmp_path)
+    await _hold(run)
+    await _capture(run, _audio(1))
+    await run._handle_event(_track_event(TRACK_C))
+    assert run.current_item.ended
+    assert run._pending_feed is None
+    await _capture(run, _audio(1.5))
+    await _run_feeds(run)
+    _client(run).add_to_queue.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    ("uri", "seek_ms"),
+    [
+        # a skip or jump to another track
+        (TRACK_C, 0),
+        # a seek within the item: its stream hints again
+        (TRACK_A, 30_000),
+    ],
+)
+async def test_the_held_item_is_dropped_when_the_run_moves(
+    tmp_path: Path, uri: str, seek_ms: int
+) -> None:
+    """A move leaves nothing queued on the engine to skip past or to crossfade into."""
+    run = _live_run(tmp_path)
+    await _hold(run)
+    client = _client(run)
+    client.play.side_effect = lambda played, **_: run._observe_engine_item(played, announced=True)
+    _confirm_seeks(run)
+
+    await run.move_to(uri, seek_ms, _streamdetails_for(uri=uri))
+    assert run._pending_feed is None
+    client.skip_next.assert_not_called()
+    await _capture(run, _audio(2.1))
+    await _run_feeds(run)
+    client.add_to_queue.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    ("uri", "held"),
+    [
+        # another track follows something else
+        (TRACK_C, None),
+        # the same item seeked back out of its last seconds holds it again
+        (TRACK_A, TRACK_B),
+    ],
+)
+async def test_a_feed_waiting_for_the_run_lock_follows_a_move_that_came_first(
+    tmp_path: Path, uri: str, held: str | None
+) -> None:
+    """A move that held the lock first decides what the waiting feed still does."""
+    run = _live_run(tmp_path)
+    await _hold(run)
+    client = _client(run)
+    client.play.side_effect = lambda played, **_: run._observe_engine_item(played, announced=True)
+    _confirm_seeks(run)
+    async with run.backend._run_lock:
+        await _capture(run, _audio(2.1))
+        await asyncio.sleep(0)
+        await run.move_to(uri, 0, _streamdetails_for(uri=uri))
+    await _run_feeds(run)
+    client.add_to_queue.assert_not_called()
+    assert run._pending_feed == held
+
+
+async def test_a_feed_waiting_for_the_run_lock_dies_with_the_run(tmp_path: Path) -> None:
+    """The run stops while its feed waits for the lock: nothing reaches the engine."""
+    run = _live_run(tmp_path)
+    await _hold(run)
+    async with run.backend._run_lock:
+        await _capture(run, _audio(2.1))
+        await asyncio.sleep(0)
+        assert run._tasks
+        await run.stop()
+    _client(run).add_to_queue.assert_not_called()
+
+
+async def test_a_late_fed_track_spotify_refuses_fails_at_once(tmp_path: Path) -> None:
+    """A held item queued in the last seconds meets a refusal like any fed item."""
+    backend = _streamable_backend(tmp_path)
+    run = _live_run(tmp_path, backend=backend)
+    backend._run = run
+    await _hold(run)
+    await _capture(run, _audio(2.1))
+    await _run_feeds(run)
+    await run._handle_event(_queue_event(("q1", TRACK_B)))
+    await run._handle_event(_queue_event())
+    await run._handle_event(_track_event(TRACK_B))
+    refused = _upcoming(run)
+    assert refused is not None
+    await backend._acquire_item(TRACK_B, 0, _streamdetails_for(uri=TRACK_B), continuation=False)
+
+    await run._handle_event(_playback_event("paused", uri=TRACK_A, position_ms=0))
+    assert _upcoming(run) is None
+    assert run._error is None
+    with pytest.raises(AudioError, match="would not play"):
+        await asyncio.wait_for(_collect(run, refused), 1)
+
+
+async def test_a_refusal_drops_the_item_held_to_follow_the_refused_one(tmp_path: Path) -> None:
+    """The item Spotify refused is over, so nothing is queued to follow it."""
+    backend = _streamable_backend(tmp_path)
+    run = _live_run(tmp_path, backend=backend)
+    backend._run = run
+    _, refused = await _reach_fed_item(run)
+    await backend._acquire_item(TRACK_B, 0, _streamdetails_for(uri=TRACK_B), continuation=False)
+    # the silence the engine renders before a track's first sample
+    await _capture(run, _silence(0.5))
+    assert run.current_item is refused
+    await run._handle_event(
+        _playback_event("playing", uri=TRACK_B, position_ms=0, duration_ms=180_000)
+    )
+    await run.feed_next(cast("str", refused.media_key), TRACK_C)
+    assert run._pending_feed == TRACK_C
+
+    await run._handle_event(_playback_event("paused", uri=TRACK_A, position_ms=0))
+    assert refused.error is not None
+    assert run._pending_feed is None
+
+
 async def test_a_stop_before_the_fed_item_idles_the_run_out(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1940,34 +2241,34 @@ async def test_a_run_released_while_its_queue_plays_waits_longer_for_its_next_it
 async def test_a_seek_keeps_the_fed_item(tmp_path: Path) -> None:
     """A seek within the item leaves the item queued after it in place."""
     run = _live_run(tmp_path)
-    await run._handle_event(_playback_event("playing", uri=TRACK_A, duration_ms=180_000))
+    await run._handle_event(_playback_event("playing", uri=TRACK_A, duration_ms=8_000))
     await _feed(run)
     _confirm_seeks(run)
     previous = run.current_item
 
-    item = await run.move_to(TRACK_A, 30_000, _streamdetails_for(uri=TRACK_A))
+    item = await run.move_to(TRACK_A, 3_000, _streamdetails_for(uri=TRACK_A))
     client = _client(run)
     client.skip_next.assert_not_called()
     client.play.assert_not_called()
-    client.seek.assert_awaited_with(30_000)
+    client.seek.assert_awaited_with(3_000)
     assert run._fed is not None
     assert run._fed.uid == "q1"
     assert run.current_item is item
     assert previous.abandoned
-    assert item.engine_duration_ms == 180_000
+    assert item.engine_duration_ms == 8_000
 
 
 async def test_a_seek_keeps_the_same_track_fed_after_itself(tmp_path: Path) -> None:
     """A seek announcing the current track leaves its queued repeat for the real boundary."""
     run = _live_run(tmp_path)
-    await run._handle_event(_playback_event("playing", uri=TRACK_A, duration_ms=180_000))
+    await run._handle_event(_playback_event("playing", uri=TRACK_A, duration_ms=8_000))
     await _feed(run, TRACK_A)
 
     async def seek(position_ms: int, **_: Any) -> None:
         await run._handle_event(_playback_event("playing", uri=TRACK_A, position_ms=position_ms))
 
     _client(run).seek.side_effect = seek
-    item = await run.move_to(TRACK_A, 175_000, _streamdetails_for(uri=TRACK_A))
+    item = await run.move_to(TRACK_A, 3_000, _streamdetails_for(uri=TRACK_A))
     assert run._fed is not None
     assert run._fed.uid == "q1"
 

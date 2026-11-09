@@ -72,6 +72,7 @@ from music_assistant.constants import (
     ATTR_FAKE_VOLUME,
     ATTR_GROUP_MEMBERS,
     ATTR_GROUP_VOLUME_SNAPSHOT,
+    ATTR_IDLE_SINCE,
     ATTR_LAST_POLL,
     ATTR_MUTE_CONTROL,
     ATTR_MUTE_LOCK,
@@ -90,6 +91,7 @@ from music_assistant.constants import (
     CONF_ENTRY_MAX_VOLUME,
     CONF_ENTRY_MIN_VOLUME,
     CONF_GROUP_MEMBERS,
+    CONF_IDLE_POWER_OFF,
     CONF_LINKED_PROTOCOL_IDS,
     CONF_MAX_VOLUME,
     CONF_MIN_VOLUME,
@@ -783,7 +785,7 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
             msg = f"Player {player.display_name} does not support seeking"
             raise UnsupportedFeaturedException(msg)
         # handle command on player directly
-        await player.seek(position)
+        await (player.foreign_protocol_player or player).seek(position)
 
     @api_command("players/cmd/shuffle", required_scope=Scope.PLAYERS_CONTROL)
     @handle_player_command
@@ -880,7 +882,7 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
                 (x for x in player.state.source_list if x.id == active_source_id), None
             )
             if active_source and active_source.can_next_previous:
-                await player.next_track()
+                await (player.foreign_protocol_player or player).next_track()
                 return
             msg = "This action is (currently) unavailable for this source."
             raise PlayerCommandFailed(msg)
@@ -906,7 +908,7 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
                 (x for x in player.state.source_list if x.id == active_source_id), None
             )
             if active_source and active_source.can_next_previous:
-                await player.previous_track()
+                await (player.foreign_protocol_player or player).previous_track()
                 return
             msg = "This action is (currently) unavailable for this source."
             raise PlayerCommandFailed(msg)
@@ -2175,6 +2177,7 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
                 player,
                 task_id=task_id,
             )
+        self._restart_idle_count(player, changed_values)
         # only steer into the (relatively expensive) membership cleanup when a field
         # that can require an unsync actually changed - this runs on every state tick
         if changed_values.keys() & {ATTR_AVAILABLE, ATTR_ENABLED, ATTR_POWERED, ATTR_REACHABLE}:
@@ -3489,6 +3492,7 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         """Background task that polls players for updates."""
         while True:
             for player in list(self._players.values()):
+                self._check_idle_power_off(player)
                 # if the player is playing, update elapsed time every tick
                 # to ensure the queue has accurate details
                 player_playing = player.state.playback_state == PlaybackState.PLAYING
@@ -3524,6 +3528,96 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
                 # Yield to event loop to prevent blocking
                 await asyncio.sleep(0)
             await asyncio.sleep(1)
+
+    def _check_idle_power_off(self, player: Player) -> None:
+        """
+        Power off a player once it has been idle for its configured idle power off time.
+
+        :param player: The player to check.
+        """
+        if not self._get_idle_power_off_minutes(player):
+            player.extra_data.pop(ATTR_IDLE_SINCE, None)
+            return
+        player.extra_data.setdefault(ATTR_IDLE_SINCE, time.monotonic())
+        if self._is_idle_power_off_due(player):
+            # the task id keeps a power off that waits for the player lock from starting twice
+            self.mass.create_task(
+                self._power_off_idle_player(player.player_id),
+                task_id=f"idle_power_off_{player.player_id}",
+            )
+
+    def _restart_idle_count(
+        self, player: Player, changed_values: dict[str, tuple[Any, Any]]
+    ) -> None:
+        """
+        Start the idle power off count of a player over when its playback or power changed.
+
+        :param player: The player whose state changed.
+        :param changed_values: The changed state values.
+        """
+        # also catches playback that starts and ends between two checks of the poll loop
+        if changed_values.keys() & {"playback_state", ATTR_POWERED}:
+            player.extra_data.pop(ATTR_IDLE_SINCE, None)
+
+    async def _power_off_idle_player(self, player_id: str) -> None:
+        """
+        Power off a player that has been idle for its configured idle power off time.
+
+        :param player_id: The player to power off.
+        """
+        try:
+            # a command that holds the player may play on it, which starts the count over.
+            # So never run without the lock, and check again once it is ours.
+            async with self.get_group_and_player_lock(player_id, strict=True):
+                player = self.get_player(player_id)
+                if player is None or not self._is_idle_power_off_due(player):
+                    return
+                # starts the count over, so a power off that fails is retried a full idle
+                # time later
+                player.extra_data.pop(ATTR_IDLE_SINCE)
+                self.logger.info("Powering off idle player %s", player.display_name)
+                await self._handle_cmd_power(player_id, False)
+        except ResourceBusyError:
+            self.logger.debug("Player %s is busy, its idle power off is tried again", player_id)
+
+    def _is_idle_power_off_due(self, player: Player) -> bool:
+        """
+        Return if the player has been idle for its configured idle power off time.
+
+        :param player: The player to check.
+        """
+        minutes = self._get_idle_power_off_minutes(player)
+        idle_since = player.extra_data.get(ATTR_IDLE_SINCE)
+        return (
+            bool(minutes)
+            and idle_since is not None
+            and time.monotonic() - idle_since >= minutes * 60
+        )
+
+    @staticmethod
+    def _get_idle_power_off_minutes(player: Player) -> int:
+        """
+        Return after how many idle minutes the player is to be powered off.
+
+        Returns 0 while that does not apply: the player has no idle power off configured, is
+        not online, powered on and stopped, or is about to play an announcement.
+
+        :param player: The player to get the idle power off time for.
+        """
+        minutes = player.config.get_value(CONF_IDLE_POWER_OFF)
+        state = player.state
+        if (
+            not isinstance(minutes, int)
+            or minutes <= 0
+            or not state.available
+            or state.powered is not True
+            or state.playback_state != PlaybackState.IDLE
+            or player.extra_data.get(ATTR_ANNOUNCEMENT_IN_PROGRESS)
+            # reported as powered on and idle while it is still starting up
+            or player.offline_by_power_control
+        ):
+            return 0
+        return minutes
 
     def _handle_group_dsp_change(
         self, player: Player, prev_group_members: list[str], new_group_members: list[str]
@@ -3954,12 +4048,7 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
             if not await self._dissolve_own_group(child_player, parent_player.state.name):
                 continue
 
-            # power on the player if needed
-            if (
-                not child_player.state.powered
-                and child_player.state.power_control != PLAYER_CONTROL_NONE
-            ):
-                await self._handle_cmd_power(child_player.player_id, True)
+            await self._power_on_for_playback(child_player)
             # if we reach here, all checks passed
             final_player_ids_to_add.append(child_player_id)
 
@@ -4293,9 +4382,7 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         player = self._get_player_with_redirect(player_id)
         source = source or player.state.active_source
         media = media or player.state.current_media
-        # power on the player if needed
-        if not player.state.powered and player.state.power_control != PLAYER_CONTROL_NONE:
-            await self._handle_cmd_power(player.player_id, True)
+        await self._power_on_for_playback(player)
         # Redirect to queue controller if it is active
         if active_queue := self.mass.player_queues.get(source or player_id):
             await self.mass.player_queues.resume(active_queue.queue_id)
@@ -4444,6 +4531,22 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
             and not player.extra_data.get(ATTR_ANNOUNCEMENT_IN_PROGRESS)
         ):
             await self.mass.player_queues.resume(player_id)
+
+    async def _power_on_for_playback(self, player: Player, skip_auto_play: bool = False) -> None:
+        """
+        Power on a player that is about to start playback, if it is not on yet.
+
+        :param player: The player that is about to play.
+        :param skip_auto_play: Skip the auto play on power on, as the caller starts playback.
+        """
+        # a device reports its playback a moment after it started, so the idle power off of
+        # the player and the members playing along counts from here, or it could switch off
+        # playback that was just started
+        for member_id in {player.player_id, *player.state.group_members}:
+            if member := self.get_player(member_id):
+                member.extra_data.pop(ATTR_IDLE_SINCE, None)
+        if not player.state.powered and player.state.power_control != PLAYER_CONTROL_NONE:
+            await self._handle_cmd_power(player.player_id, True, skip_auto_play=skip_auto_play)
 
     async def _power_on_switched_off_player(self, player_id: str) -> Player:
         """
@@ -4867,9 +4970,8 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
             player.set_active_output_protocol("native")
 
         async with player.prepare_play_media():
-            # power on the player if needed (skip auto-play since we're about to start playback)
-            if not player.state.powered and player.state.power_control != PLAYER_CONTROL_NONE:
-                await self._handle_cmd_power(player.player_id, True, skip_auto_play=True)
+            # skip auto-play since we're about to start playback
+            await self._power_on_for_playback(player, skip_auto_play=True)
             await target_player.play_media(media)
             if target_player.player_id != player.player_id:
                 # notify the native player that protocol playback started
@@ -5214,6 +5316,8 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
             raise PlayerCommandFailed(
                 f"{source} is an invalid source for player {player.state.name}"
             )
+        # the selected source plays, not the queue that auto play would resume
+        await self._power_on_for_playback(player, skip_auto_play=True)
         # forward to player
         await player.select_source(source)
 
@@ -5226,7 +5330,7 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         :param player_id: player_id of the player to handle the command.
         """
         player = self._get_reachable_player(player_id)
-        protocol_player: Player | None = None
+        protocol_player: Player | None = player.foreign_protocol_player
         if player.active_output_protocol and player.active_output_protocol != "native":
             protocol_player = self.get_player(player.active_output_protocol)
         if player.state.playback_state == PlaybackState.IDLE:
@@ -5294,7 +5398,7 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
                 )
                 raise PlayerCommandFailed(msg)
             # Delegate to active protocol player if one is active
-            if target_player := self._get_control_target(
+            if target_player := player.foreign_protocol_player or self._get_control_target(
                 player, PlayerFeature.PAUSE, require_active=True
             ):
                 await target_player.play()
@@ -5317,9 +5421,7 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
             (x for x in player.state.source_list if x.id == player.state.active_source), None
         )
         media = player.state.current_media
-        # power on the player if needed
-        if not player.state.powered and player.state.power_control != PLAYER_CONTROL_NONE:
-            await self._handle_cmd_power(player.player_id, True)
+        await self._power_on_for_playback(player)
         if active_source and not active_source.passive:
             await self._handle_select_source(player_id, active_source.id)
             return
@@ -5359,7 +5461,7 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
             )
             raise PlayerCommandFailed(msg)
         # Delegate to active protocol player if one is active
-        if target_player := self._get_control_target(
+        if target_player := player.foreign_protocol_player or self._get_control_target(
             player, PlayerFeature.PAUSE, require_active=True
         ):
             await target_player.pause()
