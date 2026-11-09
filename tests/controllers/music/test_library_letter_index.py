@@ -8,7 +8,13 @@ from uuid import uuid4
 
 import pytest
 from music_assistant_models.auth import User, UserRole
-from music_assistant_models.enums import AlbumType, MediaType, SortDirection, SortField
+from music_assistant_models.enums import (
+    AlbumType,
+    ArtistType,
+    MediaType,
+    SortDirection,
+    SortField,
+)
 from music_assistant_models.helpers import create_safe_string
 from music_assistant_models.media_items import Album, Artist, ProviderMapping, Track, UniqueList
 
@@ -134,6 +140,21 @@ async def test_album_letter_index_applies_album_types(
         sort_field=SortField.SORT_NAME,
         sort_direction=sort_direction,
     )
+
+
+@pytest.mark.parametrize("sort_direction", [SortDirection.ASC, SortDirection.DESC])
+async def test_artist_letter_index_applies_artist_filters(
+    seeded_mass: MusicAssistant, sort_direction: SortDirection
+) -> None:
+    """The offsets follow the artist listing narrowed to album artists of the singer type."""
+    index = await _assert_matches_listing(
+        seeded_mass.music.artists,
+        album_artists_only=True,
+        artist_type=ArtistType.SINGER,
+        sort_field=SortField.SORT_NAME,
+        sort_direction=sort_direction,
+    )
+    assert index
 
 
 @pytest.mark.parametrize(

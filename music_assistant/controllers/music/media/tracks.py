@@ -476,9 +476,10 @@ class TracksController(MediaControllerBase[Track]):
         :param reachable_via: Restrict results to items with a provider mapping reachable
             through one of these provider instance ids, see `library_items`.
         """
+        query_params: dict[str, Any] = {}
         return await self._library_letter_index(
             self._library_filter_parts(explicit),
-            {},
+            query_params,
             favorite=favorite,
             search=search,
             provider=provider,

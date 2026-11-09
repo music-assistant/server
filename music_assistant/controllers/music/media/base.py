@@ -2828,15 +2828,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         sort_direction: SortDirection | None,
         reachable_via: list[str] | None,
     ) -> list[dict[str, str | int]]:
-        """
-        Return the row offset where each starting letter begins in a library listing.
-
-        Matches the order and paging of ``library_items`` for the same arguments. Empty
-        unless the listing is sorted by name or sort name without a search.
-
-        :param query_parts: The WHERE conditions of the media type's own listing filters.
-        :param query_params: The bound params of those conditions.
-        """
+        """Return the row offset where each starting letter begins in a library listing."""
         field, direction = self.resolve_sort(sort_field, sort_direction)
         if search or field not in (SortField.NAME, SortField.SORT_NAME):
             return []
@@ -2854,6 +2846,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
             in_library_only=True,
             reachable_via=reachable_via,
         )
+        query_parts.extend(self.listing_filter(query_params))
         # the name columns only hold lowercase a-z and 0-9, so every letter is one run of rows
         name_column = BASE_SORT_FIELD_SQL[field].format(prefix=f"{self.db_table}.")
         first_char = f"substr({name_column}, 1, 1)"

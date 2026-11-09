@@ -2228,7 +2228,8 @@ class ArtistsController(MediaControllerBase[Artist]):
         """Return the WHERE conditions of the artist-specific library listing filters."""
         query_parts: list[str] = []
         if artist_type:
-            query_parts.append(f"artist_type = '{artist_type}'")
+            query_params["artist_type"] = artist_type.value
+            query_parts.append("artist_type = :artist_type")
         if album_artists_only and artist_type in (None, ArtistType.SINGER):
             query_parts.append(self._album_artist_clause(query_params))
         return query_parts
