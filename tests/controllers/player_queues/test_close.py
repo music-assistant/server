@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
 from typing import TYPE_CHECKING, cast
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 from music_assistant_models.enums import PlaybackState
 from music_assistant_models.errors import PlayerUnavailableError
@@ -15,8 +16,8 @@ if TYPE_CHECKING:
     from music_assistant_models.player_queue import PlayerQueue
 
 
-async def test_close_continues_after_a_queue_fails_to_stop() -> None:
-    """A queue that fails to stop does not keep the others from stopping and being saved."""
+def _controller() -> tuple[PlayerQueuesController, AsyncMock]:
+    """Build a bare controller holding two playing queues, and its cache save mock."""
     ctrl = PlayerQueuesController.__new__(PlayerQueuesController)
     ctrl.mass = MagicMock()
     ctrl.logger = MagicMock()
@@ -26,13 +27,42 @@ async def test_close_continues_after_a_queue_fails_to_stop() -> None:
         )
         for queue_id in ("unreachable", "reachable")
     }
-    ctrl.stop = AsyncMock(side_effect=[PlayerUnavailableError("gone"), None])  # type: ignore[method-assign]
-    ctrl._save_queue_to_cache = AsyncMock()  # type: ignore[method-assign]
+    save = AsyncMock()
+    ctrl._save_queue_to_cache = save  # type: ignore[method-assign]
+    return ctrl, save
+
+
+async def test_close_continues_after_a_queue_fails_to_stop() -> None:
+    """A queue that fails to stop does not keep the others from stopping and being saved."""
+    ctrl, save = _controller()
+    stop = AsyncMock(side_effect=[PlayerUnavailableError("gone"), None])
+    ctrl.stop = stop  # type: ignore[method-assign]
 
     await ctrl.close()
 
-    assert [call.args[0] for call in ctrl.stop.await_args_list] == ["unreachable", "reachable"]
-    assert [call.args[0] for call in ctrl._save_queue_to_cache.await_args_list] == [
+    assert [call.args[0] for call in stop.await_args_list] == ["unreachable", "reachable"]
+    assert [call.args[0] for call in save.await_args_list] == [
         "unreachable",
         "reachable",
     ]
+
+
+async def test_close_does_not_wait_forever_on_a_stop() -> None:
+    """A player that never answers the stop does not keep the queues from being saved."""
+    ctrl, save = _controller()
+    stopped: list[str] = []
+
+    async def stop(queue_id: str) -> None:
+        if queue_id == "unreachable":
+            await asyncio.Event().wait()
+        stopped.append(queue_id)
+
+    ctrl.stop = stop  # type: ignore[method-assign]
+
+    with patch(
+        "music_assistant.controllers.player_queues.controller.QUEUE_SHUTDOWN_STOP_TIMEOUT", 0.01
+    ):
+        await ctrl.close()
+
+    assert stopped == ["reachable"]
+    assert save.await_count == 2
