@@ -127,38 +127,6 @@ def parse_stream_metadata(segment: bytes) -> StreamMetadata | None:
     return None
 
 
-def _parse_emsg(box: bytes) -> StreamMetadata | None:
-    """Return the track of an emsg box that holds an ID3 tag, if it names one."""
-    # imported here like in the tags helper, to keep mutagen off the startup path
-    from mutagen import MutagenError  # noqa: PLC0415
-    from mutagen.id3 import ID3  # noqa: PLC0415
-
-    try:
-        if box[0] == 1:
-            # version 1 has its times (20 bytes) in front of the scheme and value
-            scheme_end = box.index(0, 24)
-            payload = box[box.index(0, scheme_end + 1) + 1 :]
-        else:
-            # version 0 has its times (16 bytes) after the scheme and value
-            scheme_end = box.index(0, 4)
-            payload = box[box.index(0, scheme_end + 1) + 1 + 16 :]
-        tag: Any = ID3(BytesIO(payload))  # type: ignore[no-untyped-call]
-    except ValueError, IndexError, MutagenError:
-        return None
-    title = tag.get("TIT2")
-    if not title or not title.text:
-        return None
-    artist, album = tag.get("TPE1"), tag.get("TALB")
-    return StreamMetadata(
-        title=str(title.text[0]),
-        artist=str(artist.text[0]) if artist and artist.text else None,
-        album=str(album.text[0]) if album and album.text else None,
-        image_url=next(
-            (frame.url for frame in tag.getall("WXXX") if frame.desc == "artworkURL_640x"), None
-        ),
-    )
-
-
 class AppleMusicLiveRadioManager:
     """Handles the live radio stations of an Apple Music account."""
 
@@ -233,10 +201,7 @@ class AppleMusicLiveRadioManager:
 
     async def get_audio_stream(self, streamdetails: StreamDetails) -> AsyncGenerator[bytes]:
         """
-        Yield a live station as one continuous PCM stream, decrypted by ffmpeg to play it.
-
-        Each key of the station gets its own decoder, the next one starts where the key
-        changes. It ends only by an error or the consumer closing it.
+        Yield a live station as one continuous PCM stream until the consumer closes it.
 
         :param streamdetails: The stream details from get_stream_details.
         """
@@ -247,6 +212,8 @@ class AppleMusicLiveRadioManager:
         try:
             async with aclosing(self._new_segments(data)) as new_segments:
                 segment = await anext(new_segments)
+                # each key gets its own ffmpeg, the next one starts where the key changes,
+                # while the PCM of all of them goes out as one stream
                 while True:
                     key_uri = segment_uri(segment.key_line)
                     if not data["keys"].get(key_uri):
@@ -484,6 +451,38 @@ class AppleMusicLiveRadioManager:
                 f"HTTP {err.status}" if isinstance(err, ClientResponseError) else type(err).__name__
             )
             raise UnplayableMediaError(f"Live radio request failed: {reason}") from None
+
+
+def _parse_emsg(box: bytes) -> StreamMetadata | None:
+    """Return the track of an emsg box that holds an ID3 tag, if it names one."""
+    # imported here like in the tags helper, to keep mutagen off the startup path
+    from mutagen import MutagenError  # noqa: PLC0415
+    from mutagen.id3 import ID3  # noqa: PLC0415
+
+    try:
+        if box[0] == 1:
+            # version 1 has its times (20 bytes) in front of the scheme and value
+            scheme_end = box.index(0, 24)
+            payload = box[box.index(0, scheme_end + 1) + 1 :]
+        else:
+            # version 0 has its times (16 bytes) after the scheme and value
+            scheme_end = box.index(0, 4)
+            payload = box[box.index(0, scheme_end + 1) + 1 + 16 :]
+        tag: Any = ID3(BytesIO(payload))  # type: ignore[no-untyped-call]
+    except ValueError, IndexError, MutagenError:
+        return None
+    title = tag.get("TIT2")
+    if not title or not title.text:
+        return None
+    artist, album = tag.get("TPE1"), tag.get("TALB")
+    return StreamMetadata(
+        title=str(title.text[0]),
+        artist=str(artist.text[0]) if artist and artist.text else None,
+        album=str(album.text[0]) if album and album.text else None,
+        image_url=next(
+            (frame.url for frame in tag.getall("WXXX") if frame.desc == "artworkURL_640x"), None
+        ),
+    )
 
 
 def _renewal_time(renew_after: float) -> float | None:
