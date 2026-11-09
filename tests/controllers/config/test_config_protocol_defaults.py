@@ -93,6 +93,15 @@ class _TestPlayer(Player):
         """Stop playback - required abstract method."""
 
 
+def _add_to_registry(mass: MusicAssistant, *players: _TestPlayer) -> None:
+    """Put players in the player registry with the config that registration creates."""
+    for player in players:
+        mass.config.create_default_player_config(
+            player.player_id, player.provider_id, player.type, player.name
+        )
+        mass.players._players[player.player_id] = player
+
+
 async def _setup_parent_with_protocol_child(mass: MusicAssistant) -> _TestPlayer:
     """Register a native parent player linked to a DLNA protocol child player."""
     sonos_provider = _TestProvider(mass, "sonos")
@@ -102,12 +111,9 @@ async def _setup_parent_with_protocol_child(mass: MusicAssistant) -> _TestPlayer
     mass._provider_manifests[sonos_provider.domain] = sonos_provider.manifest
     mass._provider_manifests[dlna_provider.domain] = dlna_provider.manifest
 
-    # building the players auto-creates their (real) config roots via create_default_player_config
     parent = _TestPlayer(sonos_provider, PARENT_ID, "Living Room", PlayerType.PLAYER)
     child = _TestPlayer(dlna_provider, CHILD_ID, "Living Room DLNA", PlayerType.PROTOCOL)
-
-    mass.players._players[PARENT_ID] = parent
-    mass.players._players[CHILD_ID] = child
+    _add_to_registry(mass, parent, child)
 
     # link the DLNA protocol output to the parent so the virtual prefixed entry is emitted
     parent.set_linked_output_protocols(
@@ -155,8 +161,7 @@ async def _setup_derived_protocol_players(
     sendspin = _TestPlayer(
         sendspin_provider, SENDSPIN_ID, "Living Room Sendspin", PlayerType.PROTOCOL
     )
-    mass.players._players[AIRPLAY_ID] = airplay
-    mass.players._players[SENDSPIN_ID] = sendspin
+    _add_to_registry(mass, airplay, sendspin)
     parent.set_linked_output_protocols(
         [
             LinkedOutputProtocol(

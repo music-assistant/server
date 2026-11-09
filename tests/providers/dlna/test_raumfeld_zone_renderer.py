@@ -64,6 +64,7 @@ async def test_setup_ignores_a_zone_renderer() -> None:
     with (
         patch.object(player, "_device_connect", AsyncMock()),
         patch.object(player, "_device_disconnect", disconnect),
+        patch.object(player.mass.config, "get", MagicMock(return_value={"enabled": True})),
         patch.object(player.mass.players, "register_or_update", register),
         patch.object(player.mass.players, "delete_player_config", delete_config),
     ):
@@ -73,6 +74,20 @@ async def test_setup_ignores_a_zone_renderer() -> None:
     disconnect.assert_awaited_once()
     # its stored config goes too, so an existing install stops restoring it as a player
     delete_config.assert_called_once_with("uuid:dlna-player")
+
+
+async def test_setup_ignores_a_zone_renderer_without_a_stored_config() -> None:
+    """A zone renderer with no stored config has nothing to clean up."""
+    player = _player(TEUFEL, AV_TRANSPORT)
+    delete_config = MagicMock()
+    with (
+        patch.object(player, "_device_connect", AsyncMock()),
+        patch.object(player, "_device_disconnect", AsyncMock()),
+        patch.object(player.mass.config, "get", MagicMock(return_value=None)),
+        patch.object(player.mass.players, "delete_player_config", delete_config),
+    ):
+        assert await player.setup() is False
+    delete_config.assert_not_called()
 
 
 async def test_setup_keeps_a_speaker_renderer_config() -> None:

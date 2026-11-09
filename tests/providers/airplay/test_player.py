@@ -234,7 +234,6 @@ def test_macos_devices_are_disabled_by_default(
     )
 
     assert player.enabled_by_default is expected
-    assert provider.mass.config.create_default_player_config.call_args.args[-1] is expected
 
 
 @pytest.mark.parametrize(

@@ -9451,6 +9451,10 @@ class TestEndToEndUniversalPlayerId:
             identifiers=identifiers,
         )
         player.set_initialized()
+        # registration creates the player config, which holds the parent link
+        mock_mass.config.create_default_player_config(
+            player_id, player.provider_id, player.type, name
+        )
         return player
 
     async def test_id_survives_recreation_with_other_identifiers(

@@ -2218,6 +2218,40 @@ def test_a_room_without_an_icy_preference_gets_basic(stored: dict[str, Any], exp
     assert stored["enable_icy_metadata"] == expected
 
 
+@pytest.mark.parametrize("registers", [True, False], ids=["registered", "not_registered"])
+async def test_a_new_room_gets_the_icy_default_only_once_registered(registers: bool) -> None:
+    """A new room that did not register (e.g. during an unload) has no config to write to."""
+    stored: dict[str, Any] = {}
+    provider = _icy_provider(stored)
+    provider.config = MagicMock()
+    provider.logger = MagicMock()
+    provider.host = MagicMock()
+    _host_mock(provider).get_rooms.return_value = ["Bar"]
+    provider._room_ids = {"Bar": "raumfeld_bar"}
+    registry: dict[str, RaumfeldPlayer] = {}
+
+    async def register(player: RaumfeldPlayer) -> None:
+        if registers:
+            registry[player.player_id] = player
+
+    players = cast("MagicMock", provider.mass.players)
+    players.register = AsyncMock(side_effect=register)
+    players.get_player.side_effect = registry.get
+    players.iter_players.return_value = []
+    with (
+        patch.object(provider, "_forget_moved_renderers"),
+        patch.object(provider, "_ensure_room_serial", AsyncMock()),
+        patch.object(provider, "_assign_room_ids"),
+        patch(
+            "music_assistant.providers.raumfeld.provider.RaumfeldPlayer",
+            side_effect=lambda **kwargs: _player(kwargs["room"]),
+        ),
+    ):
+        await provider._sync_rooms()
+
+    assert ("enable_icy_metadata" in stored) is registers
+
+
 def _commanding_provider() -> RaumfeldPlayerProvider:
     """Build a provider whose host knows the rooms Bar and Sofa, and the zone of both."""
     provider, _ = _zone_provider([["Bar", "Sofa"]])

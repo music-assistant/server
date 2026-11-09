@@ -21,6 +21,7 @@ from music_assistant_models.enums import (
 from music_assistant_models.errors import PlayerUnavailableError
 from music_assistant_models.player import PlayerSource
 from pychromecast import IDLE_APP_ID
+from pychromecast.const import CAST_TYPE_CHROMECAST
 from pychromecast.controllers.media import (
     MEDIA_PLAYER_ERROR_CODES,
     MEDIA_PLAYER_STATE_BUFFERING,
@@ -124,12 +125,13 @@ class ChromecastPlayer(PlayerEndpoint):
         self._attr_available = False
         self._attr_needs_poll = True
         self._attr_type = player_type
-        # Disable TV's by default
-        # (can be enabled manually by the user)
+        # Disable TVs by default (can be enabled manually by the user): a video device
+        # recognized by its name. Speakers and groups are never disabled by their name.
         enabled_by_default = True
-        for exclude in ("tv", "/12", "PUS", "OLED"):
-            if exclude.lower() in cast_info.friendly_name.lower():
-                enabled_by_default = False
+        if cast_info.cast_type == CAST_TYPE_CHROMECAST:
+            for exclude in ("tv", "/12", "PUS", "OLED"):
+                if exclude.lower() in cast_info.friendly_name.lower():
+                    enabled_by_default = False
         self._attr_enabled_by_default = enabled_by_default
 
         self._attr_device_info = DeviceInfo(

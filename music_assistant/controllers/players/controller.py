@@ -1653,11 +1653,19 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
 
         # Use lock to prevent race conditions during concurrent player registrations
         async with self._register_lock:
+            # a teardown may have started while this waited for the lock
+            if self._teardown_in_progress(player):
+                return
+
             player_id = player.player_id
 
             if player_id in self._players:
                 msg = f"Player {player_id} is already registered!"
                 raise AlreadyRegisteredError(msg)
+
+            self.mass.config.create_default_player_config(
+                player_id, player.provider_id, player.type, player.name, player.enabled_by_default
+            )
 
             # ignore disabled players
             if not player.state.enabled:
@@ -2563,7 +2571,10 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
                         protocol_id, {ATTR_ENABLED: bool(player_enabled)}
                     )
                 )
-            return  # enabling/disabling a player will be handled by the provider
+            if not (player_enabled and player):
+                return  # enabling/disabling a player will be handled by the provider
+            # a player can be registered while disabled (e.g. a new player that is disabled
+            # by default), so it takes the enabled config like any other config change
 
         if not player:
             return  # guard against player not being registered (yet)

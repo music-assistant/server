@@ -628,9 +628,8 @@ class PlayerConfigMixin:
             # update default name if needed
             if name and name != existing_conf.get("default_name"):
                 self.set(f"{CONF_PLAYERS}/{player_id}/default_name", name)
-            # deliberately do NOT update player_type here: this is called from
-            # Player.__init__ where the type can still be a transient class default.
-            # Genuine type changes are persisted by update_state after registration.
+            # player_type is deliberately not updated here: type changes are persisted
+            # by update_state
             return
         # config does not yet exist, create a default one.
         # the name is stored as the default name only: a stored (custom) name means

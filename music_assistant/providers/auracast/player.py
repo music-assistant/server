@@ -109,17 +109,11 @@ class AuracastPlayer(PlayerEndpoint):
             broadcast_id = 0
         if not 0 < broadcast_id < 0x1000000:
             broadcast_id = secrets.randbelow(0xFFFFFF) + 1
-            provider.mass.config.set_raw_player_config_value(
-                player_id, CONF_STORED_BROADCAST_ID, broadcast_id
-            )
         device_address = parse_device_address(
             provider.mass.config.get_raw_player_config_value(player_id, CONF_STORED_DEVICE_ADDRESS)
         )
         if device_address is None:
             device_address = generate_device_address()
-            provider.mass.config.set_raw_player_config_value(
-                player_id, CONF_STORED_DEVICE_ADDRESS, device_address
-            )
         self._broadcaster = AuracastBroadcaster(
             BroadcastConfig(
                 name=self._attr_name,
@@ -271,6 +265,16 @@ class AuracastPlayer(PlayerEndpoint):
                 self._set_idle()
                 self._attr_powered = False
         self.update_state()
+
+    async def on_config_updated(self) -> None:
+        """Store the broadcast identity, so the broadcast keeps it across restarts."""
+        broadcast_config = self._broadcaster.config
+        for key, value in (
+            (CONF_STORED_BROADCAST_ID, broadcast_config.broadcast_id),
+            (CONF_STORED_DEVICE_ADDRESS, broadcast_config.device_address),
+        ):
+            if self.mass.config.get_raw_player_config_value(self.player_id, key) != value:
+                self.mass.config.set_raw_player_config_value(self.player_id, key, value)
 
     async def on_unload(self) -> None:
         """Stop playback and release controller resources when removed."""

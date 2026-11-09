@@ -490,9 +490,13 @@ def test_player_shows_controller_details_from_setup_probe() -> None:
     )
 
 
-def test_new_player_generates_and_stores_a_static_device_address() -> None:
-    """Create the address once and keep it with the player."""
+@pytest.mark.asyncio
+async def test_new_player_generates_and_stores_a_static_device_address() -> None:
+    """Create the address once and store it with the player once its config is loaded."""
     player = create_player()
+    cast("Any", player.mass.config).set_raw_player_config_value.assert_not_called()
+
+    await player.on_config_updated()
 
     stored = {
         call.args[1]: call.args[2]
@@ -503,10 +507,12 @@ def test_new_player_generates_and_stores_a_static_device_address() -> None:
     assert player._broadcaster.config.device_address == address
 
 
+@pytest.mark.asyncio
 @pytest.mark.parametrize("stored", ["00:11:22:33:44:55", "nonsense", 7])
-def test_invalid_stored_device_address_is_replaced(stored: object) -> None:
+async def test_invalid_stored_device_address_is_replaced(stored: object) -> None:
     """Replace a stored address that is not a valid static address."""
     player = create_player({"auracast_device_address": stored})
+    await player.on_config_updated()
 
     address = player._broadcaster.config.device_address
     assert address is not None
@@ -516,9 +522,11 @@ def test_invalid_stored_device_address_is_replaced(stored: object) -> None:
     )
 
 
-def test_stored_device_address_is_reused() -> None:
+@pytest.mark.asyncio
+async def test_stored_device_address_is_reused() -> None:
     """Keep the same address across restarts without writing it again."""
     player = create_player({"auracast_device_address": "F0:F1:F2:F3:F4:F5"})
+    await player.on_config_updated()
 
     assert player._broadcaster.config.device_address == "F0:F1:F2:F3:F4:F5"
     written_keys = [
