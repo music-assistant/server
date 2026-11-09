@@ -849,6 +849,8 @@
   "core.player_queues.config_entries.default_play_action_playlist_track.label": "What playing a track from a playlist does.",
   "core.player_queues.config_entries.default_play_action_playlist_track.options.play_from_here": "Play from this track onwards",
   "core.player_queues.config_entries.default_play_action_playlist_track.options.play_track": "Play only this track",
+  "core.player_queues.config_entries.pause_timeout.description": "How long a player may stay paused before Music Assistant stops it to free the audio it holds. Once stopped, the player shows as idle, and pressing play still continues where you paused. Not every player can stay paused for long.",
+  "core.player_queues.config_entries.pause_timeout.label": "Stop a paused player after (seconds)",
   "core.player_queues.config_entries.smart_shuffle_artist_recency.description": "How long an artist you've already heard is pushed back. Kept short, since hearing an artist again sooner is usually fine.",
   "core.player_queues.config_entries.smart_shuffle_artist_recency.label": "Avoid replaying the same artist heard within",
   "core.player_queues.config_entries.smart_shuffle_artist_recency.options.0": "Off",

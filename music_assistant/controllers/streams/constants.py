@@ -197,6 +197,10 @@ VOICE_OVER_RAMP: Final[float] = 0.4
 # Maximum wait for a provider source-stream slot before a speculative attempt gives up.
 STREAM_SLOT_WAIT_TIMEOUT: Final[float] = 5.0
 
+# Seconds an AudioBuffer may go unread before it releases its audio. The queue's pause timeout
+# is capped below this, as a paused player could not continue on a released buffer.
+BUFFER_INACTIVITY_TIMEOUT: Final[int] = 300
+
 # Total capacity budget when an actual playback start retries/reselects provider mappings.
 STREAM_SLOT_PLAYBACK_WAIT_TIMEOUT: Final[float] = 15.0
 
