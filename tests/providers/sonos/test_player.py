@@ -61,6 +61,8 @@ def _bind_player(mass: MusicAssistant | MagicMock) -> tuple[SonosPlayer, MagicMo
     player._flow_queue_id = None
     player._queue_session_id = None
     player._hand_over_tasks = set()
+    player._upnp_option_timeouts = 0
+    player._events = MagicMock(follow=AsyncMock(), unfollow=AsyncMock())
     player.client = client
     player._on_unload_callbacks = []
     player.update_state = MagicMock()  # type: ignore[misc, method-assign]

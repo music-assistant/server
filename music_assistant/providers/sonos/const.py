@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import NamedTuple
+
 from aiosonos.api.models import PlayBackState as SonosPlayBackState
 from music_assistant_models.enums import PlaybackState, PlayerFeature
 
@@ -80,6 +82,63 @@ UNSUPPORTED_MODELS_NATIVE_ANNOUNCEMENTS = ("Play:1", "Play:3")
 NON_HIRES_MODELS = (
     "Connect:Amp",
     "Table lamp",
+)
+
+# model lists as known to soco (used by the Home Assistant Sonos integration)
+AMP_MODEL = "Amp"  # always drives a (RCA) subwoofer and has a subwoofer crossover
+ULTRA_SOUNDBAR_MODELS = ("Arc Ultra", "Beam Ultra")  # speech enhancement in levels 1..4
+
+
+class OptionRange(NamedTuple):
+    """Value range of a numeric player option."""
+
+    minimum: int
+    maximum: int
+
+
+EQ_RANGE = OptionRange(-10, 10)
+BALANCE_RANGE = OptionRange(-100, 100)
+AUDIO_DELAY_RANGE = OptionRange(0, 5)
+DIALOG_LEVEL_RANGE = OptionRange(1, 4)
+SUB_GAIN_RANGE = OptionRange(-15, 15)
+SUB_CROSSOVER_RANGE = OptionRange(50, 110)
+SURROUND_LEVEL_RANGE = OptionRange(-15, 15)
+# UPnP reads of player options stop after this many timeouts in a row, until a reconnect:
+# the player poll loop of all players waits for each read
+UPNP_OPTION_TIMEOUT_LIMIT = 5
+
+# UPnP RenderingControl events, received on the stream server
+EVENTS_PATH = "/sonos/notify"
+RENDERING_CONTROL_SERVICE = "urn:schemas-upnp-org:service:RenderingControl:1"
+# seconds a subscription is asked for; it is renewed halfway, by the poll
+EVENT_SUBSCRIPTION_TIMEOUT = 1800
+# poll interval (seconds) of the player options without and with events coming in; with
+# events, the poll still reads the few options that send none (status light, button lock)
+OPTIONS_POLL_INTERVAL = 30
+OPTIONS_EVENTS_POLL_INTERVAL = 300
+# seconds to wait after an event before reading the options, so a slider moved in the
+# Sonos app is read once
+OPTIONS_EVENT_READ_DELAY = 1
+# the RenderingControl state variables a player option follows
+OPTION_EVENT_VARIABLES = frozenset(
+    {
+        "Bass",
+        "Treble",
+        "Loudness",
+        "NightMode",
+        "DialogLevel",
+        "SpeechEnhanceEnabled",
+        "AudioDelay",
+        "SubEnabled",
+        "SubGain",
+        "SubCrossover",
+        "SurroundEnabled",
+        "SurroundLevel",
+        "MusicSurroundLevel",
+        "SurroundMode",
+        "Volume_LF",
+        "Volume_RF",
+    }
 )
 
 # How much of the queue one itemWindow response describes. A speaker only asks for a new
