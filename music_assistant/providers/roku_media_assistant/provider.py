@@ -20,9 +20,6 @@ from .player import MediaAssistantPlayer
 
 if TYPE_CHECKING:
     from async_upnp_client.utils import CaseInsensitiveDict
-    from music_assistant_models.enums import ProviderFeature
-
-SUPPORTED_FEATURES: set[ProviderFeature] = set()
 
 
 class MediaAssistantprovider(PlayerProvider):
@@ -30,11 +27,6 @@ class MediaAssistantprovider(PlayerProvider):
 
     roku_players: ClassVar[dict[str, MediaAssistantPlayer]] = {}
     lock: asyncio.Lock
-
-    @property
-    def supported_features(self) -> set[ProviderFeature]:
-        """Return the features supported by this Provider."""
-        return SUPPORTED_FEATURES
 
     async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
         """Return Config entries to setup this provider."""

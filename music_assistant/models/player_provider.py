@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import inspect
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, final
 
 from music_assistant_models.enums import ProviderFeature
 from music_assistant_models.errors import PlayerUnavailableError
@@ -23,6 +23,7 @@ class PlayerProvider(Provider):
     """
 
     @property
+    @final
     def supported_features(self) -> set[ProviderFeature]:
         """Return the features supported by this Provider."""
         # every player can be removed, which the players controller handles itself

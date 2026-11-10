@@ -6,7 +6,6 @@ from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any, cast
 from urllib.parse import urlparse
 
-from music_assistant_models.enums import ProviderFeature
 from pywam.device import SPEAKER_MODELS
 
 from music_assistant.constants import CONF_ENTRY_MANUAL_DISCOVERY_IPS
@@ -27,11 +26,6 @@ class SamsungWamProvider(PlayerProvider):
     supported_models: dict[str, dict[str, Any]]
     groups: GroupingCoordinator
     discovery: DiscoveryHandler
-
-    @property
-    def supported_features(self) -> set[ProviderFeature]:
-        """Return the features supported by this Provider."""
-        return {ProviderFeature.SYNC_PLAYERS}
 
     def get_players(self) -> list[WamPlayer]:
         """Return all registered WAM players."""

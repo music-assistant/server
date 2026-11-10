@@ -394,7 +394,7 @@ class SendspinProvider(PlayerProvider):
         self, mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
     ) -> None:
         """Initialize a new Sendspin player provider."""
-        super().__init__(mass, manifest, config)
+        super().__init__(mass, manifest, config, {ProviderFeature.SYNC_PLAYERS})
         # Handle config option for manual IP's. Read a default here: at construction the
         # config only carries the server defaults + stored raw values (the provider's typed
         # option entries are resolved and applied by the config controller right after this).
@@ -1109,13 +1109,6 @@ class SendspinProvider(PlayerProvider):
             )
         _check_management_result(result)
         await self.management_get_pairing_config(client_id)
-
-    @property
-    def supported_features(self) -> set[ProviderFeature]:
-        """Return the features supported by this Provider."""
-        return {
-            ProviderFeature.SYNC_PLAYERS,
-        }
 
     async def loaded_in_mass(self) -> None:
         """Call after the provider has been loaded."""
