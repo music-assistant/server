@@ -220,7 +220,14 @@ async def test_restore_puts_back_the_content_a_takeover_replaced() -> None:
     assert queue.repeat_mode == RepeatMode.ALL
     # nothing of the replaced content is left to act on the restored queue
     quiz_buffer.clear.assert_awaited_once()
-    ctrl.mass.cancel_task.assert_any_call(f"prepare_next_audio_buffer_{QUEUE_ID}")
+    for task_id in (
+        f"prepare_next_audio_buffer_{QUEUE_ID}",
+        f"fill_autoplay_tracks_{QUEUE_ID}",
+        f"fill_dynamic_tracks_{QUEUE_ID}",
+    ):
+        # a timer still waiting, or the task it already started
+        ctrl.mass.cancel_timer.assert_any_call(task_id)
+        ctrl.mass.cancel_task.assert_any_call(task_id)
     assert queue_data.prev_state is None
 
 

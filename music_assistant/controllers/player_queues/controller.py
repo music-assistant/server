@@ -1926,9 +1926,15 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         if queue.state != PlaybackState.IDLE:
             await self._handle_stop(queue_id)
         # work still pending for the replaced content (warming its next item, settling the end it
-        # played to) must not act on the restored content
-        self.mass.cancel_task(f"prepare_next_audio_buffer_{queue_id}")
-        self.mass.cancel_task(f"settle_or_resume_{queue_id}")
+        # played to, refilling it) must not act on the restored content
+        for task_id in (
+            f"prepare_next_audio_buffer_{queue_id}",
+            f"settle_or_resume_{queue_id}",
+            f"fill_autoplay_tracks_{queue_id}",
+            f"fill_dynamic_tracks_{queue_id}",
+        ):
+            self.mass.cancel_timer(task_id)
+            self.mass.cancel_task(task_id)
         self._clear(queue_id, skip_stop=True)
         saved = snapshot.data
         queue.shuffle_enabled = saved.queue.shuffle_enabled
