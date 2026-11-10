@@ -571,7 +571,7 @@ def test_plan_sections_ignores_invalid_optional_chance() -> None:
         ),
         pytest.param(
             RateLimited("Rate limited for another 873 seconds", backoff_time=873),
-            "taking no more requests for now. try again in about 15 minutes",
+            "taking no more requests for now. try again in 15 minutes",
             id="rate_limited",
         ),
         pytest.param(

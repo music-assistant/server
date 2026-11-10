@@ -944,7 +944,7 @@ class AIRadioRuntimeMixin:
         except RateLimited as err:
             minutes = ceil(err.backoff_time / 60)
             retry = (
-                f" Try again in about {minutes} minute{'s' if minutes != 1 else ''}."
+                f" Try again in {minutes} minute{'s' if minutes != 1 else ''}."
                 if minutes > 0
                 else " Try again later."
             )
