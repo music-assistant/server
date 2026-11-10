@@ -1526,6 +1526,7 @@ class SendspinPlayer(SendspinBasePlayer):
         self._attr_hidden_by_default = False
         self._attr_private = False
         self._attr_expose_to_ha_by_default = True
+        self._attr_session_only = False
         self._attr_type = PlayerType.PROTOCOL
 
     def event_cb(self, client: SendspinClient, event: ClientEvent) -> None:
@@ -2169,6 +2170,7 @@ class SendspinPlayer(SendspinBasePlayer):
         self._attr_expose_to_ha_by_default = not is_standalone
         self._attr_hidden_by_default = is_standalone
         self._attr_private = is_standalone
+        self._attr_session_only = is_standalone
         # register web/app player as native player type because it doesn't need to be linked
         # every web/app player is just a standalone player.
         self._attr_type = PlayerType.PLAYER if is_standalone else PlayerType.PROTOCOL
@@ -2904,6 +2906,7 @@ class SendspinVisualizerPlayer(SendspinBasePlayer):
     _attr_type = PlayerType.VISUALIZER
     _attr_hidden_by_default = True
     _attr_expose_to_ha_by_default = False
+    _attr_session_only = True
 
     def __init__(
         self,
@@ -3032,3 +3035,4 @@ class SendspinSourcePlayer(SendspinBasePlayer):
     _attr_type = PlayerType.SOURCE
     _attr_hidden_by_default = True
     _attr_expose_to_ha_by_default = False
+    _attr_session_only = True

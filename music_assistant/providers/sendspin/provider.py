@@ -684,6 +684,7 @@ class SendspinProvider(PlayerProvider):
         player._attr_hidden_by_default = False
         player._attr_private = False
         player._attr_expose_to_ha_by_default = True
+        player._attr_session_only = False
         player._attr_type = PlayerType.PROTOCOL
         self.logger.info(
             "Bridge claim applied to existing SendspinPlayer %s (client_id=%s)",

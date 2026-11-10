@@ -408,6 +408,7 @@ class Player(ABC):
     _attr_private: bool = False
     _attr_expose_to_ha_by_default: bool = True
     _attr_enabled_by_default: bool = True
+    _attr_session_only: bool = False
     _attr_needs_setup: bool = False
     _attr_setup_reason: str | None = None
     _attr_supported_sample_rates: list[tuple[int, int]] | None = None
@@ -568,6 +569,16 @@ class Player(ABC):
     def enabled_by_default(self) -> bool:
         """Return if the player should be enabled by default."""
         return self._attr_enabled_by_default
+
+    @property
+    def session_only(self) -> bool:
+        """
+        Return if the player only exists while its device is connected.
+
+        True for something that is no device to keep track of once it is gone, such as
+        a browser tab, an app or a virtual player.
+        """
+        return self._attr_session_only
 
     @property
     def static_group_members(self) -> list[str]:

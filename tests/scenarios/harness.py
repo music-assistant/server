@@ -173,9 +173,8 @@ class FakeProtocol(PlayerProtocol):
         super().__init__(provider, protocol_id)
         # every command received, as a tuple of the command name and its arguments
         self.commands: list[tuple[Any, ...]] = []
-        # whether the protocol exists only while attached, like a browser session; today's
-        # server has no such attribute to report it on
-        self.session_only = device.session_only
+        # whether the protocol exists only while attached, like a browser session
+        self._attr_session_only = device.session_only
         self._device = device
         self._attr_supported_features = set(DEFAULT_FEATURES)
         self._attr_device_info = DeviceInfo(model=f"Fake {provider.domain}", manufacturer="Fake")
