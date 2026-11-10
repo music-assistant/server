@@ -2721,6 +2721,23 @@ class SendspinPlayer(SendspinBasePlayer):
         up to the crossfade duration. Exact handling needs a raw-seek field on
         the flow log entry.
         """
+        if (
+            start := SendspinPlayer._flow_track_start(pq_data, queue_item, flow_position_s)
+        ) is None:
+            return None
+        track_flow_start_s, file_seek_s = start
+        return int((track_flow_start_s - file_seek_s) * 1_000_000)
+
+    @staticmethod
+    def _flow_track_start(
+        pq_data: PlayerQueueData | None, queue_item: QueueItem, flow_position_s: float
+    ) -> tuple[float, float] | None:
+        """
+        Return where the current track starts in the flow stream, and its file seek position.
+
+        The start is stream-time (the flow log counts streamed seconds), the seek media-time.
+        See `_flow_track_offset_us` for which pass of a repeated track is taken.
+        """
         if pq_data is None or queue_item.streamdetails is None:
             return None
         log = pq_data.flow_mode_stream_log
@@ -2738,7 +2755,7 @@ class SendspinPlayer(SendspinBasePlayer):
         file_seek_s = log[match_index].seek_position
         if file_seek_s is None:
             file_seek_s = float(queue_item.streamdetails.seek_position or 0)
-        return int((track_flow_start_s - file_seek_s) * 1_000_000)
+        return track_flow_start_s, file_seek_s
 
     def _timeline_anchored(
         self,
@@ -2765,12 +2782,15 @@ class SendspinPlayer(SendspinBasePlayer):
             return metadata, None
         provider = cast("SendspinProvider", self.provider)
         now_us = provider.server_api.clock.now_us()
-        anchor_us = self._timeline_track_anchor_us(queue, queue_item, now_us)
-        if anchor_us is None:
+        if (start := self._timeline_track_start_us(queue, queue_item, now_us)) is None:
             return metadata, None
-        if anchor_us > now_us:
-            return replace(metadata, track_progress=0), anchor_us
-        progress_ms = (now_us - anchor_us) // 1000
+        track_start_us, file_seek_s = start
+        seek_ms = int(file_seek_s * 1000)
+        if track_start_us > now_us:
+            return replace(metadata, track_progress=seek_ms), track_start_us
+        # The timeline runs in stream-time; the position is media-time, like the queue's.
+        speed = float(queue_item.extra_attributes.get("playback_speed") or 1.0)
+        progress_ms = seek_ms + int((now_us - track_start_us) * speed) // 1000
         if metadata.track_duration:
             progress_ms = min(progress_ms, metadata.track_duration)
         return replace(metadata, track_progress=progress_ms), None
@@ -2788,16 +2808,34 @@ class SendspinPlayer(SendspinBasePlayer):
         :param queue_item: The track playing now.
         :param now_us: The server clock now.
         """
+        if (start := self._timeline_track_start_us(queue, queue_item, now_us)) is None:
+            return None
+        track_start_us, file_seek_s = start
+        return track_start_us - int(file_seek_s * 1_000_000)
+
+    def _timeline_track_start_us(
+        self, queue: PlayerQueue | None, queue_item: QueueItem, now_us: int
+    ) -> tuple[int, float] | None:
+        """
+        Return the server-clock time the current track's audio starts, and its seek position.
+
+        None until the first chunk commits, or while the flow log hasn't recorded the track.
+
+        :param queue: The queue the track plays from.
+        :param queue_item: The track playing now.
+        :param now_us: The server clock now.
+        """
         timeline_start_us = self.playback_session.flow_track_anchor_us(0)
         if timeline_start_us is None:
             return None
         pq_data = self.mass.player_queues.queue_data_or_none(queue.queue_id) if queue else None
-        offset_us = self._flow_track_offset_us(
+        start = self._flow_track_start(
             pq_data, queue_item, (now_us - timeline_start_us) / 1_000_000
         )
-        if offset_us is None:
+        if start is None:
             return None
-        return timeline_start_us + offset_us
+        track_flow_start_s, file_seek_s = start
+        return timeline_start_us + int(track_flow_start_s * 1_000_000), file_seek_s
 
     def _schedule_position_republish(self) -> None:
         """Re-publish the position from the flow stream's timeline, without the artwork."""

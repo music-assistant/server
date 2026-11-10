@@ -31,12 +31,13 @@ _NOW_US = 50_000_000
 _QUEUE_PROGRESS_MS = 4_500
 
 
-def _queue_item(seek_position: int = 0) -> QueueItem:
+def _queue_item(seek_position: int = 0, playback_speed: float | None = None) -> QueueItem:
     return cast(
         "QueueItem",
         SimpleNamespace(
             queue_item_id=_QUEUE_ITEM_ID,
             streamdetails=SimpleNamespace(seek_position=seek_position),
+            extra_attributes={} if playback_speed is None else {"playback_speed": playback_speed},
         ),
     )
 
@@ -123,6 +124,43 @@ def test_a_seek_counts_from_the_seek_position(monkeypatch: pytest.MonkeyPatch) -
     )
 
     assert metadata.track_progress == 61_500
+
+
+def test_a_sped_up_item_reports_media_time(monkeypatch: pytest.MonkeyPatch) -> None:
+    """At 2x, ten seconds after the audio started is twenty seconds into the episode."""
+    player = _player(monkeypatch, timeline_start_us=_NOW_US - 10_000_000)
+
+    metadata, _ = player._timeline_anchored(
+        _metadata(), _queue(), _queue_item(playback_speed=2.0), is_playing=True
+    )
+
+    assert metadata.track_progress == 20_000
+
+
+def test_a_sped_up_seek_keeps_the_seek_in_media_time(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Only the time since the audio started is scaled, not where the seek landed."""
+    player = _player(monkeypatch, timeline_start_us=_NOW_US - 10_000_000, seek_position=60)
+
+    metadata, _ = player._timeline_anchored(
+        _metadata(), _queue(), _queue_item(seek_position=60, playback_speed=1.5), is_playing=True
+    )
+
+    assert metadata.track_progress == 75_000
+
+
+def test_a_seek_not_heard_yet_takes_effect_at_its_position(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Committed but still the lead time away: the seek position is scheduled for its audio."""
+    first_chunk_us = _NOW_US + 700_000
+    player = _player(monkeypatch, timeline_start_us=first_chunk_us, seek_position=60)
+
+    metadata, timestamp_us = player._timeline_anchored(
+        _metadata(), _queue(), _queue_item(seek_position=60), is_playing=True
+    )
+
+    assert metadata.track_progress == 60_000
+    assert timestamp_us == first_chunk_us
 
 
 def test_without_a_timeline_the_queue_position_stays(monkeypatch: pytest.MonkeyPatch) -> None:
