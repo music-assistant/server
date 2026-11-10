@@ -50,20 +50,18 @@ class ShareLinkResolver:
         self,
         payload: SharePayload,
         allow_search: bool = True,
-        hydrate_track: bool = True,
-        search_provider_instance_ids: set[str] | None = None,
     ) -> MediaItemType | None:
         """Resolve a shared track, album, or artist using known IDs before search."""
         media_type = MediaType(payload.type)
-        item = await self._resolve_by_external_ids(payload, media_type, hydrate_track)
+        item = await self._resolve_by_external_ids(payload, media_type)
         if item is not None or not allow_search:
             return item
         if media_type == MediaType.TRACK:
-            return await self._resolve_track_with_core(payload, search_provider_instance_ids)
+            return await self._resolve_track_with_core(payload)
         return await self._resolve_by_search(payload, media_type)
 
     async def _resolve_by_external_ids(
-        self, payload: SharePayload, media_type: MediaType, hydrate_track: bool
+        self, payload: SharePayload, media_type: MediaType
     ) -> MediaItemType | None:
         external_ids: tuple[tuple[ExternalID, str | None], ...]
         if media_type == MediaType.TRACK:
@@ -127,8 +125,6 @@ class ShareLinkResolver:
                         )
                     ):
                         continue
-                    if not hydrate_track:
-                        return item
                     try:
                         return await self.mass.music.tracks.get(
                             item.item_id, item.provider, allow_update_metadata=False
@@ -180,11 +176,9 @@ class ShareLinkResolver:
     async def _resolve_track_with_core(
         self,
         payload: SharePayload,
-        provider_instance_ids: set[str] | None = None,
     ) -> Track | None:
         """Resolve a shared track through the core provider matcher."""
-        if provider_instance_ids is None:
-            provider_instance_ids = await self._searchable_music_provider_instances()
+        provider_instance_ids = await self._searchable_music_provider_instances()
         shared_track = self._track_from_payload(payload)
         enrichment = await self.mass.music.tracks.enrich_provider_mappings(
             shared_track,
@@ -259,14 +253,12 @@ class ShareLinkResolver:
         return media_item
 
     @staticmethod
-    def _playlist_item_from_payload(
-        payload: SharePayload, include_isrc: bool = True
-    ) -> PlaylistItem:
+    def _playlist_item_from_payload(payload: SharePayload) -> PlaylistItem:
         """Convert a track share payload into the metadata form consumed by core."""
         metadata = {"media_type": MediaType.TRACK.value, "name": payload.title}
         if payload.version:
             metadata["version"] = payload.version
-        if include_isrc and payload.isrc and is_valid_isrc(payload.isrc):
+        if payload.isrc and is_valid_isrc(payload.isrc):
             metadata["isrc"] = normalize_external_id(ExternalID.ISRC, payload.isrc)
         if payload.mbid:
             metadata["mbid"] = normalize_external_id(ExternalID.MB_RECORDING, payload.mbid)

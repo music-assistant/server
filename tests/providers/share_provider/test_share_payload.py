@@ -5,13 +5,10 @@ from __future__ import annotations
 import base64
 import json
 from typing import cast
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from music_assistant_models.enums import ExternalID, MediaType
-from music_assistant_models.errors import (
-    InvalidDataError,
-)
 from music_assistant_models.media_items import (
     Album,
     Artist,
@@ -21,7 +18,6 @@ from music_assistant_models.media_items import (
 
 from music_assistant.providers.share_provider import (
     SharePayload,
-    TrackStub,
 )
 from music_assistant.providers.share_provider.links import (
     build_provider_links,
@@ -39,7 +35,7 @@ from .helpers import BARCODE, _mass, _provider, _track
 @pytest.mark.parametrize(
     ("configured_base_url", "expected_base_url"),
     [
-        (None, "https://share.music-assistant.io"),
+        (None, "https://app.music-assistant.io/share"),
         ("https://shares.example", "https://shares.example"),
     ],
 )
@@ -62,26 +58,6 @@ async def test_generate_share_link_encodes_payload_in_fragment(
     assert payload.type == "track"
     assert payload.title == "Song"
     mass.music.get_item_by_uri.assert_awaited_once_with("catalog--1://track/track")
-
-
-async def test_generate_share_link_rejects_oversized_playlist() -> None:
-    """Reject playlist payloads that cannot fit in a single API DataChannel message."""
-    provider = _provider()
-    mass = _mass(provider)
-    mass.music.get_item_by_uri = AsyncMock(return_value=MagicMock())
-    payload = SharePayload(
-        type="playlist",
-        title="Playlist",
-        tracks=[TrackStub(title="x" * (50 * 1024))],
-    )
-
-    with (
-        patch.object(provider, "_build_payload", new=AsyncMock(return_value=payload)),
-        pytest.raises(InvalidDataError) as err,
-    ):
-        await provider.generate_share_link("library://playlist/1")
-
-    assert err.value.translation_key == "share_playlist_too_large"
 
 
 async def test_build_album_payload_includes_barcode_mbid_and_provider_link() -> None:
@@ -195,7 +171,7 @@ async def test_share_base_url_is_an_instance_config_option() -> None:
     entries = await _provider().get_config_entries()
     assert len(entries) == 1
     assert entries[0].key == "share_base_url"
-    assert entries[0].default_value == "https://share.music-assistant.io"
+    assert entries[0].default_value == "https://app.music-assistant.io/share"
 
 
 @pytest.mark.parametrize(
@@ -312,19 +288,6 @@ def test_payload_uses_compact_provider_and_artwork_refs_without_version_field() 
     assert '"v"' not in decoded_json
 
 
-def test_playlist_payload_omits_null_track_fields() -> None:
-    """Nested playlist stubs omit null fields from their serialized payload."""
-    payload = SharePayload(
-        type="playlist",
-        title="Playlist",
-        tracks=[TrackStub(title="Unversioned track")],
-    )
-
-    decoded = json.loads(base64.urlsafe_b64decode(payload.to_base64()).decode())
-
-    assert decoded["tracks"] == [{"title": "Unversioned track"}]
-
-
 def test_build_provider_links_ignores_invalid_mapping_urls() -> None:
     """Provider mappings only expose URLs on their approved HTTPS host."""
     item = MagicMock()
@@ -353,10 +316,11 @@ def test_provider_links_reject_http_lookalike_hosts_and_userinfo(url: str) -> No
     assert not is_valid_provider_link("spotify", url)
 
 
-async def test_payload_rejects_unsupported_media_types() -> None:
+@pytest.mark.parametrize("media_type", ["podcast", "playlist"])
+def test_payload_rejects_unsupported_media_types(media_type: str) -> None:
     """Reject unknown media types before dispatching a share payload."""
     encoded = base64.urlsafe_b64encode(
-        json.dumps({"type": "podcast", "title": "Podcast"}).encode()
+        json.dumps({"type": media_type, "title": "Unsupported"}).encode()
     ).decode()
 
     with pytest.raises(ValueError, match="Unsupported share payload"):
@@ -390,44 +354,18 @@ def test_payload_rejects_invalid_track_duration(duration: object) -> None:
         SharePayload.from_base64(encoded)
 
 
-@pytest.mark.parametrize("duration", [True, -1, "218", 1.5])
-def test_payload_rejects_invalid_playlist_track_duration(duration: object) -> None:
-    """Playlist durations are nonnegative integer seconds when present."""
-    encoded = base64.urlsafe_b64encode(
-        json.dumps(
-            {
-                "type": "playlist",
-                "title": "Mix",
-                "tracks": [{"title": "Track", "duration": duration}],
-            }
-        ).encode()
-    ).decode()
-
-    with pytest.raises(ValueError, match="Invalid share playlist track duration"):
-        SharePayload.from_base64(encoded)
-
-
 def test_payload_drops_invalid_optional_links_and_artwork() -> None:
     """A malformed optional ref does not invalidate otherwise usable share data."""
     encoded = base64.urlsafe_b64encode(
         json.dumps(
             {
-                "type": "playlist",
-                "title": "Playlist",
+                "type": "track",
+                "title": "Track",
                 "art_ref": "x:evil.example:/art.jpg",
                 "provider_refs": {
-                    "spotify": "/playlist/123",
-                    "unknown": "/playlist/456",
+                    "spotify": "/track/123",
+                    "unknown": "/track/456",
                 },
-                "tracks": [
-                    {
-                        "title": "Track",
-                        "provider_refs": {
-                            "tidal": "/track/123",
-                            "unknown": "/track/456",
-                        },
-                    }
-                ],
             }
         ).encode()
     ).decode()
@@ -435,6 +373,4 @@ def test_payload_drops_invalid_optional_links_and_artwork() -> None:
     payload = SharePayload.from_base64(encoded)
 
     assert payload.art_ref is None
-    assert payload.provider_refs == {"spotify": "/playlist/123"}
-    assert payload.tracks is not None
-    assert payload.tracks[0].provider_refs == {"tidal": "/track/123"}
+    assert payload.provider_refs == {"spotify": "/track/123"}

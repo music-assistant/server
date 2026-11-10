@@ -15,32 +15,14 @@ from music_assistant.providers.share_provider.links import (
     expand_provider_ref,
 )
 
-SUPPORTED_SHARE_MEDIA_TYPES = frozenset(
-    {MediaType.TRACK, MediaType.ALBUM, MediaType.ARTIST, MediaType.PLAYLIST}
-)
-
-
-@dataclass
-class TrackStub:
-    """Minimal track representation inside a playlist payload."""
-
-    title: str
-    artist: str | None = None
-    artists: list[str] | None = None
-    isrc: str | None = None
-    mbid: str | None = None
-    mb_track: str | None = None
-    album: str | None = None
-    duration: int | None = None
-    provider_refs: dict[str, str] | None = None
-    version: str | None = None
+SUPPORTED_SHARE_MEDIA_TYPES = frozenset({MediaType.TRACK, MediaType.ALBUM, MediaType.ARTIST})
 
 
 @dataclass
 class SharePayload:
     """Provider-agnostic share payload encoded in the share link."""
 
-    type: Literal["track", "album", "artist", "playlist"]
+    type: Literal["track", "album", "artist"]
     title: str
     artist: str | None = None
     artists: list[str] | None = None
@@ -51,7 +33,6 @@ class SharePayload:
     barcode: str | None = None
     art_ref: str | None = None
     provider_refs: dict[str, str] | None = None
-    tracks: list[TrackStub] | None = None
     version: str | None = None
     duration: int | None = None
 
@@ -104,54 +85,6 @@ class SharePayload:
         provider_refs = _validated_provider_refs(
             data.get("provider_refs"), "Invalid share provider references"
         )
-        raw_tracks = data.get("tracks")
-        tracks: list[TrackStub] | None = None
-        if raw_tracks is not None:
-            if not isinstance(raw_tracks, list):
-                raise ValueError("Invalid share playlist tracks")
-            tracks = []
-            for raw_track in raw_tracks:
-                if not isinstance(raw_track, dict) or not isinstance(raw_track.get("title"), str):
-                    raise TypeError("Invalid share playlist track")
-                optional_fields = ("artist", "version", "isrc", "mbid", "mb_track", "album")
-                if any(
-                    raw_track.get(key) is not None and not isinstance(raw_track[key], str)
-                    for key in optional_fields
-                ):
-                    raise ValueError("Invalid share playlist track metadata")
-                raw_artists = raw_track.get("artists")
-                if raw_artists is not None and (
-                    not isinstance(raw_artists, list)
-                    or any(
-                        not isinstance(artist, str) or not artist.strip() for artist in raw_artists
-                    )
-                ):
-                    raise ValueError("Invalid share playlist artist credits")
-                track_artists = (
-                    [artist.strip() for artist in raw_artists] if raw_artists is not None else None
-                )
-                track_duration = raw_track.get("duration")
-                if track_duration is not None and (
-                    type(track_duration) is not int or track_duration < 0
-                ):
-                    raise ValueError("Invalid share playlist track duration")
-                tracks.append(
-                    TrackStub(
-                        title=raw_track["title"],
-                        artist=raw_track.get("artist"),
-                        artists=track_artists,
-                        version=raw_track.get("version"),
-                        isrc=raw_track.get("isrc"),
-                        mbid=raw_track.get("mbid"),
-                        mb_track=raw_track.get("mb_track"),
-                        album=raw_track.get("album"),
-                        duration=track_duration,
-                        provider_refs=_validated_provider_refs(
-                            raw_track.get("provider_refs"),
-                            "Invalid share playlist provider references",
-                        ),
-                    )
-                )
         return cls(
             type=data["type"],
             title=data["title"],
@@ -165,7 +98,6 @@ class SharePayload:
             barcode=data.get("barcode"),
             art_ref=art_ref,
             provider_refs=provider_refs,
-            tracks=tracks,
             duration=share_duration,
         )
 

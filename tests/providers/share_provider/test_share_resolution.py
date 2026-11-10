@@ -94,7 +94,7 @@ async def test_resolve_uses_controller_external_id_before_search(
     controller.get_item_by_external_id = AsyncMock(return_value=item)
     _mass(provider).music.tracks.get = AsyncMock(return_value=item)
     encoded = SharePayload(
-        type=cast("Literal['track', 'album', 'artist', 'playlist']", media_type.value),
+        type=cast("Literal['track', 'album', 'artist']", media_type.value),
         title="Item",
         isrc=external_ids.get("isrc"),
         mbid=external_ids.get("mbid"),
