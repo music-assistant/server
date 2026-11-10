@@ -234,6 +234,7 @@ def test_last_resort_does_not_fail_on_a_leftover_it_cannot_remove(
     locked = cache_path / "runtime" / "locked"
     locked.mkdir(parents=True)
     (locked / "held").touch()
+    (cache_path / "runtime").chmod(0o755)
     locked.chmod(0o500)
     try:
         result = Path(prepare_runtime_dir(str(cache_path)))
@@ -241,3 +242,4 @@ def test_last_resort_does_not_fail_on_a_leftover_it_cannot_remove(
         locked.chmod(0o700)
 
     assert result == cache_path / "runtime"
+    assert stat.S_IMODE(result.stat().st_mode) == 0o700

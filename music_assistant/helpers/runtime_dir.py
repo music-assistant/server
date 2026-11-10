@@ -63,6 +63,7 @@ def prepare_runtime_dir(cache_path: str) -> str:
     fallback_dir = cache_dir / "runtime"
     shutil.rmtree(fallback_dir, ignore_errors=True)
     fallback_dir.mkdir(mode=0o700, exist_ok=True)
+    fallback_dir.chmod(0o700)
     LOGGER.debug("Runtime dir: %s", fallback_dir)
     return str(fallback_dir)
 
