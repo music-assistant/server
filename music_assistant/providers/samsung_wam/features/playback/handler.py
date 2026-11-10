@@ -9,6 +9,7 @@ from music_assistant_models.errors import PlayerCommandFailed
 from pywam.lib.exceptions import PywamError
 from pywam.lib.url import UrlMediaItem
 
+from music_assistant.helpers.player import served_duration
 from music_assistant.providers.samsung_wam.features.base import (
     WamPlayerFeatureBase,
     handle_pywam_errors,
@@ -84,7 +85,7 @@ class PlaybackHandler(WamPlayerFeatureBase):
 
         stream_url = await self.mass.streams.resolve_stream_url(self.player.player_id, media)
 
-        duration = media.stream_duration or media.duration
+        duration = served_duration(media, stream_url)
         item = UrlMediaItem(
             url=stream_url,
             title=media.title,

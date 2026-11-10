@@ -10,6 +10,7 @@ from urllib.parse import urlencode
 from music_assistant_models.enums import MediaType, PlaybackState, PlayerFeature
 
 from music_assistant.constants import CONF_ENTRY_HTTP_PROFILE
+from music_assistant.helpers.player import served_duration
 from music_assistant.models.player import Player, PlayerMedia
 
 from .constants import CONF_ROKU_APP_ID
@@ -192,7 +193,7 @@ class MediaAssistantPlayer(Player):
                 ),
                 "albumArt": ("" if self.flow_mode else media.image_url or ""),
                 "songFormat": "flac",
-                "duration": media.stream_duration or media.duration or "",
+                "duration": served_duration(media, stream_url) or "",
                 "isLive": (
                     "true"
                     if media.media_type == MediaType.RADIO
@@ -249,7 +250,7 @@ class MediaAssistantPlayer(Player):
                         "artistName": media.artist,
                         "albumArt": media.image_url,
                         "songFormat": "flac",
-                        "duration": media.stream_duration or media.duration,
+                        "duration": served_duration(media, stream_url),
                         "enqueue": "true",
                     },
                 )

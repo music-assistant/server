@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, cast
+from unittest.mock import MagicMock
 
 import pytest
 from music_assistant_models.player import PlayerMedia
@@ -59,3 +60,20 @@ async def test_unset_metadata_is_left_out(player: HomeAssistantPlayer, hass_doma
     for key in ("title", "artist", "album", "albumName", "imageUrl", "images", "duration"):
         assert key not in metadata
     assert None not in metadata.values()
+
+
+@pytest.mark.parametrize(
+    ("stream_path", "duration"),
+    [("flow", 198), ("single", 4)],
+    ids=["flow", "single_item"],
+)
+async def test_only_a_flow_gets_the_whole_track_after_a_seek(
+    player: HomeAssistantPlayer, stream_path: str, duration: int
+) -> None:
+    """After a seek, a flow stream carries on into the next track, so it shows the whole track."""
+    streams = cast("MagicMock", player.mass).streams
+    streams.resolve_stream_url.return_value = f"{streams.base_url}/{stream_path}/s1/q1/i1/x.mp3"
+    media = PlayerMedia(uri="library://track/1", title="MA Track", duration=198, stream_duration=4)
+    metadata = await _play_metadata(player, "cast", media)
+
+    assert metadata["duration"] == duration
