@@ -67,6 +67,7 @@ class ShareProvider(PluginProvider):
                 key=CONF_SHARE_BASE_URL,
                 type=ConfigEntryType.STRING,
                 default_value=DEFAULT_SHARE_BASE_URL,
+                advanced=True,
             ),
         )
 

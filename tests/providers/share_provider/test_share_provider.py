@@ -17,6 +17,15 @@ from music_assistant.providers.share_provider import ShareProvider
 from .helpers import _mass, _provider
 
 
+async def test_share_page_address_is_an_advanced_setting() -> None:
+    """The default share page works without exposing a technical configuration option."""
+    entries = await _provider().get_config_entries()
+
+    entry = next(entry for entry in entries if entry.key == "share_base_url")
+    assert entry.advanced is True
+    assert entry.default_value == "https://app.music-assistant.io/share"
+
+
 async def test_generate_share_link_rejects_playlist_without_fetching_tracks() -> None:
     """Direct API requests cannot generate a playlist share link."""
     provider = _provider()
