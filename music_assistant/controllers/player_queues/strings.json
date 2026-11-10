@@ -27,8 +27,8 @@
         "global": "Follow the Player Queues default."
       },
       "disabled_reasons": {
-        "similar": "No music or metadata provider that can supply similar tracks is currently available.",
-        "similar_artists": "No music provider that can supply similar artists is currently available."
+        "similar": "No music source or metadata provider that can supply similar tracks is currently available.",
+        "similar_artists": "No music source that can supply similar artists is currently available."
       }
     },
     "autoplay_playlist": {
