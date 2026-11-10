@@ -1340,14 +1340,7 @@ class SendspinPlaybackSession:
                 # Mark EOF so that catchup processors promoted after this
                 # point also get flushed (see _promote_join_catchup_processor).
                 self._producer_eof_sent = True
-                # Signal EOF to transform pipelines so ffmpeg flushes its
-                # internal buffers instead of blocking on the last read.
-                _, pipelines = await self._snapshot_active_pipelines()
-                for _, pipeline in pipelines:
-                    async with pipeline.push_lock:
-                        if pipeline.processor is not None and pipeline.config.requires_transform:
-                            with suppress(Exception):
-                                await pipeline.processor.write_eof()
+                await self._write_eof_to_member_pipelines()
                 # Producer finished normally; send a None sentinel so the
                 # consumer exits cleanly.  The queue may be full, so retry
                 # with a deadline before falling back to cancellation.
@@ -1927,6 +1920,15 @@ class SendspinPlaybackSession:
             return None
         pipeline.ready = True
         return bytes(transformed)
+
+    async def _write_eof_to_member_pipelines(self) -> None:
+        """Flush the member DSP processes, so their last reads return instead of blocking."""
+        _, pipelines = await self._snapshot_active_pipelines()
+        for _, pipeline in pipelines:
+            async with pipeline.push_lock:
+                if pipeline.processor is not None and pipeline.config.requires_transform:
+                    with suppress(Exception):
+                        await pipeline.processor.write_eof()
 
     async def _close_member_ffmpeg(self, processor: _BufferedFfmpegProcessor) -> None:
         """Close an ffmpeg processor, suppressing errors."""
