@@ -824,11 +824,37 @@ async def test_a_catch_up_runs_as_one_background_task(
     await provider.get_playlist_metadata(second)
 
     queue = _mass(provider).tasks.run_background_task
-    assert queue.call_count == 1
-    assert queue.call_args.kwargs["task_id"] == f"{INSTANCE_ID}_ai_generate"
+    assert {call.kwargs["task_id"] for call in queue.call_args_list} == {
+        f"{INSTANCE_ID}_ai_generate"
+    }
+    assert len(_tasks(provider)) == 1
 
     release.set()
     await _settle(provider)
+    assert _engine_calls(provider) == 2
+
+
+async def test_a_pass_cancelled_while_pending_is_started_again(
+    provider: PlaylistMetadataProvider,
+) -> None:
+    """A pass an admin cancels before it ran does not keep the next one from starting."""
+    _set_config(provider, **{CONF_DESCRIPTIONS: False})
+    first, second = _smart_playlist(item_id="1"), _smart_playlist(item_id="2")
+    _register(provider, first, second)
+    queue = _mass(provider).tasks.run_background_task
+    run_queued = queue.side_effect
+    # like the tasks controller: the pass waits in the queue, and is cancelled there
+    # without its handler ever running
+    queue.side_effect = None
+
+    await provider.get_playlist_metadata(first)
+    assert queue.call_count == 1
+    queue.side_effect = run_queued
+
+    await provider.get_playlist_metadata(second)
+    await _settle(provider)
+
+    assert queue.call_count == 2
     assert _engine_calls(provider) == 2
 
 

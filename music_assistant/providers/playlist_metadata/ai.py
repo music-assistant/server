@@ -214,8 +214,6 @@ class AIArtwork:
     _pending: dict[str, None]
     # the library ids of the playlists waiting to be queued again, which a refresh leaves be
     _waiting: set[str]
-    # whether a pass is queued or running, so a second one is not started
-    _working: bool
     # the metadata refreshes running per playlist, each set once it has returned
     _refreshing: dict[str, set[asyncio.Event]]
     # set when the provider unloads, so nothing is queued afterwards
@@ -240,7 +238,6 @@ class AIArtwork:
         self._generation = 0
         self._pending = {}
         self._waiting = set()
-        self._working = False
         self._refreshing = {}
         self._stopped = False
 
@@ -806,10 +803,9 @@ class AIArtwork:
 
     def _start(self) -> None:
         """Start a generation pass, unless one is queued or running."""
-        if self._working or not self._pending:
+        if not self._pending:
             return
-        # set before it is queued, as a task the queue starts at once can queue more work
-        self._working = True
+        # a pass that is still queued or running is kept, and takes up what was queued since
         self.mass.tasks.run_background_task(
             task_id=self._task_id("generate"),
             name="Generate AI playlist artwork",
@@ -820,22 +816,19 @@ class AIArtwork:
 
     async def _work(self) -> None:
         """Generate what the queued playlists are missing, one playlist at a time."""
-        try:
-            while self._pending and not self._stopped:
-                item_id = next(iter(self._pending))
-                del self._pending[item_id]
-                try:
-                    await self._generate(item_id)
-                except Exception as err:
-                    # one playlist failing must not stop the others
-                    self.logger.warning(
-                        "Could not generate the AI artwork of playlist %s: %s",
-                        item_id,
-                        err,
-                        exc_info=err,
-                    )
-        finally:
-            self._working = False
+        while self._pending and not self._stopped:
+            item_id = next(iter(self._pending))
+            del self._pending[item_id]
+            try:
+                await self._generate(item_id)
+            except Exception as err:
+                # one playlist failing must not stop the others
+                self.logger.warning(
+                    "Could not generate the AI artwork of playlist %s: %s",
+                    item_id,
+                    err,
+                    exc_info=err,
+                )
 
     async def _generate(self, item_id: str) -> None:
         """
