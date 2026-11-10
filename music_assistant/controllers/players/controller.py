@@ -607,7 +607,9 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         Return the active sleep timer expiry timestamp for the player.
 
         :param player_id: Player ID to check.
+        :raises InsufficientPermissions: if the current user may not use the player.
         """
+        self.check_player_access(player_id)
         player = self._get_player_with_redirect(player_id)
         return player.sleep_timer_expires_at
 
@@ -627,7 +629,9 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         :param player_id: Player ID to set the timer for.
         :param seconds: Delay in seconds before playback is stopped, for the DURATION mode.
         :param mode: The point at which playback is stopped.
+        :raises InsufficientPermissions: if the current user may not use the player.
         """
+        self.check_player_access(player_id)
         if mode in (SleepTimerMode.END_OF_ITEM, SleepTimerMode.END_OF_CHAPTER):
             player = self._get_player_with_redirect(player_id)
             # the queue stops itself at that point, shows it on the player and raises when
@@ -667,7 +671,9 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         Clear the active sleep timer for the player.
 
         :param player_id: Player ID to clear the timer for.
+        :raises InsufficientPermissions: if the current user may not use the player.
         """
+        self.check_player_access(player_id)
         player = self._get_player_with_redirect(player_id)
         self._clear_sleep_timer(player)
 
