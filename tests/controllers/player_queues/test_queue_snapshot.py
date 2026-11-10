@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import asyncio
 import time
+from contextlib import suppress
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock, Mock
+from unittest.mock import AsyncMock, MagicMock, Mock, patch
 
 from music_assistant_models.enums import (
     ContentType,
@@ -27,6 +28,7 @@ from music_assistant_models.streamdetails import StreamDetails
 from music_assistant_models.unique_list import UniqueList
 
 from music_assistant.controllers.player_queues import PlayerQueuesController
+from music_assistant.controllers.player_queues.helpers import CompareState
 from music_assistant.controllers.player_queues.state import PlayerQueueData
 from music_assistant.controllers.streams.audio_buffer import AudioBuffer
 
@@ -88,12 +90,24 @@ def _controller() -> Any:
     ctrl = PlayerQueuesController.__new__(PlayerQueuesController)
     ctrl.logger = Mock()
     ctrl.mass = MagicMock()
+    tasks: dict[str, asyncio.Task[Any]] = {}
 
-    def _create_task(target: Any, *args: Any, **_kwargs: Any) -> asyncio.Task[Any]:
+    def _create_task(
+        target: Any, *args: Any, task_id: str | None = None, **_kwargs: Any
+    ) -> asyncio.Task[Any]:
         coro = target if asyncio.iscoroutine(target) else target(*args)
-        return asyncio.get_running_loop().create_task(coro)
+        task = asyncio.get_running_loop().create_task(coro)
+        if task_id is not None:
+            tasks[task_id] = task
+        return task
+
+    def _cancel_task(task_id: str) -> None:
+        if task := tasks.pop(task_id, None):
+            task.cancel()
 
     ctrl.mass.create_task.side_effect = _create_task
+    ctrl.mass.cancel_task.side_effect = _cancel_task
+    ctrl.mass.tracked_tasks = tasks
     ctrl._smart_shuffle = MagicMock()
     ctrl._smart_shuffle.is_enabled.return_value = False
     ctrl._managed_pool = MagicMock()
@@ -181,6 +195,53 @@ async def test_restore_puts_back_the_content_a_takeover_replaced() -> None:
     assert queue_data.userid == "user-1"
     # a setting changed after the snapshot is not part of the content
     assert queue.repeat_mode == RepeatMode.ALL
+
+
+async def test_restore_is_not_settled_by_the_end_of_the_replaced_content() -> None:
+    """The end the takeover's last item played to does not mark the restored queue as ended."""
+    ctrl = _controller()
+    queue_data = ctrl._queue_data[QUEUE_ID]
+    queue = queue_data.queue
+    # a plain queue parked on its last item, so only the end-of-queue handling can move it
+    ctrl.store_sources(queue, [])
+    queue.is_dynamic = False
+    queue_data.enqueued_media_items = []
+    queue.current_index = 2
+    queue.current_item = queue_data.items[2]
+    queue.next_item = None
+    ctrl.mass.players.get_player.return_value = None
+    snapshot = ctrl.snapshot(QUEUE_ID)
+    _take_over_like_a_quiz(ctrl)
+    # repeat would wrap the last item on to the first, which keeps the queue from ending at all
+    queue.repeat_mode = RepeatMode.OFF
+    quiz_item = queue_data.items[0]
+    queue_data.served_item_ids.add(quiz_item.queue_item_id)
+    played_to_the_end = CompareState(
+        queue_id=QUEUE_ID,
+        state=PlaybackState.PLAYING,
+        current_item_id=quiz_item.queue_item_id,
+        next_item_id=None,
+        current_item=quiz_item,
+        elapsed_time=180,
+        last_playing_elapsed_time=180,
+        stream_title=None,
+        codec_type=None,
+        output_player_ids=None,
+    )
+    stopped = CompareState(**{**played_to_the_end, "state": PlaybackState.IDLE})
+    ctrl._handle_end_of_queue(queue, played_to_the_end, stopped)
+    settle = ctrl.mass.tracked_tasks[f"settle_or_resume_{QUEUE_ID}"]
+
+    await ctrl.restore(QUEUE_ID, snapshot)
+    with (
+        patch("music_assistant.controllers.player_queues.playback_tracker.asyncio.sleep"),
+        suppress(asyncio.CancelledError),
+    ):
+        await settle
+
+    assert queue.current_item is queue_data.items[2]
+    assert queue.ended is False
+    assert queue.resume_pos == 42
 
 
 async def test_snapshot_is_detached_from_the_live_queue() -> None:
