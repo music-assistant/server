@@ -27,6 +27,7 @@ if TYPE_CHECKING:
     from music_assistant.mass import MusicAssistant
 
 PLAYER_ID = "test_player_1"
+GROUP_ID = "test_group_1"
 PROVIDER = "test_provider"
 
 
@@ -52,9 +53,11 @@ class _TestProvider:
 class _TestPlayer(Player):
     """A player without a removal hook of its own."""
 
-    def __init__(self, provider: _TestProvider, player_type: PlayerType) -> None:
+    def __init__(
+        self, provider: _TestProvider, player_type: PlayerType, player_id: str = PLAYER_ID
+    ) -> None:
         """Initialize the test player."""
-        super().__init__(provider, PLAYER_ID)  # type: ignore[arg-type]
+        super().__init__(provider, player_id)  # type: ignore[arg-type]
         self._attr_name = "Test Player"
         self._attr_type = player_type
         self._attr_available = True
@@ -141,6 +144,46 @@ async def test_the_removal_hook_is_called_once_the_player_is_gone(mass: MusicAss
     await mass.players.remove(PLAYER_ID)
 
     assert player.hook_calls == [{"unloaded": True, "registered": False, "config": False}]
+    _assert_removed(mass)
+
+
+class _GroupPlayer(_TestPlayer):
+    """A dynamic group that records in which state a member leaves it."""
+
+    def __init__(self, provider: _TestProvider) -> None:
+        """Initialize the test group."""
+        super().__init__(provider, PlayerType.GROUP, GROUP_ID)
+        # whether each member that left was still a registered player at that time
+        self.left_while_registered: dict[str, bool] = {}
+
+    async def set_members(
+        self,
+        player_ids_to_add: list[str] | None = None,
+        player_ids_to_remove: list[str] | None = None,
+    ) -> None:
+        """Record the members that are taken out of the group."""
+        for member_id in player_ids_to_remove or []:
+            self.left_while_registered[member_id] = (
+                self.mass.players.get_player(member_id) is not None
+            )
+
+
+async def test_a_member_of_an_active_group_leaves_it_before_it_is_unregistered(
+    mass: MusicAssistant,
+) -> None:
+    """A removed player is taken out of its active group while the group can still reach it."""
+    player = await _register(mass, _HookedPlayer)
+    group = _GroupPlayer(_TestProvider(mass))
+    mass.players._players[GROUP_ID] = group
+    player.state.active_group = GROUP_ID
+
+    try:
+        await mass.players.remove(PLAYER_ID)
+    finally:
+        mass.players._players.pop(GROUP_ID)
+
+    assert group.left_while_registered == {PLAYER_ID: True}
+    assert len(player.hook_calls) == 1
     _assert_removed(mass)
 
 

@@ -2000,13 +2000,6 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
             self.delete_player_config(player_id)
             return
         player_id = player.player_id
-        await self.unregister(player_id, permanent=True)
-        # the provider only cleans up what it keeps about the player itself. Best-effort:
-        # the player is gone by now, whatever happens to that
-        try:
-            await player.on_remove()
-        except Exception:
-            self.logger.exception("Error removing player %s", player.name)
         # check for group memberships that need to be updated
         if player.state.active_group and (
             group_player := self.mass.players.get_player(player.state.active_group)
@@ -2016,6 +2009,13 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
                 await group_player.set_members(
                     player_ids_to_remove=[player_id],
                 )
+        await self.unregister(player_id, permanent=True)
+        # the provider only cleans up what it keeps about the player itself. Best-effort:
+        # the player is gone by now, whatever happens to that
+        try:
+            await player.on_remove()
+        except Exception:
+            self.logger.exception("Error removing player %s", player.name)
 
     def delete_player_config(
         self, player_id: str, replacement_player_id: str | None = None
