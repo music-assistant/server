@@ -430,14 +430,15 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         Such a player can only continue with the audio it buffered, so playing it has to
         start the queue again rather than unpause the player.
 
-        :param queue_id: The queue to check.
+        :param queue_id: The queue to check, or a legacy id of its player.
         """
-        queue_data = self._queue_data.get(queue_id)
+        if (queue_data := self.queue_data_or_none(queue_id)) is None:
+            return False
+        queue_id = queue_data.queue.queue_id
         player = self.mass.players.get_player(queue_id)
         # a stop that could not reach the player still ends the queue's session
         return (
-            queue_data is not None
-            and queue_data.session_id is None
+            queue_data.session_id is None
             and player is not None
             and player.state.playback_state == PlaybackState.PAUSED
             and player.state.active_source == queue_id
@@ -445,7 +446,7 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
 
     def items(self, queue_id: str, limit: int = 500, offset: int = 0) -> list[QueueItem]:
         """Return all QueueItems for given PlayerQueue."""
-        if (queue_data := self._queue_data.get(queue_id)) is None:
+        if (queue_data := self.queue_data_or_none(queue_id)) is None:
             return []
         return queue_data.items[offset : offset + limit]
 
@@ -1983,7 +1984,7 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         """Get queue item by index or item_id."""
         if item_id_or_index is None:
             return None
-        if (queue_data := self._queue_data.get(queue_id)) is None:
+        if (queue_data := self.queue_data_or_none(queue_id)) is None:
             return None
         queue_items = queue_data.items
         if isinstance(item_id_or_index, int) and len(queue_items) > item_id_or_index:
@@ -2019,7 +2020,7 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
 
     def index_by_id(self, queue_id: str, queue_item_id: str) -> int | None:
         """Get index by queue_item_id."""
-        if (queue_data := self._queue_data.get(queue_id)) is None:
+        if (queue_data := self.queue_data_or_none(queue_id)) is None:
             return None
         for index, item in enumerate(queue_data.items):
             if item.queue_item_id == queue_item_id:

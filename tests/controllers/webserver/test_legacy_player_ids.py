@@ -26,6 +26,12 @@ from music_assistant.constants import CONF_LEGACY_IDS, CONF_PLAYERS
 from music_assistant.controllers.webserver import controller as webserver_controller
 from music_assistant.controllers.webserver.websocket_client import WebsocketClientHandler
 from music_assistant.helpers.json import json_dumps
+from music_assistant.providers.party import (
+    CONF_ENABLE_GUEST_ACCESS,
+    CONF_ENABLE_SKIP_SONG,
+    CONF_PARTY_PLAYER,
+    CONF_PARTY_SKIP_VOTES_REQUIRED,
+)
 from tests.scenarios.harness import Scenario
 
 if TYPE_CHECKING:
@@ -281,3 +287,28 @@ async def test_user_is_limited_to_the_player_behind_a_legacy_id(
     stored = await scenario.mass.webserver.auth.get_user(user.user_id)
     assert stored is not None
     assert stored.player_filter == [KITCHEN, BEDROOM]
+
+
+@TRANSPORTS
+async def test_party_player_set_by_a_legacy_id_takes_votes_of_a_user_of_its_player(
+    scenario: Scenario, transport: Transport
+) -> None:
+    """A user limited to a player votes on the party it hosts, set up with a legacy id."""
+    user = await _user(scenario, KITCHEN)
+    await scenario.play(KITCHEN)
+    await scenario.mass.config._create_provider_instance(
+        "party",
+        {
+            CONF_ENABLE_GUEST_ACCESS: True,
+            CONF_ENABLE_SKIP_SONG: True,
+            CONF_PARTY_PLAYER: LEGACY_ID,
+            # a single vote is counted without skipping the track
+            CONF_PARTY_SKIP_VOTES_REQUIRED: 2,
+        },
+    )
+    await scenario.settle()
+
+    reply = await _send(scenario, transport, user, "party/skip")
+
+    assert not reply.refused
+    assert reply.result["vote_counted"]

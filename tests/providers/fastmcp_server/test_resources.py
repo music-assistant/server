@@ -28,8 +28,12 @@ from fastmcp.exceptions import McpError
 from music_assistant_models.access import PlaylistAccess
 from music_assistant_models.auth import UserRole
 from music_assistant_models.enums import ProviderSharing
+from music_assistant_models.player_queue import PlayerQueue
+from music_assistant_models.queue_item import QueueItem
 
 from music_assistant.controllers.music.media.playlists import PlaylistController
+from music_assistant.controllers.player_queues import PlayerQueuesController
+from music_assistant.controllers.player_queues.state import PlayerQueueData
 from music_assistant.controllers.webserver.helpers import auth_middleware
 from music_assistant.providers.fastmcp_server.resource_helpers import (
     to_brief_player,
@@ -279,6 +283,37 @@ async def test_queue_resource_returns_json_text_for_brief(mock_mass: MagicMock) 
     assert len(parsed["items"]) == 3
     # The handler is documented to cap at MA's default page size of 500.
     mock_mass.player_queues.items.assert_called_once_with("q1", limit=500)
+
+
+async def test_queue_resource_takes_a_legacy_id_of_the_player(mock_mass: MagicMock) -> None:
+    """A queue URI naming the player by a legacy id returns that player's queue and items."""
+    queues = PlayerQueuesController.__new__(PlayerQueuesController)
+    queues.mass = SimpleNamespace(
+        players=SimpleNamespace(
+            resolve_player_id=lambda player_id: {"old-q1": "q1"}.get(player_id, player_id)
+        )
+    )
+    queues._queue_data = {
+        "q1": PlayerQueueData(
+            queue=PlayerQueue(
+                queue_id="q1", active=True, display_name="Kitchen", available=True, items=2
+            ),
+            items=[
+                QueueItem(queue_id="q1", queue_item_id=str(i), name=f"track-{i}", duration=180)
+                for i in range(2)
+            ],
+        )
+    }
+    mock_mass.player_queues = queues
+
+    mcp: FastMCP = FastMCP(name="t")
+    register_player_resources(mcp, mock_mass)
+    async with Client(mcp) as client:
+        contents = await client.read_resource("queue://old-q1")
+
+    parsed = json.loads(next(c.text for c in contents if hasattr(c, "text")))
+    assert parsed["queue_id"] == "q1"
+    assert [item["name"] for item in parsed["items"]] == ["track-0", "track-1"]
 
 
 async def test_queue_resource_returns_null_for_missing(mock_mass: MagicMock) -> None:
