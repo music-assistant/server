@@ -32,7 +32,12 @@ from music_assistant.controllers.tasks.constants import TASK_UPDATE_TIMER_ID
 from music_assistant.controllers.webserver import controller as webserver_controller
 from music_assistant.mass import MusicAssistant
 from music_assistant.models.player import Player
-from music_assistant.models.player_state import PeerSnapshot, ProtocolSnapshot, StateInputs
+from music_assistant.models.player_state import (
+    GroupSnapshot,
+    PeerSnapshot,
+    ProtocolSnapshot,
+    StateInputs,
+)
 from music_assistant.providers.sendspin.provider import SendspinProvider
 
 if TYPE_CHECKING:
@@ -540,10 +545,26 @@ def make_peer_snapshot(
         "available_for_playback": True,
         "protocol_parent_id": None,
         "grouping_locked": False,
-        "powered": None,
-        "is_active_session": False,
     }
     return PeerSnapshot(
+        player_id=player_id,
+        state=state or make_player_state(player_id),
+        **(defaults | values),
+    )
+
+
+def make_group_snapshot(
+    player_id: str, state: PlayerState | None = None, **values: Any
+) -> GroupSnapshot:
+    """
+    Return a dormant group player the way the state of a player it can hold depends on it.
+
+    :param player_id: Id of the group player.
+    :param state: The state the group player publishes.
+    :param values: The values that differ from that group player.
+    """
+    defaults: dict[str, Any] = {"powered": None, "is_active_session": False}
+    return GroupSnapshot(
         player_id=player_id,
         state=state or make_player_state(player_id),
         **(defaults | values),

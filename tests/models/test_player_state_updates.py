@@ -18,6 +18,7 @@ from music_assistant_models.enums import (
     CrossfadeMode,
     MediaType,
     PlaybackState,
+    PlayerType,
     VolumeNormalizationMode,
 )
 from music_assistant_models.media_items import AudioFormat, AudioSource
@@ -721,6 +722,31 @@ class TestInputCollection:
 
         assert player.state.synced_to == ("leader" if synced else None)
         assert mock_mass.get_provider.called is not synced
+
+    @pytest.mark.parametrize("grouped_id", ["member", "member_protocol"])
+    @pytest.mark.parametrize("can_play", [True, False])
+    def test_group_volume_counts_the_members_that_can_play(
+        self, mock_mass: MagicMock, grouped_id: str, can_play: bool
+    ) -> None:
+        """A member decides the group volume while it can play, as itself or by its protocol."""
+        provider = MockProvider("test_provider", mass=mock_mass)
+        leader = MockPlayer(provider, "leader", "Leader")
+        leader._attr_volume_level = 20
+        leader._attr_group_members = ["leader", grouped_id]
+        member = MockPlayer(provider, "member", "Member")
+        member._attr_volume_level = 80
+        member._attr_available = can_play
+        protocol = MockPlayer(provider, "member_protocol", "Member", PlayerType.PROTOCOL)
+        protocol.set_protocol_parent_id("member")
+        players = {"leader": leader, "member": member, "member_protocol": protocol}
+        mock_mass.players.get_player = MagicMock(side_effect=players.get)
+        mock_mass.players.iter_players = MagicMock(return_value=list(players.values()))
+        member.update_state(signal_event=False)
+
+        leader.update_state(signal_event=False)
+
+        assert leader.state.group_members == ["leader", "member"]
+        assert leader.state.group_volume == (80 if can_play else 20)
 
 
 class TestUpdateStateTiming:

@@ -45,6 +45,7 @@ from music_assistant_models.unique_list import UniqueList
 
 from music_assistant.controllers.players.audio_sources import AudioSourceSession
 from music_assistant.models.player_state import (
+    GroupSnapshot,
     PeerSnapshot,
     ProtocolSnapshot,
     QueueSnapshot,
@@ -53,6 +54,7 @@ from music_assistant.models.player_state import (
     reconcile_position_anchor,
 )
 from tests.common import (
+    make_group_snapshot,
     make_peer_snapshot,
     make_player_state,
     make_protocol_snapshot,
@@ -98,10 +100,22 @@ def _protocol_peer(protocol_id: str, **values: Any) -> PeerSnapshot:
     return _peer(protocol_id, type=PlayerType.PROTOCOL, protocol_parent_id=PLAYER_ID, **values)
 
 
-def _group(group_id: str = "group_1", **values: Any) -> PeerSnapshot:
-    """Return a powered group player that holds the player."""
-    values = {"type": PlayerType.GROUP, "powered": True, "group_members": [PLAYER_ID]} | values
-    return _peer(group_id, **values)
+def _group(group_id: str = "group_1", **values: Any) -> GroupSnapshot:
+    """
+    Return a powered group player that holds the player.
+
+    :param group_id: Id of the group player.
+    :param values: Values of the snapshot; any other value is one of its published state.
+    """
+    values = {"powered": True, "group_members": [PLAYER_ID]} | values
+    snapshot_keys = GroupSnapshot.__dataclass_fields__.keys()
+    snapshot_values = {key: values.pop(key) for key in list(values) if key in snapshot_keys}
+    return make_group_snapshot(group_id, make_player_state(group_id, **values), **snapshot_values)
+
+
+def _group_peer(group: GroupSnapshot) -> PeerSnapshot:
+    """Return a group player the way the players that refer to it depend on it."""
+    return make_peer_snapshot(group.player_id, group.state, type=PlayerType.GROUP)
 
 
 def _queue(queue_id: str = PLAYER_ID, **values: Any) -> QueueSnapshot:
@@ -386,7 +400,7 @@ class TestActiveGroup:
         """A member belongs to a group that is switched on or holds a session."""
         group = _group(powered=powered, is_active_session=is_active_session, group_members=members)
 
-        state = _derive(groups=(group,), peers={"group_1": group})
+        state = _derive(groups=(group,), peers={"group_1": _group_peer(group)})
 
         assert state.active_group == ("group_1" if active else None)
 
@@ -394,7 +408,10 @@ class TestActiveGroup:
         """A player in several active groups belongs to the first one."""
         first, second = _group("group_1"), _group("group_2")
 
-        state = _derive(groups=(first, second), peers={"group_1": first, "group_2": second})
+        state = _derive(
+            groups=(first, second),
+            peers={"group_1": _group_peer(first), "group_2": _group_peer(second)},
+        )
 
         assert state.active_group == "group_1"
 
@@ -402,7 +419,9 @@ class TestActiveGroup:
         """A protocol player follows the group state of its parent player."""
         group = _group()
 
-        state = _derive(player_type=PlayerType.PROTOCOL, groups=(group,), peers={"group_1": group})
+        state = _derive(
+            player_type=PlayerType.PROTOCOL, groups=(group,), peers={"group_1": _group_peer(group)}
+        )
 
         assert state.active_group is None
 
@@ -410,7 +429,9 @@ class TestActiveGroup:
         """A group player listing its own id is not its own active group."""
         group = _group(PLAYER_ID)
 
-        state = _derive(player_type=PlayerType.GROUP, groups=(group,), peers={PLAYER_ID: group})
+        state = _derive(
+            player_type=PlayerType.GROUP, groups=(group,), peers={PLAYER_ID: _group_peer(group)}
+        )
 
         assert state.active_group is None
 
@@ -481,7 +502,7 @@ class TestForeignApp:
         [
             {"active_output_protocol": "cast_1"},
             {"own": _own(synced_to="leader"), "peers": {"leader": _peer("leader")}},
-            {"groups": (_group(),), "peers": {"group_1": _group()}},
+            {"groups": (_group(),), "peers": {"group_1": _group_peer(_group())}},
             {"session": _session()},
         ],
         ids=["output_protocol_active", "synced", "grouped", "live_source"],
@@ -613,7 +634,7 @@ class TestPlaybackPosition:
             },
             {
                 "groups": (_group(),),
-                "peers": {"group_1": _group()},
+                "peers": {"group_1": _group_peer(_group())},
                 "own": _own(elapsed_time=8.0),
             },
             {
@@ -655,7 +676,9 @@ class TestActiveSource:
         group = _group(active_source="group_1")
 
         state = _derive(
-            groups=(group,), peers={"group_1": group}, own=_own(active_source="spotify")
+            groups=(group,),
+            peers={"group_1": _group_peer(group)},
+            own=_own(active_source="spotify"),
         )
 
         assert state.active_source == "group_1"
@@ -676,7 +699,10 @@ class TestActiveSource:
         state = _derive(
             own=_own(synced_to="leader"),
             groups=(group,),
-            peers={"group_1": group, "leader": _peer("leader", active_source="leader")},
+            peers={
+                "group_1": _group_peer(group),
+                "leader": _peer("leader", active_source="leader"),
+            },
         )
 
         assert state.active_source == "leader"
@@ -814,7 +840,7 @@ class TestActiveSourceAudio:
         details = self._details()
         group = _group(active_source_audio=details)
 
-        state = _derive(groups=(group,), peers={"group_1": group}, session=_session())
+        state = _derive(groups=(group,), peers={"group_1": _group_peer(group)}, session=_session())
 
         assert state.active_source_audio is details
 
@@ -1402,7 +1428,7 @@ class TestCurrentMedia:
 
         state = _derive(
             groups=(group,),
-            peers={"group_1": group},
+            peers={"group_1": _group_peer(group)},
             own=_own(current_media=PlayerMedia(uri="own://media")),
         )
 
@@ -1878,7 +1904,7 @@ class TestMediaPositionAnchor:
             return {
                 "own": _own(playback_state=PlaybackState.PLAYING),
                 "groups": (group,),
-                "peers": {"group_1": group},
+                "peers": {"group_1": _group_peer(group)},
             }
         if kind == "protocol_child":
             return {

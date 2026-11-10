@@ -74,6 +74,7 @@ from music_assistant.constants import (
 )
 from music_assistant.helpers.player import get_default_player_icon
 from music_assistant.models.player_state import (
+    GroupSnapshot,
     PeerSnapshot,
     ProtocolSnapshot,
     QueueSnapshot,
@@ -2739,7 +2740,7 @@ class Player(ABC):
             peers, probe_synced_to=not own.synced_to
         )
         for player_id in own.group_members:
-            self.__collect_peer(peers, player_id)
+            self.__collect_member(peers, player_id)
         if own.synced_to:
             self.__collect_peer(peers, own.synced_to)
         if self.__attr_protocol_parent_id:
@@ -2864,7 +2865,7 @@ class Player(ABC):
             active_protocol = _protocol_snapshot(active_output_protocol, protocol_player, None)
         if active_protocol:
             for player_id in active_protocol.group_members:
-                self.__collect_peer(peers, player_id)
+                self.__collect_member(peers, player_id)
         return tuple(linked), active_protocol, foreign_app
 
     @final
@@ -2898,12 +2899,13 @@ class Player(ABC):
                     provider_filter=provider.instance_id,
                     return_protocol_players=True,
                 ):
-                    self.__add_peer(peers, player.player_id, player, with_parent)
-                    result.add(player.player_id)
+                    player_id = player.player_id
+                    self.__add_peer(peers, player_id, player, with_parent)
+                    result.add(player_id)
         return result
 
     @final
-    def __collect_groups(self, peers: dict[str, PeerSnapshot]) -> tuple[PeerSnapshot, ...]:
+    def __collect_groups(self, peers: dict[str, PeerSnapshot]) -> tuple[GroupSnapshot, ...]:
         """
         Collect the group players that can hold the player.
 
@@ -2912,14 +2914,21 @@ class Player(ABC):
         if self.type == PlayerType.PROTOCOL:
             # a protocol player follows the group state of its parent player
             return ()
-        groups: list[PeerSnapshot] = []
+        groups: list[GroupSnapshot] = []
         for group_player in self.mass.players.iter_players(
             return_unavailable=False, return_disabled=False
         ):
             if group_player.type != PlayerType.GROUP:
                 continue
             self.__add_peer(peers, group_player.player_id, group_player)
-            groups.append(peers[group_player.player_id])
+            groups.append(
+                GroupSnapshot(
+                    group_player.player_id,
+                    group_player.powered,
+                    group_player.is_active_session,
+                    group_player.state,
+                )
+            )
         return tuple(groups)
 
     @final
@@ -2941,6 +2950,25 @@ class Player(ABC):
             for device_player_id in device_player_ids:
                 sources += prov.get_player_input_sources(device_player_id)
         return tuple(sources)
+
+    @final
+    def __collect_member(self, peers: dict[str, PeerSnapshot], player_id: str) -> None:
+        """
+        Add a player that is grouped to this one to the peers, if it is registered.
+
+        :param peers: The peers collected so far, by id.
+        :param player_id: Id of the member.
+        """
+        if not (player := self.mass.players.get_player(player_id)):
+            return
+        self.__add_peer(peers, player_id, player)
+        # whether a player is available for playback only counts for a member, where a
+        # protocol player stands for the player it is linked to
+        peers[player_id].available_for_playback = player.available_for_playback
+        if (parent_id := player.protocol_parent_id) and (
+            parent := self.mass.players.get_player(parent_id)
+        ):
+            peers[parent_id].available_for_playback = parent.available_for_playback
 
     @final
     def __collect_peer(
@@ -2973,20 +3001,18 @@ class Player(ABC):
         :param player: The player to add.
         :param with_parent: Also add the player it is linked to as a protocol player.
         """
+        parent_id = player.protocol_parent_id
         if player_id not in peers:
             # positional, which is cheaper for the many players this runs for
             peers[player_id] = PeerSnapshot(
                 player.player_id,
                 player.type,
                 player.available,
-                player.available_for_playback,
-                player.protocol_parent_id,
+                parent_id,
                 player.grouping_locked,
-                player.powered,
-                player.is_active_session,
                 player.state,
             )
-        if with_parent and (parent_id := player.protocol_parent_id) and parent_id not in peers:
+        if with_parent and parent_id and parent_id not in peers:
             self.__collect_peer(peers, parent_id)
 
     @final

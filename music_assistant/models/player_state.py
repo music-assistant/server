@@ -100,20 +100,34 @@ class PeerSnapshot:
     :param player_id: Id of the player.
     :param type: Type its provider object reports.
     :param available: Whether its device can be reached.
-    :param available_for_playback: Whether it is enabled, reachable and set up.
     :param protocol_parent_id: Id of the player it is linked to as a protocol player.
     :param grouping_locked: Whether its provider keeps its grouping read-only.
-    :param powered: Power state its provider object reports.
-    :param is_active_session: Whether it is a group player holding its members.
     :param state: The state it publishes.
+    :param available_for_playback: Whether it is enabled, reachable and set up. Only
+        given where it counts: for the players grouped to the player.
     """
 
     player_id: str
     type: PlayerType
     available: bool
-    available_for_playback: bool
     protocol_parent_id: str | None
     grouping_locked: bool
+    state: PlayerState
+    available_for_playback: bool | None = None
+
+
+@dataclass(slots=True)
+class GroupSnapshot:
+    """
+    A group player that can hold a player.
+
+    :param player_id: Id of the group player.
+    :param powered: Power state its provider object reports.
+    :param is_active_session: Whether it is holding its members.
+    :param state: The state it publishes.
+    """
+
+    player_id: str
     powered: bool | None
     is_active_session: bool
     state: PlayerState
@@ -242,7 +256,7 @@ class StateInputs:
     palette_url: str | None
     palette: MediaItemPalette | None
     peers: Mapping[str, PeerSnapshot]
-    groups: tuple[PeerSnapshot, ...]
+    groups: tuple[GroupSnapshot, ...]
     queues: Mapping[str, QueueSnapshot]
     mass_sources: frozenset[str]
     session: AudioSourceSession | None
@@ -1238,7 +1252,7 @@ def _volume_members(inputs: StateInputs, state: PlayerState) -> list[PlayerState
         if member_id == inputs.player_id:
             if inputs.player_type != PlayerType.PLAYER:
                 continue
-            available_for_playback = inputs.own.available_for_playback
+            available_for_playback: bool | None = inputs.own.available_for_playback
             member = state
         elif peer := inputs.peers.get(member_id):
             available_for_playback = peer.available_for_playback
