@@ -1079,6 +1079,18 @@ class ProtocolLinkingMixin:
                 ) or self._owns_domain_of_protocols(native_player.player_id, known_protocol_ids):
                     continue
 
+            # A wrapper holding an output of the native player's own domain wraps another
+            # device that merely shares an identifier (such as a reused IP address).
+            if foreign_ids := self._own_domain_protocol_ids(native_player, known_protocol_ids):
+                self.logger.debug(
+                    "Not replacing %s by %s: it holds %s output(s) of another device: %s",
+                    player.player_id,
+                    native_player.player_id,
+                    native_player.provider.domain,
+                    sorted(foreign_ids),
+                )
+                continue
+
             refused_protocol_ids: set[str] = set()
             moved_protocol_ids: set[str] = set()
 
@@ -1211,6 +1223,131 @@ class ProtocolLinkingMixin:
             if str(config.get("provider", "")).split("--", 1)[0] in domains:
                 return True
         return False
+
+    def _is_own_domain_output(self, parent_domain: str, protocol_player: Player) -> bool:
+        """
+        Return whether a protocol player shares the domain of a would-be native parent.
+
+        A native player already is the output of its own domain, so a second base player
+        of that domain belongs to another device. Derived protocols ride on another output
+        and are exempt, as are universal players, which are no output of their own.
+
+        :param parent_domain: Provider domain of the would-be parent player.
+        :param protocol_player: The protocol player to link.
+        """
+        return (
+            parent_domain != "universal_player"
+            and not protocol_player.underlying_player_id
+            and protocol_player.provider.domain == parent_domain
+        )
+
+    def _own_domain_protocol_ids(self, native_player: Player, protocol_ids: set[str]) -> set[str]:
+        """
+        Return the base protocols among protocol_ids that share the native player's domain.
+
+        Protocols that are not registered are resolved from their stored config.
+
+        :param native_player: The native player that would take over the protocols.
+        :param protocol_ids: The protocol player ids to check.
+        """
+        all_player_configs: dict[str, dict[str, Any]] = self.mass.config.get(CONF_PLAYERS, {})
+        result: set[str] = set()
+        for protocol_id in protocol_ids:
+            if protocol_id == native_player.player_id:
+                continue
+            if protocol_player := self.get_player(protocol_id):
+                if self._is_own_domain_output(native_player.provider.domain, protocol_player):
+                    result.add(protocol_id)
+                continue
+            config = all_player_configs.get(protocol_id)
+            if not isinstance(config, dict):
+                continue
+            values = config.get("values")
+            if isinstance(values, dict) and values.get(CONF_UNDERLYING_PLAYER_ID):
+                continue
+            if _domain_of_player_config(config) == native_player.provider.domain:
+                result.add(protocol_id)
+        return result
+
+    def _release_own_domain_protocol_links(self) -> None:
+        """
+        Release the stored protocol links of native players that hold a foreign device.
+
+        A native player that lists a base protocol of its own domain was matched with
+        another device (e.g. through a reused IP address) and took over its protocols.
+        Its stored protocol membership can't be trusted, so all of it is released; the
+        protocols that really belong to it relink by identifiers when they register.
+        Derived protocols riding on the native player itself are kept. Runs on startup
+        against stored config, is idempotent and never raises.
+        """
+        try:
+            all_player_configs = self.mass.config.get(CONF_PLAYERS, {})
+            if not isinstance(all_player_configs, dict):
+                return
+            offending = self._find_parents_holding_own_domain(all_player_configs)
+            for parent_id, children in offending.items():
+                self._release_stored_protocols_of(parent_id, children, all_player_configs)
+        except Exception:
+            self.logger.exception("Error while repairing stored protocol links")
+
+    def _find_parents_holding_own_domain(
+        self, all_player_configs: dict[str, Any]
+    ) -> dict[str, set[str]]:
+        """
+        Return the stored native parents that list a base protocol of their own domain.
+
+        :param all_player_configs: The raw stored player configs.
+        :return: The stored protocol children per offending parent id.
+        """
+        result: dict[str, set[str]] = {}
+        for parent_id, children in _stored_children_by_parent(all_player_configs).items():
+            parent_domain = _domain_of_player_config(all_player_configs.get(parent_id))
+            if not parent_domain or parent_domain == "universal_player":
+                continue
+            for child_id in children:
+                child_config = all_player_configs.get(child_id)
+                if not isinstance(child_config, dict) or _stored_underlying_id(child_config):
+                    continue
+                if _domain_of_player_config(child_config) == parent_domain:
+                    result[parent_id] = children
+                    break
+        return result
+
+    def _release_stored_protocols_of(
+        self, parent_id: str, children: set[str], all_player_configs: dict[str, Any]
+    ) -> None:
+        """
+        Release the stored protocol children of a parent, except those riding on it.
+
+        :param parent_id: The parent player whose stored protocol membership is released.
+        :param children: The stored protocol children of the parent.
+        :param all_player_configs: The raw stored player configs.
+        """
+        kept: set[str] = set()
+        for child_id in sorted(children):
+            child_config = all_player_configs.get(child_id)
+            if isinstance(child_config, dict) and _stored_underlying_id(child_config) == parent_id:
+                kept.add(child_id)
+                continue
+            self.logger.info(
+                "Releasing protocol player %s from %s: the parent holds an output of "
+                "another device of its own domain",
+                child_id,
+                parent_id,
+            )
+            child_values = child_config.get("values") if isinstance(child_config, dict) else None
+            if isinstance(child_values, dict) and (
+                child_values.get(CONF_PROTOCOL_PARENT_ID) == parent_id
+            ):
+                self.mass.config.set(
+                    f"{CONF_PLAYERS}/{child_id}/values/{CONF_PROTOCOL_PARENT_ID}", None
+                )
+        stored_ids = _stored_linked_protocol_ids(all_player_configs.get(parent_id))
+        remaining_ids = [protocol_id for protocol_id in stored_ids if protocol_id in kept]
+        if remaining_ids != stored_ids:
+            self.mass.config.set(
+                f"{CONF_PLAYERS}/{parent_id}/values/{CONF_LINKED_PROTOCOL_IDS}", remaining_ids
+            )
 
     def _migrate_universal_player_config(self, universal_id: str, native_id: str) -> None:
         """
@@ -1429,6 +1566,14 @@ class ProtocolLinkingMixin:
         """Add a protocol link from native player to protocol player."""
         # Never link a player to itself (hides it as its own protocol child).
         if native_player.player_id == protocol_player.player_id:
+            return
+        if self._is_own_domain_output(native_player.provider.domain, protocol_player):
+            self.logger.debug(
+                "Refusing to link %s to %s: a %s player cannot be an output of another one",
+                protocol_player.player_id,
+                native_player.player_id,
+                native_player.provider.domain,
+            )
             return
         # Guard: refuse to replace an existing active link from the same domain.
         # This prevents a second instance of the same protocol (e.g., two AirPlay
@@ -3377,3 +3522,48 @@ class ProtocolLinkingMixin:
             if parent_id != parent_player.player_id:
                 members.append((member_id, parent_id))
         return members
+
+
+def _domain_of_player_config(config: object) -> str | None:
+    """Return the provider domain of a raw stored player config, if known."""
+    if not isinstance(config, dict) or not (provider := config.get("provider")):
+        return None
+    return str(provider).split("--", 1)[0]
+
+
+def _stored_underlying_id(config: dict[str, Any]) -> str | None:
+    """Return the stored underlying player id of a raw player config, if any."""
+    values = config.get("values")
+    if not isinstance(values, dict) or not (underlying_id := values.get(CONF_UNDERLYING_PLAYER_ID)):
+        return None
+    return str(underlying_id)
+
+
+def _stored_linked_protocol_ids(config: object) -> list[str]:
+    """Return the stored linked protocol ids of a raw player config."""
+    if not isinstance(config, dict) or not isinstance(values := config.get("values"), dict):
+        return []
+    stored_ids = values.get(CONF_LINKED_PROTOCOL_IDS)
+    if not isinstance(stored_ids, list):
+        return []
+    return [str(protocol_id) for protocol_id in stored_ids]
+
+
+def _stored_children_by_parent(all_player_configs: dict[str, Any]) -> dict[str, set[str]]:
+    """
+    Return the stored protocol children per parent id, from both sides of the relation.
+
+    :param all_player_configs: The raw stored player configs.
+    """
+    result: dict[str, set[str]] = {}
+    for player_id, config in all_player_configs.items():
+        if not isinstance(config, dict):
+            continue
+        for protocol_id in _stored_linked_protocol_ids(config):
+            if protocol_id != player_id:
+                result.setdefault(player_id, set()).add(protocol_id)
+        values = config.get("values")
+        parent_id = values.get(CONF_PROTOCOL_PARENT_ID) if isinstance(values, dict) else None
+        if parent_id and parent_id != player_id and parent_id in all_player_configs:
+            result.setdefault(str(parent_id), set()).add(player_id)
+    return result

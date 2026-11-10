@@ -12784,3 +12784,304 @@ class TestExternalSourceTakeover:
         controller, sonos_player = TestCanGroupWithExternalSource._build_rig(mock_mass)
 
         assert not controller._is_ma_managed_source(sonos_player, "tv")
+
+
+class TestOwnDomainOutputGuard:
+    """
+    Tests for native players that would hold an output of their own provider domain.
+
+    A native player already is the output of its own domain, so a second base protocol
+    player of that domain belongs to another device that only shares an identifier
+    (support#6998: a Chromecast dongle took over all protocols of a Samsung TV).
+    """
+
+    @staticmethod
+    def _cast_dongle(mock_mass: MagicMock) -> MockPlayer:
+        """Create a native (Google) Chromecast player."""
+        dongle = MockPlayer(
+            MockProvider("chromecast", mass=mock_mass),
+            "cast_dongle",
+            "Family Room",
+            identifiers={
+                IdentifierType.IP_ADDRESS: "10.0.25.150",
+                IdentifierType.MAC_ADDRESS: "B0:E4:D5:AA:24:26",
+            },
+        )
+        dongle.set_initialized()
+        return dongle
+
+    @staticmethod
+    def _cast_tv(mock_mass: MagicMock) -> MockPlayer:
+        """Create the Cast protocol player of a non-Google TV."""
+        tv = MockPlayer(
+            MockProvider("chromecast", mass=mock_mass),
+            "cast_tv",
+            '65" QLED',
+            player_type=PlayerType.PROTOCOL,
+            identifiers={
+                IdentifierType.IP_ADDRESS: "10.0.25.150",
+                IdentifierType.MAC_ADDRESS: "04:CB:01:EC:00:9B",
+            },
+        )
+        tv.set_initialized()
+        return tv
+
+    def test_refuses_base_output_of_own_domain(self, mock_mass: MagicMock) -> None:
+        """A native Chromecast never takes another Cast device as its output."""
+        controller = PlayerController(mock_mass)
+        mock_mass.config.get = MagicMock(side_effect=lambda _key, default=None: default)
+        dongle = self._cast_dongle(mock_mass)
+        cast_tv = self._cast_tv(mock_mass)
+        controller._players = {"cast_dongle": dongle, "cast_tv": cast_tv}
+
+        controller._add_protocol_link(dongle, cast_tv, "chromecast")
+
+        assert cast_tv.protocol_parent_id is None
+        assert dongle.linked_output_protocols == []
+
+    def test_identifier_match_does_not_link_own_domain(self, mock_mass: MagicMock) -> None:
+        """A shared IP does not make a native Chromecast adopt a Cast protocol player."""
+        controller = PlayerController(mock_mass)
+        mock_mass.config.get = MagicMock(side_effect=lambda _key, default=None: default)
+        dongle = self._cast_dongle(mock_mass)
+        cast_tv = self._cast_tv(mock_mass)
+        controller._players = {"cast_dongle": dongle, "cast_tv": cast_tv}
+        assert controller._identifiers_match(dongle, cast_tv, "chromecast")
+
+        assert controller._try_link_to_existing_player(cast_tv, "chromecast") is False
+        assert cast_tv.protocol_parent_id is None
+
+    def test_allows_derived_output_of_own_domain(self, mock_mass: MagicMock) -> None:
+        """A derived protocol rides on another output, so its domain does not matter."""
+        controller = PlayerController(mock_mass)
+        mock_mass.config.get = MagicMock(side_effect=lambda _key, default=None: default)
+        native = MockPlayer(MockProvider("sendspin", mass=mock_mass), "native_1", "Speaker")
+        native.set_initialized()
+        bridge = MockPlayer(
+            MockProvider("sendspin", mass=mock_mass),
+            "spb_1",
+            "Bridge",
+            player_type=PlayerType.PROTOCOL,
+        )
+        bridge._attr_underlying_player_id = "native_1"
+        bridge.set_initialized()
+        controller._players = {"native_1": native, "spb_1": bridge}
+
+        controller._add_protocol_link(native, bridge, "sendspin")
+
+        assert bridge.protocol_parent_id == "native_1"
+
+    @pytest.mark.parametrize("tv_registered", [True, False])
+    def test_does_not_replace_universal_player_of_other_device(
+        self, mock_mass: MagicMock, tv_registered: bool
+    ) -> None:
+        """A native Chromecast never takes over a wrapper that holds another Cast device."""
+        controller = PlayerController(mock_mass)
+        up_provider = create_mock_universal_provider(mock_mass)
+        config_store: dict[str, Any] = {
+            CONF_PLAYERS: {
+                "up_tv": {"provider": "universal_player", "values": {}},
+                "cast_tv": {
+                    "provider": "chromecast",
+                    "player_type": "protocol",
+                    "values": {"protocol_parent_id": "up_tv"},
+                },
+                "cast_dongle": {"provider": "chromecast", "values": {}},
+            }
+        }
+        _wire_nested_config(mock_mass, config_store)
+        mock_mass.players = controller
+        mock_mass.create_task = MagicMock()
+
+        universal = UniversalPlayer(
+            provider=up_provider,
+            player_id="up_tv",
+            name='65" QLED',
+            device_info=DeviceInfo(model="Q8FA_PM", manufacturer="Samsung"),
+            protocol_player_ids=["cast_tv"],
+        )
+        universal._attr_device_info.add_identifier(IdentifierType.IP_ADDRESS, "10.0.25.150")
+        universal.set_initialized()
+        cast_tv = self._cast_tv(mock_mass)
+        dongle = self._cast_dongle(mock_mass)
+        controller._players = {"up_tv": universal, "cast_dongle": dongle}
+        if tv_registered:
+            # an offline TV is only known from config, which the takeover would migrate
+            controller._players["cast_tv"] = cast_tv
+            controller._add_protocol_link(universal, cast_tv, "chromecast")
+        assert controller._identifiers_match(dongle, universal, "")
+
+        controller._check_replace_universal_player(dongle)
+
+        players = config_store[CONF_PLAYERS]
+        assert players["cast_tv"]["values"]["protocol_parent_id"] == "up_tv"
+        assert not players["cast_dongle"]["values"].get("linked_protocol_ids")
+        assert dongle.linked_output_protocols == []
+        mock_mass.create_task.assert_not_called()
+
+
+class TestReleaseOwnDomainProtocolLinks:
+    """Tests for the startup repair of native players holding another device's protocols."""
+
+    @staticmethod
+    def _reporter_store() -> dict[str, Any]:
+        """Return stored config of a Chromecast dongle that took over a TV (support#6998)."""
+        return {
+            CONF_PLAYERS: {
+                "cast_dongle": {
+                    "provider": "chromecast",
+                    "player_type": "player",
+                    "values": {
+                        "linked_protocol_ids": [
+                            "spb_dongle",
+                            "dlna_old",
+                            "ap_tv",
+                            "cast_tv",
+                        ]
+                    },
+                },
+                "spb_dongle": {
+                    "provider": "sendspin",
+                    "player_type": "protocol",
+                    "values": {
+                        "protocol_parent_id": "cast_dongle",
+                        CONF_UNDERLYING_PLAYER_ID: "cast_dongle",
+                    },
+                },
+                "ap_tv": {
+                    "provider": "airplay",
+                    "player_type": "protocol",
+                    "values": {"protocol_parent_id": "cast_dongle"},
+                },
+                "spb_ap_tv": {
+                    "provider": "sendspin",
+                    "player_type": "protocol",
+                    "values": {
+                        "protocol_parent_id": "cast_dongle",
+                        CONF_UNDERLYING_PLAYER_ID: "ap_tv",
+                    },
+                },
+                "cast_tv": {
+                    "provider": "chromecast",
+                    "player_type": "protocol",
+                    "values": {"protocol_parent_id": "cast_dongle"},
+                },
+                "dlna_tv": {
+                    "provider": "dlna--abc123",
+                    "player_type": "protocol",
+                    "values": {"protocol_parent_id": "cast_dongle"},
+                },
+            }
+        }
+
+    def test_releases_all_base_protocols_of_offending_parent(self, mock_mass: MagicMock) -> None:
+        """The TV's protocols are released, the dongle keeps the bridge riding on itself."""
+        controller = PlayerController(mock_mass)
+        store = self._reporter_store()
+        _wire_nested_config(mock_mass, store)
+
+        controller._release_own_domain_protocol_links()
+
+        players = store[CONF_PLAYERS]
+        assert players["cast_dongle"]["values"]["linked_protocol_ids"] == ["spb_dongle"]
+        assert players["spb_dongle"]["values"]["protocol_parent_id"] == "cast_dongle"
+        for child_id in ("ap_tv", "spb_ap_tv", "cast_tv", "dlna_tv"):
+            assert players[child_id]["values"]["protocol_parent_id"] is None, child_id
+        # the protocol configs themselves (and their settings) are kept
+        assert players["ap_tv"]["player_type"] == "protocol"
+
+    def test_is_idempotent(self, mock_mass: MagicMock) -> None:
+        """A second run finds nothing left to repair."""
+        controller = PlayerController(mock_mass)
+        store = self._reporter_store()
+        _wire_nested_config(mock_mass, store)
+        controller._release_own_domain_protocol_links()
+        mock_mass.config.set.reset_mock()
+
+        controller._release_own_domain_protocol_links()
+
+        mock_mass.config.set.assert_not_called()
+
+    def test_leaves_healthy_native_parents_alone(self, mock_mass: MagicMock) -> None:
+        """A native player with protocols of other domains only is not touched."""
+        controller = PlayerController(mock_mass)
+        store: dict[str, Any] = {
+            CONF_PLAYERS: {
+                "sonos_1": {
+                    "provider": "sonos",
+                    "values": {"linked_protocol_ids": ["ap_1", "spb_1"]},
+                },
+                "ap_1": {
+                    "provider": "airplay",
+                    "player_type": "protocol",
+                    "values": {"protocol_parent_id": "sonos_1"},
+                },
+                "spb_1": {
+                    "provider": "sendspin",
+                    "player_type": "protocol",
+                    "values": {
+                        "protocol_parent_id": "sonos_1",
+                        CONF_UNDERLYING_PLAYER_ID: "ap_1",
+                    },
+                },
+                "up_1": {
+                    "provider": "universal_player",
+                    "values": {"linked_protocol_ids": ["cast_1"]},
+                },
+                "cast_1": {
+                    "provider": "chromecast",
+                    "player_type": "protocol",
+                    "values": {"protocol_parent_id": "up_1"},
+                },
+            }
+        }
+        _wire_nested_config(mock_mass, store)
+
+        controller._release_own_domain_protocol_links()
+
+        mock_mass.config.set.assert_not_called()
+
+    def test_detects_offending_child_listed_on_parent_side_only(self, mock_mass: MagicMock) -> None:
+        """A same-domain id only in the parent's stored list still marks it."""
+        controller = PlayerController(mock_mass)
+        store = self._reporter_store()
+        store[CONF_PLAYERS]["cast_tv"]["values"]["protocol_parent_id"] = None
+        _wire_nested_config(mock_mass, store)
+
+        controller._release_own_domain_protocol_links()
+
+        assert store[CONF_PLAYERS]["ap_tv"]["values"]["protocol_parent_id"] is None
+        assert store[CONF_PLAYERS]["cast_dongle"]["values"]["linked_protocol_ids"] == ["spb_dongle"]
+
+    @pytest.mark.parametrize(
+        "players",
+        [
+            {"cast_dongle": None},
+            {"cast_dongle": {"provider": "chromecast", "values": None}},
+            {"cast_dongle": {"provider": "chromecast", "values": {"linked_protocol_ids": "x"}}},
+            {"cast_tv": {"provider": None, "values": {"protocol_parent_id": "gone"}}},
+        ],
+    )
+    def test_survives_malformed_config(self, mock_mass: MagicMock, players: dict[str, Any]) -> None:
+        """Half-written stored values are skipped instead of raising."""
+        controller = PlayerController(mock_mass)
+        _wire_nested_config(mock_mass, {CONF_PLAYERS: players})
+
+        controller._release_own_domain_protocol_links()
+
+    def test_never_raises(self, mock_mass: MagicMock) -> None:
+        """An unexpected error is logged instead of breaking controller setup."""
+        controller = PlayerController(mock_mass)
+        mock_mass.config.get = MagicMock(side_effect=RuntimeError("boom"))
+
+        controller._release_own_domain_protocol_links()
+
+    def test_runs_as_part_of_startup_repair(self, mock_mass: MagicMock) -> None:
+        """The startup repair pass releases the offending links."""
+        controller = PlayerController(mock_mass)
+        store = self._reporter_store()
+        _wire_nested_config(mock_mass, store)
+
+        controller._repair_protocol_parent_links()
+
+        assert store[CONF_PLAYERS]["cast_tv"]["values"]["protocol_parent_id"] is None
