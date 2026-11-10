@@ -684,6 +684,29 @@ class TestCacheInvalidationClasses:
         assert "some_provider_prop" not in player._cache
 
 
+class TestInputCollection:
+    """What update_state looks up to calculate the state."""
+
+    @pytest.mark.parametrize("synced", [True, False])
+    def test_grouping_candidates_are_only_looked_up_for_a_player_that_can_group(
+        self, mock_mass: MagicMock, synced: bool
+    ) -> None:
+        """A synced player has nothing to group with, so its candidates are left alone."""
+        provider = MockProvider("test_provider", mass=mock_mass)
+        player = MockPlayer(provider, "player_1", "Player 1")
+        player._attr_can_group_with = {"test_instance"}
+        leader = MockPlayer(provider, "leader", "Leader")
+        leader._attr_group_members = ["leader", "player_1"] if synced else []
+        players = {"leader": leader, "player_1": player}
+        mock_mass.players.get_player = MagicMock(side_effect=players.get)
+        mock_mass.players.iter_players = MagicMock(return_value=list(players.values()))
+
+        player.update_state(signal_event=False)
+
+        assert player.state.synced_to == ("leader" if synced else None)
+        assert mock_mass.get_provider.called is not synced
+
+
 class TestUpdateStateTiming:
     """Micro-benchmarks guarding the cost of the update_state paths."""
 

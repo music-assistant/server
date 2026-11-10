@@ -1,5 +1,5 @@
 """
-Tests for __final_playback_state when an output protocol is active.
+Tests for the published playback state when an output protocol is active.
 
 Covers the propagation of the protocol player's state (including IDLE) up to
 the parent player that has it set as ``active_output_protocol``.

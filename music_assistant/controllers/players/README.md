@@ -47,6 +47,7 @@ The `PlayerState` is a dataclass representing the final state of the player. It:
 - Applies transformations (e.g., fake power/volume controls)
 - Is the object exposed to the outside world via the API
 - Is a snapshot created when `player.update_state()` is called
+- Is derived by `derive_player_state` ([player_state.py](../../models/player_state.py)), a function of a snapshot of everything the state depends on
 - Contains only serializable data suitable for API consumers
 
 ```
