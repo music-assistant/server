@@ -2079,6 +2079,26 @@ class TestGroupVolume:
 
         assert state.group_volume == 40
 
+    def test_player_named_by_a_legacy_id_does_not_count_itself(self) -> None:
+        """A protocol player that lists itself by a legacy id is still no member of its own."""
+        state = _derive(
+            player_type=PlayerType.PROTOCOL,
+            volume_control=PLAYER_CONTROL_NATIVE,
+            volume_level=90,
+            own=_own(group_members=["legacy_id", "member"]),
+            peers={
+                "legacy_id": _peer(
+                    PLAYER_ID,
+                    type=PlayerType.PROTOCOL,
+                    volume_control=PLAYER_CONTROL_NATIVE,
+                    volume_level=90,
+                ),
+                "member": _peer("member", volume_control=PLAYER_CONTROL_NATIVE, volume_level=40),
+            },
+        )
+
+        assert state.group_volume == 40
+
     @pytest.mark.parametrize(
         "member",
         [

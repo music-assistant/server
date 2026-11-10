@@ -2642,7 +2642,7 @@ class Player(ABC):
                 )
                 for s in self.source_list
             ),
-            # the reported lists themselves: their properties build a new list on every read
+            # the reported lists themselves: their properties build a new list on each update
             "sound_mode_list": tuple((m.id, m.name, m.passive) for m in self._attr_sound_mode_list),
             "options": tuple((o.key, o.value, o.read_only) for o in self._attr_options),
             "current_media": (
@@ -2906,9 +2906,8 @@ class Player(ABC):
                     provider_filter=provider.instance_id,
                     return_protocol_players=True,
                 ):
-                    player_id = player.player_id
-                    self.__add_peer(peers, player_id, player, with_parent)
-                    result.add(player_id)
+                    self.__add_peer(peers, player, with_parent)
+                    result.add(player.player_id)
         return result
 
     @final
@@ -2927,7 +2926,7 @@ class Player(ABC):
         ):
             if group_player.type != PlayerType.GROUP:
                 continue
-            self.__add_peer(peers, group_player.player_id, group_player)
+            self.__add_peer(peers, group_player)
             groups.append(
                 GroupSnapshot(
                     group_player.player_id,
@@ -2980,9 +2979,9 @@ class Player(ABC):
         own_id = player.player_id
         if own_id != player_id:
             # a player that is named by a legacy id is found by its own id as well
-            self.__add_peer(peers, own_id, player, with_parent=False)
+            self.__add_peer(peers, player, with_parent=False)
             peers[player_id] = peers[own_id]
-        self.__add_peer(peers, own_id, player, with_parent)
+        self.__add_peer(peers, player, with_parent)
         if as_member:
             # whether a player is available for playback only counts for a member, where a
             # protocol player stands for the player it is linked to
@@ -2997,18 +2996,17 @@ class Player(ABC):
     def __add_peer(
         self,
         peers: dict[str, PeerSnapshot],
-        player_id: str,
         player: Player,
         with_parent: bool = True,
     ) -> None:
         """
-        Add a player to the peers.
+        Add a player to the peers, by its own id.
 
         :param peers: The peers collected so far, by id.
-        :param player_id: Id the player is registered under.
         :param player: The player to add.
         :param with_parent: Also add the player it is linked to as a protocol player.
         """
+        player_id = player.player_id
         parent_id = player.protocol_parent_id
         if player_id not in peers:
             # positional, which is cheaper for the many players this runs for
@@ -3046,10 +3044,14 @@ class Player(ABC):
         """Resolve the artwork of the current item of a queue into its snapshot."""
         if not (current_item := snapshot.queue.current_item):
             return
+        # a stream that reports metadata shows its own image, or else that of the item
+        stream_metadata = (
+            current_item.streamdetails.stream_metadata if current_item.streamdetails else None
+        )
         # the image format needs to be 512x512 jpeg for maximum compatibility with players
-        if current_item.image:
+        if current_item.image and not (stream_metadata and stream_metadata.image_url):
             snapshot.item_image_url = self.mass.metadata.get_image_url(current_item.image, size=512)
-        if current_item.media_item and current_item.media_item.image:
+        if not stream_metadata and current_item.media_item and current_item.media_item.image:
             snapshot.media_item_image_url = self.mass.metadata.get_image_url(
                 current_item.media_item.image, size=512
             )

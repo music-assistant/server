@@ -1280,12 +1280,14 @@ def _volume_members(inputs: StateInputs, state: PlayerState) -> list[PlayerState
     """
     members: list[PlayerState] = []
     for member_id in state.group_members:
-        if member_id == inputs.player_id:
+        peer = inputs.peers.get(member_id)
+        # the player itself may be named by one of its legacy ids
+        if (peer.player_id if peer else member_id) == inputs.player_id:
             if inputs.player_type != PlayerType.PLAYER:
                 continue
             available_for_playback: bool | None = inputs.own.available_for_playback
             member = state
-        elif peer := inputs.peers.get(member_id):
+        elif peer:
             available_for_playback = peer.available_for_playback
             member = peer.state
         else:
