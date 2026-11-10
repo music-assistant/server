@@ -1456,13 +1456,7 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
 
         # if the target player is a member of an active group player (e.g. a syncgroup),
         # redirect the command to that group player so it can manage the member change
-        if (
-            parent_player.type != PlayerType.GROUP
-            and parent_player.state.active_group
-            and (group_player := self._resolve_playback_owner(parent_player)).type
-            == PlayerType.GROUP
-            and PlayerFeature.SET_MEMBERS in group_player.state.supported_features
-        ):
+        if group_player := self._get_set_members_group(parent_player):
             self.logger.debug(
                 "Redirecting set_members from %s to its group player %s",
                 parent_player.name,
@@ -4012,7 +4006,8 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
 
         Adding needs access to the target player and to every player added. Without access
         to the target player, a user may only remove players they have access to from it,
-        and only while the target player is not synced to another player itself.
+        and only while the target player is not synced to another player itself. For a
+        member of a group player, the group player counts as a target player too.
 
         :param target_player: player_id of the syncgroup leader or group player.
         :param player_ids_to_add: List of player_id's to add to the target player.
@@ -4031,13 +4026,31 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
                     raise InsufficientPermissions(msg)
 
         target = self.get_player(target_player)
-        if has_player_access(current_user, target_player, target):
+        targets = [target_player]
+        if target and (group_player := self._get_set_members_group(target)):
+            targets.append(group_player.player_id)
+        if all(has_player_access(current_user, pid, self.get_player(pid)) for pid in targets):
             check_access(player_ids_to_add or [])
             return
         # cmd_set_members first detaches a target that is synced to another player
         if player_ids_to_add or not player_ids_to_remove or (target and target.synced_to):
-            check_access([target_player])
+            check_access(targets)
         check_access(player_ids_to_remove or [])
+
+    def _get_set_members_group(self, player: Player) -> Player | None:
+        """
+        Return the group player that manages the members of the given player, if any.
+
+        :param player: The target player of a set_members command.
+        """
+        if (
+            player.type != PlayerType.GROUP
+            and player.state.active_group
+            and (group_player := self._resolve_playback_owner(player)).type == PlayerType.GROUP
+            and PlayerFeature.SET_MEMBERS in group_player.state.supported_features
+        ):
+            return group_player
+        return None
 
     async def _handle_set_members(  # noqa: PLR0915
         self,

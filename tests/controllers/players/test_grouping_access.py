@@ -4,17 +4,19 @@ Tests that the grouping commands follow the calling user's player filter.
 A grouping command needs access to every player whose grouping it changes: adding needs the
 target player and every player added, removing needs the target player or the player removed,
 and a target player that is synced to another player is detached first, so it needs access too.
+A command on a member of a group player changes that group, so the group counts as a target.
 """
 
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable, Iterator
 from contextlib import AbstractContextManager, contextmanager, nullcontext
+from typing import cast
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from music_assistant_models.auth import User, UserRole
-from music_assistant_models.enums import PlayerFeature
+from music_assistant_models.enums import PlayerFeature, PlayerType
 from music_assistant_models.errors import InsufficientPermissions
 
 from music_assistant.controllers.players import PlayerController
@@ -134,6 +136,56 @@ async def test_a_synced_player_the_user_can_not_use_stays_synced(
 
     controller._handle_set_members.assert_not_awaited()  # type: ignore[attr-defined]
     assert controller._players["b"].synced_to == "c"
+
+
+def _capture(controller: PlayerController, *member_ids: str) -> None:
+    """Register a powered group player "g" that captures the given members."""
+    provider = MockProvider("group", instance_id="group", mass=cast("MagicMock", controller.mass))
+    group = MockPlayer(provider, "g", "Group G", player_type=PlayerType.GROUP)
+    group._attr_powered = True
+    group._attr_supported_features.add(PlayerFeature.SET_MEMBERS)
+    group._attr_group_members = list(member_ids)
+    group._cache.clear()
+    group.set_initialized()
+    controller._players["g"] = group
+    # the members derive their active group from the group's state
+    group.update_state(signal_event=False)
+    for member_id in member_ids:
+        controller._players[member_id].update_state(force_update=True, signal_event=False)
+
+
+@pytest.mark.parametrize(
+    ("command", "refused"),
+    [
+        pytest.param(_set_members("a", remove=["b"]), "Player B", id="remove-other"),
+        pytest.param(_set_members("a", add=["c"]), "Group G", id="add-own"),
+    ],
+)
+async def test_a_group_the_user_can_not_use_is_left_alone(
+    controller: PlayerController, command: Command, refused: str
+) -> None:
+    """A command on a member of a group player changes that group, so it needs access to it."""
+    _capture(controller, "a", "b")
+    assert controller._players["a"].state.active_group == "g"
+
+    with _user(["a", "c"]), pytest.raises(InsufficientPermissions, match=refused):
+        await command(controller)
+
+    controller._handle_set_members.assert_not_awaited()  # type: ignore[attr-defined]
+
+
+async def test_own_player_leaves_a_group_the_user_can_not_use(
+    controller: PlayerController,
+) -> None:
+    """A user may take their own player out of a group player through one of its members."""
+    _capture(controller, "a", "b")
+
+    with _user(["b"]):
+        await controller._api_cmd_set_members("a", player_ids_to_remove=["b"])
+
+    controller._handle_set_members.assert_awaited_once_with(  # type: ignore[attr-defined]
+        controller._players["g"], None, ["b"]
+    )
 
 
 @pytest.mark.parametrize(
