@@ -86,10 +86,8 @@ async def test_stop_listen_in_with_another_player_is_refused(plugin: PartyPlugin
     _set_members(plugin).assert_not_awaited()
 
 
-async def test_stop_listen_in_leaves_a_player_that_is_no_guest_listener(
-    plugin: PartyPlugin,
-) -> None:
-    """Stopping to listen in only takes out a player that was added as a guest listener."""
+async def test_stop_listen_in_with_permitted_player_detaches_it(plugin: PartyPlugin) -> None:
+    """A guest may take a player within their players out of the party audio."""
     players = plugin.mass.players
     players._players["v"]._attr_group_members = ["v", "a"]
     for player in players._players.values():
@@ -98,5 +96,4 @@ async def test_stop_listen_in_leaves_a_player_that_is_no_guest_listener(
     with as_user(["a"], client_player_id="w"):
         await _api(plugin, "party/stop_listen_in")("a")
 
-    _set_members(plugin).assert_not_awaited()
-    assert players._players["a"].synced_to == "v"
+    _set_members(plugin).assert_awaited_once_with(players._players["v"], None, ["a"])
