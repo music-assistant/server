@@ -1375,6 +1375,8 @@ class SendspinPlayer(SendspinBasePlayer):
     _content_takeover_pending: bool = False
     # Item (uri and queue item id) of the metadata last published to the group.
     _published_item: tuple[str, str | None] | None = None
+    # The metadata last published, also while it is still scheduled to take effect.
+    _published_metadata: Metadata | None = None
     playback_session: SendspinPlaybackSession
     static_delay_default_ms: int = DEFAULT_SENDSPIN_STATIC_DELAY
     # HA media_player entity announcements are relayed to (ESPHome-backed devices)
@@ -2034,6 +2036,7 @@ class SendspinPlayer(SendspinBasePlayer):
             if (metadata_role := self._metadata_role) is not None:
                 metadata_role.set_metadata(metadata, timestamp_us=timestamp_us)
                 self._published_item = (current_media.uri, current_media.queue_item_id)
+                self._published_metadata = metadata
 
         if not self._metadata_publish_allowed(generation):
             return
@@ -2622,6 +2625,7 @@ class SendspinPlayer(SendspinBasePlayer):
         self.last_sent_artwork_url = None
         self.last_sent_artist_artwork_url = None
         self._published_item = None
+        self._published_metadata = None
         self._last_beat_queue_item_id = None
         self._last_beat_anchor_us = None
 
@@ -2811,12 +2815,16 @@ class SendspinPlayer(SendspinBasePlayer):
         send are not redone: at the start of a stream they compete with the audio, and
         aborting a send that is still decoding artwork wastes that work. While the current
         item is not published yet, the full send in flight (or a new one) places it.
+
+        Built from what this player published rather than from the role's metadata, which
+        is only what is in effect now: a new track scheduled for when it is heard would
+        otherwise be replaced by the previous track's metadata.
         """
         media = self.state.current_media
         metadata_role = self._metadata_role
         if media is None or metadata_role is None:
             return
-        published = metadata_role.metadata
+        published = self._published_metadata
         if published is None or (media.uri, media.queue_item_id) != self._published_item:
             # Joins a send already in flight instead of aborting it.
             self.mass.create_task(
@@ -2848,6 +2856,7 @@ class SendspinPlayer(SendspinBasePlayer):
             ):
                 return
             metadata_role.set_metadata(metadata, timestamp_us=timestamp_us)
+            self._published_metadata = metadata
 
     async def _send_beat_schedule(
         self,

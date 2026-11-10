@@ -186,6 +186,7 @@ def _republishing_player(
     player = _player(monkeypatch, timeline_start_us)
     role = MagicMock()
     role.metadata = published
+    player._published_metadata = published
     monkeypatch.setattr(SendspinPlayer, "_metadata_role", property(lambda _self: role))
     media = SimpleNamespace(uri="track-uri", queue_item_id=_QUEUE_ITEM_ID, source_id="queue-1")
     state = SimpleNamespace(current_media=media, playback_state=PlaybackState.PLAYING)
@@ -228,6 +229,33 @@ async def test_the_position_is_republished_without_a_full_send(
     assert metadata.title == "Track"
     assert role.set_metadata.call_args.kwargs == {"timestamp_us": None}
     mass.create_task.assert_not_called()
+
+
+async def test_a_scheduled_track_is_not_replaced_by_the_previous_one(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """
+    The new track's metadata waits for its first audio, so the role still shows the old one.
+
+    A timeline change in that window must reschedule the new track, not move the previous
+    track's title and duration onto the new position.
+    """
+    first_chunk_us = _NOW_US + 700_000
+    scheduled = _metadata()
+    player, role, _ = _republishing_player(
+        monkeypatch, timeline_start_us=first_chunk_us, published=scheduled
+    )
+    role.metadata = replace(_metadata(), title="Previous track", track_duration=240_000)
+
+    await player._republish_position()
+
+    role.set_metadata.assert_called_once()
+    metadata = role.set_metadata.call_args.args[0]
+    assert metadata.title == "Track"
+    assert metadata.track_duration == 180_000
+    assert metadata.track_progress == 0
+    assert role.set_metadata.call_args.kwargs == {"timestamp_us": first_chunk_us}
+    assert player._published_metadata is metadata
 
 
 async def test_an_item_not_published_yet_joins_the_full_send(
