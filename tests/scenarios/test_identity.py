@@ -468,8 +468,12 @@ async def _played(scenario: Scenario, players: _TwoPlayers) -> None:
 
 
 async def _renamed(scenario: Scenario, players: _TwoPlayers) -> None:
-    """Give the younger player a custom name."""
+    """Give the younger player a custom name, which is stored in its config."""
     await scenario.configure_player(players.younger_id, name="Kitchen TV")
+    config = await scenario.player_config(players.younger_id)
+    if config is None or config.name != "Kitchen TV":
+        msg = f"the custom name of {players.younger_id} was not stored"
+        raise ScenarioError(msg)
 
 
 @pytest.mark.parametrize("used", [_played, _renamed], ids=["played", "renamed"])
@@ -498,6 +502,9 @@ async def test_used_duplicate_is_not_merged(
     await _seen_again_with_its_address(scenario, living.airplay, LIVING_TV.ip)
     await _seen_again_with_its_address(scenario, bedroom.airplay, BEDROOM_TV.ip)
 
+    # the used duplicate is kept
+    assert [p.player_id for p in scenario.players_carrying(bedroom.airplay)] == [bedroom.older_id]
+    assert [p.player_id for p in scenario.players_carrying(bedroom.cast)] == [bedroom.younger_id]
     # the unused duplicate is merged: its id becomes a legacy id of the older player
     for receiver in (living.airplay, living.cast):
         assert [p.player_id for p in scenario.players_carrying(receiver)] == [living.older_id]
@@ -507,6 +514,3 @@ async def test_used_duplicate_is_not_merged(
     assert scenario.events(EventType.PLAYER_REMOVED, object_id=living.younger_id) == [
         Event(EventType.PLAYER_REMOVED, living.younger_id)
     ]
-    # the used duplicate is kept
-    assert [p.player_id for p in scenario.players_carrying(bedroom.airplay)] == [bedroom.older_id]
-    assert [p.player_id for p in scenario.players_carrying(bedroom.cast)] == [bedroom.younger_id]
