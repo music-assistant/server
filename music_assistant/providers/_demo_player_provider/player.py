@@ -267,6 +267,10 @@ class DemoPlayer(Player):
         # In a real implementation you actually send a command to the player
         # wait for the player to report a new state before updating the playback state.
         url = await self.provider.mass.streams.resolve_stream_url(self.player_id, media)
+        # If you tell the player how long the media is, take it from
+        # served_duration(media, url) (music_assistant.helpers.player), not from
+        # media.stream_duration: after a seek that is the seconds left in the track, which
+        # is right for a single-item stream but too short for a flow stream.
         logger = self.provider.logger.getChild(self.player_id)
         logger.info("Received PLAY_MEDIA command on player %s with url %s", self.display_name, url)
         self._attr_current_media = media
