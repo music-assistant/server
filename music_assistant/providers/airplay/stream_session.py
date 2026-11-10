@@ -16,6 +16,7 @@ from music_assistant.controllers.streams.audio_processing import get_media_sessi
 from music_assistant.helpers.ffmpeg import FFMpeg
 
 from .constants import (
+    AIRPLAY_ANCHOR_SEAT_LEAD_MS,
     AIRPLAY_CLOCK_READY_LEAD_MS,
     AIRPLAY_CLOCK_READY_TIMEOUT_MS,
     AIRPLAY_COLD_GROUP_START_LEAD_MS,
@@ -212,8 +213,9 @@ class AirPlayStreamSession:
             # So a group anchor waits for the receivers to say when they can
             # play, rather than trusting the lead to have covered it.
             ready_at_unix_ms = await self._wait_members_clock_ready()
+            start_unix_ms = self._anchor_start_unix_ms(ready_at_unix_ms=ready_at_unix_ms)
             await self._start_members(
-                position_ms, self._anchor_start_unix_ms(ready_at_unix_ms=ready_at_unix_ms)
+                position_ms, await self._seat_member_anchors(position_ms, start_unix_ms)
             )
         except asyncio.CancelledError:
             await self.stop()
@@ -1306,6 +1308,27 @@ class AirPlayStreamSession:
                 ", ".join(sorted({readiness.value for readiness in unprojected})),
             )
         return ready_at_unix_ms
+
+    async def _seat_member_anchors(self, position_ms: int, start_unix_ms: int) -> int:
+        """
+        Have every member of a cold buffered group accept an anchor before audio leaves.
+
+        A strict receiver rejects its anchor until its clock is seated while the
+        binary retries, and by then the other members' first seconds of audio can
+        be on the wire. The instant is commanded far enough out that nothing has
+        left when the last ack arrives, so the real one that follows costs no one
+        any audio. Receivers that accept straight away keep the original instant.
+
+        :param position_ms: Media position mapped to the first sample of the anchor.
+        :param start_unix_ms: Shared audible-start instant planned for the group.
+        :return: The shared audible-start instant to command next.
+        """
+        streams = [player.stream for player in self.sync_clients if player.stream]
+        if len(streams) < 2 or not all(stream.buffered_route for stream in streams):
+            return start_unix_ms
+        seat_unix_ms = int(cli_clock_time() * 1000) + AIRPLAY_ANCHOR_SEAT_LEAD_MS
+        await asyncio.gather(*[stream.start(seat_unix_ms, position_ms) for stream in streams])
+        return max(start_unix_ms, int(cli_clock_time() * 1000) + AIRPLAY_GROUP_START_LEAD_MS)
 
     async def _start_members(self, position_ms: int, start_unix_ms: int) -> None:
         """
