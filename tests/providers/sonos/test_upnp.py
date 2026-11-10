@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from typing import Any
@@ -18,6 +19,7 @@ from music_assistant.providers.sonos.const import (
     EVENTS_PATH,
     OPTIONS_EVENTS_POLL_INTERVAL,
     OPTIONS_POLL_INTERVAL,
+    UPNP_TIMEOUT_LIMIT,
 )
 from music_assistant.providers.sonos.upnp import SonosSpeakerUpnp, SonosUpnp
 from tests.providers.sonos.test_player import _bind_player
@@ -145,7 +147,8 @@ async def speaker(monkeypatch: pytest.MonkeyPatch) -> AsyncIterator[FakeSpeaker]
     async with aiohttp.ClientSession() as session:
         fake.mass.http_session_no_ssl = session
         fake.mass.streams.base_url = "http://192.168.1.10:8097"
-        fake.upnp = SonosUpnp(fake.mass).speaker("127.0.0.1")
+        logger = logging.getLogger("test.sonos.upnp")
+        fake.upnp = SonosUpnp(fake.mass, logger).speaker("127.0.0.1", logger)
         yield fake
     await server.close()
 
@@ -168,8 +171,31 @@ async def test_an_action_of_the_embedded_service_is_called(speaker: FakeSpeaker)
 
     assert result["CurrentBass"] == 3
     assert "<InstanceID>0</InstanceID>" in speaker.soap_bodies[0]
+    # a missing service or action is a UpnpError, so a KeyError still means a bug
     with pytest.raises(UpnpError):
         await speaker.speaker.call("urn:schemas-upnp-org:service:HTControl:1", "GetIRRepeaterState")
+    with pytest.raises(UpnpError):
+        await speaker.speaker.rendering_control("GetTreble")
+
+
+async def test_requests_stop_after_timeouts_in_a_row(speaker: FakeSpeaker) -> None:
+    """After UPNP_TIMEOUT_LIMIT timeouts nothing is sent until the timeouts are reset."""
+    upnp = speaker.speaker
+    create_device = AsyncMock(side_effect=TimeoutError)
+    with patch.object(upnp._upnp.factory, "async_create_device", create_device):
+        for _ in range(UPNP_TIMEOUT_LIMIT):
+            with pytest.raises(TimeoutError):
+                await upnp.rendering_control("GetBass")
+        with pytest.raises(UpnpError):
+            await upnp.rendering_control("GetBass")
+        await upnp.follow(MagicMock())
+        answers_before_reset = upnp.answers
+        upnp.reset_timeouts()
+
+    assert not answers_before_reset
+    assert create_device.await_count == UPNP_TIMEOUT_LIMIT
+    assert (await upnp.rendering_control("GetBass"))["CurrentBass"] == 3
+    assert upnp.answers
 
 
 async def test_a_speaker_is_followed_once_its_first_event_came_in(speaker: FakeSpeaker) -> None:

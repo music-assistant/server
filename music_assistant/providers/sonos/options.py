@@ -7,10 +7,12 @@ options; everything else is set (and partly read) over UPnP.
 
 from __future__ import annotations
 
-from collections.abc import Awaitable, Callable, Sequence
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, NamedTuple
+from typing import TYPE_CHECKING, Any
 
+import aiohttp
+from async_upnp_client.exceptions import UpnpActionError, UpnpError
 from music_assistant_models.player import PlayerOption, PlayerOptionType, PlayerOptionValueType
 
 from .const import (
@@ -25,12 +27,10 @@ from .const import (
     SUB_GAIN_RANGE,
     SURROUND_LEVEL_RANGE,
     ULTRA_SOUNDBAR_MODELS,
-    UPNP_OPTION_TIMEOUT_LIMIT,
     EqType,
     IrRepeaterState,
     OptionRange,
 )
-from .upnp import UPNP_ERRORS
 
 if TYPE_CHECKING:
     import logging
@@ -394,27 +394,21 @@ SONOS_OPTIONS: tuple[SonosOption, ...] = (
 )
 
 
-class PlayerOptionsRead(NamedTuple):
-    """The player options read from a speaker, and its UPnP timeouts in a row since."""
-
-    options: list[PlayerOption]
-    upnp_timeouts: int
-
-
 async def read_player_options(
     device: SonosDevice,
     logger: logging.Logger,
-    upnp_timeouts: int,
+    previous: Mapping[str, PlayerOption],
     options_to_read: Sequence[SonosOption] = SONOS_OPTIONS,
-) -> PlayerOptionsRead:
+) -> list[PlayerOption]:
     """
     Read the player options the speaker has.
 
-    UPnP reads are skipped once the speaker timed out UPNP_OPTION_TIMEOUT_LIMIT times in a row.
+    An option the speaker lacks or refuses is left out; one it failed to answer in time keeps
+    its previous value. Over UPnP nothing is read while the speaker does not answer at all.
 
     :param device: The speaker to read the options from.
     :param logger: Logger for the options a speaker did not answer for.
-    :param upnp_timeouts: UPnP timeouts in a row of the earlier reads.
+    :param previous: The options read before, by key.
     :param options_to_read: The options to read.
     """
     if any(not option.read_over_upnp for option in options_to_read):
@@ -423,23 +417,21 @@ async def read_player_options(
     for option in options_to_read:
         if not option.available(device):
             continue
-        if option.read_over_upnp and upnp_timeouts >= UPNP_OPTION_TIMEOUT_LIMIT:
+        if option.read_over_upnp and not device.upnp.answers:
             continue
         try:
             value = await option.read(device)
-        except TimeoutError as err:
-            upnp_timeouts += 1
-            logger.debug("Could not read player option %s: %r", option.key, err)
-            if upnp_timeouts == UPNP_OPTION_TIMEOUT_LIMIT:
-                logger.warning(
-                    "UPnP does not answer, options read over UPnP are left out until reconnect"
-                )
+        except UpnpActionError as err:
+            logger.debug("Speaker refused player option %s: %r", option.key, err)
             continue
-        except UPNP_ERRORS as err:
+        except (TimeoutError, aiohttp.ClientError, OSError) as err:
             logger.debug("Could not read player option %s: %r", option.key, err)
+            if option.key in previous:
+                options.append(previous[option.key])
             continue
-        if option.read_over_upnp:
-            upnp_timeouts = 0
+        except UpnpError as err:
+            logger.debug("Speaker lacks player option %s: %r", option.key, err)
+            continue
         if value is None:
             continue
         options.append(
@@ -454,4 +446,4 @@ async def read_player_options(
                 step=1 if option.value_range else None,
             )
         )
-    return PlayerOptionsRead(options, upnp_timeouts)
+    return options

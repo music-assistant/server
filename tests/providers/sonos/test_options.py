@@ -12,7 +12,6 @@ from music_assistant_models.errors import PlayerCommandFailed
 from music_assistant.providers.sonos.const import (
     DEVICE_PROPERTIES_SERVICE,
     HT_CONTROL_SERVICE,
-    UPNP_OPTION_TIMEOUT_LIMIT,
     EqType,
     IrRepeaterState,
 )
@@ -87,7 +86,7 @@ def _upnp(trueplay_available: bool = False, error: Exception | None = None) -> M
         }
         return answers.get(action, {})
 
-    upnp = MagicMock()
+    upnp = MagicMock(answers=True)
     upnp.rendering_control = AsyncMock(side_effect=_answer)
     upnp.call = AsyncMock(
         side_effect=lambda _service, action, **arguments: _answer(action, **arguments)
@@ -132,51 +131,48 @@ def _device(
 )
 async def test_options_offered_per_speaker(device: SonosDevice, expected_keys: set[str]) -> None:
     """A speaker gets the options its settings, model and bonded speakers allow."""
-    result = await read_player_options(device, LOGGER, 0)
+    options = await read_player_options(device, LOGGER, {})
 
-    assert {option.key for option in result.options} == expected_keys
+    assert {option.key for option in options} == expected_keys
 
 
-async def test_option_values_and_unanswered_read() -> None:
-    """Values come from settings and UPnP; an option the speaker does not answer is left out."""
+async def test_option_values_and_failed_reads() -> None:
+    """A refused option is left out; one that timed out keeps its previous value."""
     upnp = _upnp()
     answer = upnp.call.side_effect
 
     def _call(service: str, action: str, **arguments: Any) -> Mapping[str, Any]:
         if action == "GetLEDState":
             raise UpnpActionError(error_code=401)
+        if action == "GetButtonLockState":
+            raise UpnpConnectionTimeoutError
         return answer(service, action, **arguments)  # type: ignore[no-any-return]
 
     upnp.call.side_effect = _call
     device = _device(upnp=upnp)
+    previous = {option.key: option for option in await read_player_options(_device(), LOGGER, {})}
 
-    result = await read_player_options(device, LOGGER, 3)
-    options = {option.key: option for option in result.options}
+    options = {option.key: option for option in await read_player_options(device, LOGGER, previous)}
 
-    # an answered UPnP read ends the timeouts in a row
-    assert result.upnp_timeouts == 0
     assert "status_light" not in options
+    assert options["touch_controls"] is previous["touch_controls"]
     assert options["bass"].value == 3
     assert (options["bass"].min_value, options["bass"].max_value) == (-10, 10)
     assert options["night_mode"].value is True
     assert options["balance"].value == -20
-    assert options["touch_controls"].value is True
     assert options["remote_led_feedback"].value is True
     assert options["mono_mode"].read_only
     assert not options["bass"].read_only
 
 
-async def test_upnp_reads_stop_after_timeouts_in_a_row() -> None:
-    """Once UPnP timed out often enough in a row, only the settings options are read."""
-    upnp = _upnp(error=UpnpConnectionTimeoutError())
-    device = _device(upnp=upnp)
+async def test_nothing_is_read_over_upnp_while_the_speaker_does_not_answer() -> None:
+    """Only the settings options are read once the speaker stopped answering UPnP."""
+    upnp = _upnp()
+    upnp.answers = False
 
-    first = await read_player_options(device, LOGGER, 0)
-    upnp.reset_mock()
-    second = await read_player_options(device, LOGGER, first.upnp_timeouts)
+    options = await read_player_options(_device(upnp=upnp), LOGGER, {})
 
-    assert first.upnp_timeouts >= UPNP_OPTION_TIMEOUT_LIMIT
-    assert {option.key for option in second.options} == SETTINGS_KEYS
+    assert {option.key for option in options} == SETTINGS_KEYS
     upnp.call.assert_not_awaited()
     upnp.rendering_control.assert_not_awaited()
 

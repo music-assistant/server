@@ -9,7 +9,6 @@ received on Music Assistant's stream server, which the speakers reach anyway to 
 from __future__ import annotations
 
 import asyncio
-import logging
 import time
 from collections.abc import Callable
 from datetime import timedelta
@@ -30,18 +29,19 @@ from .const import (
     RENDERING_CONTROL_SERVICE,
     UPNP_PORT,
     UPNP_TIMEOUT,
+    UPNP_TIMEOUT_LIMIT,
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping, Sequence
+    import logging
+    from collections.abc import Awaitable, Mapping, Sequence
 
     from async_upnp_client.client import UpnpDevice, UpnpService, UpnpStateVariable
 
     from music_assistant import MusicAssistant
 
-LOGGER = logging.getLogger(__name__)
 # a timeout is a TimeoutError (UpnpConnectionTimeoutError included)
-UPNP_ERRORS = (UpnpError, aiohttp.ClientError, OSError, TimeoutError, KeyError)
+UPNP_ERRORS = (UpnpError, aiohttp.ClientError, OSError, TimeoutError)
 
 ChangeCallback = Callable[[dict[str, str]], None]
 
@@ -49,13 +49,15 @@ ChangeCallback = Callable[[dict[str, str]], None]
 class SonosUpnp(UpnpNotifyServer):  # type: ignore[misc,unused-ignore]
     """The UPnP of all Sonos speakers, with their events received on the stream server."""
 
-    def __init__(self, mass: MusicAssistant) -> None:
+    def __init__(self, mass: MusicAssistant, logger: logging.Logger) -> None:
         """
         Start receiving events; a speaker is reached with ``speaker``.
 
         :param mass: The Music Assistant instance.
+        :param logger: The provider's logger.
         """
         self._mass = mass
+        self._logger = logger
         requester = AiohttpSessionRequester(mass.http_session_no_ssl, timeout=UPNP_TIMEOUT)
         # a speaker's service descriptions are not always strict UPnP
         self.factory = UpnpFactory(requester, non_strict=True)
@@ -69,13 +71,14 @@ class SonosUpnp(UpnpNotifyServer):  # type: ignore[misc,unused-ignore]
         """Return the URL the speakers send their events to."""
         return f"{self._mass.streams.base_url}{EVENTS_PATH}"
 
-    def speaker(self, player_ip: str) -> SonosSpeakerUpnp:
+    def speaker(self, player_ip: str, logger: logging.Logger) -> SonosSpeakerUpnp:
         """
         Return the UPnP of a speaker.
 
         :param player_ip: The speaker's IP address.
+        :param logger: The player's logger.
         """
-        return SonosSpeakerUpnp(self, player_ip)
+        return SonosSpeakerUpnp(self, player_ip, logger)
 
     def close(self) -> None:
         """Stop receiving events; the speakers end their own subscriptions on unload."""
@@ -90,7 +93,7 @@ class SonosUpnp(UpnpNotifyServer):  # type: ignore[misc,unused-ignore]
         try:
             status = await self.event_handler.handle_notify(http_request)
         except (DefusedET.ParseError, ValueError) as err:
-            LOGGER.debug("Ignoring an unreadable event from %s: %r", request.remote, err)
+            self._logger.debug("Ignoring an unreadable event from %s: %r", request.remote, err)
             return Response(status=400)
         return Response(status=status)
 
@@ -100,20 +103,25 @@ class SonosSpeakerUpnp:
     The UPnP services of one speaker: action calls and the RenderingControl events.
 
     The speaker counts as followed only once its first event came in. Until then, and after
-    the subscription is lost, its settings have to be polled.
+    the subscription is lost, its settings have to be polled. After UPNP_TIMEOUT_LIMIT
+    timeouts in a row nothing is sent until reset_timeouts: the player poll loop of all
+    players waits for each request.
     """
 
-    def __init__(self, upnp: SonosUpnp, player_ip: str) -> None:
+    def __init__(self, upnp: SonosUpnp, player_ip: str, logger: logging.Logger) -> None:
         """
         Initialize; the speaker's description is read on first use.
 
         :param upnp: The UPnP of all speakers.
         :param player_ip: The speaker's IP address.
+        :param logger: The player's logger.
         """
         self._upnp = upnp
+        self._logger = logger
         self.location = f"http://{player_ip}:{UPNP_PORT}/xml/device_description.xml"
         self._device: UpnpDevice | None = None
         self._device_lock = asyncio.Lock()
+        self._timeouts = 0
         # kept here because the event handler holds the service only weakly
         self._events_service: UpnpService | None = None
         self._renew_at = 0.0
@@ -126,6 +134,15 @@ class SonosSpeakerUpnp:
         """Return whether the speaker's RenderingControl events come in."""
         return self._events_service is not None and self._events_live
 
+    @property
+    def answers(self) -> bool:
+        """Return whether requests are sent: not after UPNP_TIMEOUT_LIMIT timeouts in a row."""
+        return self._timeouts < UPNP_TIMEOUT_LIMIT
+
+    def reset_timeouts(self) -> None:
+        """Send requests again, e.g. after the speaker reconnected."""
+        self._timeouts = 0
+
     async def call(self, service_type: str, action: str, **arguments: Any) -> Mapping[str, Any]:
         """
         Call a UPnP action of the speaker and return its output arguments.
@@ -137,7 +154,10 @@ class SonosSpeakerUpnp:
         :param arguments: The input arguments as Python values.
         """
         service = await self._service(service_type)
-        return await service.action(action).async_call(**arguments)
+        if not service.has_action(action):
+            msg = f"{self.location} has no {action}"
+            raise UpnpError(msg)
+        return await self._counting_timeouts(service.action(action).async_call(**arguments))
 
     async def rendering_control(self, action: str, **arguments: Any) -> Mapping[str, Any]:
         """
@@ -170,14 +190,35 @@ class SonosSpeakerUpnp:
             self._events_service = None
             self._events_live = False
             try:
-                await self._upnp.event_handler.async_unsubscribe(service)
+                await self._counting_timeouts(self._upnp.event_handler.async_unsubscribe(service))
             except UPNP_ERRORS as err:
-                LOGGER.debug("Ending the events of %s failed: %r", self.location, err)
+                self._logger.debug("Ending the events of %s failed: %r", self.location, err)
+
+    async def _counting_timeouts[T](self, request: Awaitable[T]) -> T:
+        if not self.answers:
+            if asyncio.iscoroutine(request):
+                request.close()
+            msg = f"{self.location} does not answer"
+            raise UpnpError(msg)
+        try:
+            result = await request
+        except TimeoutError:
+            self._timeouts += 1
+            if self._timeouts == UPNP_TIMEOUT_LIMIT:
+                self._logger.warning(
+                    "%s does not answer over UPnP; its settings are left out until it reconnects",
+                    self.location,
+                )
+            raise
+        self._timeouts = 0
+        return result
 
     async def _service(self, service_type: str) -> UpnpService:
         async with self._device_lock:
             if self._device is None:
-                self._device = await self._upnp.factory.async_create_device(self.location)
+                self._device = await self._counting_timeouts(
+                    self._upnp.factory.async_create_device(self.location)
+                )
         # e.g. RenderingControl sits in the MediaRenderer device embedded in the ZonePlayer
         if (service := self._device.find_service(service_type)) is None:
             msg = f"{self.location} has no {service_type}"
@@ -191,27 +232,31 @@ class SonosSpeakerUpnp:
             # set before subscribing: the first event can come in before the answer
             self._events_service = service
             self._renew_at = float("inf")
-            _, timeout = await self._upnp.event_handler.async_subscribe(
-                service, timeout=timedelta(seconds=EVENT_SUBSCRIPTION_TIMEOUT)
+            _, timeout = await self._counting_timeouts(
+                self._upnp.event_handler.async_subscribe(
+                    service, timeout=timedelta(seconds=EVENT_SUBSCRIPTION_TIMEOUT)
+                )
             )
         except UPNP_ERRORS as err:
             self._events_service = None
-            LOGGER.debug("Subscribing to the events of %s failed: %r", self.location, err)
+            self._logger.debug("Subscribing to the events of %s failed: %r", self.location, err)
             return
         self._renew_at = time.time() + timeout.total_seconds() / 2
-        LOGGER.debug("Subscribed to the events of %s", self.location)
+        self._logger.debug("Subscribed to the events of %s", self.location)
 
     async def _renew(self) -> None:
         assert self._events_service is not None  # checked by follow
         try:
-            _, timeout = await self._upnp.event_handler.async_resubscribe(
-                self._events_service, timeout=timedelta(seconds=EVENT_SUBSCRIPTION_TIMEOUT)
+            _, timeout = await self._counting_timeouts(
+                self._upnp.event_handler.async_resubscribe(
+                    self._events_service, timeout=timedelta(seconds=EVENT_SUBSCRIPTION_TIMEOUT)
+                )
             )
         except UPNP_ERRORS as err:
             # lost: made again on the next follow
             self._events_service = None
             self._events_live = False
-            LOGGER.debug("Renewing the events of %s failed: %r", self.location, err)
+            self._logger.debug("Renewing the events of %s failed: %r", self.location, err)
             return
         self._renew_at = time.time() + timeout.total_seconds() / 2
 
@@ -221,7 +266,7 @@ class SonosSpeakerUpnp:
         if self._events_service is None:
             return
         if not self._events_live:
-            LOGGER.debug("Events of %s come in", self.location)
+            self._logger.debug("Events of %s come in", self.location)
             self._events_live = True
         changes: dict[str, str] = {}
         for variable in variables:

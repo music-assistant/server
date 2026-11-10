@@ -202,8 +202,6 @@ class SonosPlayer(Player):
         self._queue_session_id: str | None = None
         # hand-overs of a group the speakers moved outside MA, one per move
         self._hand_over_tasks: set[asyncio.Task[None]] = set()
-        # UPnP timeouts in a row while reading the player options, reset on (re)connect
-        self._upnp_option_timeouts = 0
 
     @property
     def source_list(self) -> list[PlayerSource]:
@@ -252,7 +250,7 @@ class SonosPlayer(Player):
             self.device_info.ip_address, self.mass.http_session_no_ssl
         )
         provider = cast("SonosPlayerProvider", self._provider)
-        self.upnp = provider.upnp.speaker(self.device_info.ip_address)
+        self.upnp = provider.upnp.speaker(self.device_info.ip_address, self.logger)
         await self._connect(False)
 
         # collect supported features
@@ -422,12 +420,22 @@ class SonosPlayer(Player):
         option = next((x for x in SONOS_OPTIONS if x.key == option_key), None)
         if option is None or option.write is None:
             msg = f"Option {option_key} can not be set on {self.display_name}"
-            raise PlayerCommandFailed(msg)
+            raise PlayerCommandFailed(
+                msg,
+                translation_key="option_not_settable",
+                translation_owner=self.translation_owner,
+                translation_args=[option_key, self.display_name],
+            )
         try:
             await option.write(self._options_device, option_value)
         except (SonosException, *UPNP_ERRORS) as err:
             msg = f"Failed to set option {option_key} on {self.display_name}: {err}"
-            raise PlayerCommandFailed(msg) from err
+            raise PlayerCommandFailed(
+                msg,
+                translation_key="option_set_failed",
+                translation_owner=self.translation_owner,
+                translation_args=[option_key, self.display_name],
+            ) from err
         await self._update_options()
 
     @property
@@ -1332,7 +1340,7 @@ class SonosPlayer(Player):
                 return
             self.connected = True
             self._attr_available = True
-            self._upnp_option_timeouts = 0
+            self.upnp.reset_timeouts()
             # a speaker that restarted lost its event subscription: the next poll makes it anew
             self.mass.create_task(self.upnp.unfollow())
             if self._marked_asleep:
@@ -1988,22 +1996,20 @@ class SonosPlayer(Player):
         :param options_to_read: The options to read; all offered ones when omitted.
         """
         to_read = self._offered_options if options_to_read is None else options_to_read
+        previous = {option.key: option for option in self._attr_options}
         try:
-            result = await read_player_options(
-                self._options_device, self.logger, self._upnp_option_timeouts, to_read
-            )
+            read = await read_player_options(self._options_device, self.logger, previous, to_read)
         except SonosException as err:
             # the options read last stay until the next poll
             self.logger.debug("Could not read the player options: %s", err)
             return
-        self._upnp_option_timeouts = result.upnp_timeouts
         if options_to_read is None:
-            self._attr_options = result.options
+            self._attr_options = read
         else:
             read_keys = {option.key for option in to_read}
             kept = [option for option in self._attr_options if option.key not in read_keys]
             order = {option.key: index for index, option in enumerate(SONOS_OPTIONS)}
-            self._attr_options = sorted([*kept, *result.options], key=lambda x: order[x.key])
+            self._attr_options = sorted([*kept, *read], key=lambda x: order[x.key])
         self.update_state()
 
     def _schedule_options_read(self) -> None:

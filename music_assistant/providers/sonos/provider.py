@@ -66,7 +66,7 @@ class SonosPlayerProvider(PlayerProvider):
         self._set_aiosonos_log_level()
         self._cloud_queue = SonosCloudQueue(self)
         self.mass.streams.register_dynamic_route("/sonos_queue/*", self._cloud_queue.handle_request)
-        self.upnp = SonosUpnp(self.mass)
+        self.upnp = SonosUpnp(self.mass, self.logger)
         self._unsub_queue_items_updated = self.mass.subscribe(
             self._handle_queue_items_updated, EventType.QUEUE_ITEMS_UPDATED
         )

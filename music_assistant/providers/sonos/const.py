@@ -107,9 +107,9 @@ SURROUND_LEVEL_RANGE = OptionRange(-15, 15)
 # player config: offer the options the speaker sends no events for, which are polled
 CONF_SHOW_DEVICE_SETTINGS = "show_device_settings"
 
-# UPnP reads of player options stop after this many timeouts in a row, until a reconnect:
-# the player poll loop of all players waits for each read
-UPNP_OPTION_TIMEOUT_LIMIT = 5
+# UPnP requests to a speaker stop after this many timeouts in a row, until a reconnect:
+# the player poll loop of all players waits for each request
+UPNP_TIMEOUT_LIMIT = 5
 
 # UPnP of the speakers (reference, unofficial: https://sonos.svrooij.io/services)
 UPNP_PORT = 1400

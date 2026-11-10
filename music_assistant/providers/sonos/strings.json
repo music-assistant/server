@@ -9,6 +9,8 @@
     "description": "Play music, manage groups, and control SONOS speakers throughout your home."
   },
   "errors": {
+    "option_not_settable": "Option {0} can not be set on {1}.",
+    "option_set_failed": "Failed to set option {0} on {1}.",
     "player_synced_cannot_play": "Player {0} can not accept the play command, it is synced to another player.",
     "wake_on_lan_timeout": "{0} did not respond to wake-on-LAN."
   }
