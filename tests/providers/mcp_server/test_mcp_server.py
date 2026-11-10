@@ -9,7 +9,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from aiohttp import StreamReader, web
 from aiohttp.test_utils import make_mocked_request
-from music_assistant_models.auth import AuthProviderType, UserRole
+from music_assistant_models.auth import AuthProviderType, Scope, UserRole
 from music_assistant_models.enums import PlaybackState, PlayerType, QueueOption, RepeatMode
 from music_assistant_models.media_items import Playlist, SearchResults, Track
 
@@ -24,8 +24,20 @@ from music_assistant.helpers.hassio import SupervisorError
 from music_assistant.helpers.json import json_dumps, json_loads
 from music_assistant.providers.mcp_server import CONF_HOME_ASSISTANT_SECRET
 from music_assistant.providers.mcp_server.auth import META_HA_USER_ID
-from music_assistant.providers.mcp_server.registry import TOOLS
+from music_assistant.providers.mcp_server.registry import (
+    TOOLS,
+    _matches_schema,
+    _type_schema,
+    mcp_tool,
+)
 from music_assistant.providers.mcp_server.transport import MCPTransport
+from music_assistant.providers.rotation_playlist.models import (
+    RotationDetails,
+    StepError,
+    StepsError,
+    parse_steps,
+)
+from music_assistant.providers.rotation_playlist.validation import validate_steps
 
 if TYPE_CHECKING:
     from music_assistant_models.auth import User
@@ -121,7 +133,8 @@ async def test_unknown_method(mass: MusicAssistant, admin_token: str) -> None:
 
 async def test_tools_list(mass: MusicAssistant, admin_token: str) -> None:
     """Every tool is listed with a description and a valid input schema."""
-    response = await _post(mass, _rpc("tools/list"), admin_token)
+    with patch.object(mass, "get_provider", return_value=MagicMock()):
+        response = await _post(mass, _rpc("tools/list"), admin_token)
     tools = _body(response)["result"]["tools"]
     assert {tool["name"] for tool in tools} == set(TOOLS)
     for tool in tools:
@@ -714,3 +727,202 @@ def _fake_player(player_id: str, name: str) -> MagicMock:
     player.state.current_media = None
     player.private = False
     return player
+
+
+def test_schema_override_replaces_parameter_schema() -> None:
+    """An override replaces the generated schema of a parameter and keeps its description."""
+
+    @mcp_tool("override_probe", Scope.LIBRARY_READ, schema_overrides={"steps": {"type": "array"}})
+    async def probe(mass: MusicAssistant, steps: list[dict[str, Any]]) -> None:
+        """
+        Probe.
+
+        :param steps: The steps.
+        """
+
+    try:
+        prop = TOOLS["override_probe"].input_schema["properties"]["steps"]
+        assert prop == {"type": "array", "description": "The steps."}
+    finally:
+        TOOLS.pop("override_probe")
+
+
+def test_matches_schema_object_and_array_of_objects() -> None:
+    """Objects match dicts and arrays of objects match lists of dicts."""
+    assert _type_schema(dict[str, Any]) == {"type": "object"}
+    assert _matches_schema({"a": 1}, {"type": "object"})
+    assert not _matches_schema([1], {"type": "object"})
+    array = _type_schema(list[dict[str, Any]])
+    assert _matches_schema([{"a": 1}, {}], array)
+    assert not _matches_schema([{"a": 1}, "x"], array)
+    assert not _matches_schema({"a": 1}, array)
+
+
+async def test_rotation_tools_error_when_provider_missing(
+    mass: MusicAssistant, admin_token: str
+) -> None:
+    """Every rotation tool says the plugin is off when the provider is not loaded."""
+    calls: dict[str, dict[str, Any]] = {
+        "create_rotation": {"name": "x", "steps": []},
+        "update_rotation": {"rotation": "x", "name": "y"},
+        "preview_rotation": {"limit": 5, "steps": []},
+        "explain_rotation": {"steps": []},
+        "describe_rotation_steps": {},
+        "list_rotation_recipes": {},
+    }
+    for name, arguments in calls.items():
+        result = _body(await _post(mass, _call(name, arguments), admin_token))["result"]
+        assert result["isError"], name
+        assert "Rotations are not enabled" in result["content"][0]["text"], name
+
+
+async def test_rotation_tools_offered_only_with_the_plugin(
+    mass: MusicAssistant, admin_token: str
+) -> None:
+    """The rotation tools and instructions are only offered when the plugin is loaded."""
+    rotation_tools = {name for name in TOOLS if "rotation" in name}
+    assert len(rotation_tools) == 6
+
+    tools = _body(await _post(mass, _rpc("tools/list"), admin_token))["result"]["tools"]
+    assert {tool["name"] for tool in tools} == set(TOOLS) - rotation_tools
+    result = _body(await _post(mass, _rpc("initialize"), admin_token))["result"]
+    assert "create_rotation" not in result["instructions"]
+
+    with patch.object(mass, "get_provider", return_value=MagicMock()):
+        tools = _body(await _post(mass, _rpc("tools/list"), admin_token))["result"]["tools"]
+        result = _body(await _post(mass, _rpc("initialize"), admin_token))["result"]
+    assert {tool["name"] for tool in tools} == set(TOOLS)
+    assert "create_rotation" in result["instructions"]
+
+
+async def test_create_rotation_tool_calls_provider(mass: MusicAssistant, admin_token: str) -> None:
+    """create_rotation passes the steps on and surfaces a steps error unchanged."""
+    provider = MagicMock()
+    provider.create = AsyncMock(
+        return_value=Playlist(item_id="1", provider="library", name="Mix", provider_mappings=set())
+    )
+    steps = [{"type": "source_albums"}]
+    with patch.object(mass, "get_provider", return_value=provider):
+        response = await _post(
+            mass, _call("create_rotation", {"name": "Mix", "steps": steps}), admin_token
+        )
+        result = _body(response)["result"]
+        assert not result["isError"]
+        provider.create.assert_awaited_once_with("Mix", steps)
+        assert "library://playlist/1" in result["content"][0]["text"]
+
+        provider.create = AsyncMock(side_effect=StepsError([StepError(0, None, "Fix it")]))
+        response = await _post(
+            mass, _call("create_rotation", {"name": "Mix", "steps": steps}), admin_token
+        )
+        result = _body(response)["result"]
+        assert result["isError"]
+        assert "Fix it" in result["content"][0]["text"]
+
+
+async def test_rotation_argument_resolves_name(mass: MusicAssistant, admin_token: str) -> None:
+    """The rotation argument accepts a name, case-insensitive, and refuses unknown names."""
+    playlist = Playlist(item_id="1", provider="library", name="Mix", provider_mappings=set())
+    provider = MagicMock()
+    provider.list_rotations = AsyncMock(
+        return_value=[{"id": "uuid-1", "name": "Fuchsbande", "playlist": playlist.to_dict()}]
+    )
+    provider.update = AsyncMock(return_value=playlist)
+    with patch.object(mass, "get_provider", return_value=provider):
+        response = await _post(
+            mass, _call("update_rotation", {"rotation": "fuchsBANDE", "name": "New"}), admin_token
+        )
+        assert not _body(response)["result"]["isError"]
+        provider.update.assert_awaited_once_with("uuid-1", name="New", steps=None)
+
+        response = await _post(
+            mass, _call("update_rotation", {"rotation": "Nope", "name": "New"}), admin_token
+        )
+        result = _body(response)["result"]
+        assert result["isError"]
+        assert "Fuchsbande" in result["content"][0]["text"]
+
+
+async def test_explain_rotation_reads_the_steps_of_a_rotation(
+    mass: MusicAssistant, admin_token: str
+) -> None:
+    """explain_rotation explains the stored steps of a Rotation given by its name."""
+    playlist = Playlist(item_id="1", provider="library", name="Mix", provider_mappings=set())
+    steps = [{"type": "source", "media_type": "album", "from": "library"}]
+    provider = MagicMock()
+    provider.list_rotations = AsyncMock(
+        return_value=[{"id": "uuid-1", "name": "Fuchsbande", "playlist": playlist.to_dict()}]
+    )
+    provider.get = AsyncMock(
+        return_value=RotationDetails(
+            id="uuid-1",
+            name="Fuchsbande",
+            steps=steps,
+            playlist=playlist.to_dict(),
+            round_status={"round": 1},
+        )
+    )
+    provider.explain = AsyncMock(return_value=["Take albums from my library"])
+    with patch.object(mass, "get_provider", return_value=provider):
+        response = await _post(
+            mass, _call("explain_rotation", {"rotation": "Fuchsbande"}), admin_token
+        )
+    result = _body(response)["result"]
+    assert not result["isError"]
+    provider.explain.assert_awaited_once_with(steps)
+
+
+async def test_preview_rotation_needs_exactly_one_source(
+    mass: MusicAssistant, admin_token: str
+) -> None:
+    """preview_rotation takes either a rotation or steps, and returns compact tracks."""
+    track = Track(
+        item_id="7", provider="library", name="Folge 1", provider_mappings=set(), duration=60
+    )
+    provider = MagicMock()
+    provider.preview = AsyncMock(
+        return_value={
+            "groups": [
+                {
+                    "item": track.to_dict(),
+                    "tracks": [{"track": track.to_dict(), "removed": True}],
+                }
+            ],
+            "step_counts": [],
+            "total_tracks": 1,
+            "total_exact": True,
+            "duration_seconds": 60,
+        }
+    )
+    with patch.object(mass, "get_provider", return_value=provider):
+        for arguments in ({"limit": 5}, {"limit": 5, "rotation": "x", "steps": []}):
+            response = await _post(mass, _call("preview_rotation", arguments), admin_token)
+            assert _body(response)["result"]["isError"]
+        response = await _post(
+            mass, _call("preview_rotation", {"limit": 5, "steps": [{"type": "x"}]}), admin_token
+        )
+        result = _body(response)["result"]
+        assert not result["isError"]
+        provider.preview.assert_awaited_once_with([{"type": "x"}], 5, include_removed=False)
+        group = json_loads(result["content"][0]["text"])["groups"][0]
+        assert group["tracks"][0]["removed"] is True
+        assert group["tracks"][0]["name"] == "Folge 1"
+
+
+def test_create_rotation_tool_schema_has_one_of_steps() -> None:
+    """The steps argument carries the generated JSON schema with its anyOf of step types."""
+    steps = TOOLS["create_rotation"].input_schema["properties"]["steps"]
+    assert steps["type"] == "array"
+    assert len(steps["items"]["anyOf"]) == 6
+    assert steps["description"]
+    assert "limit (1-200)" in TOOLS["preview_rotation"].description
+
+
+def test_create_rotation_example_steps_are_valid() -> None:
+    """The example in the create_rotation description is a valid steps document."""
+    description = TOOLS["create_rotation"].description
+    start = description.index("steps: ") + len("steps: ")
+    end = description.index("] Use describe_rotation_steps") + 1
+    steps = parse_steps(json_loads(description[start:end]))
+    assert len(steps) == 6
+    assert validate_steps(steps) == []
