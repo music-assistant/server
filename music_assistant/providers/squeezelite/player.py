@@ -37,12 +37,9 @@ from music_assistant.constants import (
 from music_assistant.controllers.streams.audio_processing import get_media_session_id
 from music_assistant.helpers.audio import get_mime_type
 from music_assistant.helpers.util import TaskManager
-from music_assistant.models.player import (
-    POSITION_JUMP_THRESHOLD,
-    DeviceInfo,
-    PlayerMedia,
-)
+from music_assistant.models.player import DeviceInfo, PlayerMedia
 from music_assistant.models.player_protocol import PlayerProtocol
+from music_assistant.models.player_state import POSITION_JUMP_THRESHOLD
 
 from .constants import (
     CONF_ENTRY_DISPLAY,

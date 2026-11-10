@@ -4411,11 +4411,11 @@ class TestNativeProtocolPlayerGrouping:
 
 
 class TestFinalGroupMembersTranslation:
-    """Tests for __final_group_members translation of protocol player IDs."""
+    """Tests for the translation of protocol player IDs in the published group members."""
 
     def test_final_group_members_translates_protocol_ids(self, mock_mass: MagicMock) -> None:
         """
-        Test that __final_group_members translates protocol player IDs to visible IDs.
+        Test that the published group members translate protocol player IDs to visible IDs.
 
         When a native AirPlay player (Apple TV) has protocol players in its group_members,
         the final state should show the visible parent player IDs instead.
@@ -4467,7 +4467,7 @@ class TestFinalGroupMembersTranslation:
 
 
 class TestFinalActiveGroupTranslation:
-    """Tests for __final_active_group with translated protocol player IDs."""
+    """Tests for the published active group with translated protocol player IDs."""
 
     def test_active_group_uses_translated_group_members(self, mock_mass: MagicMock) -> None:
         """Test that visible players resolve active_group from translated group members."""
@@ -4522,7 +4522,7 @@ class TestFinalActiveGroupTranslation:
 
 
 class TestFinalSyncedToWithNativeProtocolParent:
-    """Tests for __final_synced_to when sync parent is a native protocol player."""
+    """Tests for the published synced_to when sync parent is a native protocol player."""
 
     def test_synced_to_native_airplay_player(self, mock_mass: MagicMock) -> None:
         """
@@ -12785,7 +12785,7 @@ class TestExternalSourceTakeover:
     def test_device_own_external_source_stays_external(self, mock_mass: MagicMock) -> None:
         """A source MA does not produce is still classified as external."""
         # checked on the classifier directly: while an output protocol renders the audio,
-        # __final_active_source overrules what the device reports, so a device-local
+        # the published active source overrules what the device reports, so a device-local
         # source cannot be driven through _check_external_source_takeover at all
         controller, sonos_player = TestCanGroupWithExternalSource._build_rig(mock_mass)
 

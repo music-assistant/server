@@ -5,6 +5,7 @@ from __future__ import annotations
 import copy
 import time
 from statistics import median
+from typing import Any
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -16,18 +17,23 @@ from music_assistant_models.audio_processing import (
 from music_assistant_models.enums import (
     ContentType,
     CrossfadeMode,
+    ImageType,
     MediaType,
     PlaybackState,
+    PlayerType,
     VolumeNormalizationMode,
 )
-from music_assistant_models.media_items import AudioFormat, AudioSource
+from music_assistant_models.media_items import AudioFormat, AudioSource, MediaItemImage, Track
 from music_assistant_models.media_items.provider_mapping import ProviderMapping
+from music_assistant_models.player import PlayerOption, PlayerOptionType, PlayerSoundMode
 from music_assistant_models.player_queue import PlayerQueue
 from music_assistant_models.queue_item import QueueItem
 from music_assistant_models.streamdetails import StreamDetails, StreamMetadata
+from music_assistant_models.unique_list import UniqueList
 
 import music_assistant.models.player as player_module
 from music_assistant.controllers.players.audio_sources import AudioSourceSession
+from music_assistant.models.player_state import derive_player_state
 from tests.common import MockPlayer, MockProvider
 
 
@@ -61,21 +67,47 @@ def player(mock_mass: MagicMock) -> MockPlayer:
     return player
 
 
+class _SyncedPlayer(MockPlayer):
+    """A player whose provider names its sync leader itself."""
+
+    leader_id: str | None = None
+
+    @property
+    def synced_to(self) -> str | None:
+        """Return the id of the sync leader as the provider names it."""
+        return self.leader_id
+
+
+def _image(url: str = "http://img/cover.jpg") -> MediaItemImage:
+    """
+    Return the image of a media item.
+
+    :param url: Where the image is found.
+    """
+    return MediaItemImage(
+        type=ImageType.THUMB,
+        path=url,
+        provider="url",
+        remotely_accessible=True,
+    )
+
+
 class TestUpdateStateChangeDetection:
     """The no-change update_state path does no work; changed inputs recalculate."""
 
     def test_no_change_update_does_no_work(self, player: MockPlayer) -> None:
         """An update_state call without any changed input builds nothing."""
         with (
-            patch.object(
-                player_module, "PlayerState", wraps=player_module.PlayerState
-            ) as state_cls,
+            patch.object(player_module, "derive_player_state", wraps=derive_player_state) as derive,
             patch.object(copy, "deepcopy", wraps=copy.deepcopy) as deepcopy_mock,
         ):
             player.update_state()
 
-        state_cls.assert_not_called()
+        derive.assert_not_called()
         deepcopy_mock.assert_not_called()
+        # nor the lists the properties of the player build on every read
+        assert "sound_mode_list" not in player._cache
+        assert "options" not in player._cache
 
     def test_position_tick_does_not_rebuild(self, player: MockPlayer) -> None:
         """A regular playback tick keeps the anchor and builds nothing."""
@@ -85,11 +117,11 @@ class TestUpdateStateChangeDetection:
         player._attr_elapsed_time_last_updated += 1
 
         with patch.object(
-            player_module, "PlayerState", wraps=player_module.PlayerState
-        ) as state_cls:
+            player_module, "derive_player_state", wraps=derive_player_state
+        ) as derive:
             player.update_state()
 
-        state_cls.assert_not_called()
+        derive.assert_not_called()
         assert player.state.elapsed_time == 10.0
 
     def test_position_jump_rebuilds_state(self, player: MockPlayer) -> None:
@@ -106,34 +138,46 @@ class TestUpdateStateChangeDetection:
         player._attr_volume_level = 55
 
         with patch.object(
-            player_module, "PlayerState", wraps=player_module.PlayerState
-        ) as state_cls:
+            player_module, "derive_player_state", wraps=derive_player_state
+        ) as derive:
             player.update_state(signal_event=False)
 
-        state_cls.assert_called_once()
+        derive.assert_called_once()
         assert player.state.volume_level == 55
+
+    def test_changed_sound_modes_and_options_rebuild_state(self, player: MockPlayer) -> None:
+        """Sound modes and options the device reports anew reach the state."""
+        player._attr_sound_mode_list = [PlayerSoundMode(id="movie", name="Movie")]
+        player.update_state(signal_event=False)
+        assert [x.id for x in player.state.sound_mode_list] == ["movie"]
+
+        player._attr_options = [
+            PlayerOption(key="bass", name="Bass", type=PlayerOptionType.INTEGER, value=3)
+        ]
+        player.update_state(signal_event=False)
+        assert [(x.key, x.value) for x in player.state.options] == [("bass", 3)]
 
     def test_changed_privacy_rebuilds_state(self, player: MockPlayer) -> None:
         """A player turning private must reach clients, which decide where to show it."""
         player._attr_private = True
 
         with patch.object(
-            player_module, "PlayerState", wraps=player_module.PlayerState
-        ) as state_cls:
+            player_module, "derive_player_state", wraps=derive_player_state
+        ) as derive:
             player.update_state(signal_event=False)
 
-        state_cls.assert_called_once()
+        derive.assert_called_once()
         assert player.state.private is True
 
     def test_mark_state_dirty_forces_recalculation(self, player: MockPlayer) -> None:
         """mark_state_dirty recalculates even when no own input changed."""
         with patch.object(
-            player_module, "PlayerState", wraps=player_module.PlayerState
-        ) as state_cls:
+            player_module, "derive_player_state", wraps=derive_player_state
+        ) as derive:
             player.mark_state_dirty()
             player.update_state(signal_event=False)
 
-        state_cls.assert_called_once()
+        derive.assert_called_once()
 
     def test_position_appearing_signals_a_jump(
         self, player: MockPlayer, mock_mass: MagicMock
@@ -156,63 +200,6 @@ class TestUpdateStateChangeDetection:
 
         mock_mass.players.on_player_position_jumped.assert_called_once_with(player)
         assert player.state.elapsed_time == 0.5
-
-
-class TestReconcilePositionAnchor:
-    """The anchor reconcile helper's handling of incomplete anchors."""
-
-    def test_incomplete_to_complete_reports_a_jump(self) -> None:
-        """A position appearing on a None anchor is a discontinuity, not a quiet adopt."""
-        position, _, jumped = player_module._reconcile_position_anchor(
-            None, None, 0.5, time.time(), prev_playing=True, new_playing=True
-        )
-        assert position == 0.5
-        assert jumped
-
-    def test_complete_to_incomplete_adopts_silently(self) -> None:
-        """A position disappearing (stop/reset) is adopted without a jump signal."""
-        position, _, jumped = player_module._reconcile_position_anchor(
-            10.0, time.time(), None, None, prev_playing=True, new_playing=False
-        )
-        assert position is None
-        assert not jumped
-
-    def test_incomplete_to_incomplete_stays_silent(self) -> None:
-        """No position on either side has nothing to signal."""
-        _, _, jumped = player_module._reconcile_position_anchor(
-            None, None, None, None, prev_playing=False, new_playing=False
-        )
-        assert not jumped
-
-    def test_steady_playback_still_keeps_the_previous_anchor(self) -> None:
-        """A tick extrapolating to the same corrected position keeps the anchor unchanged."""
-        now = time.time()
-        position, timestamp, jumped = player_module._reconcile_position_anchor(
-            10.0, now - 5, 15.2, now, prev_playing=True, new_playing=True
-        )
-        assert position == 10.0
-        assert timestamp == now - 5
-        assert not jumped
-
-    def test_resume_adopts_the_fresh_anchor(self) -> None:
-        """Resuming must not extrapolate from a timestamp taken before the stop."""
-        now = time.time()
-        position, timestamp, jumped = player_module._reconcile_position_anchor(
-            59.0, now - 3600, 59.0, now - 0.5, prev_playing=False, new_playing=True
-        )
-        assert position == 59.0
-        assert timestamp == now - 0.5
-        assert not jumped
-
-    def test_pause_adopts_the_paused_anchor(self) -> None:
-        """A paused anchor is read without extrapolation, so it must hold the paused position."""
-        now = time.time()
-        position, timestamp, jumped = player_module._reconcile_position_anchor(
-            0.0, now - 90, 90.0, now, prev_playing=True, new_playing=False
-        )
-        assert position == 90.0
-        assert timestamp == now
-        assert not jumped
 
 
 class TestNativeCurrentMediaPosition:
@@ -740,6 +727,304 @@ class TestCacheInvalidationClasses:
         player._cache["some_provider_prop"] = object()
         player.update_state()
         assert "some_provider_prop" not in player._cache
+
+
+class TestInputCollection:
+    """What update_state looks up to calculate the state."""
+
+    @pytest.mark.parametrize("synced", [True, False])
+    def test_grouping_candidates_are_only_looked_up_for_a_player_that_can_group(
+        self, mock_mass: MagicMock, synced: bool
+    ) -> None:
+        """A synced player has nothing to group with, so its candidates are left alone."""
+        provider = MockProvider("test_provider", mass=mock_mass)
+        player = MockPlayer(provider, "player_1", "Player 1")
+        player._attr_can_group_with = {"test_instance"}
+        leader = MockPlayer(provider, "leader", "Leader")
+        leader._attr_group_members = ["leader", "player_1"] if synced else []
+        players = {"leader": leader, "player_1": player}
+        mock_mass.players.get_player = MagicMock(side_effect=players.get)
+        mock_mass.players.iter_players = MagicMock(return_value=list(players.values()))
+
+        player.update_state(signal_event=False)
+
+        assert player.state.synced_to == ("leader" if synced else None)
+        assert mock_mass.get_provider.called is not synced
+
+    @pytest.mark.parametrize("grouped_id", ["member", "member_protocol", "old_member"])
+    @pytest.mark.parametrize("can_play", [True, False])
+    def test_group_volume_counts_the_members_that_can_play(
+        self, mock_mass: MagicMock, grouped_id: str, can_play: bool
+    ) -> None:
+        """A member decides the group volume while it can play, however the group names it."""
+        provider = MockProvider("test_provider", mass=mock_mass)
+        leader = MockPlayer(provider, "leader", "Leader")
+        leader._attr_volume_level = 20
+        leader._attr_group_members = ["leader", grouped_id]
+        member = MockPlayer(provider, "member", "Member")
+        member._attr_volume_level = 80
+        member._attr_available = can_play
+        protocol = MockPlayer(provider, "member_protocol", "Member", PlayerType.PROTOCOL)
+        protocol.set_protocol_parent_id("member")
+        players = {"leader": leader, "member": member, "member_protocol": protocol}
+        # the member also answers to a legacy id
+        mock_mass.players.get_player = MagicMock(side_effect={**players, "old_member": member}.get)
+        mock_mass.players.iter_players = MagicMock(return_value=list(players.values()))
+        member.update_state(signal_event=False)
+
+        leader.update_state(signal_event=False)
+
+        assert leader.state.group_members == ["leader", "member"]
+        assert leader.state.group_volume == (80 if can_play else 20)
+
+    def test_member_named_by_a_legacy_id_counts_under_that_id_too(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """A protocol player keeps its members as reported, a legacy id among them counts."""
+        provider = MockProvider("test_provider", mass=mock_mass)
+        leader = MockPlayer(provider, "leader", "Leader", PlayerType.PROTOCOL)
+        leader._attr_group_members = ["leader", "old_member"]
+        member = MockPlayer(provider, "member", "Member")
+        member._attr_volume_level = 80
+        players = {"leader": leader, "member": member}
+        mock_mass.players.get_player = MagicMock(side_effect={**players, "old_member": member}.get)
+        mock_mass.players.iter_players = MagicMock(return_value=list(players.values()))
+        member.update_state(signal_event=False)
+
+        leader.update_state(signal_event=False)
+
+        assert leader.state.group_members == ["leader", "old_member"]
+        assert leader.state.group_volume == 80
+
+    def test_sync_leader_named_by_a_legacy_id_is_followed(self, mock_mass: MagicMock) -> None:
+        """A player synced to a legacy id of its leader mirrors the player that answers to it."""
+        provider = MockProvider("test_provider", mass=mock_mass)
+        leader = MockPlayer(provider, "leader", "Leader")
+        leader._attr_playback_state = PlaybackState.PLAYING
+        leader.set_current_media(uri="http://test/stream", title="Song")
+        follower = _SyncedPlayer(provider, "follower", "Follower")
+        follower.leader_id = "old_leader"
+        players = {"leader": leader, "follower": follower}
+        mock_mass.players.get_player = MagicMock(side_effect={**players, "old_leader": leader}.get)
+        mock_mass.players.iter_players = MagicMock(return_value=list(players.values()))
+        leader.update_state(signal_event=False)
+
+        follower.update_state(signal_event=False)
+
+        assert follower.state.synced_to == "leader"
+        assert follower.state.playback_state == PlaybackState.PLAYING
+        assert follower.state.active_source == leader.state.active_source
+        assert follower.state.current_media is leader.state.current_media
+
+    def test_members_of_the_active_output_protocol_count_for_the_group_volume(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """A player grouped through the protocol that plays decides the group volume as well."""
+        provider = MockProvider("test_provider", mass=mock_mass)
+        leader = MockPlayer(provider, "leader", "Leader")
+        leader._attr_volume_level = 20
+        protocol = MockPlayer(provider, "leader_protocol", "Leader", PlayerType.PROTOCOL)
+        protocol.set_protocol_parent_id("leader")
+        protocol._attr_group_members = ["leader_protocol", "member"]
+        member = MockPlayer(provider, "member", "Member")
+        member._attr_volume_level = 80
+        players = {"leader": leader, "leader_protocol": protocol, "member": member}
+        mock_mass.players.get_player = MagicMock(side_effect=players.get)
+        mock_mass.players.iter_players = MagicMock(return_value=list(players.values()))
+        member.update_state(signal_event=False)
+
+        leader.set_active_output_protocol("leader_protocol")
+
+        assert leader.state.group_members == ["leader", "member"]
+        assert leader.state.group_volume == 80
+
+    def test_member_of_an_active_group_player_shows_what_the_group_plays(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """A group player holding the player is where the player takes its source and media."""
+        provider = MockProvider("test_provider", mass=mock_mass)
+        group = MockPlayer(provider, "group_1", "Group", PlayerType.GROUP)
+        group._attr_group_members = ["player_1"]
+        group._attr_active_source = "group_1"
+        group._attr_playback_state = PlaybackState.PLAYING
+        group.set_current_media(uri="http://test/group", title="Group Song")
+        player = MockPlayer(provider, "player_1", "Player 1")
+        players = {"group_1": group, "player_1": player}
+        mock_mass.players.get_player = MagicMock(side_effect=players.get)
+        mock_mass.players.iter_players = MagicMock(return_value=list(players.values()))
+        group.update_state(signal_event=False)
+
+        player.update_state(signal_event=False)
+
+        assert player.state.active_group == "group_1"
+        assert player.state.active_source == group.state.active_source
+        assert player.state.current_media is group.state.current_media
+
+    @pytest.mark.parametrize(
+        ("kind", "looked_up"),
+        [("own_queue", True), ("synced", False), ("external_source", False)],
+    )
+    def test_artwork_is_only_looked_up_for_the_queue_the_media_is_taken_from(
+        self, mock_mass: MagicMock, kind: str, looked_up: bool
+    ) -> None:
+        """A player that shows other media than the item of its queue needs no artwork of it."""
+        queue = PlayerQueue(
+            queue_id="player_1",
+            active=True,
+            display_name="Player 1",
+            available=True,
+            items=1,
+            current_item=QueueItem(
+                queue_id="player_1",
+                queue_item_id="item_1",
+                name="Song",
+                duration=200,
+                image=_image(),
+            ),
+        )
+        mock_mass.player_queues.get = MagicMock(side_effect={"player_1": queue}.get)
+        mock_mass.metadata.get_image_url = MagicMock(return_value="http://ma/cover.jpg")
+        provider = MockProvider("test_provider", mass=mock_mass)
+        player = MockPlayer(provider, "player_1", "Player 1")
+        player._attr_playback_state = PlaybackState.PLAYING
+        leader = MockPlayer(provider, "leader", "Leader")
+        if kind == "synced":
+            leader._attr_group_members = ["leader", "player_1"]
+        if kind == "external_source":
+            player._attr_active_source = "line_in"
+        players = {"leader": leader, "player_1": player}
+        mock_mass.players.get_player = MagicMock(side_effect=players.get)
+        mock_mass.players.iter_players = MagicMock(return_value=list(players.values()))
+
+        player.update_state(signal_event=False)
+
+        assert mock_mass.metadata.get_image_url.called is looked_up
+        media = player.state.current_media
+        assert (media.image_url if media else None) == (
+            "http://ma/cover.jpg" if looked_up else None
+        )
+
+    def test_image_of_the_media_item_is_shown_for_a_queue_item_without_one(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """A queue item without an image of its own shows the image of the track it holds."""
+        player = _queue_item_player(mock_mass, _queue_item(image=None))
+
+        player.update_state(signal_event=False)
+
+        assert mock_mass.metadata.get_image_url.call_count == 1
+        assert player.state.current_media is not None
+        assert player.state.current_media.image_url == "http://ma/track.jpg"
+
+    @pytest.mark.parametrize("stream_image_url", [None, "http://stream/now.jpg"])
+    def test_artwork_of_a_stream_with_metadata_is_only_looked_up_where_it_is_shown(
+        self, mock_mass: MagicMock, stream_image_url: str | None
+    ) -> None:
+        """A stream that reports metadata shows its own image, or else that of the queue item."""
+        streamdetails = StreamDetails(
+            provider="test_provider",
+            item_id="item_1",
+            audio_format=AudioFormat(),
+            media_type=MediaType.RADIO,
+            stream_metadata=StreamMetadata(title="Live Track", image_url=stream_image_url),
+        )
+        player = _queue_item_player(mock_mass, _queue_item(streamdetails=streamdetails))
+
+        player.update_state(signal_event=False)
+
+        assert mock_mass.metadata.get_image_url.call_count == (1 if stream_image_url is None else 0)
+        assert player.state.current_media is not None
+        assert player.state.current_media.image_url == (stream_image_url or "http://ma/item.jpg")
+
+    @pytest.mark.parametrize("stream_image_url", [None, "http://stream/now.jpg"])
+    def test_image_of_a_live_source_is_only_looked_up_when_what_it_plays_has_none(
+        self, mock_mass: MagicMock, stream_image_url: str | None
+    ) -> None:
+        """What a live source is playing may come with an image, which is the one shown."""
+        source = AudioSource(
+            item_id="main",
+            provider="test_instance",
+            name="Spotify Connect",
+            provider_mappings={
+                ProviderMapping(
+                    item_id="main",
+                    provider_domain="spotify_connect",
+                    provider_instance="test_instance",
+                )
+            },
+        )
+        source.metadata.images = UniqueList([_image()])
+        session = AudioSourceSession(
+            player_id="player_1",
+            source=source,
+            provider_instance_id="test_instance",
+            stream_metadata=StreamMetadata(title="Live Track", image_url=stream_image_url),
+        )
+        mock_mass.players.get_audio_source_session = MagicMock(return_value=session)
+        mock_mass.metadata.get_image_url = MagicMock(return_value="http://ma/source.jpg")
+        provider = MockProvider("test_provider", mass=mock_mass)
+        player = MockPlayer(provider, "player_1", "Player 1")
+
+        player.update_state(signal_event=False)
+
+        assert mock_mass.metadata.get_image_url.called is (stream_image_url is None)
+        assert player.state.current_media is not None
+        assert player.state.current_media.image_url == (stream_image_url or "http://ma/source.jpg")
+
+
+def _queue_item(**values: Any) -> QueueItem:
+    """
+    Return a queue item with an image of its own that holds a track with an image.
+
+    :param values: The values that differ from that queue item.
+    """
+    track = Track(
+        item_id="t1",
+        provider="test",
+        name="Song",
+        duration=200,
+        provider_mappings={
+            ProviderMapping(item_id="t1", provider_domain="test", provider_instance="test")
+        },
+    )
+    track.metadata.images = UniqueList([_image("http://img/track.jpg")])
+    defaults: dict[str, Any] = {
+        "queue_id": "player_1",
+        "queue_item_id": "item_1",
+        "name": "Song",
+        "duration": 200,
+        "image": _image("http://img/item.jpg"),
+        "media_item": track,
+    }
+    return QueueItem(**(defaults | values))
+
+
+def _queue_item_player(mock_mass: MagicMock, current_item: QueueItem) -> MockPlayer:
+    """
+    Return a playing player whose own queue plays the given item.
+
+    The artwork lookup returns the url of the image it is given, in the Music Assistant
+    host: ``http://img/x.jpg`` becomes ``http://ma/x.jpg``.
+
+    :param mock_mass: The mocked Music Assistant instance.
+    :param current_item: The current item of the queue.
+    """
+    queue = PlayerQueue(
+        queue_id="player_1",
+        active=True,
+        display_name="Player 1",
+        available=True,
+        items=1,
+        current_item=current_item,
+    )
+    mock_mass.player_queues.get = MagicMock(side_effect={"player_1": queue}.get)
+    mock_mass.metadata.get_image_url = MagicMock(
+        side_effect=lambda image, **_: image.path.replace("http://img/", "http://ma/")
+    )
+    provider = MockProvider("test_provider", mass=mock_mass)
+    player = MockPlayer(provider, "player_1", "Player 1")
+    player._attr_playback_state = PlaybackState.PLAYING
+    return player
 
 
 class TestUpdateStateTiming:

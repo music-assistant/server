@@ -3014,7 +3014,7 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         """
         state = player.state
         # a self-referential active_group/synced_to is not a real parent (mirror the
-        # != self guard in Player.__final_current_media), so it must not skip resolution
+        # != self guard of the state derivation), so it must not skip resolution
         parent_id = state.active_group or state.synced_to
         if parent_id and parent_id != player.player_id:
             return True

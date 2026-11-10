@@ -1,8 +1,8 @@
 """
 Tests for Player model final volume/mute state resolution.
 
-Covers __final_volume_level and __final_volume_muted_state, which read the
-final volume/mute exclusively from whichever control volume_control/mute_control
+Covers the published volume level and mute state, which are read
+exclusively from whichever control volume_control/mute_control
 resolves to (native, a protocol player, or an external player control). The
 final state is None (unknown) whenever that resolved control itself reports
 no value.
@@ -35,7 +35,7 @@ def mock_mass() -> MagicMock:
 
 
 class TestFinalVolumeLevel:
-    """Test __final_volume_level resolution against the control volume_control resolves to."""
+    """Test volume level resolution against the control volume_control resolves to."""
 
     def test_uses_control_player_when_available(self, mock_mass: MagicMock) -> None:
         """Final volume uses the control player's volume when it is present."""
@@ -120,7 +120,7 @@ class TestFinalVolumeLevel:
 
 
 class TestFinalVolumeMutedState:
-    """Test __final_volume_muted_state resolution against the control mute_control resolves to."""
+    """Test mute state resolution against the control mute_control resolves to."""
 
     def test_uses_control_player_when_available(self, mock_mass: MagicMock) -> None:
         """Final mute state uses the control player's mute state when present."""

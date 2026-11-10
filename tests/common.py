@@ -12,14 +12,18 @@ from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import aiofiles.os
+from music_assistant_models.constants import PLAYER_CONTROL_NONE
 from music_assistant_models.enums import (
     EventType,
     IdentifierType,
+    PlaybackState,
     PlayerFeature,
     PlayerType,
     ProviderType,
 )
 from music_assistant_models.player import DeviceInfo
+from music_assistant_models.player import Player as PlayerState
+from music_assistant_models.unique_list import UniqueList
 
 from music_assistant.constants import CONF_PROVIDERS
 from music_assistant.controllers.config import ConfigController
@@ -28,6 +32,12 @@ from music_assistant.controllers.tasks.constants import TASK_UPDATE_TIMER_ID
 from music_assistant.controllers.webserver import controller as webserver_controller
 from music_assistant.mass import MusicAssistant
 from music_assistant.models.player import Player
+from music_assistant.models.player_state import (
+    GroupSnapshot,
+    PeerSnapshot,
+    ProtocolSnapshot,
+    StateInputs,
+)
 from music_assistant.providers.sendspin.provider import SendspinProvider
 
 if TYPE_CHECKING:
@@ -474,6 +484,151 @@ class MockPlayer(Player):
 
     async def stop(self) -> None:
         """Stop playback - required abstract method."""
+
+
+def make_player_state(player_id: str = "player_1", **values: Any) -> PlayerState:
+    """
+    Return the published state of an idle, available player.
+
+    :param player_id: Id of the player.
+    :param values: The values that differ from that state.
+    """
+    defaults: dict[str, Any] = {
+        "provider": "test_prov",
+        "type": PlayerType.PLAYER,
+        "name": player_id,
+        "available": True,
+        "device_info": DeviceInfo(),
+    }
+    return PlayerState(player_id=player_id, **(defaults | values))
+
+
+def make_protocol_snapshot(protocol_id: str = "player_1", **values: Any) -> ProtocolSnapshot:
+    """
+    Return what the provider object of an idle, available device reports.
+
+    :param protocol_id: Player id the provider object is registered under.
+    :param values: The values that differ from that report.
+    """
+    defaults: dict[str, Any] = {
+        "name": None,
+        "available": True,
+        "available_for_playback": True,
+        "needs_setup": False,
+        "setup_reason": None,
+        "supported_features": set(),
+        "playback_state": PlaybackState.IDLE,
+        "elapsed_time": None,
+        "elapsed_time_last_updated": None,
+        "active_source": None,
+        "source_list": [],
+        "current_media": None,
+        "group_members": [],
+        "synced_to": None,
+    }
+    return ProtocolSnapshot(protocol_id=protocol_id, **(defaults | values))
+
+
+def make_peer_snapshot(
+    player_id: str, state: PlayerState | None = None, **values: Any
+) -> PeerSnapshot:
+    """
+    Return an idle, available player the way the state of another player depends on it.
+
+    :param player_id: Id of the player.
+    :param state: The state the player publishes.
+    :param values: The values that differ from that player.
+    """
+    defaults: dict[str, Any] = {
+        "type": PlayerType.PLAYER,
+        "available": True,
+        "available_for_playback": True,
+        "protocol_parent_id": None,
+        "grouping_locked": False,
+    }
+    return PeerSnapshot(
+        player_id=player_id,
+        state=state or make_player_state(player_id),
+        **(defaults | values),
+    )
+
+
+def make_group_snapshot(
+    player_id: str, state: PlayerState | None = None, **values: Any
+) -> GroupSnapshot:
+    """
+    Return a dormant group player the way the state of a player it can hold depends on it.
+
+    :param player_id: Id of the group player.
+    :param state: The state the group player publishes.
+    :param values: The values that differ from that group player.
+    """
+    defaults: dict[str, Any] = {"powered": None, "is_active_session": False}
+    return GroupSnapshot(
+        player_id=player_id,
+        state=state or make_player_state(player_id),
+        **(defaults | values),
+    )
+
+
+def make_state_inputs(**values: Any) -> StateInputs:
+    """
+    Return what the state of an idle, available player without any controls is derived from.
+
+    :param values: The values that differ from those inputs.
+    """
+    player_id = values.get("player_id", "player_1")
+    defaults: dict[str, Any] = {
+        "player_id": player_id,
+        "provider": "test_prov",
+        "player_type": PlayerType.PLAYER,
+        "now": 1000.0,
+        "previous_state": make_player_state(player_id),
+        "enabled": True,
+        "name": player_id,
+        "default_name": None,
+        "hide_in_ui": False,
+        "expose_to_ha": True,
+        "icon": "speaker",
+        "power_control": PLAYER_CONTROL_NONE,
+        "volume_control": PLAYER_CONTROL_NONE,
+        "mute_control": PLAYER_CONTROL_NONE,
+        "powered": None,
+        "volume_level": None,
+        "volume_muted": None,
+        "offline_by_power_control": False,
+        "own": make_protocol_snapshot(player_id),
+        "device_info": DeviceInfo(),
+        "private": False,
+        "trusts_reported_source": False,
+        "grouping_locked": False,
+        "active_sound_mode": None,
+        "sound_mode_list": UniqueList(),
+        "options": UniqueList(),
+        "static_group_members": [],
+        "can_group_with": set(),
+        "has_setup_flow": False,
+        "linked": (),
+        "active_protocol": None,
+        "foreign_app": None,
+        "protocol_parent_id": None,
+        "output_protocols": [],
+        "active_output_protocol": None,
+        "active_mass_source": None,
+        "sleep_timer_expires_at": None,
+        "sleep_timer_mode": None,
+        "extra_attributes": {},
+        "palette_url": None,
+        "palette": None,
+        "peers": {},
+        "groups": (),
+        "queues": {},
+        "mass_sources": frozenset(),
+        "session": None,
+        "session_image_url": None,
+        "standing_sources": (),
+    }
+    return StateInputs(**(defaults | values))
 
 
 class MockMass:

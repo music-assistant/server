@@ -116,7 +116,7 @@ class ProtocolBackedPlayer(PlayerProtocol):
             # while playing through an output protocol player, surface its raw current_media
             # so consumers of this player's raw value (e.g. a sync group mirroring its leader)
             # can resolve the active queue item. Reading the protocol player's .state here would
-            # route back through this player's __final_current_media and lose the queue item id.
+            # route back through this player's own current media and lose the queue item id.
             return protocol_player.current_media
         return None
 

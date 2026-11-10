@@ -21,8 +21,10 @@ from music_assistant_models.unique_list import UniqueList
 from music_assistant.controllers.players import PlayerController
 from music_assistant.controllers.players.constants import PlayerLockPurpose
 from music_assistant.controllers.players.controller import AUDIO_SOURCE_CLAIM_TIMEOUT
-from music_assistant.models.player import Player, PlayerMedia
+from music_assistant.models.player import PlayerMedia
+from music_assistant.models.player_state import derive_player_state
 from music_assistant.models.plugin import PluginProvider
+from tests.common import make_state_inputs
 
 PLAYER_ID = "player_1"
 PROVIDER_INSTANCE = "spotify_connect--abc"
@@ -915,9 +917,9 @@ async def test_the_reported_media_can_be_handed_back_to_the_player() -> None:
     assert session is not None
 
     media = controller._handle_play_media.await_args.args[1]
-    # the reported position is taken from the player's final playback state
-    _player._Player__final_playback_state = (PlaybackState.PLAYING, None, None)
-    reported = Player._Player__audio_source_media(_player, session)  # type: ignore[attr-defined]
+    state, _ = derive_player_state(make_state_inputs(player_id=PLAYER_ID, session=session))
+    reported = state.current_media
 
+    assert reported is not None
     assert reported.queue_session_id == session.playback_session_id
     assert reported.source_id == media.source_id

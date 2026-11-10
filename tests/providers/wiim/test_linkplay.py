@@ -16,7 +16,7 @@ from music_assistant_models.enums import (
 from pywiim import WiiMError
 
 from music_assistant.controllers.players.protocol_linking import ProtocolLinkingMixin
-from music_assistant.models.player import LinkedOutputProtocol
+from music_assistant.models.player import LinkedOutputProtocol, Player
 from music_assistant.providers.wiim.constants import PLAYER_ID_PREFIX
 from music_assistant.providers.wiim.grouping import NativeGroupRole
 from music_assistant.providers.wiim.helpers import (
@@ -762,10 +762,9 @@ class TestFinalGroupingState:
 
     @staticmethod
     def _final_supported_features(player: LinkPlayPlayer) -> set[PlayerFeature]:
-        return cast(
-            "set[PlayerFeature]",
-            player._Player__final_supported_features,  # type: ignore[attr-defined]
-        )
+        # the shell's own update_state is mocked out
+        Player.update_state(player, force_update=True, signal_event=False)
+        return player.state.supported_features
 
     def _link_grouping_protocol(self, player: LinkPlayPlayer, mock_provider: MagicMock) -> None:
         """Link a DLNA protocol player that itself supports SET_MEMBERS."""

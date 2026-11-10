@@ -2694,6 +2694,7 @@ class TestSupportedFeaturesFromActiveMembers:
         leader = _make_mock_player("display", provider_domain="sendspin")
         # the live session is what the leader reports, not the configured list
         leader.state.group_members = ["display", "speaker"]
+        leader.state.volume_control = leader.state.mute_control = PLAYER_CONTROL_NONE
         member = _make_mock_player("speaker")
         member_features = {
             PlayerFeature.PLAY_MEDIA,
@@ -2702,6 +2703,8 @@ class TestSupportedFeaturesFromActiveMembers:
         }
         member.supported_features = member_features
         member.state.supported_features = member_features
+        member.state.volume_level = 40
+        member.state.volume_muted = False
         mass.players.get_player = _player_lookup({"display": leader, "speaker": member})
 
         sgp.sync_leader = leader
@@ -2714,6 +2717,7 @@ class TestSupportedFeaturesFromActiveMembers:
         sgp.update_state(signal_event=False)
         assert PlayerFeature.VOLUME_SET in sgp.state.supported_features
         assert PlayerFeature.VOLUME_MUTE in sgp.state.supported_features
+        assert sgp.state.group_volume == 40
 
     def test_playback_features_stay_bound_to_the_sync_leader(self) -> None:
         """Enqueue, gapless and DSP come from the leader only; a member cannot add them."""

@@ -89,7 +89,7 @@ The sync leader is the **source of truth** for the group's playback state:
 - Reports playback state, elapsed time, current media, and active source to the group (via the group's `_update_attributes` reading the leader's raw values)
 - Contributes features (enqueue, gapless, volume, DSP) to the group
 
-> **State derivation note:** The leader's own `__final_playback_state` does **not** mirror its parent group — that would create a circular dependency (group derives from leader → leader derives from group → both stuck at last value). Members of an active group always report their own raw playback state; only manually-synced clients (`synced_to`) mirror their leader's state.
+> **State derivation note:** The leader's own playback state does **not** mirror its parent group — that would create a circular dependency (group derives from leader → leader derives from group → both stuck at last value). Members of an active group always report their own raw playback state; only manually-synced clients (`synced_to`) mirror their leader's state.
 
 ## Group Types
 
