@@ -73,11 +73,7 @@ class WidevinePlaylistParser(HLSMediaPlaylistParser):
 
     def process_line(self, line: str) -> None:
         """Process a single line from the playlist, skipping the keys of other DRM systems."""
-        if (
-            line.startswith("#EXT-X-KEY:")
-            and WIDEVINE_KEY_FORMAT not in line
-            and "METHOD=NONE" not in line
-        ):
+        if line.startswith("#EXT-X-KEY:") and WIDEVINE_KEY_FORMAT not in line:
             return
         super().process_line(line)
 
@@ -317,13 +313,7 @@ class AppleMusicLiveRadioManager:
 
     async def _prepare_next_key(self, data: dict[str, Any], ahead: list[HLSMediaSegment]) -> None:
         """Get the license of a key that comes up, so the change of key has no gap."""
-        upcoming = {data["key_uri"]}
-        for segment in ahead:
-            try:
-                upcoming.add(segment_uri(segment.key_line))
-            except UnplayableMediaError:
-                # the segment itself fails when the stream reaches it
-                continue
+        upcoming = {data["key_uri"], *(segment_uri(segment.key_line) for segment in ahead)}
         data["keys"] = {uri: key for uri, key in data["keys"].items() if uri in upcoming}
         for key_uri in upcoming - data["keys"].keys():
             # one try ahead of time, the change of key asks again if this one fails

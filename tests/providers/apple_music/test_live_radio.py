@@ -489,26 +489,6 @@ async def test_the_next_key_is_licensed_once_ahead(monkeypatch: pytest.MonkeyPat
     assert live.details.data["renew_at"] == pytest.approx(time.monotonic() + 780, abs=5)
 
 
-async def test_a_clear_segment_has_no_key_and_does_not_stop_the_license_ahead() -> None:
-    """A METHOD=NONE line ends the key, the key of a later segment is still prepared."""
-    radio = _radio()
-    radio._get_license = AsyncMock(return_value=("bb", 780.0))  # type: ignore[method-assign]
-    text = (
-        _media(1, ["A"])
-        + "#EXT-X-KEY:METHOD=NONE\n#EXTINF:16.0,\ns2\n"
-        + _media(3, ["B"]).split("\n", 3)[3]
-    )
-    encrypted, clear, next_key = WidevinePlaylistParser(text).parse().segments
-    data: dict[str, Any] = {"key_uri": _wv("A"), "keys": {_wv("A"): ("aa", 780.0)}}
-
-    await radio._prepare_next_key(data, [clear, next_key])
-
-    assert segment_uri(encrypted.key_line) == _wv("A")
-    with pytest.raises(UnplayableMediaError):
-        segment_uri(clear.key_line)
-    assert data["keys"] == {_wv("A"): ("aa", 780.0), _wv("B"): ("bb", 780.0)}
-
-
 async def test_the_playlist_loop_renews_the_license_when_it_is_due(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
