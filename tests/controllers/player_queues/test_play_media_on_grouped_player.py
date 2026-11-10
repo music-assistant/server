@@ -299,6 +299,23 @@ async def test_a_request_without_option_follows_the_default_for_its_media(
     assert setup.items(lands_in) == ["t1"]
 
 
+async def test_a_radio_mode_request_follows_the_playlist_default() -> None:
+    """
+    A radio mode request plays a radio playlist, so the playlist default decides.
+
+    Tracks default to ADD here and playlists to REPLACE, so the request stays on the player's
+    own queue rather than going to the group's.
+    """
+    setup = _Setup("dynamic", True, QueueOption.ADD.value)
+    # the radio playlist the seed turns into is looked up by its uri
+    setup.queues.mass.music.get_item_by_uri = AsyncMock(return_value=_track())
+
+    await setup.queues.play_media("a", _track(), radio_mode=True)
+
+    assert setup.items("a") == ["t1"]
+    assert setup.items("g") == []
+
+
 @pytest.mark.parametrize("overrides_group", [True, False])
 @pytest.mark.parametrize("option", [*ADDING_OPTIONS, *STARTING_OPTIONS])
 @pytest.mark.parametrize("kind", KINDS)

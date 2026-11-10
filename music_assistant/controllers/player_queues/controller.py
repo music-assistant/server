@@ -768,7 +768,7 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         if (source_uri := await _resolve_audio_source_request(media)) is not None:
             await self.mass.players.select_source(queue_id, source_uri)
             return
-        queue_id = await self._get_play_media_queue_id(queue_id, media, option)
+        queue_id = await self._get_play_media_queue_id(queue_id, media, option, radio_mode)
         if (
             option not in (QueueOption.ADD, QueueOption.NEXT, QueueOption.REPLACE_NEXT)
             and (player := self.mass.players.get_player(queue_id)) is not None
@@ -2252,6 +2252,7 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         queue_id: str,
         media: MediaItemType | ItemMapping | str | list[MediaItemType | ItemMapping | str],
         option: QueueOption | None,
+        radio_mode: bool,
     ) -> str:
         """
         Return the queue a play request naming the given queue is handled on.
@@ -2264,6 +2265,7 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         :param queue_id: The queue the play request names.
         :param media: The media of the play request.
         :param option: The enqueue option of the play request, None for the default.
+        :param radio_mode: The deprecated radio mode of the play request.
         :raises InsufficientPermissions: When the request goes to the owner's queue and the
             current user lacks access to the owner.
         """
@@ -2272,6 +2274,9 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         owner = self.mass.players._resolve_playback_owner(player)
         if owner is player or self.get(owner.player_id) is None:
             return queue_id
+        if option is None and radio_mode:
+            # the loader plays a radio mode request as a radio playlist
+            option = self._default_enqueue_option(MediaType.PLAYLIST)
         if option is None and (option := await self._get_default_play_option(media)) is None:
             return queue_id
         if option in (QueueOption.PLAY, QueueOption.REPLACE) and bool(
