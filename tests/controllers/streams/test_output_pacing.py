@@ -2,10 +2,23 @@
 
 from __future__ import annotations
 
-from typing import cast
+from typing import TYPE_CHECKING, cast
+
+import pytest
+from music_assistant_models.enums import ContentType
+from music_assistant_models.helpers import set_global_cache_values
+from music_assistant_models.media_items import AudioFormat
 
 from music_assistant.constants import CONF_ENTRY_CROSSFADE_DURATION
 from music_assistant.controllers.streams.constants import PacingProfile, output_pacing_args
+from music_assistant.helpers.ffmpeg import (
+    CACHE_ATTR_READRATE_CATCHUP,
+    check_ffmpeg_version,
+    get_ffmpeg_stream,
+)
+
+if TYPE_CHECKING:
+    from collections.abc import AsyncGenerator
 
 # A track of ordinary length from a source that delivers just-in-time, at the low end
 # of what the Spotify Soloist backend delivered when measured (1.07x to 1.1x).
@@ -17,6 +30,9 @@ SLOW_SOURCE_START_SECONDS = 2.7
 # How far short of a full default fade the room at the first track change of such a track
 # may fall: the pace trades that second for the lead a player holds at a track boundary.
 FIRST_FADE_SHORTFALL_SECONDS = 1
+# How long, per second a server stall lasted, the output may take to get back on its
+# schedule. The stalls seen in production came seconds apart.
+MAX_CATCH_UP_PER_STALL_SECOND = 1.1
 
 
 def _value(args: list[str], key: str) -> float:
@@ -70,6 +86,57 @@ def test_the_near_realtime_pacing_is_the_measured_one() -> None:
         "-readrate_initial_burst",
         "3",
     ]
+
+
+async def test_a_player_regains_the_lead_a_stall_drained_in_about_the_stalls_time() -> None:
+    """
+    A player with a small lead runs dry when stalls of the server follow each other.
+
+    ffmpeg's own catch-up of 1.05x the pace takes minutes to refill a stall of a few seconds.
+    """
+    await set_global_cache_values({CACHE_ATTR_READRATE_CATCHUP: True})
+    args = output_pacing_args(PacingProfile.NEAR_REALTIME)
+    readrate = _value(args, "-readrate")
+
+    # the output falls behind by what the pace would have handed over during the stall,
+    # and makes that up at the catch-up pace less its own
+    catch_up_per_stall_second = readrate / (_value(args, "-readrate_catchup") - readrate)
+
+    assert catch_up_per_stall_second <= MAX_CATCH_UP_PER_STALL_SECOND
+
+
+async def test_an_ffmpeg_without_the_catch_up_option_is_not_handed_it() -> None:
+    """An ffmpeg before 8.0 refuses the unknown option and would serve nothing at all."""
+    await set_global_cache_values({CACHE_ATTR_READRATE_CATCHUP: False})
+
+    for profile in PacingProfile:
+        assert "-readrate_catchup" not in output_pacing_args(profile)
+
+
+@pytest.mark.parametrize("profile", list(PacingProfile))
+async def test_the_installed_ffmpeg_streams_with_the_pacing_of(profile: PacingProfile) -> None:
+    """Whatever the startup check found, the installed ffmpeg streams with the pacing it yields."""
+    await check_ffmpeg_version()
+    pcm_format = AudioFormat(
+        content_type=ContentType.PCM_S16LE, sample_rate=44100, bit_depth=16, channels=2
+    )
+
+    async def _audio() -> AsyncGenerator[bytes]:
+        # a tenth of a second is within every profile's burst, so it streams at once
+        yield bytes(pcm_format.pcm_sample_size // 10)
+
+    # an option ffmpeg refuses fails the stream with an AudioError
+    chunks = [
+        chunk
+        async for chunk in get_ffmpeg_stream(
+            audio_input=_audio(),
+            input_format=pcm_format,
+            output_format=AudioFormat(content_type=ContentType.FLAC),
+            extra_input_args=output_pacing_args(profile),
+        )
+    ]
+
+    assert chunks
 
 
 def test_a_track_of_a_slow_source_earns_the_room_for_a_fade() -> None:

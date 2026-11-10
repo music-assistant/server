@@ -33,6 +33,7 @@ MINIMAL_FFMPEG_VERSION = 7
 CACHE_ATTR_LIBSOXR_PRESENT: Final[str] = "libsoxr_present"
 CACHE_ATTR_FFMPEG_VERSION: Final[str] = "ffmpeg_version"
 CACHE_ATTR_HLS_CMAF_BLOCKED: Final[str] = "hls_cmaf_blocked"
+CACHE_ATTR_READRATE_CATCHUP: Final[str] = "readrate_catchup"
 DEFAULT_MP3_BIT_RATE: Final[int] = 320
 # Maximum seconds to spend detecting the format of a source before it is decoded.
 AUDIO_PROBE_TIMEOUT: Final[int] = 5
@@ -828,6 +829,19 @@ def get_ffmpeg_hls_cmaf_input_args() -> list[str]:
     return []
 
 
+def get_ffmpeg_readrate_catchup_args(speed: str) -> list[str]:
+    """
+    Return the input arguments that set how fast a paced input makes up a lag, if supported.
+
+    An ffmpeg without the option gets none and keeps its own catch-up.
+
+    :param speed: The read rate to catch up at, at least the input's own read rate.
+    """
+    if get_global_cache_value(CACHE_ATTR_READRATE_CATCHUP):
+        return ["-readrate_catchup", speed]
+    return []
+
+
 def add_input_fflag(input_args: list[str], flag: str) -> None:
     """
     Add a format flag to the input args, merging it into an existing -fflags option.
@@ -880,12 +894,16 @@ async def check_ffmpeg_version() -> None:
     cmaf_blocked = (
         returncode == 0 and b"extension_picky" in hls_options and b"cmfa" not in hls_options
     )
+    # -readrate_catchup arrived in 8.0, and a build without it refuses it as an unknown option
+    returncode, long_help = await check_output("ffmpeg", "-hide_banner", "-h", "long")
+    readrate_catchup = returncode == 0 and b"-readrate_catchup" in long_help
     # use globals as in-memory cache
     await set_global_cache_values(
         {
             CACHE_ATTR_LIBSOXR_PRESENT: libsoxr_support,
             CACHE_ATTR_FFMPEG_VERSION: version,
             CACHE_ATTR_HLS_CMAF_BLOCKED: cmaf_blocked,
+            CACHE_ATTR_READRATE_CATCHUP: readrate_catchup,
         }
     )
 
