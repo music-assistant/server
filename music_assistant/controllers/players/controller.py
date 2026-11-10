@@ -1596,20 +1596,17 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         # error path when transfer_queue or HA's unjoin asks us to release a
         # group that has static members.
         if player.state.type == PlayerType.GROUP:
-            if player.state.power_control != PLAYER_CONTROL_NONE:
-                await self._handle_cmd_power(player.player_id, False)
-            else:
-                await self._handle_cmd_stop(player.player_id)
+            await self._release_group_session(player.player_id)
             return
 
         if player.state.active_group:
             group = self.get_player(player.state.active_group)
             is_static_member = group is not None and player_id in group.state.static_group_members
             if is_static_member:
-                # Static members can't be released individually — recurse so
-                # the group-player branch above stops/dissolves the session.
+                # Static members can't be released individually — release the
+                # session of the group as a whole; access to the member is enough.
                 if group is not None:
-                    await self.cmd_ungroup(group.player_id)
+                    await self._release_group_session(group.player_id)
                 return
             # dynamic or non-static member — remove just this player
             await self.cmd_set_members(player.state.active_group, player_ids_to_remove=[player_id])
@@ -5459,6 +5456,22 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         await self._power_on_for_playback(player, skip_auto_play=True)
         # forward to player
         await player.select_source(source)
+
+    async def _release_group_session(self, group_id: str) -> None:
+        """
+        Release the session of a group player: power it off, or stop it without power control.
+
+        Skips permission checks (internal use only).
+
+        :param group_id: player_id of the group player.
+        :raises PlayerUnavailableError: When the group player is not available.
+        """
+        group = self.get_player(group_id, raise_unavailable=True)
+        assert group is not None  # for type checking
+        if group.state.power_control != PLAYER_CONTROL_NONE:
+            await self._handle_cmd_power(group.player_id, False)
+        else:
+            await self._handle_cmd_stop(group.player_id)
 
     async def _handle_cmd_stop(self, player_id: str) -> None:
         """

@@ -6,6 +6,8 @@ needs access to the target player or to every player removed; when the target pl
 member of a group player, removing needs access to that group player as well. A target player
 that is synced to another player is detached first, so a request that adds nothing needs
 access to it too.
+Ungroup or power off of a static member ends the session of its group player, which needs
+access to that member only.
 """
 
 from __future__ import annotations
@@ -13,11 +15,11 @@ from __future__ import annotations
 from collections.abc import Awaitable, Callable
 from contextlib import AbstractContextManager, nullcontext
 from typing import Any, cast
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from music_assistant_models.auth import UserRole
-from music_assistant_models.enums import PlayerFeature, PlayerType
+from music_assistant_models.enums import PlaybackState, PlayerFeature, PlayerType
 from music_assistant_models.errors import InsufficientPermissions
 
 from music_assistant.controllers.players import PlayerController
@@ -305,3 +307,114 @@ async def test_an_unrestricted_caller_may_group_any_player(
         await _set_members("a", add=["b"])(controller)
 
     _assert_changed(controller, "a", add=["b"])
+
+
+def _capture_static(controller: PlayerController, power_control: bool) -> MockPlayer:
+    """
+    Register group player "g" with static members "a" and "b", and power control on "a".
+
+    A group without power control is playing, so that releasing it stops it. The power and
+    stop commands of "a" and "g" are mocked.
+
+    :param controller: The players controller.
+    :param power_control: Whether the group player has a (native) power control.
+    """
+    _capture(controller, "a", "b")
+    group = cast("MockPlayer", controller._players["g"])
+    group._attr_static_group_members = ["a", "b"]
+    if power_control:
+        group._attr_supported_features.add(PlayerFeature.POWER)
+    else:
+        group._attr_playback_state = PlaybackState.PLAYING
+    member = cast("MockPlayer", controller._players["a"])
+    member._attr_powered = True
+    member._attr_supported_features.add(PlayerFeature.POWER)
+    for player in (group, member):
+        player._cache.clear()
+        player.update_state(force_update=True, signal_event=False)
+        player.power = AsyncMock()  # type: ignore[method-assign]
+        player.stop = AsyncMock()  # type: ignore[method-assign]
+    assert member.state.active_group == "g"
+    return group
+
+
+def _ungroup(player_id: str) -> Command:
+    """Return the players/cmd/ungroup API command for the given player."""
+    return lambda c: _api(c, "players/cmd/ungroup")(player_id)
+
+
+def _power_off(player_id: str) -> Command:
+    """Return the players/cmd/power API command that switches the given player off."""
+    return lambda c: _api(c, "players/cmd/power")(player_id, False)
+
+
+@pytest.mark.parametrize("power_control", [True, False], ids=["power-control", "no-power-control"])
+@pytest.mark.parametrize(
+    ("command", "member_powered_off"),
+    [
+        pytest.param(_ungroup("a"), False, id="ungroup"),
+        pytest.param(_power_off("a"), True, id="power-off"),
+    ],
+)
+@pytest.mark.parametrize(
+    "user",
+    [
+        pytest.param(lambda: as_user(["a"]), id="limited-to-member"),
+        pytest.param(lambda: as_user([]), id="empty-filter"),
+        pytest.param(nullcontext, id="no-user"),
+    ],
+)
+async def test_own_static_member_ends_the_session_of_its_group(
+    controller: PlayerController,
+    user: Callable[[], AbstractContextManager[object]],
+    command: Command,
+    member_powered_off: bool,
+    power_control: bool,
+) -> None:
+    """Ungroup or power off of a static member ends its group's session for whoever may use it."""
+    group = _capture_static(controller, power_control)
+    member = controller._players["a"]
+
+    with user():
+        await command(controller)
+
+    if power_control:
+        group.power.assert_awaited_once_with(False)  # type: ignore[attr-defined]
+        group.stop.assert_not_awaited()  # type: ignore[attr-defined]
+    else:
+        group.stop.assert_awaited_once_with()  # type: ignore[attr-defined]
+        group.power.assert_not_awaited()  # type: ignore[attr-defined]
+    if member_powered_off:
+        member.power.assert_awaited_once_with(False)  # type: ignore[attr-defined]
+    else:
+        member.power.assert_not_awaited()  # type: ignore[attr-defined]
+    _assert_unchanged(controller)
+
+
+@pytest.mark.parametrize("command", [_ungroup("a"), _power_off("a")], ids=["ungroup", "power-off"])
+async def test_static_member_the_user_can_not_use_is_refused(
+    controller: PlayerController, command: Command
+) -> None:
+    """A user who may not use a static member can not end its group's session through it."""
+    group = _capture_static(controller, power_control=True)
+    member = controller._players["a"]
+
+    with as_user(["c"]), pytest.raises(InsufficientPermissions, match="Player A"):
+        await command(controller)
+
+    group.power.assert_not_awaited()  # type: ignore[attr-defined]
+    member.power.assert_not_awaited()  # type: ignore[attr-defined]
+    assert set(group.state.group_members) == {"a", "b"}
+
+
+async def test_own_dynamic_member_leaves_its_group_only(controller: PlayerController) -> None:
+    """Ungroup of a dynamic member takes only that member out of its group player."""
+    group = _capture_static(controller, power_control=True)
+    group._attr_static_group_members = []
+    group.update_state(force_update=True, signal_event=False)
+
+    with as_user(["a"]):
+        await _ungroup("a")(controller)
+
+    _assert_changed(controller, "g", remove=["a"])
+    group.power.assert_not_awaited()  # type: ignore[attr-defined]
