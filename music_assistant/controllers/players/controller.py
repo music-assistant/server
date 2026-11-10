@@ -1604,9 +1604,12 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
             is_static_member = group is not None and player_id in group.state.static_group_members
             if is_static_member:
                 # Static members can't be released individually — release the
-                # session of the group as a whole; access to the member is enough.
+                # session of the group as a whole. Access to the member is enough,
+                # so the release (which may switch off the other members) runs as
+                # the server.
                 if group is not None:
-                    await self._release_group_session(group.player_id)
+                    with system_auth_context():
+                        await self._release_group_session(group.player_id)
                 return
             # dynamic or non-static member — remove just this player
             await self.cmd_set_members(player.state.active_group, player_ids_to_remove=[player_id])
