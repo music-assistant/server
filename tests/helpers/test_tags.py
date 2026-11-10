@@ -15,7 +15,7 @@ from aiohttp.test_utils import TestServer
 from music_assistant_models.errors import InvalidDataError
 from mutagen.apev2 import APEv2
 from mutagen.flac import FLAC
-from mutagen.id3 import ID3, TCOM, TDOR, TDRC, TXXX, UFID
+from mutagen.id3 import ID3, TCOM, TDOR, TDRC, TPE2, TXXX, UFID
 from mutagen.mp4 import MP4, MP4FreeForm
 from PIL import Image
 
@@ -626,6 +626,123 @@ def test_parse_apev2_tags_single_artist() -> None:
     # Plural keys should not be set
     assert "artists" not in result
     assert "albumartists" not in result
+
+
+def test_parse_apev2_tags_explicit_albumartists_beats_single_album_artist() -> None:
+    """An explicit ALBUMARTISTS tag (Picard 3.0+) is read alongside a single Album Artist."""
+    mock_tags = _create_mock_apev2_tags(
+        {"Album Artist": "Artist A & Artist B", "ALBUMARTISTS": "Artist A\x00Artist B"}
+    )
+
+    result = _parse_apev2_tags(mock_tags)
+
+    assert result.get("albumartist") == "Artist A & Artist B"
+    assert result.get("albumartists") == ["Artist A", "Artist B"]
+
+
+def test_parse_apev2_tags_explicit_albumartists_beats_multi_value_album_artist() -> None:
+    """An explicit ALBUMARTISTS tag overwrites a null-separated Album Artist field."""
+    mock_tags = _create_mock_apev2_tags(
+        {"Album Artist": "Wrong A\x00Wrong B", "ALBUMARTISTS": "Artist A\x00Artist B"}
+    )
+
+    result = _parse_apev2_tags(mock_tags)
+
+    assert result.get("albumartists") == ["Artist A", "Artist B"]
+    assert "albumartist" not in result
+
+
+def test_parse_apev2_tags_albumartists_key_is_case_insensitive() -> None:
+    """APEv2 keys are case-insensitive, so any spelling of ALBUMARTISTS is read."""
+    ape = APEv2()  # type: ignore[no-untyped-call]
+    ape["AlbumArtists"] = "Artist A\x00Artist B"
+
+    result = _parse_apev2_tags(ape)
+
+    assert result.get("albumartists") == ["Artist A", "Artist B"]
+
+
+def _create_id3_tags(
+    albumartist: list[str],
+    albumartists_desc: str | None = None,
+    albumartists: list[str] | None = None,
+) -> ID3:
+    """
+    Create in-memory ID3 tags with a TPE2 frame and an optional explicit album artists frame.
+
+    :param albumartist: Values for the TPE2 (album artist) frame.
+    :param albumartists_desc: TXXX description of the explicit album artists frame.
+    :param albumartists: Values for the explicit frame, defaults to ["Artist A", "Artist B"].
+    """
+    id3 = ID3()  # type: ignore[no-untyped-call]
+    id3.add(TPE2(encoding=3, text=albumartist))  # type: ignore[no-untyped-call]
+    if albumartists_desc:
+        id3.add(
+            TXXX(  # type: ignore[no-untyped-call]
+                encoding=3,
+                desc=albumartists_desc,
+                text=albumartists or ["Artist A", "Artist B"],
+            )
+        )
+    return id3
+
+
+@pytest.mark.parametrize("desc", ["ALBUMARTISTS", "Album Artists"])
+def test_parse_id3_explicit_albumartists_beats_single_tpe2(desc: str) -> None:
+    """An explicit TXXX album artists frame is read alongside a single TPE2 value."""
+    result = _parse_id3_tags(_create_id3_tags(["Artist A & Artist B"], desc))
+
+    assert result.get("albumartist") == "Artist A & Artist B"
+    assert result.get("albumartists") == ["Artist A", "Artist B"]
+
+
+def test_parse_id3_explicit_albumartists_beats_multi_value_tpe2() -> None:
+    """TXXX:ALBUMARTISTS overwrites an ID3v2.4 null-separated TPE2."""
+    result = _parse_id3_tags(_create_id3_tags(["Wrong A", "Wrong B"], "ALBUMARTISTS"))
+
+    assert result.get("albumartists") == ["Artist A", "Artist B"]
+    assert "albumartist" not in result
+
+
+def test_parse_id3_without_explicit_albumartists() -> None:
+    """Without an explicit frame, a single TPE2 stays the singular album artist."""
+    result = _parse_id3_tags(_create_id3_tags(["Artist A & Artist B"]))
+
+    assert result.get("albumartist") == "Artist A & Artist B"
+    assert "albumartists" not in result
+
+
+@pytest.mark.parametrize(
+    ("raw_tags", "fmt"),
+    [
+        (_create_id3_tags(["Artist A & Artist B"], "ALBUMARTISTS"), "mp3"),
+        # ID3v2.3 has no multi-value frames, so Picard joins the values with "; "
+        (_create_id3_tags(["Artist A & Artist B"], "ALBUMARTISTS", ["Artist A; Artist B"]), "mp3"),
+        (
+            _create_mock_apev2_tags(
+                {"Album Artist": "Artist A & Artist B", "ALBUMARTISTS": "Artist A\x00Artist B"}
+            ),
+            "wv",
+        ),
+    ],
+)
+def test_explicit_albumartists_drive_album_artists(raw_tags: ID3 | MagicMock, fmt: str) -> None:
+    """The explicit album artists list wins over a combined album artist string without MBIDs."""
+    parsed = _parse_id3_tags(raw_tags) if fmt == "mp3" else _parse_apev2_tags(raw_tags)
+    audio_tags = tags.AudioTags(
+        raw={},
+        sample_rate=44100,
+        channels=2,
+        bits_per_sample=16,
+        format=fmt,
+        bit_rate=None,
+        duration=180.0,
+        tags=parsed,
+        has_cover_image=False,
+        filename=f"test.{fmt}",
+    )
+
+    assert audio_tags.album_artists == ("Artist A", "Artist B")
 
 
 def test_parse_mp4_multi_value_musicbrainz_albumtype() -> None:
