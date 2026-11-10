@@ -191,8 +191,9 @@ class StateInputs:
     :param palette: Resolved color palette of that image.
     :param peers: The other players referred to, by id.
     :param groups: The group players that can hold the player.
-    :param queues: The queues referred to as a source, by id.
-    :param live_sources: The sources referred to that a live audio source publishes.
+    :param queues: The queues the player can be playing from, by id.
+    :param mass_sources: The sources referred to that Music Assistant plays itself:
+        a queue or a live audio source.
     :param session: Live audio source playing on the player.
     :param session_image_url: Url of the image of that audio source.
     :param standing_sources: Audio sources that are selectable on the player without
@@ -243,7 +244,7 @@ class StateInputs:
     peers: Mapping[str, PeerSnapshot]
     groups: tuple[PeerSnapshot, ...]
     queues: Mapping[str, QueueSnapshot]
-    live_sources: frozenset[str]
+    mass_sources: frozenset[str]
     session: AudioSourceSession | None
     session_image_url: str | None
     standing_sources: tuple[AudioSource, ...]
@@ -540,10 +541,8 @@ def _playback_position(
     elapsed_time_last_updated: float | None
     # If an output protocol is active (and not native),
     # use the protocol player's state as the source of truth
-    if (
-        inputs.active_output_protocol
-        and inputs.active_output_protocol != "native"
-        and (protocol_player := inputs.peers.get(inputs.active_output_protocol))
+    if inputs.active_protocol and (
+        protocol_player := inputs.peers.get(inputs.active_protocol.protocol_id)
     ):
         playback_state = protocol_player.state.playback_state
         elapsed_time = protocol_player.state.elapsed_time
@@ -969,14 +968,7 @@ def _plays_external_source(inputs: StateInputs, active_source: str | None) -> bo
     if active_source == inputs.player_id:
         return False
 
-    # A live AudioSource (e.g. Spotify Connect) is audio MA produces itself, unlike
-    # the device's own streaming endpoint or a line-in it switched to
-    if active_source in inputs.live_sources:
-        return False
-
-    # If it's a known queue ID it's MA-managed; anything else is external
-    # (line-in, TV input, etc.)
-    return active_source not in inputs.queues
+    return active_source not in inputs.mass_sources
 
 
 def _current_media(

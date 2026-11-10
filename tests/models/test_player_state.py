@@ -527,8 +527,12 @@ class TestPlaybackPosition:
 
     def test_active_output_protocol_is_the_source_of_truth(self) -> None:
         """While a protocol player renders the audio, its published playback is the player's."""
+        protocol = make_protocol_snapshot("airplay_1", playback_state=PlaybackState.IDLE)
+
         state = _derive(
             active_output_protocol="airplay_1",
+            active_protocol=protocol,
+            linked=(protocol,),
             peers={
                 "airplay_1": _protocol_peer(
                     "airplay_1",
@@ -1366,26 +1370,18 @@ class TestCanGroupWith:
         assert state.active_source == "tv"
         assert state.can_group_with == {"player_2"}
 
-    @pytest.mark.parametrize(
-        "values",
-        [
-            {"queues": {"queue_x": _queue("queue_x")}},
-            {"live_sources": frozenset({"queue_x"})},
-        ],
-        ids=["queue", "live_source"],
-    )
-    def test_source_ma_produces_keeps_the_protocol_candidates(self, values: dict[str, Any]) -> None:
+    def test_source_ma_plays_itself_keeps_the_protocol_candidates(self) -> None:
         """Another queue or a live audio source is audio MA can send to a protocol group."""
         protocol = make_protocol_snapshot("airplay_1")
 
         state = _derive(
             active_mass_source="queue_x",
+            mass_sources=frozenset({"queue_x"}),
             linked=(protocol,),
             peers={
                 "airplay_1": _protocol_peer("airplay_1", can_group_with={"player_3"}),
                 "player_3": _peer("player_3"),
             },
-            **values,
         )
 
         assert state.active_source == "queue_x"

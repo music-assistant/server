@@ -2750,17 +2750,17 @@ class Player(ABC):
             can_group_with = self.__collect_can_group_with(peers, linked)
         groups = self.__collect_groups(peers)
         session = self.mass.players.get_audio_source_session(self.player_id)
-        source_ids = {
-            self.player_id,
-            self.__active_mass_source,
-            own.active_source,
-            *(group.state.active_source for group in groups),
+        source_ids = {self.__active_mass_source, own.active_source}
+        queues = {
+            queue_id: self.__queue_snapshot(queue)
+            for queue_id in {self.player_id, *source_ids}
+            if queue_id is not None and (queue := self.mass.player_queues.get(queue_id))
         }
+        source_ids.update(group.state.active_source for group in groups)
         if session is not None:
             source_ids.add(session.active_source)
         if foreign_app:
             source_ids.add(foreign_app.active_source)
-        queues, live_sources = self.__collect_sources(source_ids)
         return StateInputs(
             player_id=self.player_id,
             provider=self.provider_id,
@@ -2806,7 +2806,11 @@ class Player(ABC):
             peers=peers,
             groups=groups,
             queues=queues,
-            live_sources=live_sources,
+            mass_sources=frozenset(
+                source_id
+                for source_id in source_ids
+                if source_id is not None and self.__is_mass_source(source_id, queues)
+            ),
             session=session,
             session_image_url=(
                 self.mass.metadata.get_image_url(session.source.image, size=512)
@@ -2918,28 +2922,6 @@ class Player(ABC):
         return tuple(groups)
 
     @final
-    def __collect_sources(
-        self, source_ids: set[str | None]
-    ) -> tuple[dict[str, QueueSnapshot], frozenset[str]]:
-        """
-        Collect what Music Assistant itself plays among the given sources.
-
-        Returns the queues among them, by id, and the ids a live audio source publishes.
-
-        :param source_ids: Ids of the sources the state can refer to.
-        """
-        queues: dict[str, QueueSnapshot] = {}
-        live_sources: set[str] = set()
-        for source_id in source_ids:
-            if source_id is None:
-                continue
-            if queue := self.mass.player_queues.get(source_id):
-                queues[source_id] = self.__queue_snapshot(queue)
-            if self.mass.players.is_live_audio_source(source_id):
-                live_sources.add(source_id)
-        return queues, frozenset(live_sources)
-
-    @final
     def __collect_standing_sources(self) -> tuple[AudioSource, ...]:
         """Collect the audio sources plugins bound to the player or report as its inputs."""
         if self.type == PlayerType.PROTOCOL:
@@ -3005,6 +2987,24 @@ class Player(ABC):
             )
         if with_parent and (parent_id := player.protocol_parent_id) and parent_id not in peers:
             self.__collect_peer(peers, parent_id)
+
+    @final
+    def __is_mass_source(self, source_id: str, queues: dict[str, QueueSnapshot]) -> bool:
+        """
+        Return whether Music Assistant itself plays the given source.
+
+        :param source_id: Id of the source.
+        :param queues: The queues collected so far, by id.
+        """
+        return (
+            source_id in queues
+            # A live AudioSource (e.g. Spotify Connect) is audio MA produces itself, unlike
+            # the device's own streaming endpoint or a line-in it switched to
+            or self.mass.players.is_live_audio_source(source_id)
+            # If it's a known queue ID it's MA-managed; anything else is external
+            # (line-in, TV input, etc.)
+            or self.mass.player_queues.get(source_id) is not None
+        )
 
     @final
     def __queue_snapshot(self, queue: PlayerQueue) -> QueueSnapshot:

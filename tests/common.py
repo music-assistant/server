@@ -602,7 +602,7 @@ def make_state_inputs(**values: Any) -> StateInputs:
         "peers": {},
         "groups": (),
         "queues": {},
-        "live_sources": frozenset(),
+        "mass_sources": frozenset(),
         "session": None,
         "session_image_url": None,
         "standing_sources": (),
