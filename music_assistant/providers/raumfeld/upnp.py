@@ -16,6 +16,7 @@ if TYPE_CHECKING:
 SERVICE_AV_TRANSPORT = "urn:schemas-upnp-org:service:AVTransport:1"
 SERVICE_RENDERING_CONTROL = "urn:schemas-upnp-org:service:RenderingControl:1"
 SERVICE_CONTENT_DIRECTORY = "urn:schemas-upnp-org:service:ContentDirectory:1"
+SERVICE_SETUP = "urn:schemas-raumfeld-com:service:SetupService:1"
 
 # The host lists the children of these library objects only to the Raumfeld app.
 _RAUMFELD_APP_OBJECTS = ("0/RadioTime", "0/Tidal")
@@ -69,3 +70,16 @@ async def browse(
         return None
     # the DIDL-Lite as the server sent it
     return result.raw_upnp_value
+
+
+async def get_software_version(session: aiohttp.ClientSession, location: str) -> str | None:
+    """
+    Return the software version of a speaker, or ``None`` if it did not say.
+
+    :param session: The HTTP session to use.
+    :param location: The description URL of the speaker's Raumfeld device.
+    """
+    action = await get_action(session, location, SERVICE_SETUP, "GetInfo")
+    response = await action.async_call()
+    version = response.get("SoftwareVersion")
+    return str(version) if version else None
