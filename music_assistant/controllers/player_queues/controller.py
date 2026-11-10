@@ -16,6 +16,7 @@ from __future__ import annotations
 import asyncio
 import random
 import time
+from dataclasses import replace
 from typing import TYPE_CHECKING, Any, Final, cast
 
 import shortuuid
@@ -94,7 +95,11 @@ from music_assistant.controllers.player_queues.media_resolver import MediaResolv
 from music_assistant.controllers.player_queues.playback_tracker import PlaybackTrackerMixin
 from music_assistant.controllers.player_queues.queue_loader import QueueLoaderMixin
 from music_assistant.controllers.player_queues.smart_shuffle import SmartShuffle
-from music_assistant.controllers.player_queues.state import PlayerQueueData, SleepTimerTarget
+from music_assistant.controllers.player_queues.state import (
+    PlayerQueueData,
+    QueueSnapshot,
+    SleepTimerTarget,
+)
 from music_assistant.controllers.player_queues.stream_feeder import StreamFeederMixin
 from music_assistant.controllers.players.constants import SwitchedOffAction
 from music_assistant.controllers.webserver.helpers.auth_middleware import (
@@ -1878,6 +1883,75 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
                 queue.next_item = self.get_next_item(queue_id, current_index)
         self.signal_update(queue_id, True)
         self.update_next_item_on_player(queue_id)
+
+    def snapshot(self, queue_id: str) -> QueueSnapshot:
+        """
+        Return a copy of the queue's content, detached from the live queue, for `restore`.
+
+        The content is the items, the position (including where the current item was in its
+        playback), shuffle, the dynamic sources, the autoplay seeds, the credited albums and the
+        user the queue plays for. The queue's settings are not part of it.
+
+        :param queue_id: The queue to copy.
+        """
+        queue_data = self._queue_data[queue_id]
+        queue = queue_data.queue
+        saved = PlayerQueueData.from_cache(queue_data.to_cache(), queue_data.items_to_cache())
+        if queue.state == PlaybackState.PLAYING:
+            # use the live playback clock while actively playing
+            saved.queue.resume_pos = int(queue.corrected_elapsed_time)
+        elif queue.ended:
+            # a queue that played to its end starts over, so it has no position to keep
+            saved.queue.resume_pos = 0
+        else:
+            # when not playing the live clock is stale, so use the stored resume position
+            saved.queue.resume_pos = int(queue.resume_pos or self._last_played_position(queue))
+        saved.fade_ordered_until = queue_data.fade_ordered_until
+        return QueueSnapshot(saved)
+
+    async def restore(self, queue_id: str, snapshot: QueueSnapshot) -> None:
+        """
+        Put the content of a snapshot back on a queue, stopping the queue's playback first.
+
+        Playback is not started again, and the queue keeps its current settings (repeat,
+        crossfade, autoplay, ...).
+
+        :param queue_id: The queue to put the content on; a queue that no longer exists is left
+            alone.
+        :param snapshot: The snapshot to put back, as taken by `snapshot`.
+        """
+        if (queue_data := self._queue_data.get(queue_id)) is None:
+            return
+        queue = queue_data.queue
+        if queue.state != PlaybackState.IDLE:
+            await self._handle_stop(queue_id)
+        # a prewarm still running would warm audio for an item that is no longer on the queue
+        self.mass.cancel_task(f"prepare_next_audio_buffer_{queue_id}")
+        self._clear(queue_id, skip_stop=True)
+        saved = snapshot.data
+        queue.shuffle_enabled = saved.queue.shuffle_enabled
+        self.store_sources(queue, list(saved.source_items))
+        queue.is_dynamic = saved.queue.is_dynamic
+        queue_data.enqueued_media_items = list(saved.enqueued_media_items)
+        queue_data.credited_albums = set(saved.credited_albums)
+        queue_data.userid = saved.userid
+        queue_data.fade_ordered_until = saved.fade_ordered_until
+        # the tracker's last state describes the replaced content: left in place, its last played
+        # position would be read as where the restored current item stopped
+        queue_data.prev_state = None
+        queue.ended = saved.queue.ended
+        queue.current_index = saved.queue.current_index
+        queue.resume_pos = saved.queue.resume_pos
+        queue.elapsed_time = saved.queue.resume_pos
+        queue.elapsed_time_last_updated = time.time()
+        self.update_items(queue_id, [replace(item, queue_id=queue_id) for item in saved.items])
+        queue.current_item = self.get_item(queue_id, queue.current_index)
+        queue.next_item = (
+            self.get_next_item(queue_id, queue.current_index)
+            if queue.current_index is not None
+            else None
+        )
+        self.signal_update(queue_id)
 
     # Helper methods
 
