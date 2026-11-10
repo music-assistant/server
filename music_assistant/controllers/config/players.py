@@ -602,7 +602,8 @@ class PlayerConfigMixin:
         if not changed_keys:
             # no changes
             return config
-        # store updated config first (to prevent issues with enabling/disabling players)
+        # store updated config first (to prevent issues with enabling/disabling players),
+        # each value with the config of whoever declared its entry
         values_by_key = self._split_player_values(player_id, new_values)
         new_raw["values"] = values_by_key.pop(f"{conf_key}/values")
         existing_protocol_values = {key: self.get(key) or {} for key in values_by_key}

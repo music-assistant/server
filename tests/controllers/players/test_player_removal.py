@@ -193,6 +193,24 @@ async def test_a_group_player_is_removed_like_any_other_player(mass: MusicAssist
     _assert_removed(mass)
 
 
+@pytest.mark.parametrize("command", ["players/remove", "players/remove_group_player"])
+async def test_a_sync_group_is_removed_by_the_controller(
+    mass: MusicAssistant, command: str
+) -> None:
+    """A group the user created goes with either command; its provider has no part in it."""
+    group = await mass.players.create_group_player("sync_group", "Group", [], dynamic=True)
+    group_id = group.player_id
+    assert mass.config.get(f"{CONF_PLAYERS}/{group_id}") is not None
+
+    if command == "players/remove":
+        await mass.players.remove(group_id)
+    else:
+        await mass.players.remove_group_player(group_id)
+
+    assert mass.players.get_player(group_id) is None
+    assert mass.config.get(f"{CONF_PLAYERS}/{group_id}") is None
+
+
 async def test_the_group_command_only_removes_group_players(mass: MusicAssistant) -> None:
     """The group command refuses a player that is no group and leaves it alone."""
     player = await _register(mass, _HookedPlayer)
