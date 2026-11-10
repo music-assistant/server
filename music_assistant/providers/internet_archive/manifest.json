@@ -5,7 +5,8 @@
   "documentation": "https://music-assistant.io/music-providers/internet-archive/",
   "type": "music",
   "requirements": [],
-  "codeowners": ["@ozgav"],
+  "codeowners": ["@OzGav"],
+  "tier": "community",
   "multi_instance": false,
   "stage": "stable"
 }

@@ -5,6 +5,7 @@
   "name": "Overcast",
   "description": "Import your podcast subscriptions and playback progress from Overcast.",
   "codeowners": ["@music-assistant"],
+  "tier": "core",
   "requirements": ["segno==1.6.6"],
   "documentation": "https://music-assistant.io/music-providers/overcast",
   "multi_instance": true

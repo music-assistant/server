@@ -111,6 +111,16 @@ class SpotifyPlaybackBackend(ABC):
             this stream, leaving it nothing to deliver.
         """
 
+    async def feed_next(self, media_key: str, spotify_uri: str) -> None:  # noqa: B027
+        """
+        Line up the item that follows the one being streamed.
+
+        Backends that fetch each item on its own have nothing to line up.
+
+        :param media_key: The StreamDetails uri of the item being streamed.
+        :param spotify_uri: Canonical Spotify URI of the item that follows it.
+        """
+
     async def get_diagnostics(self) -> dict[str, SerializableType]:
         """Return diagnostic details about the backend (never any secret)."""
         return {}

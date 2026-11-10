@@ -20,6 +20,7 @@ from music_assistant_models.enums import (
     PlaybackState,
     QueueOption,
     RepeatMode,
+    SleepTimerMode,
 )
 from music_assistant_models.errors import (
     InvalidDataError,
@@ -37,6 +38,7 @@ from music_assistant_models.media_items import (
     ItemMapping,
     MediaItemType,
     PlayableMediaItemType,
+    Playlist,
     PodcastEpisode,
     Track,
     media_from_dict,
@@ -67,6 +69,7 @@ from music_assistant.controllers.player_queues.helpers import (
     played_from_album,
 )
 from music_assistant.controllers.player_queues.managed_pool import gate_tracks
+from music_assistant.controllers.players.constants import SwitchedOffAction
 from music_assistant.controllers.webserver.helpers.auth_middleware import (
     get_current_user,
     set_current_user,
@@ -81,7 +84,7 @@ from music_assistant.helpers.throttle_retry import (
     with_request_priority,
 )
 from music_assistant.helpers.uri import parse_uri
-from music_assistant.models.music_provider import MusicProvider
+from music_assistant.models.music_provider import MusicProvider, ProviderStreamLimitError
 
 if TYPE_CHECKING:
     from music_assistant_models.enums import SortDirection, SortField
@@ -517,6 +520,18 @@ class QueueLoaderMixin(_PlayerQueuesBase):
         if details.metadata.chapters:
             media_item.metadata.chapters = details.metadata.chapters
             self.signal_update(queue_item.queue_id, items_changed=True)
+            queue_data = self._queue_data.get(queue_item.queue_id)
+            target = queue_data.sleep_timer_target if queue_data else None
+            current_item = queue_data.queue.current_item if queue_data else None
+            if (
+                target is not None
+                and target.mode == SleepTimerMode.END_OF_CHAPTER
+                and target.queue_item_id == queue_item.queue_item_id
+                and current_item is not None
+                and current_item.queue_item_id == queue_item.queue_item_id
+            ):
+                # a chapter timer pinned before the chapters were known stops at the item end
+                self._repin_sleep_timer(queue_item.queue_id)
 
     def _set_missing_duration(self, queue_item: QueueItem, duration: int) -> bool:
         """
@@ -556,6 +571,16 @@ class QueueLoaderMixin(_PlayerQueuesBase):
         queue_items = self._queue_data[queue_id].items
         if not queue_items or cur_index is None:
             # queue is empty
+            return None
+        # a sleep timer stops the queue at a point in its target item: nothing follows that
+        # item on its own, a skip still moves on
+        sleep_timer_target = self._queue_data[queue_id].sleep_timer_target
+        if (
+            sleep_timer_target is not None
+            and not is_skip
+            and cur_index < len(queue_items)
+            and queue_items[cur_index].queue_item_id == sleep_timer_target.queue_item_id
+        ):
             return None
         # handle repeat single track
         if queue.repeat_mode == RepeatMode.ONE and not is_skip:
@@ -812,7 +837,7 @@ class QueueLoaderMixin(_PlayerQueuesBase):
             return
         await self.load(queue_id, queue_items, insert_at_index=len(queue_data.items) + 1)
 
-    @handle_play_action
+    @handle_play_action(switched_off=SwitchedOffAction.RUN)
     async def _handle_play_media(  # noqa: C901, PLR0912
         self,
         queue_id: str,
@@ -867,11 +892,6 @@ class QueueLoaderMixin(_PlayerQueuesBase):
             ]
             radio_mode = False
 
-        # Forget the previous queue's enqueued items when a new queue is requested. A caller that
-        # left the option to the config gets this once the first item resolved it, below: it is the
-        # option that says whether this is a new queue or an addition to the current one.
-        if option is not None and option not in (QueueOption.ADD, QueueOption.NEXT):
-            self._reset_enqueued_media_items(queue_data)
         # An ADD/NEXT onto a queue that is already a managed pool (has a dynamic source): a finite
         # item is kept only as a source (the bounded pool materializes it) instead of being expanded
         # into the queue. Any other enqueue (PLAY/REPLACE, or onto a linear queue) expands finite
@@ -884,6 +904,7 @@ class QueueLoaderMixin(_PlayerQueuesBase):
         play_next_items: list[ResolvedItem] = []
         source_items: list[MediaItemType] = []
         shuffle_settled = False
+        first_item_resolved = False
         # reported to the caller when none of the requested items made it through
         last_item_error: MusicAssistantError | None = None
         # resolve all media items
@@ -937,13 +958,35 @@ class QueueLoaderMixin(_PlayerQueuesBase):
                         config_key = f"default_enqueue_option_{media_item.media_type.value}"
                     config_value = self.get_config_value(config_key, return_type=str)
                     option = QueueOption(config_value)
-                    if option not in (QueueOption.ADD, QueueOption.NEXT):
-                        self._reset_enqueued_media_items(queue_data)
-                    # settled from the resolved option for the same reason as the reset above
+                    # settled from the resolved option for the same reason as the reset below
                     already_dynamic = queue.is_dynamic and option in (
                         QueueOption.ADD,
                         QueueOption.NEXT,
                     )
+
+                # like the shuffle state below, the first item that resolves decides for the batch
+                if not first_item_resolved:
+                    first_item_resolved = True
+                    # A play that starts now is refused before its tracks are fetched when every
+                    # source of it is held by realtime playback on another player. Anything else,
+                    # such as a shuffled batch that may start on any of its items, is left to the
+                    # check once its first track streams.
+                    shuffled_batch = len(media_list) > 1 and (
+                        shuffle or (shuffle is None and queue.shuffle_enabled)
+                    )
+                    if (
+                        option in (QueueOption.PLAY, QueueOption.REPLACE)
+                        and not shuffled_batch
+                        and isinstance(media_item, (Playlist, Album, Track))
+                    ):
+                        self.mass.player_queues.refuse_held_item(
+                            media_item, queue_id, playback_user
+                        )
+                    # Forget the previous queue's enqueued items when a new queue is requested: it
+                    # is the option that says whether this is a new queue or an addition to the
+                    # current one. Done after the check above, so a refused play leaves them alone.
+                    if option not in (QueueOption.ADD, QueueOption.NEXT):
+                        self._reset_enqueued_media_items(queue_data)
 
                 # Save requested media item to play on the queue so we can use it as a seed
                 # for Autoplay's music refill (the podcast/audiobook continuations resolve
@@ -1066,6 +1109,9 @@ class QueueLoaderMixin(_PlayerQueuesBase):
                     if plays_next_track:
                         play_next_items += resolved_items
 
+            except ProviderStreamLimitError:
+                # the item is playable, its source is busy: the play is refused as a whole
+                raise
             except MusicAssistantError as err:
                 self.logger.warning("Skipping %s: %s", item, err)
                 last_item_error = err

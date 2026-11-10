@@ -8,7 +8,13 @@ from uuid import uuid4
 
 from music_assistant_models.auth import User, UserRole
 from music_assistant_models.enums import MediaType
-from music_assistant_models.media_items import Artist, ItemMapping, ProviderMapping, UniqueList
+from music_assistant_models.media_items import (
+    Artist,
+    Genre,
+    ItemMapping,
+    ProviderMapping,
+    UniqueList,
+)
 
 from music_assistant.constants import DB_TABLE_PROVIDER_MAPPINGS
 from music_assistant.controllers.music.favorites import (
@@ -41,6 +47,16 @@ async def _add_track(mass: MusicAssistant, name: str, *, second_source: bool = F
     for mapping in track.provider_mappings:
         mapping.in_library = True
     return await mass.music.tracks.add_item_to_library(track)
+
+
+async def _add_genre(mass: MusicAssistant, *tracks: Track) -> int:
+    """Add a library genre with the given library tracks linked to it, and return its id."""
+    genre = await mass.music.genres.add_item_to_library(
+        Genre(item_id="0", provider="library", name=uuid4().hex, provider_mappings=set())
+    )
+    for track in tracks:
+        await mass.music.genres.add_media_mapping(genre.item_id, MediaType.TRACK, track.item_id)
+    return int(genre.item_id)
 
 
 async def test_disliked_track_keys_are_the_users_own(music_mass_module: MusicAssistant) -> None:
@@ -198,6 +214,79 @@ async def test_without_disliked_drops_the_users_dislikes(music_mass_module: Musi
 
     untouched = await without_disliked_tracks(mass, None, [disliked, liked])
     assert [x.item_id for x in untouched] == [disliked.item_id, liked.item_id]
+
+
+async def test_without_disliked_drops_the_tracks_of_a_disliked_genre(
+    music_mass_module: MusicAssistant,
+) -> None:
+    """A track in a disliked genre is dropped, from the library and straight from its sources."""
+    mass = music_mass_module
+    store = mass.music.favorites
+    user_id = uuid4().hex
+    in_genre = await _add_track(mass, "In A Disliked Genre", second_source=True)
+    in_liked_genre = await _add_track(mass, "In A Liked Genre")
+    without_genre = await _add_track(mass, "Without A Genre")
+    disliked_genre = await _add_genre(mass, in_genre)
+    liked_genre = await _add_genre(mass, in_liked_genre)
+    await store.set(MediaType.GENRE, disliked_genre, False, [user_id])
+    await store.set(MediaType.GENRE, liked_genre, True, [user_id])
+    # the same track straight from each music source that holds it, and one not in the library
+    from_sources = [
+        create_track(mapping.provider_instance, mapping.item_id, name=in_genre.name)
+        for mapping in in_genre.provider_mappings
+    ]
+    not_in_library = create_track(PROV_A, uuid4().hex, name="Not In The Library")
+    candidates = [in_genre, in_liked_genre, without_genre, *from_sources, not_in_library]
+
+    kept = await without_disliked_tracks(mass, user_id, candidates)
+
+    assert [(x.provider, x.item_id) for x in kept] == [
+        (x.provider, x.item_id) for x in (in_liked_genre, without_genre, not_in_library)
+    ]
+    assert await store.disliked_genre_ids(user_id) == {disliked_genre}
+    # nobody else's playback is gated by the dislike
+    assert await without_disliked_tracks(mass, uuid4().hex, candidates) == candidates
+
+
+async def test_a_track_without_genres_of_its_own_is_in_those_of_its_albums(
+    music_mass_module: MusicAssistant,
+) -> None:
+    """A track without genres of its own is dropped for a disliked genre of any album it is on."""
+    mass = music_mass_module
+    user_id = uuid4().hex
+    track_id = uuid4().hex
+    track = create_track(PROV_A, track_id, name="On Two Albums", isrc=uuid4().hex)
+    track.album = create_album(PROV_A, uuid4().hex, name="Original Album")
+    await mass.music.tracks.add_item_to_library(track)
+    on_compilation = create_track(PROV_A, track_id, name="On Two Albums", isrc=uuid4().hex)
+    on_compilation.album = create_album(PROV_A, uuid4().hex, name="Compilation")
+    compilation = await mass.music.albums.add_item_to_library(on_compilation.album)
+    library_track = await mass.music.tracks.add_item_to_library(on_compilation)
+    assert library_track.album is not None
+    assert library_track.album.item_id != compilation.item_id
+    genre = await _add_genre(mass)
+    await mass.music.genres.add_media_mapping(genre, MediaType.ALBUM, compilation.item_id)
+    await mass.music.favorites.set(MediaType.GENRE, genre, False, [user_id])
+
+    assert await without_disliked_tracks(mass, user_id, [library_track, track]) == []
+
+
+async def test_a_track_with_genres_of_its_own_ignores_those_of_its_albums(
+    music_mass_module: MusicAssistant,
+) -> None:
+    """A track with genres of its own is kept when only its album is in a disliked genre."""
+    mass = music_mass_module
+    user_id = uuid4().hex
+    track = create_track(PROV_A, uuid4().hex, name="Has Genres Of Its Own", isrc=uuid4().hex)
+    track.album = create_album(PROV_A, uuid4().hex, name="Album In The Genre")
+    library_track = await mass.music.tracks.add_item_to_library(track)
+    assert library_track.album is not None
+    await _add_genre(mass, library_track)
+    genre = await _add_genre(mass)
+    await mass.music.genres.add_media_mapping(genre, MediaType.ALBUM, library_track.album.item_id)
+    await mass.music.favorites.set(MediaType.GENRE, genre, False, [user_id])
+
+    assert await without_disliked_tracks(mass, user_id, [library_track]) == [library_track]
 
 
 async def test_with_user_favorites_covers_every_media_type(

@@ -5,6 +5,7 @@
   "name": "Local files",
   "description": "Play music, audiobooks and podcasts from folders on this server, connected drives and network shares.",
   "codeowners": ["@music-assistant"],
+  "tier": "core",
   "requirements": [],
   "documentation": "https://music-assistant.io/music-providers/local-files/",
   "multi_instance": true,
