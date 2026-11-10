@@ -267,6 +267,10 @@ class AmpliPiZonePlayer(PlayerProtocol):
         for player_id in affected:
             self.mass.players.trigger_player_update(player_id)
 
+    async def on_remove(self) -> None:
+        """Let the provider go of this player, so that it registers the zone as a new one."""
+        self._prov.forget_zone(self._zone_id)
+
     def set_unavailable(self) -> None:
         """Mark the player as (temporarily) unavailable."""
         if not self._attr_available:

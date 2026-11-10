@@ -209,6 +209,14 @@ class AmpliPiPlayerProvider(PlayerProvider):
             and stream.type not in EXCLUDED_SELECTABLE_STREAM_TYPES
         ]
 
+    def forget_zone(self, zone_id: int) -> None:
+        """
+        Let go of the player of a zone, so that the zone is registered as a new player.
+
+        :param zone_id: ID of the AmpliPi zone.
+        """
+        self._players.pop(zone_id, None)
+
     def zone_id_for(self, player_id: str) -> int | None:
         """Return the AmpliPi zone id for the given Music Assistant player_id."""
         for zone_id, player in self._players.items():
