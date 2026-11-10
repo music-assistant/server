@@ -288,7 +288,7 @@ class UniversalGroupPlayer(Player):
                             # once the member no longer reports this group, its power off does
                             # not release the group again; the internal handler needs no access
                             # to the member
-                            member.update_state()
+                            member.refresh_state()
                             await self.mass.players._handle_cmd_power(member.player_id, False)
 
         if not powered:

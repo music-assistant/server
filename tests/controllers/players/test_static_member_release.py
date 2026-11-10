@@ -121,16 +121,17 @@ def mass() -> Iterator[MagicMock]:
 
 
 async def _build(
-    mass: MagicMock, group_cls: type[Player], power_control: bool
+    mass: MagicMock, group_cls: type[Player], power_control: bool, playing: bool = True
 ) -> tuple[PlayerController, Player]:
     """
-    Register a playing group player "g" with static members "a" and "b", and a player "c".
+    Register a group player "g" with static members "a" and "b", and a player "c".
 
     The members have a native power control; "b" leads a sync group.
 
     :param mass: The mocked server.
     :param group_cls: The group player class.
     :param power_control: Whether the group player has a (fake) power control.
+    :param playing: Whether the group (and so its members) is playing.
     """
     mass.loop = asyncio.get_running_loop()
     controller = PlayerController(mass)
@@ -155,7 +156,8 @@ async def _build(
         device._attr_supported_features = {PlayerFeature.PLAY_MEDIA, PlayerFeature.SET_MEMBERS}
         if pid != "c":
             device._attr_supported_features.add(PlayerFeature.POWER)
-            device._attr_playback_state = PlaybackState.PLAYING
+            if playing:
+                device._attr_playback_state = PlaybackState.PLAYING
         device._attr_can_group_with = {"a", "b", "c"} - {pid}
         controller._players[pid] = device
         device.set_initialized()
@@ -174,10 +176,12 @@ async def _build(
         group._update_attributes()
     else:
         assert isinstance(group, UniversalGroupPlayer)
-        group.stream = MagicMock(done=False, stop=AsyncMock())
+        if playing:
+            group.stream = MagicMock(done=False, stop=AsyncMock())
         group._set_attributes()
     group.set_initialized()
-    group._attr_playback_state = PlaybackState.PLAYING
+    if playing:
+        group._attr_playback_state = PlaybackState.PLAYING
     for player in (*controller._players.values(), controller._players["a"]):
         player._cache.clear()
         player.update_state(force_update=True, signal_event=False)
@@ -186,16 +190,16 @@ async def _build(
     return controller, group
 
 
-async def _send(controller: PlayerController, command: str) -> None:
-    """Send the given players/cmd API command for member "a" (power: switch it off)."""
+async def _send(controller: PlayerController, command: str, player_id: str = "a") -> None:
+    """Send the given players/cmd API command for a member (power: switch it off)."""
     target = cast(
         "Callable[..., Awaitable[None]]",
         controller.mass.command_handlers[f"players/cmd/{command}"].target,
     )
     if command == "power":
-        await target("a", False)
+        await target(player_id, False)
     else:
-        await target("a")
+        await target(player_id)
 
 
 async def _settle() -> None:
@@ -238,6 +242,36 @@ async def test_universal_group_static_member_ends_the_session(
     assert sorted(mass.calls) == sorted(
         [("a", "stop"), ("b", "stop"), ("a", "power", False), ("b", "power", False), *member_off]
     )
+    assert group.powered is False
+    off: tuple[Any, ...] = (False, PlaybackState.IDLE, None, None, [])
+    assert _end_state(controller) == {
+        "a": off,
+        "b": off,
+        "g": (False, PlaybackState.IDLE, None, None, ["a", "b"]),
+    }
+
+
+@pytest.mark.parametrize("command", COMMANDS)
+@pytest.mark.parametrize(
+    "user",
+    [
+        pytest.param(lambda: as_user(["b"]), id="limited-to-member"),
+        pytest.param(lambda: as_user([]), id="unlimited"),
+        pytest.param(nullcontext, id="no-user"),
+    ],
+)
+async def test_idle_universal_group_static_member_ends_the_session(
+    mass: MagicMock, user: Callable[[], AbstractContextManager[object]], command: str
+) -> None:
+    """An idle powered universal group switches its members off, also for a user limited to one."""
+    controller, group = await _build(mass, UniversalGroupPlayer, power_control=True, playing=False)
+
+    with user():
+        await _send(controller, command, "b")
+    await _settle()
+
+    member_off = [("b", "power", False)] if command == "power" else []
+    assert sorted(mass.calls) == sorted([("a", "power", False), ("b", "power", False), *member_off])
     assert group.powered is False
     off: tuple[Any, ...] = (False, PlaybackState.IDLE, None, None, [])
     assert _end_state(controller) == {
