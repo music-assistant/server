@@ -1439,8 +1439,7 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         Join/unjoin given player(s) to/from target player.
 
         Will add the given player(s) to the target player (sync leader or group player).
-        Does not check the current user's player access; the players/cmd/set_members API
-        command does.
+        Does not check the current user's player access, see check_grouping_access.
 
         :param target_player: player_id of the syncgroup leader or group player.
         :param player_ids_to_add: List of player_id's to add to the target player.
@@ -1477,6 +1476,64 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         async with self.get_player_lock(parent_player.player_id, PlayerLockPurpose.PLAYBACK):
             await self._handle_set_members(parent_player, player_ids_to_add, player_ids_to_remove)
 
+    def check_player_access(self, player_id: str) -> None:
+        """
+        Check that the current user may use the given player.
+
+        :param player_id: The id of the player to check.
+        :raises InsufficientPermissions: if the current user may not use the player.
+        """
+        if (current_user := get_current_user()) is None:
+            return
+        player = self.get_player(player_id)
+        if not has_player_access(current_user, player_id, player):
+            name = player.display_name if player else player_id
+            msg = f"{current_user.username} does not have access to player {name}"
+            raise InsufficientPermissions(msg)
+
+    def check_grouping_access(
+        self,
+        target_player: str,
+        player_ids_to_add: list[str] | None = None,
+        player_ids_to_remove: list[str] | None = None,
+    ) -> None:
+        """
+        Check that the current user may make the given cmd_set_members request.
+
+        Call this before cmd_set_members for a request that comes from a client.
+
+        Adding players needs access to the target player and to every player added.
+        Removing players needs access to the target player or to every player removed, so a
+        user can always take a player of their own out of a group. When the target player is
+        a member of a group player, removing needs access to that group player as well, or to
+        every player removed. A request that adds nothing needs access to the target player
+        when it is empty, or when the target player is synced to another player (as it is
+        detached from that player first).
+
+        :param target_player: player_id of the syncgroup leader or group player.
+        :param player_ids_to_add: List of player_id's to add to the target player.
+        :param player_ids_to_remove: List of player_id's to remove from the target player.
+        :raises InsufficientPermissions: if the current user may not make the request.
+        """
+        if (current_user := get_current_user()) is None:
+            return
+        target = self.get_player(target_player)
+        group_player = self._get_set_members_group(target) if target else None
+        if player_ids_to_add:
+            # a group player the command is passed on to only gains players the user may use
+            for player_id in (target_player, *player_ids_to_add):
+                self.check_player_access(player_id)
+        elif not player_ids_to_remove or (target and target.synced_to and not group_player):
+            # cmd_set_members detaches a synced target first, unless it passes the
+            # command on to the target's group player
+            self.check_player_access(target_player)
+        if not player_ids_to_remove:
+            return
+        owners = [target_player, group_player.player_id] if group_player else [target_player]
+        if not all(has_player_access(current_user, pid, self.get_player(pid)) for pid in owners):
+            for player_id in player_ids_to_remove:
+                self.check_player_access(player_id)
+
     @api_command("players/cmd/group", required_scope=Scope.PLAYERS_CONTROL)
     @handle_player_command
     async def cmd_group(self, player_id: str, target_player: str) -> None:
@@ -1496,9 +1553,9 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         :raises PlayerCommandFailed: if the target player is already synced to another player.
         :raises PlayerUnavailableError: if the target player is not available.
         :raises PlayerCommandFailed: if the player is already grouped to another player.
-        :raises InsufficientPermissions: if the user may not use the target player.
+        :raises InsufficientPermissions: if the user may not use the player or target player.
         """
-        self._check_grouping_access(target_player, player_ids_to_add=[player_id])
+        self.check_grouping_access(target_player, player_ids_to_add=[player_id])
         await self.cmd_set_members(target_player, player_ids_to_add=[player_id])
 
     @api_command("players/cmd/group_many", required_scope=Scope.PLAYERS_CONTROL)
@@ -1511,7 +1568,7 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
 
         :raises InsufficientPermissions: if the user may not use the target player or a child.
         """
-        self._check_grouping_access(target_player, player_ids_to_add=child_player_ids)
+        self.check_grouping_access(target_player, player_ids_to_add=child_player_ids)
         await self.cmd_set_members(target_player, player_ids_to_add=child_player_ids)
 
     @api_command("players/cmd/ungroup", required_scope=Scope.PLAYERS_CONTROL)
@@ -3992,52 +4049,8 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         :raises PlayerUnavailableError: if the target player is not available.
         :raises InsufficientPermissions: if the user may not use a player whose grouping changes.
         """
-        self._check_grouping_access(target_player, player_ids_to_add, player_ids_to_remove)
+        self.check_grouping_access(target_player, player_ids_to_add, player_ids_to_remove)
         await self.cmd_set_members(target_player, player_ids_to_add, player_ids_to_remove)
-
-    def _check_grouping_access(
-        self,
-        target_player: str,
-        player_ids_to_add: list[str] | None = None,
-        player_ids_to_remove: list[str] | None = None,
-    ) -> None:
-        """
-        Check that the current user may change the grouping of the given players.
-
-        Adding needs access to the target player and to every player added. Without access
-        to the target player, a user may only remove players they have access to from it,
-        and only while the target player is not synced to another player itself. For a
-        member of a group player, the group player counts as a target player too, and the
-        member stays synced.
-
-        :param target_player: player_id of the syncgroup leader or group player.
-        :param player_ids_to_add: List of player_id's to add to the target player.
-        :param player_ids_to_remove: List of player_id's to remove from the target player.
-        :raises InsufficientPermissions: if the user may not use a player whose grouping changes.
-        """
-        if (current_user := get_current_user()) is None:
-            return
-
-        def check_access(player_ids: list[str]) -> None:
-            for player_id in player_ids:
-                player = self.get_player(player_id)
-                if not has_player_access(current_user, player_id, player):
-                    name = player.display_name if player else player_id
-                    msg = f"{current_user.username} does not have access to player {name}"
-                    raise InsufficientPermissions(msg)
-
-        target = self.get_player(target_player)
-        group_player = self._get_set_members_group(target) if target else None
-        targets = [target_player, group_player.player_id] if group_player else [target_player]
-        if all(has_player_access(current_user, pid, self.get_player(pid)) for pid in targets):
-            check_access(player_ids_to_add or [])
-            return
-        # cmd_set_members first detaches a target that is synced to another player,
-        # unless it passes the command on to the target's group player
-        detaches_target = target is not None and not group_player and bool(target.synced_to)
-        if player_ids_to_add or not player_ids_to_remove or detaches_target:
-            check_access(targets)
-        check_access(player_ids_to_remove or [])
 
     def _get_set_members_group(self, player: Player) -> Player | None:
         """

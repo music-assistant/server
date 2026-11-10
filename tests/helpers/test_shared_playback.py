@@ -140,6 +140,17 @@ async def test_venue_add_and_remove_guest_listener() -> None:
     )
 
 
+async def test_venue_remove_leaves_a_player_that_is_no_guest_listener() -> None:
+    """Only a player added as a guest listener is detached from the venue."""
+    venue_player = _create_venue_player(can_group_with={"web_player_1"})
+    mass = _create_mock_mass(venue_player)
+    session = await SharedPlaybackSession.create_venue(mass, "venue_player")
+
+    await session.remove_guest_listener("web_player_1")
+
+    mass.players.cmd_set_members.assert_not_awaited()
+
+
 async def test_venue_restores_remembered_listener_only_when_missing() -> None:
     """Restore a tracked listener after its actual group membership disappears."""
     venue_player = _create_venue_player(can_group_with={"web_player_1"})

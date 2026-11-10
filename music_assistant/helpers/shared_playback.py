@@ -246,8 +246,12 @@ class SharedPlaybackSession:
         """
         Detach a guest's web player from this session.
 
+        A player that was not added with add_guest_listener is left alone.
+
         :param web_player_id: The player_id of the guest's web player.
         """
+        if web_player_id not in self._guest_listeners:
+            return
         self._guest_listeners.discard(web_player_id)
         if self._get_host_player() is None:
             return
