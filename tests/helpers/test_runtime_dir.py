@@ -18,7 +18,7 @@ def shm_path(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
     shm = tmp_path / "shm"
     shm.mkdir()
     monkeypatch.setattr(runtime_dir, "SHM_PATH", str(shm))
-    monkeypatch.setattr(runtime_dir.os, "getuid", lambda: 0)
+    monkeypatch.setattr(os, "getuid", lambda: 0)
     return shm
 
 
@@ -46,7 +46,7 @@ def test_regular_user_keeps_it_under_the_cache_path(
     monkeypatch: pytest.MonkeyPatch, shm_path: Path, cache_path: Path
 ) -> None:
     """A regular user's files in /dev/shm can be wiped by logind, so they stay on disk."""
-    monkeypatch.setattr(runtime_dir.os, "getuid", lambda: runtime_dir.FIRST_REGULAR_UID)
+    monkeypatch.setattr(os, "getuid", lambda: runtime_dir.FIRST_REGULAR_UID)
 
     result = Path(prepare_runtime_dir(str(cache_path)))
 
