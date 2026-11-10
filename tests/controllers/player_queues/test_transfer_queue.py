@@ -357,7 +357,14 @@ async def test_transfer_queue_resumes_a_replacement_for_a_missing_item_from_the_
     index from what it played before, so loading the items moves it onto the item at that index.
     """
     fake = _shuffle_controller(source_shuffle_enabled=False)
-    for name in ("load", "update_items", "_resync_position", "index_by_id", "get_item"):
+    for name in (
+        "load",
+        "update_items",
+        "_resync_position",
+        "index_by_id",
+        "get_item",
+        "queue_data_or_none",
+    ):
         method = getattr(PlayerQueuesController, name)
         setattr(fake, name, method.__get__(fake))
     fake.play_index = AsyncMock()

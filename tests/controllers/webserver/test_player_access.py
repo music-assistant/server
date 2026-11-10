@@ -81,6 +81,13 @@ def test_restricted_user_is_limited_to_the_filter() -> None:
     assert not has_player_access(user, OTHER_PLAYER, _player(OTHER_PLAYER, private=False))
 
 
+def test_player_looked_up_by_a_legacy_id_is_checked_by_its_own_id() -> None:
+    """A player looked up by a legacy id is permitted when the filter holds its own id."""
+    user = _user(UserRole.USER, [ALLOWED_PLAYER])
+    assert has_player_access(user, "old_kitchen", _player(ALLOWED_PLAYER, private=False))
+    assert not has_player_access(user, "old_living_room", _player(OTHER_PLAYER, private=False))
+
+
 def test_own_client_player_is_permitted() -> None:
     """The private client player the user connected on is usable even when filtered out."""
     user = _user(UserRole.USER, [ALLOWED_PLAYER])
