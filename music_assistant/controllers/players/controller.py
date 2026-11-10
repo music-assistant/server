@@ -4010,8 +4010,9 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         """
         Check that the current user may change the grouping of the given players.
 
-        Adding needs access to the target player and to every player added. Removing needs
-        access to the target player or to the player removed.
+        Adding needs access to the target player and to every player added. Without access
+        to the target player, a user may only remove players they have access to from it,
+        and only while the target player is not synced to another player itself.
 
         :param target_player: player_id of the syncgroup leader or group player.
         :param player_ids_to_add: List of player_id's to add to the target player.
@@ -4029,12 +4030,14 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
                     msg = f"{current_user.username} does not have access to player {name}"
                     raise InsufficientPermissions(msg)
 
-        if player_ids_to_add:
-            check_access([target_player, *player_ids_to_add])
-        if player_ids_to_remove and not has_player_access(
-            current_user, target_player, self.get_player(target_player)
-        ):
-            check_access(player_ids_to_remove)
+        target = self.get_player(target_player)
+        if has_player_access(current_user, target_player, target):
+            check_access(player_ids_to_add or [])
+            return
+        # cmd_set_members first detaches a target that is synced to another player
+        if player_ids_to_add or not player_ids_to_remove or (target and target.synced_to):
+            check_access([target_player])
+        check_access(player_ids_to_remove or [])
 
     async def _handle_set_members(  # noqa: PLR0915
         self,

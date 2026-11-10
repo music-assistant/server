@@ -1,9 +1,9 @@
 """
 Tests that the grouping commands follow the calling user's player filter.
 
-A grouping command needs access to every player whose grouping the caller asks to change:
-adding needs the target player and every player added, removing needs the target player or
-the player removed.
+A grouping command needs access to every player whose grouping it changes: adding needs the
+target player and every player added, removing needs the target player or the player removed,
+and a target player that is synced to another player is detached first, so it needs access too.
 """
 
 from __future__ import annotations
@@ -113,6 +113,27 @@ async def test_removing_a_player_from_another_players_group_is_refused(
         await controller._api_cmd_set_members("b", player_ids_to_remove=["c"])
 
     controller._handle_set_members.assert_not_awaited()  # type: ignore[attr-defined]
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        pytest.param(_set_members("b"), id="set_members-nothing"),
+        pytest.param(lambda c: c.cmd_group_many("b", []), id="group_many-nothing"),
+        pytest.param(_set_members("b", remove=["a"]), id="set_members-remove-non-member"),
+    ],
+)
+async def test_a_synced_player_the_user_can_not_use_stays_synced(
+    controller: PlayerController, command: Command
+) -> None:
+    """A request on a synced player outside the user's players does not detach it."""
+    _sync(controller, "c", "b")
+
+    with _user(["a"]), pytest.raises(InsufficientPermissions, match="Player B"):
+        await command(controller)
+
+    controller._handle_set_members.assert_not_awaited()  # type: ignore[attr-defined]
+    assert controller._players["b"].synced_to == "c"
 
 
 @pytest.mark.parametrize(
