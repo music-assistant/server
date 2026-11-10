@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from contextlib import asynccontextmanager
+from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from typing import TYPE_CHECKING, Any, Final
 
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption
@@ -11,7 +11,12 @@ from music_assistant_models.enums import ConfigEntryType, ProviderFeature, Provi
 from music_assistant_models.errors import ProviderUnavailableError, RateLimited
 
 from music_assistant.constants import MASS_LOGGER_NAME
-from music_assistant.helpers.throttle_retry import MAX_RETRY_AFTER, ThrottlerManager
+from music_assistant.helpers.throttle_retry import (
+    MAX_RETRY_AFTER,
+    RequestPriority,
+    ThrottlerManager,
+    current_priority,
+)
 from music_assistant.models.plugin import (
     AIEngine,
     ImageEngine,
@@ -38,9 +43,10 @@ class EngineThrottlers:
     """
     The throttlers of a plugin's engines, which also hold an engine back after it failed.
 
-    An engine that could not be reached, or that rate limited us, turns requests away for a
-    while, so its callers fail fast rather than each paying a request and a timeout of their
-    own. Each engine has its own throttler, so one failing engine does not hold back another.
+    An engine that could not be reached, or that rate limited us, turns background requests
+    away for a while, so background work fails fast rather than each pass paying a request and
+    a timeout of its own. A user action always asks the engine, within its rate limit only.
+    Each engine has its own throttler, so one failing engine does not hold back another.
     """
 
     def __init__(
@@ -60,7 +66,7 @@ class EngineThrottlers:
 
     def cooldown_remaining(self, engine_id: str) -> float:
         """
-        Return the seconds the engine still turns requests away, 0 when it takes them.
+        Return the seconds the engine still turns background work away, 0 when it takes it.
 
         :param engine_id: The provider-scoped id of the engine.
         """
@@ -78,14 +84,22 @@ class EngineThrottlers:
     @asynccontextmanager
     async def request(self, engine_id: str) -> AsyncGenerator[None]:
         """
-        Run one request to the engine, within its rate limit and outside its cooldown.
+        Run one request to the engine, within its rate limit and, for background work, its cooldown.
 
         :param engine_id: The provider-scoped id of the engine.
-        :raises RateLimited: While the engine turns requests away for longer than a caller
-            is made to wait.
+        :raises RateLimited: While the engine turns background requests away for longer than
+            a caller is made to wait.
         """
         throttler = self._throttler(engine_id)
-        async with throttler.acquire():
+        # a user waiting on an answer is better served by asking the engine than by being
+        # turned away for an outage that may already be over, so only background work sits
+        # the cooldown out, a failure of either still arms it
+        gate: AbstractAsyncContextManager[float] = (
+            throttler.acquire()
+            if current_priority() is RequestPriority.LOW
+            else throttler.throttler
+        )
+        async with gate:
             try:
                 yield
             except RateLimited as err:

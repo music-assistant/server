@@ -25,6 +25,7 @@ from music_assistant_models.errors import (
 )
 
 from music_assistant.constants import CONF_LOG_LEVEL, CONF_VERIFY_SSL
+from music_assistant.helpers.throttle_retry import RequestPriority, request_priority
 from music_assistant.helpers.tts import TTSLanguageNotSupportedError
 from music_assistant.providers.hass import (
     CONF_AUTH_TOKEN,
@@ -694,7 +695,7 @@ async def test_ai_query_uses_the_requested_engine() -> None:
 
 
 async def test_ai_query_leaves_an_unreachable_entity_alone() -> None:
-    """Home Assistant being unreachable is an outage, and the entity is left alone a while."""
+    """Home Assistant being unreachable is an outage, and background work leaves it alone."""
     states = [_state("ai_task.first", "First")]
 
     async with _start_provider(states) as (provider, hass):
@@ -702,10 +703,13 @@ async def test_ai_query_leaves_an_unreachable_entity_alone() -> None:
         with pytest.raises(ProviderUnavailableError):
             await provider.ai_query("What is this song?")
         assert provider.engine_cooldown("ai_task.first") > 0
-        with pytest.raises(RateLimited):
+        with request_priority(RequestPriority.LOW), pytest.raises(RateLimited):
             await provider.ai_query("What is this song?")
-
         hass.send_command.assert_awaited_once()
+
+        # a user asking once Home Assistant is back gets an answer, not the cooldown
+        hass.send_command = AsyncMock(return_value={"response": {"data": "A song"}})
+        assert await provider.ai_query("What is this song?") == "A song"
 
 
 async def test_ai_generate_image_leaves_an_entity_alone_after_a_failing_download() -> None:

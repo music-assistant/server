@@ -29,6 +29,7 @@ from music_assistant.helpers.plugin_engines import (
     select_core_tts_engine,
     select_tts_engine,
 )
+from music_assistant.helpers.throttle_retry import RequestPriority, request_priority
 from music_assistant.models.plugin import AIEngine, PluginProvider, TTSEngine
 
 if TYPE_CHECKING:
@@ -387,10 +388,13 @@ async def _fail(throttlers: EngineThrottlers, engine_id: str, err: Exception) ->
 
 
 async def test_engine_throttlers_hold_back_an_unreachable_engine() -> None:
-    """An engine that could not be reached turns requests away, without asking it again."""
+    """An engine that could not be reached turns background work away, without asking again."""
     clock = _Clock()
     throttlers = EngineThrottlers(rate_limit=10, period=60)
-    with patch("music_assistant.helpers.throttle_retry.time.monotonic", clock.monotonic):
+    with (
+        patch("music_assistant.helpers.throttle_retry.time.monotonic", clock.monotonic),
+        request_priority(RequestPriority.LOW),
+    ):
         await _fail(throttlers, "image", ProviderUnavailableError("down"))
         assert throttlers.cooldown_remaining("image") == ENGINE_OUTAGE_COOLDOWN
         called = AsyncMock()
@@ -417,10 +421,13 @@ async def test_engine_throttlers_honour_the_wait_a_service_asks_for() -> None:
 
 
 async def test_engine_throttlers_hold_back_an_engine_that_did_not_answer() -> None:
-    """A caller that times an engine out reports it, and the engine turns requests away."""
+    """A caller that times an engine out reports it, and the engine turns background work away."""
     clock = _Clock()
     throttlers = EngineThrottlers(rate_limit=10, period=60)
-    with patch("music_assistant.helpers.throttle_retry.time.monotonic", clock.monotonic):
+    with (
+        patch("music_assistant.helpers.throttle_retry.time.monotonic", clock.monotonic),
+        request_priority(RequestPriority.LOW),
+    ):
         throttlers.note_outage("image")
         assert throttlers.cooldown_remaining("image") == ENGINE_OUTAGE_COOLDOWN
         with pytest.raises(RateLimited):
@@ -430,13 +437,32 @@ async def test_engine_throttlers_hold_back_an_engine_that_did_not_answer() -> No
         assert throttlers.cooldown_remaining("text") == 0
 
 
+@pytest.mark.parametrize("priority", [RequestPriority.NORMAL, RequestPriority.HIGH])
+async def test_engine_throttlers_never_turn_a_user_away(priority: RequestPriority) -> None:
+    """A user action asks an engine in its cooldown, and its failure holds background work back."""
+    throttlers = EngineThrottlers(rate_limit=10, period=60)
+    throttlers.note_outage("text")
+    called = AsyncMock()
+    with request_priority(priority):
+        async with throttlers.request("text"):
+            await called()
+        called.assert_awaited_once()
+        # an engine a user found unreachable is left alone by background work as well
+        await _fail(throttlers, "image", ProviderUnavailableError("down"))
+    assert throttlers.cooldown_remaining("image") == pytest.approx(ENGINE_OUTAGE_COOLDOWN)
+    with request_priority(RequestPriority.LOW), pytest.raises(RateLimited):
+        async with throttlers.request("image"):
+            pass
+
+
 async def test_engine_throttlers_keep_engines_apart() -> None:
     """One engine failing does not hold back another engine of the same plugin."""
     throttlers = EngineThrottlers(rate_limit=10, period=60)
     await _fail(throttlers, "image", ProviderUnavailableError("down"))
     assert throttlers.cooldown_remaining("text") == 0
-    async with throttlers.request("text"):
-        pass
+    with request_priority(RequestPriority.LOW):
+        async with throttlers.request("text"):
+            pass
 
 
 async def test_engine_throttlers_do_not_hold_back_an_engine_that_refused() -> None:

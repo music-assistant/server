@@ -402,10 +402,11 @@ class PluginProvider(
 
     def engine_cooldown(self, engine_id: str) -> float:
         """
-        Return the seconds an engine of this plugin turns requests away, 0 when it takes them.
+        Return the seconds an engine of this plugin turns background work away, 0 if none.
 
-        An engine that could not be reached, or that rate limited us, is left alone for a while
-        (see ``EngineThrottlers``), so background work can wait for it rather than fail.
+        An engine that could not be reached, or that rate limited us, is left alone by background
+        work for a while (see ``EngineThrottlers``), so that work can wait for it rather than fail.
+        A user action is never turned away.
 
         :param engine_id: The provider-scoped id of the engine (``PluginEngine.id``).
         """
@@ -415,8 +416,8 @@ class PluginProvider(
         """
         Hold an engine of this plugin back for a while after it did not answer in time.
 
-        A caller that times an engine request out reports it here, so the next caller waits
-        for the engine instead of paying its own timeout.
+        A caller that times an engine request out reports it here, so the next background caller
+        waits for the engine instead of paying its own timeout.
 
         :param engine_id: The provider-scoped id of the engine (``PluginEngine.id``).
         """

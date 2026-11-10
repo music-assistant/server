@@ -17,6 +17,7 @@ from music_assistant_models.errors import (
     UnsupportedFeaturedException,
 )
 
+from music_assistant.helpers.throttle_retry import RequestPriority, request_priority
 from music_assistant.providers.openai_compatible import (
     SUPPORTED_FEATURES,
     OpenAICompatibleProvider,
@@ -1031,7 +1032,7 @@ async def test_ai_generate_image_remembers_a_model_that_needs_the_images_endpoin
 async def test_ai_generate_image_leaves_an_unreachable_model_alone(
     provider: OpenAICompatibleProvider,
 ) -> None:
-    """A model that could not be reached turns the next request away without sending it."""
+    """A model that could not be reached turns background work away without sending it."""
     await provider.handle_async_init()
     with patch(
         "music_assistant.providers.openai_compatible.image_generation",
@@ -1041,7 +1042,7 @@ async def test_ai_generate_image_leaves_an_unreachable_model_alone(
             await provider.ai_generate_image("A cat", engine_id="gpt-image-1")
         assert provider.engine_cooldown("gpt-image-1") > 0
         assert provider.engine_cooldown("other-model") == 0
-        with pytest.raises(RateLimited):
+        with request_priority(RequestPriority.LOW), pytest.raises(RateLimited):
             await provider.ai_generate_image("A dog", engine_id="gpt-image-1")
 
     generate.assert_awaited_once()
