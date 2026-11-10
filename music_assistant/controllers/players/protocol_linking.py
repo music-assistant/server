@@ -18,7 +18,6 @@ from typing import TYPE_CHECKING, cast
 
 from music_assistant_models.enums import (
     EventType,
-    IdentifierType,
     PlaybackState,
     PlayerFeature,
     PlayerType,
@@ -41,11 +40,7 @@ from music_assistant.constants import (
     PROTOCOL_PRIORITY,
     VERBOSE_LOG_LEVEL,
 )
-from music_assistant.helpers.util import (
-    is_locally_administered_mac,
-    is_valid_mac_address,
-    normalize_mac_for_matching,
-)
+from music_assistant.controllers.players.matching import DeviceIdentity, identifiers_match
 from music_assistant.models.player import LinkedOutputProtocol, Player
 from music_assistant.providers.sync_group.constants import CONF_ALLOWED_MEMBERS
 from music_assistant.providers.universal_player import UniversalPlayer, UniversalPlayerProvider
@@ -272,8 +267,8 @@ class ProtocolLinkingMixin:
             if native_player.provider.domain == "universal_player":
                 if isinstance(native_player, UniversalPlayer):
                     is_known = protocol_player.player_id in native_player._protocol_player_ids
-                    is_match = not is_known and self._identifiers_match(
-                        native_player, protocol_player, protocol_domain
+                    is_match = not is_known and identifiers_match(
+                        self._identity_of(native_player), self._identity_of(protocol_player)
                     )
                     if is_known or is_match:
                         self._add_protocol_link(native_player, protocol_player, protocol_domain)
@@ -311,7 +306,9 @@ class ProtocolLinkingMixin:
                 continue
 
             # Fallback to identifier matching
-            if self._identifiers_match(native_player, protocol_player, protocol_domain):
+            if identifiers_match(
+                self._identity_of(native_player), self._identity_of(protocol_player)
+            ):
                 self._add_protocol_link(native_player, protocol_player, protocol_domain)
                 if protocol_player.protocol_parent_id:
                     protocol_player.refresh_state()
@@ -352,7 +349,9 @@ class ProtocolLinkingMixin:
             linked_player = self.get_player(linked.output_protocol_id)
             if not linked_player:
                 continue
-            if self._identifiers_match(linked_player, protocol_player, protocol_domain):
+            if identifiers_match(
+                self._identity_of(linked_player), self._identity_of(protocol_player)
+            ):
                 self._add_protocol_link(native_player, protocol_player, protocol_domain)
                 if protocol_player.protocol_parent_id:
                     protocol_player.refresh_state()
@@ -565,7 +564,9 @@ class ProtocolLinkingMixin:
             # Multiple instances of the same protocol on one host are separate players
             if other_player.provider.domain == protocol_domain:
                 continue
-            if self._identifiers_match(protocol_player, other_player):
+            if identifiers_match(
+                self._identity_of(protocol_player), self._identity_of(other_player)
+            ):
                 matching.append(other_player)
 
         return matching
@@ -575,7 +576,7 @@ class ProtocolLinkingMixin:
         for player in self._players.values():
             if not isinstance(player, UniversalPlayer):
                 continue
-            if self._identifiers_match(protocol_player, player, ""):
+            if identifiers_match(self._identity_of(protocol_player), self._identity_of(player)):
                 return player
         return None
 
@@ -789,7 +790,9 @@ class ProtocolLinkingMixin:
             if not isinstance(player, UniversalPlayer):
                 continue
 
-            if not self._identifiers_match(universal_player, player, ""):
+            if not identifiers_match(
+                self._identity_of(universal_player), self._identity_of(player)
+            ):
                 continue
 
             # Do not merge if both UPs have protocols from the same domain.
@@ -996,7 +999,9 @@ class ProtocolLinkingMixin:
             if self._parent_has_active_protocol_from_domain(native_player, protocol_domain):
                 continue
 
-            if self._identifiers_match(native_player, protocol_player, protocol_domain):
+            if identifiers_match(
+                self._identity_of(native_player), self._identity_of(protocol_player)
+            ):
                 self._add_protocol_link(native_player, protocol_player, protocol_domain)
                 # Check if linking succeeded (may be refused for duplicate domain)
                 if protocol_player.protocol_parent_id is not None:
@@ -1059,7 +1064,9 @@ class ProtocolLinkingMixin:
                 continue
 
             # Check by identifiers first
-            identifiers_match = self._identifiers_match(native_player, player, "")
+            same_device = identifiers_match(
+                self._identity_of(native_player), self._identity_of(player)
+            )
 
             # Also check if native player's ID is in the universal player's stored protocol list
             # This handles players that changed type (e.g., sendspin web players changed from
@@ -1071,7 +1078,7 @@ class ProtocolLinkingMixin:
 
             known_protocol_ids = set(self._get_known_protocol_ids(player))
 
-            if not identifiers_match and not player_id_in_protocols:
+            if not same_device and not player_id_in_protocols:
                 # The native's stored protocol list claims the wrapped protocols as well, unless
                 # it already owns a protocol of their domain, which makes that entry stale.
                 if known_protocol_ids.isdisjoint(
@@ -1900,143 +1907,29 @@ class ProtocolLinkingMixin:
         protocol_player.refresh_state()
         self._schedule_protocol_evaluation(protocol_player)
 
-    def _identifiers_match(
-        self, player_a: Player, player_b: Player, protocol_domain: str = ""
-    ) -> bool:
+    def _identity_of(self, player: Player) -> DeviceIdentity:
         """
-        Check if identifiers match between two players.
+        Return what a player reports about its device, for identifier matching.
 
-        Matching is done by comparing connection identifiers (MAC, serial, UUID).
-        As a last resort, IP address is used when at least one player has a
-        locally-administered MAC, indicating the device uses MAC randomization
-        and ARP could not resolve the real hardware address.
-
-        Invalid identifiers (e.g., 00:00:00:00:00:00 MAC addresses) are filtered out
-        to prevent false matches between unrelated devices.
+        :param player: The player to describe.
         """
-        identifiers_a = player_a.device_info.identifiers
-        identifiers_b = player_b.device_info.identifiers
-
-        # Receivers on one host share its IP and ARP MAC, so a differing AirPlay id rules out a match
-        airplay_id_a = identifiers_a.get(IdentifierType.AIRPLAY_ID)
-        airplay_id_b = identifiers_b.get(IdentifierType.AIRPLAY_ID)
-        if airplay_id_a and airplay_id_b and airplay_id_a.lower() != airplay_id_b.lower():
-            return False
-
-        # Check identifiers in order of reliability
-        # MAC_ADDRESS > SERIAL_NUMBER > UUID > CAST_UUID > AIRPLAY_ID
-        for conn_type in (
-            IdentifierType.MAC_ADDRESS,
-            IdentifierType.SERIAL_NUMBER,
-            IdentifierType.UUID,
-            IdentifierType.CAST_UUID,
-            IdentifierType.AIRPLAY_ID,
-        ):
-            val_a = identifiers_a.get(conn_type)
-            val_b = identifiers_b.get(conn_type)
-
-            if not val_a or not val_b:
-                continue
-
-            # Filter out invalid MAC addresses (00:00:00:00:00:00, ff:ff:ff:ff:ff:ff)
-            if conn_type == IdentifierType.MAC_ADDRESS:
-                if not is_valid_mac_address(val_a) or not is_valid_mac_address(val_b):
-                    self.logger.log(
-                        VERBOSE_LOG_LEVEL,
-                        "Skipping invalid MAC address for matching: %s=%s, %s=%s",
-                        player_a.display_name,
-                        val_a,
-                        player_b.display_name,
-                        val_b,
-                    )
-                    continue
-
-            # Normalize values for comparison
-            if conn_type == IdentifierType.MAC_ADDRESS:
-                # Use MAC normalization that handles locally-administered bit differences
-                # Some protocols (like AirPlay) report a locally-administered MAC variant
-                # where bit 1 of the first octet is set (e.g., 54:78:... vs 56:78:...)
-                val_a_norm = normalize_mac_for_matching(val_a)
-                val_b_norm = normalize_mac_for_matching(val_b)
-
-                # Direct match on current MAC
-                if val_a_norm == val_b_norm:
-                    return True
-
-                # Multi-MAC matching: also check original reported MACs.
-                # Devices with multiple interfaces (WiFi + Ethernet) may have ARP
-                # resolve one MAC while the protocol reports a different one.
-                macs_a = {val_a_norm}
-                macs_b = {val_b_norm}
-                reported_a = player_a.extra_data.get("reported_mac")
-                reported_b = player_b.extra_data.get("reported_mac")
-                if reported_a and is_valid_mac_address(reported_a):
-                    macs_a.add(normalize_mac_for_matching(reported_a))
-                if reported_b and is_valid_mac_address(reported_b):
-                    macs_b.add(normalize_mac_for_matching(reported_b))
-                if macs_a & macs_b:
-                    return True
-
-                # No MAC match - continue to next identifier type
-                continue
-
-            val_a_norm = val_a.lower().replace(":", "").replace("-", "")
-            val_b_norm = val_b.lower().replace(":", "").replace("-", "")
-
-            # Direct match
-            if val_a_norm == val_b_norm:
-                return True
-
-            # Special case: Sonos UUID matching with DLNA _MR suffix
-            # Sonos uses RINCON_xxx, DLNA uses RINCON_xxx_MR for Media Renderer
-            if conn_type == IdentifierType.UUID:
-                if val_b_norm.endswith("_mr") and val_b_norm[:-3] == val_a_norm:
-                    return True
-                if val_a_norm.endswith("_mr") and val_a_norm[:-3] == val_b_norm:
-                    return True
-
-        # Last resort: IP-based matching.
-        # Two players on the same IP are very likely the same physical device.
-        # This handles two cases:
-        # 1. MAC randomization: at least one player has no real MAC (LA or missing),
-        #    so ARP couldn't resolve a usable address.
-        # 2. Different MACs per protocol: some devices (e.g., Yamaha MusicCast) report
-        #    different valid globally-unique MACs per protocol (DLNA vs AirPlay differ
-        #    by 1 in the last octet). IP matching is safe here because two different
-        #    devices on a LAN cannot share the same IP simultaneously.
-        #    To avoid false positives between unrelated native players, this path
-        #    requires at least one player to be a protocol or universal player.
-        ip_a = identifiers_a.get(IdentifierType.IP_ADDRESS)
-        ip_b = identifiers_b.get(IdentifierType.IP_ADDRESS)
-        if ip_a and ip_b and ip_a == ip_b:
-            mac_a = identifiers_a.get(IdentifierType.MAC_ADDRESS)
-            mac_b = identifiers_b.get(IdentifierType.MAC_ADDRESS)
-            a_is_real = (
-                mac_a is not None
-                and is_valid_mac_address(mac_a)
-                and not is_locally_administered_mac(mac_a)
+        if player.provider.domain != "universal_player":
+            return DeviceIdentity(
+                identifiers=player.identifiers,
+                domains=frozenset({player.provider.domain}),
+                native=player.type != PlayerType.PROTOCOL,
             )
-            b_is_real = (
-                mac_b is not None
-                and is_valid_mac_address(mac_b)
-                and not is_locally_administered_mac(mac_b)
-            )
-            # Case 1: at least one player has no real hardware MAC
-            if not (a_is_real and b_is_real):
-                return True
-            # Case 2: both have real MACs but at least one is a protocol/universal player
-            a_is_protocol = (
-                player_a.type == PlayerType.PROTOCOL
-                or player_a.provider.domain == "universal_player"
-            )
-            b_is_protocol = (
-                player_b.type == PlayerType.PROTOCOL
-                or player_b.provider.domain == "universal_player"
-            )
-            if a_is_protocol or b_is_protocol:
-                return True
-
-        return False
+        # A wrapper stands for the protocols it holds: it reports their identifiers next to
+        # the ones it stored, and their domains also while they are away.
+        identifiers = set(player.identifiers)
+        for protocol_id in self._get_known_protocol_ids(player):
+            if protocol_player := self.get_player(protocol_id):
+                identifiers |= protocol_player.identifiers
+        return DeviceIdentity(
+            identifiers=frozenset(identifiers),
+            domains=frozenset(output.protocol_domain for output in player.output_protocols),
+            native=False,
+        )
 
     def _select_best_output_protocol(self, player: Player) -> tuple[Player, OutputProtocol | None]:
         """

@@ -61,11 +61,6 @@ ONE_S_UDN = "uuid:raumfeld-one-s-0003"
             "dlna",
             {IdentifierType.UUID: "uuid:gmrender-0001"},
             {IdentifierType.UUID: "uuid:gmrender-0002"},
-            marks=pytest.mark.xfail(
-                strict=True,
-                raises=AssertionError,
-                reason="phase 2 (#416): a differing UUID vetoes a match like an AirPlay id does",
-            ),
             id="uuid",
         ),
     ],

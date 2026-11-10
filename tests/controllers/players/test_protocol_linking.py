@@ -34,6 +34,7 @@ from music_assistant.constants import (
 )
 from music_assistant.controllers.config.migrations import migrate
 from music_assistant.controllers.players import PlayerController
+from music_assistant.controllers.players.matching import DeviceIdentity, identifiers_match
 from music_assistant.helpers.util import enrich_device_mac_address
 from music_assistant.models.player import DeviceInfo, LinkedOutputProtocol, Player
 from music_assistant.models.player_provider import PlayerProvider
@@ -273,478 +274,118 @@ def mock_mass() -> Iterator[MagicMock]:
             coro.close()
 
 
-class TestIdentifiersMatch:
-    """Tests for identifier matching logic."""
+class TestIdentityOf:
+    """Tests for what a player reports about its device to the identifier matcher."""
 
-    def test_mac_address_match(self, mock_mass: MagicMock) -> None:
-        """Test that MAC addresses match correctly."""
+    def test_native_player(self, mock_mass: MagicMock) -> None:
+        """A native player reports its identifiers, its own domain and that it is native."""
         controller = PlayerController(mock_mass)
-
-        provider = MockProvider("test")
-        player_a = MockPlayer(
-            provider,
-            "player_a",
-            "Player A",
-            identifiers={IdentifierType.MAC_ADDRESS: "AA:BB:CC:DD:EE:FF"},
-        )
-        player_b = MockPlayer(
-            provider,
-            "player_b",
-            "Player B",
-            identifiers={IdentifierType.MAC_ADDRESS: "aa:bb:cc:dd:ee:ff"},  # lowercase
+        player = MockPlayer(
+            MockProvider("sonos", mass=mock_mass),
+            "RINCON_000E58123456",
+            "Sonos",
+            identifiers={
+                IdentifierType.MAC_ADDRESS: "00:0E:58:12:34:56",
+                IdentifierType.UUID: "RINCON_000E58123456",
+            },
         )
 
-        assert controller._identifiers_match(player_a, player_b) is True
+        assert controller._identity_of(player) == DeviceIdentity(
+            identifiers=frozenset(
+                {
+                    (IdentifierType.MAC_ADDRESS, "00:0E:58:12:34:56"),
+                    (IdentifierType.UUID, "RINCON_000E58123456"),
+                }
+            ),
+            domains=frozenset({"sonos"}),
+            native=True,
+        )
 
-    def test_mac_address_no_match(self, mock_mass: MagicMock) -> None:
-        """Test that different MAC addresses don't match."""
+    def test_protocol_player(self, mock_mass: MagicMock) -> None:
+        """A protocol player is not the native protocol of its device."""
         controller = PlayerController(mock_mass)
-
-        provider = MockProvider("test")
-        player_a = MockPlayer(
-            provider,
-            "player_a",
-            "Player A",
-            identifiers={IdentifierType.MAC_ADDRESS: "AA:BB:CC:DD:EE:FF"},
-        )
-        player_b = MockPlayer(
-            provider,
-            "player_b",
-            "Player B",
-            identifiers={IdentifierType.MAC_ADDRESS: "11:22:33:44:55:66"},
+        player = MockPlayer(
+            MockProvider("airplay", mass=mock_mass),
+            "ap000e58123456",
+            "Speaker (AirPlay)",
+            player_type=PlayerType.PROTOCOL,
+            identifiers={IdentifierType.AIRPLAY_ID: "ap000e58123456"},
         )
 
-        assert controller._identifiers_match(player_a, player_b) is False
-
-    def test_invalid_mac_address_no_match(self, mock_mass: MagicMock) -> None:
-        """Test that an all-zero MAC is not identity and never matches across devices."""
-        controller = PlayerController(mock_mass)
-
-        provider = MockProvider("test")
-        player_a = MockPlayer(
-            provider,
-            "player_a",
-            "Player A",
-            identifiers={IdentifierType.MAC_ADDRESS: "00:00:00:00:00:00"},
-        )
-        player_b = MockPlayer(
-            provider,
-            "player_b",
-            "Player B",
-            identifiers={IdentifierType.MAC_ADDRESS: "00:00:00:00:00:00"},
+        assert controller._identity_of(player) == DeviceIdentity(
+            identifiers=frozenset({(IdentifierType.AIRPLAY_ID, "ap000e58123456")}),
+            domains=frozenset({"airplay"}),
+            native=False,
         )
 
-        assert controller._identifiers_match(player_a, player_b) is False
-
-    def test_mac_address_locally_administered_bit_match(self, mock_mass: MagicMock) -> None:
+    def test_universal_player(self, mock_mass: MagicMock) -> None:
         """
-        Test that MAC addresses differing only in locally-administered bit match.
+        A universal player reports for the protocols it holds.
 
-        Some protocols (like AirPlay) report a MAC with the locally-administered
-        bit set (bit 1 of first octet), while other protocols report the real
-        hardware MAC. These should match as the same device.
-
-        Example: 54:78:C9:E6:0D:A0 (hardware) vs 56:78:C9:E6:0D:A0 (AirPlay)
+        It reports their identifiers next to the ones it stored, so each of them stays its
+        device whichever UUID was stored last, and their domains also while they are away,
+        so a second renderer of one protocol on the host is told apart.
         """
         controller = PlayerController(mock_mass)
-
-        provider = MockProvider("test")
-        # Real hardware MAC (first byte 0x54 = 01010100, bit 1 = 0)
-        player_a = MockPlayer(
-            provider,
-            "player_a",
-            "WiiM Pro (DLNA)",
-            identifiers={IdentifierType.MAC_ADDRESS: "54:78:C9:E6:0D:A0"},
-        )
-        # AirPlay MAC with locally-administered bit set (first byte 0x56 = 01010110, bit 1 = 1)
-        player_b = MockPlayer(
-            provider,
-            "player_b",
-            "WiiM Pro (AirPlay)",
-            identifiers={IdentifierType.MAC_ADDRESS: "56:78:C9:E6:0D:A0"},
-        )
-
-        # These should match because they differ only in the locally-administered bit
-        assert controller._identifiers_match(player_a, player_b) is True
-
-    def test_mac_address_locally_administered_bit_different_devices_no_match(
-        self, mock_mass: MagicMock
-    ) -> None:
-        """
-        Test that different devices with locally-administered MACs don't match.
-
-        Only the locally-administered bit should be ignored, not other differences.
-        """
-        controller = PlayerController(mock_mass)
-
-        provider = MockProvider("test")
-        player_a = MockPlayer(
-            provider,
-            "player_a",
-            "Device A",
-            identifiers={IdentifierType.MAC_ADDRESS: "54:78:C9:E6:0D:A0"},
-        )
-        player_b = MockPlayer(
-            provider,
-            "player_b",
-            "Device B",
-            identifiers={IdentifierType.MAC_ADDRESS: "56:78:C9:E6:0D:A1"},  # Different last byte
-        )
-
-        # These should NOT match - they differ in more than just the locally-administered bit
-        assert controller._identifiers_match(player_a, player_b) is False
-
-    def test_ip_address_fallback_with_no_mac(self, mock_mass: MagicMock) -> None:
-        """Test that same IP matches when no MAC is available (ARP couldn't help)."""
-        controller = PlayerController(mock_mass)
-
-        provider = MockProvider("test")
-        player_a = MockPlayer(
-            provider,
-            "player_a",
-            "Player A",
-            identifiers={IdentifierType.IP_ADDRESS: "192.168.1.100"},
-        )
-        player_b = MockPlayer(
-            provider,
-            "player_b",
-            "Player B",
-            identifiers={IdentifierType.IP_ADDRESS: "192.168.1.100"},
-        )
-
-        # Same IP with no MAC at all = match (likely same device, ARP unavailable)
-        assert controller._identifiers_match(player_a, player_b) is True
-
-    def test_sonos_uuid_dlna_suffix_match(self, mock_mass: MagicMock) -> None:
-        """Test Sonos UUID matching with DLNA _MR suffix."""
-        controller = PlayerController(mock_mass)
-
-        provider = MockProvider("test")
-        # Sonos native player
-        player_a = MockPlayer(
-            provider,
-            "player_a",
-            "Sonos Player",
-            identifiers={IdentifierType.UUID: "RINCON_000E58123456"},
-        )
-        # DLNA player with _MR suffix
-        player_b = MockPlayer(
-            provider,
-            "player_b",
-            "DLNA Player",
-            identifiers={IdentifierType.UUID: "RINCON_000E58123456_MR"},
-        )
-
-        assert controller._identifiers_match(player_a, player_b) is True
-
-    def test_no_identifiers_no_match(self, mock_mass: MagicMock) -> None:
-        """Test that players without identifiers don't match."""
-        controller = PlayerController(mock_mass)
-
-        provider = MockProvider("test")
-        player_a = MockPlayer(provider, "player_a", "Player A")
-        player_b = MockPlayer(provider, "player_b", "Player B")
-
-        assert controller._identifiers_match(player_a, player_b) is False
-
-    def test_cast_uuid_match(self, mock_mass: MagicMock) -> None:
-        """
-        Test that CAST_UUID identifiers match for cross-protocol linking.
-
-        When a Chromecast device has no valid MAC (non-Google devices like SEI Robotics),
-        the CAST_UUID identifier allows matching the Chromecast player with its
-        Sendspin bridge player.
-        """
-        controller = PlayerController(mock_mass)
-
-        provider = MockProvider("test")
-        # Chromecast player with UUID and CAST_UUID but no MAC
-        player_a = MockPlayer(
-            provider,
-            "player_a",
-            "Android TV (Cast)",
-            player_type=PlayerType.PROTOCOL,
-            identifiers={
-                IdentifierType.UUID: "88ef6168-67d7-3d08-fae8-b1b1709c1ed7",
-                IdentifierType.CAST_UUID: "88ef6168-67d7-3d08-fae8-b1b1709c1ed7",
-                IdentifierType.IP_ADDRESS: "192.168.1.228",
+        mock_mass.players = controller
+        _wire_nested_config(
+            mock_mass,
+            {
+                CONF_PLAYERS: {
+                    "up_tv": {"values": {"linked_protocol_ids": ["cast_tv", "dlna_tv", "ap_tv"]}},
+                    "cast_tv": {"provider": "chromecast--one"},
+                    "dlna_tv": {"provider": "dlna--one"},
+                    "ap_tv": {"provider": "airplay--one"},
+                }
             },
         )
-        # Sendspin bridge player with only MAC and CAST_UUID (no UUID, no IP)
-        player_b = MockPlayer(
-            provider,
-            "player_b",
-            "Android TV (Sendspin)",
+        tv = {
+            IdentifierType.MAC_ADDRESS: "54:78:C9:E6:0D:A0",
+            IdentifierType.IP_ADDRESS: "192.168.1.60",
+        }
+        universal = _create_universal_player(
+            mock_mass,
+            "up_tv",
+            "TV",
+            protocol_player_ids=["cast_tv", "dlna_tv", "ap_tv"],
+            identifiers={**tv, IdentifierType.UUID: "dlna-udn"},
+        )
+        cast = MockPlayer(
+            MockProvider("chromecast", mass=mock_mass),
+            "cast_tv",
+            "TV (Cast)",
             player_type=PlayerType.PROTOCOL,
-            identifiers={
-                IdentifierType.MAC_ADDRESS: "D4:CF:F9:D9:DA:FD",
-                IdentifierType.CAST_UUID: "88ef6168-67d7-3d08-fae8-b1b1709c1ed7",
-            },
+            identifiers={**tv, IdentifierType.UUID: "cast-uuid"},
         )
-
-        # Should match via CAST_UUID even though they share no MAC, UUID, or IP
-        assert controller._identifiers_match(player_a, player_b) is True
-
-    def test_cast_uuid_no_match(self, mock_mass: MagicMock) -> None:
-        """Test that different CAST_UUIDs don't match."""
-        controller = PlayerController(mock_mass)
-
-        provider = MockProvider("test")
-        player_a = MockPlayer(
-            provider,
-            "player_a",
-            "Device A",
+        dlna = MockPlayer(
+            MockProvider("dlna", mass=mock_mass),
+            "dlna_tv",
+            "TV (DLNA)",
             player_type=PlayerType.PROTOCOL,
-            identifiers={IdentifierType.CAST_UUID: "88ef6168-67d7-3d08-fae8-b1b1709c1ed7"},
+            identifiers={**tv, IdentifierType.UUID: "dlna-udn"},
         )
-        player_b = MockPlayer(
-            provider,
-            "player_b",
-            "Device B",
+        other_renderer = MockPlayer(
+            MockProvider("dlna", mass=mock_mass),
+            "dlna_other",
+            "Other renderer on the TV",
             player_type=PlayerType.PROTOCOL,
-            identifiers={IdentifierType.CAST_UUID: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"},
+            identifiers={**tv, IdentifierType.UUID: "other-udn"},
         )
+        # the AirPlay protocol is away: only its stored config names its domain
+        controller._players = {"up_tv": universal, "cast_tv": cast, "dlna_tv": dlna}
 
-        assert controller._identifiers_match(player_a, player_b) is False
+        identity = controller._identity_of(universal)
 
-    def test_airplay_id_match(self, mock_mass: MagicMock) -> None:
-        """
-        Test that AIRPLAY_ID identifiers match for cross-protocol linking.
-
-        When an AirPlay device's MAC has locally-administered bit differences,
-        AIRPLAY_ID provides a reliable secondary match path between the AirPlay
-        player and its Sendspin bridge player.
-        """
-        controller = PlayerController(mock_mass)
-
-        provider = MockProvider("test")
-        # AirPlay player with its player_id as AIRPLAY_ID
-        player_a = MockPlayer(
-            provider,
-            "player_a",
-            "Apple TV (AirPlay)",
-            player_type=PlayerType.PROTOCOL,
-            identifiers={
-                IdentifierType.MAC_ADDRESS: "54:78:1A:D4:FF:44",
-                IdentifierType.AIRPLAY_ID: "ap54781ad4ff44",
-                IdentifierType.IP_ADDRESS: "192.168.1.50",
-            },
+        assert identity == DeviceIdentity(
+            identifiers=frozenset(
+                {*tv.items(), (IdentifierType.UUID, "dlna-udn"), (IdentifierType.UUID, "cast-uuid")}
+            ),
+            domains=frozenset({"chromecast", "dlna", "airplay"}),
+            native=False,
         )
-        # Sendspin bridge player with MAC and AIRPLAY_ID
-        player_b = MockPlayer(
-            provider,
-            "player_b",
-            "Apple TV (Sendspin)",
-            player_type=PlayerType.PROTOCOL,
-            identifiers={
-                IdentifierType.MAC_ADDRESS: "54:78:1A:D4:FF:44",
-                IdentifierType.AIRPLAY_ID: "ap54781ad4ff44",
-            },
-        )
-
-        # Should match via both MAC and AIRPLAY_ID
-        assert controller._identifiers_match(player_a, player_b) is True
-
-    def test_airplay_id_no_match(self, mock_mass: MagicMock) -> None:
-        """Test that different AIRPLAY_IDs don't match."""
-        controller = PlayerController(mock_mass)
-
-        provider = MockProvider("test")
-        player_a = MockPlayer(
-            provider,
-            "player_a",
-            "Device A",
-            player_type=PlayerType.PROTOCOL,
-            identifiers={IdentifierType.AIRPLAY_ID: "ap54781ad4ff44"},
-        )
-        player_b = MockPlayer(
-            provider,
-            "player_b",
-            "Device B",
-            player_type=PlayerType.PROTOCOL,
-            identifiers={IdentifierType.AIRPLAY_ID: "apaabbccddeeff"},
-        )
-
-        assert controller._identifiers_match(player_a, player_b) is False
-
-    def test_airplay_id_mismatch_blocks_ip_fallback(self, mock_mass: MagicMock) -> None:
-        """Test that AirPlay receivers sharing one IP with LA MACs don't match."""
-        controller = PlayerController(mock_mass)
-
-        provider = MockProvider("airplay")
-        player_a = MockPlayer(
-            provider,
-            "ap02a82cf96025",
-            "Receiver A",
-            player_type=PlayerType.PROTOCOL,
-            identifiers={
-                IdentifierType.MAC_ADDRESS: "02:A8:2C:F9:60:25",
-                IdentifierType.IP_ADDRESS: "192.168.1.117",
-                IdentifierType.AIRPLAY_ID: "ap02a82cf96025",
-            },
-        )
-        player_b = MockPlayer(
-            provider,
-            "ap5ab35862ec6c",
-            "Receiver B",
-            player_type=PlayerType.PROTOCOL,
-            identifiers={
-                IdentifierType.MAC_ADDRESS: "5A:B3:58:62:EC:6C",
-                IdentifierType.IP_ADDRESS: "192.168.1.117",
-                IdentifierType.AIRPLAY_ID: "ap5ab35862ec6c",
-            },
-        )
-
-        assert controller._identifiers_match(player_a, player_b) is False
-
-    def test_ip_fallback_with_la_mac(self, mock_mass: MagicMock) -> None:
-        """Test IP fallback matching when one player has a locally-administered MAC."""
-        controller = PlayerController(mock_mass)
-
-        provider = MockProvider("test")
-        player_a = MockPlayer(
-            provider,
-            "player_a",
-            "AirPlay Device",
-            player_type=PlayerType.PROTOCOL,
-            identifiers={
-                IdentifierType.MAC_ADDRESS: "C0:F5:35:7B:6D:A0",
-                IdentifierType.IP_ADDRESS: "192.168.1.48",
-            },
-        )
-        player_b = MockPlayer(
-            provider,
-            "player_b",
-            "DLNA Device",
-            player_type=PlayerType.PROTOCOL,
-            identifiers={
-                # Locally-administered MAC from ARP (device uses MAC randomization)
-                IdentifierType.MAC_ADDRESS: "02:4E:52:A1:BC:6B",
-                IdentifierType.IP_ADDRESS: "192.168.1.48",
-            },
-        )
-
-        assert controller._identifiers_match(player_a, player_b) is True
-
-    def test_ip_fallback_with_missing_mac(self, mock_mass: MagicMock) -> None:
-        """Test IP fallback matching when one player has no MAC at all."""
-        controller = PlayerController(mock_mass)
-
-        provider = MockProvider("test")
-        player_a = MockPlayer(
-            provider,
-            "player_a",
-            "AirPlay Device",
-            player_type=PlayerType.PROTOCOL,
-            identifiers={
-                IdentifierType.MAC_ADDRESS: "C0:F5:35:7B:6D:A0",
-                IdentifierType.IP_ADDRESS: "192.168.1.48",
-            },
-        )
-        player_b = MockPlayer(
-            provider,
-            "player_b",
-            "DLNA Device",
-            player_type=PlayerType.PROTOCOL,
-            identifiers={
-                IdentifierType.IP_ADDRESS: "192.168.1.48",
-            },
-        )
-
-        assert controller._identifiers_match(player_a, player_b) is True
-
-    def test_ip_fallback_protocol_players_with_real_macs(self, mock_mass: MagicMock) -> None:
-        """
-        Test that IP matches protocol players even when both have real MACs.
-
-        Some devices (e.g., Yamaha MusicCast) report different valid globally-unique
-        MACs per protocol (DLNA vs AirPlay differ by 1 in the last octet).
-        IP matching is safe here because two devices on a LAN can't share an IP.
-        """
-        controller = PlayerController(mock_mass)
-
-        provider = MockProvider("test")
-        player_a = MockPlayer(
-            provider,
-            "player_a",
-            "Device A",
-            player_type=PlayerType.PROTOCOL,
-            identifiers={
-                IdentifierType.MAC_ADDRESS: "C0:F5:35:7B:6D:A0",
-                IdentifierType.IP_ADDRESS: "192.168.1.48",
-            },
-        )
-        player_b = MockPlayer(
-            provider,
-            "player_b",
-            "Device B",
-            player_type=PlayerType.PROTOCOL,
-            identifiers={
-                # A8 first octet = 10101000, LA bit (0x02) is clear -> real MAC
-                IdentifierType.MAC_ADDRESS: "A8:BB:CC:DD:EE:FF",
-                IdentifierType.IP_ADDRESS: "192.168.1.48",
-            },
-        )
-
-        # Protocol players with real MACs on same IP -> match (same physical device)
-        assert controller._identifiers_match(player_a, player_b) is True
-
-    def test_ip_no_fallback_native_players_with_real_macs(self, mock_mass: MagicMock) -> None:
-        """Test that IP alone does NOT match two native PLAYER-type players with real MACs."""
-        controller = PlayerController(mock_mass)
-
-        provider = MockProvider("test")
-        player_a = MockPlayer(
-            provider,
-            "player_a",
-            "Device A",
-            player_type=PlayerType.PLAYER,
-            identifiers={
-                IdentifierType.MAC_ADDRESS: "C0:F5:35:7B:6D:A0",
-                IdentifierType.IP_ADDRESS: "192.168.1.48",
-            },
-        )
-        player_b = MockPlayer(
-            provider,
-            "player_b",
-            "Device B",
-            player_type=PlayerType.PLAYER,
-            identifiers={
-                IdentifierType.MAC_ADDRESS: "A8:BB:CC:DD:EE:FF",
-                IdentifierType.IP_ADDRESS: "192.168.1.48",
-            },
-        )
-
-        # Two native players with real MACs that don't match - IP should NOT be used
-        assert controller._identifiers_match(player_a, player_b) is False
-
-    def test_ip_no_fallback_different_ips(self, mock_mass: MagicMock) -> None:
-        """Test that different IPs don't match even with LA MAC."""
-        controller = PlayerController(mock_mass)
-
-        provider = MockProvider("test")
-        player_a = MockPlayer(
-            provider,
-            "player_a",
-            "Device A",
-            player_type=PlayerType.PROTOCOL,
-            identifiers={
-                IdentifierType.MAC_ADDRESS: "C0:F5:35:7B:6D:A0",
-                IdentifierType.IP_ADDRESS: "192.168.1.48",
-            },
-        )
-        player_b = MockPlayer(
-            provider,
-            "player_b",
-            "Device B",
-            player_type=PlayerType.PROTOCOL,
-            identifiers={
-                IdentifierType.MAC_ADDRESS: "02:4E:52:A1:BC:6B",
-                IdentifierType.IP_ADDRESS: "192.168.1.99",
-            },
-        )
-
-        assert controller._identifiers_match(player_a, player_b) is False
+        assert identifiers_match(identity, controller._identity_of(cast))
+        assert identifiers_match(identity, controller._identity_of(dlna))
+        assert not identifiers_match(identity, controller._identity_of(other_renderer))
 
 
 class TestProtocolPlayerDetection:
@@ -5718,7 +5359,9 @@ class TestEnrichAndMatchIntegration:
         )
 
         # Identifiers match via AIRPLAY_ID
-        assert controller._identifiers_match(airplay_player, sendspin_player, "sendspin") is True
+        assert identifiers_match(
+            controller._identity_of(airplay_player), controller._identity_of(sendspin_player)
+        )
 
     @pytest.mark.asyncio
     async def test_wiim_device_mac_replaced_still_matches(self, mock_mass: MagicMock) -> None:
@@ -5768,7 +5411,9 @@ class TestEnrichAndMatchIntegration:
         )
 
         # Should match by MAC
-        assert controller._identifiers_match(airplay_player, dlna_player, "dlna") is True
+        assert identifiers_match(
+            controller._identity_of(airplay_player), controller._identity_of(dlna_player)
+        )
 
 
 class TestDuplicateProtocolPrevention:
@@ -9769,7 +9414,9 @@ class TestSiblingProtocolMatching:
         controller._players["spb_000678747b16"] = spb_player
 
         # Direct identifier match would fail (HEOS has no identifiers)
-        assert controller._identifiers_match(heos_player, spb_player, "sendspin") is False
+        assert not identifiers_match(
+            controller._identity_of(heos_player), controller._identity_of(spb_player)
+        )
 
         # Sibling matching should succeed through AirPlay's identifiers
         assert controller._match_via_linked_protocols(heos_player, spb_player, "sendspin") is True
@@ -10567,7 +10214,9 @@ class TestMultiMACMatching:
             identifiers={IdentifierType.MAC_ADDRESS: "AA:BB:CC:DD:EE:02"},
         )
 
-        assert controller._identifiers_match(player_a, player_b) is True
+        assert identifiers_match(
+            controller._identity_of(player_a), controller._identity_of(player_b)
+        )
 
     def test_match_on_reported_mac_reverse(self, mock_mass: MagicMock) -> None:
         """Match when player_b's reported MAC matches player_a's ARP MAC."""
@@ -10589,7 +10238,9 @@ class TestMultiMACMatching:
         )
         player_b.extra_data["reported_mac"] = "AA:BB:CC:DD:EE:02"
 
-        assert controller._identifiers_match(player_a, player_b) is True
+        assert identifiers_match(
+            controller._identity_of(player_a), controller._identity_of(player_b)
+        )
 
     def test_no_match_when_both_macs_differ(self, mock_mass: MagicMock) -> None:
         """No match when all MACs differ between players."""
@@ -10612,7 +10263,9 @@ class TestMultiMACMatching:
         )
         player_b.extra_data["reported_mac"] = "AA:BB:CC:DD:EE:04"
 
-        assert controller._identifiers_match(player_a, player_b) is False
+        assert not identifiers_match(
+            controller._identity_of(player_a), controller._identity_of(player_b)
+        )
 
     def test_match_reported_mac_with_la_bit_normalization(self, mock_mass: MagicMock) -> None:
         """Reported MAC matching also applies LA bit normalization."""
@@ -10636,7 +10289,42 @@ class TestMultiMACMatching:
             identifiers={IdentifierType.MAC_ADDRESS: "54:78:C9:E6:0D:A0"},  # real MAC
         )
 
-        assert controller._identifiers_match(player_a, player_b) is True
+        assert identifiers_match(
+            controller._identity_of(player_a), controller._identity_of(player_b)
+        )
+
+    def test_match_on_arp_mac_while_the_provider_reports_its_own(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """A player keeps the ARP-resolved MAC when its provider reports its own MAC again."""
+        controller = PlayerController(mock_mass)
+        _wire_nested_config(
+            mock_mass,
+            {CONF_PLAYERS: {"player_a": {"values": {"cached_arp_mac": "AA:BB:CC:DD:EE:02"}}}},
+        )
+
+        player_a = MockPlayer(
+            MockProvider("test", mass=mock_mass),
+            "player_a",
+            "Player A",
+            identifiers={IdentifierType.MAC_ADDRESS: "AA:BB:CC:DD:EE:01"},
+        )
+        player_b = MockPlayer(
+            MockProvider("other", mass=mock_mass),
+            "player_b",
+            "Player B",
+            identifiers={IdentifierType.MAC_ADDRESS: "AA:BB:CC:DD:EE:02"},
+        )
+
+        assert player_a.identifiers == frozenset(
+            {
+                (IdentifierType.MAC_ADDRESS, "AA:BB:CC:DD:EE:01"),
+                (IdentifierType.MAC_ADDRESS, "AA:BB:CC:DD:EE:02"),
+            }
+        )
+        assert identifiers_match(
+            controller._identity_of(player_a), controller._identity_of(player_b)
+        )
 
 
 class TestProtocolParentIdPersistence:
