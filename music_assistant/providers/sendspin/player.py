@@ -1377,6 +1377,8 @@ class SendspinPlayer(SendspinBasePlayer):
     _published_item: tuple[str, str | None] | None = None
     # The metadata last published, also while it is still scheduled to take effect.
     _published_metadata: Metadata | None = None
+    # Server-clock time that metadata takes effect at, when it was scheduled ahead.
+    _published_effective_us: int | None = None
     playback_session: SendspinPlaybackSession
     static_delay_default_ms: int = DEFAULT_SENDSPIN_STATIC_DELAY
     # HA media_player entity announcements are relayed to (ESPHome-backed devices)
@@ -1632,6 +1634,9 @@ class SendspinPlayer(SendspinBasePlayer):
     async def stop(self) -> None:
         """Stop command."""
         self.logger.debug("Received STOP command on player %s", self.display_name)
+        # A new item scheduled for its first audio is not shown yet: the group stop below
+        # freezes what is in effect (the previous item) and drops the scheduled one.
+        update_pending = self._metadata_update_pending()
         self.mark_stop_called()
         self._abort_pending_cast_start()
         self._attr_current_media = None
@@ -1670,12 +1675,13 @@ class SendspinPlayer(SendspinBasePlayer):
             # The cancel is what ends the stream on that path, so deliver the
             # notify again; bridges already torn down ignore it.
             self._notify_bridges_explicit_stop(self.api.group.clients)
-        # The stop cancelled any push still loading, which may have left the previous item.
+        # The stop cancelled any push still loading, or a scheduled update, either of which
+        # may have left the previous item.
         if (
             self.synced_to is None
             and self._published_item is not None
             and (media := self.state.current_media) is not None
-            and (media.uri, media.queue_item_id) != self._published_item
+            and ((media.uri, media.queue_item_id) != self._published_item or update_pending)
         ):
             self.mass.create_task(
                 self.send_current_media_metadata(),
@@ -2037,6 +2043,7 @@ class SendspinPlayer(SendspinBasePlayer):
                 metadata_role.set_metadata(metadata, timestamp_us=timestamp_us)
                 self._published_item = (current_media.uri, current_media.queue_item_id)
                 self._published_metadata = metadata
+                self._published_effective_us = timestamp_us
 
         if not self._metadata_publish_allowed(generation):
             return
@@ -2564,6 +2571,13 @@ class SendspinPlayer(SendspinBasePlayer):
             self.logger.debug("Skipping undecodable artwork: %s", err)
             return None
 
+    def _metadata_update_pending(self) -> bool:
+        """Return whether the metadata last published is still scheduled to take effect."""
+        if self._published_effective_us is None:
+            return False
+        provider = cast("SendspinProvider", self.provider)
+        return self._published_effective_us > provider.server_api.clock.now_us()
+
     def _metadata_publish_allowed(self, generation: int) -> bool:
         """Return whether a metadata task still owns the current snapshot."""
         return generation == self._metadata_generation and not self._content_takeover_pending
@@ -2626,6 +2640,7 @@ class SendspinPlayer(SendspinBasePlayer):
         self.last_sent_artist_artwork_url = None
         self._published_item = None
         self._published_metadata = None
+        self._published_effective_us = None
         self._last_beat_queue_item_id = None
         self._last_beat_anchor_us = None
 
@@ -2895,6 +2910,7 @@ class SendspinPlayer(SendspinBasePlayer):
                 return
             metadata_role.set_metadata(metadata, timestamp_us=timestamp_us)
             self._published_metadata = metadata
+            self._published_effective_us = timestamp_us
 
     async def _send_beat_schedule(
         self,
