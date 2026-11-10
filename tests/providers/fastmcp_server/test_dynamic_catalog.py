@@ -2088,6 +2088,48 @@ async def test_invocation_rejects_targets_outside_user_filters(
     assert "blocked-target" not in repr(audit_records)
 
 
+async def test_invocation_applies_user_filters_to_the_player_behind_a_legacy_id() -> None:
+    """A legacy id reaches its player for a user who may use that player, and for no one else."""
+    calls: list[str] = []
+
+    async def get_player(player_id: str) -> str:
+        calls.append(player_id)
+        return player_id
+
+    user = SimpleNamespace(
+        user_id="u1",
+        username="limited",
+        enabled=True,
+        role="user",
+        player_filter=["kitchen"],
+        provider_filter=[],
+    )
+    adapter = _real_adapter(_handler("players/get", get_player, "players.read"), user=user)
+    legacy_ids = {"old-kitchen": "kitchen", "old-bedroom": "bedroom"}
+    adapter.mass.players.resolve_player_id = lambda player_id: legacy_ids.get(player_id, player_id)
+
+    result = await adapter.call(
+        "ma_api:players/get",
+        {"player_id": "old-kitchen"},
+        response_mode="compact",
+        fields=None,
+        max_items=None,
+        ctx=MagicMock(),
+    )
+    with pytest.raises(ToolError, match=r"\[not_found_or_forbidden\]"):
+        await adapter.call(
+            "ma_api:players/get",
+            {"player_id": "old-bedroom"},
+            response_mode="compact",
+            fields=None,
+            max_items=None,
+            ctx=MagicMock(),
+        )
+
+    assert result["data"] == "kitchen"
+    assert calls == ["kitchen"]
+
+
 async def test_embedded_provider_write_is_denied_before_execution() -> None:
     """A provider identity inside a media mapping is checked before a write runs."""
     calls: list[object] = []

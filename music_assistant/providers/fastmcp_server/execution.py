@@ -372,7 +372,8 @@ class DynamicAPIAdapter:
         if entry.profile is not None:
             for excluded_name in entry.profile.excluded_arguments:
                 parsed.pop(excluded_name, None)
-        # resolved up front, so the authorization below checks the players the command reaches
+        # legacy player ids are resolved here, ahead of the handler call, so the
+        # authorization below checks the players the command reaches
         from music_assistant.helpers.api import resolve_player_ids  # noqa: PLC0415
 
         parsed = resolve_player_ids(self.mass, parsed)
@@ -889,9 +890,7 @@ class DynamicAPIAdapter:
                 variable = auth_middleware.impersonated_user
                 context_tokens.append((variable, variable.set(impersonated_user)))
             with confirmation_scope:
-                from music_assistant.helpers.api import run_api_command  # noqa: PLC0415
-
-                result = run_api_command(self.mass, entry.handler, parsed)
+                result = entry.handler.target(**parsed)
                 if inspect.isawaitable(result):
                     result = await result
                 if inspect.isasyncgen(result):

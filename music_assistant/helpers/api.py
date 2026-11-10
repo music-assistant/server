@@ -272,24 +272,22 @@ def run_api_command(
     mass: MusicAssistant, handler: APICommandHandler, args: Mapping[str, Any]
 ) -> Any:
     """
-    Call the handler of an API command and return what it returns.
-
-    A command reaches a player by any of its legacy ids as well: see resolve_player_ids.
+    Call the handler of an API command, with the legacy player ids in its arguments resolved.
 
     :param mass: The MusicAssistant instance.
     :param handler: The handler of the command.
     :param args: The arguments of the command, by name.
-    :return: The handler's own return value, which may be a coroutine or an async generator.
+    :return: What the handler returns, which may be a coroutine or an async generator.
     """
     return handler.target(**resolve_player_ids(mass, args))
 
 
 def resolve_player_ids(mass: MusicAssistant, args: Mapping[str, Any]) -> dict[str, Any]:
     """
-    Return the arguments of an API command with the player ids in them resolved.
+    Return the arguments of an API command with the legacy player ids in them resolved.
 
-    Every legacy id of a player in the arguments named in PLAYER_ID_ARGUMENTS is replaced
-    by the id of that player.
+    A player keeps answering to its legacy ids: in the arguments named in
+    PLAYER_ID_ARGUMENTS, each of them is replaced by the id of its player.
 
     :param mass: The MusicAssistant instance.
     :param args: The arguments of the command, by name.

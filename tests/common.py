@@ -336,6 +336,7 @@ def bare_player_controller() -> PlayerController:
     players = PlayerController.__new__(PlayerController)
     players._player_command_locks = {}
     players._players = {}
+    players._legacy_ids = {}
     players._task_held_locks = weakref.WeakKeyDictionary()
     players.logger = MagicMock()
     return players
