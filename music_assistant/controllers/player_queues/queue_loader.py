@@ -949,15 +949,7 @@ class QueueLoaderMixin(_PlayerQueuesBase):
 
                 # handle default enqueue option if needed
                 if option is None:
-                    # Radio + AudioSource share a single "live_sources" enqueue default —
-                    # both are live infinite streams where REPLACE is almost always the
-                    # right semantic. Other media types use their per-type config key.
-                    if media_item.media_type in (MediaType.RADIO, MediaType.AUDIO_SOURCE):
-                        config_key = CONF_DEFAULT_ENQUEUE_OPTION_LIVE_SOURCES
-                    else:
-                        config_key = f"default_enqueue_option_{media_item.media_type.value}"
-                    config_value = self.get_config_value(config_key, return_type=str)
-                    option = QueueOption(config_value)
+                    option = self._default_enqueue_option(media_item.media_type)
                     # settled from the resolved option for the same reason as the reset below
                     already_dynamic = queue.is_dynamic and option in (
                         QueueOption.ADD,
@@ -1198,6 +1190,21 @@ class QueueLoaderMixin(_PlayerQueuesBase):
         if (instance := self.mass.get_provider(provider)) is None:
             return None
         return (instance.instance_id, item_id)
+
+    def _default_enqueue_option(self, media_type: MediaType) -> QueueOption:
+        """
+        Return the enqueue option a play request of the given media type uses when it names none.
+
+        :param media_type: The media type of the (first) requested item.
+        """
+        # Radio + AudioSource share a single "live_sources" enqueue default —
+        # both are live infinite streams where REPLACE is almost always the
+        # right semantic. Other media types use their per-type config key.
+        if media_type in (MediaType.RADIO, MediaType.AUDIO_SOURCE):
+            config_key = CONF_DEFAULT_ENQUEUE_OPTION_LIVE_SOURCES
+        else:
+            config_key = f"default_enqueue_option_{media_type.value}"
+        return QueueOption(self.get_config_value(config_key, return_type=str))
 
     async def _enter_dynamic_mode(self, queue_id: str, option: QueueOption | None) -> None:
         """

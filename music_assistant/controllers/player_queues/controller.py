@@ -16,6 +16,7 @@ from __future__ import annotations
 import asyncio
 import random
 import time
+from contextlib import suppress
 from dataclasses import replace
 from typing import TYPE_CHECKING, Any, Final, cast
 
@@ -58,6 +59,7 @@ from music_assistant_models.player_queue import PlayerQueue
 
 from music_assistant.constants import (
     ATTR_ANNOUNCEMENT_IN_PROGRESS,
+    CONF_PLAY_MEDIA_OVERRIDES_GROUP,
     MASS_LOGO_ONLINE,
     PLAYLIST_MEDIA_TYPES,
 )
@@ -766,6 +768,7 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         if (source_uri := await _resolve_audio_source_request(media)) is not None:
             await self.mass.players.select_source(queue_id, source_uri)
             return
+        queue_id = await self._get_play_media_queue_id(queue_id, media, option)
         if (
             option not in (QueueOption.ADD, QueueOption.NEXT, QueueOption.REPLACE_NEXT)
             and (player := self.mass.players.get_player(queue_id)) is not None
@@ -2243,6 +2246,64 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         ):
             msg = f"{current_user.username} does not have access to queue {queue_id}"
             raise InsufficientPermissions(msg)
+
+    async def _get_play_media_queue_id(
+        self,
+        queue_id: str,
+        media: MediaItemType | ItemMapping | str | list[MediaItemType | ItemMapping | str],
+        option: QueueOption | None,
+    ) -> str:
+        """
+        Return the queue a play request naming the given queue is handled on.
+
+        A player that is synced to another player or captured by a group plays the queue of
+        that owner. Media added to what it plays goes to that queue, and so does new content,
+        unless the player's play_media_overrides_group setting takes it out of the group to
+        play the content on its own queue.
+
+        :param queue_id: The queue the play request names.
+        :param media: The media of the play request.
+        :param option: The enqueue option of the play request, None for the default.
+        """
+        if (player := self.mass.players.get_player(queue_id)) is None:
+            return queue_id
+        owner = self.mass.players._resolve_playback_owner(player)
+        if owner is player or self.get(owner.player_id) is None:
+            return queue_id
+        if option is None and (option := await self._get_default_play_option(media)) is None:
+            return queue_id
+        if option in (QueueOption.PLAY, QueueOption.REPLACE) and bool(
+            self.mass.config.get_raw_player_config_value(
+                player.player_id, CONF_PLAY_MEDIA_OVERRIDES_GROUP, True
+            )
+        ):
+            return queue_id
+        self.logger.info(
+            "Player %s is synced or grouped, its play request goes to the queue of %s",
+            player.display_name,
+            owner.display_name,
+        )
+        return owner.player_id
+
+    async def _get_default_play_option(
+        self,
+        media: MediaItemType | ItemMapping | str | list[MediaItemType | ItemMapping | str],
+    ) -> QueueOption | None:
+        """
+        Return the enqueue option a play request that names none uses.
+
+        :param media: The media of the play request.
+        :return: The option of the first item with a known media type, None when there is none.
+        """
+        for entry in media if isinstance(media, list) else [media]:
+            media_type = await _media_type(entry)
+            if media_type == MediaType.UNKNOWN and isinstance(entry, str):
+                # a plain url or file only has a media type once it is resolved
+                with suppress(MusicAssistantError):
+                    media_type = (await self.mass.music.get_item_by_uri(entry)).media_type
+            if media_type != MediaType.UNKNOWN:
+                return self._default_enqueue_option(media_type)
+        return None
 
     @handle_play_action(switched_off=SwitchedOffAction.RUN)
     async def _handle_stop(self, queue_id: str) -> None:
