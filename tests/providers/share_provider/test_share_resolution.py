@@ -10,6 +10,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from music_assistant_models.enums import ExternalID, MediaType, ProviderType
 from music_assistant_models.errors import (
+    MediaNotFoundError,
     ProviderUnavailableError,
 )
 from music_assistant_models.media_items import (
@@ -28,6 +29,203 @@ from music_assistant.providers.share_provider import (
 )
 
 from .helpers import BARCODE, ISRC, _core_match, _mass, _provider, _track
+
+
+@pytest.mark.parametrize("media_type", [MediaType.ALBUM, MediaType.ARTIST])
+@pytest.mark.parametrize("allow_search", [False, True])
+async def test_resolve_uses_visible_provider_url_before_search(
+    media_type: MediaType, allow_search: bool
+) -> None:
+    """Exact provider links resolve without a catalog search, including ID-only requests."""
+    provider = _provider()
+    mass = _mass(provider)
+    mass.music.get_visible_provider.return_value = SimpleNamespace(
+        instance_id="tidal--visible", available=True, type=ProviderType.MUSIC
+    )
+    item_class = Album if media_type == MediaType.ALBUM else Artist
+    item = item_class(
+        item_id="123", provider="tidal--visible", name="Shared item", provider_mappings=set()
+    )
+    mass.music.get_item_by_uri = AsyncMock(return_value=item)
+    payload = SharePayload(
+        type=cast("Literal['album', 'artist']", media_type.value),
+        title="Shared item",
+        provider_urls={"tidal": f"https://tidal.com/{media_type.value}/123"},
+    )
+
+    assert await provider._resolve_media_item(payload, allow_search=allow_search) is item
+    mass.music.get_item_by_uri.assert_awaited_once_with(
+        f"tidal--visible://{media_type.value}/123", allow_update_metadata=False
+    )
+    mass.music.search.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "failure", ["hidden", "offline", "fetch-error", "wrong-title", "wrong-type", "invalid-id"]
+)
+async def test_provider_url_miss_falls_back_to_search(failure: str) -> None:
+    """Hidden, invalid, unavailable and unrelated exact links cannot resolve a share."""
+    provider = _provider()
+    mass = _mass(provider)
+    mass.music.get_visible_provider.return_value = (
+        None
+        if failure == "hidden"
+        else SimpleNamespace(
+            instance_id="tidal--visible",
+            available=failure != "offline",
+            type=ProviderType.MUSIC,
+        )
+    )
+    item_class = Album if failure == "wrong-type" else Artist
+    candidate = item_class(
+        item_id="123",
+        provider="tidal--visible",
+        name="Other" if failure == "wrong-title" else "Shared",
+        provider_mappings=set(),
+    )
+    mass.music.get_item_by_uri = AsyncMock(
+        return_value=candidate,
+        side_effect=MediaNotFoundError("Removed") if failure == "fetch-error" else None,
+    )
+    mass.music.search = AsyncMock(return_value=SimpleNamespace(albums=[], artists=[], tracks=[]))
+    payload = SharePayload(
+        type="artist",
+        title="Shared",
+        provider_urls={
+            "tidal": f"https://tidal.com/artist/{'invalid' if failure == 'invalid-id' else '123'}"
+        },
+    )
+
+    assert await provider._resolve_media_item(payload) is None
+    mass.music.search.assert_awaited_once()
+    if failure in ("hidden", "offline", "invalid-id"):
+        mass.music.get_item_by_uri.assert_not_called()
+
+
+async def test_provider_url_resolution_prefers_existing_library_external_id() -> None:
+    """A known library identity is used before contacting a provider from its URL."""
+    provider = _provider()
+    mass = _mass(provider)
+    item = Artist(
+        item_id="1",
+        provider="library",
+        name="Shared",
+        external_ids={(ExternalID.MB_ARTIST, "artist-mbid")},
+        provider_mappings=set(),
+    )
+    mass.music.get_controller.return_value.get_item_by_external_id = AsyncMock(return_value=item)
+    mass.music.get_item_by_uri = AsyncMock()
+
+    assert (
+        await provider._resolve_media_item(
+            SharePayload(
+                type="artist",
+                title="Shared",
+                mbid="artist-mbid",
+                provider_urls={"tidal": "https://tidal.com/artist/123"},
+            )
+        )
+        is item
+    )
+    mass.music.get_item_by_uri.assert_not_called()
+
+
+async def test_provider_url_resolution_tries_next_connected_service_after_failure() -> None:
+    """A missing item on one service does not hide an exact link on another."""
+    provider = _provider()
+    mass = _mass(provider)
+    mass.music.get_visible_provider.side_effect = lambda domain: SimpleNamespace(
+        instance_id=f"{domain}--visible", available=True, type=ProviderType.MUSIC
+    )
+    matching = Artist(
+        item_id="456", provider="deezer--visible", name="Shared", provider_mappings=set()
+    )
+    mass.music.get_item_by_uri = AsyncMock(side_effect=[MediaNotFoundError("Removed"), matching])
+
+    assert (
+        await provider._resolve_media_item(
+            SharePayload(
+                type="artist",
+                title="Shared",
+                provider_urls={
+                    "tidal": "https://tidal.com/artist/123",
+                    "deezer": "https://www.deezer.com/artist/456",
+                },
+            )
+        )
+        is matching
+    )
+    assert mass.music.get_item_by_uri.await_count == 2
+    mass.music.search.assert_not_called()
+
+
+async def test_provider_url_resolution_skips_unloadable_ytmusic_album() -> None:
+    """Public album-playlist links remain displayable but cannot be loaded as browse IDs."""
+    provider = _provider()
+    mass = _mass(provider)
+    mass.music.get_item_by_uri = AsyncMock()
+
+    assert (
+        await provider._resolve_media_item(
+            SharePayload(
+                type="album",
+                title="Shared",
+                provider_urls={"ytmusic": "https://music.youtube.com/playlist?list=OLAK5uy_abc"},
+            ),
+            allow_search=False,
+        )
+        is None
+    )
+    mass.music.get_visible_provider.assert_not_called()
+    mass.music.get_item_by_uri.assert_not_called()
+
+
+@pytest.mark.parametrize("media_type", [MediaType.ALBUM, MediaType.ARTIST])
+async def test_search_accepts_one_match_per_provider_without_mbid(media_type: MediaType) -> None:
+    """The same item on two services is not ambiguous solely because IDs differ."""
+    provider = _provider()
+    item_class = Album if media_type == MediaType.ALBUM else Artist
+    first = item_class(item_id="123", provider="tidal--1", name="Shared", provider_mappings=set())
+    second = replace(first, item_id="456", provider="deezer--1")
+    _mass(provider).music.search = AsyncMock(
+        return_value=SimpleNamespace(
+            albums=[first, second] if media_type == MediaType.ALBUM else [],
+            artists=[first, second] if media_type == MediaType.ARTIST else [],
+            tracks=[],
+        )
+    )
+
+    assert (
+        await provider._resolve_media_item(
+            SharePayload(type=cast("Literal['album', 'artist']", media_type.value), title="Shared")
+        )
+        is first
+    )
+
+
+async def test_album_search_prefers_matching_barcode() -> None:
+    """A matching retail identifier distinguishes otherwise matching search results."""
+    provider = _provider()
+    matching = Album(
+        item_id="matching",
+        provider="catalog--1",
+        name="Shared",
+        external_ids={(ExternalID.BARCODE, BARCODE)},
+        provider_mappings=set(),
+    )
+    other = replace(matching, item_id="other", external_ids=set())
+    mass = _mass(provider)
+    mass.music.get_controller.return_value.get_item_by_external_id = AsyncMock(return_value=None)
+    mass.music.search = AsyncMock(
+        return_value=SimpleNamespace(albums=[other, matching], artists=[], tracks=[])
+    )
+
+    assert (
+        await provider._resolve_media_item(
+            SharePayload(type="album", title="Shared", barcode=BARCODE)
+        )
+        is matching
+    )
 
 
 @pytest.mark.parametrize(

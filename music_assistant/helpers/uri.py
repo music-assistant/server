@@ -76,6 +76,8 @@ def valid_id(provider: str, media_type: MediaType, item_id: str) -> bool:
         return valid_base62_length22(item_id)
     if provider in _NUMERIC_ID_PROVIDERS and media_type in _CANONICAL_URL_TYPES:
         return item_id.isdigit()
+    if provider == "ytmusic" and media_type == MediaType.ALBUM:
+        return item_id.startswith("MPRE")
     return True
 
 

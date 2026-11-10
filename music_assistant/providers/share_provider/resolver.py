@@ -14,6 +14,7 @@ from music_assistant.helpers.compare import (
     TrackMatchConfidence,
     compare_album,
     compare_artist,
+    compare_external_ids,
     compare_track_evidence,
     compare_track_title,
 )
@@ -28,6 +29,7 @@ from music_assistant.helpers.playlists import (
     construct_media_item_from_playlist_item,
 )
 from music_assistant.helpers.provider_access import visible_music_sources
+from music_assistant.helpers.uri import create_uri, parse_uri, share_url_provider
 from music_assistant.models.music_provider import PROVIDER_FETCH_ERRORS
 from music_assistant.providers.share_provider.payload import SharePayload
 
@@ -54,6 +56,8 @@ class ShareLinkResolver:
         """Resolve a shared track, album, or artist using known IDs before search."""
         media_type = MediaType(payload.type)
         item = await self._resolve_by_external_ids(payload, media_type)
+        if item is None and media_type in (MediaType.ALBUM, MediaType.ARTIST):
+            item = await self._resolve_by_provider_urls(payload, media_type)
         if item is not None or not allow_search:
             return item
         if media_type == MediaType.TRACK:
@@ -141,6 +145,32 @@ class ShareLinkResolver:
                 return item
         return None
 
+    async def _resolve_by_provider_urls(
+        self, payload: SharePayload, media_type: MediaType
+    ) -> Album | Artist | None:
+        for domain, url in (payload.provider_urls or {}).items():
+            if share_url_provider(url, media_type) != domain:
+                continue
+            provider = self.mass.music.get_visible_provider(domain)
+            if not provider or not provider.available or provider.type != ProviderType.MUSIC:
+                continue
+            _, _, item_id = await parse_uri(url, validate_id=True)
+            try:
+                item = await self.mass.music.get_item_by_uri(
+                    create_uri(media_type, provider.instance_id, item_id),
+                    allow_update_metadata=False,
+                )
+            except PROVIDER_FETCH_ERRORS as err:
+                LOGGER.debug("Shared provider URL lookup failed for %s: %s", domain, err)
+                continue
+            if isinstance(item, Album) and media_type == MediaType.ALBUM:
+                if self._matches_album_reference(payload, self._album_reference(payload), item):
+                    return item
+            elif isinstance(item, Artist) and media_type == MediaType.ARTIST:
+                if compare_artist(self._artist_reference(payload), item) is True:
+                    return item
+        return None
+
     async def _resolve_by_search(
         self, payload: SharePayload, media_type: MediaType
     ) -> MediaItemType | None:
@@ -154,24 +184,34 @@ class ShareLinkResolver:
                 if isinstance(item, Album)
                 and self._matches_album_reference(payload, album_reference, item)
             ]
-            unique_albums: dict[tuple[str, str], Album] = {}
-            for album in album_matches:
-                mbid = album.get_external_id(ExternalID.MB_ALBUM)
-                key = ("mbid", mbid) if mbid else ("item", f"{album.provider}:{album.item_id}")
-                unique_albums.setdefault(key, album)
-            return next(iter(unique_albums.values())) if len(unique_albums) == 1 else None
-        artist_reference = self._artist_reference(payload)
-        artist_matches = [
-            item
-            for item in results.artists or []
-            if isinstance(item, Artist) and compare_artist(artist_reference, item) is True
-        ]
-        unique_artists: dict[tuple[str, str], Artist] = {}
-        for artist in artist_matches:
-            mbid = artist.get_external_id(ExternalID.MB_ARTIST)
-            key = ("mbid", mbid) if mbid else ("item", f"{artist.provider}:{artist.item_id}")
-            unique_artists.setdefault(key, artist)
-        return next(iter(unique_artists.values())) if len(unique_artists) == 1 else None
+            barcode_matches = [
+                album
+                for album in album_matches
+                if compare_external_ids(
+                    album_reference.external_ids, album.external_ids, ExternalID.BARCODE
+                )
+                is True
+            ]
+            matches: list[Album] | list[Artist] = barcode_matches or album_matches
+            mbid_type = ExternalID.MB_ALBUM
+        else:
+            artist_reference = self._artist_reference(payload)
+            matches = [
+                item
+                for item in results.artists or []
+                if isinstance(item, Artist) and compare_artist(artist_reference, item) is True
+            ]
+            mbid_type = ExternalID.MB_ARTIST
+        matches_by_provider: dict[str, dict[tuple[str, str], Album | Artist]] = {}
+        for item in matches:
+            mbid = item.get_external_id(mbid_type)
+            key = ("mbid", mbid) if mbid else ("item", item.item_id)
+            matches_by_provider.setdefault(item.provider, {}).setdefault(key, item)
+        if any(len(items) > 1 for items in matches_by_provider.values()):
+            return None
+        if library_matches := matches_by_provider.get("library"):
+            return next(iter(library_matches.values()))
+        return matches[0] if matches else None
 
     async def _resolve_track_with_core(
         self,

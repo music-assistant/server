@@ -1,9 +1,11 @@
 {
   "type": "plugin",
+  "stage": "beta",
   "domain": "share_provider",
   "name": "Share Links",
   "description": "Generate and resolve provider-agnostic share links for tracks, albums and artists.",
   "codeowners": ["@dmoo500"],
   "tier": "community",
+  "documentation": "https://github.com/music-assistant/server/blob/dev/music_assistant/providers/share_provider/README.md",
   "requirements": []
 }

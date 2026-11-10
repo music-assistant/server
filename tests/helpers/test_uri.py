@@ -181,6 +181,8 @@ def test_share_url_provider(url: str, expected: str | None) -> None:
         ("https://open.spotify.com/album/not-a-spotify-id", None),
         ("https://tidal.com/album/79280548", "tidal"),
         ("https://tidal.com/album/in-rainbows", None),
+        ("https://music.youtube.com/browse/MPREb_example", "ytmusic"),
+        ("https://music.youtube.com/playlist?list=OLAK5uy_abc", None),
     ],
 )
 def test_share_url_provider_of_a_media_type(url: str, expected: str | None) -> None:
@@ -220,6 +222,7 @@ def test_canonical_provider_url(
         f"https://open.spotify.com/artist/{SPOTIFY_ID[:10]}",
         "https://tidal.com/artist/not-a-number",
         "https://music.apple.com/us/artist/radiohead",
+        "https://music.youtube.com/playlist?list=OLAK5uy_abc",
     ],
 )
 async def test_parse_uri_rejects_a_malformed_id_when_validating(url: str) -> None:
@@ -240,6 +243,18 @@ async def test_parse_uri_validation_leaves_non_numeric_playlist_ids_alone() -> N
     assert await parse_uri(
         f"https://music.apple.com/us/playlist/todays-hits/{apple_playlist}", validate_id=True
     ) == (MediaType.PLAYLIST, "apple_music", apple_playlist)
+
+
+async def test_parse_uri_validates_ytmusic_browse_album_id() -> None:
+    """Only a browse album ID is usable for loading a YouTube Music album."""
+    assert await parse_uri("https://music.youtube.com/browse/MPREb_example", validate_id=True) == (
+        MediaType.ALBUM,
+        "ytmusic",
+        "MPREb_example",
+    )
+    assert await parse_uri(
+        "https://music.youtube.com/playlist?list=PLexample", validate_id=True
+    ) == (MediaType.PLAYLIST, "ytmusic", "PLexample")
 
 
 async def test_canonical_provider_url_round_trips_through_parse_uri() -> None:
