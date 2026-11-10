@@ -5135,7 +5135,8 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
             the one playing.
         """
         active_source_id = player.state.active_source or player.player_id
-        if source_id is not None and source_id != active_source_id:
+        # a queue can be named by a legacy id of its player
+        if source_id is not None and self.resolve_player_id(source_id) != active_source_id:
             msg = f"The source this was meant for is no longer playing on {player.state.name}."
             raise PlayerCommandFailed(msg)
         return active_source_id
@@ -5348,8 +5349,8 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         :param player_id: player_id of the player to handle the command.
         :param source: The ID of the source that needs to be activated/selected.
         """
-        if source is None:
-            source = player_id  # default to MA queue source
+        # default to MA queue source, which can also be named by a legacy id of its player
+        source = player_id if source is None else self.resolve_player_id(source)
         player = self._get_reachable_player(player_id)
         # check if player is already playing and source is different
         # in that case we need to stop the player first
@@ -5375,8 +5376,8 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         await self._release_audio_source(player_id)
         # check if source is a mass queue
         # this can be used to restore the queue after a source switch
-        if queue := self.mass.player_queues.get(source):
-            player.set_active_mass_source(queue.queue_id)
+        if self.mass.player_queues.get(source):
+            player.set_active_mass_source(source)
             return
         # Legacy compatibility: the old plugin-source API used the
         # plugin's instance_id directly as the source string. The refactor

@@ -19,6 +19,7 @@ from aiohttp.streams import StreamReader
 from aiohttp.test_utils import make_mocked_request
 from music_assistant_models.api import CommandMessage
 from music_assistant_models.auth import User, UserRole
+from music_assistant_models.enums import PlaybackState
 from music_assistant_models.errors import InsufficientPermissions
 
 from music_assistant.constants import CONF_LEGACY_IDS, CONF_PLAYERS
@@ -215,6 +216,48 @@ async def test_queue_selected_as_source_by_a_legacy_id_is_active_under_its_own_i
     kitchen = scenario.player(KITCHEN)
     assert kitchen is not None
     assert kitchen.active_source == KITCHEN
+
+
+@TRANSPORTS
+async def test_playing_queue_selected_again_by_a_legacy_id_keeps_playing(
+    scenario: Scenario, transport: Transport
+) -> None:
+    """Selecting the queue a player already plays, by a legacy id, leaves the playback alone."""
+    user = await _user(scenario, KITCHEN)
+    await scenario.play(KITCHEN)
+
+    reply = await _send(
+        scenario, transport, user, "players/cmd/select_source", player_id=KITCHEN, source=LEGACY_ID
+    )
+
+    assert not reply.refused
+    kitchen = scenario.player(KITCHEN)
+    assert kitchen is not None
+    assert kitchen.playback_state == PlaybackState.PLAYING
+
+
+@TRANSPORTS
+async def test_command_aimed_at_the_playing_queue_by_a_legacy_id_reaches_it(
+    scenario: Scenario, transport: Transport
+) -> None:
+    """A command for the source a player plays takes the queue under a legacy id as well."""
+    user = await _user(scenario, KITCHEN)
+    await scenario.play(KITCHEN)
+
+    reply = await _send(
+        scenario,
+        transport,
+        user,
+        "players/cmd/shuffle",
+        player_id=KITCHEN,
+        shuffle_enabled=True,
+        source_id=LEGACY_ID,
+    )
+
+    assert not reply.refused
+    queue = scenario.queue(KITCHEN)
+    assert queue is not None
+    assert queue.shuffle_enabled
 
 
 @TRANSPORTS
