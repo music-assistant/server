@@ -1921,11 +1921,7 @@ class SendspinPlayer(SendspinBasePlayer):
             abort_existing=True,
         )
         # The position published at the play or seek command predates the audio.
-        self.mass.create_task(
-            self.send_current_media_metadata(),
-            task_id=f"sendspin_metadata_{self.player_id}",
-            abort_existing=True,
-        )
+        self._schedule_position_republish()
 
     def on_first_audio_heard(self) -> None:
         """Re-publish the position once a new stream's first audio is heard."""
@@ -1943,11 +1939,7 @@ class SendspinPlayer(SendspinBasePlayer):
         self.mass.players.on_player_position_jumped(queue_owner)
         # What was published at the play or seek command predates the audio, and the
         # queue may only now place the track in the flow stream.
-        self.mass.create_task(
-            self.send_current_media_metadata(),
-            task_id=f"sendspin_metadata_{self.player_id}",
-            abort_existing=True,
-        )
+        self._schedule_position_republish()
 
     def on_queue_updated(self, queue_id: str) -> None:
         """Push the repeat and shuffle state of the queue this player is playing."""
@@ -2802,6 +2794,60 @@ class SendspinPlayer(SendspinBasePlayer):
         if offset_us is None:
             return None
         return timeline_start_us + offset_us
+
+    def _schedule_position_republish(self) -> None:
+        """Re-publish the position from the flow stream's timeline, without the artwork."""
+        self.mass.create_task(
+            self._republish_position(),
+            task_id=f"sendspin_position_{self.player_id}",
+            abort_existing=True,
+        )
+
+    async def _republish_position(self) -> None:
+        """
+        Move the published position of the current item onto the flow stream's timeline.
+
+        Only the position changed, so the artwork and library lookups of a full metadata
+        send are not redone: at the start of a stream they compete with the audio, and
+        aborting a send that is still decoding artwork wastes that work. While the current
+        item is not published yet, the full send in flight (or a new one) places it.
+        """
+        media = self.state.current_media
+        metadata_role = self._metadata_role
+        if media is None or metadata_role is None:
+            return
+        published = metadata_role.metadata
+        if published is None or (media.uri, media.queue_item_id) != self._published_item:
+            # Joins a send already in flight instead of aborting it.
+            self.mass.create_task(
+                self.send_current_media_metadata(),
+                task_id=f"sendspin_metadata_{self.player_id}",
+            )
+            return
+        generation = self._metadata_generation
+        queue: PlayerQueue | None = None
+        queue_item: QueueItem | None = None
+        if media.source_id and media.queue_item_id:
+            queue = self.mass.player_queues.get(media.source_id)
+            queue_item = self.mass.player_queues.get_item(media.source_id, media.queue_item_id)
+        # Drop the stored timestamp: the position from the timeline counts as of now.
+        base = replace(published, timestamp_us=None)
+        metadata, timestamp_us = self._timeline_anchored(
+            base,
+            queue,
+            queue_item,
+            is_playing=self.state.playback_state == PlaybackState.PLAYING,
+        )
+        if metadata is base:
+            # The timeline doesn't place the track (yet): what was published stands.
+            return
+        async with self._metadata_lock:
+            if (
+                not self._metadata_publish_allowed(generation)
+                or (media.uri, media.queue_item_id) != self._published_item
+            ):
+                return
+            metadata_role.set_metadata(metadata, timestamp_us=timestamp_us)
 
     async def _send_beat_schedule(
         self,

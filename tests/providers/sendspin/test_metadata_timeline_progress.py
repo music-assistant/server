@@ -8,12 +8,14 @@ extrapolate from the queue's position run ahead of what they play by that much.
 
 from __future__ import annotations
 
+import asyncio
+from dataclasses import replace
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, cast
 from unittest.mock import MagicMock
 
 from aiosendspin.server.roles.metadata.state import Metadata
-from music_assistant_models.enums import PlayerType
+from music_assistant_models.enums import PlaybackState, PlayerType
 from music_assistant_models.player_queue import PlayLogEntry
 
 from music_assistant.providers.sendspin.player import SendspinPlayer
@@ -163,7 +165,7 @@ def test_first_audio_heard_rebases_the_queue_of_the_protocol_parent(
     monkeypatch.setattr(
         SendspinPlayer, "protocol_parent_id", property(lambda _self: "universal-1"), raising=False
     )
-    monkeypatch.setattr(SendspinPlayer, "send_current_media_metadata", MagicMock())
+    monkeypatch.setattr(SendspinPlayer, "_republish_position", MagicMock())
 
     player.on_first_audio_heard()
 
@@ -171,3 +173,88 @@ def test_first_audio_heard_rebases_the_queue_of_the_protocol_parent(
     parent.update_state.assert_called_once_with(force_update=True)
     mass.players.on_player_position_jumped.assert_called_once_with(parent)
     mass.create_task.assert_called_once()
+
+
+def _republishing_player(
+    monkeypatch: pytest.MonkeyPatch,
+    timeline_start_us: int | None,
+    published: Metadata | None,
+    *,
+    published_item: tuple[str, str | None] | None = ("track-uri", _QUEUE_ITEM_ID),
+) -> tuple[SendspinPlayer, MagicMock, MagicMock]:
+    """Build a player whose metadata role holds `published`, returning it, the role and mass."""
+    player = _player(monkeypatch, timeline_start_us)
+    role = MagicMock()
+    role.metadata = published
+    monkeypatch.setattr(SendspinPlayer, "_metadata_role", property(lambda _self: role))
+    media = SimpleNamespace(uri="track-uri", queue_item_id=_QUEUE_ITEM_ID, source_id="queue-1")
+    state = SimpleNamespace(current_media=media, playback_state=PlaybackState.PLAYING)
+    monkeypatch.setattr(SendspinPlayer, "state", property(lambda _self: state), raising=False)
+    monkeypatch.setattr(SendspinPlayer, "player_id", "sendspin-1", raising=False)
+    player._published_item = published_item
+    player._metadata_generation = 0
+    player._content_takeover_pending = False
+    player._metadata_lock = asyncio.Lock()
+    mass = MagicMock()
+    mass.player_queues.get.return_value = _queue()
+    mass.player_queues.get_item.return_value = _queue_item()
+    mass.player_queues.queue_data_or_none = player.mass.player_queues.queue_data_or_none
+    player.mass = mass
+    full_send = MagicMock()
+    monkeypatch.setattr(SendspinPlayer, "send_current_media_metadata", full_send)
+    return player, role, mass
+
+
+async def test_the_position_is_republished_without_a_full_send(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """
+    A timeline change only moves the position: the artwork isn't fetched and decoded again.
+
+    The published metadata carries the time it took effect. The new position counts as of
+    now, so it must not be moved on by the time since then.
+    """
+    published = replace(_metadata(), timestamp_us=_NOW_US - 10_000_000)
+    player, role, mass = _republishing_player(
+        monkeypatch, timeline_start_us=_NOW_US - 2_000_000, published=published
+    )
+
+    await player._republish_position()
+
+    role.set_metadata.assert_called_once()
+    metadata = role.set_metadata.call_args.args[0]
+    assert metadata.track_progress == 2_000
+    assert metadata.timestamp_us is None
+    assert metadata.title == "Track"
+    assert role.set_metadata.call_args.kwargs == {"timestamp_us": None}
+    mass.create_task.assert_not_called()
+
+
+async def test_an_item_not_published_yet_joins_the_full_send(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The new item still needs its artwork: join the full send in flight, don't abort it."""
+    player, role, mass = _republishing_player(
+        monkeypatch,
+        timeline_start_us=_NOW_US - 2_000_000,
+        published=_metadata(),
+        published_item=("previous-uri", "qi-0"),
+    )
+
+    await player._republish_position()
+
+    role.set_metadata.assert_not_called()
+    mass.create_task.assert_called_once()
+    assert mass.create_task.call_args.kwargs == {"task_id": "sendspin_metadata_sendspin-1"}
+
+
+async def test_nothing_is_republished_without_a_timeline(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Before the first chunk commits, the position published from the queue stands."""
+    player, role, mass = _republishing_player(
+        monkeypatch, timeline_start_us=None, published=_metadata()
+    )
+
+    await player._republish_position()
+
+    role.set_metadata.assert_not_called()
+    mass.create_task.assert_not_called()
