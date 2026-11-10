@@ -1,15 +1,21 @@
 """Tests for the Sonos player options."""
 
 import logging
+from collections.abc import Mapping
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, call
 
 import pytest
-from aiosonos.api.upnp import EqType, IrRepeaterState, RoomCalibrationStatus
-from aiosonos.exceptions import CommandTimeout, FailedCommand
+from async_upnp_client.exceptions import UpnpActionError, UpnpConnectionTimeoutError
 from music_assistant_models.errors import PlayerCommandFailed
 
-from music_assistant.providers.sonos.const import UPNP_OPTION_TIMEOUT_LIMIT
+from music_assistant.providers.sonos.const import (
+    DEVICE_PROPERTIES_SERVICE,
+    HT_CONTROL_SERVICE,
+    UPNP_OPTION_TIMEOUT_LIMIT,
+    EqType,
+    IrRepeaterState,
+)
 from music_assistant.providers.sonos.options import (
     SONOS_OPTIONS,
     SonosDevice,
@@ -57,17 +63,36 @@ SETTINGS_KEYS = {
     "night_mode",
     "speech_enhancement",
 }
-UPNP_GETTERS = (
-    "get_eq",
-    "get_channel_volume",
-    "get_led_state",
-    "get_button_lock_state",
-    "get_room_calibration_status",
-    "get_ir_repeater_state",
-    "get_led_feedback_state",
-)
 SUB_KEYS = {"sub_enabled", "subwoofer_volume"}
 SURROUND_KEYS = {"surround_enabled", "surround_mode", "surround_level", "music_surround_level"}
+
+
+def _upnp(trueplay_available: bool = False, error: Exception | None = None) -> MagicMock:
+    """Return a speaker's UPnP answering the Get actions like a Ray, or failing with error."""
+
+    def _answer(action: str, **arguments: Any) -> Mapping[str, Any]:
+        if error is not None:
+            raise error
+        answers: dict[str, Mapping[str, Any]] = {
+            "GetEQ": {"CurrentValue": 1},
+            "GetVolume": {"CurrentVolume": 100 if arguments.get("Channel") == "LF" else 80},
+            "GetRoomCalibrationStatus": {
+                "RoomCalibrationEnabled": True,
+                "RoomCalibrationAvailable": trueplay_available,
+            },
+            "GetLEDState": {"CurrentLEDState": "Off"},
+            "GetButtonLockState": {"CurrentButtonLockState": "Off"},
+            "GetIRRepeaterState": {"CurrentIRRepeaterState": "On"},
+            "GetLEDFeedbackState": {"LEDFeedbackState": "On"},
+        }
+        return answers.get(action, {})
+
+    upnp = MagicMock()
+    upnp.rendering_control = AsyncMock(side_effect=_answer)
+    upnp.call = AsyncMock(
+        side_effect=lambda _service, action, **arguments: _answer(action, **arguments)
+    )
+    return upnp
 
 
 def _device(
@@ -75,7 +100,7 @@ def _device(
     settings: dict[str, Any] | None = None,
     has_subwoofer: bool = False,
     has_surrounds: bool = False,
-    trueplay_available: bool = False,
+    upnp: MagicMock | None = None,
 ) -> SonosDevice:
     client = MagicMock()
     client.player.settings = RAY_SETTINGS if settings is None else settings
@@ -83,17 +108,7 @@ def _device(
     client.player.has_surrounds = has_surrounds
     client.player.refresh_settings = AsyncMock()
     client.player.set_home_theater_options = AsyncMock()
-    client.upnp = upnp = AsyncMock()
-    upnp.get_eq = AsyncMock(return_value=1)
-    upnp.get_channel_volume = AsyncMock(side_effect=lambda channel: 100 if channel == "LF" else 80)
-    upnp.get_led_state = AsyncMock(return_value=False)
-    upnp.get_button_lock_state = AsyncMock(return_value=False)
-    upnp.get_led_feedback_state = AsyncMock(return_value=True)
-    upnp.get_ir_repeater_state = AsyncMock(return_value=IrRepeaterState.ON)
-    upnp.get_room_calibration_status = AsyncMock(
-        return_value=RoomCalibrationStatus(enabled=True, available=trueplay_available)
-    )
-    return SonosDevice(client, model)
+    return SonosDevice(client, upnp or _upnp(), model)
 
 
 @pytest.mark.parametrize(
@@ -107,7 +122,9 @@ def _device(
         (_device(model="Arc Ultra"), BASE_KEYS | HOME_THEATER_KEYS | {"dialogue_level"}),
         (_device(model="Amp"), BASE_KEYS | HOME_THEATER_KEYS | SUB_KEYS | {"sub_crossover"}),
         (
-            _device(model="Era 100", settings=SPEAKER_SETTINGS, trueplay_available=True),
+            _device(
+                model="Era 100", settings=SPEAKER_SETTINGS, upnp=_upnp(trueplay_available=True)
+            ),
             BASE_KEYS | {"trueplay"},
         ),
     ],
@@ -122,9 +139,16 @@ async def test_options_offered_per_speaker(device: SonosDevice, expected_keys: s
 
 async def test_option_values_and_unanswered_read() -> None:
     """Values come from settings and UPnP; an option the speaker does not answer is left out."""
-    device = _device()
-    client: Any = device.client
-    client.upnp.get_led_state = AsyncMock(side_effect=FailedCommand("401"))
+    upnp = _upnp()
+    answer = upnp.call.side_effect
+
+    def _call(service: str, action: str, **arguments: Any) -> Mapping[str, Any]:
+        if action == "GetLEDState":
+            raise UpnpActionError(error_code=401)
+        return answer(service, action, **arguments)  # type: ignore[no-any-return]
+
+    upnp.call.side_effect = _call
+    device = _device(upnp=upnp)
 
     result = await read_player_options(device, LOGGER, 3)
     options = {option.key: option for option in result.options}
@@ -137,37 +161,87 @@ async def test_option_values_and_unanswered_read() -> None:
     assert options["night_mode"].value is True
     assert options["balance"].value == -20
     assert options["touch_controls"].value is True
+    assert options["remote_led_feedback"].value is True
     assert options["mono_mode"].read_only
     assert not options["bass"].read_only
-    client.player.refresh_settings.assert_awaited_once()
 
 
 async def test_upnp_reads_stop_after_timeouts_in_a_row() -> None:
     """Once UPnP timed out often enough in a row, only the settings options are read."""
-    device = _device()
-    client: Any = device.client
-    for method in UPNP_GETTERS:
-        setattr(client.upnp, method, AsyncMock(side_effect=CommandTimeout("upnp", 10)))
+    upnp = _upnp(error=UpnpConnectionTimeoutError())
+    device = _device(upnp=upnp)
 
     first = await read_player_options(device, LOGGER, 0)
+    upnp.reset_mock()
     second = await read_player_options(device, LOGGER, first.upnp_timeouts)
 
     assert first.upnp_timeouts >= UPNP_OPTION_TIMEOUT_LIMIT
     assert {option.key for option in second.options} == SETTINGS_KEYS
-    assert client.upnp.get_led_state.await_count == 1
+    upnp.call.assert_not_awaited()
+    upnp.rendering_control.assert_not_awaited()
 
 
 @pytest.mark.parametrize(
     ("key", "value", "method", "expected_calls"),
     [
-        ("bass", 4, "upnp.set_bass", [call(4)]),
-        ("loudness", False, "upnp.set_loudness", [call(False)]),
-        ("night_mode", False, "player.set_home_theater_options", [call({"nightMode": False})]),
-        ("touch_controls", False, "upnp.set_button_lock_state", [call(True)]),
-        ("balance", -20.0, "upnp.set_channel_volume", [call("LF", 100), call("RF", 80)]),
-        ("subwoofer_volume", 5, "upnp.set_eq", [call(EqType.SUB_GAIN, 5)]),
-        ("surround_enabled", True, "upnp.set_eq", [call(EqType.SURROUND_ENABLED, 1)]),
-        ("ir_repeater", False, "upnp.set_ir_repeater_state", [call(IrRepeaterState.OFF)]),
+        ("bass", 4, "upnp.rendering_control", [call("SetBass", DesiredBass=4)]),
+        (
+            "loudness",
+            False,
+            "upnp.rendering_control",
+            [call("SetLoudness", Channel="Master", DesiredLoudness=False)],
+        ),
+        (
+            "night_mode",
+            False,
+            "client.player.set_home_theater_options",
+            [call({"nightMode": False})],
+        ),
+        (
+            "touch_controls",
+            False,
+            "upnp.call",
+            [call(DEVICE_PROPERTIES_SERVICE, "SetButtonLockState", DesiredButtonLockState="On")],
+        ),
+        (
+            "remote_led_feedback",
+            False,
+            "upnp.call",
+            [call(HT_CONTROL_SERVICE, "SetLEDFeedbackState", LEDFeedbackState="Off")],
+        ),
+        (
+            "balance",
+            -20.0,
+            "upnp.rendering_control",
+            [
+                call("SetVolume", Channel="LF", DesiredVolume=100),
+                call("SetVolume", Channel="RF", DesiredVolume=80),
+            ],
+        ),
+        (
+            "subwoofer_volume",
+            5,
+            "upnp.rendering_control",
+            [call("SetEQ", EQType=EqType.SUB_GAIN, DesiredValue=5)],
+        ),
+        (
+            "surround_enabled",
+            True,
+            "upnp.rendering_control",
+            [call("SetEQ", EQType=EqType.SURROUND_ENABLED, DesiredValue=1)],
+        ),
+        (
+            "ir_repeater",
+            False,
+            "upnp.call",
+            [
+                call(
+                    HT_CONTROL_SERVICE,
+                    "SetIRRepeaterState",
+                    DesiredIRRepeaterState=IrRepeaterState.OFF,
+                )
+            ],
+        ),
     ],
 )
 async def test_option_writes(key: str, value: Any, method: str, expected_calls: list[Any]) -> None:
@@ -178,7 +252,7 @@ async def test_option_writes(key: str, value: Any, method: str, expected_calls: 
 
     await option.write(device, value)
 
-    target: Any = device.client
+    target: Any = device
     for attribute in method.split("."):
         target = getattr(target, attribute)
     assert target.await_args_list == expected_calls
@@ -190,7 +264,7 @@ async def test_option_writes(key: str, value: Any, method: str, expected_calls: 
         ("bass", None, False),
         ("mono_mode", None, True),
         ("unknown", None, True),
-        ("bass", FailedCommand("402"), True),
+        ("bass", UpnpActionError(error_code=402), True),
     ],
     ids=["set", "read_only", "unknown", "rejected"],
 )
@@ -198,9 +272,9 @@ async def test_set_option(key: str, write_error: Exception | None, fails: bool) 
     """A set option is read back; read-only, unknown and rejected ones raise."""
     player = _make_named_player("Ray")
     player.discovery_info = {"device": {"modelDisplayName": "Ray"}}  # type: ignore[typeddict-item]
-    client: Any = _device().client
-    player.client = client
-    client.upnp.set_bass = AsyncMock(side_effect=write_error)
+    device = _device(upnp=_upnp(error=write_error))
+    player.client = device.client
+    player.upnp = device.upnp
 
     if fails:
         with pytest.raises(PlayerCommandFailed):
@@ -208,7 +282,8 @@ async def test_set_option(key: str, write_error: Exception | None, fails: bool) 
         return
     await player.set_option(key, 4)
 
-    client.upnp.set_bass.assert_awaited_once_with(4)
+    upnp: Any = device.upnp
+    assert call("SetBass", DesiredBass=4) in upnp.rendering_control.await_args_list
     assert any(option.key == "bass" for option in player._attr_options)
     update_state: Any = player.update_state
     update_state.assert_called_once()

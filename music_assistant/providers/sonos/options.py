@@ -2,8 +2,7 @@
 Player options (EQ, home theater and speaker settings) of a Sonos player.
 
 The websocket api reports most settings in one call but sets only the home theater
-options; everything else is set (and partly read) over UPnP. The speaker sends no event
-when a setting changes, so the options are polled.
+options; everything else is set (and partly read) over UPnP.
 """
 
 from __future__ import annotations
@@ -12,31 +11,36 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, NamedTuple
 
-from aiosonos.api.upnp import EqType, IrRepeaterState
-from aiosonos.exceptions import CommandTimeout, SonosException
 from music_assistant_models.player import PlayerOption, PlayerOptionType, PlayerOptionValueType
 
 from .const import (
     AMP_MODEL,
     AUDIO_DELAY_RANGE,
     BALANCE_RANGE,
+    DEVICE_PROPERTIES_SERVICE,
     DIALOG_LEVEL_RANGE,
     EQ_RANGE,
+    HT_CONTROL_SERVICE,
     SUB_CROSSOVER_RANGE,
     SUB_GAIN_RANGE,
     SURROUND_LEVEL_RANGE,
     ULTRA_SOUNDBAR_MODELS,
     UPNP_OPTION_TIMEOUT_LIMIT,
+    EqType,
+    IrRepeaterState,
     OptionRange,
 )
+from .upnp import UPNP_ERRORS
 
 if TYPE_CHECKING:
     import logging
 
     from aiosonos.client import SonosLocalApiClient
 
+    from .upnp import SonosSpeakerUpnp
+
 OptionReader = Callable[["SonosDevice"], Awaitable[PlayerOptionValueType | None]]
-OptionWriter = Callable[["SonosDevice", Any], Awaitable[None]]
+OptionWriter = Callable[["SonosDevice", Any], Awaitable[Any]]
 
 
 @dataclass(frozen=True)
@@ -44,6 +48,7 @@ class SonosDevice:
     """The speaker a player option is read from and written to."""
 
     client: SonosLocalApiClient
+    upnp: SonosSpeakerUpnp
     model: str
 
     def setting(self, *path: str) -> Any:
@@ -113,14 +118,15 @@ def _eq_option(
     available: Callable[[SonosDevice], bool],
     value_range: OptionRange | None = None,
 ) -> SonosOption:
-    """Return an option stored as UPnP EQ type (booleans as 0/1)."""
+    """Return an option stored as RenderingControl EQ type (booleans as 0/1)."""
 
     async def _read(device: SonosDevice) -> PlayerOptionValueType:
-        value = await device.client.upnp.get_eq(eq_type)
+        result = await device.upnp.rendering_control("GetEQ", EQType=eq_type)
+        value = int(result["CurrentValue"])
         return bool(value) if option_type == PlayerOptionType.BOOLEAN else value
 
     async def _write(device: SonosDevice, value: PlayerOptionValueType) -> None:
-        await device.client.upnp.set_eq(eq_type, int(value))
+        await device.upnp.rendering_control("SetEQ", EQType=eq_type, DesiredValue=int(value))
 
     return SonosOption(
         key=key,
@@ -133,40 +139,74 @@ def _eq_option(
     )
 
 
+def _on_off_option(
+    key: str,
+    name: str,
+    service_type: str,
+    state: str,
+    available: Callable[[SonosDevice], bool] = lambda _: True,
+    inverted: bool = False,
+) -> SonosOption:
+    """
+    Return an option stored as On/Off state with Get<state>/Set<state> actions.
+
+    :param state: The state name, e.g. LEDState for GetLEDState/SetLEDState.
+    :param inverted: The option is on while the state is Off (e.g. touch controls/button lock).
+    """
+
+    async def _read(device: SonosDevice) -> bool:
+        result = await device.upnp.call(service_type, f"Get{state}")
+        # DeviceProperties names the output Current<state>, HTControl just <state>
+        value: str | None = result.get(f"Current{state}", result.get(state))
+        return (value == "On") != inverted
+
+    async def _write(device: SonosDevice, value: PlayerOptionValueType) -> None:
+        # DeviceProperties names the input Desired<state>, HTControl just <state>
+        argument = state if service_type == HT_CONTROL_SERVICE else f"Desired{state}"
+        on = bool(value) != inverted
+        await device.upnp.call(service_type, f"Set{state}", **{argument: "On" if on else "Off"})
+
+    return SonosOption(
+        key=key,
+        name=name,
+        option_type=PlayerOptionType.BOOLEAN,
+        read=_read,
+        write=_write,
+        available=available,
+    )
+
+
 async def _read_balance(device: SonosDevice) -> int:
     # Sonos keeps a volume per side; 0 is centered, -100 only left, +100 only right
-    left = await device.client.upnp.get_channel_volume("LF")
-    right = await device.client.upnp.get_channel_volume("RF")
-    return (right - left) * 100 // max(left, right, 1)
+    left = (await device.upnp.rendering_control("GetVolume", Channel="LF"))["CurrentVolume"]
+    right = (await device.upnp.rendering_control("GetVolume", Channel="RF"))["CurrentVolume"]
+    return int((right - left) * 100 // max(left, right, 1))
 
 
 async def _write_balance(device: SonosDevice, value: PlayerOptionValueType) -> None:
     balance = int(value)
-    await device.client.upnp.set_channel_volume("LF", min(100, 100 - balance))
-    await device.client.upnp.set_channel_volume("RF", min(100, 100 + balance))
+    for channel, volume in (("LF", 100 - balance), ("RF", 100 + balance)):
+        await device.upnp.rendering_control(
+            "SetVolume", Channel=channel, DesiredVolume=min(100, volume)
+        )
 
 
 async def _read_trueplay(device: SonosDevice) -> bool | None:
-    status = await device.client.upnp.get_room_calibration_status()
-    return status.enabled if status.available else None
+    result = await device.upnp.rendering_control("GetRoomCalibrationStatus")
+    if not bool(int(result["RoomCalibrationAvailable"])):
+        return None
+    return bool(int(result["RoomCalibrationEnabled"]))
 
 
 async def _read_ir_repeater(device: SonosDevice) -> bool | None:
-    state = await device.client.upnp.get_ir_repeater_state()
+    result = await device.upnp.call(HT_CONTROL_SERVICE, "GetIRRepeaterState")
+    state = result["CurrentIRRepeaterState"]
     return None if state == IrRepeaterState.DISABLED else state == IrRepeaterState.ON
 
 
 async def _write_ir_repeater(device: SonosDevice, value: bool) -> None:
     state = IrRepeaterState.ON if value else IrRepeaterState.OFF
-    await device.client.upnp.set_ir_repeater_state(state)
-
-
-async def _read_touch_controls(device: SonosDevice) -> bool:
-    return not await device.client.upnp.get_button_lock_state()
-
-
-async def _write_touch_controls(device: SonosDevice, value: bool) -> None:
-    await device.client.upnp.set_button_lock_state(not value)
+    await device.upnp.call(HT_CONTROL_SERVICE, "SetIRRepeaterState", DesiredIRRepeaterState=state)
 
 
 SONOS_OPTIONS: tuple[SonosOption, ...] = (
@@ -176,7 +216,9 @@ SONOS_OPTIONS: tuple[SonosOption, ...] = (
         option_type=PlayerOptionType.INTEGER,
         read=_setting("eq", "bass"),
         read_over_upnp=False,
-        write=lambda device, value: device.client.upnp.set_bass(int(value)),
+        write=lambda device, value: device.upnp.rendering_control(
+            "SetBass", DesiredBass=int(value)
+        ),
         value_range=EQ_RANGE,
     ),
     SonosOption(
@@ -185,7 +227,9 @@ SONOS_OPTIONS: tuple[SonosOption, ...] = (
         option_type=PlayerOptionType.INTEGER,
         read=_setting("eq", "treble"),
         read_over_upnp=False,
-        write=lambda device, value: device.client.upnp.set_treble(int(value)),
+        write=lambda device, value: device.upnp.rendering_control(
+            "SetTreble", DesiredTreble=int(value)
+        ),
         value_range=EQ_RANGE,
     ),
     SonosOption(
@@ -194,7 +238,9 @@ SONOS_OPTIONS: tuple[SonosOption, ...] = (
         option_type=PlayerOptionType.BOOLEAN,
         read=_setting("eq", "loudness"),
         read_over_upnp=False,
-        write=lambda device, value: device.client.upnp.set_loudness(bool(value)),
+        write=lambda device, value: device.upnp.rendering_control(
+            "SetLoudness", Channel="Master", DesiredLoudness=bool(value)
+        ),
     ),
     SonosOption(
         key="balance",
@@ -204,26 +250,22 @@ SONOS_OPTIONS: tuple[SonosOption, ...] = (
         write=_write_balance,
         value_range=BALANCE_RANGE,
     ),
-    SonosOption(
-        key="status_light",
-        name="Status light",
-        option_type=PlayerOptionType.BOOLEAN,
-        read=lambda device: device.client.upnp.get_led_state(),
-        write=lambda device, value: device.client.upnp.set_led_state(bool(value)),
-    ),
-    SonosOption(
-        key="touch_controls",
-        name="Touch controls",
-        option_type=PlayerOptionType.BOOLEAN,
-        read=_read_touch_controls,
-        write=_write_touch_controls,
+    _on_off_option("status_light", "Status light", DEVICE_PROPERTIES_SERVICE, "LEDState"),
+    _on_off_option(
+        "touch_controls",
+        "Touch controls",
+        DEVICE_PROPERTIES_SERVICE,
+        "ButtonLockState",
+        inverted=True,
     ),
     SonosOption(
         key="trueplay",
         name="Trueplay",
         option_type=PlayerOptionType.BOOLEAN,
         read=_read_trueplay,
-        write=lambda device, value: device.client.upnp.set_room_calibration_enabled(bool(value)),
+        write=lambda device, value: device.upnp.rendering_control(
+            "SetRoomCalibrationStatus", RoomCalibrationEnabled=bool(value)
+        ),
     ),
     SonosOption(
         key="mono_mode",
@@ -279,12 +321,11 @@ SONOS_OPTIONS: tuple[SonosOption, ...] = (
         write=_write_ir_repeater,
         available=lambda device: device.is_home_theater,
     ),
-    SonosOption(
-        key="remote_led_feedback",
-        name="Status light on remote control",
-        option_type=PlayerOptionType.BOOLEAN,
-        read=lambda device: device.client.upnp.get_led_feedback_state(),
-        write=lambda device, value: device.client.upnp.set_led_feedback_state(bool(value)),
+    _on_off_option(
+        "remote_led_feedback",
+        "Status light on remote control",
+        HT_CONTROL_SERVICE,
+        "LEDFeedbackState",
         available=lambda device: device.is_home_theater,
     ),
     _eq_option(
@@ -371,16 +412,16 @@ async def read_player_options(
             continue
         try:
             value = await option.read(device)
-        except CommandTimeout as err:
+        except TimeoutError as err:
             upnp_timeouts += 1
-            logger.debug("Could not read player option %s: %s", option.key, err)
+            logger.debug("Could not read player option %s: %r", option.key, err)
             if upnp_timeouts == UPNP_OPTION_TIMEOUT_LIMIT:
                 logger.warning(
                     "UPnP does not answer, options read over UPnP are left out until reconnect"
                 )
             continue
-        except SonosException as err:
-            logger.debug("Could not read player option %s: %s", option.key, err)
+        except UPNP_ERRORS as err:
+            logger.debug("Could not read player option %s: %r", option.key, err)
             continue
         if option.read_over_upnp:
             upnp_timeouts = 0

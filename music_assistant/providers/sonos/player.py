@@ -26,7 +26,6 @@ from aiosonos.api.models import (
     MusicService,
     SonosCapability,
 )
-from aiosonos.api.upnp import UPNP_PORT
 from aiosonos.client import SonosLocalApiClient
 from aiosonos.const import EventType as SonosEventType
 from aiosonos.const import SonosEvent
@@ -78,6 +77,7 @@ from music_assistant.providers.sonos.const import (
     UPCOMING_ITEMS,
 )
 from music_assistant.providers.sonos.options import SONOS_OPTIONS, SonosDevice, read_player_options
+from music_assistant.providers.sonos.upnp import UPNP_ERRORS
 
 if TYPE_CHECKING:
     from aiosonos.api.models import (
@@ -92,6 +92,7 @@ if TYPE_CHECKING:
     from music_assistant_models.queue_item import QueueItem
 
     from .provider import SonosPlayerProvider
+    from .upnp import SonosSpeakerUpnp
 
 SUPPORTED_FEATURES = {
     PlayerFeature.PLAY_MEDIA,
@@ -145,6 +146,8 @@ class SonosPlayer(Player):
     _attr_external_pause_idle_timeout = EXTERNAL_PAUSE_IDLE_TIMEOUT
     # the speaker names the service it plays itself, so its source list is trusted
     _attr_trusts_reported_source = True
+    # set up in setup(), with the client
+    upnp: SonosSpeakerUpnp
 
     def __init__(
         self,
@@ -194,7 +197,6 @@ class SonosPlayer(Player):
         self._hand_over_tasks: set[asyncio.Task[None]] = set()
         # UPnP timeouts in a row while reading the player options, reset on (re)connect
         self._upnp_option_timeouts = 0
-        self._events = prov.events
 
     @property
     def source_list(self) -> list[PlayerSource]:
@@ -242,6 +244,8 @@ class SonosPlayer(Player):
         self.client = SonosLocalApiClient(
             self.device_info.ip_address, self.mass.http_session_no_ssl
         )
+        provider = cast("SonosPlayerProvider", self._provider)
+        self.upnp = provider.upnp.speaker(self.device_info.ip_address)
         await self._connect(False)
 
         # collect supported features
@@ -335,7 +339,7 @@ class SonosPlayer(Player):
     async def on_unload(self) -> None:
         """Handle logic when the player is unloaded from the Player controller."""
         await super().on_unload()
-        await self._events.unfollow(self._upnp_location)
+        await self.upnp.unfollow()
         for task_id in (
             f"sonos_reconnect_{self.player_id}",
             f"restore_airplay_group_{self.player_id}",
@@ -409,7 +413,7 @@ class SonosPlayer(Player):
             raise PlayerCommandFailed(msg)
         try:
             await option.write(self._options_device, option_value)
-        except SonosException as err:
+        except (SonosException, *UPNP_ERRORS) as err:
             msg = f"Failed to set option {option_key} on {self.display_name}: {err}"
             raise PlayerCommandFailed(msg) from err
         await self._update_options()
@@ -417,7 +421,7 @@ class SonosPlayer(Player):
     @property
     def poll_interval(self) -> int:
         """Return the poll interval: longer while the speaker's RenderingControl events come in."""
-        if self._events.follows(self._upnp_location):
+        if self.upnp.follows:
             return OPTIONS_EVENTS_POLL_INTERVAL
         return OPTIONS_POLL_INTERVAL
 
@@ -425,7 +429,7 @@ class SonosPlayer(Player):
         """Poll the player options, and follow (renew) the speaker's RenderingControl events."""
         if not self.connected:
             return
-        await self._events.follow(self._upnp_location, self._on_rendering_change)
+        await self.upnp.follow(self._on_rendering_change)
         await self._update_options()
 
     async def play(self) -> None:
@@ -1310,7 +1314,7 @@ class SonosPlayer(Player):
             self._attr_available = True
             self._upnp_option_timeouts = 0
             # a speaker that restarted lost its event subscription: the next poll makes it anew
-            self.mass.create_task(self._events.unfollow(self._upnp_location))
+            self.mass.create_task(self.upnp.unfollow())
             if self._marked_asleep:
                 self._attr_powered = True
                 self._marked_asleep = False
@@ -1944,11 +1948,8 @@ class SonosPlayer(Player):
 
     @property
     def _options_device(self) -> SonosDevice:
-        return SonosDevice(self.client, self.discovery_info["device"].get("modelDisplayName", ""))
-
-    @property
-    def _upnp_location(self) -> str:
-        return f"http://{self.client.player_ip}:{UPNP_PORT}/xml/device_description.xml"
+        model = self.discovery_info["device"].get("modelDisplayName", "")
+        return SonosDevice(self.client, self.upnp, model)
 
     async def _update_options(self) -> None:
         try:

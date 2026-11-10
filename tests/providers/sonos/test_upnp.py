@@ -1,8 +1,9 @@
-"""Tests for the UPnP RenderingControl events of Sonos speakers."""
+"""Tests for the UPnP of Sonos speakers: action calls and RenderingControl events."""
 
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
+from dataclasses import dataclass, field
 from typing import Any
 from unittest.mock import MagicMock
 
@@ -11,13 +12,14 @@ import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestServer
 from async_upnp_client.const import HttpRequest
+from async_upnp_client.exceptions import UpnpError
 
 from music_assistant.providers.sonos.const import (
     EVENTS_PATH,
     OPTIONS_EVENTS_POLL_INTERVAL,
     OPTIONS_POLL_INTERVAL,
 )
-from music_assistant.providers.sonos.events import SonosEvents
+from music_assistant.providers.sonos.upnp import SonosSpeakerUpnp, SonosUpnp
 from tests.providers.sonos.test_player import _bind_player
 
 # a Sonos ZonePlayer keeps RenderingControl in its embedded MediaRenderer device
@@ -55,14 +57,33 @@ _DESCRIPTION = """<?xml version="1.0"?>
 _SCPD = """<?xml version="1.0"?>
 <scpd xmlns="urn:schemas-upnp-org:service-1-0">
  <specVersion><major>1</major><minor>0</minor></specVersion>
- <actionList/>
+ <actionList>
+  <action>
+   <name>GetBass</name>
+   <argumentList>
+    <argument>
+     <name>InstanceID</name><direction>in</direction>
+     <relatedStateVariable>A_ARG_TYPE_InstanceID</relatedStateVariable>
+    </argument>
+    <argument>
+     <name>CurrentBass</name><direction>out</direction>
+     <relatedStateVariable>Bass</relatedStateVariable>
+    </argument>
+   </argumentList>
+  </action>
+ </actionList>
  <serviceStateTable>
-  <stateVariable sendEvents="yes">
-   <name>LastChange</name>
-   <dataType>string</dataType>
-  </stateVariable>
+  <stateVariable sendEvents="yes"><name>LastChange</name><dataType>string</dataType></stateVariable>
+  <stateVariable sendEvents="no"><name>A_ARG_TYPE_InstanceID</name><dataType>ui4</dataType></stateVariable>
+  <stateVariable sendEvents="no"><name>Bass</name><dataType>i2</dataType></stateVariable>
  </serviceStateTable>
 </scpd>"""
+
+_GET_BASS_REPLY = (
+    '<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/"><s:Body>'
+    '<u:GetBassResponse xmlns:u="urn:schemas-upnp-org:service:RenderingControl:1">'
+    "<CurrentBass>3</CurrentBass></u:GetBassResponse></s:Body></s:Envelope>"
+)
 
 _EVENT = (
     '<e:propertyset xmlns:e="urn:schemas-upnp-org:event-1-0"><e:property><LastChange>'
@@ -77,14 +98,22 @@ _EVENT = (
 )
 
 
-class _Speaker:
-    """A speaker that serves its description and takes subscriptions."""
+@dataclass
+class FakeSpeaker:
+    """A speaker that serves its description, answers GetBass and takes subscriptions."""
 
-    def __init__(self) -> None:
-        """Accept subscriptions until told otherwise."""
-        self.subscribe_status = 200
-        self.methods: list[str] = []
-        self.callbacks: list[str] = []
+    upnp: SonosSpeakerUpnp | None = None
+    mass: MagicMock = field(default_factory=MagicMock)
+    subscribe_status: int = 200
+    methods: list[str] = field(default_factory=list)
+    callbacks: list[str] = field(default_factory=list)
+    soap_bodies: list[str] = field(default_factory=list)
+
+    @property
+    def speaker(self) -> SonosSpeakerUpnp:
+        """Return the speaker's UPnP."""
+        assert self.upnp is not None
+        return self.upnp
 
     async def handle(self, request: web.Request) -> web.Response:
         """Answer like a Sonos speaker on port 1400."""
@@ -93,6 +122,9 @@ class _Speaker:
         if request.path == "/xml/RenderingControl1.xml":
             return web.Response(text=_SCPD, content_type="text/xml")
         self.methods.append(request.method)
+        if request.method == "POST":
+            self.soap_bodies.append(await request.text())
+            return web.Response(text=_GET_BASS_REPLY, content_type="text/xml")
         if request.method == "SUBSCRIBE":
             self.callbacks.append(request.headers.get("CALLBACK", ""))
             if self.subscribe_status != 200:
@@ -102,24 +134,25 @@ class _Speaker:
 
 
 @pytest.fixture
-async def speaker() -> AsyncIterator[tuple[_Speaker, str, SonosEvents, MagicMock]]:
-    """Serve a speaker; return it, its description URL, the events and their mass."""
-    fake = _Speaker()
+async def speaker(monkeypatch: pytest.MonkeyPatch) -> AsyncIterator[FakeSpeaker]:
+    """Serve a fake speaker and return it with its UPnP."""
+    fake = FakeSpeaker()
     app = web.Application()
     app.router.add_route("*", "/{tail:.*}", fake.handle)
     server = TestServer(app)
     await server.start_server()
+    monkeypatch.setattr("music_assistant.providers.sonos.upnp.UPNP_PORT", server.port)
     async with aiohttp.ClientSession() as session:
-        mass = MagicMock()
-        mass.http_session_no_ssl = session
-        mass.streams.base_url = "http://192.168.1.10:8097"
-        yield fake, str(server.make_url("/xml/device_description.xml")), SonosEvents(mass), mass
+        fake.mass.http_session_no_ssl = session
+        fake.mass.streams.base_url = "http://192.168.1.10:8097"
+        fake.upnp = SonosUpnp(fake.mass).speaker("127.0.0.1")
+        yield fake
     await server.close()
 
 
-async def _notify(events: SonosEvents) -> None:
+async def _notify(upnp: SonosSpeakerUpnp) -> None:
     """Deliver an event as the speaker would."""
-    await events._handler.handle_notify(
+    await upnp._upnp.event_handler.handle_notify(
         HttpRequest(
             "NOTIFY",
             f"http://192.168.1.10:8097{EVENTS_PATH}",
@@ -129,56 +162,63 @@ async def _notify(events: SonosEvents) -> None:
     )
 
 
-async def test_a_speaker_is_followed_once_its_first_event_came_in(
-    speaker: tuple[_Speaker, str, SonosEvents, MagicMock],
-) -> None:
-    """The embedded RenderingControl is subscribed to; its event names channel volumes apart."""
-    fake, location, events, _ = speaker
+async def test_an_action_of_the_embedded_service_is_called(speaker: FakeSpeaker) -> None:
+    """RenderingControl is found in the embedded device; arguments and replies are converted."""
+    result = await speaker.speaker.rendering_control("GetBass")
+
+    assert result["CurrentBass"] == 3
+    assert "<InstanceID>0</InstanceID>" in speaker.soap_bodies[0]
+    with pytest.raises(UpnpError):
+        await speaker.speaker.call("urn:schemas-upnp-org:service:HTControl:1", "GetIRRepeaterState")
+
+
+async def test_a_speaker_is_followed_once_its_first_event_came_in(speaker: FakeSpeaker) -> None:
+    """The events go to MA's stream server; an event names the channel volumes apart."""
     on_change = MagicMock()
 
-    await events.follow(location, on_change)
-    assert fake.callbacks == [f"<http://192.168.1.10:8097{EVENTS_PATH}>"]
+    await speaker.speaker.follow(on_change)
     # subscribed, but nothing came in yet: events may not reach MA at all
-    assert not events.follows(location)
-    await _notify(events)
+    followed_before_event = speaker.speaker.follows
+    await _notify(speaker.speaker)
 
-    assert events.follows(location)
+    assert speaker.callbacks == [f"<http://192.168.1.10:8097{EVENTS_PATH}>"]
+    assert not followed_before_event
+    assert speaker.speaker.follows
     on_change.assert_called_once_with(
         {"InstanceID": "0", "Volume": "40", "Volume_LF": "100", "Volume_RF": "80", "Bass": "3"}
     )
 
 
-async def test_a_refused_or_lost_subscription_is_made_again(
-    speaker: tuple[_Speaker, str, SonosEvents, MagicMock],
-) -> None:
+async def test_a_refused_or_lost_subscription_is_made_again(speaker: FakeSpeaker) -> None:
     """A refused subscribe or renewal leaves the speaker unfollowed until the next follow."""
-    fake, location, events, _ = speaker
-    fake.subscribe_status = 500
-    await events.follow(location, MagicMock())
-    assert location not in events._subscriptions
+    upnp = speaker.speaker
+    speaker.subscribe_status = 500
+    await upnp.follow(MagicMock())
+    refused_subscription = upnp._events_service
 
-    fake.subscribe_status = 200
-    await events.follow(location, MagicMock())
-    await _notify(events)
-    events._subscriptions[location].renew_at = 0.0
-    fake.subscribe_status = 412
-    await events.follow(location, MagicMock())
+    speaker.subscribe_status = 200
+    await upnp.follow(MagicMock())
+    await _notify(upnp)
+    followed_after_retry = upnp.follows
+    upnp._renew_at = 0.0
+    speaker.subscribe_status = 412
+    await upnp.follow(MagicMock())
 
-    assert not events.follows(location)
-    assert location not in events._subscriptions
+    assert refused_subscription is None
+    assert followed_after_retry
+    assert not upnp.follows
+    assert upnp._events_service is None
 
 
-async def test_close_ends_the_subscriptions_and_the_route(
-    speaker: tuple[_Speaker, str, SonosEvents, MagicMock],
-) -> None:
-    """Closing unsubscribes and takes the event route off MA's stream server."""
-    fake, location, events, mass = speaker
-    await events.follow(location, MagicMock())
+async def test_unfollow_ends_the_subscription(speaker: FakeSpeaker) -> None:
+    """Unfollowing unsubscribes; closing takes the event route off MA's stream server."""
+    await speaker.speaker.follow(MagicMock())
 
-    await events.close()
+    await speaker.speaker.unfollow()
+    speaker.speaker._upnp.close()
 
-    assert fake.methods[-1] == "UNSUBSCRIBE"
-    mass.streams.register_dynamic_route.return_value.assert_called_once_with()
+    assert speaker.methods[-1] == "UNSUBSCRIBE"
+    speaker.mass.streams.register_dynamic_route.return_value.assert_called_once_with()
 
 
 @pytest.mark.parametrize(
@@ -197,12 +237,13 @@ def test_an_option_event_reads_the_options(changes: dict[str, str], read: bool) 
 
 
 @pytest.mark.parametrize(
-    ("follows", "interval"), [(True, OPTIONS_EVENTS_POLL_INTERVAL), (False, OPTIONS_POLL_INTERVAL)]
+    ("follows", "interval"),
+    [(True, OPTIONS_EVENTS_POLL_INTERVAL), (False, OPTIONS_POLL_INTERVAL)],
 )
 def test_poll_interval_follows_the_events(follows: bool, interval: int) -> None:
     """The options are polled less often while the speaker's events come in."""
     player, _ = _bind_player(MagicMock())
-    events: Any = player._events
-    events.follows.return_value = follows
+    upnp: Any = player.upnp
+    upnp.follows = follows
 
     assert player.poll_interval == interval

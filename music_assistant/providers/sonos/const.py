@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from enum import StrEnum
 from typing import NamedTuple
 
 from aiosonos.api.models import PlayBackState as SonosPlayBackState
@@ -107,9 +108,38 @@ SURROUND_LEVEL_RANGE = OptionRange(-15, 15)
 # the player poll loop of all players waits for each read
 UPNP_OPTION_TIMEOUT_LIMIT = 5
 
+# UPnP of the speakers (reference, unofficial: https://sonos.svrooij.io/services)
+UPNP_PORT = 1400
+UPNP_TIMEOUT = 10
+RENDERING_CONTROL_SERVICE = "urn:schemas-upnp-org:service:RenderingControl:1"
+DEVICE_PROPERTIES_SERVICE = "urn:schemas-upnp-org:service:DeviceProperties:1"
+HT_CONTROL_SERVICE = "urn:schemas-upnp-org:service:HTControl:1"
+
+
+class EqType(StrEnum):
+    """EQ types of RenderingControl GetEQ/SetEQ; not every speaker supports each."""
+
+    AUDIO_DELAY = "AudioDelay"
+    DIALOG_LEVEL = "DialogLevel"
+    MUSIC_SURROUND_LEVEL = "MusicSurroundLevel"
+    SUB_CROSSOVER = "SubCrossover"
+    SUB_ENABLED = "SubEnable"
+    SUB_GAIN = "SubGain"
+    SURROUND_ENABLED = "SurroundEnable"
+    SURROUND_LEVEL = "SurroundLevel"
+    SURROUND_MODE = "SurroundMode"  # 0 = ambient, 1 = full
+
+
+class IrRepeaterState(StrEnum):
+    """States of the IR repeater of a home theater speaker."""
+
+    ON = "On"
+    OFF = "Off"
+    DISABLED = "Disabled"
+
+
 # UPnP RenderingControl events, received on the stream server
 EVENTS_PATH = "/sonos/notify"
-RENDERING_CONTROL_SERVICE = "urn:schemas-upnp-org:service:RenderingControl:1"
 # seconds a subscription is asked for; it is renewed halfway, by the poll
 EVENT_SUBSCRIPTION_TIMEOUT = 1800
 # poll interval (seconds) of the player options without and with events coming in; with
