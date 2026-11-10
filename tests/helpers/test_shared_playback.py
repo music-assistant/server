@@ -9,7 +9,11 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from music_assistant_models.enums import PlayerFeature
-from music_assistant_models.errors import SetupFailedError, UnsupportedFeaturedException
+from music_assistant_models.errors import (
+    PlayerCommandFailed,
+    SetupFailedError,
+    UnsupportedFeaturedException,
+)
 
 from music_assistant.helpers.shared_playback import SharedPlaybackMode, SharedPlaybackSession
 from tests.common import collect_loop_errors
@@ -149,6 +153,25 @@ async def test_venue_remove_leaves_a_player_that_is_no_guest_listener() -> None:
     await session.remove_guest_listener("web_player_1")
 
     mass.players.cmd_set_members.assert_not_awaited()
+
+
+async def test_venue_remove_keeps_a_listener_whose_detach_failed() -> None:
+    """A guest listener stays tracked when detaching it fails, so a retry detaches it."""
+    venue_player = _create_venue_player(can_group_with={"web_player_1"})
+    mass = _create_mock_mass(venue_player)
+    session = await SharedPlaybackSession.create_venue(mass, "venue_player")
+    await session.add_guest_listener("web_player_1")
+    mass.players.cmd_set_members.side_effect = PlayerCommandFailed("detach failed")
+
+    with pytest.raises(PlayerCommandFailed):
+        await session.remove_guest_listener("web_player_1")
+    mass.players.cmd_set_members.side_effect = None
+    await session.remove_guest_listener("web_player_1")
+
+    mass.players.cmd_set_members.assert_awaited_with(
+        "venue_player", player_ids_to_remove=["web_player_1"]
+    )
+    assert mass.players.cmd_set_members.await_count == 3
 
 
 async def test_venue_restores_remembered_listener_only_when_missing() -> None:

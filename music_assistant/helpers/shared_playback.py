@@ -252,12 +252,11 @@ class SharedPlaybackSession:
         """
         if web_player_id not in self._guest_listeners:
             return
+        if self._get_host_player() is not None:
+            await self.mass.players.cmd_set_members(
+                self._player_id, player_ids_to_remove=[web_player_id]
+            )
         self._guest_listeners.discard(web_player_id)
-        if self._get_host_player() is None:
-            return
-        await self.mass.players.cmd_set_members(
-            self._player_id, player_ids_to_remove=[web_player_id]
-        )
 
     async def close(self) -> None:
         """
