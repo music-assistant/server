@@ -2264,6 +2264,8 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         :param queue_id: The queue the play request names.
         :param media: The media of the play request.
         :param option: The enqueue option of the play request, None for the default.
+        :raises InsufficientPermissions: When the request goes to the owner's queue and the
+            current user lacks access to the owner.
         """
         if (player := self.mass.players.get_player(queue_id)) is None:
             return queue_id
@@ -2278,6 +2280,7 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
             )
         ):
             return queue_id
+        self._check_player_permission(owner.player_id)
         self.logger.info(
             "Player %s is synced or grouped, its play request goes to the queue of %s",
             player.display_name,

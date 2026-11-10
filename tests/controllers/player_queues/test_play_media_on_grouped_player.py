@@ -5,7 +5,8 @@ Player "a" is synced to player "b", or a dynamic or static member of group playe
 request on a's own queue that adds to what it plays goes to the queue of that owner; new content
 follows a's play_media_overrides_group setting: on, a leaves the group and plays it on its own
 queue; off, the owner's queue plays it. The real queue and players controllers handle the request;
-only the media lookup, the member change and what a device plays are stubbed.
+only the media lookup, the member change and what a device plays are stubbed. A request that
+ends up on the owner's queue needs access to the owner as well.
 """
 
 from __future__ import annotations
@@ -17,6 +18,7 @@ from unittest.mock import AsyncMock, MagicMock, Mock
 
 import pytest
 from music_assistant_models.enums import MediaType, PlayerFeature, PlayerType, QueueOption
+from music_assistant_models.errors import InsufficientPermissions
 from music_assistant_models.media_items import ItemMapping, ProviderMapping, Track
 from music_assistant_models.player_queue import PlayerQueue
 from music_assistant_models.unique_list import UniqueList
@@ -27,12 +29,28 @@ from music_assistant.controllers.player_queues.media_resolver import ResolvedIte
 from music_assistant.controllers.player_queues.state import PlayerQueueData
 from music_assistant.controllers.players import PlayerController
 from music_assistant.models.player import PlayerMedia
-from tests.common import MockPlayer, MockProvider, grouping_player_controller
+from tests.common import MockPlayer, MockProvider, as_user, grouping_player_controller
 
 ADDING_OPTIONS = [QueueOption.ADD, QueueOption.NEXT, QueueOption.REPLACE_NEXT]
 STARTING_OPTIONS = [QueueOption.PLAY, QueueOption.REPLACE]
 KINDS = ["synced", "dynamic", "static"]
 OWNER = {"synced": "b", "dynamic": "g", "static": "g"}
+# the callers that may use the owner: none at all, an unlimited user, a user of both players
+USERS = ["no-user", "unlimited", "member-and-owner"]
+RELEASE = {
+    "synced": "set_members(b,-['a'])",
+    "dynamic": "set_members(g,-['a'])",
+    "static": "stop(g)",
+}
+
+
+def _caller(user: str, kind: str) -> contextlib.AbstractContextManager[None]:
+    """Run the request as the given caller, see USERS; "member-only" may only use a."""
+    if user == "no-user":
+        return contextlib.nullcontext()
+    return as_user(
+        {"unlimited": [], "member-and-owner": ["a", OWNER[kind]], "member-only": ["a"]}[user]
+    )
 
 
 class _Setup:
@@ -134,7 +152,8 @@ class _Setup:
         mass.music.check_item_playable_for_user = Mock()
 
         async def _play_index(queue_id: str, *_args: Any, **_kwargs: Any) -> None:
-            # what play_index ends in: the queue's player plays the queue
+            # what play_index does: check the caller's access, then the queue's player plays it
+            ctrl._check_player_permission(queue_id)
             await self.players.play_media(
                 queue_id, PlayerMedia(uri=f"queue://{queue_id}", source_id=queue_id)
             )
@@ -181,16 +200,18 @@ def _track(item_id: str = "t1") -> Track:
     )
 
 
+@pytest.mark.parametrize("user", USERS)
 @pytest.mark.parametrize("overrides_group", [True, False])
 @pytest.mark.parametrize("option", ADDING_OPTIONS)
 @pytest.mark.parametrize("kind", KINDS)
 async def test_adding_goes_to_the_queue_the_player_plays(
-    kind: str, option: QueueOption, overrides_group: bool
+    kind: str, option: QueueOption, overrides_group: bool, user: str
 ) -> None:
     """Media added on a captured player lands in its owner's queue, the player stays grouped."""
     setup = _Setup(kind, overrides_group, QueueOption.PLAY.value)
 
-    await setup.queues.play_media("a", _track(), option)
+    with _caller(user, kind):
+        await setup.queues.play_media("a", _track(), option)
 
     assert setup.items(OWNER[kind]) == ["t1"]
     assert setup.items("a") == []
@@ -198,41 +219,68 @@ async def test_adding_goes_to_the_queue_the_player_plays(
     assert setup.released == []
 
 
+@pytest.mark.parametrize("user", [*USERS, "member-only"])
 @pytest.mark.parametrize("option", STARTING_OPTIONS)
 @pytest.mark.parametrize("kind", KINDS)
 async def test_new_content_plays_on_the_player_alone_with_the_setting_on(
-    kind: str, option: QueueOption
+    kind: str, option: QueueOption, user: str
 ) -> None:
     """With the setting on the player leaves its group and plays its own queue."""
     setup = _Setup(kind, True, QueueOption.PLAY.value)
 
-    await setup.queues.play_media("a", _track(), option)
+    with _caller(user, kind):
+        await setup.queues.play_media("a", _track(), option)
 
     assert setup.items("a") == ["t1"]
     assert setup.items(OWNER[kind]) == []
     assert setup.played == [("a", "a")]
-    assert setup.released == [
-        {
-            "synced": "set_members(b,-['a'])",
-            "dynamic": "set_members(g,-['a'])",
-            "static": "stop(g)",
-        }[kind]
-    ]
+    assert setup.released == [RELEASE[kind]]
 
 
+@pytest.mark.parametrize("user", USERS)
 @pytest.mark.parametrize("option", STARTING_OPTIONS)
 @pytest.mark.parametrize("kind", KINDS)
 async def test_new_content_plays_on_the_owner_with_the_setting_off(
-    kind: str, option: QueueOption
+    kind: str, option: QueueOption, user: str
 ) -> None:
     """With the setting off the owner's queue gets the media and the owner plays it."""
     setup = _Setup(kind, False, QueueOption.PLAY.value)
 
-    await setup.queues.play_media("a", _track(), option)
+    with _caller(user, kind):
+        await setup.queues.play_media("a", _track(), option)
 
     assert setup.items(OWNER[kind]) == ["t1"]
     assert setup.items("a") == []
     assert setup.played == [(OWNER[kind], OWNER[kind])]
+    assert setup.released == []
+
+
+@pytest.mark.parametrize(
+    ("option", "overrides_group"),
+    [
+        *((option, True) for option in ADDING_OPTIONS),
+        *((option, False) for option in ADDING_OPTIONS),
+    ]
+    + [(option, False) for option in STARTING_OPTIONS],
+)
+@pytest.mark.parametrize("kind", KINDS)
+async def test_a_request_for_the_owner_queue_needs_access_to_the_owner(
+    kind: str, option: QueueOption, overrides_group: bool
+) -> None:
+    """A user of the member only is refused before any queue or player is touched."""
+    setup = _Setup(kind, overrides_group, QueueOption.PLAY.value)
+
+    with (
+        _caller("member-only", kind),
+        pytest.raises(
+            InsufficientPermissions, match=f"limited does not have access to player {OWNER[kind]}"
+        ),
+    ):
+        await setup.queues.play_media("a", _track(), option)
+
+    assert setup.items(OWNER[kind]) == []
+    assert setup.items("a") == []
+    assert setup.played == []
     assert setup.released == []
 
 
