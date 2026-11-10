@@ -216,6 +216,7 @@ class OvercastProvider(MusicProvider):
                 if state is not None and (state.played or state.progress_s):
                     mass_episode.resume_position_ms = (state.progress_s or 0) * 1000
                     mass_episode.fully_played = state.played
+                    mass_episode.resume_position_timestamp = state.user_updated_at
             yield mass_episode
 
     async def get_podcast_episode(self, prov_episode_id: str) -> PodcastEpisode:
@@ -431,12 +432,10 @@ class OvercastProvider(MusicProvider):
             )
             if mass_episode is None:
                 continue
-            if not state.played:
-                # never move the user backwards: the playlog write replaces whatever MA
-                # recorded itself, which may be a position further into the episode
-                _, local_position_ms = await self.mass.music.get_resume_position(mass_episode)
-                if local_position_ms > (state.progress_s or 0) * 1000:
-                    continue
+            overcast_point = (state.played, (state.progress_s or 0) * 1000)
+            if await self.mass.music.get_resume_position(mass_episode) != overcast_point:
+                # the progress Music Assistant recorded itself wins
+                continue
             await self.mass.music.mark_item_played(
                 mass_episode,
                 fully_played=state.played,
