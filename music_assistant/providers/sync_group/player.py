@@ -105,7 +105,7 @@ class SyncGroupPlayer(PlayerProtocol):
 
         The session is considered active while a sync leader is set (formed and
         potentially playing/paused), while the idle grace timer is still
-        pending, or while a debounced re-form is pending. ``__final_active_group``
+        pending, or while a debounced re-form is pending. The state derivation
         reads this to decide whether the configured members should be marked as
         ``active_group`` for this group.
         """
@@ -1229,7 +1229,7 @@ class SyncGroupPlayer(PlayerProtocol):
     def _update_attributes(self) -> None:
         """Update dynamic attributes."""
         # NOTE on what reads from `.state.*` vs the leader's raw attributes below:
-        # `__final_current_media` and `__final_active_source` on a player that has
+        # the current media and active source of a player that has
         # an ``active_group`` route through the active_group's state — so reading
         # ``sync_leader.state.current_media`` from inside the group would loop
         # back through our own state derivation (group → leader.state →

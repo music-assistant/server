@@ -148,7 +148,7 @@ class UniversalGroupPlayer(PlayerProtocol):
         Return whether this group currently has captured members.
 
         The session is considered active while the multicast stream is live or
-        while the idle grace timer is still pending. ``__final_active_group``
+        while the idle grace timer is still pending. The state derivation
         reads this to decide whether the configured members should be marked
         as ``active_group`` for this group.
         """

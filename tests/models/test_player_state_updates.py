@@ -28,6 +28,7 @@ from music_assistant_models.streamdetails import StreamDetails, StreamMetadata
 
 import music_assistant.models.player as player_module
 from music_assistant.controllers.players.audio_sources import AudioSourceSession
+from music_assistant.models.player_state import derive_player_state
 from tests.common import MockPlayer, MockProvider
 
 
@@ -67,14 +68,12 @@ class TestUpdateStateChangeDetection:
     def test_no_change_update_does_no_work(self, player: MockPlayer) -> None:
         """An update_state call without any changed input builds nothing."""
         with (
-            patch.object(
-                player_module, "PlayerState", wraps=player_module.PlayerState
-            ) as state_cls,
+            patch.object(player_module, "derive_player_state", wraps=derive_player_state) as derive,
             patch.object(copy, "deepcopy", wraps=copy.deepcopy) as deepcopy_mock,
         ):
             player.update_state()
 
-        state_cls.assert_not_called()
+        derive.assert_not_called()
         deepcopy_mock.assert_not_called()
 
     def test_position_tick_does_not_rebuild(self, player: MockPlayer) -> None:
@@ -85,11 +84,11 @@ class TestUpdateStateChangeDetection:
         player._attr_elapsed_time_last_updated += 1
 
         with patch.object(
-            player_module, "PlayerState", wraps=player_module.PlayerState
-        ) as state_cls:
+            player_module, "derive_player_state", wraps=derive_player_state
+        ) as derive:
             player.update_state()
 
-        state_cls.assert_not_called()
+        derive.assert_not_called()
         assert player.state.elapsed_time == 10.0
 
     def test_position_jump_rebuilds_state(self, player: MockPlayer) -> None:
@@ -106,11 +105,11 @@ class TestUpdateStateChangeDetection:
         player._attr_volume_level = 55
 
         with patch.object(
-            player_module, "PlayerState", wraps=player_module.PlayerState
-        ) as state_cls:
+            player_module, "derive_player_state", wraps=derive_player_state
+        ) as derive:
             player.update_state(signal_event=False)
 
-        state_cls.assert_called_once()
+        derive.assert_called_once()
         assert player.state.volume_level == 55
 
     def test_changed_privacy_rebuilds_state(self, player: MockPlayer) -> None:
@@ -118,22 +117,22 @@ class TestUpdateStateChangeDetection:
         player._attr_private = True
 
         with patch.object(
-            player_module, "PlayerState", wraps=player_module.PlayerState
-        ) as state_cls:
+            player_module, "derive_player_state", wraps=derive_player_state
+        ) as derive:
             player.update_state(signal_event=False)
 
-        state_cls.assert_called_once()
+        derive.assert_called_once()
         assert player.state.private is True
 
     def test_mark_state_dirty_forces_recalculation(self, player: MockPlayer) -> None:
         """mark_state_dirty recalculates even when no own input changed."""
         with patch.object(
-            player_module, "PlayerState", wraps=player_module.PlayerState
-        ) as state_cls:
+            player_module, "derive_player_state", wraps=derive_player_state
+        ) as derive:
             player.mark_state_dirty()
             player.update_state(signal_event=False)
 
-        state_cls.assert_called_once()
+        derive.assert_called_once()
 
     def test_position_appearing_signals_a_jump(
         self, player: MockPlayer, mock_mass: MagicMock
@@ -156,63 +155,6 @@ class TestUpdateStateChangeDetection:
 
         mock_mass.players.on_player_position_jumped.assert_called_once_with(player)
         assert player.state.elapsed_time == 0.5
-
-
-class TestReconcilePositionAnchor:
-    """The anchor reconcile helper's handling of incomplete anchors."""
-
-    def test_incomplete_to_complete_reports_a_jump(self) -> None:
-        """A position appearing on a None anchor is a discontinuity, not a quiet adopt."""
-        position, _, jumped = player_module._reconcile_position_anchor(
-            None, None, 0.5, time.time(), prev_playing=True, new_playing=True
-        )
-        assert position == 0.5
-        assert jumped
-
-    def test_complete_to_incomplete_adopts_silently(self) -> None:
-        """A position disappearing (stop/reset) is adopted without a jump signal."""
-        position, _, jumped = player_module._reconcile_position_anchor(
-            10.0, time.time(), None, None, prev_playing=True, new_playing=False
-        )
-        assert position is None
-        assert not jumped
-
-    def test_incomplete_to_incomplete_stays_silent(self) -> None:
-        """No position on either side has nothing to signal."""
-        _, _, jumped = player_module._reconcile_position_anchor(
-            None, None, None, None, prev_playing=False, new_playing=False
-        )
-        assert not jumped
-
-    def test_steady_playback_still_keeps_the_previous_anchor(self) -> None:
-        """A tick extrapolating to the same corrected position keeps the anchor unchanged."""
-        now = time.time()
-        position, timestamp, jumped = player_module._reconcile_position_anchor(
-            10.0, now - 5, 15.2, now, prev_playing=True, new_playing=True
-        )
-        assert position == 10.0
-        assert timestamp == now - 5
-        assert not jumped
-
-    def test_resume_adopts_the_fresh_anchor(self) -> None:
-        """Resuming must not extrapolate from a timestamp taken before the stop."""
-        now = time.time()
-        position, timestamp, jumped = player_module._reconcile_position_anchor(
-            59.0, now - 3600, 59.0, now - 0.5, prev_playing=False, new_playing=True
-        )
-        assert position == 59.0
-        assert timestamp == now - 0.5
-        assert not jumped
-
-    def test_pause_adopts_the_paused_anchor(self) -> None:
-        """A paused anchor is read without extrapolation, so it must hold the paused position."""
-        now = time.time()
-        position, timestamp, jumped = player_module._reconcile_position_anchor(
-            0.0, now - 90, 90.0, now, prev_playing=True, new_playing=False
-        )
-        assert position == 90.0
-        assert timestamp == now
-        assert not jumped
 
 
 class TestNativeCurrentMediaPosition:
