@@ -4007,7 +4007,8 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         Adding needs access to the target player and to every player added. Without access
         to the target player, a user may only remove players they have access to from it,
         and only while the target player is not synced to another player itself. For a
-        member of a group player, the group player counts as a target player too.
+        member of a group player, the group player counts as a target player too, and the
+        member stays synced.
 
         :param target_player: player_id of the syncgroup leader or group player.
         :param player_ids_to_add: List of player_id's to add to the target player.
@@ -4026,14 +4027,15 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
                     raise InsufficientPermissions(msg)
 
         target = self.get_player(target_player)
-        targets = [target_player]
-        if target and (group_player := self._get_set_members_group(target)):
-            targets.append(group_player.player_id)
+        group_player = self._get_set_members_group(target) if target else None
+        targets = [target_player, group_player.player_id] if group_player else [target_player]
         if all(has_player_access(current_user, pid, self.get_player(pid)) for pid in targets):
             check_access(player_ids_to_add or [])
             return
-        # cmd_set_members first detaches a target that is synced to another player
-        if player_ids_to_add or not player_ids_to_remove or (target and target.synced_to):
+        # cmd_set_members first detaches a target that is synced to another player,
+        # unless it passes the command on to the target's group player
+        detaches_target = target is not None and not group_player and bool(target.synced_to)
+        if player_ids_to_add or not player_ids_to_remove or detaches_target:
             check_access(targets)
         check_access(player_ids_to_remove or [])
 

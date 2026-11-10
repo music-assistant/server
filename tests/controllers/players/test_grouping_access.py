@@ -188,6 +188,22 @@ async def test_own_player_leaves_a_group_the_user_can_not_use(
     )
 
 
+async def test_own_synced_player_leaves_a_group_the_user_can_not_use(
+    controller: PlayerController,
+) -> None:
+    """A user may take their own player out of a group player while it is synced in it."""
+    _sync(controller, "c", "a")
+    _capture(controller, "c", "a")
+    assert controller._players["a"].synced_to == "c"
+
+    with _user(["a"]):
+        await controller._api_cmd_set_members("a", player_ids_to_remove=["a"])
+
+    controller._handle_set_members.assert_awaited_once_with(  # type: ignore[attr-defined]
+        controller._players["g"], None, ["a"]
+    )
+
+
 @pytest.mark.parametrize(
     "command",
     [
