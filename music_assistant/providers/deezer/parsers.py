@@ -26,6 +26,7 @@ from deezer_python_gql.generated.get_recently_played import (
 from deezer_python_gql.generated.get_track import GetTrackTrack
 from music_assistant_models.enums import (
     AlbumType,
+    ContentType,
     ExternalID,
     ImageType,
     MediaType,
@@ -34,6 +35,7 @@ from music_assistant_models.media_items import (
     Album,
     Artist,
     Audiobook,
+    AudioFormat,
     ItemMapping,
     MediaItemChapter,
     MediaItemImage,
@@ -966,3 +968,11 @@ def parse_date(date_value: str | None) -> datetime | None:
         return datetime.fromisoformat(str(date_value))
     except ValueError, TypeError:
         return None
+
+
+def parse_audio_format(deezer_format: str) -> AudioFormat:
+    """Return the audio format of a Deezer format name, with the bit rate an MP3 name carries."""
+    return AudioFormat(
+        content_type=ContentType.try_parse(deezer_format.split("_", maxsplit=1)[0]),
+        bit_rate={"MP3_320": 320, "MP3_128": 128}.get(deezer_format),
+    )

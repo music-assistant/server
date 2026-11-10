@@ -52,7 +52,7 @@ from .helpers import (
     fetch_all_bookmarks,
     parse_flac_streaminfo,
 )
-from .parsers import parse_date
+from .parsers import parse_audio_format, parse_date
 
 if TYPE_CHECKING:
     from music_assistant_models.media_items import ItemMapping
@@ -162,9 +162,7 @@ class DeezerStreamingManager:
         track_id = str(song_data["SNG_ID"])
         size_key = f"FILESIZE_{url_details['format']}"
         size = int(song_data.get(size_key) or song_data.get("FILESIZE_MP3_MISC") or 0)
-        audio_format = AudioFormat(
-            content_type=ContentType.try_parse(url_details["format"].split("_")[0])
-        )
+        audio_format = parse_audio_format(url_details["format"])
         if audio_format.content_type == ContentType.FLAC and (
             streaminfo := await self._get_flac_streaminfo(url, track_id, size)
         ):
@@ -275,9 +273,7 @@ class DeezerStreamingManager:
             item_id=item_id,
             provider=self.instance_id,
             media_type=MediaType.AUDIOBOOK,
-            audio_format=AudioFormat(
-                content_type=ContentType.try_parse(first_url_details["format"].split("_")[0])
-            ),
+            audio_format=parse_audio_format(first_url_details["format"]),
             stream_type=StreamType.CUSTOM,
             duration=total_duration,
             data={
