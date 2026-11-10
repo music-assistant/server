@@ -499,9 +499,8 @@ async def test_used_duplicate_is_not_merged(
     await _seen_again_with_its_address(scenario, bedroom.airplay, BEDROOM_TV.ip)
 
     # the unused duplicate is merged: its id becomes a legacy id of the older player
-    assert [p.player_id for p in scenario.players_carrying(living.airplay, living.cast)] == [
-        living.older_id
-    ]
+    for receiver in (living.airplay, living.cast):
+        assert [p.player_id for p in scenario.players_carrying(receiver)] == [living.older_id]
     resolved = scenario.player(living.younger_id)
     assert resolved is not None
     assert resolved.player_id == living.older_id
