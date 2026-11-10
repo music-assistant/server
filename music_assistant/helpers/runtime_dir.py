@@ -43,9 +43,13 @@ def prepare_runtime_dir(cache_path: str) -> str:
     # the shared dirs serve every process and user on a host, so the name is derived from the
     # cache path, which differs per server
     name = f"music-assistant-{hashlib.sha256(str(cache_dir).encode()).hexdigest()[:12]}"
-    bases = [tempfile.gettempdir()]
+    bases: list[str] = []
     if os.getuid() < FIRST_REGULAR_UID or not Path(SYSTEMD_RUN_PATH).is_dir():
-        bases.insert(0, SHM_PATH)
+        bases.append(SHM_PATH)
+    try:
+        bases.append(tempfile.gettempdir())
+    except OSError as err:
+        LOGGER.debug("Runtime dir cannot use a temp dir: %s", err)
     for base in bases:
         runtime_dir = Path(base, name)
         try:

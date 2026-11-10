@@ -183,6 +183,33 @@ def test_falls_back_to_the_cache_path_as_a_last_resort(
     assert stat.S_IMODE(result.stat().st_mode) == 0o700
 
 
+def _no_usable_temp_dir() -> str:
+    raise FileNotFoundError("No usable temporary directory found")
+
+
+def test_no_usable_temp_dir_still_uses_shared_memory(
+    monkeypatch: pytest.MonkeyPatch, shm_path: Path, cache_path: Path
+) -> None:
+    """A host without a usable temp dir still gets /dev/shm."""
+    monkeypatch.setattr(tempfile, "gettempdir", _no_usable_temp_dir)
+
+    result = Path(prepare_runtime_dir(str(cache_path)))
+
+    assert result.parent == shm_path
+
+
+@pytest.mark.usefixtures("no_shared_memory")
+def test_no_usable_temp_dir_falls_back_to_the_cache_path(
+    monkeypatch: pytest.MonkeyPatch, cache_path: Path
+) -> None:
+    """Without /dev/shm and without a usable temp dir the cache path is used."""
+    monkeypatch.setattr(tempfile, "gettempdir", _no_usable_temp_dir)
+
+    result = Path(prepare_runtime_dir(str(cache_path)))
+
+    assert result == cache_path / "runtime"
+
+
 @pytest.mark.usefixtures("no_shared_memory")
 def test_last_resort_leftovers_are_removed(
     monkeypatch: pytest.MonkeyPatch, cache_path: Path, tmp_path: Path
