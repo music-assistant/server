@@ -29,7 +29,7 @@ from tests.scenarios.harness import Scenario
 
 if TYPE_CHECKING:
     import pathlib
-    from collections.abc import AsyncGenerator
+    from collections.abc import AsyncGenerator, Coroutine
 
 KITCHEN = "sonos_kitchen"
 BEDROOM = "sonos_bedroom"
@@ -86,6 +86,18 @@ async def _user(scenario: Scenario, *player_filter: str, role: UserRole = UserRo
     )
 
 
+async def _run[T](scenario: Scenario, operation: Coroutine[Any, Any, T]) -> T:
+    """
+    Run an operation on the server of the scenario to its end.
+
+    :param scenario: The scenario whose server runs the operation.
+    :param operation: The operation, which must not wait for the clock.
+    """
+    task = await scenario.command(operation)
+    assert task.done()
+    return await task
+
+
 async def _send(
     scenario: Scenario, transport: Transport, user: User, command: str, **args: Any
 ) -> _Reply:
@@ -105,8 +117,7 @@ async def _send(
             webserver, make_mocked_request("GET", "/ws", app=web.Application())
         )
         client._authenticated_user = user
-        task = await scenario.command(client._handle_command(CommandMessage.from_dict(message)))
-        await task
+        await _run(scenario, client._handle_command(CommandMessage.from_dict(message)))
         answer = json.loads(client._to_write.get_nowait() or "")
         refused = answer.get("error_code") == InsufficientPermissions.error_code
         assert refused or "error_code" not in answer, answer
@@ -116,7 +127,7 @@ async def _send(
     payload.feed_eof()
     request = make_mocked_request("POST", "/api", payload=payload, app=web.Application())
     with patch.object(webserver_controller, "get_authenticated_user", AsyncMock(return_value=user)):
-        response = await (await scenario.command(webserver._handle_jsonrpc_api_command(request)))
+        response = await _run(scenario, webserver._handle_jsonrpc_api_command(request))
     assert response.status in (200, 403), response.text
     assert response.text is not None
     refused = response.status == 403
