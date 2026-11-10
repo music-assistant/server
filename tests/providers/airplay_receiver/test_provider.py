@@ -7,8 +7,9 @@ from dataclasses import dataclass
 from typing import cast
 from unittest.mock import AsyncMock, MagicMock
 
-from music_assistant_models.enums import EventType
+from music_assistant_models.enums import ContentType, EventType
 from music_assistant_models.event import MassEvent
+from music_assistant_models.media_items import AudioFormat
 
 from music_assistant.providers.airplay_receiver import (
     AirPlayReceiverProvider,
@@ -357,3 +358,29 @@ def test_a_fatal_log_line_marks_the_daemon_started() -> None:
     prov._process_shairport_log_line(daemon, "fatal error: Could not bind any listening ports")
 
     assert daemon.started.is_set()
+
+
+def test_receiver_pipes_and_config_live_in_the_runtime_dir() -> None:
+    """The receiver's FIFOs and shairport-sync config are created in the runtime dir."""
+    prov, mocks = _reconcile_provider(("p1",), {})
+    mocks.mass.runtime_path = "/ma-runtime"
+    prov.config.instance_id = "airplay_receiver"
+    prov.config.name = "AirPlay Receiver"
+    prov.manifest = MagicMock(domain="airplay_receiver")
+    prov._ports = {"p1": 7000}
+    prov._audio_format = AudioFormat(content_type=ContentType.ALAC)
+    prov._setup_shairport_daemon = MagicMock()  # type: ignore[method-assign]
+    player = MagicMock(player_id="p1", display_name="Player A")
+
+    AirPlayReceiverProvider._start_receiver(prov, player, "Player A | Music Assistant")
+
+    daemon = prov._daemons["p1"]
+    assert {
+        daemon.audio_pipe.path,
+        daemon.metadata_pipe.path,
+        daemon.config_file,
+    } == {
+        "/ma-runtime/ma_airplay_audio_airplay_receiver_p1",
+        "/ma-runtime/ma_airplay_metadata_airplay_receiver_p1",
+        "/ma-runtime/ma_shairport_sync_airplay_receiver_p1.conf",
+    }
