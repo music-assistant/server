@@ -23,6 +23,22 @@ LEGACY_ID = "old_kitchen"
 PLAYER_ID = "kitchen"
 OTHER_PLAYER_ID = "bedroom"
 
+# the arguments that hold a player id, listed apart from the set the resolver reads
+EXPECTED_PLAYER_ID_ARGUMENTS = (
+    "child_player_ids",
+    "members",
+    "player_filter",
+    "player_id",
+    "player_ids",
+    "player_ids_to_add",
+    "player_ids_to_remove",
+    "queue_id",
+    "source_queue_id",
+    "target_player",
+    "target_queue_id",
+    "venue_player_id",
+    "web_player_id",
+)
 # the arguments named after a player or queue that hold something else
 NO_PLAYER_ID_ARGUMENTS = {"queue_item_id", "return_protocol_players"}
 
@@ -36,13 +52,18 @@ def _mass() -> MusicAssistant:
     return cast("MusicAssistant", SimpleNamespace(players=players))
 
 
-@pytest.mark.parametrize("name", sorted(PLAYER_ID_ARGUMENTS))
+@pytest.mark.parametrize("name", EXPECTED_PLAYER_ID_ARGUMENTS)
 def test_legacy_id_in_a_player_id_argument_is_resolved(name: str) -> None:
     """Every argument that holds a player id takes a legacy id, alone or in a list."""
     assert resolve_player_ids(_mass(), {name: LEGACY_ID}) == {name: PLAYER_ID}
     assert resolve_player_ids(_mass(), {name: [OTHER_PLAYER_ID, LEGACY_ID]}) == {
         name: [OTHER_PLAYER_ID, PLAYER_ID]
     }
+
+
+def test_every_player_id_argument_is_tested() -> None:
+    """A name added to the player id arguments is added to the tested names as well."""
+    assert set(EXPECTED_PLAYER_ID_ARGUMENTS) >= PLAYER_ID_ARGUMENTS
 
 
 def test_other_arguments_are_left_alone() -> None:

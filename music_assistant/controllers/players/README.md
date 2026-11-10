@@ -73,19 +73,23 @@ The `PlayerState` is a dataclass representing the final state of the player. It:
 
 A player keeps answering to its legacy ids: ids it was known under before, such as the id of a
 player that was merged into it. They are stored with the player's config (`values.legacy_ids`)
-and resolved in one place, `PlayerController.resolve_player_id`:
+and resolved in one place, `PlayerController.resolve_player_id`. They resolve in:
 
-- Every API transport resolves the player and queue ids in the arguments of a command before
-  its handler runs (`run_api_command` in [helpers/api.py](../../helpers/api.py)), so a handler
-  and its permission checks only see the id of the player itself.
-- `get_player` and the lookups of the queue controller resolve them for callers inside the
-  server.
-- A source id is the id of a queue when the source is a queue, so the player commands that
-  take one resolve it before they compare it with the active source.
+- the id-bearing arguments of an API command (`PLAYER_ID_ARGUMENTS`), which every API
+  transport rewrites before the handler runs (`run_api_command` in
+  [helpers/api.py](../../helpers/api.py));
+- `get_player`, and the queue lookups (`get`, `queue_data`, `items`, `get_item` and the like);
+- the `source` and `source_id` arguments of the player commands, which also take source ids
+  that are no queue, so these commands resolve them before they compare them with the active
+  source;
+- `has_player_access`, when the caller passes the player it looked up.
+
+A command called inside the server is not rewritten: it takes the id of the player itself.
+Protocol ids never resolve.
 
 The lookup is built from the stored player configs at startup and again whenever a player
-config is deleted. The id of a player that has a stored config is never a legacy id: an id
-that another player lists resolves to that player only while no config is stored under it.
+config is deleted. An id resolves to the player that lists it only while no player is
+registered under that id and no config is stored under it.
 
 ## Core Components
 
