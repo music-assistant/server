@@ -1938,9 +1938,11 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         queue_data.credited_albums = set(saved.credited_albums)
         queue_data.userid = saved.userid
         queue_data.fade_ordered_until = saved.fade_ordered_until
-        # the tracker's last state describes the replaced content: left in place, its last played
-        # position would be read as where the restored current item stopped
+        # the tracker's last state and flow stream describe the replaced content: left in place,
+        # a late report of the stopped player is read against the restored items
         queue_data.prev_state = None
+        queue_data.flow_mode_stream_log = []
+        queue.flow_mode = False
         queue.ended = saved.queue.ended
         queue.current_index = saved.queue.current_index
         queue.resume_pos = saved.queue.resume_pos

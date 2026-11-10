@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import time
 from contextlib import suppress
+from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, Mock, patch
 
@@ -22,7 +23,7 @@ from music_assistant_models.media_items import (
     ProviderMapping,
     Track,
 )
-from music_assistant_models.player_queue import PlayerQueue
+from music_assistant_models.player_queue import PlayerQueue, PlayLogEntry
 from music_assistant_models.queue_item import QueueItem
 from music_assistant_models.streamdetails import StreamDetails
 from music_assistant_models.unique_list import UniqueList
@@ -221,6 +222,35 @@ async def test_restore_puts_back_the_content_a_takeover_replaced() -> None:
     quiz_buffer.clear.assert_awaited_once()
     ctrl.mass.cancel_task.assert_any_call(f"prepare_next_audio_buffer_{QUEUE_ID}")
     assert queue_data.prev_state is None
+
+
+async def test_restore_keeps_its_position_when_the_stopped_player_reports_late() -> None:
+    """A report of the replaced flow stream that lands after the restore leaves its position."""
+    ctrl = _controller()
+    queue_data = ctrl._queue_data[QUEUE_ID]
+    queue = queue_data.queue
+    snapshot = ctrl.snapshot(QUEUE_ID)
+    _take_over_like_a_quiz(ctrl)
+    quiz_item = queue_data.items[0]
+    queue.flow_mode = True
+    queue_data.flow_mode_stream_log = [PlayLogEntry(quiz_item.queue_item_id)]
+    # the player has not reported the stop yet, so the queue still reads playing
+    queue.state = PlaybackState.PLAYING
+    ctrl._handle_stop = AsyncMock()
+    await ctrl.restore(QUEUE_ID, snapshot)
+
+    player = SimpleNamespace(
+        active_output_protocol=None,
+        current_media=SimpleNamespace(
+            source_id=QUEUE_ID, queue_item_id=quiz_item.queue_item_id, uri=None
+        ),
+        state=SimpleNamespace(playback_state=PlaybackState.PLAYING, corrected_elapsed_time=6.0),
+    )
+    ctrl._update_current_index_from_player(queue, player)
+
+    assert queue.current_index == 1
+    assert queue.current_item is queue_data.items[1]
+    assert queue.elapsed_time == 42
 
 
 async def test_restore_keeps_a_queue_that_played_to_its_end_finished() -> None:
