@@ -221,7 +221,7 @@ The rules are one table. Two sides *differ* in a type when both report it and sh
 | `AIRPLAY_ID` | always | yes |
 | `IP_ADDRESS` | never | as a last resort |
 
-Every veto is checked before any shared value may match, so several AirPlay receivers on one host stay a player each although they share its IP and MAC address.
+Every veto is checked before any shared value may match, so two sides that differ in their AirPlay id never match, even when they share an IP and MAC address.
 
 - A UUID or serial number only vetoes within one domain: a Chromecast reports its cast uuid as UUID, DLNA its UDN, MusicCast and Bose their device id, so one device has several of them.
 - A MAC address never vetoes, as a device has one per network interface. Null and broadcast addresses identify nothing, and the locally-administered bit is ignored because some protocols report the hardware address with that bit set.

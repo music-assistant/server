@@ -163,11 +163,15 @@ def test_a_type_only_one_side_reports_never_vetoes() -> None:
 
 def test_a_shared_value_among_several_never_vetoes() -> None:
     """A room reporting the UUIDs of its renderers shares one with each of them."""
-    room = identity(
-        ("raumfeld", "dlna"), {UUID: ["renderer-1", "renderer-2", "renderer-3"], IP: HOST}
+    renderers = ["renderer-1", "renderer-2", "renderer-3"]
+    assert same_device(
+        identity(("raumfeld", "dlna"), {UUID: renderers}), identity("dlna", {UUID: "renderer-2"})
     )
-    assert same_device(room, identity("dlna", {UUID: "renderer-2", IP: HOST}))
-    assert not same_device(room, identity("dlna", {UUID: "renderer-4", IP: HOST}))
+    # a renderer of another room is vetoed although it shares the IP
+    assert not same_device(
+        identity(("raumfeld", "dlna"), {UUID: renderers, IP: HOST}),
+        identity("dlna", {UUID: "renderer-4", IP: HOST}),
+    )
 
 
 def test_shared_cast_uuid_matches_without_a_mac() -> None:
@@ -232,6 +236,10 @@ def test_shared_ip_matches_without_a_hardware_mac() -> None:
     assert same_device(
         identity("squeezelite", {MAC: HARDWARE_MAC, IP: HOST}, native=True),
         identity("snapcast", {IP: HOST}, native=True),
+    )
+    assert same_device(
+        identity("squeezelite", {MAC: HARDWARE_MAC, IP: HOST}, native=True),
+        identity("snapcast", {MAC: RANDOM_MAC, IP: HOST}, native=True),
     )
 
 
