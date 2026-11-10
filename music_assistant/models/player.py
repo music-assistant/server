@@ -80,6 +80,7 @@ from music_assistant.models.player_state import (
     StateInputs,
     derive_player_state,
     reconcile_position_anchor,
+    resolve_synced_to,
 )
 from music_assistant.models.plugin import PluginProvider
 
@@ -336,12 +337,13 @@ def _state_fingerprint(state: PlayerState) -> dict[str, Any]:
     return fingerprint
 
 
-def _protocol_snapshot(protocol_id: str, player: Player) -> ProtocolSnapshot:
+def _protocol_snapshot(protocol_id: str, player: Player, synced_to: str | None) -> ProtocolSnapshot:
     """
     Return what a provider object reports for its player.
 
     :param protocol_id: Player id the provider object is registered under.
     :param player: The provider object.
+    :param synced_to: Id of the player it reports to be synced to.
     """
     return ProtocolSnapshot(
         protocol_id=protocol_id,
@@ -358,7 +360,7 @@ def _protocol_snapshot(protocol_id: str, player: Player) -> ProtocolSnapshot:
         source_list=player.source_list,
         current_media=player.current_media,
         group_members=player.group_members,
-        synced_to=player.synced_to,
+        synced_to=synced_to,
     )
 
 
@@ -2730,16 +2732,22 @@ class Player(ABC):
     @final
     def __collect_state_inputs(self) -> StateInputs:
         """Collect everything the state of the player is derived from."""
-        own = _protocol_snapshot(self.player_id, self)
+        own = _protocol_snapshot(self.player_id, self, self.synced_to)
         peers: dict[str, PeerSnapshot] = {}
-        linked, active_protocol, foreign_app = self.__collect_protocols(peers)
+        linked, active_protocol, foreign_app = self.__collect_protocols(
+            peers, probe_synced_to=not own.synced_to
+        )
         for player_id in own.group_members:
             self.__collect_peer(peers, player_id)
         if own.synced_to:
             self.__collect_peer(peers, own.synced_to)
         if self.__attr_protocol_parent_id:
             self.__collect_peer(peers, self.__attr_protocol_parent_id)
-        can_group_with = self.__collect_can_group_with(peers)
+        can_group_with: set[str] = set()
+        # a player that is synced or keeps its grouping locked has nothing to group with,
+        # which saves looking up all players of the providers it can group through
+        if not self.grouping_locked and resolve_synced_to(own, linked, peers) is None:
+            can_group_with = self.__collect_can_group_with(peers, linked)
         groups = self.__collect_groups(peers)
         session = self.mass.players.get_audio_source_session(self.player_id)
         source_ids = {
@@ -2810,7 +2818,7 @@ class Player(ABC):
 
     @final
     def __collect_protocols(
-        self, peers: dict[str, PeerSnapshot]
+        self, peers: dict[str, PeerSnapshot], probe_synced_to: bool
     ) -> tuple[tuple[ProtocolSnapshot, ...], ProtocolSnapshot | None, ProtocolSnapshot | None]:
         """
         Collect what the linked protocol players report, and the players they refer to.
@@ -2819,6 +2827,9 @@ class Player(ABC):
         that plays an app Music Assistant did not start.
 
         :param peers: The peers collected so far, by id.
+        :param probe_synced_to: Read which player each linked protocol player is synced
+            to. That only counts for a player that reports no sync leader itself, and
+            finding it takes a pass over the players of the protocol's provider.
         """
         foreign_player = self.linked_foreign_player()
         foreign_app: ProtocolSnapshot | None = None
@@ -2829,7 +2840,9 @@ class Player(ABC):
             protocol_id = link.output_protocol_id
             if not (protocol_player := self.__collect_peer(peers, protocol_id)):
                 continue
-            protocol = _protocol_snapshot(protocol_id, protocol_player)
+            protocol = _protocol_snapshot(
+                protocol_id, protocol_player, protocol_player.synced_to if probe_synced_to else None
+            )
             linked.append(protocol)
             if protocol_player is foreign_player:
                 foreign_app = protocol
@@ -2837,33 +2850,40 @@ class Player(ABC):
                 active_protocol = protocol
             if protocol.synced_to:
                 self.__collect_peer(peers, protocol.synced_to)
-            for player_id in protocol_player.state.can_group_with:
-                self.__collect_peer(peers, player_id)
         if (
             active_protocol is None
             and active_output_protocol
             and active_output_protocol != "native"
             and (protocol_player := self.__collect_peer(peers, active_output_protocol))
         ):
-            active_protocol = _protocol_snapshot(active_output_protocol, protocol_player)
+            active_protocol = _protocol_snapshot(active_output_protocol, protocol_player, None)
         if active_protocol:
             for player_id in active_protocol.group_members:
                 self.__collect_peer(peers, player_id)
         return tuple(linked), active_protocol, foreign_app
 
     @final
-    def __collect_can_group_with(self, peers: dict[str, PeerSnapshot]) -> set[str]:
+    def __collect_can_group_with(
+        self, peers: dict[str, PeerSnapshot], linked: tuple[ProtocolSnapshot, ...]
+    ) -> set[str]:
         """
-        Collect the players the player reports it can group with.
+        Collect the players the player and its linked protocol players can group with.
 
-        Returns their ids: a provider instance id among the reported ids stands for
-        all (available) players of that provider.
+        Returns the ids the player itself reports: a provider instance id among them
+        stands for all (available) players of that provider.
 
         :param peers: The peers collected so far, by id.
+        :param linked: What the linked protocol players report.
         """
+        for protocol in linked:
+            for player_id in peers[protocol.protocol_id].state.can_group_with:
+                self.__collect_peer(peers, player_id)
+        # a protocol player groups with protocol players as they are,
+        # any other player with the visible players those belong to
+        with_parent = self.type != PlayerType.PROTOCOL
         result: set[str] = set()
         for member_id in self.can_group_with:
-            if self.__collect_peer(peers, member_id):
+            if self.__collect_peer(peers, member_id, with_parent):
                 result.add(member_id)
                 continue  # already a player ID
             # Check if member_id is a provider instance ID
@@ -2873,7 +2893,7 @@ class Player(ABC):
                     provider_filter=provider.instance_id,
                     return_protocol_players=True,
                 ):
-                    self.__add_peer(peers, player.player_id, player)
+                    self.__add_peer(peers, player.player_id, player, with_parent)
                     result.add(player.player_id)
         return result
 
@@ -2940,40 +2960,50 @@ class Player(ABC):
         return tuple(sources)
 
     @final
-    def __collect_peer(self, peers: dict[str, PeerSnapshot], player_id: str) -> Player | None:
+    def __collect_peer(
+        self, peers: dict[str, PeerSnapshot], player_id: str, with_parent: bool = True
+    ) -> Player | None:
         """
         Add the player with the given id to the peers, if it is registered.
 
         :param peers: The peers collected so far, by id.
         :param player_id: Id of the player to add.
+        :param with_parent: Also add the player it is linked to as a protocol player.
         """
         if player := self.mass.players.get_player(player_id):
-            self.__add_peer(peers, player_id, player)
+            self.__add_peer(peers, player_id, player, with_parent)
         return player
 
     @final
-    def __add_peer(self, peers: dict[str, PeerSnapshot], player_id: str, player: Player) -> None:
+    def __add_peer(
+        self,
+        peers: dict[str, PeerSnapshot],
+        player_id: str,
+        player: Player,
+        with_parent: bool = True,
+    ) -> None:
         """
-        Add a player to the peers, together with the player it is linked to as a protocol.
+        Add a player to the peers.
 
         :param peers: The peers collected so far, by id.
         :param player_id: Id the player is registered under.
         :param player: The player to add.
+        :param with_parent: Also add the player it is linked to as a protocol player.
         """
-        if player_id in peers:
-            return
-        peers[player_id] = PeerSnapshot(
-            player_id=player.player_id,
-            type=player.type,
-            available=player.available,
-            available_for_playback=player.available_for_playback,
-            protocol_parent_id=player.protocol_parent_id,
-            grouping_locked=player.grouping_locked,
-            powered=player.powered,
-            is_active_session=player.is_active_session,
-            state=player.state,
-        )
-        if parent_id := player.protocol_parent_id:
+        if player_id not in peers:
+            # positional, which is cheaper for the many players this runs for
+            peers[player_id] = PeerSnapshot(
+                player.player_id,
+                player.type,
+                player.available,
+                player.available_for_playback,
+                player.protocol_parent_id,
+                player.grouping_locked,
+                player.powered,
+                player.is_active_session,
+                player.state,
+            )
+        if with_parent and (parent_id := player.protocol_parent_id) and parent_id not in peers:
             self.__collect_peer(peers, parent_id)
 
     @final

@@ -70,7 +70,9 @@ class ProtocolSnapshot:
     :param source_list: Sources of the device.
     :param current_media: Media the device has loaded.
     :param group_members: Ids of the players grouped to the device, itself included.
-    :param synced_to: Id of the player the device is synced to.
+    :param synced_to: Id of the player the device is synced to. Only given where it
+        counts: for the player's own provider object, and for the linked protocol
+        players of a player that reports no sync leader itself.
     """
 
     protocol_id: str
@@ -90,7 +92,7 @@ class ProtocolSnapshot:
     synced_to: str | None
 
 
-@dataclass(slots=True, kw_only=True)
+@dataclass(slots=True)
 class PeerSnapshot:
     """
     Another player, as far as the state of a player depends on it.
@@ -278,7 +280,7 @@ def derive_player_state(inputs: StateInputs) -> tuple[PlayerState, StateEffects]
     """
     own = inputs.own
     prev_state = inputs.previous_state
-    synced_to = _synced_to(inputs)
+    synced_to = resolve_synced_to(own, inputs.linked, inputs.peers)
     active_group = _active_group(inputs)
     foreign_app = _shown_foreign_app(inputs, synced_to, active_group)
     playback_state, elapsed_time, elapsed_time_last_updated = _playback_position(
@@ -389,6 +391,41 @@ def derive_player_state(inputs: StateInputs) -> tuple[PlayerState, StateEffects]
     )
 
 
+def resolve_synced_to(
+    own: ProtocolSnapshot,
+    linked: Iterable[ProtocolSnapshot],
+    peers: Mapping[str, PeerSnapshot],
+) -> str | None:
+    """
+    Return the id of the visible player a player is synced to.
+
+    This checks both the sync state of the player itself and that of its linked
+    protocol players, translating protocol player ids to visible player ids.
+
+    :param own: What the player's own provider object reports.
+    :param linked: What the linked protocol players report, in link order.
+    :param peers: The other players referred to, by id.
+    """
+    if own_synced_to := own.synced_to:
+        if sync_parent := peers.get(own_synced_to):
+            return sync_parent.protocol_parent_id or sync_parent.player_id
+        return own_synced_to
+    # check if any of the linked protocol players are synced,
+    # and if so, return the visible player they are synced to
+    for protocol in linked:
+        if not protocol.synced_to:
+            continue
+        if not (sync_parent := peers.get(protocol.synced_to)):
+            continue
+        if sync_parent.type != PlayerType.PROTOCOL:
+            # Sync parent is already a visible player (e.g., native AirPlay player)
+            return sync_parent.player_id
+        if sync_parent.protocol_parent_id and (parent := peers.get(sync_parent.protocol_parent_id)):
+            # Sync parent is a protocol player, return its visible parent
+            return parent.player_id
+    return None
+
+
 def reconcile_position_anchor(
     prev_position: float | None,
     prev_timestamp: float | None,
@@ -439,35 +476,6 @@ def reconcile_position_anchor(
     if force_adopt or jumped or prev_playing != new_playing:
         return new_position, new_timestamp, jumped
     return prev_position, prev_timestamp, False
-
-
-def _synced_to(inputs: StateInputs) -> str | None:
-    """
-    Return the id of the visible player the player is synced to.
-
-    This checks both the sync state of the player itself and that of its linked
-    protocol players, translating protocol player ids to visible player ids.
-    """
-    if own_synced_to := inputs.own.synced_to:
-        if sync_parent := inputs.peers.get(own_synced_to):
-            return sync_parent.protocol_parent_id or sync_parent.player_id
-        return own_synced_to
-    # check if any of the linked protocol players are synced,
-    # and if so, return the visible player they are synced to
-    for protocol in inputs.linked:
-        if not protocol.synced_to:
-            continue
-        if not (sync_parent := inputs.peers.get(protocol.synced_to)):
-            continue
-        if sync_parent.type != PlayerType.PROTOCOL:
-            # Sync parent is already a visible player (e.g., native AirPlay player)
-            return sync_parent.player_id
-        if sync_parent.protocol_parent_id and (
-            parent := inputs.peers.get(sync_parent.protocol_parent_id)
-        ):
-            # Sync parent is a protocol player, return its visible parent
-            return parent.player_id
-    return None
 
 
 def _active_group(inputs: StateInputs) -> str | None:
