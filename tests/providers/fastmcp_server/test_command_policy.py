@@ -379,9 +379,12 @@ def test_curated_destructive_profiles_do_not_claim_write() -> None:
     assert liars == []
 
 
-def test_save_as_playlist_requires_the_playlist_edit_capability() -> None:
-    """Saving a queue as a playlist creates library playlists, not queue edits."""
-    decision = resolve_command_policy("player_queues/save_as_playlist", "library.write", None)
+@pytest.mark.parametrize(
+    "command", ["player_queues/save_as_playlist", "player_queues/add_to_playlist"]
+)
+def test_queue_to_playlist_commands_require_the_playlist_edit_capability(command: str) -> None:
+    """Putting a queue into a playlist edits library playlists, not the queue."""
+    decision = resolve_command_policy(command, "library.write", None)
 
     assert decision.required_capabilities == frozenset({str(Capability.EDIT_PLAYLISTS)})
     assert decision.hard_denied is False
