@@ -2,141 +2,64 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
-from music_assistant_models.errors import MediaNotFoundError
+from music_assistant_models.streamdetails import StreamMetadata
 
-from music_assistant.helpers.datetime import from_iso_string
-
-from .constants import ID_PATTERN, IMAGE_URL
-from .models import NowPlaying
+from .constants import IMAGE_URL
 
 if TYPE_CHECKING:
     from collections.abc import Iterable
+    from datetime import datetime
 
-    from .models import Channel, Programme, Series, Track
-
-
-def clean_text(value: Any) -> str | None:
-    """
-    Return the value stripped, if it is text with something in it.
-
-    :param value: Any value of a document of DR.
-    """
-    if isinstance(value, str) and value.strip():
-        return value.strip()
-    return None
+    from .models import Channel, DRAudioAsset, DRImageAsset, DRProgramme, DRTrack
 
 
-def parse_time(value: Any) -> float | None:
-    """
-    Return the epoch seconds of an ISO 8601 time that carries a UTC offset, else None.
-
-    :param value: Any value of a document of DR.
-    """
-    try:
-        moment = from_iso_string(value)
-    except TypeError, ValueError:
-        return None
-    return moment.timestamp() if moment.tzinfo else None
-
-
-def parse_id(value: Any) -> str | None:
-    """
-    Return the value if it is a production number of DR, which is made of digits, else None.
-
-    :param value: Any value of a document of DR.
-    """
-    return value if isinstance(value, str) and ID_PATTERN.fullmatch(value) else None
-
-
-def require_id(item_id: str, kind: str) -> str:
-    """
-    Return the id, or raise when it cannot be the production number of an item of DR.
-
-    :param item_id: The id to check.
-    :param kind: What the id is meant to identify, for the message of the error.
-    :raises MediaNotFoundError: When the id is no production number.
-    """
-    if parse_id(item_id) is None:
-        raise MediaNotFoundError(f"{item_id!r} is not the id of a DR {kind}")
-    return item_id
-
-
-def get_items(document: Any) -> list[Any]:
-    """
-    Return the items of a list document of DR, or none when it is not one.
-
-    :param document: A page of a list, as DR serves it.
-    """
-    items = document.get("items") if isinstance(document, dict) else None
-    return items if isinstance(items, list) else []
-
-
-def get_image_url(assets: Any, *targets: str) -> str | None:
+def get_image_url(assets: Iterable[DRImageAsset], *targets: str) -> str | None:
     """
     Return the url of the square picture among the image assets, if any.
 
-    A picture whose target is named earlier in targets wins, the others follow ordered by id.
-
-    :param assets: The image assets of an item of DR, each with an id, a target and a ratio.
+    :param assets: The image assets of an item of DR.
     :param targets: The targets of the preferred pictures, the first one is the most wanted.
     """
-    candidates = []
-    for asset in assets if isinstance(assets, list) else []:
-        if not isinstance(asset, dict) or asset.get("ratio") != "1:1":
-            continue
-        if image_id := clean_text(asset.get("id")):
-            target = asset.get("target")
-            rank = targets.index(target) if target in targets else len(targets)
-            candidates.append((rank, image_id))
+    # a picture whose target is named earlier wins, the other square ones follow ordered by id
+    candidates = [
+        (targets.index(asset.target) if asset.target in targets else len(targets), asset.id)
+        for asset in assets
+        if asset.ratio == "1:1"
+    ]
     return IMAGE_URL.format(min(candidates)[1]) if candidates else None
 
 
-def search_series(series: Iterable[Series], query: str, limit: int) -> list[Series]:
+def get_audio(assets: list[DRAudioAsset]) -> DRAudioAsset | None:
     """
-    Return the series matching all words of the query in title or description.
+    Return the audio asset of an episode to play, if it has one.
 
-    Matching is case-insensitive. Titles starting with the query come first, then other
-    title matches, then description matches; each group is ordered by title.
-
-    :param series: The series to search.
-    :param query: The words to find.
-    :param limit: The maximum number of series to return.
+    :param assets: The audio assets of an episode of DR.
     """
-    folded_query = " ".join(query.casefold().split())
-    words = folded_query.split()
-    if not words:
-        return []
-    ranked: list[tuple[int, str, Series]] = []
-    for entry in series:
-        title = entry.title.casefold()
-        if all(word in title for word in words):
-            rank = 0 if title.startswith(folded_query) else 1
-        elif all(word in f"{title}\n{(entry.description or '').casefold()}" for word in words):
-            rank = 2
-        else:
-            continue
-        ranked.append((rank, title, entry))
-    ranked.sort(key=lambda item: item[:2])
-    return [entry for _, _, entry in ranked[:limit]]
+    # the mp3 of the highest bitrate, else the HLS stream
+    mp3s = [asset for asset in assets if asset.target == "Progressive" and asset.format == "mp3"]
+    if mp3s:
+        return max(mp3s, key=lambda asset: asset.bitrate)
+    return next((asset for asset in assets if asset.format == "HLS"), None)
 
 
-def recently_updated(series: Iterable[Series], limit: int) -> list[Series]:
+def get_stream(assets: list[DRAudioAsset]) -> DRAudioAsset | None:
     """
-    Return the series whose latest episode is the newest, the newest series first.
+    Return the audio asset of a channel to stream, if it has one.
 
-    :param series: The series to pick from.
-    :param limit: The maximum number of series to return.
+    :param assets: The audio assets of a channel of DR.
     """
-    published = [entry for entry in series if entry.episodes > 0 and entry.latest is not None]
-    published.sort(key=lambda entry: entry.latest or 0.0, reverse=True)
-    return published[:limit]
+    # the HLS stream, else the ICY stream of the highest bitrate
+    if hls := next((asset for asset in assets if asset.format == "HLS"), None):
+        return hls
+    icy = [asset for asset in assets if asset.format == "ICY"]
+    return max(icy, key=lambda asset: asset.bitrate, default=None)
 
 
 def search_channels(channels: Iterable[Channel], query: str, limit: int) -> list[Channel]:
     """
-    Return the channels whose name holds every word of the query, ignoring case.
+    Return the channels that match every word of the query, ignoring case.
 
     :param channels: The channels to search.
     :param query: The words to find.
@@ -145,52 +68,69 @@ def search_channels(channels: Iterable[Channel], query: str, limit: int) -> list
     words = query.casefold().split()
     if not words:
         return []
+    # DR titles P6 and P8 without their Beat and Jazz, which only the slug has
     matches = [
-        channel for channel in channels if all(word in channel.name.casefold() for word in words)
+        channel
+        for channel in channels
+        if all(word in f"{channel.name} {channel.slug}".casefold() for word in words)
     ]
     return matches[:limit]
 
 
-def find_track(tracks: Iterable[Track], at: float) -> Track | None:
+def find_track(tracks: Iterable[DRTrack], at: datetime) -> DRTrack | None:
     """
-    Return the track playing at the time, which is the latest one to have started.
+    Return the track playing at the time, if any.
 
     :param tracks: The tracks DR has played on a channel.
-    :param at: The time to look at, in epoch seconds.
+    :param at: The time to look at.
     """
-    playing = [track for track in tracks if track.start <= at < track.end]
-    return max(playing, key=lambda track: track.start, default=None)
+    playing = [track for track in tracks if track.played_time <= at < track.end_time]
+    # when tracks overlap, the one that started last is the one playing
+    return max(playing, key=lambda track: track.played_time, default=None)
 
 
 def find_programme(
-    programmes: Iterable[Programme], channel_slug: str, at: float
-) -> Programme | None:
+    programmes: Iterable[DRProgramme], channel_slug: str, at: datetime
+) -> DRProgramme | None:
     """
     Return the programme on air on the channel at the time, none when it is over.
 
     :param programmes: The programmes on air now, one for every channel.
     :param channel_slug: The slug of the channel.
-    :param at: The time to look at, in epoch seconds.
+    :param at: The time to look at.
     """
-    programme = next((entry for entry in programmes if entry.channel_slug == channel_slug), None)
-    return programme if programme is not None and programme.end > at else None
+    programme = next((entry for entry in programmes if entry.channel.slug == channel_slug), None)
+    return programme if programme is not None and programme.end_time > at else None
 
 
-def get_now_playing(
-    channel: Channel, tracks: Iterable[Track], programmes: Iterable[Programme], at: float
-) -> NowPlaying:
+def get_stream_metadata(
+    channel: Channel, tracks: Iterable[DRTrack], programmes: Iterable[DRProgramme], at: datetime
+) -> StreamMetadata:
     """
-    Return the track the channel plays at the time, else its programme, else the channel.
+    Return the stream metadata of what the channel plays at the time.
 
     :param channel: The channel to look at.
     :param tracks: The tracks DR has played on the channel.
     :param programmes: The programmes on air now, one for every channel.
-    :param at: The time to look at, in epoch seconds.
+    :param at: The time to look at.
     """
+    # a track playing, else the programme on air, else the channel itself
     programme = find_programme(programmes, channel.slug, at)
-    picture = programme.image_url if programme else None
+    picture = get_image_url(programme.image_assets, "SquareImage") if programme else None
     if track := find_track(tracks, at):
-        return NowPlaying(track.title, track.artist, picture)
+        return StreamMetadata(title=track.title, artist=_get_artist(track), image_url=picture)
     if programme:
-        return NowPlaying(programme.title, None, picture)
-    return NowPlaying(channel.name)
+        return StreamMetadata(title=programme.title, image_url=picture)
+    return StreamMetadata(title=channel.name)
+
+
+def _get_artist(track: DRTrack) -> str | None:
+    """Return the artist line of a track."""
+    # the credits of classical music are a long list, so the composers are named instead
+    if track.classical:
+        composers = dict.fromkeys(
+            role.name for role in track.roles if role.role.casefold() == "komponist"
+        )
+        if composers:
+            return ", ".join(composers)
+    return track.description or None

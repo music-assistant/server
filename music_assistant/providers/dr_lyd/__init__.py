@@ -18,9 +18,6 @@ from .provider import DRLydProvider
 SUPPORTED_FEATURES = {
     ProviderFeature.BROWSE,
     ProviderFeature.SEARCH,
-    # The provider has no library of its own, the sync only brings up to date the podcasts that
-    # were added to the library from search or browse.
-    ProviderFeature.LIBRARY_PODCASTS,
 }
 
 

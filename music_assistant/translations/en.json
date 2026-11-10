@@ -1400,8 +1400,6 @@
   "provider.dlna.config_entries.replace_pause_with_stop.label": "Replace Pause with Stop",
   "provider.dlna.manifest.description": "Stream music to supported UPnP/DLNA-compatible devices.",
   "provider.dr_lyd.manifest.description": "Listen to the live radio channels and the podcasts of DR LYD, the audio service of the Danish public broadcaster DR.",
-  "provider.dr_lyd.media.folder.all_podcasts.name": "All podcasts",
-  "provider.dr_lyd.media.folder.live_radio.name": "Live radio",
   "provider.dr_lyd.media.folder.recently_updated.name": "Recently updated",
   "provider.emby.config_entries.ip_address.description": "The url of the Emby server to connect to.",
   "provider.emby.config_entries.ip_address.label": "Server",

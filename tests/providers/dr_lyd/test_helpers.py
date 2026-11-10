@@ -2,113 +2,65 @@
 
 from __future__ import annotations
 
-from typing import Any
-
 import pytest
-from music_assistant_models.errors import MediaNotFoundError
+from music_assistant_models.streamdetails import StreamMetadata
 
 from music_assistant.providers.dr_lyd.constants import IMAGE_URL
 from music_assistant.providers.dr_lyd.helpers import (
-    clean_text,
     find_programme,
     find_track,
+    get_audio,
     get_image_url,
-    get_items,
-    get_now_playing,
-    parse_id,
-    parse_time,
-    recently_updated,
-    require_id,
+    get_stream,
+    get_stream_metadata,
     search_channels,
-    search_series,
 )
-from music_assistant.providers.dr_lyd.models import NowPlaying, Programme, Series
-from music_assistant.providers.dr_lyd.parsers import parse_tracks
+from music_assistant.providers.dr_lyd.models import (
+    Channel,
+    DRAudioAsset,
+    DRChannel,
+    DRChannelRef,
+    DRImageAsset,
+    DRProgramme,
+    DRTrack,
+)
 
 from .conftest import (
+    ASSET,
     CHANNEL_LIST,
     CHANNELS,
-    NOT_AN_ID,
+    CHANNELS_DOCUMENT,
+    CLASSICAL_TRACKS,
+    ICY_STREAM,
     P3_PICTURE,
     PROGRAMME_LIST,
-    SERIES,
+    STREAM,
     TRACKS,
-    TRACKS_P2,
-    epoch,
-    make_series,
+    at,
+    episode,
+    track_item,
 )
 
 
-def titles(series: list[Series]) -> list[str]:
-    """Return the titles of the series."""
-    return [entry.title for entry in series]
+def square(image_id: str, target: str = "Default", ratio: str = "1:1") -> DRImageAsset:
+    """Return an image asset."""
+    return DRImageAsset(id=image_id, target=target, ratio=ratio)
 
 
-def slugs(channels: Any) -> list[str]:
+def audio(target: str, format_: str, bitrate: int, url: str) -> DRAudioAsset:
+    """Return an audio asset."""
+    return DRAudioAsset(target=target, format=format_, bitrate=bitrate, url=url)
+
+
+def channel_audio(slug: str) -> list[DRAudioAsset]:
+    """Return the audio assets of a channel of the channels document."""
+    item = next(item for item in CHANNELS_DOCUMENT if item["slug"] == slug)
+    return DRChannel.from_dict(item).audio_assets
+
+
+def slugs(channels: list[Channel]) -> list[str]:
     """Return the slugs of the channels."""
     return [channel.slug for channel in channels]
-
-
-def square(image_id: str, target: str = "Default", ratio: str = "1:1") -> dict[str, str]:
-    """Return an image asset."""
-    return {"id": image_id, "target": target, "ratio": ratio}
-
-
-def test_clean_text_strips_text() -> None:
-    """Text is stripped."""
-    assert clean_text("  P3 \n") == "P3"
-
-
-@pytest.mark.parametrize("value", [None, "", "  ", 5, ["x"], {}])
-def test_clean_text_is_none_for_what_is_not_text_with_something_in_it(value: Any) -> None:
-    """Whatever is no text, or only blanks, gives none."""
-    assert clean_text(value) is None
-
-
-def test_parse_time_with_an_offset() -> None:
-    """A time with a UTC offset is epoch seconds."""
-    assert parse_time("2026-11-05T22:03:09+00:00") == 1793916189.0
-    assert parse_time("2026-11-05T23:03:09+01:00") == 1793916189.0
-
-
-@pytest.mark.parametrize("value", ["2026-11-05T22:03:09", "a while ago", "", None, 5])
-def test_parse_time_is_none_without_an_offset_or_a_time(value: Any) -> None:
-    """A time without a UTC offset, or no time at all, gives none."""
-    assert parse_time(value) is None
-
-
-def test_parse_time_before_1970() -> None:
-    """A time before 1970 is negative."""
-    value = parse_time("1952-10-23T19:55:00+00:00")
-    assert value is not None
-    assert value < 0
-
-
-def test_parse_id_is_made_of_digits() -> None:
-    """A production number is text made of digits."""
-    assert parse_id("6641303469000") == "6641303469000"
-    for value in (None, 5, True, *NOT_AN_ID):
-        assert parse_id(value) is None, value
-
-
-def test_require_id_returns_an_id() -> None:
-    """A production number is returned as it is."""
-    assert require_id("12", "podcast") == "12"
-
-
-@pytest.mark.parametrize("item_id", NOT_AN_ID)
-def test_require_id_raises_for_what_cannot_be_an_id(item_id: str) -> None:
-    """Something else than a production number is not found, which keeps it out of a url."""
-    with pytest.raises(MediaNotFoundError, match="is not the id of a DR podcast"):
-        require_id(item_id, "podcast")
-
-
-def test_get_items_of_a_list_document() -> None:
-    """The items of a list document are its items, none for any other document."""
-    assert get_items({"items": [1, 2]}) == [1, 2]
-    documents: list[Any] = [None, [], "text", {}, {"items": None}, {"items": "x"}]
-    for document in documents:
-        assert get_items(document) == []
 
 
 def test_a_square_picture() -> None:
@@ -137,110 +89,101 @@ def test_a_square_picture_of_another_target_beats_none() -> None:
     assert get_image_url(assets, "Podcast") == IMAGE_URL.format("a")
 
 
+def test_no_picture_without_assets() -> None:
+    """Without image assets there is no picture."""
+    assert get_image_url([]) is None
+
+
+def test_the_mp3_with_the_highest_bitrate_is_played() -> None:
+    """The progressive mp3 with the highest bitrate is the audio of an episode."""
+    chosen = get_audio(episode("13332646601").audio_assets)
+    assert chosen is not None
+    assert chosen.format == "mp3"
+    assert chosen.url == ASSET.format(
+        "6ad74f730a53387c03882d19",
+        "347bb34d0e730032a186bf6590b2fda614a7a95e664d67b1f6a3573a91059063",
+    )
+
+
+def test_the_mp3_is_found_wherever_the_asset_is_listed() -> None:
+    """The order of the audio assets makes no difference."""
+    assets = episode("16122293321").audio_assets
+    expected = ASSET.format(
+        "633ff9514c57f9f719d27463",
+        "674ea56ead83b9491cd27e4cc0acc945f30f042284cd96999c28ef75b2ca9ea8",
+    )
+    for ordered in (assets, assets[::-1]):
+        chosen = get_audio(ordered)
+        assert chosen is not None
+        assert chosen.url == expected
+
+
+def test_the_hls_stream_when_there_is_no_mp3() -> None:
+    """An episode with no mp3 is played from its HLS stream."""
+    chosen = get_audio(episode("13332646424").audio_assets)
+    assert chosen is not None
+    assert chosen.format == "HLS"
+    assert chosen.url == ASSET.format(
+        "6ac618f3842017fe110f01f4",
+        "20cc9a1c4b7f4100884bae9aa2ec925d3b6ca09dec292d9a85f32681dafc5afc",
+    )
+
+
+def test_the_mp3_is_preferred_to_the_hls_stream() -> None:
+    """An mp3 wins over an HLS stream, whatever their bitrates."""
+    assets = [
+        audio("Stream", "HLS", 9999, "https://example.com/stream.m3u8"),
+        audio("Progressive", "mp3", 0, "https://example.com/a.mp3"),
+    ]
+    chosen = get_audio(assets)
+    assert chosen is not None
+    assert chosen.url == "https://example.com/a.mp3"
+
+
 @pytest.mark.parametrize(
-    "assets", [None, [], "text", {}, [None, 5, "x", {}, {"ratio": "1:1"}, square(" ")]]
+    "assets",
+    [
+        [],
+        [audio("Progressive", "mp4", 192, "https://example.com/a.mp4")],
+        [audio("Stream", "DASH", 0, "https://example.com/a.mpd")],
+        [audio("Stream", "mp3", 192, "https://example.com/a.mp3")],
+    ],
 )
-def test_no_picture_for_unreadable_assets(assets: Any) -> None:
-    """Whatever is no list of image assets gives no picture."""
-    assert get_image_url(assets) is None
+def test_no_audio_to_play(assets: list[DRAudioAsset]) -> None:
+    """An episode needs a progressive mp3 or an HLS stream."""
+    assert get_audio(assets) is None
 
 
-def test_search_finds_the_series_by_its_title() -> None:
-    """The title of a series is searched."""
-    assert titles(search_series(SERIES.values(), "den sidste time", 5)) == ["Den sidste time"]
+def test_a_channel_is_streamed_from_hls() -> None:
+    """The HLS stream of a channel is preferred to its ICY streams."""
+    stream = get_stream(channel_audio("p3"))
+    assert stream is not None
+    assert (stream.format, stream.url) == ("HLS", STREAM.format("p3"))
 
 
-def test_search_ignores_case_and_extra_spaces() -> None:
-    """Case and extra spaces make no difference."""
-    assert titles(search_series(SERIES.values(), "  DEN   sidste TIME ", 5)) == ["Den sidste time"]
+def test_the_icy_stream_of_the_highest_bitrate_when_there_is_no_hls_one() -> None:
+    """Without an HLS stream a channel is streamed from its ICY stream of the highest bitrate."""
+    assets = [asset for asset in channel_audio("p3") if asset.format != "HLS"]
+    stream = get_stream(assets)
+    assert stream is not None
+    assert (stream.format, stream.url) == ("ICY", ICY_STREAM.format("A05H"))
 
 
-def test_search_needs_every_word() -> None:
-    """Every word of the query must match."""
-    assert titles(search_series(SERIES.values(), "sidste time", 5)) == ["Den sidste time"]
-    assert search_series(SERIES.values(), "sidste zebra", 5) == []
+@pytest.mark.parametrize("assets", [[], [audio("Stream", "DASH", 0, "https://example.com/a.mpd")]])
+def test_no_stream_without_hls_or_icy(assets: list[DRAudioAsset]) -> None:
+    """A channel needs an HLS or an ICY stream."""
+    assert get_stream(assets) is None
 
 
-def test_search_reads_the_description_too() -> None:
-    """The description of a series is searched as well."""
-    assert titles(search_series(SERIES.values(), "nyhedspodcast", 5)) == ["Genstart"]
+def test_channels_match_the_name_and_the_slug_ignoring_case() -> None:
+    """The name and the slug of a channel are searched, ignoring case."""
+    assert slugs(search_channels(CHANNEL_LIST, "P3", 10)) == ["p3"]
+    assert slugs(search_channels(CHANNEL_LIST, "JAZZ", 10)) == ["p8jazz"]
+    assert slugs(search_channels(CHANNEL_LIST, "beat", 10)) == ["p6beat"]
 
 
-def test_the_words_may_be_split_between_the_title_and_the_description() -> None:
-    """A series matches when its title and description together hold every word."""
-    everything = [make_series(title="Genstart", description="Dagens nyheder")]
-    assert titles(search_series(everything, "genstart nyheder", 5)) == ["Genstart"]
-
-
-def test_a_title_that_starts_with_the_query_comes_first_then_other_titles() -> None:
-    """Titles starting with the query come first, then other titles, then descriptions."""
-    everything = [
-        make_series(title="Det store hus", description="tid"),
-        make_series(title="Tidens tegn"),
-        make_series(title="Kære tid"),
-        make_series(title="Om en tid", description="x"),
-        make_series(title="Tid til alt"),
-        make_series(title="Alt andet", description="Her handler det om tid"),
-    ]
-    assert titles(search_series(everything, "tid", 10)) == [
-        "Tid til alt",
-        "Tidens tegn",
-        "Kære tid",
-        "Om en tid",
-        "Alt andet",
-        "Det store hus",
-    ]
-
-
-def test_search_limit() -> None:
-    """No more series than the limit are returned."""
-    everything = [make_series(title=f"Tid {number}") for number in range(10)]
-    assert len(search_series(everything, "tid", 3)) == 3
-
-
-def test_a_blank_query_matches_no_series() -> None:
-    """A query of blanks finds nothing."""
-    assert search_series(SERIES.values(), "   ", 5) == []
-
-
-def test_the_series_with_the_newest_episode_come_first() -> None:
-    """The recently updated series are ordered by their latest episode."""
-    assert titles(recently_updated(SERIES.values(), 20)) == [
-        "Radioavisen",
-        "Genstart",
-        "Musikquizzen",
-        "Sara & Monopolet - podcast",
-        "Tættere på himlen",
-        "Den sidste time",
-        "De Lovløse",
-        "Barneliv gennem tiden",
-    ]
-
-
-def test_recently_updated_limit() -> None:
-    """No more series than the limit are returned."""
-    assert len(recently_updated(SERIES.values(), 3)) == 3
-
-
-def test_recently_updated_leaves_out_series_without_episodes_or_a_time() -> None:
-    """A series without episodes or without a time of its latest episode is left out."""
-    everything = [
-        make_series(title="Old", latest=100.0),
-        make_series(title="Empty", episodes=0, latest=900.0),
-        make_series(title="Undated", latest=None),
-        make_series(title="New", latest=500.0),
-    ]
-    assert titles(recently_updated(everything, 10)) == ["New", "Old"]
-
-
-def test_channels_match_the_name_ignoring_case() -> None:
-    """The name of a channel is searched, ignoring case."""
-    assert slugs(search_channels(CHANNEL_LIST, "dr P3", 10)) == ["p3"]
-    assert slugs(search_channels(CHANNEL_LIST, "jazz", 10)) == ["p8jazz"]
-
-
-def test_every_word_must_match_the_name_of_a_channel() -> None:
-    """Every word of the query must be in the name of the channel."""
+def test_every_word_must_match_a_channel() -> None:
+    """Every word of the query must be in the name or the slug of the channel."""
     assert slugs(search_channels(CHANNEL_LIST, "københavn", 10)) == ["p4kbh", "p5kbh"]
     assert slugs(search_channels(CHANNEL_LIST, "p4 københavn", 10)) == ["p4kbh"]
     assert search_channels(CHANNEL_LIST, "p3 jazz", 10) == []
@@ -253,13 +196,13 @@ def test_districts_are_found_too() -> None:
 
 def test_channel_search_limit_and_blank_query() -> None:
     """No more channels than the limit are returned, and a blank query finds none."""
-    assert len(search_channels(CHANNEL_LIST, "dr", 3)) == 3
+    assert len(search_channels(CHANNEL_LIST, "p", 3)) == 3
     assert search_channels(CHANNEL_LIST, "  ", 10) == []
 
 
 def title_at(time_of_day: str) -> str | None:
     """Return the title of the track of the fixture that plays at the time."""
-    track = find_track(TRACKS, epoch(time_of_day))
+    track = find_track(TRACKS, at(time_of_day))
     return track.title if track else None
 
 
@@ -286,80 +229,117 @@ def test_no_track_between_tracks_or_without_tracks() -> None:
     """Between tracks, before the oldest track and without tracks nothing is playing."""
     assert title_at("22:24:00") is None
     assert title_at("21:00:00") is None
-    assert find_track([], epoch("22:30:00")) is None
+    assert find_track([], at("22:30:00")) is None
 
 
-def find(
-    slug: str, time_of_day: str = "22:30:00", programmes: list[Programme] | None = None
-) -> Any:
-    """Return the programme that is on air on the channel at the time."""
-    return find_programme(programmes or PROGRAMME_LIST, slug, epoch(time_of_day))
+def programme(slug: str, title: str, end: str = "23:00:00") -> DRProgramme:
+    """Return a programme on air on a channel until the end."""
+    return DRProgramme(
+        title=title, end_time=at(end), channel=DRChannelRef(slug=slug), image_assets=[]
+    )
 
 
 def test_the_programme_on_air() -> None:
     """The programme on air is the one of the channel."""
-    programme = find("p3")
-    assert programme.title == "Den sidste time"
-    assert programme.end == epoch("23:03:00")
-    assert find("p2").title == "Natsværmeren: Poesi"
+    on_air = find_programme(PROGRAMME_LIST, "p3", at("22:30:00"))
+    assert on_air is not None
+    assert on_air.title == "Den sidste time"
+    assert on_air.end_time == at("23:03:00")
+    on_air = find_programme(PROGRAMME_LIST, "p2", at("22:30:00"))
+    assert on_air is not None
+    assert on_air.title == "Natsværmeren: Poesi"
 
 
 def test_the_channel_is_picked_by_its_whole_slug() -> None:
     """A slug that starts like the one of the channel is another channel."""
-    programmes = [
-        Programme("p4bornholm", "Bornholm", None, epoch("23:00:00")),
-        Programme("p4kbh", "Før natten på P4", None, epoch("23:00:00")),
-    ]
-    assert find("p4kbh", programmes=programmes).title == "Før natten på P4"
+    programmes = [programme("p4bornholm", "Bornholm"), programme("p4kbh", "Før natten på P4")]
+    on_air = find_programme(programmes, "p4kbh", at("22:30:00"))
+    assert on_air is not None
+    assert on_air.title == "Før natten på P4"
 
 
 def test_no_programme_once_it_is_over() -> None:
     """A programme is on air until its end."""
-    assert find("p3", "23:02:59") is not None
-    assert find("p3", "23:03:00") is None
+    assert find_programme(PROGRAMME_LIST, "p3", at("23:02:59")) is not None
+    assert find_programme(PROGRAMME_LIST, "p3", at("23:03:00")) is None
 
 
 def test_no_programme_for_a_channel_that_is_not_listed() -> None:
     """A channel that is not in the schedules has no programme."""
-    assert find("p8jazz") is None
+    assert find_programme(PROGRAMME_LIST, "p8jazz", at("22:30:00")) is None
 
 
-def test_now_playing_is_the_track_with_the_picture_of_the_programme() -> None:
+def test_the_stream_metadata_is_the_track_with_the_picture_of_the_programme() -> None:
     """A track playing is shown with its artist and the picture of the programme."""
-    playing = get_now_playing(CHANNELS["p3"], TRACKS, PROGRAMME_LIST, epoch("22:30:00"))
-    assert playing == NowPlaying("Min egen værste ven", "Friða Saiya", P3_PICTURE)
+    metadata = get_stream_metadata(CHANNELS["p3"], TRACKS, PROGRAMME_LIST, at("22:30:00"))
+    assert metadata == StreamMetadata(
+        title="Min egen værste ven", artist="Friða Saiya", image_url=P3_PICTURE
+    )
 
 
-def test_now_playing_is_classical_music_with_its_composer() -> None:
+def test_the_stream_metadata_is_classical_music_with_its_composer() -> None:
     """A classical track is shown with its composer."""
-    playing = get_now_playing(
-        CHANNELS["p2"], parse_tracks(TRACKS_P2), PROGRAMME_LIST, epoch("22:20:00")
-    )
-    assert playing.title == "Suor Angelica - Intermezzo"
-    assert playing.artist == "Giacomo Puccini"
+    metadata = get_stream_metadata(CHANNELS["p2"], CLASSICAL_TRACKS, PROGRAMME_LIST, at("22:20:00"))
+    assert metadata.title == "Suor Angelica - Intermezzo"
+    assert metadata.artist == "Giacomo Puccini"
 
 
-def test_now_playing_is_the_programme_between_tracks() -> None:
+def test_each_composer_is_named_once() -> None:
+    """A composer is named once, whatever the case of the role."""
+    roles = [
+        {"role": "Komponist", "name": "Carl Nielsen"},
+        {"role": "Dirigent", "name": "Bo Holten"},
+        {"role": "komponist", "name": "Wayne Siegel"},
+        {"role": "Komponist", "name": "Carl Nielsen"},
+    ]
+    track = DRTrack.from_dict(track_item(classical=True, roles=roles))
+    metadata = get_stream_metadata(CHANNELS["p2"], [track], [], track.played_time)
+    assert metadata.artist == "Carl Nielsen, Wayne Siegel"
+
+
+def test_classical_music_without_a_composer_keeps_the_credits() -> None:
+    """A classical track without a composer keeps the credits of DR."""
+    track = next(track for track in CLASSICAL_TRACKS if track.title.startswith("La peau douce"))
+    metadata = get_stream_metadata(CHANNELS["p2"], [track], [], track.played_time)
+    assert metadata.artist is not None
+    assert metadata.artist.startswith("KOMPONIST: Georges Delerue.")
+
+
+def test_other_music_on_a_classical_channel_keeps_the_artist_line() -> None:
+    """A track that is not classical keeps the artist line of DR."""
+    track = next(track for track in CLASSICAL_TRACKS if track.title == "Kære fisk")
+    metadata = get_stream_metadata(CHANNELS["p2"], [track], [], track.played_time)
+    assert metadata.artist == "Ursula Andkjær Olsen"
+
+
+def test_a_track_without_an_artist_line_has_no_artist() -> None:
+    """A track whose artist line is empty has no artist."""
+    track = DRTrack.from_dict(track_item(description=""))
+    metadata = get_stream_metadata(CHANNELS["p3"], [track], [], track.played_time)
+    assert metadata == StreamMetadata(title="Raindance", artist=None)
+
+
+def test_the_stream_metadata_is_the_programme_between_tracks() -> None:
     """Between tracks the programme is shown."""
-    playing = get_now_playing(CHANNELS["p3"], TRACKS, PROGRAMME_LIST, epoch("22:24:00"))
-    assert playing == NowPlaying("Den sidste time", None, P3_PICTURE)
+    metadata = get_stream_metadata(CHANNELS["p3"], TRACKS, PROGRAMME_LIST, at("22:24:00"))
+    assert metadata == StreamMetadata(title="Den sidste time", image_url=P3_PICTURE)
 
 
-def test_now_playing_is_the_track_without_a_picture_without_programmes() -> None:
+def test_the_stream_metadata_is_the_track_without_a_picture_without_programmes() -> None:
     """Without programmes a track is shown without a picture."""
-    playing = get_now_playing(CHANNELS["p3"], TRACKS, [], epoch("22:30:00"))
-    assert playing == NowPlaying("Min egen værste ven", "Friða Saiya", None)
+    metadata = get_stream_metadata(CHANNELS["p3"], TRACKS, [], at("22:30:00"))
+    assert metadata == StreamMetadata(title="Min egen værste ven", artist="Friða Saiya")
 
 
-def test_now_playing_is_the_channel_when_nothing_is_known() -> None:
+def test_the_stream_metadata_is_the_channel_when_nothing_is_known() -> None:
     """Without tracks and programmes the name of the channel is shown."""
-    assert get_now_playing(CHANNELS["p3"], [], [], epoch("22:30:00")) == NowPlaying("DR P3")
-    assert get_now_playing(CHANNELS["p8jazz"], [], PROGRAMME_LIST, epoch("22:30:00")) == NowPlaying(
-        "DR P8 Jazz"
-    )
+    assert get_stream_metadata(CHANNELS["p3"], [], [], at("22:30:00")) == StreamMetadata(title="P3")
+    assert get_stream_metadata(
+        CHANNELS["p8jazz"], [], PROGRAMME_LIST, at("22:30:00")
+    ) == StreamMetadata(title="P8")
 
 
-def test_now_playing_is_the_channel_once_the_programme_is_over() -> None:
+def test_the_stream_metadata_is_the_channel_once_the_programme_is_over() -> None:
     """A programme that is over is not shown."""
-    playing = get_now_playing(CHANNELS["p3"], [], PROGRAMME_LIST, epoch("23:03:00"))
-    assert playing == NowPlaying("DR P3")
+    metadata = get_stream_metadata(CHANNELS["p3"], [], PROGRAMME_LIST, at("23:03:00"))
+    assert metadata == StreamMetadata(title="P3")
