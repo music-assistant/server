@@ -27,10 +27,11 @@ from music_assistant_models.media_items import (
     Radio,
     Track,
 )
+from music_assistant_models.player_control import PlayerControl
 from music_assistant_models.player_queue import PlayerQueue
 from music_assistant_models.unique_list import UniqueList
 
-from music_assistant.constants import CONF_PLAY_MEDIA_OVERRIDES_GROUP
+from music_assistant.constants import CONF_PLAY_MEDIA_OVERRIDES_GROUP, CONF_POWER_CONTROL
 from music_assistant.controllers.player_queues import PlayerQueuesController
 from music_assistant.controllers.player_queues.media_resolver import ResolvedItem
 from music_assistant.controllers.player_queues.state import PlayerQueueData
@@ -350,6 +351,73 @@ async def test_a_request_without_option_that_plays_follows_the_setting(kind: str
     assert setup.released == [RELEASE[kind]]
 
 
+@pytest.mark.parametrize("user", USERS)
+@pytest.mark.parametrize("kind", KINDS)
+async def test_a_request_without_option_that_plays_goes_to_the_owner_with_the_setting_off(
+    kind: str, user: str
+) -> None:
+    """A track defaulting to PLAY is played by the owner with the setting off."""
+    setup = _Setup(kind, False, QueueOption.PLAY.value)
+
+    with _caller(user, kind):
+        await setup.queues.play_media("a", _track())
+
+    assert setup.items(OWNER[kind]) == ["t1"]
+    assert setup.items("a") == []
+    assert setup.played == [(OWNER[kind], OWNER[kind])]
+    assert setup.released == []
+
+
+@pytest.mark.parametrize("kind", KINDS)
+async def test_a_request_without_option_that_plays_needs_the_owner_with_the_setting_off(
+    kind: str,
+) -> None:
+    """A track defaulting to PLAY needs access to the owner with the setting off."""
+    setup = _Setup(kind, False, QueueOption.PLAY.value)
+
+    with (
+        _caller("member-only", kind),
+        pytest.raises(
+            InsufficientPermissions, match=f"limited does not have access to player {OWNER[kind]}"
+        ),
+    ):
+        await setup.queues.play_media("a", _track())
+
+    assert setup.items(OWNER[kind]) == []
+    assert setup.items("a") == []
+    assert setup.played == []
+    assert setup.released == []
+
+
+async def test_a_request_without_option_that_adds_leaves_a_switched_off_owner_off() -> None:
+    """A track defaulting to ADD is added to a sync leader switched off at its power control."""
+    setup = _Setup("synced", True, QueueOption.ADD.value)
+    mass = cast("MagicMock", setup.players.mass)
+    raw_config = mass.config.get_raw_player_config_value.side_effect
+    mass.config.get_raw_player_config_value.side_effect = lambda player_id, key, default=None: (
+        "plug"
+        if key == CONF_POWER_CONTROL and player_id == "b"
+        else raw_config(player_id, key, default)
+    )
+    setup.players._controls["plug"] = PlayerControl(
+        id="plug", provider="test", name="Plug", supports_power=True, power_state=False
+    )
+    leader = setup.players._players["b"]
+    leader._attr_available = False
+    leader._cache.clear()
+    leader.update_state(force_update=True, signal_event=False)
+    assert leader.offline_by_power_control
+    power_on = AsyncMock()
+    setup.players._power_on_switched_off_player = power_on  # type: ignore[method-assign]
+
+    await setup.queues.play_media("a", _track())
+
+    power_on.assert_not_awaited()
+    assert setup.items("b") == ["t1"]
+    assert setup.played == []
+    assert setup.released == []
+
+
 @pytest.mark.parametrize("kind", KINDS)
 async def test_a_radio_mode_request_follows_the_playlist_default(kind: str) -> None:
     """
@@ -438,6 +506,20 @@ async def test_the_first_played_entry_decides_the_access_a_default_needs(
         ),
     ):
         await setup.queues.play_media("a", [SKIPPED_FIRST[first], "test://radio/r"])
+
+    assert setup.items(OWNER[kind]) == []
+    assert setup.items("a") == []
+    assert setup.played == []
+    assert setup.released == []
+
+
+@pytest.mark.parametrize("kind", KINDS)
+async def test_a_request_of_which_nothing_plays_stays_on_the_named_queue(kind: str) -> None:
+    """A batch whose entries are all skipped fails on the player's own queue, not on access."""
+    setup = _Setup(kind, True, QueueOption.ADD.value)
+
+    with _caller("member-only", kind), pytest.raises(MediaNotFoundError):
+        await setup.queues.play_media("a", list(SKIPPED_FIRST.values()))
 
     assert setup.items(OWNER[kind]) == []
     assert setup.items("a") == []

@@ -2,8 +2,9 @@
 Tests for ending a group session through a static member, with the real group providers.
 
 A user who may use a static member of a group player may end the session of that group
-(ungroup or power off of the member), with the same effect as for any other caller, but
-nothing of that release runs with more permissions than the caller has.
+(ungroup or power off of the member, or a play request that takes the member out of its
+group), with the same effect as for any other caller, but nothing of that release runs with
+more permissions than the caller has.
 """
 
 from __future__ import annotations
@@ -16,18 +17,22 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from music_assistant_models.constants import PLAYER_CONTROL_FAKE, PLAYER_CONTROL_NONE
-from music_assistant_models.enums import PlaybackState, PlayerFeature
+from music_assistant_models.enums import MediaType, PlaybackState, PlayerFeature, QueueOption
+from music_assistant_models.media_items import ItemMapping, ProviderMapping, Track
 from music_assistant_models.player import PlayerMedia
 from music_assistant_models.player_queue import PlayerQueue
 from music_assistant_models.queue_item import QueueItem
+from music_assistant_models.unique_list import UniqueList
 
 from music_assistant.constants import (
     ATTR_FAKE_POWER,
     CONF_DYNAMIC_GROUP_MEMBERS,
     CONF_GROUP_MEMBERS,
+    CONF_PLAY_MEDIA_OVERRIDES_GROUP,
     CONF_POWER_CONTROL,
 )
 from music_assistant.controllers.player_queues import PlayerQueuesController
+from music_assistant.controllers.player_queues.media_resolver import ResolvedItem
 from music_assistant.controllers.player_queues.state import PlayerQueueData
 from music_assistant.controllers.players import PlayerController
 from music_assistant.controllers.webserver.helpers.auth_middleware import get_current_user
@@ -74,6 +79,10 @@ class _Device(MockPlayer):
         if not powered:
             self._attr_playback_state = PlaybackState.IDLE
         self.update_state(force_update=True)
+
+    async def play_media(self, media: PlayerMedia) -> None:
+        """Record what the device is asked to play."""
+        self._calls.append((self.player_id, "play_media", media.source_id))
 
     async def set_members(
         self,
@@ -137,7 +146,7 @@ async def _build(
     controller = PlayerController(mass)
     mass.players = controller
     values: dict[str, dict[str, Any]] = {
-        "a": {CONF_POWER_CONTROL: "native"},
+        "a": {CONF_POWER_CONTROL: "native", CONF_PLAY_MEDIA_OVERRIDES_GROUP: True},
         "b": {CONF_POWER_CONTROL: "native"},
         "c": {CONF_POWER_CONTROL: PLAYER_CONTROL_NONE},
         "g": {
@@ -362,3 +371,71 @@ async def test_static_member_release_restarts_nothing_beyond_the_user(
     assert set(restarts) == {"limited"}
     queues._play_index.assert_not_awaited()
     assert ("b", "members", [], ["a"]) in mass.calls
+
+
+@pytest.mark.parametrize("option", [QueueOption.PLAY, QueueOption.REPLACE])
+@pytest.mark.parametrize("power_control", [False, True])
+@pytest.mark.parametrize(
+    "user", [*USERS, pytest.param(lambda: as_user(["a", "g"]), id="member-and-group")]
+)
+async def test_play_media_on_a_static_member_ends_the_session(
+    mass: MagicMock,
+    user: Callable[[], AbstractContextManager[object]],
+    power_control: bool,
+    option: QueueOption,
+) -> None:
+    """
+    New content on a static member that overrides its group ends the group's session.
+
+    The member then plays the content alone from its own queue, also for a user limited to it.
+    """
+    controller, group = await _build(mass, SyncGroupPlayer, power_control=power_control)
+    queues = PlayerQueuesController(mass)
+    mass.player_queues = queues
+    for queue_id in ("a", "b", "g"):
+        queue = PlayerQueue(
+            queue_id=queue_id, active=True, display_name=queue_id, available=True, items=0
+        )
+        queues._queue_data[queue_id] = PlayerQueueData(queue=queue)
+    queues.signal_update = MagicMock()  # type: ignore[method-assign]
+    queues._media_resolver._resolve_media_items = AsyncMock(  # type: ignore[method-assign]
+        side_effect=lambda media_item, *_args, **_kwargs: [ResolvedItem(media_item)]
+    )
+    mass.music.check_item_playable_for_user = MagicMock()
+
+    async def _play_index(queue_id: str, *_args: Any, **_kwargs: Any) -> None:
+        # what play_index does: check the caller's access, then the queue's player plays it
+        queues._check_player_permission(queue_id)
+        await controller.play_media(
+            queue_id, PlayerMedia(uri=f"queue://{queue_id}", source_id=queue_id)
+        )
+
+    queues.play_index = _play_index  # type: ignore[method-assign]
+    track = Track(
+        item_id="t1",
+        provider="test",
+        name="Track",
+        duration=180,
+        artists=UniqueList(
+            [ItemMapping(item_id="x", provider="test", name="X", media_type=MediaType.ARTIST)]
+        ),
+        provider_mappings={
+            ProviderMapping(item_id="t1", provider_domain="test", provider_instance="test")
+        },
+    )
+
+    with user():
+        await queues.play_media("a", track, option)
+    await _settle()
+
+    assert mass.calls == [("b", "stop"), ("b", "members", [], ["a"]), ("a", "play_media", "a")]
+    assert queues._queue_data["g"].items == []
+    assert [
+        item.media_item.item_id for item in queues._queue_data["a"].items if item.media_item
+    ] == ["t1"]
+    assert group.powered is (False if power_control else None)
+    assert _end_state(controller) == {
+        "a": (True, PlaybackState.PLAYING, None, None, []),
+        "b": (True, PlaybackState.IDLE, None, None, []),
+        "g": (group.powered, PlaybackState.IDLE, None, None, ["a", "b"]),
+    }

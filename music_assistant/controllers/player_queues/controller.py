@@ -2309,7 +2309,7 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         """
         user = get_current_user()
         for entry in media if isinstance(media, list) else [media]:
-            # an entry the loader skips does not decide the option either
+            # an entry the loader skips does not decide the option
             with suppress(MusicAssistantError):
                 media_item = await self._resolve_play_media_entry(entry, user)
                 return self._default_enqueue_option(media_item.media_type)
