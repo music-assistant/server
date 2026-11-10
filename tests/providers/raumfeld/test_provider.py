@@ -2271,6 +2271,9 @@ def _registering_provider(
     """
     provider = _moving_provider(rooms)
     provider.config = MagicMock(instance_id="raumfeld")
+    # the software versions are covered by their own tests
+    provider._versions_read = set(rooms)
+    provider._room_versions = {}
     registry = {player.player_id: player for player in registered}
     for player in registered:
         player._provider = provider
@@ -2505,6 +2508,9 @@ async def test_a_new_room_gets_the_icy_default_only_once_registered(registers: b
     provider.host = MagicMock()
     _host_mock(provider).get_rooms.return_value = ["Bar"]
     provider._room_ids = {"Bar": "raumfeld_bar"}
+    # the software versions are covered by their own tests
+    provider._versions_read = {"Bar"}
+    provider._room_versions = {}
     registry: dict[str, RaumfeldPlayer] = {}
 
     async def register(player: RaumfeldPlayer) -> None:
@@ -2613,3 +2619,50 @@ async def test_only_a_room_in_the_leaders_zone_is_taken_out_of_it() -> None:
     with patch.object(bar, "update_state"):
         await bar.set_members(player_ids_to_remove=[sofa.player_id, kitchen.player_id])
     provider.drop_room.assert_awaited_once_with("Sofa")
+
+
+def _versioned_provider() -> RaumfeldPlayerProvider:
+    """Build a provider whose host lists Bar's speaker with its Raumfeld device, and Sofa's without."""
+    provider, _ = _provider(_DEVICE_DESCRIPTION)
+    provider.host = _host(
+        {"Bar": ("uuid:bar", "uuid:bar-renderer"), "Sofa": ("uuid:sofa", "uuid:sofa-renderer")},
+        {
+            "uuid:bar-renderer": "http://192.168.1.42:60778/bar.xml",
+            "uuid:sofa-renderer": "http://192.168.1.43:52612/sofa.xml",
+        },
+    )
+    provider.host._devices = Devices(
+        provider.host._devices.locations,
+        None,
+        raumfeld_devices={"192.168.1.42": "http://192.168.1.42:57793/bar-device.xml"},
+    )
+    provider._room_versions = {}
+    provider._versions_read = set()
+    return provider
+
+
+async def test_software_versions_are_read_once_per_connect() -> None:
+    """Each speaker's version is read once; one that cannot be read stays unknown until then."""
+    provider = _versioned_provider()
+    read = AsyncMock(return_value="2.21.0")
+    with patch("music_assistant.providers.raumfeld.provider.get_software_version", read):
+        await provider._read_software_versions(["Bar", "Sofa"])
+        await provider._read_software_versions([])
+    read.assert_awaited_once_with(
+        provider.mass.http_session, "http://192.168.1.42:57793/bar-device.xml"
+    )
+    assert provider.room_software_version("Bar") == "2.21.0"
+    # Sofa's speaker has no Raumfeld device listed, so there is nothing to read
+    assert provider.room_software_version("Sofa") is None
+    assert provider._versions_read == {"Bar", "Sofa"}
+
+
+async def test_a_speaker_that_does_not_answer_has_no_version() -> None:
+    """A speaker that fails the read leaves its version unknown, without failing the sync."""
+    provider = _versioned_provider()
+    with patch(
+        "music_assistant.providers.raumfeld.provider.get_software_version",
+        AsyncMock(side_effect=TimeoutError),
+    ):
+        await provider._read_software_versions(["Bar"])
+    assert provider.room_software_version("Bar") is None

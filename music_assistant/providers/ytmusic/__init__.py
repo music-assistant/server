@@ -792,7 +792,9 @@ class YoutubeMusicProvider(RecommendationPayloadMixin, MusicProvider):
             self._episode_playbacks.pop(video_id, None)
         # a failed announcement is tried again with the next report
         if not playback.announced:
-            playback.watchtime_url = await self._announce_episode_playback(video_id, playback.cpn)
+            playback.watchtime_url = await self._announce_episode_playback(
+                video_id, playback.cpn, playback.position
+            )
             playback.announced = True
         if playback.watchtime_url:
             await self._report_episode_position(playback, position)
@@ -1512,11 +1514,13 @@ class YoutubeMusicProvider(RecommendationPayloadMixin, MusicProvider):
         cpn = "".join(secrets.choice(CPN_ALPHABET) for _ in range(16))
         playback = EpisodePlayback(cpn=cpn, position=position)
         self._episode_playbacks[video_id] = playback
-        playback.watchtime_url = await self._announce_episode_playback(video_id, cpn)
+        playback.watchtime_url = await self._announce_episode_playback(video_id, cpn, position)
         playback.announced = True
         return playback
 
-    async def _announce_episode_playback(self, video_id: str, cpn: str) -> str | None:
+    async def _announce_episode_playback(
+        self, video_id: str, cpn: str, position: int
+    ) -> str | None:
         """Announce a new playback of a podcast episode to YouTube and return its report address."""
         tracking = await get_playback_tracking(video_id, headers=self._headers, user=self._yt_user)
         playback_url = (tracking or {}).get("videostatsPlaybackUrl", {}).get("baseUrl")
@@ -1524,7 +1528,9 @@ class YoutubeMusicProvider(RecommendationPayloadMixin, MusicProvider):
         if not playback_url or not watchtime_url:
             self.logger.debug("YouTube offers no playback reporting for episode %s", video_id)
             return None
-        await self._send_playback_report(playback_url, {"cpn": cpn, "docid": video_id, "cmt": "0"})
+        await self._send_playback_report(
+            playback_url, {"cpn": cpn, "docid": video_id, "cmt": str(position)}
+        )
         return str(watchtime_url)
 
     async def _report_episode_position(self, playback: EpisodePlayback, position: int) -> None:

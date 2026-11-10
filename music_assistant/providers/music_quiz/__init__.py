@@ -68,7 +68,12 @@ from music_assistant_models.config_entries import (
     ConfigEntry,
     ProviderConfig,
 )
-from music_assistant_models.enums import ConfigEntryType, ProviderFeature, QueueOption
+from music_assistant_models.enums import (
+    ConfigEntryType,
+    PlaybackState,
+    ProviderFeature,
+    QueueOption,
+)
 from music_assistant_models.errors import (
     AudioError,
     InvalidDataError,
@@ -80,6 +85,7 @@ from music_assistant_models.errors import (
 from music_assistant_models.media_items import Track
 
 from music_assistant.constants import ATTR_ANNOUNCEMENT_IN_PROGRESS, CONF_ENABLED
+from music_assistant.controllers.streams.constants import STREAM_SLOT_WAIT_TIMEOUT
 from music_assistant.controllers.webserver.helpers.auth_middleware import (
     current_user,
     impersonated_user,
@@ -165,6 +171,7 @@ if TYPE_CHECKING:
     from music_assistant_models.provider import ProviderManifest
     from music_assistant_models.queue_item import QueueItem
 
+    from music_assistant.controllers.player_queues.state import QueueSnapshot
     from music_assistant.mass import MusicAssistant
     from music_assistant.models import ProviderInstanceType
     from music_assistant.models.player import Player
@@ -249,6 +256,13 @@ class MusicQuizPlugin(PluginProvider):
         self._playback_lock = asyncio.Lock()
         self._next_round_task: asyncio.Task[MusicQuizRound] | None = None
         self._warm_next_track_task: asyncio.Task[None] | None = None
+        # queue item of the first round's track, staged on the playback target in the lobby
+        self._staged_item_id: str | None = None
+        # the venue queue's own content from before the quiz first took it over
+        self._venue_snapshot: QueueSnapshot | None = None
+        # latest item the quiz staged or started on its playback queue; the venue queue is only
+        # restored while it still holds this item, so content played there since is left alone
+        self._quiz_item_id: str | None = None
         self._reveal_playback_task: asyncio.Task[None] | None = None
         self._unregister_handles: list[Callable[[], None]] = []
         # public state is broadcast from sync code paths that cannot await the join URL,
@@ -331,6 +345,7 @@ class MusicQuizPlugin(PluginProvider):
             await self._cancel_reveal_playback_task()
             if quiz_type is None or quiz_type.uses_audio:
                 await self._stop_playback()
+            await self._restore_venue_queue()
             self._game_generation += 1
             # clear game state before tearing down the session so a guest listen-in
             # racing with unload cannot (re)create or join a session mid-teardown
@@ -467,18 +482,24 @@ class MusicQuizPlugin(PluginProvider):
             if previous_quiz_type is not None and previous_quiz_type.uses_audio:
                 await self._stop_playback()
             async with self._playback_lock:
-                if not quiz_strategy.uses_audio or (
+                playback_changed = not quiz_strategy.uses_audio or (
                     previous_game is not None and _playback_selection_changed(previous_game, game)
-                ):
+                )
+                if playback_changed:
                     await self._close_playback_session_locked()
                 self._cancel_timers()
                 self._cancel_next_round_task()
+                if playback_changed:
+                    # only once the lobby staging is cancelled, so it cannot stage onto the
+                    # restored queue
+                    await self._restore_venue_queue()
                 self._game_generation += 1
                 self._game = game
                 self._quiz_type = quiz_strategy
                 self._answer_type = answer_strategy
                 self._next_round_task = initial_round_task
                 self._signal_game_updated()
+            self._warm_first_round(initial_round_task.result())
             await self._store_playback_preference(
                 game_config.playback_mode,
                 remembered_venue_player_id,
@@ -552,6 +573,7 @@ class MusicQuizPlugin(PluginProvider):
                 self._schedule_presence_expiry(now)
                 if auto_start and _has_active_players(game, now):
                     self._schedule_replay_auto_start(game, now)
+                self._warm_first_round(initial_round_task.result())
             finally:
                 # a failed preparation keeps the previous game, so clear and
                 # broadcast here too or clients wait on the preparing state forever
@@ -575,6 +597,7 @@ class MusicQuizPlugin(PluginProvider):
             self._answer_type = None
             if uses_audio:
                 await self._stop_playback()
+            await self._restore_venue_queue()
             # tear down the shared session so its virtual player / listen-in
             # guests do not linger once the game is gone
             await self._close_playback_session()
@@ -979,7 +1002,7 @@ class MusicQuizPlugin(PluginProvider):
             if track_uri in rejected_uris:
                 quiz_type.reject_track(track_uri)
                 continue
-            if await self._advance_to_queued_track(track_uri):
+            if await self._advance_to_queued_track(track_uri, round_index):
                 return next_round
             try:
                 # This public queue operation is both the production resolution boundary and
@@ -1067,6 +1090,7 @@ class MusicQuizPlugin(PluginProvider):
         if len(game.rounds) >= game.config.round_count:
             if quiz_type.uses_audio and not quiz_type.plays_track_on_reveal:
                 await self._stop_playback()
+            await self._restore_venue_queue()
             finish_game(game)
             self._cancel_presence_expiry()
             self._signal_game_updated()
@@ -1290,6 +1314,15 @@ class MusicQuizPlugin(PluginProvider):
                     self._warm_next_track(track_known)
                 )
 
+    def _warm_first_round(self, first_round: MusicQuizRound) -> None:
+        """Queue and buffer the first round's track in the background while the lobby is open."""
+        _, quiz_type, _ = self._require_game_strategies()
+        if not quiz_type.plays_track_before_answering or first_round.track_uri is None:
+            return
+        self._warm_next_track_task = self.mass.create_task(
+            self._warm_first_track(first_round.track_uri)
+        )
+
     async def _get_prepared_round(self, round_index: int) -> MusicQuizRound:
         """Return the (prefetched) round with the given index."""
         game, quiz_type, _ = self._require_game_strategies()
@@ -1317,6 +1350,7 @@ class MusicQuizPlugin(PluginProvider):
             self._warm_next_track_task.cancel()
             self._warm_next_track_task.add_done_callback(_consume_task_exception)
             self._warm_next_track_task = None
+        self._staged_item_id = None
         if self._next_round_task is not None:
             self._next_round_task.cancel()
             # retrieve the result/exception once the task settles so a prefetch that
@@ -1459,9 +1493,15 @@ class MusicQuizPlugin(PluginProvider):
         """Play the given track on the game's playback session."""
         with _system_auth_context():
             session = await self._prepare_session_for_playback()
-            await self.mass.player_queues.play_media(
-                session.queue_id, track_uri, option=QueueOption.REPLACE
-            )
+            self._snapshot_venue_queue(session)
+            try:
+                await self.mass.player_queues.play_media(
+                    session.queue_id, track_uri, option=QueueOption.REPLACE
+                )
+            finally:
+                # a track that fails to start may already have replaced the queue's content
+                if played_item := next(iter(self.mass.player_queues.items(session.queue_id)), None):
+                    self._quiz_item_id = played_item.queue_item_id
 
     async def _enqueue_track(self, track_uri: str) -> None:
         """Append a track to the game's playback session queue without starting it."""
@@ -1478,6 +1518,59 @@ class MusicQuizPlugin(PluginProvider):
             await self.mass.player_queues.play_media(
                 session.queue_id, track_uri, option=QueueOption.ADD
             )
+
+    async def _warm_first_track(self, track_uri: str) -> None:
+        """
+        Queue the first round's track on an idle playback target and buffer its audio.
+
+        :param track_uri: URI of the first round's track.
+        """
+        with _system_auth_context():
+            if (game := self._game) is None:
+                return
+            if game.config.playback_mode == SharedPlaybackMode.VENUE:
+                venue = self.mass.players.get_player(game.config.venue_player_id or "")
+                # a venue that is playing or paused (e.g. a party while the lobby is open) is
+                # left alone, without a session either: a lobby teardown stops the session's
+                # playback. Its first round then starts without prepared audio.
+                if (
+                    venue is None
+                    or not venue.state.available
+                    or venue.state.playback_state != PlaybackState.IDLE
+                ):
+                    return
+            session = await self._get_playback_session()
+            if session is None:
+                return
+            try:
+                self._snapshot_venue_queue(session)
+                # starting the game replaces the queue anyway, staging takes it over a bit earlier;
+                # replace_next (unlike add) also drops the autoplay seeds of what played before
+                self.mass.player_queues.clear(session.queue_id, skip_stop=True)
+                await self.mass.player_queues.play_media(
+                    session.queue_id, track_uri, option=QueueOption.REPLACE_NEXT
+                )
+                staged_item = next(iter(self.mass.player_queues.items(session.queue_id)), None)
+                if staged_item is None:
+                    return
+                # after the clear, the queue only holds what this staging put there
+                self._quiz_item_id = staged_item.queue_item_id
+                if not await self._is_round_track(staged_item, track_uri):
+                    return
+                self._staged_item_id = staged_item.queue_item_id
+                # A cold start decodes the track at full speed while the player has no lead
+                # yet; buffering it in the lobby lets the first round start from audio already
+                # in hand. Best effort: audio that is missing or lapsed in a long lobby is
+                # resolved on demand when the round starts.
+                await self.mass.streams.audio.get_audio_buffer(
+                    staged_item,
+                    reason="prepare_next",
+                    capacity_wait_timeout=STREAM_SLOT_WAIT_TIMEOUT,
+                    allow_provider_match=False,
+                    stop_paused_queues=False,
+                )
+            except MusicAssistantError as err:
+                self.logger.debug("Could not prepare the first Music Quiz track: %s", err)
 
     async def _warm_next_track(self, track_known: asyncio.Future[MusicQuizRound]) -> None:
         """
@@ -1530,15 +1623,26 @@ class MusicQuizPlugin(PluginProvider):
                 ),
             )
 
-    async def _advance_to_queued_track(self, track_uri: str) -> bool:
-        """Start an already-queued track; False when the caller must fall back."""
+    async def _advance_to_queued_track(self, track_uri: str, round_index: int) -> bool:
+        """
+        Start the round's track from the queue when the game already queued it.
+
+        :param track_uri: URI of the round's track.
+        :param round_index: Index of the round being started.
+        :return: False when the caller must start the track itself.
+        """
         with _system_auth_context():
             session = self._playback_session
             if session is None:
                 return False
+            items = self.mass.player_queues.items(session.queue_id)
+            if round_index == 0:
+                # before the first round the queue holds whatever the target played last, of
+                # which only the item staged in the lobby belongs to the game
+                items = [item for item in items if item.queue_item_id == self._staged_item_id]
             # matched per item: the queue's next-item helpers silently skip unplayable items
             queued_item: QueueItem | None = None
-            for item in self.mass.player_queues.items(session.queue_id):
+            for item in items:
                 if item.available and await self._is_round_track(item, track_uri):
                     queued_item = item
                     break
@@ -1558,6 +1662,7 @@ class MusicQuizPlugin(PluginProvider):
                     err,
                 )
                 return False
+            self._quiz_item_id = queued_item.queue_item_id
             return True
 
     async def _is_round_track(self, queue_item: QueueItem, track_uri: str) -> bool:
@@ -1595,6 +1700,33 @@ class MusicQuizPlugin(PluginProvider):
                 await self.mass.player_queues.stop(self._playback_session.queue_id)
             except Exception as err:
                 self.logger.warning("Could not stop Music Quiz playback: %s", err)
+
+    def _snapshot_venue_queue(self, session: SharedPlaybackSession) -> None:
+        """Remember the venue queue's own content before the quiz takes it over."""
+        if session.mode != SharedPlaybackMode.VENUE:
+            return
+        if self._venue_snapshot is None or self._venue_played_on(session.queue_id):
+            self._venue_snapshot = self.mass.player_queues.snapshot(session.queue_id)
+
+    async def _restore_venue_queue(self) -> None:
+        """Put the venue queue's own content back, unless something else was played there since."""
+        snapshot = self._venue_snapshot
+        played_on = snapshot is not None and self._venue_played_on(snapshot.queue_id)
+        self._venue_snapshot = self._quiz_item_id = None
+        if snapshot is None or played_on:
+            return
+        try:
+            await self.mass.player_queues.restore(snapshot.queue_id, snapshot)
+        except Exception as err:
+            self.logger.warning("Could not restore the queue of the Music Quiz venue: %s", err)
+
+    def _venue_played_on(self, queue_id: str) -> bool:
+        """Return whether the venue queue holds content played there after the quiz's own item."""
+        queues = self.mass.player_queues
+        # an empty queue (a takeover that failed halfway) holds nothing newer
+        return bool(queues.items(queue_id, limit=1)) and (
+            self._quiz_item_id is None or queues.index_by_id(queue_id, self._quiz_item_id) is None
+        )
 
     def _audio_started_at(self, game_round: MusicQuizRound) -> float:
         """

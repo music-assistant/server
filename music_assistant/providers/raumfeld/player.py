@@ -299,7 +299,9 @@ class RaumfeldPlayer(PlayerProtocol):
         self._power_changed_at = 0.0
         self._advance_task_id = f"raumfeld_advance_{player_id}"
         self._attr_device_info = DeviceInfo(
-            model=provider.room_model(room) or "Raumfeld", manufacturer="Teufel"
+            model=provider.room_model(room) or "Raumfeld",
+            manufacturer="Teufel",
+            software_version=provider.room_software_version(room),
         )
         # Expose the room's media-renderer UUID (and IP) so Music Assistant links this
         # native player to the same renderer's DLNA/Chromecast/Sendspin representation
@@ -414,6 +416,17 @@ class RaumfeldPlayer(PlayerProtocol):
             return
         self.room = room
         self._attr_name = room
+        self.update_state()
+
+    def set_software_version(self, version: str | None) -> None:
+        """
+        Show the software version of this room's speaker, keeping the known one if unread.
+
+        :param version: The version the speaker reports, or ``None`` if it was not read.
+        """
+        if version is None or version == self._attr_device_info.software_version:
+            return
+        self._attr_device_info.software_version = version
         self.update_state()
 
     def set_station_buttons(self, buttons: list[tuple[int, str, str, bool]]) -> None:

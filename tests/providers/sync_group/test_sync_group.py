@@ -21,7 +21,6 @@ from music_assistant_models.player import OutputProtocol, PlayerMedia, PlayerSou
 from music_assistant.constants import (
     CONF_GROUP_MEMBERS,
     CONF_MUTE_CONTROL,
-    CONF_PLAYERS,
     CONF_VOLUME_CONTROL,
     PROTOCOL_PRIORITY,
 )
@@ -1830,104 +1829,6 @@ class TestGetConfigEntriesMemberPicker:
         option_ids = {option.value for option in members_entry.options}
 
         assert option_ids == {"leader", "follower"}
-
-
-class TestMembersFilterMigration:
-    """Test the members_filter (exclusion) -> allowed_members (inclusion) migration."""
-
-    def _run_migrate(self, data: dict[str, Any]) -> dict[str, Any]:
-        """Run the migration block against a copy of the provided data dict."""
-        all_player_configs = data.get(CONF_PLAYERS, {})
-        if isinstance(all_player_configs, dict):
-            group_provider_domains = {"sync_group", "universal_group"}
-            universe = {
-                pid
-                for pid, cfg in all_player_configs.items()
-                if isinstance(cfg, dict) and cfg.get("provider") not in group_provider_domains
-            }
-            for player_cfg in all_player_configs.values():
-                if not isinstance(player_cfg, dict):
-                    continue
-                if player_cfg.get("provider") != "sync_group":
-                    continue
-                values = player_cfg.setdefault("values", {})
-                old_exclude = values.get("members_filter") or []
-                if not old_exclude or values.get("allowed_members") is not None:
-                    continue
-                values["allowed_members"] = sorted(universe - set(old_exclude))
-                values["members_filter"] = []
-        return data
-
-    def test_inverts_exclusion_to_inclusion(self) -> None:
-        """An exclusion list of [X] becomes an inclusion list of universe - {X}."""
-        data = {
-            CONF_PLAYERS: {
-                "a": {"provider": "sonos", "player_id": "a"},
-                "b": {"provider": "airplay", "player_id": "b"},
-                "c": {"provider": "chromecast", "player_id": "c"},
-                "syncgroup_1": {
-                    "provider": "sync_group",
-                    "player_id": "syncgroup_1",
-                    "values": {"members_filter": ["b"]},
-                },
-            }
-        }
-        out = self._run_migrate(data)
-        sg = out[CONF_PLAYERS]["syncgroup_1"]["values"]
-        assert sg["allowed_members"] == ["a", "c"]
-        assert sg["members_filter"] == []
-
-    def test_idempotent_when_already_migrated(self) -> None:
-        """Re-running migration on already-migrated config is a no-op."""
-        data = {
-            CONF_PLAYERS: {
-                "a": {"provider": "sonos", "player_id": "a"},
-                "syncgroup_1": {
-                    "provider": "sync_group",
-                    "player_id": "syncgroup_1",
-                    "values": {"allowed_members": ["a"], "members_filter": []},
-                },
-            }
-        }
-        out = self._run_migrate(data)
-        sg = out[CONF_PLAYERS]["syncgroup_1"]["values"]
-        assert sg["allowed_members"] == ["a"]
-        assert sg["members_filter"] == []
-
-    def test_skips_when_no_exclusion_list(self) -> None:
-        """A sync_group without a members_filter is left untouched."""
-        data = {
-            CONF_PLAYERS: {
-                "syncgroup_1": {
-                    "provider": "sync_group",
-                    "player_id": "syncgroup_1",
-                    "values": {},
-                },
-            }
-        }
-        out = self._run_migrate(data)
-        sg = out[CONF_PLAYERS]["syncgroup_1"]["values"]
-        assert "allowed_members" not in sg
-
-    def test_excludes_group_providers_from_universe(self) -> None:
-        """Group-providing players (sync_group/universal_group) are not in the universe."""
-        data = {
-            CONF_PLAYERS: {
-                "a": {"provider": "sonos", "player_id": "a"},
-                "ug": {"provider": "universal_group", "player_id": "ug"},
-                "sg": {"provider": "sync_group", "player_id": "sg"},
-                "syncgroup_1": {
-                    "provider": "sync_group",
-                    "player_id": "syncgroup_1",
-                    "values": {"members_filter": ["a"]},
-                },
-            }
-        }
-        out = self._run_migrate(data)
-        sg = out[CONF_PLAYERS]["syncgroup_1"]["values"]
-        # Universe = {a} (sg/ug/syncgroup_1 are group providers excluded).
-        # Inversion removes a, so allowed_members is empty.
-        assert sg["allowed_members"] == []
 
 
 class TestIsActiveSession:

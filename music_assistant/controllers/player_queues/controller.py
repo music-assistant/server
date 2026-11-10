@@ -16,6 +16,7 @@ from __future__ import annotations
 import asyncio
 import random
 import time
+from dataclasses import replace
 from typing import TYPE_CHECKING, Any, Final, cast
 
 import shortuuid
@@ -78,6 +79,7 @@ from music_assistant.controllers.player_queues.constants import (
     PAUSE_TIMEOUT_RANGE,
     PLAYBACK_START_TIMEOUT,
     QUEUE_CACHE_SAVE_DELAY,
+    QUEUE_SHUTDOWN_STOP_TIMEOUT,
     SKIP_END_MARGIN,
 )
 from music_assistant.controllers.player_queues.helpers import (
@@ -93,7 +95,11 @@ from music_assistant.controllers.player_queues.media_resolver import MediaResolv
 from music_assistant.controllers.player_queues.playback_tracker import PlaybackTrackerMixin
 from music_assistant.controllers.player_queues.queue_loader import QueueLoaderMixin
 from music_assistant.controllers.player_queues.smart_shuffle import SmartShuffle
-from music_assistant.controllers.player_queues.state import PlayerQueueData, SleepTimerTarget
+from music_assistant.controllers.player_queues.state import (
+    PlayerQueueData,
+    QueueSnapshot,
+    SleepTimerTarget,
+)
 from music_assistant.controllers.player_queues.stream_feeder import StreamFeederMixin
 from music_assistant.controllers.players.constants import SwitchedOffAction
 from music_assistant.controllers.webserver.helpers.auth_middleware import (
@@ -282,10 +288,16 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         # stop all playback
         for queue in self.all():
             if queue.state in (PlaybackState.PLAYING, PlaybackState.PAUSED):
-                await self.stop(queue.queue_id)
-        # flush any pending (debounced) state writes so the latest queue survives shutdown/update
+                try:
+                    async with asyncio.timeout(QUEUE_SHUTDOWN_STOP_TIMEOUT):
+                        await self.stop(queue.queue_id)
+                except Exception as err:
+                    self.logger.warning("Failed to stop queue %s - %s", queue.queue_id, err)
+        # flush any pending (debounced) state writes so the latest queue survives shutdown/update;
+        # a save that already started is cancelled too, so its older state can't land last
         for queue in self.all():
             self.mass.cancel_timer(f"save_queue_cache_{queue.queue_id}")
+            self.mass.cancel_task(f"save_queue_cache_{queue.queue_id}")
             await self._save_queue_to_cache(queue.queue_id)
 
     async def get_diagnostics(self) -> dict[str, SerializableType]:
@@ -922,6 +934,22 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         self.signal_update(queue_id)
 
     @api_command(
+        "player_queues/add_to_playlist",
+        required_scope=Scope.LIBRARY_WRITE,
+        allow_impersonation=True,
+    )
+    async def add_to_playlist(self, queue_id: str, db_playlist_id: str | int) -> BackgroundTask:
+        """
+        Add the items of a queue to an existing library playlist.
+
+        :param queue_id: The queue_id of the queue to take the items from.
+        :param db_playlist_id: Library playlist id to add the items to.
+        :return: Managed background task for the playlist update.
+        """
+        uris = self._playlist_uris(queue_id)
+        return await self.mass.music.playlists.add_playlist_tracks(db_playlist_id, uris)
+
+    @api_command(
         "player_queues/save_as_playlist",
         required_scope=Scope.LIBRARY_WRITE,
         allow_impersonation=True,
@@ -932,20 +960,9 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
 
         :param queue_id: The queue_id of the queue to save.
         :param name: The name for the new playlist.
+        :return: Managed background task that fills the new playlist.
         """
-        self._check_player_permission(queue_id)
-        if not self.get(queue_id):
-            raise PlayerUnavailableError(f"Queue {queue_id} is not available")
-        queue_items = queue_data.items if (queue_data := self._queue_data.get(queue_id)) else []
-        if not queue_items:
-            raise QueueEmpty("Cannot save an empty queue as a playlist.")
-        # collect URIs from queue items that are playlist-compatible
-        uris: list[str] = []
-        for item in queue_items:
-            if item.uri and item.media_type in PLAYLIST_MEDIA_TYPES:
-                uris.append(item.uri)
-        if not uris:
-            raise InvalidDataError("No valid items in queue to save as playlist.")
+        uris = self._playlist_uris(queue_id)
         playlist = await self.mass.music.playlists.create_playlist(name)
         return await self.mass.music.playlists.add_playlist_tracks(playlist.item_id, uris)
 
@@ -1867,6 +1884,85 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         self.signal_update(queue_id, True)
         self.update_next_item_on_player(queue_id)
 
+    def snapshot(self, queue_id: str) -> QueueSnapshot:
+        """
+        Return a copy of the queue's content, detached from the live queue, for `restore`.
+
+        The content is the items, the position (including where the current item was in its
+        playback), shuffle, the dynamic sources, the autoplay seeds, the credited albums and the
+        user the queue plays for. The queue's settings are not part of it.
+
+        :param queue_id: The queue to copy.
+        """
+        queue_data = self._queue_data[queue_id]
+        queue = queue_data.queue
+        saved = PlayerQueueData.from_cache(queue_data.to_cache(), queue_data.items_to_cache())
+        if queue.state == PlaybackState.PLAYING:
+            # use the live playback clock while actively playing
+            saved.queue.resume_pos = int(queue.corrected_elapsed_time)
+        elif queue.ended:
+            # a queue that played to its end starts over, so it has no position to keep
+            saved.queue.resume_pos = 0
+        else:
+            # when not playing the live clock is stale, so use the stored resume position
+            saved.queue.resume_pos = int(queue.resume_pos or self._last_played_position(queue))
+        saved.fade_ordered_until = queue_data.fade_ordered_until
+        return QueueSnapshot(saved)
+
+    async def restore(self, queue_id: str, snapshot: QueueSnapshot) -> None:
+        """
+        Put the content of a snapshot back on a queue, stopping the queue's playback first.
+
+        Playback is not started again, and the queue keeps its current settings (repeat,
+        crossfade, autoplay, ...).
+
+        :param queue_id: The queue to put the content on; a queue that no longer exists is left
+            alone.
+        :param snapshot: The snapshot to put back, as taken by `snapshot`.
+        """
+        if (queue_data := self._queue_data.get(queue_id)) is None:
+            return
+        queue = queue_data.queue
+        if queue.state != PlaybackState.IDLE:
+            await self._handle_stop(queue_id)
+        # work still pending for the replaced content (warming its next item, settling the end it
+        # played to, refilling it) must not act on the restored content
+        for task_id in (
+            f"prepare_next_audio_buffer_{queue_id}",
+            f"settle_or_resume_{queue_id}",
+            f"fill_autoplay_tracks_{queue_id}",
+            f"fill_dynamic_tracks_{queue_id}",
+        ):
+            self.mass.cancel_timer(task_id)
+            self.mass.cancel_task(task_id)
+        self._clear(queue_id, skip_stop=True)
+        saved = snapshot.data
+        queue.shuffle_enabled = saved.queue.shuffle_enabled
+        self.store_sources(queue, list(saved.source_items))
+        queue.is_dynamic = saved.queue.is_dynamic
+        queue_data.enqueued_media_items = list(saved.enqueued_media_items)
+        queue_data.credited_albums = set(saved.credited_albums)
+        queue_data.userid = saved.userid
+        queue_data.fade_ordered_until = saved.fade_ordered_until
+        # the tracker's last state and flow stream describe the replaced content: left in place,
+        # a late report of the stopped player is read against the restored items
+        queue_data.prev_state = None
+        queue_data.flow_mode_stream_log = []
+        queue.flow_mode = False
+        queue.ended = saved.queue.ended
+        queue.current_index = saved.queue.current_index
+        queue.resume_pos = saved.queue.resume_pos
+        queue.elapsed_time = saved.queue.resume_pos
+        queue.elapsed_time_last_updated = time.time()
+        self.update_items(queue_id, [replace(item, queue_id=queue_id) for item in saved.items])
+        queue.current_item = self.get_item(queue_id, queue.current_index)
+        queue.next_item = (
+            self.get_next_item(queue_id, queue.current_index)
+            if queue.current_index is not None
+            else None
+        )
+        self.signal_update(queue_id)
+
     # Helper methods
 
     def get_item(self, queue_id: str, item_id_or_index: int | str | None) -> QueueItem | None:
@@ -2722,3 +2818,18 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
                 self.signal_update(queue_id)
         finally:
             self._set_transitioning(queue_id, False)
+
+    def _playlist_uris(self, queue_id: str) -> list[str]:
+        """Return the URIs of the queue's playlist-compatible items, checking player access."""
+        self._check_player_permission(queue_id)
+        if not self.get(queue_id):
+            raise PlayerUnavailableError(f"Queue {queue_id} is not available")
+        queue_items = queue_data.items if (queue_data := self._queue_data.get(queue_id)) else []
+        if not queue_items:
+            raise QueueEmpty("Cannot save an empty queue as a playlist.")
+        uris = [
+            item.uri for item in queue_items if item.uri and item.media_type in PLAYLIST_MEDIA_TYPES
+        ]
+        if not uris:
+            raise InvalidDataError("No valid items in queue to save as playlist.")
+        return uris
