@@ -15,7 +15,11 @@ from music_assistant_models.enums import (
     ProviderFeature,
     ProviderType,
 )
-from music_assistant_models.errors import UnsupportedFeaturedException
+from music_assistant_models.errors import (
+    PlayerCommandFailed,
+    PlayerUnavailableError,
+    UnsupportedFeaturedException,
+)
 
 from music_assistant.constants import CONF_PLAYER_DSP, CONF_PLAYER_QUEUES, CONF_PLAYERS
 from music_assistant.models.player import DeviceInfo, Player
@@ -155,6 +159,7 @@ class _GroupPlayer(_TestPlayer):
         super().__init__(provider, PlayerType.GROUP, GROUP_ID)
         # whether each member that left was still a registered player at that time
         self.left_while_registered: dict[str, bool] = {}
+        self.leave_error: Exception | None = None
 
     async def set_members(
         self,
@@ -166,6 +171,8 @@ class _GroupPlayer(_TestPlayer):
             self.left_while_registered[member_id] = (
                 self.mass.players.get_player(member_id) is not None
             )
+        if self.leave_error:
+            raise self.leave_error
 
 
 async def test_a_member_of_an_active_group_leaves_it_before_it_is_unregistered(
@@ -183,6 +190,33 @@ async def test_a_member_of_an_active_group_leaves_it_before_it_is_unregistered(
         mass.players._players.pop(GROUP_ID)
 
     assert group.left_while_registered == {PLAYER_ID: True}
+    assert len(player.hook_calls) == 1
+    _assert_removed(mass)
+
+
+@pytest.mark.parametrize(
+    "leave_error",
+    [
+        PlayerUnavailableError("member is not available"),
+        PlayerCommandFailed("member is static"),
+        UnsupportedFeaturedException("group is not dynamic"),
+    ],
+)
+async def test_a_group_that_can_not_let_the_member_go_does_not_keep_the_player(
+    mass: MusicAssistant, leave_error: Exception
+) -> None:
+    """A member its active group refuses to release, or can not reach, is removed all the same."""
+    player = await _register(mass, _HookedPlayer)
+    group = _GroupPlayer(_TestProvider(mass))
+    group.leave_error = leave_error
+    mass.players._players[GROUP_ID] = group
+    player.state.active_group = GROUP_ID
+
+    try:
+        await mass.players.remove(PLAYER_ID)
+    finally:
+        mass.players._players.pop(GROUP_ID)
+
     assert len(player.hook_calls) == 1
     _assert_removed(mass)
 

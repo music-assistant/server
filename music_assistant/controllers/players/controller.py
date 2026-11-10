@@ -2005,7 +2005,9 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
             group_player := self.mass.players.get_player(player.state.active_group)
         ):
             # try to remove from the group
-            with suppress(UnsupportedFeaturedException, PlayerCommandFailed):
+            with suppress(
+                UnsupportedFeaturedException, PlayerCommandFailed, PlayerUnavailableError
+            ):
                 await group_player.set_members(
                     player_ids_to_remove=[player_id],
                 )
