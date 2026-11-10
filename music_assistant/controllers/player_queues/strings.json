@@ -142,6 +142,10 @@
         "global": "Follow the Player Queues default."
       }
     },
+    "pause_timeout": {
+      "label": "Stop a paused player after (seconds)",
+      "description": "How long a player may stay paused before Music Assistant stops it to free the audio it holds. Once stopped, the player shows as idle, and pressing play still continues where you paused. Not every player can stay paused for long."
+    },
     "default_enqueue_select_artist": {
       "label": "Items to select when you play a (in-library) artist.",
       "options": {

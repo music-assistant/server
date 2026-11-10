@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
+from urllib.parse import urlparse
 
 import aiohttp
 import defusedxml.ElementTree as DefusedET
@@ -24,6 +25,8 @@ if TYPE_CHECKING:
 LOGGER = logging.getLogger(__name__)
 
 _MEDIA_SERVER_TYPE = "urn:schemas-upnp-org:device:MediaServer:1"
+# one per speaker, holding its setup service (software version, updates)
+_RAUMFELD_DEVICE_TYPE = "urn:schemas-raumfeld-com:device:RaumfeldDevice:1"
 _SPOTIFY_ACTIVE = "active"
 
 
@@ -59,6 +62,8 @@ class Devices:
     # device UDN -> device description URL
     locations: dict[str, str]
     media_server_udn: str | None
+    # speaker address -> description URL of the speaker's Raumfeld device
+    raumfeld_devices: dict[str, str] = field(default_factory=dict)
 
 
 class RaumfeldHost:
@@ -184,6 +189,14 @@ class RaumfeldHost:
         """
         return self._devices.locations.get(udn)
 
+    def raumfeld_device_location(self, address: str) -> str | None:
+        """
+        Return the description URL of the Raumfeld device of the speaker at an address.
+
+        :param address: The speaker's IP address.
+        """
+        return self._devices.raumfeld_devices.get(address)
+
     def _apply_zone_config(self, xml: str) -> None:
         """Take over the rooms and zones from a getZones answer."""
         before = self._zone_config.rooms
@@ -276,6 +289,7 @@ def parse_devices(xml: str) -> Devices:
     """
     root = DefusedET.fromstring(xml)
     locations: dict[str, str] = {}
+    raumfeld_devices: dict[str, str] = {}
     media_server_udn = None
     for device in root.iterfind("device"):
         udn, location = device.get("udn"), device.get("location")
@@ -284,7 +298,13 @@ def parse_devices(xml: str) -> Devices:
         locations[udn] = location
         if device.get("type") == _MEDIA_SERVER_TYPE:
             media_server_udn = udn
-    return Devices(locations=locations, media_server_udn=media_server_udn)
+        elif device.get("type") == _RAUMFELD_DEVICE_TYPE and (
+            address := urlparse(location).hostname
+        ):
+            raumfeld_devices[address] = location
+    return Devices(
+        locations=locations, media_server_udn=media_server_udn, raumfeld_devices=raumfeld_devices
+    )
 
 
 def _room(element: Element) -> Room | None:

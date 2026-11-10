@@ -536,7 +536,8 @@ class DiscoveryController(CoreController):
         discovery_payload = {
             "service": "mcp",
             "config": {
-                "url": f"http://{os.environ['HOSTNAME']}:{INGRESS_SERVER_PORT}{self._mcp_path}"
+                "url": f"http://{os.environ['HOSTNAME']}:{INGRESS_SERVER_PORT}{self._mcp_path}",
+                "token": await self.mass.webserver.auth.get_homeassistant_system_user_token(),
             },
         }
         try:

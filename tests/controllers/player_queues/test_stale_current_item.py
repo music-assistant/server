@@ -49,7 +49,9 @@ def _controller() -> tuple[PlayerQueuesController, PlayerQueue]:
     ctrl.play_index = AsyncMock()  # type: ignore[method-assign]
     ctrl.mass = MagicMock()
     ctrl.mass.players.get_player = Mock(
-        return_value=MagicMock(state=MagicMock(playback_state=PlaybackState.IDLE))
+        return_value=MagicMock(
+            state=MagicMock(playback_state=PlaybackState.IDLE), offline_by_power_control=False
+        )
     )
     ctrl.logger = MagicMock()
     return ctrl, queue

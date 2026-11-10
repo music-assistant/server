@@ -100,6 +100,10 @@
       "label": "Skip Song Refill Rate (minutes)",
       "description": "How many minutes it takes for one 'Skip Song' token to refill. This controls how often guests can skip the currently playing song."
     },
+    "skip_votes_required": {
+      "label": "Votes Required to Skip",
+      "description": "How many different guests must press 'Skip' before the currently playing song is skipped. Set to 1 to let a single guest skip a song. Votes reset when the next song starts."
+    },
     "request_badge_color": {
       "label": "Request Badge Color",
       "description": "Color for the 'Request' badge shown on guest-added queue items."

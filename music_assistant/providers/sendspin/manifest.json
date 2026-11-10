@@ -8,7 +8,7 @@
   "codeowners": ["@music-assistant"],
   "tier": "core",
   "credits": ["[Sendspin](https://sendspin-audio.com)"],
-  "requirements": ["aiosendspin[server]==10.2.2", "av==18.1.0"],
+  "requirements": ["aiosendspin[server]==10.3.0", "av==19.0.2"],
   "builtin": true,
   "allow_disable": false
 }

@@ -352,6 +352,7 @@ def _host_room_player() -> RaumfeldPlayer:
     provider.room_model = MagicMock(  # type: ignore[attr-defined]
         return_value="Raumfeld Soundbar"
     )
+    provider.room_software_version = MagicMock(return_value="2.21.0")  # type: ignore[attr-defined]
     host = MagicMock()
     host.power_state.return_value = "MANUAL_STANDBY"
     provider.host = host  # type: ignore[attr-defined]
@@ -367,7 +368,19 @@ def test_room_on_the_host_gets_its_ip_identifier() -> None:
     player = _host_room_player()
     assert player.device_info.identifiers[IdentifierType.IP_ADDRESS] == "192.168.1.41"
     assert player.device_info.model == "Raumfeld Soundbar"
+    assert player.device_info.software_version == "2.21.0"
     assert player.powered is False
+
+
+def test_a_software_version_read_later_is_shown() -> None:
+    """A version read after the player was made replaces the one shown; an unread one does not."""
+    player = _host_room_player()
+    with patch.object(player, "update_state") as update_state:
+        player.set_software_version("2.22.0")
+        player.set_software_version(None)
+        player.set_software_version("2.22.0")
+    assert player.device_info.software_version == "2.22.0"
+    update_state.assert_called_once()
 
 
 _RENDERER = "http://192.168.1.42:54730/renderer.xml"
@@ -376,6 +389,7 @@ _RENDERER = "http://192.168.1.42:54730/renderer.xml"
 def _room_player(location: str | None = _RENDERER) -> RaumfeldPlayer:
     """Build a RaumfeldPlayer for a room whose own renderer is at the given location."""
     player = _flow_player()
+    player._Player__attr_linked_protocols = []  # type: ignore[attr-defined]
     player.room = "Bar"
     provider = MagicMock()
     provider.room_renderer_location.return_value = location
@@ -2852,3 +2866,20 @@ def test_the_timer_announces_the_first_track_of_a_repeated_queue() -> None:
     player._announce_upcoming("q1", "q3")
 
     assert player._announced_item_id == "q1"
+
+
+async def test_an_app_cast_past_the_host_is_not_read_from_the_room_renderer() -> None:
+    """A room still flagged for Spotify Connect plays nothing itself while an app is cast."""
+    player, _ = _external_player()
+    player._attr_playback_state = PlaybackState.PLAYING
+    with (
+        patch.object(player, "linked_foreign_player", return_value=MagicMock()),
+        patch.object(player, "_update_volume", AsyncMock()),
+        patch.object(player, "_update_poll_interval"),
+        patch.object(player, "update_state"),
+        patch.object(player, "_read_room_state", AsyncMock()) as read_state,
+    ):
+        await player._poll_room_playback()
+
+    read_state.assert_not_awaited()
+    assert player._attr_playback_state == PlaybackState.IDLE

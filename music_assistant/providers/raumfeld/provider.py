@@ -85,6 +85,7 @@ from .upnp import (
     SERVICE_RENDERING_CONTROL,
     browse,
     get_action,
+    get_software_version,
 )
 
 if TYPE_CHECKING:
@@ -147,6 +148,10 @@ class RaumfeldPlayerProvider(PlayerProvider):
     _room_ids: dict[str, str]
     # rooms already warned about sharing a serial, so the warning goes out once per room
     _shared_serial_warned: set[str]
+    # room name -> software version of its speaker, and the rooms it was read for since the
+    # last connect: a speaker that installed an update restarts, and the host with it
+    _room_versions: dict[str, str]
+    _versions_read: set[str]
 
     def line_in(self, renderer_uuid: str | None) -> tuple[str, str] | None:
         """Return the ``(stream url, title)`` of a room's Line-In input, or ``None``."""
@@ -161,6 +166,14 @@ class RaumfeldPlayerProvider(PlayerProvider):
         :param room: The Raumfeld room name to look up.
         """
         return self._room_models.get(room)
+
+    def room_software_version(self, room: str) -> str | None:
+        """
+        Return the software version of a room's speaker, or ``None`` if it is unknown.
+
+        :param room: The Raumfeld room name to look up.
+        """
+        return self._room_versions.get(room)
 
     def room_transport_url(self, room: str) -> str | None:
         """
@@ -220,6 +233,8 @@ class RaumfeldPlayerProvider(PlayerProvider):
         self._renderer_descriptions = {}
         self._room_ids = {}
         self._shared_serial_warned = set()
+        self._room_versions = {}
+        self._versions_read = set()
         # empty until connected; replaced by a fresh one on every connect
         self.host = RaumfeldHost(self.mass.http_session, self._host_url, self._handle_rooms_changed)
         self.room_events = RendererEvents(
@@ -440,6 +455,7 @@ class RaumfeldPlayerProvider(PlayerProvider):
         # load Line-In inputs before registering players so each room can expose its own
         await self._load_line_in()
         self._library_read_at = 0.0
+        self._versions_read = set()
         await self.mass.cache.delete(
             None, category=CACHE_CATEGORY_BUTTON_ITEMS, provider=self.instance_id
         )
@@ -616,6 +632,9 @@ class RaumfeldPlayerProvider(PlayerProvider):
             await self._ensure_room_serial(room)
         self._assign_room_ids(rooms)
         await self._pin_room_ids()
+        await self._read_software_versions(
+            [room for room in rooms if room not in self._versions_read]
+        )
         present: set[str] = set()
         for room in rooms:
             if (player_id := self._room_player_id(room)) is None:
@@ -627,6 +646,7 @@ class RaumfeldPlayerProvider(PlayerProvider):
                 # the stored room name (used for host calls) and the display name
                 if isinstance(existing, RaumfeldPlayer):
                     existing.set_room(room)
+                    existing.set_software_version(self.room_software_version(room))
                     existing.set_available(True)
                 self._ensure_icy_default(player_id)
                 continue
@@ -1246,6 +1266,28 @@ class RaumfeldPlayerProvider(PlayerProvider):
         if (control_url := parse_control_url(description, "AVTransport")) is not None:
             self._room_transport_paths[room] = control_url
         return serial
+
+    async def _read_software_versions(self, rooms: list[str]) -> None:
+        """Read the software version of each room's speaker, all at once."""
+        if not rooms:
+            return
+        self._versions_read.update(rooms)
+        versions = await asyncio.gather(*(self._read_software_version(room) for room in rooms))
+        for room, version in zip(rooms, versions, strict=True):
+            if version is not None:
+                self._room_versions[room] = version
+
+    async def _read_software_version(self, room: str) -> str | None:
+        """Return the software version of a room's speaker, or ``None`` if it cannot be read."""
+        _, address = self.resolve_room_renderer(room)
+        if address is None or (location := self.host.raumfeld_device_location(address)) is None:
+            return None
+        try:
+            async with asyncio.timeout(DEVICE_INFO_TIMEOUT):
+                return await get_software_version(self.mass.http_session, location)
+        except (*HOST_ERRORS, UpnpError) as err:
+            self.logger.debug("Failed to read the software version of %s: %r", room, err)
+            return None
 
     def _ensure_icy_default(self, player_id: str) -> None:
         """
