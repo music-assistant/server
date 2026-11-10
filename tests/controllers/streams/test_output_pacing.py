@@ -92,7 +92,7 @@ async def test_a_player_regains_the_lead_a_stall_drained_in_about_the_stalls_tim
     """
     A player with a small lead runs dry when stalls of the server follow each other.
 
-    ffmpeg's own catch-up of 1.05x the pace takes minutes to refill a stall of a few seconds.
+    ffmpeg's own catch-up of 1.05x the pace takes over a minute to refill a stall of a few seconds.
     """
     await set_global_cache_values({CACHE_ATTR_READRATE_CATCHUP: True})
     args = output_pacing_args(PacingProfile.NEAR_REALTIME)

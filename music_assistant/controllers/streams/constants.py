@@ -115,8 +115,8 @@ _PACING: Final[dict[PacingProfile, tuple[str, str]]] = {
     PacingProfile.LOW_LATENCY: ("1.02", "0.5"),
 }
 
-# Pace at which output that fell behind its schedule (a server stall while the player played
-# from its buffer) makes up the lag; it never runs past the burst plus the pace. ffmpeg's own
+# Pace at which output that fell behind its schedule (a stall of the server or of the player's
+# reads) makes up the lag; it never runs past the burst plus the pace. ffmpeg's own
 # 1.05x the pace takes over a minute to refill a few seconds, so stalls in a row run a player dry.
 _CATCHUP: Final[dict[PacingProfile, str]] = {PacingProfile.NEAR_REALTIME: "2"}
 
