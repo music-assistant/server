@@ -6212,6 +6212,8 @@ async def test_warm_first_track_does_not_claim_an_item_it_did_not_queue() -> Non
     await plugin._warm_first_track("library://track/0")
 
     assert plugin._staged_item_id is None
+    # the cleared queue only holds what the staging put there, so it is still the quiz's
+    assert plugin._quiz_item_id == "item-staged"
     get_audio_buffer.assert_not_awaited()
 
 
@@ -6705,8 +6707,11 @@ async def test_mid_game_reset_keeps_the_snapshot_from_before_the_game() -> None:
     await plugin.create_game(round_count=2, source_uris=["library://playlist/1"])
     assert plugin._warm_next_track_task is not None
     await plugin._warm_next_track_task
+    plugin._quiz_item_id = None
     await plugin.start_game()
     queues.play_index.assert_awaited_once_with("venue_player", "item-staged")
+    # the round started from the queue, which still holds the quiz's own item
+    assert cast("str | None", plugin._quiz_item_id) == "item-staged"
     await plugin.reset()
     assert plugin._warm_next_track_task is not None
     await plugin._warm_next_track_task
@@ -6768,6 +6773,56 @@ async def test_venue_queue_played_on_since_is_not_restored() -> None:
     queues.restore.assert_not_awaited()
     assert plugin._venue_snapshot is None
     assert plugin._quiz_item_id is None
+
+
+@pytest.mark.asyncio
+async def test_venue_played_on_since_the_lobby_is_snapshotted_again_at_the_first_round() -> None:
+    """Content played on the venue after the lobby staging is what the game gives back."""
+    plugin = _create_plugin()
+    _install_staging_target(plugin)
+    session = cast("AsyncMock", plugin._get_playback_session).return_value
+    plugin._prepare_session_for_playback = AsyncMock(  # type: ignore[method-assign]
+        return_value=session
+    )
+    plugin._play_track = MusicQuizPlugin._play_track.__get__(  # type: ignore[method-assign]
+        plugin, MusicQuizPlugin
+    )
+    queues = cast("MagicMock", plugin.mass.player_queues)
+    lobby_snapshot = MagicMock(spec=QueueSnapshot)
+    party_snapshot = MagicMock(spec=QueueSnapshot)
+    queues.snapshot = MagicMock(side_effect=[lobby_snapshot, party_snapshot])
+    await plugin._warm_first_track("library://track/0")
+    assert plugin._venue_snapshot is lobby_snapshot
+    # party music replaced the staged track on the venue while the lobby was open
+    party_item = MagicMock()
+    party_item.queue_item_id = "item-party"
+    queues.items = MagicMock(return_value=[party_item])
+    queues.index_by_id = MagicMock(return_value=None)
+
+    await plugin._play_track("library://track/0")
+
+    assert queues.snapshot.call_count == 2
+    assert plugin._venue_snapshot is party_snapshot
+
+
+@pytest.mark.asyncio
+async def test_unloading_restores_the_venue_queue() -> None:
+    """Unloading the plugin gives the venue its queue back."""
+    plugin = _create_plugin()
+    await plugin.create_game(round_count=1, source_uris=["library://playlist/1"])
+    snapshot = _held_venue_snapshot(plugin)
+    plugin.mass.config = _create_stored_config_controller(provider_enabled=True)
+
+    with patch(
+        "music_assistant.helpers.guest_access.revoke_guest_access",
+        new=AsyncMock(return_value=(0, 0)),
+    ):
+        await plugin.unload()
+
+    cast("MagicMock", plugin.mass.player_queues).restore.assert_awaited_once_with(
+        "venue_player", snapshot
+    )
+    assert plugin._venue_snapshot is None
 
 
 @pytest.mark.asyncio

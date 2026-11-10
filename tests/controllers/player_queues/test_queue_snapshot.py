@@ -96,7 +96,8 @@ def _controller() -> Any:
         target: Any, *args: Any, task_id: str | None = None, **_kwargs: Any
     ) -> asyncio.Task[Any]:
         coro = target if asyncio.iscoroutine(target) else target(*args)
-        task = asyncio.get_running_loop().create_task(coro)
+        # eager, like mass.create_task: an audio cleanup reads the items it releases right away
+        task = asyncio.Task(coro, loop=asyncio.get_running_loop(), eager_start=True)
         if task_id is not None:
             tasks[task_id] = task
         return task
@@ -132,6 +133,7 @@ def _controller() -> Any:
             enqueued_media_items=[playlist],
             credited_albums={"test://album/1"},
             userid="user-1",
+            fade_ordered_until=items[2].queue_item_id,
         )
     }
     queue.items = len(items)
@@ -141,6 +143,22 @@ def _controller() -> Any:
     queue.next_item = items[2]
     queue.resume_pos = 42
     return ctrl
+
+
+def _played_to(queue_item: QueueItem, state: PlaybackState) -> CompareState:
+    """Return the tracker state of a queue whose player is at the end of the given item."""
+    return CompareState(
+        queue_id=QUEUE_ID,
+        state=state,
+        current_item_id=queue_item.queue_item_id,
+        next_item_id=None,
+        current_item=queue_item,
+        elapsed_time=180,
+        last_playing_elapsed_time=180,
+        stream_title=None,
+        codec_type=None,
+        output_player_ids=None,
+    )
 
 
 def _take_over_like_a_quiz(ctrl: Any) -> None:
@@ -154,7 +172,9 @@ def _take_over_like_a_quiz(ctrl: Any) -> None:
     queue_data.enqueued_media_items = [quiz_track]
     queue_data.credited_albums = set()
     queue_data.userid = None
+    queue_data.fade_ordered_until = quiz_item.queue_item_id
     ctrl.update_items(QUEUE_ID, [quiz_item])
+    queue_data.prev_state = _played_to(quiz_item, PlaybackState.PLAYING)
     queue.current_index = 0
     queue.current_item = quiz_item
     queue.elapsed_time = 25
@@ -173,6 +193,7 @@ async def test_restore_puts_back_the_content_a_takeover_replaced() -> None:
     snapshot = ctrl.snapshot(QUEUE_ID)
     _take_over_like_a_quiz(ctrl)
     assert (queue.shuffle_enabled, queue.is_dynamic) == (False, False)
+    quiz_buffer = queue_data.items[0].streamdetails.buffer
     await ctrl.restore(QUEUE_ID, snapshot)
 
     assert [item.queue_item_id for item in queue_data.items] == original_ids
@@ -193,8 +214,30 @@ async def test_restore_puts_back_the_content_a_takeover_replaced() -> None:
     assert [item.uri for item in queue_data.enqueued_media_items] == ["test://playlist/radio"]
     assert queue_data.credited_albums == {"test://album/1"}
     assert queue_data.userid == "user-1"
+    assert queue_data.fade_ordered_until == original_ids[2]
     # a setting changed after the snapshot is not part of the content
     assert queue.repeat_mode == RepeatMode.ALL
+    # nothing of the replaced content is left to act on the restored queue
+    quiz_buffer.clear.assert_awaited_once()
+    ctrl.mass.cancel_task.assert_any_call(f"prepare_next_audio_buffer_{QUEUE_ID}")
+    assert queue_data.prev_state is None
+
+
+async def test_restore_keeps_a_queue_that_played_to_its_end_finished() -> None:
+    """A queue that had played to its end comes back finished, on its last item."""
+    ctrl = _controller()
+    queue_data = ctrl._queue_data[QUEUE_ID]
+    queue = queue_data.queue
+    ctrl.mark_ended(QUEUE_ID)
+    snapshot = ctrl.snapshot(QUEUE_ID)
+    _take_over_like_a_quiz(ctrl)
+
+    await ctrl.restore(QUEUE_ID, snapshot)
+
+    assert queue.ended is True
+    assert queue.current_index == 2
+    assert queue.current_item is queue_data.items[2]
+    assert queue.resume_pos == 0
 
 
 async def test_restore_is_not_settled_by_the_end_of_the_replaced_content() -> None:
@@ -216,20 +259,11 @@ async def test_restore_is_not_settled_by_the_end_of_the_replaced_content() -> No
     queue.repeat_mode = RepeatMode.OFF
     quiz_item = queue_data.items[0]
     queue_data.served_item_ids.add(quiz_item.queue_item_id)
-    played_to_the_end = CompareState(
-        queue_id=QUEUE_ID,
-        state=PlaybackState.PLAYING,
-        current_item_id=quiz_item.queue_item_id,
-        next_item_id=None,
-        current_item=quiz_item,
-        elapsed_time=180,
-        last_playing_elapsed_time=180,
-        stream_title=None,
-        codec_type=None,
-        output_player_ids=None,
+    ctrl._handle_end_of_queue(
+        queue,
+        _played_to(quiz_item, PlaybackState.PLAYING),
+        _played_to(quiz_item, PlaybackState.IDLE),
     )
-    stopped = CompareState(**{**played_to_the_end, "state": PlaybackState.IDLE})
-    ctrl._handle_end_of_queue(queue, played_to_the_end, stopped)
     settle = ctrl.mass.tracked_tasks[f"settle_or_resume_{QUEUE_ID}"]
 
     await ctrl.restore(QUEUE_ID, snapshot)

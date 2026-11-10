@@ -1551,9 +1551,13 @@ class MusicQuizPlugin(PluginProvider):
                     session.queue_id, track_uri, option=QueueOption.REPLACE_NEXT
                 )
                 staged_item = next(iter(self.mass.player_queues.items(session.queue_id)), None)
-                if staged_item is None or not await self._is_round_track(staged_item, track_uri):
+                if staged_item is None:
                     return
-                self._staged_item_id = self._quiz_item_id = staged_item.queue_item_id
+                # after the clear, the queue only holds what this staging put there
+                self._quiz_item_id = staged_item.queue_item_id
+                if not await self._is_round_track(staged_item, track_uri):
+                    return
+                self._staged_item_id = staged_item.queue_item_id
                 # A cold start decodes the track at full speed while the player has no lead
                 # yet; buffering it in the lobby lets the first round start from audio already
                 # in hand. Best effort: audio that is missing or lapsed in a long lobby is
@@ -1698,26 +1702,31 @@ class MusicQuizPlugin(PluginProvider):
                 self.logger.warning("Could not stop Music Quiz playback: %s", err)
 
     def _snapshot_venue_queue(self, session: SharedPlaybackSession) -> None:
-        """Remember the venue queue's own content before the quiz first takes it over."""
-        if self._venue_snapshot is None and session.mode == SharedPlaybackMode.VENUE:
+        """Remember the venue queue's own content before the quiz takes it over."""
+        if session.mode != SharedPlaybackMode.VENUE:
+            return
+        if self._venue_snapshot is None or self._venue_played_on(session.queue_id):
             self._venue_snapshot = self.mass.player_queues.snapshot(session.queue_id)
 
     async def _restore_venue_queue(self) -> None:
         """Put the venue queue's own content back, unless something else was played there since."""
-        snapshot, self._venue_snapshot = self._venue_snapshot, None
-        quiz_item_id, self._quiz_item_id = self._quiz_item_id, None
-        if snapshot is None:
-            return
-        queues = self.mass.player_queues
-        # an empty queue (a takeover that failed halfway) holds nothing newer to leave alone
-        if queues.items(snapshot.queue_id, limit=1) and (
-            quiz_item_id is None or queues.index_by_id(snapshot.queue_id, quiz_item_id) is None
-        ):
+        snapshot = self._venue_snapshot
+        played_on = snapshot is not None and self._venue_played_on(snapshot.queue_id)
+        self._venue_snapshot = self._quiz_item_id = None
+        if snapshot is None or played_on:
             return
         try:
             await self.mass.player_queues.restore(snapshot.queue_id, snapshot)
         except Exception as err:
             self.logger.warning("Could not restore the queue of the Music Quiz venue: %s", err)
+
+    def _venue_played_on(self, queue_id: str) -> bool:
+        """Return whether the venue queue holds content played there after the quiz's own item."""
+        queues = self.mass.player_queues
+        # an empty queue (a takeover that failed halfway) holds nothing newer
+        return bool(queues.items(queue_id, limit=1)) and (
+            self._quiz_item_id is None or queues.index_by_id(queue_id, self._quiz_item_id) is None
+        )
 
     def _audio_started_at(self, game_round: MusicQuizRound) -> float:
         """
