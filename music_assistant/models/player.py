@@ -2641,8 +2641,9 @@ class Player(ABC):
                 )
                 for s in self.source_list
             ),
-            "sound_mode_list": tuple((m.id, m.name, m.passive) for m in self.sound_mode_list),
-            "options": tuple((o.key, o.value, o.read_only) for o in self.options),
+            # the reported lists themselves: their properties build a new list on every read
+            "sound_mode_list": tuple((m.id, m.name, m.passive) for m in self._attr_sound_mode_list),
+            "options": tuple((o.key, o.value, o.read_only) for o in self._attr_options),
             "current_media": (
                 (
                     current_media.uri,

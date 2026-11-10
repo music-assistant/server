@@ -22,6 +22,7 @@ from music_assistant_models.enums import (
 )
 from music_assistant_models.media_items import AudioFormat, AudioSource
 from music_assistant_models.media_items.provider_mapping import ProviderMapping
+from music_assistant_models.player import PlayerOption, PlayerOptionType, PlayerSoundMode
 from music_assistant_models.player_queue import PlayerQueue
 from music_assistant_models.queue_item import QueueItem
 from music_assistant_models.streamdetails import StreamDetails, StreamMetadata
@@ -75,6 +76,9 @@ class TestUpdateStateChangeDetection:
 
         derive.assert_not_called()
         deepcopy_mock.assert_not_called()
+        # nor the lists the properties of the player build on every read
+        assert "sound_mode_list" not in player._cache
+        assert "options" not in player._cache
 
     def test_position_tick_does_not_rebuild(self, player: MockPlayer) -> None:
         """A regular playback tick keeps the anchor and builds nothing."""
@@ -111,6 +115,18 @@ class TestUpdateStateChangeDetection:
 
         derive.assert_called_once()
         assert player.state.volume_level == 55
+
+    def test_changed_sound_modes_and_options_rebuild_state(self, player: MockPlayer) -> None:
+        """Sound modes and options the device reports anew reach the state."""
+        player._attr_sound_mode_list = [PlayerSoundMode(id="movie", name="Movie")]
+        player.update_state(signal_event=False)
+        assert [x.id for x in player.state.sound_mode_list] == ["movie"]
+
+        player._attr_options = [
+            PlayerOption(key="bass", name="Bass", type=PlayerOptionType.INTEGER, value=3)
+        ]
+        player.update_state(signal_event=False)
+        assert [(x.key, x.value) for x in player.state.options] == [("bass", 3)]
 
     def test_changed_privacy_rebuilds_state(self, player: MockPlayer) -> None:
         """A player turning private must reach clients, which decide where to show it."""
