@@ -6,6 +6,7 @@ This document provides an overview of the Music Assistant Player Controller arch
 
 - [Overview](#overview)
 - [Player vs PlayerState](#player-vs-playerstate)
+- [Legacy Ids](#legacy-ids)
 - [Core Components](#core-components)
 - [Player Types](#player-types)
 - [Multi-Protocol Player System](#multi-protocol-player-system)
@@ -67,6 +68,22 @@ The `PlayerState` is a dataclass representing the final state of the player. It:
 │  - Serializable for API/WebSocket                               │
 └─────────────────────────────────────────────────────────────────┘
 ```
+
+## Legacy Ids
+
+A player keeps answering to its legacy ids: ids it was known under before, such as the id of a
+player that was merged into it. They are stored with the player's config (`values.legacy_ids`)
+and resolved in one place, `PlayerController.resolve_player_id`:
+
+- Every API transport resolves the player and queue ids in the arguments of a command before
+  its handler runs (`run_api_command` in [helpers/api.py](../../helpers/api.py)), so a handler
+  and its permission checks only see the id of the player itself.
+- `get_player` and the lookups of the queue controller resolve them for callers inside the
+  server.
+
+The lookup is built from the stored player configs at startup and again whenever a player
+config is deleted. The id of a stored player is never a legacy id: an id that another player
+lists starts to resolve to that player once its own config is gone.
 
 ## Core Components
 
