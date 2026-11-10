@@ -128,25 +128,6 @@ class AppleMusicStreamingManager:
         """Return if the Widevine device files of this provider were loaded."""
         return bool(self._decrypt_client_id and self._decrypt_private_key)
 
-    @property
-    def decryption_headers(self) -> dict[str, str]:
-        """Return headers required for decryption requests."""
-        return {
-            "authorization": f"Bearer {self.provider._music_app_token}",
-            "media-user-token": cast("str", self.provider._music_user_token),
-            "connection": "keep-alive",
-            "accept": "application/json",
-            "origin": "https://music.apple.com",
-            "referer": "https://music.apple.com/",
-            "accept-encoding": "gzip, deflate, br",
-            "content-type": "application/json;charset=utf-8",
-            # mimics the Apple Music web player these requests come from (#1315)
-            "user-agent": (
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
-                " (KHTML, like Gecko) Chrome/110.0.0.0 Safari/537.36"
-            ),
-        }
-
     async def get_content_key(
         self,
         license_url: str,
@@ -193,7 +174,7 @@ class AppleMusicStreamingManager:
                 self.provider.mass.http_session.post(
                     license_url,
                     data=json.dumps(body),
-                    headers={**self.decryption_headers, **(headers or {})},
+                    headers={**self._decryption_headers, **(headers or {})},
                     ssl=ssl,
                     timeout=LICENSE_TIMEOUT,
                 ) as response,
@@ -227,7 +208,7 @@ class AppleMusicStreamingManager:
             try:
                 async with self.provider.mass.http_session.post(
                     playback_url,
-                    headers=self.decryption_headers,
+                    headers=self._decryption_headers,
                     json=data,
                     ssl=True,
                 ) as response:
@@ -260,6 +241,25 @@ class AppleMusicStreamingManager:
         track_url = base_path + "/" + playlist_items[0].path
         key = playlist_item.key
         return (track_url, key)
+
+    @property
+    def _decryption_headers(self) -> dict[str, str]:
+        """Return headers required for decryption requests."""
+        return {
+            "authorization": f"Bearer {self.provider._music_app_token}",
+            "media-user-token": cast("str", self.provider._music_user_token),
+            "connection": "keep-alive",
+            "accept": "application/json",
+            "origin": "https://music.apple.com",
+            "referer": "https://music.apple.com/",
+            "accept-encoding": "gzip, deflate, br",
+            "content-type": "application/json;charset=utf-8",
+            # mimics the Apple Music web player these requests come from (#1315)
+            "user-agent": (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+                " (KHTML, like Gecko) Chrome/110.0.0.0 Safari/537.36"
+            ),
+        }
 
     async def _get_decryption_key(
         self, license_url: str, key_id: bytes, uri: str, item_id: str
