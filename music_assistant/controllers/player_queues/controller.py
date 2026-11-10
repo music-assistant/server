@@ -392,8 +392,12 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         return tuple(queue_data.queue for queue_data in self._queue_data.values())
 
     def get(self, queue_id: str) -> PlayerQueue | None:
-        """Return PlayerQueue by queue_id or None if not found."""
-        queue_data = self._queue_data.get(queue_id)
+        """
+        Return PlayerQueue by queue_id or None if not found.
+
+        :param queue_id: ID of the queue, or a legacy id of its player.
+        """
+        queue_data = self.queue_data_or_none(queue_id)
         return queue_data.queue if queue_data else None
 
     def queue_data(self, queue_id: str) -> PlayerQueueData:
@@ -402,12 +406,22 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
 
         Internal accessor for the stateful helper services so they reach per-queue state through
         the controller rather than its private store.
+
+        :param queue_id: ID of the queue, or a legacy id of its player.
         """
-        return self._queue_data[queue_id]
+        if (queue_data := self.queue_data_or_none(queue_id)) is None:
+            raise KeyError(queue_id)
+        return queue_data
 
     def queue_data_or_none(self, queue_id: str) -> PlayerQueueData | None:
-        """Return the server-side record for a queue, or None if it is not registered."""
-        return self._queue_data.get(queue_id)
+        """
+        Return the server-side record for a queue, or None if it is not registered.
+
+        :param queue_id: ID of the queue, or a legacy id of its player.
+        """
+        if (queue_data := self._queue_data.get(queue_id)) is not None:
+            return queue_data
+        return self._queue_data.get(self.mass.players.resolve_player_id(queue_id))
 
     def has_lost_paused_stream(self, queue_id: str) -> bool:
         """

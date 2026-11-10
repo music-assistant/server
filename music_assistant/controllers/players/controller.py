@@ -93,6 +93,7 @@ from music_assistant.constants import (
     CONF_ENTRY_MIN_VOLUME,
     CONF_GROUP_MEMBERS,
     CONF_IDLE_POWER_OFF,
+    CONF_LEGACY_IDS,
     CONF_LINKED_PROTOCOL_IDS,
     CONF_MAX_VOLUME,
     CONF_MIN_VOLUME,
@@ -210,6 +211,8 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         """Initialize core controller."""
         super().__init__(mass)
         self._players: dict[str, Player] = {}
+        # the player id behind every legacy id of the stored players
+        self._legacy_ids: dict[str, str] = {}
         self._controls: dict[str, PlayerControl] = {}
         self.manifest.name = "Player Controller"
         self.manifest.description = (
@@ -338,6 +341,7 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
     async def setup(self, config: CoreConfig) -> None:
         """Async initialize of module."""
         self._repair_protocol_parent_links()
+        self._build_legacy_id_index()
         self._poll_task = self.mass.create_task(self._poll_players())
         self.mass.tasks.register_scheduled_task(
             task_id="fix_group_member_configs",
@@ -488,13 +492,13 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         """
         Return Player by player_id.
 
-        :param player_id [str]: ID of the player.
+        :param player_id [str]: ID of the player, or one of its legacy ids.
         :param raise_unavailable [bool]: Raise if player is unavailable.
 
         :raises PlayerUnavailableError: If player is unavailable and raise_unavailable is True.
         :return: Player object or None.
         """
-        if player := self._players.get(player_id):
+        if player := self._players.get(self.resolve_player_id(player_id)):
             if (not player.state.available or not player.state.enabled) and raise_unavailable:
                 msg = f"Player {player_id} is not available"
                 raise PlayerUnavailableError(msg)
@@ -503,6 +507,19 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
             msg = f"Player {player_id} is not available"
             raise PlayerUnavailableError(msg)
         return None
+
+    def resolve_player_id(self, player_id: str) -> str:
+        """
+        Return the id of the player that answers to the given id.
+
+        A player keeps answering to its legacy ids, such as the id of a player that was
+        merged into it. Any other id is returned as it is, whether a player has it or not.
+
+        :param player_id: A player id or legacy id.
+        """
+        if player_id in self._players:
+            return player_id
+        return self._legacy_ids.get(player_id, player_id)
 
     def get_protocol(self, protocol_id: str) -> PlayerProtocol | None:
         """
@@ -2037,6 +2054,7 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
                 self.mass.config.remove(key)
             if self.get_player(pid) is None:
                 self.mass.player_queues.purge_saved_queue(pid)
+        self._build_legacy_id_index()
         # a user access filter is an allow-list of player ids, so it must not be left
         # pointing at a player whose config was just wiped: a replaced player hands its
         # entries over to its replacement, a removed one has them dropped
@@ -3465,6 +3483,24 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
                 yield _player
 
     # Protocol linking methods are provided by ProtocolLinkingMixin (protocol_linking.py)
+
+    def _build_legacy_id_index(self) -> None:
+        """Build the lookup of legacy ids from the stored player configs."""
+        legacy_ids: dict[str, str] = {}
+        self._legacy_ids = legacy_ids
+        stored_configs = self.mass.config.get(CONF_PLAYERS, {})
+        if not isinstance(stored_configs, dict):
+            return
+        for player_id, stored_config in stored_configs.items():
+            values = stored_config.get("values") if isinstance(stored_config, dict) else None
+            stored_ids = values.get(CONF_LEGACY_IDS) if isinstance(values, dict) else None
+            if not isinstance(stored_ids, list):
+                continue
+            for legacy_id in stored_ids:
+                # the id of a stored player is never a legacy id, and of several players
+                # that hold the same legacy id the first one keeps it
+                if isinstance(legacy_id, str) and legacy_id not in stored_configs:
+                    legacy_ids.setdefault(legacy_id, player_id)
 
     def _repair_protocol_parent_links(self) -> None:
         """

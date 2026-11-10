@@ -672,6 +672,7 @@ def _real_adapter(
     """Build an authenticated adapter around one fake MA handler."""
     mass = MagicMock()
     mass.command_handlers = {handler.command: handler}
+    mass.players.resolve_player_id = lambda player_id: player_id
     user = user or MagicMock(user_id="u1", enabled=True, role="admin")
     mass.webserver.auth.authenticate_with_token = AsyncMock(return_value=user)
     mass.webserver.auth.get_token_id_from_token = AsyncMock(return_value="u1")

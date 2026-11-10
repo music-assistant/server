@@ -41,6 +41,7 @@ from music_assistant.helpers.api import (
     parse_arguments,
     redact_json_secrets,
     redact_secrets,
+    run_api_command,
 )
 from music_assistant.helpers.provider_access import access_allows, with_derived_provider_filter
 from music_assistant.helpers.throttle_retry import RequestPriority, set_request_priority
@@ -358,7 +359,7 @@ class WebsocketClientHandler:
                 ):
                     set_impersonated_user(impersonation_user)
             args = parse_arguments(handler.signature, handler.type_hints, msg.args)
-            result: Any = handler.target(**args)
+            result: Any = run_api_command(self.mass, handler, args)
             if hasattr(result, "__anext__"):
                 # handle async generator (for really large listings)
                 items: list[Any] = []
