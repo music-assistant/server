@@ -48,10 +48,9 @@ async def test_multi_client_stream_content_type_describes_output_format(
     sync_parent = MagicMock(multi_client_stream=stream)
     child = MagicMock(display_name="Child")
     provider = MagicMock()
-    provider.mass.players.get_player.side_effect = lambda pid: (
-        sync_parent if pid == "leader" else child
-    )
-    provider.get_protocol = lambda pid: provider.mass.players.get_player(pid)
+    # the sync leader and its child are both protocol objects of this provider
+    provider.get_protocol = {"leader": sync_parent, "child": child}.get
+    provider.mass.players.get_player.return_value = None
     provider.mass.streams.audio.get_output_format = AsyncMock(return_value=output_format)
     provider.mass.streams.audio.get_player_output_plan.return_value = MagicMock(filter_params=[])
     request = MagicMock(method="GET")

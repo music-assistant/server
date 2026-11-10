@@ -1051,6 +1051,9 @@ def test_owns_volume_true_when_parent_control_is_bridge_on_self(
     bridge.underlying_player_id = "test_player"
     airplay_player.mass.players.get_player.side_effect = {  # type: ignore[attr-defined]
         "parent": parent,
+    }.get
+    # the bridge is a protocol object of another provider
+    airplay_player.mass.players.get_protocol.side_effect = {  # type: ignore[attr-defined]
         "sendspin_bridge": bridge,
     }.get
     airplay_player.set_protocol_parent_id("parent")
@@ -1068,6 +1071,7 @@ def test_owns_volume_false_when_another_control_owns_it(
     airplay_player.mass.players.get_player.side_effect = {  # type: ignore[attr-defined]
         "parent": parent,
     }.get
+    airplay_player.mass.players.get_protocol.return_value = None  # type: ignore[attr-defined]
     airplay_player.set_protocol_parent_id("parent")
 
     assert airplay_player.owns_volume is False
@@ -1112,6 +1116,8 @@ def test_release_foreign_mute_latch_clears_mute_owned_by_other_control(
     cast_player.underlying_player_id = None
     airplay_player.mass.players.get_player.side_effect = {  # type: ignore[attr-defined]
         "parent": parent,
+    }.get
+    airplay_player.mass.players.get_protocol.side_effect = {  # type: ignore[attr-defined]
         "cast_player": cast_player,
     }.get
     airplay_player.set_protocol_parent_id("parent")

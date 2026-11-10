@@ -42,6 +42,10 @@ def _make_mock_mass() -> MagicMock:
     mass = MagicMock()
     mass.players = MagicMock()
     mass.players.get_player = MagicMock(return_value=None)
+    # a protocol object is found in the registry of the players, whatever a test sets that to
+    mass.players.get_protocol = MagicMock(
+        side_effect=lambda protocol_id: mass.players.get_player(protocol_id)
+    )
     mass.players._handle_cmd_stop = AsyncMock()
     mass.players._handle_cmd_resume = AsyncMock()
     mass.players._handle_play_media = AsyncMock()
@@ -3996,3 +4000,56 @@ class TestNextTrackHandoverLocksTheLeader:
         await sgp.enqueue_next_media(MagicMock())
 
         mass.players._handle_enqueue_next_media.assert_not_awaited()
+
+
+class TestProtocolObjectLookups:
+    """A protocol object of a member is looked up as a protocol, the member itself as a player."""
+
+    @staticmethod
+    def _setup() -> tuple[SyncGroupPlayer, MagicMock, MagicMock, MagicMock]:
+        """Return a group whose leader plays on its AirPlay protocol, with separate lookups."""
+        mass = _make_mock_mass()
+        leader = _make_mock_player(
+            "leader", protocol_domains=["airplay"], active_output_protocol="ap_leader"
+        )
+        leader.linked_output_protocols[0].output_protocol_id = "ap_leader"
+        ap_leader = _make_mock_player("ap_leader", provider_domain="airplay")
+        ap_leader.protocol_parent_id = "leader"
+        mass.players.get_player = _player_lookup({"leader": leader})
+        mass.players.get_protocol = _player_lookup({"ap_leader": ap_leader})
+        sgp = _make_sync_group(mass)
+        sgp.sync_leader = leader
+        sgp._attr_group_members = ["leader"]
+        return sgp, mass, leader, ap_leader
+
+    def test_the_session_player_is_the_protocol_object_of_the_active_output(self) -> None:
+        """The live session is owned by the protocol object the leader plays on."""
+        sgp, mass, _leader, ap_leader = self._setup()
+
+        assert sgp._active_session_player() is ap_leader
+        mass.players.get_protocol.assert_called_once_with("ap_leader")
+
+    def test_the_session_target_of_a_member_is_its_protocol_object_of_the_domain(self) -> None:
+        """A member is reached on a protocol domain through its protocol object of that domain."""
+        sgp, mass, leader, ap_leader = self._setup()
+
+        assert sgp._resolve_session_target(leader, "airplay") is ap_leader
+        mass.players.get_protocol.assert_called_once_with("ap_leader")
+        mass.players.get_player.assert_not_called()
+
+    def test_protocol_ids_translate_to_the_player_they_belong_to(self) -> None:
+        """A protocol id becomes the id of its player, any other id passes unchanged."""
+        sgp, mass, _leader, _ap_leader = self._setup()
+
+        assert sgp._translate_to_parent_ids(["ap_leader", "member", "leader"]) == [
+            "leader",
+            "member",
+        ]
+        mass.players.get_player.assert_not_called()
+
+    def test_the_source_of_the_active_output_protocol_is_no_source_of_the_leader(self) -> None:
+        """A source the leader reports that is its own output protocol does not count."""
+        sgp, _mass, leader, _ap_leader = self._setup()
+        leader.active_source = "AirPlay"
+
+        assert sgp.active_source is None

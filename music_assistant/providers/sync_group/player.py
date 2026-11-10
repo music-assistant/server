@@ -203,7 +203,7 @@ class SyncGroupPlayer(PlayerProtocol):
             self.sync_leader.active_output_protocol
             and self.sync_leader.active_output_protocol != "native"
         ):
-            if protocol_player := self.mass.players.get_player(
+            if protocol_player := self.mass.players.get_protocol(
                 self.sync_leader.active_output_protocol
             ):
                 output_protocol_domain = protocol_player.provider.domain
@@ -1109,7 +1109,7 @@ class SyncGroupPlayer(PlayerProtocol):
         """
         result: list[str] = []
         for pid in player_ids:
-            if player := self.mass.players.get_player(pid):
+            if player := self.mass.players.get_protocol(pid):
                 parent_id = player.protocol_parent_id or pid
                 if parent_id not in result:
                     result.append(parent_id)
@@ -1158,7 +1158,7 @@ class SyncGroupPlayer(PlayerProtocol):
             self.sync_leader.active_output_protocol
             and self.sync_leader.active_output_protocol != "native"
             and (
-                protocol_player := self.mass.players.get_player(
+                protocol_player := self.mass.players.get_protocol(
                     self.sync_leader.active_output_protocol
                 )
             )
@@ -1769,5 +1769,5 @@ class SyncGroupPlayer(PlayerProtocol):
             return player
         for linked in player.linked_output_protocols:
             if linked.protocol_domain == domain:
-                return self.mass.players.get_player(linked.output_protocol_id)
+                return self.mass.players.get_protocol(linked.output_protocol_id)
         return None

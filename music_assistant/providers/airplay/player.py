@@ -1061,7 +1061,7 @@ class AirPlayPlayer(PlayerProtocol):
         if control == self.player_id:
             return True
         # bridge players riding on this player (e.g. Sendspin-over-AirPlay) forward to us
-        if control_player := self.mass.players.get_player(control):
+        if control_player := self.mass.players.get_protocol(control):
             return control_player.underlying_player_id == self.player_id
         return False
 

@@ -218,7 +218,7 @@ class SqueezelitePlayerProvider(PlayerProvider):
             raise web.HTTPNotFound(reason=f"Unknown player: {player_id}")
         sync_parent = cast("SqueezelitePlayer", sync_parent)
 
-        if not (child_player := self.mass.players.get_player(child_player_id)):
+        if not (child_player := self.get_protocol(child_player_id)):
             raise web.HTTPNotFound(reason=f"Unknown player: {child_player_id}")
 
         if not (stream := sync_parent.multi_client_stream) or stream.done:
