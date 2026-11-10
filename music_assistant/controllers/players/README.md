@@ -80,6 +80,8 @@ and resolved in one place, `PlayerController.resolve_player_id`:
   and its permission checks only see the id of the player itself.
 - `get_player` and the lookups of the queue controller resolve them for callers inside the
   server.
+- A source id is the id of a queue when the source is a queue, so the player commands that
+  take one resolve it before they compare it with the active source.
 
 The lookup is built from the stored player configs at startup and again whenever a player
 config is deleted. The id of a player that has a stored config is never a legacy id: an id
