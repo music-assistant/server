@@ -92,6 +92,8 @@ def _controller(snapshot: RecencySnapshot) -> PlayerQueuesController:
     ctrl = PlayerQueuesController.__new__(PlayerQueuesController)
     ctrl.logger = MagicMock()
     ctrl.mass = MagicMock()
+    # the providers of the sources mix their batches like most providers do
+    ctrl.mass.get_provider.return_value.keeps_batch_order = False
     ctrl.mass.music.recency.snapshot = AsyncMock(return_value=snapshot)
     ctrl.mass.players.get_player = Mock(return_value=Mock(extra_data={}))
     lock_cm = MagicMock()
@@ -244,6 +246,60 @@ async def test_add_track_on_dynamic_queue_still_feeds_pool() -> None:
     assert ids[1] != "seed", f"expected 'seed' mixed into the pool tail, not at index 1: {ids}"
     # the pool actually ran (proving _enter_dynamic_mode fired), not left untouched
     assert any(item_id.startswith("d") for item_id in ids), f"pool tail was not rebuilt: {ids}"
+
+
+async def test_add_track_on_ordered_queue_goes_to_the_end(monkeypatch: pytest.MonkeyPatch) -> None:
+    """ADD of a track after a source that keeps its order is appended as is, not pooled."""
+    random.seed(4)
+    ctrl = _controller(RecencySnapshot(now=NOW))
+    queue = _dynamic_playing_queue(ctrl, [])
+    queue.shuffle_enabled = False
+    queue_data = ctrl._queue_data["q1"]
+    queue_data.items += [_queue_item("q1", _track(f"r{i}", artist=f"R{i}")) for i in range(3)]
+    queue.items = len(queue_data.items)
+    monkeypatch.setattr(
+        "music_assistant.controllers.player_queues.helpers.keeps_batch_order",
+        lambda _mass, item: item.item_id == "dyn",
+    )
+    enter_dynamic_mode = AsyncMock()
+    monkeypatch.setattr(ctrl, "_enter_dynamic_mode", enter_dynamic_mode)
+    extra = _track("extra", artist="Extra")
+
+    await ctrl._handle_play_media("q1", extra, QueueOption.ADD)
+
+    ids = [item.media_item.item_id for item in queue_data.items if item.media_item is not None]
+    assert ids == ["current", "r0", "r1", "r2", "extra"]
+    assert extra not in queue_data.source_items
+    enter_dynamic_mode.assert_not_awaited()
+
+
+async def test_default_add_track_on_ordered_queue_goes_to_the_end(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A track without an option, defaulting to ADD, is appended after an ordered source."""
+    random.seed(4)
+    ctrl = _controller(RecencySnapshot(now=NOW))
+    ctrl.get_config_value = Mock(return_value=QueueOption.ADD.value)  # type: ignore[method-assign]
+    queue = _dynamic_playing_queue(ctrl, [])
+    queue.shuffle_enabled = False
+    queue_data = ctrl._queue_data["q1"]
+    queue_data.items += [_queue_item("q1", _track(f"r{i}", artist=f"R{i}")) for i in range(3)]
+    queue.items = len(queue_data.items)
+    monkeypatch.setattr(
+        "music_assistant.controllers.player_queues.helpers.keeps_batch_order",
+        lambda _mass, item: item.item_id == "dyn",
+    )
+    enter_dynamic_mode = AsyncMock()
+    monkeypatch.setattr(ctrl, "_enter_dynamic_mode", enter_dynamic_mode)
+    extra = _track("extra", artist="Extra")
+
+    await ctrl._handle_play_media("q1", extra, None)
+
+    ids = [item.media_item.item_id for item in queue_data.items if item.media_item is not None]
+    assert ids == ["current", "r0", "r1", "r2", "extra"]
+    assert extra not in queue_data.source_items
+    assert queue.shuffle_enabled is False
+    enter_dynamic_mode.assert_not_awaited()
 
 
 async def test_play_next_container_on_dynamic_queue_feeds_pool() -> None:
