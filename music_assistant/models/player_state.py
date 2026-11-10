@@ -171,6 +171,7 @@ class StateInputs:
     :param hide_in_ui: Whether the player is hidden in the UI.
     :param expose_to_ha: Whether the player is exposed to Home Assistant.
     :param icon: Icon of the player.
+    :param legacy_ids: Ids the player was known under before, which it keeps answering to.
     :param power_control: The control the power of the player is resolved to.
     :param volume_control: The control the volume of the player is resolved to.
     :param mute_control: The control the mute of the player is resolved to.
@@ -229,6 +230,7 @@ class StateInputs:
     hide_in_ui: bool
     expose_to_ha: bool
     icon: str
+    legacy_ids: list[str]
     power_control: str
     volume_control: str
     mute_control: str
@@ -361,6 +363,7 @@ def derive_player_state(inputs: StateInputs) -> tuple[PlayerState, StateEffects]
         has_setup_flow=inputs.has_setup_flow,
         sleep_timer_expires_at=inputs.sleep_timer_expires_at,
         sleep_timer_mode=inputs.sleep_timer_mode,
+        legacy_ids=inputs.legacy_ids,
     )
     volume_members = _volume_members(inputs, state)
     state.group_volume = _group_volume(state, volume_members)

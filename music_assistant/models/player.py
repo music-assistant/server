@@ -63,6 +63,7 @@ from music_assistant.constants import (
     CONF_EXPOSE_PLAYER_TO_HA,
     CONF_FLOW_MODE,
     CONF_HIDE_IN_UI,
+    CONF_LEGACY_IDS,
     CONF_LINKED_PROTOCOL_IDS,
     CONF_MUTE_CONTROL,
     CONF_PLAYERS,
@@ -278,6 +279,7 @@ def _state_fingerprint(state: PlayerState) -> dict[str, Any]:
         "active_group": state.active_group,
         "enabled": state.enabled,
         "hide_in_ui": state.hide_in_ui,
+        "legacy_ids": tuple(state.legacy_ids),
         "private": state.private,
         "expose_to_ha": state.expose_to_ha,
         "icon": state.icon,
@@ -1573,6 +1575,15 @@ class Player(ABC):
 
     @cached_property
     @final
+    def legacy_ids(self) -> list[str]:
+        """Return the ids the player was known under before, which it keeps answering to."""
+        legacy_ids = self.mass.config.get_raw_player_config_value(self.player_id, CONF_LEGACY_IDS)
+        if not isinstance(legacy_ids, list):
+            return []
+        return [legacy_id for legacy_id in legacy_ids if isinstance(legacy_id, str)]
+
+    @cached_property
+    @final
     def power_control(self) -> str:
         """Return the power control type."""
         conf = self.__stored_control_conf(CONF_POWER_CONTROL, PlayerFeature.POWER)
@@ -2795,6 +2806,7 @@ class Player(ABC):
             hide_in_ui=self.hide_in_ui,
             expose_to_ha=self.expose_to_ha,
             icon=self.icon,
+            legacy_ids=self.legacy_ids,
             power_control=self.power_control,
             volume_control=self.volume_control,
             mute_control=self.mute_control,

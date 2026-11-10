@@ -590,6 +590,7 @@ def make_state_inputs(**values: Any) -> StateInputs:
         "hide_in_ui": False,
         "expose_to_ha": True,
         "icon": "speaker",
+        "legacy_ids": [],
         "power_control": PLAYER_CONTROL_NONE,
         "volume_control": PLAYER_CONTROL_NONE,
         "mute_control": PLAYER_CONTROL_NONE,

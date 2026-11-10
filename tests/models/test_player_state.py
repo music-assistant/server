@@ -221,6 +221,7 @@ class TestPublishedValues:
             hide_in_ui=True,
             expose_to_ha=False,
             icon="soundbar",
+            legacy_ids=["old_player_1"],
             device_info=device_info,
             private=True,
             active_sound_mode="movie",
@@ -243,6 +244,7 @@ class TestPublishedValues:
         assert state.hide_in_ui is True
         assert state.expose_to_ha is False
         assert state.icon == "soundbar"
+        assert state.legacy_ids == ["old_player_1"]
         assert state.device_info is device_info
         assert state.private is True
         assert state.active_sound_mode == "movie"
