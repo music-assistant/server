@@ -82,8 +82,8 @@ and resolved in one place, `PlayerController.resolve_player_id`:
   server.
 
 The lookup is built from the stored player configs at startup and again whenever a player
-config is deleted. The id of a stored player is never a legacy id: an id that another player
-lists starts to resolve to that player once its own config is gone.
+config is deleted. The id of a player that has a stored config is never a legacy id: an id
+that another player lists resolves to that player only while no config is stored under it.
 
 ## Core Components
 

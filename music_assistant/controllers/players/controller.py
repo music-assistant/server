@@ -517,9 +517,12 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
 
         :param player_id: A player id or legacy id.
         """
-        if player_id in self._players:
+        if player_id in self._players or player_id not in self._legacy_ids:
             return player_id
-        return self._legacy_ids.get(player_id, player_id)
+        # the id of a stored player is never a legacy id
+        if player_id in self.mass.config.get(CONF_PLAYERS, {}):
+            return player_id
+        return self._legacy_ids[player_id]
 
     def get_protocol(self, protocol_id: str) -> PlayerProtocol | None:
         """
@@ -2052,7 +2055,7 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
                 f"{CONF_PLAYER_QUEUES}/{pid}",
             ):
                 self.mass.config.remove(key)
-            if self.get_player(pid) is None:
+            if pid not in self._players:
                 self.mass.player_queues.purge_saved_queue(pid)
         self._build_legacy_id_index()
         # a user access filter is an allow-list of player ids, so it must not be left
@@ -3497,9 +3500,8 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
             if not isinstance(stored_ids, list):
                 continue
             for legacy_id in stored_ids:
-                # the id of a stored player is never a legacy id, and of several players
-                # that hold the same legacy id the first one keeps it
-                if isinstance(legacy_id, str) and legacy_id not in stored_configs:
+                # of several players that hold the same legacy id the first one keeps it
+                if isinstance(legacy_id, str):
                     legacy_ids.setdefault(legacy_id, player_id)
 
     def _repair_protocol_parent_links(self) -> None:
@@ -5373,8 +5375,8 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         await self._release_audio_source(player_id)
         # check if source is a mass queue
         # this can be used to restore the queue after a source switch
-        if self.mass.player_queues.get(source):
-            player.set_active_mass_source(source)
+        if queue := self.mass.player_queues.get(source):
+            player.set_active_mass_source(queue.queue_id)
             return
         # Legacy compatibility: the old plugin-source API used the
         # plugin's instance_id directly as the source string. The refactor

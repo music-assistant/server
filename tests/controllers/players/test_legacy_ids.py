@@ -99,6 +99,19 @@ def test_id_of_a_stored_player_is_never_a_legacy_id() -> None:
     assert controller.resolve_player_id(BEDROOM) == BEDROOM
 
 
+def test_player_whose_config_is_stored_later_keeps_its_own_id() -> None:
+    """An id stops being a legacy id as soon as a player config is stored under it."""
+    stored_configs = {KITCHEN: _stored("old_kitchen")}
+    controller = _controller(stored_configs)
+    _register(controller, KITCHEN)
+
+    # a device that comes back under its former id while its player is disabled or offline
+    stored_configs["old_kitchen"] = _stored()
+
+    assert controller.resolve_player_id("old_kitchen") == "old_kitchen"
+    assert controller.get_player("old_kitchen") is None
+
+
 def test_registered_player_keeps_its_own_id() -> None:
     """A player that registers under the legacy id of another player is found by that id."""
     controller = _controller({KITCHEN: _stored("old_kitchen")})
@@ -123,9 +136,14 @@ def test_id_of_a_deleted_player_becomes_a_legacy_id_of_the_player_that_lists_it(
     """A player that lists the id of another one answers to it once that player is deleted."""
     controller = _controller({KITCHEN: _stored(BEDROOM), BEDROOM: _stored()})
 
+    _register(controller, KITCHEN)
+
     controller.delete_player_config(BEDROOM)
 
     assert controller.resolve_player_id(BEDROOM) == KITCHEN
+    # the deleted player is gone with its saved queue, whoever answers to its id from now on
+    purge = cast("MagicMock", controller.mass).player_queues.purge_saved_queue
+    purge.assert_called_once_with(BEDROOM)
 
 
 @pytest.mark.parametrize(

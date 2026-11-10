@@ -201,6 +201,23 @@ async def test_transfer_from_a_legacy_id_needs_access_to_its_player(
 
 
 @TRANSPORTS
+async def test_queue_selected_as_source_by_a_legacy_id_is_active_under_its_own_id(
+    scenario: Scenario, transport: Transport
+) -> None:
+    """A player whose queue is selected as source by a legacy id plays from that queue."""
+    user = await _user(scenario, KITCHEN)
+
+    reply = await _send(
+        scenario, transport, user, "players/cmd/select_source", player_id=KITCHEN, source=LEGACY_ID
+    )
+
+    assert not reply.refused
+    kitchen = scenario.player(KITCHEN)
+    assert kitchen is not None
+    assert kitchen.active_source == KITCHEN
+
+
+@TRANSPORTS
 async def test_user_is_limited_to_the_player_behind_a_legacy_id(
     scenario: Scenario, transport: Transport
 ) -> None:
