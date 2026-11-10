@@ -35,8 +35,8 @@ _TYPE_ALIAS_CACHE: dict[str, Any] = {}
 _MODEL_TYPE_CACHE: dict[str, Any] = {}
 _MAX_TYPE_HINT_RESOLVE_ATTEMPTS = 32
 
-# the arguments that hold the id of a player (or of several) in every command that has
-# them; a queue shares the id of its player
+# the arguments, by name, that hold the id of a player (or of several) in the commands
+# that have them; a queue shares the id of its player
 PLAYER_ID_ARGUMENTS: Final[frozenset[str]] = frozenset(
     {
         "player_id",
