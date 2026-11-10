@@ -6,6 +6,7 @@ import shutil
 import subprocess
 from collections.abc import Callable
 from datetime import UTC, datetime
+from typing import Any
 from unittest.mock import MagicMock, patch
 
 import mutagen
@@ -713,22 +714,28 @@ def test_parse_id3_without_explicit_albumartists() -> None:
 
 
 @pytest.mark.parametrize(
-    ("raw_tags", "fmt"),
+    ("parsed", "fmt"),
     [
-        (_create_id3_tags(["Artist A & Artist B"], "ALBUMARTISTS"), "mp3"),
+        (_parse_id3_tags(_create_id3_tags(["Artist A & Artist B"], "ALBUMARTISTS")), "mp3"),
         # ID3v2.3 has no multi-value frames, so Picard joins the values with "; "
-        (_create_id3_tags(["Artist A & Artist B"], "ALBUMARTISTS", ["Artist A; Artist B"]), "mp3"),
         (
-            _create_mock_apev2_tags(
-                {"Album Artist": "Artist A & Artist B", "ALBUMARTISTS": "Artist A\x00Artist B"}
+            _parse_id3_tags(
+                _create_id3_tags(["Artist A & Artist B"], "ALBUMARTISTS", ["Artist A; Artist B"])
+            ),
+            "mp3",
+        ),
+        (
+            _parse_apev2_tags(
+                _create_mock_apev2_tags(
+                    {"Album Artist": "Artist A & Artist B", "ALBUMARTISTS": "Artist A\x00Artist B"}
+                )
             ),
             "wv",
         ),
     ],
 )
-def test_explicit_albumartists_drive_album_artists(raw_tags: ID3 | MagicMock, fmt: str) -> None:
+def test_explicit_albumartists_drive_album_artists(parsed: dict[str, Any], fmt: str) -> None:
     """The explicit album artists list wins over a combined album artist string without MBIDs."""
-    parsed = _parse_id3_tags(raw_tags) if fmt == "mp3" else _parse_apev2_tags(raw_tags)
     audio_tags = tags.AudioTags(
         raw={},
         sample_rate=44100,
