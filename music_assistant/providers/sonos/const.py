@@ -104,6 +104,9 @@ DIALOG_LEVEL_RANGE = OptionRange(1, 4)
 SUB_GAIN_RANGE = OptionRange(-15, 15)
 SUB_CROSSOVER_RANGE = OptionRange(50, 110)
 SURROUND_LEVEL_RANGE = OptionRange(-15, 15)
+# player config: offer the options the speaker sends no events for, which are polled
+CONF_SHOW_DEVICE_SETTINGS = "show_device_settings"
+
 # UPnP reads of player options stop after this many timeouts in a row, until a reconnect:
 # the player poll loop of all players waits for each read
 UPNP_OPTION_TIMEOUT_LIMIT = 5
@@ -142,8 +145,8 @@ class IrRepeaterState(StrEnum):
 EVENTS_PATH = "/sonos/notify"
 # seconds a subscription is asked for; it is renewed halfway, by the poll
 EVENT_SUBSCRIPTION_TIMEOUT = 1800
-# poll interval (seconds) of the player options without and with events coming in; with
-# events, the poll still reads the few options that send none (status light, button lock)
+# poll interval (seconds) of the player options; with events coming in and no option that
+# sends none offered, the poll only renews the subscription
 OPTIONS_POLL_INTERVAL = 30
 OPTIONS_EVENTS_POLL_INTERVAL = 300
 # seconds to wait after an event before reading the options, so a slider moved in the

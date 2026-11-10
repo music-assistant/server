@@ -7,7 +7,7 @@ options; everything else is set (and partly read) over UPnP.
 
 from __future__ import annotations
 
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, NamedTuple
 
@@ -93,6 +93,13 @@ class SonosOption:
     available: Callable[[SonosDevice], bool] = lambda _: True
     value_range: OptionRange | None = None
     read_over_upnp: bool = True
+    # a change of it comes with a RenderingControl event (or the settings read with one)
+    sends_events: bool = True
+
+    @property
+    def polled(self) -> bool:
+        """Return if a change of the option is only seen by polling the speaker."""
+        return self.read_over_upnp and not self.sends_events
 
 
 def _setting(*path: str) -> OptionReader:
@@ -148,7 +155,7 @@ def _on_off_option(
     inverted: bool = False,
 ) -> SonosOption:
     """
-    Return an option stored as On/Off state with Get<state>/Set<state> actions.
+    Return an option stored as On/Off state with Get<state>/Set<state> actions; it sends no events.
 
     :param state: The state name, e.g. LEDState for GetLEDState/SetLEDState.
     :param inverted: The option is on while the state is Off (e.g. touch controls/button lock).
@@ -173,6 +180,7 @@ def _on_off_option(
         read=_read,
         write=_write,
         available=available,
+        sends_events=False,
     )
 
 
@@ -266,6 +274,7 @@ SONOS_OPTIONS: tuple[SonosOption, ...] = (
         write=lambda device, value: device.upnp.rendering_control(
             "SetRoomCalibrationStatus", RoomCalibrationEnabled=bool(value)
         ),
+        sends_events=False,
     ),
     SonosOption(
         key="mono_mode",
@@ -320,6 +329,7 @@ SONOS_OPTIONS: tuple[SonosOption, ...] = (
         read=_read_ir_repeater,
         write=_write_ir_repeater,
         available=lambda device: device.is_home_theater,
+        sends_events=False,
     ),
     _on_off_option(
         "remote_led_feedback",
@@ -392,7 +402,10 @@ class PlayerOptionsRead(NamedTuple):
 
 
 async def read_player_options(
-    device: SonosDevice, logger: logging.Logger, upnp_timeouts: int
+    device: SonosDevice,
+    logger: logging.Logger,
+    upnp_timeouts: int,
+    options_to_read: Sequence[SonosOption] = SONOS_OPTIONS,
 ) -> PlayerOptionsRead:
     """
     Read the player options the speaker has.
@@ -402,10 +415,12 @@ async def read_player_options(
     :param device: The speaker to read the options from.
     :param logger: Logger for the options a speaker did not answer for.
     :param upnp_timeouts: UPnP timeouts in a row of the earlier reads.
+    :param options_to_read: The options to read.
     """
-    await device.client.player.refresh_settings()
+    if any(not option.read_over_upnp for option in options_to_read):
+        await device.client.player.refresh_settings()
     options: list[PlayerOption] = []
-    for option in SONOS_OPTIONS:
+    for option in options_to_read:
         if not option.available(device):
             continue
         if option.read_over_upnp and upnp_timeouts >= UPNP_OPTION_TIMEOUT_LIMIT:

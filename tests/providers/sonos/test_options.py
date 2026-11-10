@@ -258,6 +258,27 @@ async def test_option_writes(key: str, value: Any, method: str, expected_calls: 
     assert target.await_args_list == expected_calls
 
 
+async def test_polled_options_are_merged_into_the_options_read_before() -> None:
+    """Polling some options keeps the others, in the order of the table."""
+    player = _make_named_player("Ray")
+    player.discovery_info = {"device": {"modelDisplayName": "Ray"}}  # type: ignore[typeddict-item]
+    device = _device()
+    player.client = device.client
+    player.upnp = device.upnp
+    await player._update_options()
+    status_light = next(option for option in SONOS_OPTIONS if option.key == "status_light")
+    upnp: Any = device.upnp
+    upnp.call.side_effect = lambda _service, _action: {"CurrentLEDState": "On"}
+
+    keys_before = [option.key for option in player._attr_options]
+    await player._update_options([status_light])
+
+    assert [option.key for option in player._attr_options] == keys_before
+    values = {option.key: option.value for option in player._attr_options}
+    assert values["status_light"] is True
+    assert values["bass"] == 3
+
+
 @pytest.mark.parametrize(
     ("key", "write_error", "fails"),
     [

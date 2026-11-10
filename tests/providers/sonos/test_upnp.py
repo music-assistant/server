@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from typing import Any
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import aiohttp
 import pytest
@@ -237,13 +237,38 @@ def test_an_option_event_reads_the_options(changes: dict[str, str], read: bool) 
 
 
 @pytest.mark.parametrize(
-    ("follows", "interval"),
-    [(True, OPTIONS_EVENTS_POLL_INTERVAL), (False, OPTIONS_POLL_INTERVAL)],
+    ("follows", "show_device_settings", "interval", "polled_keys"),
+    [
+        (False, False, OPTIONS_POLL_INTERVAL, "all"),
+        (True, False, OPTIONS_EVENTS_POLL_INTERVAL, None),
+        (
+            True,
+            True,
+            OPTIONS_POLL_INTERVAL,
+            {"status_light", "touch_controls", "trueplay", "ir_repeater", "remote_led_feedback"},
+        ),
+    ],
+    ids=["no_events", "events", "events_and_device_settings"],
 )
-def test_poll_interval_follows_the_events(follows: bool, interval: int) -> None:
-    """The options are polled less often while the speaker's events come in."""
-    player, _ = _bind_player(MagicMock())
+async def test_poll_reads_only_what_the_events_miss(
+    follows: bool, show_device_settings: bool, interval: int, polled_keys: str | set[str] | None
+) -> None:
+    """With events, only the opted-in device settings are polled; without, everything."""
+    mass = MagicMock()
+    mass.config.get_raw_player_config_value.return_value = show_device_settings
+    player, _ = _bind_player(mass)
+    player.connected = True
     upnp: Any = player.upnp
     upnp.follows = follows
 
+    with patch.object(player, "_update_options", AsyncMock()) as update_options:
+        await player.poll()
+
     assert player.poll_interval == interval
+    if polled_keys is None:
+        update_options.assert_not_awaited()
+    elif polled_keys == "all":
+        update_options.assert_awaited_once_with()
+    else:
+        (options_read,) = update_options.await_args_list[0].args
+        assert {option.key for option in options_read} == polled_keys
