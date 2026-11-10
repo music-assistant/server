@@ -35,6 +35,7 @@ from music_assistant_models.enums import (
     PlayerFeature,
     PlayerType,
     ProviderFeature,
+    SleepTimerMode,
 )
 from music_assistant_models.errors import ActionUnavailable, UnsupportedFeaturedException
 from music_assistant_models.player import (
@@ -55,6 +56,8 @@ from music_assistant.constants import (
     ATTR_FAKE_MUTE,
     ATTR_FAKE_POWER,
     ATTR_FAKE_VOLUME,
+    ATTR_POWER_ON_IN_PROGRESS,
+    ATTR_REACHABLE,
     CONF_ENTRY_PLAYER_ICON,
     CONF_EXPOSE_PLAYER_TO_HA,
     CONF_FLOW_MODE,
@@ -68,6 +71,7 @@ from music_assistant.constants import (
     CONF_UNDERLYING_PLAYER_ID,
     CONF_VOLUME_CONTROL,
     EXTERNAL_SOURCES,
+    FOREIGN_PROTOCOL_FEATURES,
     PLAYER_CONTROL_PROTOCOL,
     PROTOCOL_FEATURES,
     PROTOCOL_PRIORITY,
@@ -357,6 +361,7 @@ def _state_fingerprint(state: PlayerState) -> dict[str, Any]:
         "setup_reason": state.setup_reason,
         "has_setup_flow": state.has_setup_flow,
         "sleep_timer_expires_at": state.sleep_timer_expires_at,
+        "sleep_timer_mode": state.sleep_timer_mode,
         "supported_features": frozenset(state.supported_features),
         "sound_mode_list": tuple((m.id, m.name, m.passive) for m in state.sound_mode_list),
         "options": tuple((o.key, o.value, o.read_only) for o in state.options),
@@ -457,11 +462,6 @@ class Player(ABC):
     # on its own source list counts as a takeover of the remembered MA queue. Leave at
     # False for devices that also list the transport our own stream arrives on.
     _attr_trusts_reported_source: bool = False
-    # Set this on players that play upcoming tracks from their own cached copy of the
-    # queue (which may not be refreshable, e.g. the Sonos cloud queue): a stream request
-    # for a queue item away from the playhead is then refused, so the player re-reads
-    # the queue instead of silently playing a stale cached track.
-    _attr_strict_queue_item_requests: bool = False
 
     def __init__(self, provider: PlayerProvider, player_id: str) -> None:
         """Initialize the Player."""
@@ -650,9 +650,31 @@ class Player(ABC):
 
         A device that is reachable but still needs setup - an unpaired AirPlay
         receiver, for example - can not accept a stream, so it must never be
-        picked as an output protocol or command target.
+        picked as an output protocol or command target. Neither can a disabled player.
+
+        Use this, not state.available, for a device that must be reachable right now:
+        the state also reports a player that is switched off at its power control as
+        available (see offline_by_power_control).
         """
-        return self.available and not self.needs_setup
+        return self.enabled and self.available and not self.needs_setup
+
+    @property
+    @final
+    def offline_by_power_control(self) -> bool:
+        """
+        Return if the device is offline because it is switched off at its external power control.
+
+        Also True while Music Assistant powers it on through that control and waits for it
+        to come online. Such a player is reported to clients as available and powered off,
+        so it can be powered on (or played to) from there, while the device itself is not
+        reachable.
+        """
+        if self.available or self.type in (PlayerType.GROUP, PlayerType.PROTOCOL):
+            return False
+        control = self.mass.players.get_player_control(self.power_control)
+        if control is None or not control.supports_power:
+            return False
+        return not control.power_state or ATTR_POWER_ON_IN_PROGRESS in self.extra_data
 
     @property
     @final
@@ -1398,6 +1420,15 @@ class Player(ABC):
         # default implementation will simply trigger an update for the state of the player
         self.mass.players.trigger_player_update(self.player_id)
 
+    def on_queue_position_served(self, queue_index: int, queue_item_id: str) -> None:  # noqa: B027
+        """
+        Handle callback when a stream request addressed by queue position was served.
+
+        :param queue_index: The queue position the player fetched.
+        :param queue_item_id: The queue item whose audio went out for that position.
+        """
+        # optional callback, for a player that fetches its queue items by position
+
     def on_sync_parent_updated(
         self, sync_parent: Player, changed_values: dict[str, tuple[Any, Any]]
     ) -> None:
@@ -1772,18 +1803,6 @@ class Player(ABC):
 
     @property
     @final
-    def strict_queue_item_requests(self) -> bool:
-        """
-        Return whether queue item stream requests must match the queue's playhead.
-
-        When set, a stream request for a queue item the queue no longer places at or
-        around the playhead is refused, so the player re-reads the queue instead of
-        playing a track out of a stale cached copy of it.
-        """
-        return self._attr_strict_queue_item_requests
-
-    @property
-    @final
     def state(self) -> PlayerState:
         """Return the current (and FINAL) PlayerState of the player."""
         return self._state
@@ -2029,6 +2048,42 @@ class Player(ABC):
             )
         self.__attr_active_output_protocol = protocol_id
         self.update_state()
+
+    @cached_property
+    @final
+    def foreign_protocol_player(self) -> Player | None:
+        """Return the linked protocol player whose app to show and control on this player."""
+        if (
+            (foreign_player := self.linked_foreign_player())
+            and self.__attr_active_output_protocol in (None, "native")
+            and self.playback_state != PlaybackState.PLAYING
+            # a paused player keeps its place, until an app actually plays over it
+            and (
+                self.playback_state != PlaybackState.PAUSED
+                or foreign_player.playback_state == PlaybackState.PLAYING
+            )
+            and not self.__final_synced_to
+            and not self.__final_active_group
+            and self.mass.players.get_audio_source_session(self.player_id) is None
+        ):
+            return foreign_player
+        return None
+
+    @final
+    def linked_foreign_player(self) -> Player | None:
+        """Return the linked protocol player that plays an app Music Assistant did not start."""
+        for linked in self.__attr_linked_protocols:
+            protocol_player = self.mass.players.get_player(linked.output_protocol_id)
+            if (
+                protocol_player is not None
+                and protocol_player.available
+                and protocol_player.playback_state in (PlaybackState.PLAYING, PlaybackState.PAUSED)
+                # Music Assistant's own playback through a protocol reports no source, and
+                # following a group is no source of its own
+                and any(x.id == protocol_player.active_source for x in protocol_player.source_list)
+            ):
+                return protocol_player
+        return None
 
     @final
     def set_linked_output_protocols(self, protocols: list[LinkedOutputProtocol]) -> None:
@@ -2391,6 +2446,23 @@ class Player(ABC):
         """Return the unix (utc) timestamp at which the active sleep timer stops playback."""
         return self.__sleep_timer_expires_at
 
+    __sleep_timer_mode: SleepTimerMode | None = None
+
+    @final
+    def set_sleep_timer_mode(self, value: SleepTimerMode | None) -> None:
+        """
+        Set the point at which the active sleep timer stops playback.
+
+        :param value: The sleep timer mode, or None to clear the sleep timer.
+        """
+        self.__sleep_timer_mode = value
+
+    @property
+    @final
+    def sleep_timer_mode(self) -> SleepTimerMode | None:
+        """Return the point at which the active sleep timer stops playback."""
+        return self.__sleep_timer_mode
+
     __stop_called: bool = False
 
     @final
@@ -2686,6 +2758,7 @@ class Player(ABC):
             "active_output_protocol": self.__attr_active_output_protocol,
             "active_mass_source": self.__active_mass_source,
             "sleep_timer_expires_at": self.__sleep_timer_expires_at,
+            "sleep_timer_mode": self.__sleep_timer_mode,
         }
 
     @final
@@ -2741,7 +2814,11 @@ class Player(ABC):
             player_id=self.player_id,
             provider=self.provider_id,
             type=self.type,
-            available=self.enabled and self.available and not self.needs_setup,
+            # the client view: it includes a player switched off at its power control, so
+            # internal code that needs a reachable device checks available_for_playback
+            available=self.enabled
+            and (self.available or self.offline_by_power_control)
+            and not self.needs_setup,
             device_info=self.device_info,
             supported_features=self.__final_supported_features,
             playback_state=playback_state,
@@ -2780,6 +2857,7 @@ class Player(ABC):
             setup_reason=self.setup_reason,
             has_setup_flow=self.has_setup_flow,
             sleep_timer_expires_at=self.sleep_timer_expires_at,
+            sleep_timer_mode=self.sleep_timer_mode,
         )
         media_position_jumped = self.__reconcile_current_media_anchor(
             prev_state, prev_playing, new_playing
@@ -2805,6 +2883,9 @@ class Player(ABC):
                 5, self.set_active_mass_source, None, task_id=f"set_mass_source_{self.player_id}"
             )
         new_fingerprint = _state_fingerprint(self._state)
+        # not part of the state: whether the device can be reached, which its availability
+        # does not tell for a player that is switched off at its power control
+        new_fingerprint[ATTR_REACHABLE] = self.available
         self.__state_fingerprint = new_fingerprint
         changed_values: dict[str, tuple[Any, Any]] = {}
         for key in prev_fingerprint.keys() | new_fingerprint.keys():
@@ -2852,6 +2933,7 @@ class Player(ABC):
             self.__final_active_group
             or self.__final_synced_to
             or (self.type == PlayerType.PROTOCOL and self.__attr_protocol_parent_id)
+            or self.foreign_protocol_player
         )
         position, timestamp, jumped = _reconcile_position_anchor(
             prev_media.elapsed_time,
@@ -2895,6 +2977,10 @@ class Player(ABC):
             playback_state = protocol_player.state.playback_state
             elapsed_time = protocol_player.state.elapsed_time
             elapsed_time_last_updated = protocol_player.state.elapsed_time_last_updated
+        elif foreign_player := self.foreign_protocol_player:
+            playback_state = foreign_player.playback_state
+            elapsed_time = foreign_player.elapsed_time
+            elapsed_time_last_updated = foreign_player.elapsed_time_last_updated
         # If we're synced to another player, mirror the leader's state so that
         # synced clients report the same playback info as their leader.
         elif (parent_id := self.__final_synced_to) and (
@@ -2928,6 +3014,11 @@ class Player(ABC):
             elapsed_time_last_updated = (
                 session.stream_metadata.elapsed_time_last_updated or time.time()
             )
+
+        if self.offline_by_power_control:
+            # a device that is switched off plays nothing, while one cut off mid-song may
+            # still report the state it had
+            playback_state = PlaybackState.IDLE
 
         return (playback_state, elapsed_time, elapsed_time_last_updated)
 
@@ -3070,6 +3161,8 @@ class Player(ABC):
         # a live external source reports what it plays itself
         if (session := self.mass.players.get_audio_source_session(self.player_id)) is not None:
             return self.__audio_source_media(session)
+        if foreign_player := self.foreign_protocol_player:
+            return foreign_player.current_media
         # if MA queue is active, return those details
         active_source = self.__final_active_source
         active_queue: PlayerQueue | None = None
@@ -3281,6 +3374,14 @@ class Player(ABC):
                     repeat_mode=session.repeat_mode,
                 )
             )
+        # an app on a linked protocol player, with what that player offers for it; the same
+        # service among the player's own sources is another way to play it
+        if foreign_player := self.foreign_protocol_player:
+            app_source = next(
+                x for x in foreign_player.source_list if x.id == foreign_player.active_source
+            )
+            sources = UniqueList(x for x in sources if x.id != app_source.id)
+            sources.append(app_source)
         # standing entries for the audio sources plugins bound to this player or report
         # as inputs of its own device, so they are selectable from the source menu
         # without a session being active first;
@@ -3407,6 +3508,8 @@ class Player(ABC):
                 for feature in protocol_player.supported_features:
                     if feature in ACTIVE_PROTOCOL_FEATURES:
                         base_features.add(feature)
+        if foreign_player := self.foreign_protocol_player:
+            base_features |= foreign_player.supported_features & FOREIGN_PROTOCOL_FEATURES
         # Append (allowed features) from all linked protocols
         for linked in self.__attr_linked_protocols:
             if protocol_player := self.mass.players.get_player(linked.output_protocol_id):
@@ -3556,6 +3659,10 @@ class Player(ABC):
         # put it there, so it outranks whatever the device reports about itself
         if (session := self.mass.players.get_audio_source_session(self.player_id)) is not None:
             return session.active_source
+
+        # an app on a linked protocol player plays past this player, which plays nothing itself
+        if foreign_player := self.foreign_protocol_player:
+            return foreign_player.active_source
 
         # always prefer active MA source but add a guard to detect if player is really playing
         # something different, such as a line-in or TV input. Many players do not accurately

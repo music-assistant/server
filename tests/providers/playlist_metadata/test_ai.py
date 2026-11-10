@@ -2112,7 +2112,7 @@ def _add_worker_fakes(provider: PlaylistMetadataProvider) -> None:
         if task_id and (existing := tasks.get(task_id)) and not existing.done():
             coro.close()
             return existing
-        task = asyncio.Task(coro, eager_start=True)
+        task = asyncio.Task(coro, loop=asyncio.get_running_loop(), eager_start=True)
         tasks[task_id or str(id(task))] = task
         return task
 

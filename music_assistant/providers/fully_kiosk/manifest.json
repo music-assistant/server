@@ -5,6 +5,7 @@
   "name": "Fully Kiosk Browser",
   "description": "Play audio on Fully Kiosk-enabled displays or Android devices.",
   "codeowners": ["@music-assistant"],
+  "tier": "core",
   "credits": [
     "[Fully Kiosk library for Python](https://github.com/cgarwood/python-fullykiosk)"
   ],

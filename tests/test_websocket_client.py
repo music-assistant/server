@@ -12,7 +12,7 @@ from music_assistant_models.access import PlaylistAccess
 from music_assistant_models.api import CommandMessage, ErrorResultMessage, SuccessResultMessage
 from music_assistant_models.auth import Scope, User, UserRole
 from music_assistant_models.enums import EventType, FlowStepType, ProviderSharing
-from music_assistant_models.errors import InsufficientPermissions
+from music_assistant_models.errors import InsufficientPermissions, ProviderStreamHeldError
 from music_assistant_models.event import MassEvent
 from music_assistant_models.media_items import Playlist, ProviderMapping
 from music_assistant_models.setup_flow import SetupFlowStep
@@ -41,6 +41,11 @@ from music_assistant.helpers.throttle_retry import (
 
 async def _noop_command() -> None:
     """Test command target."""
+
+
+async def _held_command() -> None:
+    """Test command target that fails with structured error data."""
+    raise ProviderStreamHeldError("Spotify is already playing on Kitchen", data={"queue_id": "k"})
 
 
 async def _acting_user_command() -> str | None:
@@ -229,6 +234,19 @@ async def test_impersonated_command_runs_as_the_target(
         assert _sent_error_code(client) == PERMISSION_DENIED
     else:
         assert _sent_result(client) == ran_as
+
+
+async def test_an_errors_structured_data_reaches_the_client() -> None:
+    """Data a client acts on travels with the error result, next to the message."""
+    handler = APICommandHandler.parse("test/held", _held_command)
+    client = _create_client(UserRole.ADMIN, handler)
+
+    await client._run_handler(handler, CommandMessage(message_id="1", command="test/held"))
+
+    message = client._send_message.await_args.args[0]
+    assert isinstance(message, ErrorResultMessage)
+    assert message.error_code == ProviderStreamHeldError.error_code
+    assert message.data == {"queue_id": "k"}
 
 
 @pytest.mark.asyncio

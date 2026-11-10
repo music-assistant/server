@@ -167,3 +167,24 @@ async def test_rate_track_passes_auth_headers_and_user() -> None:
         )
     mock_ytmusic.assert_called_once_with(auth=headers, user="123")
     mock_ytm.rate_song.assert_called_once_with(videoId="video", rating=LikeStatus.DISLIKE)
+
+
+@pytest.mark.parametrize(
+    ("response", "expected"),
+    [
+        ({"playerConfig": {"playbackStartConfig": {"startSeconds": 1007}}}, 1007),
+        ({"playerConfig": {"playbackStartConfig": {}}}, 0),
+        ({}, 0),
+    ],
+)
+async def test_get_episode_start_seconds_reads_the_player_response(
+    response: dict[str, Any], expected: int
+) -> None:
+    """The resume second comes from the player response, 0 when YouTube sends none."""
+    ytm = MagicMock()
+    ytm._send_request.return_value = response
+    with patch.object(ytmusicapi, "YTMusic", return_value=ytm):
+        assert await helpers.get_episode_start_seconds("v1", headers={}) == expected
+
+    assert ytm._send_request.call_args.args[0] == "player"
+    assert ytm._send_request.call_args.args[1]["video_id"] == "v1"

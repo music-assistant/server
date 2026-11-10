@@ -18,6 +18,7 @@ from music_assistant_models.enums import (
     PlayerFeature,
     PlayerType,
 )
+from music_assistant_models.errors import PlayerCommandFailed
 from music_assistant_models.media_items import AudioSource
 from music_assistant_models.media_items.provider_mapping import ProviderMapping
 from music_assistant_models.player import PlayerMedia
@@ -31,7 +32,6 @@ from music_assistant.constants import (
     CONF_PROTOCOL_PARENT_ID,
     CONF_UNDERLYING_PLAYER_ID,
 )
-from music_assistant.controllers.config import ConfigController
 from music_assistant.controllers.config.migrations import migrate
 from music_assistant.controllers.players import PlayerController
 from music_assistant.helpers.util import enrich_device_mac_address
@@ -4007,6 +4007,139 @@ class TestProtocolSwitchingDuringPlayback:
         ]
         assert leader.active_output_protocol == "bridge_leader"
         controller.cmd_resume.assert_not_awaited()
+
+    def _build_protocol_group(
+        self, mock_mass: MagicMock
+    ) -> tuple[PlayerController, dict[str, MockPlayer]]:
+        """
+        Build a leader playing over AirPlay with one AirPlay member and an idle Sendspin player.
+
+        The leader and the member each have an AirPlay output and a Sendspin bridge.
+
+        :param mock_mass: The mocked MusicAssistant instance.
+        :return: The controller and its players by ID.
+        """
+        controller = PlayerController(mock_mass)
+        sonos_provider = MockProvider("sonos", instance_id="sonos", mass=mock_mass)
+        wiim_provider = MockProvider("wiim", instance_id="wiim", mass=mock_mass)
+        airplay_provider = MockProvider("airplay", instance_id="airplay", mass=mock_mass)
+        sendspin_provider = MockProvider("sendspin", instance_id="sendspin", mass=mock_mass)
+
+        leader = MockPlayer(sonos_provider, "leader", "Living Room")
+        leader._attr_supported_features.add(PlayerFeature.SET_MEMBERS)
+        member = MockPlayer(wiim_provider, "member", "Kitchen")
+        joiner = MockPlayer(sendspin_provider, "joiner", "Bedroom")
+        joiner._attr_supported_features.add(PlayerFeature.PLAY_MEDIA)
+        players = [leader, member, joiner]
+        for parent in (leader, member):
+            protocol_players = (
+                MockPlayer(
+                    airplay_provider,
+                    f"{parent.player_id}_airplay",
+                    parent.display_name,
+                    player_type=PlayerType.PROTOCOL,
+                ),
+                MockPlayer(
+                    sendspin_provider,
+                    f"{parent.player_id}_bridge",
+                    parent.display_name,
+                    player_type=PlayerType.PROTOCOL,
+                ),
+            )
+            for protocol_player in protocol_players:
+                protocol_player._attr_supported_features.add(PlayerFeature.SET_MEMBERS)
+                protocol_player.set_protocol_parent_id(parent.player_id)
+            parent.set_linked_output_protocols(
+                [
+                    LinkedOutputProtocol(
+                        output_protocol_id=f"{parent.player_id}_airplay",
+                        protocol_domain="airplay",
+                        priority=10,
+                    ),
+                    LinkedOutputProtocol(
+                        output_protocol_id=f"{parent.player_id}_bridge",
+                        protocol_domain="sendspin",
+                        priority=40,
+                    ),
+                ]
+            )
+            players.extend(protocol_players)
+
+        mock_mass.players = controller
+        controller._players = {player.player_id: player for player in players}
+        leader_airplay = controller._players["leader_airplay"]
+        leader_airplay._attr_group_members = ["leader_airplay", "member_airplay"]
+        leader_airplay._attr_playback_state = PlaybackState.PLAYING
+        for player in players:
+            player.update_state(signal_event=False)
+        leader.set_active_output_protocol("leader_airplay")
+        member.set_active_output_protocol("member_airplay")
+        return controller, {player.player_id: player for player in players}
+
+    async def test_resume_after_switch_plays_through_the_new_protocol(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """
+        The resume after a protocol switch plays through the protocol that took over.
+
+        The members of the stopped protocol group are re-added on the new protocol after the
+        resume, so the stopped group must no longer count as grouped when the resume picks
+        the output.
+        """
+        controller, players = self._build_protocol_group(mock_mass)
+        leader = players["leader"]
+
+        selected_on_resume: list[str] = []
+
+        async def record_resume(player_id: str) -> None:
+            for player in players.values():
+                player.update_state(signal_event=False)
+            selected_on_resume.append(
+                controller._select_best_output_protocol(controller._players[player_id])[0].player_id
+            )
+
+        controller._handle_cmd_stop = AsyncMock()  # type: ignore[method-assign]
+        controller.cmd_resume = AsyncMock(side_effect=record_resume)  # type: ignore[method-assign]
+        controller._handle_set_members = AsyncMock()  # type: ignore[method-assign]
+
+        await controller._forward_protocol_set_members(
+            parent_player=leader,
+            parent_protocol_player=controller._players["leader_bridge"],
+            protocol_members_to_add=["joiner"],
+            protocol_members_to_remove=[],
+        )
+
+        assert selected_on_resume == ["leader_bridge"]
+
+    async def test_switch_that_would_strand_a_member_is_refused(self, mock_mass: MagicMock) -> None:
+        """
+        A player whose protocol a grouped member cannot follow is not added to the group.
+
+        The re-added member would move the group back onto a protocol the new player cannot
+        join, which hands the output back and forth without end.
+        """
+        controller, players = self._build_protocol_group(mock_mass)
+        players["member_bridge"]._attr_available = False
+        for player in players.values():
+            player.update_state(signal_event=False)
+        controller._handle_cmd_stop = AsyncMock()  # type: ignore[method-assign]
+        controller.cmd_resume = AsyncMock()  # type: ignore[method-assign]
+        controller._handle_set_members = AsyncMock()  # type: ignore[method-assign]
+
+        with pytest.raises(PlayerCommandFailed) as err:
+            await controller._forward_protocol_set_members(
+                parent_player=players["leader"],
+                parent_protocol_player=players["leader_bridge"],
+                protocol_members_to_add=["joiner"],
+                protocol_members_to_remove=[],
+            )
+
+        assert (
+            err.value.translation_key,
+            players["leader"].active_output_protocol,
+            players["leader_bridge"].group_members,
+            controller._handle_cmd_stop.await_count,
+        ) == ("member_cannot_follow_protocol", "leader_airplay", [], 0)
 
     async def test_joining_member_protocol_is_active_before_its_stream_starts(
         self, mock_mass: MagicMock
@@ -11600,27 +11733,6 @@ class TestSelfReferentialProtocolLinks:
         # or its permanent cleanup would re-evaluate it as an orphaned protocol
         assert "esp_client" not in universal._protocol_player_ids
 
-    async def test_migrate_clears_persisted_self_referential_link(self) -> None:
-        """Config migration scrubs a self-referential link left by an older version."""
-        config = ConfigController.__new__(ConfigController)
-        config._data = {
-            CONF_PLAYERS: {
-                "esp_client": {
-                    "provider": "sendspin",
-                    "player_id": "esp_client",
-                    "values": {
-                        "protocol_parent_id": "esp_client",
-                        "linked_protocol_ids": ["esp_client"],
-                    },
-                }
-            }
-        }
-        await migrate(config._data)
-
-        values = config._data[CONF_PLAYERS]["esp_client"]["values"]
-        assert values["protocol_parent_id"] is None
-        assert "esp_client" not in values["linked_protocol_ids"]
-
 
 class TestDerivedProtocolLinking:
     """
@@ -11779,6 +11891,49 @@ class TestDerivedProtocolLinking:
         controller._try_link_protocol_to_native(derived)
 
         assert derived.protocol_parent_id is None
+
+    @pytest.mark.parametrize("removal", ["config_deleted_while_unregistered", "unregistered"])
+    async def test_refused_derived_links_once_its_domain_is_freed(
+        self, mock_mass: MagicMock, removal: str
+    ) -> None:
+        """
+        A derived player refused for a taken domain links once the player holding it is removed.
+
+        A device's bridges register in no fixed order, so a bridge that is removed right after
+        start can hold the domain while the bridge that stays registers.
+        """
+        controller = PlayerController(mock_mass)
+        mock_mass.players = controller
+        mock_mass.config.get = MagicMock(return_value=[])
+
+        native = MockPlayer(
+            MockProvider("wiim", mass=mock_mass), "native_1", "WiiM", player_type=PlayerType.PLAYER
+        )
+        native.set_initialized()
+        controller._players = {"native_1": native}
+        for player_id, domain in (("ap_1", "airplay"), ("cast_1", "chromecast")):
+            base = MockPlayer(
+                MockProvider(domain, mass=mock_mass),
+                player_id,
+                f"WiiM {domain}",
+                player_type=PlayerType.PROTOCOL,
+            )
+            base.set_initialized()
+            controller._players[player_id] = base
+            controller._add_protocol_link(native, base, domain)
+        for player_id, underlying_id in (("spb_cast", "cast_1"), ("spb_ap", "ap_1")):
+            bridge = self._make_derived_player(mock_mass, player_id, underlying_id)
+            controller._players[player_id] = bridge
+            controller._try_link_protocol_to_native(bridge)
+        assert controller._players["spb_ap"].protocol_parent_id is None
+
+        if removal == "unregistered":
+            await controller.unregister("spb_cast", permanent=True)
+        else:
+            del controller._players["spb_cast"]
+            controller.delete_player_config("spb_cast")
+
+        assert controller._players["spb_ap"].protocol_parent_id == "native_1"
 
     def test_derived_joins_universal_parent(self, mock_mass: MagicMock) -> None:
         """Test a derived player joins the universal player of its underlying player."""

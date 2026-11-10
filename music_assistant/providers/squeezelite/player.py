@@ -511,8 +511,13 @@ class SqueezelitePlayer(Player):
         if media.source_id and (queue := self.mass.player_queues.get(media.source_id)):
             self.extra_data["playlist repeat"] = REPEATMODE_MAP[queue.repeat_mode]
             self.extra_data["playlist shuffle"] = int(queue.shuffle_enabled)
-        low_latency_stream = media.media_type in (MediaType.AUDIO_SOURCE, MediaType.RADIO)
-        # live streams start on a smaller buffer (KB, tenths of a second) to cut latency
+        # live streams and announcements start on a smaller buffer (KB, tenths of a second) to cut
+        # latency; a short announcement would never fill the default 2 second output buffer
+        low_latency_stream = media.media_type in (
+            MediaType.AUDIO_SOURCE,
+            MediaType.RADIO,
+            MediaType.ANNOUNCEMENT,
+        )
         stream_threshold, output_threshold = (64, 1) if low_latency_stream else (200, 20)
         await slimplayer.play_url(
             url=url,

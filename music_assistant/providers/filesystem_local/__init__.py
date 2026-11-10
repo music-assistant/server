@@ -298,6 +298,9 @@ class LocalFileSystemProvider(MusicProvider):
         # folders already warned about a missing ALBUMARTIST tag, reset at the start of
         # each sync so every sync reports the current state of the library once per album
         self._missing_album_artist_warned: set[str] = set()
+        # artist folders whose registered artist.nfo changed, refreshed once a sync's
+        # tracks are processed
+        self._changed_artist_paths: set[str] = set()
 
     async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
         """Return Config entries to configure this provider."""
@@ -654,6 +657,7 @@ class LocalFileSystemProvider(MusicProvider):
         self._sync_nfo_by_dir = {}
         self._sync_nfo_index_ready = False
         self._missing_album_artist_warned = set()
+        self._changed_artist_paths = set()
         try:
             await self._enumerate_files_for_sync(
                 file_checksums=file_checksums,
@@ -767,6 +771,7 @@ class LocalFileSystemProvider(MusicProvider):
                 async with TaskManager(self.mass, concurrency) as tm:
                     for item, prev_checksum in items_to_process:
                         await tm.create_task_with_limit(_process(item, prev_checksum))
+            await self._refresh_changed_artists()
         finally:
             self.sync_running = False
             self._sync_nfo_by_dir = {}
@@ -1816,6 +1821,7 @@ class LocalFileSystemProvider(MusicProvider):
         registered file whose token is unchanged is also ignored. Only a registered file whose
         token changed queues its representative track, deduplicated against tracks already
         queued by this sync (whether from another changed metadata file or their own change).
+        A changed artist.nfo also marks its artist for a refresh after the tracks.
 
         This never writes the metadata-file cache itself: only actually reparsing the
         representative track (which re-reads the file) advances its registered token, so a
@@ -1857,6 +1863,10 @@ class LocalFileSystemProvider(MusicProvider):
                 await self.mass.metadata.invalidate_image_cache(
                     self.instance_id, meta_item.relative_path
                 )
+            if meta_item.filename.lower() == "artist.nfo":
+                # reparsing a track only adds an artist's missing ids, so the artist itself
+                # is refreshed after the tracks
+                self._changed_artist_paths.add(meta_item.relative_parent_path)
             if track_path in queued_tracks:
                 # already queued for another reason (its own content changed, or another
                 # metadata file got here first): still needs the stale-cache drop below, since
@@ -1882,6 +1892,40 @@ class LocalFileSystemProvider(MusicProvider):
             else:
                 prev_checksum = file_checksums.get(track_path)
             items_to_process.append((track_item, prev_checksum))
+
+    async def _refresh_changed_artists(self) -> None:
+        """Overwrite each library artist whose artist.nfo changed with its reparsed details."""
+        for artist_path in sorted(self._changed_artist_paths):
+            db_artist = await self.mass.music.artists.get_library_item_by_prov_id(
+                artist_path, self.instance_id
+            )
+            if not db_artist:
+                continue
+            # the cached artist was parsed from a track's tags, which may spell it differently
+            await self.cache.delete(
+                key=artist_path, category=CACHE_CATEGORY_ARTIST_INFO, provider=self.instance_id
+            )
+            try:
+                artist = await self.get_artist(artist_path)
+                # one library artist can be linked to several folders of this source
+                # and the overwrite below would drop all but this one
+                artist.provider_mappings.update(
+                    mapping
+                    for mapping in db_artist.provider_mappings
+                    if mapping.provider_instance == self.instance_id
+                    and mapping not in artist.provider_mappings
+                )
+                await self.mass.music.artists.update_item_in_library(
+                    db_artist.item_id, artist, overwrite=True
+                )
+            except Exception as err:
+                # one artist must not fail the whole sync
+                self.logger.error(
+                    "Error refreshing artist %s - %s",
+                    artist_path,
+                    err,
+                    exc_info=err if self.logger.isEnabledFor(logging.DEBUG) else None,
+                )
 
     async def _register_metadata_file(
         self, item: FileSystemItem, representative_track: str | None
