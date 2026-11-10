@@ -230,7 +230,7 @@ class PulseCaptureServer:
         # PA's .pa config and module argument parsers are space-delimited with no
         # escaping; refuse early with a clear error instead of mis-parsing later
         if " " in str(self._base_dir):
-            raise RuntimeError(f"cache path may not contain spaces: {self._base_dir}")
+            raise RuntimeError(f"runtime path may not contain spaces: {self._base_dir}")
 
         def _prepare() -> None:
             self._base_dir.mkdir(parents=True, exist_ok=True)
