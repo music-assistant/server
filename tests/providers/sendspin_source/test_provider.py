@@ -240,10 +240,10 @@ async def test_stream_details_rejects_unknown_source() -> None:
         await provider.get_stream_details("unknown", MediaType.AUDIO_SOURCE)
 
 
-async def test_stream_details_declare_the_source_rate_and_channels(
+async def test_stream_details_declare_the_source_format(
     fake_client: _FakeClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The details wait for the source and carry its own rate and channels at 24-bit."""
+    """The details wait for the source and carry its own format."""
     provider = await make_provider([fake_client])
     monkeypatch.setattr(provider, "_create_bridge", lambda *_args: _StubBridge())
     await provider.on_source_selected("client-1", "player-1", "queue-1", "session-1")
@@ -256,7 +256,7 @@ async def test_stream_details_declare_the_source_rate_and_channels(
         )
     )
     assert (await details).audio_format == AudioFormat(
-        content_type=ContentType.PCM_S24LE, sample_rate=96000, bit_depth=24, channels=1
+        content_type=ContentType.PCM_S16LE, sample_rate=96000, bit_depth=16, channels=1
     )
 
 

@@ -6,8 +6,7 @@ CONF_TARGET_LATENCY = "target_latency"
 DEFAULT_TARGET_LATENCY_MS = 500
 
 # PCM output format for a Sendspin source that has not announced its own yet. A
-# source plays at its own sample rate and channel count once it does, always at
-# this bit depth.
+# source plays in its own format once it does.
 OUTPUT_SAMPLE_RATE = 48000
 OUTPUT_BIT_DEPTH = 24
 OUTPUT_CHANNELS = 2

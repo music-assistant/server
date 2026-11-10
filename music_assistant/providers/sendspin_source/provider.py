@@ -718,9 +718,9 @@ class SendspinSourceProvider(PluginProvider):
         session.start_event = event
         if session.output_format is None:
             session.output_format = AudioFormat(
-                content_type=OUTPUT_FORMAT.content_type,
+                content_type=ContentType.from_bit_depth(event.audio_format.bit_depth),
                 sample_rate=event.audio_format.sample_rate,
-                bit_depth=OUTPUT_BIT_DEPTH,
+                bit_depth=event.audio_format.bit_depth,
                 channels=event.audio_format.channels,
             )
         session.bridge = self._create_bridge(

@@ -22,7 +22,7 @@ When a user plays a source, the provider sends the client a
 streams timestamped encoded audio up to the server, and the Sendspin server
 library decodes it back to PCM. This provider feeds that PCM into a clock
 bridge (`aiosendspin.audio.AsrcSourceBridge`) and serves Music Assistant a
-steady 24-bit stream at the source's own sample rate and channel count.
+steady stream in the source's own format.
 
 ## Design notes
 
