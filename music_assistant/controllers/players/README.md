@@ -123,6 +123,10 @@ Contains standalone helper functions and decorators:
 - `handle_player_command` decorator for command validation
 - `AnnounceData` type definition
 
+### 4. Identifier Matching ([matching.py](matching.py))
+
+The pure function that decides whether two players stand for the same physical device, with every veto and precedence rule in one table (see [Device Identifier Matching](#device-identifier-matching)).
+
 ## Locking
 
 Player commands are serialized per player with `get_player_lock`. A command that cannot get the lock within 30 seconds runs without it, so a player stays responsive when the previous holder hangs on a dead provider call. A strict acquisition (`strict=True`) never does that: it keeps waiting, up to 120 seconds per lock (a grouped player's group lock first, then its own), and then fails with a `ResourceBusyError`. The queue play actions and the next-track handover take the lock strictly, since two of them running at once on one queue corrupt it. The timeouts live in [constants.py](constants.py).
@@ -198,16 +202,34 @@ Modern audio devices often support multiple streaming protocols (AirPlay, Chrome
 
 ### Device Identifier Matching
 
-Protocol players are matched to the same physical device using identifiers in order of reliability:
+Whether two players stand for the same physical device is decided in one place: `identifiers_match` in [matching.py](matching.py), a pure function over what each side reports about its device:
 
-1. **MAC_ADDRESS** - Most reliable, unique to the network interface
-2. **SERIAL_NUMBER** - Unique device serial number
-3. **UUID** - Universally unique identifier
-4. **CAST_UUID / AIRPLAY_ID** - Protocol-specific stable identifiers (a differing AIRPLAY_ID rules out a match, as several AirPlay receivers can share one host, IP and MAC)
-5. **IP_ADDRESS** - Last resort only when strong identifiers are unavailable or unreliable
-6. **player_id** - Fallback device key for players without usable identifiers (e.g., Sendspin)
+- its identifiers as a set of `(type, value)` pairs (`Player.identifiers`), so a device with two MAC addresses (the one its provider reported and the one ARP resolved) holds a pair for each
+- the protocol domains that reported them
+- whether the native protocol of the device is among them
 
-**Note:** IP matching is intentionally conservative. The controller prefers strong identifiers first, verifies MAC addresses with ARP where possible, and only falls back to IP when at least one side lacks a reliable hardware identifier or when a protocol/universal player still needs a last-resort match.
+A universal player reports for the protocols it holds: their identifiers next to the ones it stored, and their domains also while they are away.
+
+The rules are one table. Two sides *differ* in a type when both report it and share no value; a type only one side reports never rules a match out.
+
+| Identifier | Differing values rule a match out | A shared value is a match |
+|---|---|---|
+| `MAC_ADDRESS` | never | yes |
+| `SERIAL_NUMBER` | when both sides share a protocol domain | yes |
+| `UUID` | when both sides share a protocol domain | yes |
+| `CAST_UUID` | always | yes |
+| `AIRPLAY_ID` | always | yes |
+| `ZONE` | always | no |
+| `IP_ADDRESS` | never | as a last resort |
+
+Every veto is checked before any shared value may match, so two sides that differ in their AirPlay id or zone never match, even when they share an IP and MAC address.
+
+- A UUID or serial number only vetoes within one domain: a Chromecast reports its cast uuid as UUID, DLNA its UDN, MusicCast and Bose their device id, so one device has several of them.
+- A zone tells the outputs of one chassis apart, which share its MAC address and IP. It identifies nothing on its own, as every chassis has a first zone.
+- A MAC address never vetoes, as a device has one per network interface. Null and broadcast addresses identify nothing, and the locally-administered bit is ignored because some protocols report the hardware address with that bit set.
+- A shared IP address alone is the last resort. It never ties two native devices that each have a hardware MAC address, as one host can carry several of them.
+
+A provider reports an identifier in the form the other protocols of the device report it: the DLNA provider strips the `_MR` suffix from the UDN of a Sonos renderer, which leaves the UUID of its Sonos player.
 
 **Important:** Protocol players from the **same protocol domain** (same provider.domain) will NOT be matched together, even if they share the same MAC/IP address. This is intentional to handle multiple software player instances (e.g., multiple Snapcast clients, multiple SendSpin web players) running on the same host. These are separate logical players, not multiple protocols of the same physical device.
 

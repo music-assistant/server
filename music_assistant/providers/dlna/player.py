@@ -460,7 +460,10 @@ class DLNAPlayer(PlayerProtocol):
                 uuid_value = self.player_id
                 if uuid_value.lower().startswith("uuid:"):
                     uuid_value = uuid_value[5:]
-                self._attr_device_info.add_identifier(IdentifierType.UUID, uuid_value)
+                # the UDN of a Sonos renderer is the UUID of its Sonos player plus "_MR"
+                self._attr_device_info.add_identifier(
+                    IdentifierType.UUID, uuid_value.removesuffix("_MR")
+                )
                 # MAC address is NOT extracted from UUID because the last 12 chars
                 # of UPnP UUIDs are unreliable — many devices put random/model
                 # values there, not the real hardware MAC. Instead, the player

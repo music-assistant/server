@@ -30,6 +30,7 @@ from music_assistant_models.constants import (
     PLAYER_CONTROL_NONE,
 )
 from music_assistant_models.enums import (
+    IdentifierType,
     MediaType,
     PlaybackState,
     PlayerFeature,
@@ -57,6 +58,7 @@ from music_assistant.constants import (
     ATTR_FAKE_VOLUME,
     ATTR_POWER_ON_IN_PROGRESS,
     ATTR_REACHABLE,
+    CONF_CACHED_ARP_MAC,
     CONF_ENTRY_PLAYER_ICON,
     CONF_EXPOSE_PLAYER_TO_HA,
     CONF_FLOW_MODE,
@@ -1465,6 +1467,24 @@ class Player(ABC):
         This is not persisted and not exposed on the API.
         """
         return self._extra_data
+
+    @property
+    @final
+    def identifiers(self) -> frozenset[tuple[IdentifierType, str]]:
+        """
+        Return every identifier of the device as (type, value) pairs.
+
+        A device with several MAC addresses (the one its provider reported and the one
+        ARP resolved) holds a pair for each.
+        """
+        identifiers = set(self.device_info.identifiers.items())
+        cached_arp_mac = self.mass.config.get(
+            f"{CONF_PLAYERS}/{self.player_id}/values/{CONF_CACHED_ARP_MAC}"
+        )
+        for mac_address in (self.extra_data.get("reported_mac"), cached_arp_mac):
+            if mac_address:
+                identifiers.add((IdentifierType.MAC_ADDRESS, mac_address))
+        return frozenset(identifiers)
 
     @cached_property
     @final
