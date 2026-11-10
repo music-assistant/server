@@ -265,3 +265,15 @@ class PlayerQueueData:
             )
             if not isinstance(item, ItemMapping)
         ]
+
+
+@dataclass(frozen=True, slots=True)
+class QueueSnapshot:
+    """A copy of a queue's content, detached from the live queue, to put back with `restore`."""
+
+    data: PlayerQueueData
+
+    @property
+    def queue_id(self) -> str:
+        """Return the id of the queue the snapshot was taken from."""
+        return self.data.queue.queue_id
