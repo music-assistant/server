@@ -66,6 +66,17 @@ def player(mock_mass: MagicMock) -> MockPlayer:
     return player
 
 
+class _SyncedPlayer(MockPlayer):
+    """A player whose provider names its sync leader itself."""
+
+    leader_id: str | None = None
+
+    @property
+    def synced_to(self) -> str | None:
+        """Return the id of the sync leader as the provider names it."""
+        return self.leader_id
+
+
 def _image() -> MediaItemImage:
     """Return the image of a media item."""
     return MediaItemImage(
@@ -735,12 +746,12 @@ class TestInputCollection:
         assert player.state.synced_to == ("leader" if synced else None)
         assert mock_mass.get_provider.called is not synced
 
-    @pytest.mark.parametrize("grouped_id", ["member", "member_protocol"])
+    @pytest.mark.parametrize("grouped_id", ["member", "member_protocol", "old_member"])
     @pytest.mark.parametrize("can_play", [True, False])
     def test_group_volume_counts_the_members_that_can_play(
         self, mock_mass: MagicMock, grouped_id: str, can_play: bool
     ) -> None:
-        """A member decides the group volume while it can play, as itself or by its protocol."""
+        """A member decides the group volume while it can play, however the group names it."""
         provider = MockProvider("test_provider", mass=mock_mass)
         leader = MockPlayer(provider, "leader", "Leader")
         leader._attr_volume_level = 20
@@ -751,7 +762,8 @@ class TestInputCollection:
         protocol = MockPlayer(provider, "member_protocol", "Member", PlayerType.PROTOCOL)
         protocol.set_protocol_parent_id("member")
         players = {"leader": leader, "member": member, "member_protocol": protocol}
-        mock_mass.players.get_player = MagicMock(side_effect=players.get)
+        # the member also answers to a legacy id
+        mock_mass.players.get_player = MagicMock(side_effect={**players, "old_member": member}.get)
         mock_mass.players.iter_players = MagicMock(return_value=list(players.values()))
         member.update_state(signal_event=False)
 
@@ -759,6 +771,45 @@ class TestInputCollection:
 
         assert leader.state.group_members == ["leader", "member"]
         assert leader.state.group_volume == (80 if can_play else 20)
+
+    def test_member_named_by_a_legacy_id_counts_under_that_id_too(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """A protocol player keeps its members as reported, a legacy id among them counts."""
+        provider = MockProvider("test_provider", mass=mock_mass)
+        leader = MockPlayer(provider, "leader", "Leader", PlayerType.PROTOCOL)
+        leader._attr_group_members = ["leader", "old_member"]
+        member = MockPlayer(provider, "member", "Member")
+        member._attr_volume_level = 80
+        players = {"leader": leader, "member": member}
+        mock_mass.players.get_player = MagicMock(side_effect={**players, "old_member": member}.get)
+        mock_mass.players.iter_players = MagicMock(return_value=list(players.values()))
+        member.update_state(signal_event=False)
+
+        leader.update_state(signal_event=False)
+
+        assert leader.state.group_members == ["leader", "old_member"]
+        assert leader.state.group_volume == 80
+
+    def test_sync_leader_named_by_a_legacy_id_is_followed(self, mock_mass: MagicMock) -> None:
+        """A player synced to a legacy id of its leader mirrors the player that answers to it."""
+        provider = MockProvider("test_provider", mass=mock_mass)
+        leader = MockPlayer(provider, "leader", "Leader")
+        leader._attr_playback_state = PlaybackState.PLAYING
+        leader.set_current_media(uri="http://test/stream", title="Song")
+        follower = _SyncedPlayer(provider, "follower", "Follower")
+        follower.leader_id = "old_leader"
+        players = {"leader": leader, "follower": follower}
+        mock_mass.players.get_player = MagicMock(side_effect={**players, "old_leader": leader}.get)
+        mock_mass.players.iter_players = MagicMock(return_value=list(players.values()))
+        leader.update_state(signal_event=False)
+
+        follower.update_state(signal_event=False)
+
+        assert follower.state.synced_to == "leader"
+        assert follower.state.playback_state == PlaybackState.PLAYING
+        assert follower.state.active_source == leader.state.active_source
+        assert follower.state.current_media is leader.state.current_media
 
     @pytest.mark.parametrize(
         ("kind", "looked_up"),

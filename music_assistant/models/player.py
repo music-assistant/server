@@ -2740,7 +2740,7 @@ class Player(ABC):
             peers, probe_synced_to=not own.synced_to
         )
         for player_id in own.group_members:
-            self.__collect_member(peers, player_id)
+            self.__collect_peer(peers, player_id, as_member=True)
         if own.synced_to:
             self.__collect_peer(peers, own.synced_to)
         if self.__attr_protocol_parent_id:
@@ -2872,7 +2872,7 @@ class Player(ABC):
             active_protocol = _protocol_snapshot(active_output_protocol, protocol_player, None)
         if active_protocol:
             for player_id in active_protocol.group_members:
-                self.__collect_member(peers, player_id)
+                self.__collect_peer(peers, player_id, as_member=True)
         return tuple(linked), active_protocol, foreign_app
 
     @final
@@ -2959,37 +2959,38 @@ class Player(ABC):
         return tuple(sources)
 
     @final
-    def __collect_member(self, peers: dict[str, PeerSnapshot], player_id: str) -> None:
-        """
-        Add a player that is grouped to this one to the peers, if it is registered.
-
-        :param peers: The peers collected so far, by id.
-        :param player_id: Id of the member.
-        """
-        if not (player := self.mass.players.get_player(player_id)):
-            return
-        self.__add_peer(peers, player_id, player)
-        # whether a player is available for playback only counts for a member, where a
-        # protocol player stands for the player it is linked to
-        peers[player_id].available_for_playback = player.available_for_playback
-        if (parent_id := player.protocol_parent_id) and (
-            parent := self.mass.players.get_player(parent_id)
-        ):
-            peers[parent_id].available_for_playback = parent.available_for_playback
-
-    @final
     def __collect_peer(
-        self, peers: dict[str, PeerSnapshot], player_id: str, with_parent: bool = True
+        self,
+        peers: dict[str, PeerSnapshot],
+        player_id: str,
+        with_parent: bool = True,
+        as_member: bool = False,
     ) -> Player | None:
         """
         Add the player with the given id to the peers, if it is registered.
 
         :param peers: The peers collected so far, by id.
-        :param player_id: Id of the player to add.
+        :param player_id: Id of the player to add, or one of its legacy ids.
         :param with_parent: Also add the player it is linked to as a protocol player.
+        :param as_member: The player is grouped to this one, which makes it count whether
+            it is available for playback.
         """
-        if player := self.mass.players.get_player(player_id):
-            self.__add_peer(peers, player_id, player, with_parent)
+        if not (player := self.mass.players.get_player(player_id)):
+            return None
+        own_id = player.player_id
+        if own_id != player_id:
+            # a player that is named by a legacy id is found by its own id as well
+            self.__add_peer(peers, own_id, player, with_parent=False)
+            peers[player_id] = peers[own_id]
+        self.__add_peer(peers, own_id, player, with_parent)
+        if as_member:
+            # whether a player is available for playback only counts for a member, where a
+            # protocol player stands for the player it is linked to
+            peers[own_id].available_for_playback = player.available_for_playback
+            if (parent_id := player.protocol_parent_id) and (
+                parent := self.mass.players.get_player(parent_id)
+            ):
+                peers[parent_id].available_for_playback = parent.available_for_playback
         return player
 
     @final
@@ -3012,7 +3013,7 @@ class Player(ABC):
         if player_id not in peers:
             # positional, which is cheaper for the many players this runs for
             peers[player_id] = PeerSnapshot(
-                player.player_id,
+                player_id,
                 player.type,
                 player.available,
                 parent_id,
