@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import json
+import zlib
 from unittest.mock import AsyncMock, MagicMock, call, patch
 
 import pytest
@@ -35,9 +36,14 @@ async def test_generate_share_link_rejects_playlist_without_fetching_tracks() ->
 async def test_resolve_share_link_rejects_playlists(tracks: list[dict[str, str]]) -> None:
     """Incoming playlist links never reach matching or change the library."""
     provider = _provider()
-    encoded = base64.urlsafe_b64encode(
-        json.dumps({"type": "playlist", "title": "Mix", "tracks": tracks}).encode()
-    ).decode()
+    compressor = zlib.compressobj(9, zlib.DEFLATED, -15)
+    compressed = (
+        compressor.compress(
+            json.dumps({"type": "playlist", "title": "Mix", "tracks": tracks}).encode()
+        )
+        + compressor.flush()
+    )
+    encoded = "1" + base64.urlsafe_b64encode(compressed).decode().rstrip("=")
 
     with patch.object(ShareProvider, "_resolve_media_item", new_callable=AsyncMock) as resolve:
         assert await provider.resolve_share_link(encoded) is None

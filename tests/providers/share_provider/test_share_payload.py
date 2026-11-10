@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import json
+import zlib
 from typing import cast
 from unittest.mock import AsyncMock, MagicMock
 
@@ -21,15 +22,23 @@ from music_assistant.providers.share_provider import (
 )
 from music_assistant.providers.share_provider.links import (
     build_provider_links,
-    build_provider_refs,
-    compact_artwork_ref,
-    expand_artwork_ref,
-    expand_provider_ref,
+    is_valid_artwork_url,
     is_valid_provider_link,
+)
+from music_assistant.providers.share_provider.payload import (
+    MAX_DECODED_PAYLOAD_SIZE,
+    MAX_ENCODED_PAYLOAD_SIZE,
 )
 from music_assistant.providers.share_provider.resolver import ShareLinkResolver
 
 from .helpers import BARCODE, _mass, _provider, _track
+
+
+def _encode_data(data: object) -> str:
+    """Encode arbitrary input independently of payload model validation."""
+    compressor = zlib.compressobj(9, zlib.DEFLATED, -15)
+    compressed = compressor.compress(json.dumps(data).encode()) + compressor.flush()
+    return "1" + base64.urlsafe_b64encode(compressed).decode().rstrip("=")
 
 
 @pytest.mark.parametrize(
@@ -87,7 +96,7 @@ async def test_build_album_payload_includes_barcode_mbid_and_provider_link() -> 
     assert payload.version == "Deluxe"
     assert payload.mbid == "album-mbid"
     assert payload.barcode == BARCODE
-    assert payload.provider_refs == {"spotify": "/album/album%2F123"}
+    assert payload.provider_urls == {"spotify": "https://open.spotify.com/album/album%2F123"}
 
 
 async def test_build_track_payload_includes_duration_for_core_matching() -> None:
@@ -182,12 +191,11 @@ async def test_share_base_url_is_an_instance_config_option() -> None:
         "https://ia800.archive.org/download/album/cover:front.jpg?format=full:2",
     ],
 )
-def test_artwork_refs_roundtrip_colons_in_path_and_query(url: str) -> None:
-    """Artwork paths and queries retain colons when compacted and expanded."""
-    ref = compact_artwork_ref(url)
-
-    assert ref is not None
-    assert expand_artwork_ref(ref) == url
+def test_artwork_urls_roundtrip_colons_in_path_and_query(url: str) -> None:
+    """Artwork URLs remain intact rather than being encoded as host codes."""
+    payload = SharePayload(type="album", title="Album", art_url=url)
+    assert is_valid_artwork_url(url)
+    assert SharePayload.from_base64(payload.to_base64()).art_url == url
 
 
 def test_build_provider_links_keeps_apple_music_canonical_url() -> None:
@@ -206,8 +214,8 @@ def test_build_provider_links_keeps_apple_music_canonical_url() -> None:
     }
 
 
-def test_build_provider_refs_omits_provider_hosts() -> None:
-    """Share payload references keep localized paths without full URLs."""
+def test_build_provider_links_preserves_full_localized_urls() -> None:
+    """Share payload URLs preserve the provider's host and localized path."""
     item = MagicMock()
     item.provider_mappings = [
         MagicMock(
@@ -222,9 +230,9 @@ def test_build_provider_refs_omits_provider_hosts() -> None:
         ),
     ]
 
-    assert build_provider_refs(item) == {
-        "apple_music": "/at/album/a-little-bit-off/1487244856?i=1487244862",
-        "spotify": "/track/track-id",
+    assert build_provider_links(item) == {
+        "apple_music": "https://music.apple.com/at/album/a-little-bit-off/1487244856?i=1487244862",
+        "spotify": "https://open.spotify.com/track/track-id",
     }
 
 
@@ -247,44 +255,32 @@ def test_build_provider_links_uses_only_mapping_urls() -> None:
     assert build_provider_links(item) == {"qobuz": "https://open.qobuz.com/artist/54321"}
 
 
-def test_payload_uses_compact_provider_and_artwork_refs_without_version_field() -> None:
-    """Share metadata is encoded without a redundant protocol-version field."""
+def test_payload_uses_full_urls_and_versioned_raw_deflate() -> None:
+    """The version prefix identifies raw-deflated JSON with complete URLs."""
     apple_url = "https://music.apple.com/at/album/123?i=456"
     art_url = "https://is1-ssl.mzstatic.com/image/thumb/cover/1000x1000bb.jpg"
-    art_ref = compact_artwork_ref(art_url)
-    assert art_ref is not None
     payload = SharePayload(
         type="track",
         title="Track",
         version="Live",
-        art_ref=art_ref,
-        provider_refs={
-            "apple_music": build_provider_refs(
-                MagicMock(
-                    provider_mappings=[
-                        MagicMock(
-                            provider_domain="apple_music",
-                            item_id="456",
-                            url=apple_url,
-                        )
-                    ]
-                )
-            )["apple_music"]
-        },
+        art_url=art_url,
+        provider_urls={"apple_music": apple_url},
     )
 
     encoded = payload.to_base64()
     decoded = SharePayload.from_base64(encoded)
-    decoded_json = base64.urlsafe_b64decode(encoded).decode()
+    assert encoded.startswith("1")
+    body = encoded[1:]
+    decoded_json = zlib.decompress(
+        base64.urlsafe_b64decode(body + "=" * (-len(body) % 4)), -15
+    ).decode()
 
-    assert decoded.art_ref == art_ref
+    assert decoded.art_url == art_url
     assert decoded.version == "Live"
-    assert decoded.provider_refs == {
-        "apple_music": "/at/album/123?i=456",
-    }
-    assert expand_artwork_ref(art_ref) == art_url
-    assert expand_provider_ref("apple_music", decoded.provider_refs["apple_music"]) == apple_url
-    assert "https://" not in decoded_json
+    assert decoded.provider_urls == {"apple_music": apple_url}
+    assert "https://" in decoded_json
+    assert "art_ref" not in decoded_json
+    assert "provider_refs" not in decoded_json
     assert '"v"' not in decoded_json
 
 
@@ -319,19 +315,15 @@ def test_provider_links_reject_http_lookalike_hosts_and_userinfo(url: str) -> No
 @pytest.mark.parametrize("media_type", ["podcast", "playlist"])
 def test_payload_rejects_unsupported_media_types(media_type: str) -> None:
     """Reject unknown media types before dispatching a share payload."""
-    encoded = base64.urlsafe_b64encode(
-        json.dumps({"type": media_type, "title": "Unsupported"}).encode()
-    ).decode()
+    encoded = _encode_data({"type": media_type, "title": "Unsupported"})
 
     with pytest.raises(ValueError, match="Unsupported share payload"):
         SharePayload.from_base64(encoded)
 
 
-def test_payload_does_not_require_a_version_field() -> None:
-    """The share payload contains no protocol-version marker."""
-    encoded = base64.urlsafe_b64encode(
-        json.dumps({"type": "track", "title": "Track"}).encode()
-    ).decode()
+def test_payload_version_is_outside_json() -> None:
+    """Versioned links do not need a duplicate version field inside the JSON."""
+    encoded = _encode_data({"type": "track", "title": "Track"})
 
     assert SharePayload.from_base64(encoded).title == "Track"
 
@@ -346,9 +338,7 @@ def test_track_payload_roundtrips_optional_duration() -> None:
 @pytest.mark.parametrize("duration", [True, -1, "218", 1.5])
 def test_payload_rejects_invalid_track_duration(duration: object) -> None:
     """Individual-track duration must be a nonnegative integer."""
-    encoded = base64.urlsafe_b64encode(
-        json.dumps({"type": "track", "title": "Track", "duration": duration}).encode()
-    ).decode()
+    encoded = _encode_data({"type": "track", "title": "Track", "duration": duration})
 
     with pytest.raises(ValueError, match="Invalid share track duration"):
         SharePayload.from_base64(encoded)
@@ -356,21 +346,124 @@ def test_payload_rejects_invalid_track_duration(duration: object) -> None:
 
 def test_payload_drops_invalid_optional_links_and_artwork() -> None:
     """A malformed optional ref does not invalidate otherwise usable share data."""
-    encoded = base64.urlsafe_b64encode(
-        json.dumps(
-            {
-                "type": "track",
-                "title": "Track",
-                "art_ref": "x:evil.example:/art.jpg",
-                "provider_refs": {
-                    "spotify": "/track/123",
-                    "unknown": "/track/456",
-                },
-            }
-        ).encode()
-    ).decode()
+    encoded = _encode_data(
+        {
+            "type": "track",
+            "title": "Track",
+            "art_url": "https://evil.example/art.jpg",
+            "provider_urls": {
+                "spotify": "https://open.spotify.com/track/123",
+                "unknown": "https://open.spotify.com/track/456",
+            },
+        }
+    )
 
     payload = SharePayload.from_base64(encoded)
 
-    assert payload.art_ref is None
-    assert payload.provider_refs == {"spotify": "/track/123"}
+    assert payload.art_url is None
+    assert payload.provider_urls == {"spotify": "https://open.spotify.com/track/123"}
+
+
+@pytest.mark.parametrize(
+    ("domain", "url", "expected"),
+    [
+        ("ytmusic", "https://music.youtube.com/browse/MPREb_example", True),
+        ("ytmusic", "https://music.youtube.com/playlist?list=OLAK5uy_abc", True),
+        ("qobuz", "https://www.qobuz.com/us-en/album/album/123", True),
+        ("tidal", "https://listen.tidal.com/album/123", True),
+        ("spotify", "https://music.apple.com/de/album/123", False),
+        ("spotify", "https://open.spotify.com/track/", False),
+        ("spotify", "/track/123", False),
+        ("spotify", "https://open.spotify.com", False),
+    ],
+)
+def test_provider_urls_use_core_classification(domain: str, url: str, expected: bool) -> None:
+    """Public item URL formats are validated by core rather than a plugin-owned table."""
+    assert is_valid_provider_link(domain, url) is expected
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "http://is1-ssl.mzstatic.com/art.jpg",
+        "https://mzstatic.com.evil.example/art.jpg",
+        "https://user@is1-ssl.mzstatic.com/art.jpg",
+        "m:is1-ssl:/art.jpg",
+    ],
+)
+def test_artwork_rejects_unsafe_urls_and_old_codes(url: str) -> None:
+    """Only complete approved HTTPS artwork URLs are accepted."""
+    assert not is_valid_artwork_url(url)
+
+
+@pytest.mark.parametrize("encoded", ["", "2abc", "eyJ0eXBlIjoiYWxidW0ifQ", "1", "1***", "1a"])
+def test_payload_rejects_invalid_versions_and_base64(encoded: str) -> None:
+    """Neither an unknown version nor the unreleased old format is accepted."""
+    with pytest.raises(ValueError, match=r"Unsupported share format version|Invalid share payload"):
+        SharePayload.from_base64(encoded)
+
+
+def test_payload_rejects_truncated_and_trailing_compressed_data() -> None:
+    """A compressed link must contain exactly one complete deflate stream."""
+    encoded = SharePayload(type="track", title="Track").to_base64()
+    body = encoded[1:]
+    compressed = base64.urlsafe_b64decode(body + "=" * (-len(body) % 4))
+    for malformed in (compressed[:-1], compressed + b"trailing"):
+        invalid = "1" + base64.urlsafe_b64encode(malformed).decode().rstrip("=")
+        with pytest.raises(ValueError, match="Invalid compressed share payload"):
+            SharePayload.from_base64(invalid)
+
+
+def test_payload_bounds_both_compressed_and_decompressed_input() -> None:
+    """A tiny deflate bomb cannot allocate an unbounded decoded payload."""
+    oversized = _encode_data({"type": "track", "title": "x" * MAX_DECODED_PAYLOAD_SIZE})
+    with pytest.raises(ValueError, match="too large"):
+        SharePayload.from_base64(oversized)
+    with pytest.raises(ValueError, match="too large"):
+        SharePayload.from_base64("1" + "a" * MAX_ENCODED_PAYLOAD_SIZE)
+    with pytest.raises(ValueError, match="too large"):
+        SharePayload(type="track", title="x" * MAX_DECODED_PAYLOAD_SIZE).to_base64()
+
+
+def test_payload_accepts_exact_decoded_size_limit() -> None:
+    """The maximum decoded JSON length is inclusive."""
+    empty = json.dumps({"type": "track", "title": ""}, separators=(",", ":")).encode()
+    payload = SharePayload(type="track", title="x" * (MAX_DECODED_PAYLOAD_SIZE - len(empty)))
+    assert SharePayload.from_base64(payload.to_base64()) == payload
+    with pytest.raises(ValueError, match="too large"):
+        SharePayload(type="track", title=payload.title + "x").to_base64()
+
+
+@pytest.mark.parametrize("data", [[], None, {"type": "track"}, {"type": "track", "title": 42}])
+def test_payload_rejects_invalid_json_shapes(data: object) -> None:
+    """Successful decompression does not bypass metadata validation."""
+    with pytest.raises((TypeError, ValueError), match=r"Invalid share payload|title is missing"):
+        SharePayload.from_base64(_encode_data(data))
+
+
+def test_payload_roundtrips_unicode_and_compresses_full_urls() -> None:
+    """UTF-8 metadata and complete URLs survive the versioned compressed format."""
+    payload = SharePayload(
+        type="album",
+        title="Björk 日本語 🎵",
+        artist="Björk",
+        art_url="https://is1-ssl.mzstatic.com/image/thumb/cover/1000x1000bb.jpg",
+        provider_urls={
+            "apple_music": "https://music.apple.com/de/album/album-name/1442624385",
+            "spotify": "https://open.spotify.com/album/4Z8W4fKeB5YxbusRsdQVPb",
+        },
+    )
+    encoded = payload.to_base64()
+    assert SharePayload.from_base64(encoded) == payload
+    uncompressed = json.dumps(
+        {
+            "type": payload.type,
+            "title": payload.title,
+            "artist": payload.artist,
+            "art_url": payload.art_url,
+            "provider_urls": payload.provider_urls,
+        },
+        ensure_ascii=False,
+        separators=(",", ":"),
+    ).encode()
+    assert len(encoded) < len(base64.urlsafe_b64encode(uncompressed))

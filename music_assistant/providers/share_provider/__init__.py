@@ -2,11 +2,11 @@
 Share Links plugin for Music Assistant.
 
 Generates and resolves provider-agnostic share links for tracks, albums and
-artists. Links encode item metadata as base64-encoded JSON in the URL
+artists. Links encode compressed, versioned JSON metadata in the URL
 fragment — no server-side storage required.
 
 Link format:
-    https://<share_base_url>/#<base64url-encoded-json>
+    https://<share_base_url>/#1<base64url-encoded-raw-deflate-json>
 """
 
 from __future__ import annotations
@@ -25,8 +25,7 @@ from music_assistant_models.media_items import Album, BrowseFolder, Track
 from music_assistant.helpers.playlists import PlaylistItem
 from music_assistant.models.plugin import PluginProvider
 from music_assistant.providers.share_provider.links import (
-    build_provider_refs,
-    compact_artwork_ref,
+    build_provider_links,
     is_valid_artwork_url,
 )
 from music_assistant.providers.share_provider.payload import (
@@ -110,7 +109,10 @@ class ShareProvider(PluginProvider):
         if isinstance(item, BrowseFolder):
             raise InvalidDataError("Sharing browse folders is not supported")
         payload = await self._build_payload(item)
-        encoded_payload = payload.to_base64()
+        try:
+            encoded_payload = payload.to_base64()
+        except ValueError as err:
+            raise InvalidDataError(str(err)) from err
         base_url = self.config.get_value(CONF_SHARE_BASE_URL) or DEFAULT_SHARE_BASE_URL
         return f"{base_url}/#{encoded_payload}"
 
@@ -120,7 +122,7 @@ class ShareProvider(PluginProvider):
         """
         Resolve a share payload to a local MA item.
 
-        :param encoded: Base64-encoded share payload.
+        :param encoded: Versioned, compressed base64url share payload.
         :param allow_search: Allow text search when no external ID matches.
         :return: The resolved MA item, or None if nothing matched.
         """
@@ -143,15 +145,15 @@ class ShareProvider(PluginProvider):
         mbid: str | None = None
         mb_track: str | None = None
         barcode: str | None = None
-        art_ref: str | None = None
+        art_url: str | None = None
         duration: int | None = None
-        provider_refs: dict[str, str] | None = None
+        provider_urls: dict[str, str] | None = None
 
         if item.media_type not in SUPPORTED_SHARE_MEDIA_TYPES:
             raise InvalidDataError(f"Sharing {media_type} items is not supported")
 
         if item.image and item.image.remotely_accessible and is_valid_artwork_url(item.image.path):
-            art_ref = compact_artwork_ref(item.image.path)
+            art_url = item.image.path
 
         if item.media_type == MediaType.TRACK:
             version_str = getattr(item, "version", None) or None
@@ -164,11 +166,11 @@ class ShareProvider(PluginProvider):
             mb_track = item.get_external_id(ExternalID.MB_TRACK)
             if hasattr(item, "album") and item.album:
                 album_str = item.album.name
-            provider_refs = build_provider_refs(item)
+            provider_urls = build_provider_links(item)
 
         elif item.media_type == MediaType.ARTIST:
             mbid = item.get_external_id(ExternalID.MB_ARTIST)
-            provider_refs = build_provider_refs(item)
+            provider_urls = build_provider_links(item)
 
         elif item.media_type == MediaType.ALBUM:
             version_str = getattr(item, "version", None) or None
@@ -177,7 +179,7 @@ class ShareProvider(PluginProvider):
             if isinstance(item, Album):
                 artist_credits = [artist.name for artist in item.artists] or None
                 artist_str = ", ".join(artist_credits) if artist_credits else None
-            provider_refs = build_provider_refs(item)
+            provider_urls = build_provider_links(item)
 
         return SharePayload(
             type=cast("Literal['track', 'album', 'artist']", media_type),
@@ -190,8 +192,8 @@ class ShareProvider(PluginProvider):
             mbid=mbid,
             mb_track=mb_track,
             barcode=barcode,
-            art_ref=art_ref,
-            provider_refs=provider_refs or None,
+            art_url=art_url,
+            provider_urls=provider_urls or None,
             duration=duration,
         )
 

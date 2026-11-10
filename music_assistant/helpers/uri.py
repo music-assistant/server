@@ -262,12 +262,15 @@ def _parse_ytmusic_url(path: list[str], query: dict[str, list[str]]) -> tuple[Me
     """Parse the path and query of a YouTube Music share URL."""
     # https://music.youtube.com/channel/{channel_id}
     # https://music.youtube.com/watch?v={video_id}
-    # a release share URL (playlist?list=OLAK5uy_...) names no album browse id, so it
-    # is unsupported like any other unknown path
     if path[0] == "channel":
         return (MediaType.ARTIST, "ytmusic", path[1])
     if path[0] == "watch" and (video_id := query.get("v", [""])[0]):
         return (MediaType.TRACK, "ytmusic", video_id)
+    if path[0] == "browse" and path[1].startswith("MPRE"):
+        return (MediaType.ALBUM, "ytmusic", path[1])
+    if path[0] == "playlist" and (playlist_id := query.get("list", [""])[0]):
+        media_type = MediaType.ALBUM if playlist_id.startswith("OLAK5uy_") else MediaType.PLAYLIST
+        return (media_type, "ytmusic", playlist_id)
     raise KeyError(path[0])
 
 

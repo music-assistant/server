@@ -93,6 +93,18 @@ SPOTIFY_ID = "4Z8W4fKeB5YxbusRsdQVPb"
             "https://music.youtube.com/watch?v=dQw4w9WgXcQ",
             (MediaType.TRACK, "ytmusic", "dQw4w9WgXcQ"),
         ),
+        (
+            "https://music.youtube.com/browse/MPREb_example",
+            (MediaType.ALBUM, "ytmusic", "MPREb_example"),
+        ),
+        (
+            "https://music.youtube.com/playlist?list=OLAK5uy_abc",
+            (MediaType.ALBUM, "ytmusic", "OLAK5uy_abc"),
+        ),
+        (
+            "https://music.youtube.com/playlist?list=PLexample",
+            (MediaType.PLAYLIST, "ytmusic", "PLexample"),
+        ),
         # anything else is a plain stream URL for the builtin provider
         (
             "https://www.discogs.com/artist/3840",
@@ -121,7 +133,9 @@ async def test_parse_uri_share_urls(url: str, expected: tuple[MediaType, str, st
         "https://tidal.com/browse/track/",
         "https://www.qobuz.com/us-en/label/xl-recordings/1234",
         "https://www.qobuz.com/gb-en/interpreter/whitesnake/download-streaming-albums",
-        "https://music.youtube.com/playlist?list=OLAK5uy_abc",
+        "https://music.youtube.com/playlist?list=",
+        "https://music.youtube.com/browse/",
+        "https://music.youtube.com/browse/not-an-album",
         "https://music.apple.com/gb",
         "https://www.deezer.com/artist/not-a-number",
     ],
@@ -144,6 +158,9 @@ async def test_parse_uri_rejects_truncated_or_unsupported_share_urls(url: str) -
         ("https://www.qobuz.com/us-en/album/in-rainbows-radiohead/0634904032432", "qobuz"),
         ("https://www.qobuz.com/gb-en/interpreter/whitesnake/download-streaming-albums", None),
         ("https://music.youtube.com/channel/UCr_iyUANcn9OX_yy9piYoLw", "ytmusic"),
+        ("https://music.youtube.com/browse/MPREb_example", "ytmusic"),
+        ("https://music.youtube.com/playlist?list=OLAK5uy_abc", "ytmusic"),
+        ("https://music.youtube.com/playlist?list=PLexample", "ytmusic"),
         ("https://www.discogs.com/release/1157205", None),
         ("https://www.wikidata.org/wiki/Q862203", None),
         ("https://radiohead.bandcamp.com/album/in-rainbows", None),

@@ -5,17 +5,22 @@ from __future__ import annotations
 import base64
 import binascii
 import json
+import re
+import zlib
 from dataclasses import asdict, dataclass
 from typing import Literal
 
 from music_assistant_models.enums import MediaType
 
 from music_assistant.providers.share_provider.links import (
-    expand_artwork_ref,
-    expand_provider_ref,
+    is_valid_artwork_url,
+    is_valid_provider_link,
 )
 
 SUPPORTED_SHARE_MEDIA_TYPES = frozenset({MediaType.TRACK, MediaType.ALBUM, MediaType.ARTIST})
+SHARE_FORMAT_VERSION = "1"
+MAX_ENCODED_PAYLOAD_SIZE = 65536
+MAX_DECODED_PAYLOAD_SIZE = 65536
 
 
 @dataclass
@@ -31,23 +36,48 @@ class SharePayload:
     mbid: str | None = None
     mb_track: str | None = None
     barcode: str | None = None
-    art_ref: str | None = None
-    provider_refs: dict[str, str] | None = None
+    art_url: str | None = None
+    provider_urls: dict[str, str] | None = None
     version: str | None = None
     duration: int | None = None
 
     def to_base64(self) -> str:
-        """Encode payload as URL-safe base64 JSON."""
+        """Encode a versioned, raw-deflated JSON payload as URL-safe base64."""
         data = _drop_none(asdict(self))
-        return base64.urlsafe_b64encode(json.dumps(data, separators=(",", ":")).encode()).decode()
+        raw = json.dumps(data, separators=(",", ":"), ensure_ascii=False).encode()
+        if len(raw) > MAX_DECODED_PAYLOAD_SIZE:
+            raise ValueError("Share payload is too large")
+        compressor = zlib.compressobj(9, zlib.DEFLATED, -15)
+        compressed = compressor.compress(raw) + compressor.flush()
+        encoded = SHARE_FORMAT_VERSION + base64.urlsafe_b64encode(compressed).decode().rstrip("=")
+        if len(encoded) > MAX_ENCODED_PAYLOAD_SIZE:
+            raise ValueError("Share payload is too large")
+        return encoded
 
     @classmethod
     def from_base64(cls, encoded: str) -> SharePayload:
-        """Decode payload from URL-safe base64 JSON."""
+        """Decode a versioned, raw-deflated JSON payload from URL-safe base64."""
+        if not isinstance(encoded, str) or not encoded.startswith(SHARE_FORMAT_VERSION):
+            raise ValueError("Unsupported share format version")
+        if len(encoded) > MAX_ENCODED_PAYLOAD_SIZE:
+            raise ValueError("Share payload is too large")
+        body = encoded[1:]
+        if not re.fullmatch(r"[A-Za-z0-9_-]+", body):
+            raise ValueError("Invalid share payload")
         try:
-            padded = encoded + "=" * (-len(encoded) % 4)
-            data = json.loads(base64.b64decode(padded, altchars=b"-_", validate=True))
-        except (binascii.Error, ValueError) as err:
+            padded = body + "=" * (-len(body) % 4)
+            compressed = base64.b64decode(padded, altchars=b"-_", validate=True)
+            decompressor = zlib.decompressobj(-15)
+            raw = decompressor.decompress(compressed, MAX_DECODED_PAYLOAD_SIZE + 1)
+        except (binascii.Error, zlib.error) as err:
+            raise ValueError("Invalid share payload") from err
+        if len(raw) > MAX_DECODED_PAYLOAD_SIZE:
+            raise ValueError("Share payload is too large")
+        if not decompressor.eof or decompressor.unused_data or decompressor.unconsumed_tail:
+            raise ValueError("Invalid compressed share payload")
+        try:
+            data = json.loads(raw)
+        except ValueError as err:
             raise ValueError("Invalid share payload") from err
         if not isinstance(data, dict):
             raise TypeError("Invalid share payload")
@@ -79,11 +109,11 @@ class SharePayload:
         share_duration = data.get("duration")
         if share_duration is not None and (type(share_duration) is not int or share_duration < 0):
             raise ValueError("Invalid share track duration")
-        art_ref = data.get("art_ref")
-        if not isinstance(art_ref, str) or expand_artwork_ref(art_ref) is None:
-            art_ref = None
-        provider_refs = _validated_provider_refs(
-            data.get("provider_refs"), "Invalid share provider references"
+        art_url = data.get("art_url")
+        if not isinstance(art_url, str) or not is_valid_artwork_url(art_url):
+            art_url = None
+        provider_urls = _validated_provider_urls(
+            data.get("provider_urls"), "Invalid share provider URLs"
         )
         return cls(
             type=data["type"],
@@ -96,13 +126,13 @@ class SharePayload:
             mbid=data.get("mbid"),
             mb_track=data.get("mb_track"),
             barcode=data.get("barcode"),
-            art_ref=art_ref,
-            provider_refs=provider_refs,
+            art_url=art_url,
+            provider_urls=provider_urls,
             duration=share_duration,
         )
 
 
-def _validated_provider_refs(value: object, error_message: str) -> dict[str, str] | None:
+def _validated_provider_urls(value: object, error_message: str) -> dict[str, str] | None:
     if value is None:
         return None
     if not isinstance(value, dict):
@@ -111,7 +141,7 @@ def _validated_provider_refs(value: object, error_message: str) -> dict[str, str
     for domain, ref in value.items():
         if not isinstance(domain, str) or not isinstance(ref, str):
             raise TypeError(error_message)
-        if expand_provider_ref(domain, ref) is None:
+        if not is_valid_provider_link(domain, ref):
             continue
         refs[domain] = ref
     return refs or None
