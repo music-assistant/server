@@ -158,7 +158,11 @@ from .helpers import (
     pin_code_format,
     speaks_legacy_wire,
 )
-from .playback import ANCHOR_REBASE_SIGNIFICANT_US, SendspinPlaybackSession
+from .playback import (
+    ANCHOR_REBASE_SIGNIFICANT_US,
+    SendspinPlaybackSession,
+    later_item_sample_rate,
+)
 
 # Supported group commands for Sendspin players
 SUPPORTED_GROUP_COMMANDS = [
@@ -188,7 +192,7 @@ _OUTPUT_DELAY_COMMANDS = frozenset({PlayerCommand.SET_OUTPUT_DELAY, PlayerComman
 # Config constants for Sendspin audio format
 CONF_PREFERRED_SENDSPIN_FORMAT = "preferred_sendspin_format"
 SENDSPIN_FORMAT_AUTOMATIC = "automatic"
-# Every item of a session is sent at the session sample rate, so a crossfade never spans two.
+# A crossfade is mixed at one sample rate before it reaches a Sendspin client.
 _CROSSFADE_DIFFERENT_SAMPLE_RATES_HIDDEN = ConfigEntry.from_dict(
     {**CONF_ENTRY_CROSSFADE_DIFFERENT_SAMPLE_RATES.to_dict(), "hidden": True}
 )
@@ -1518,7 +1522,7 @@ class SendspinPlayer(SendspinBasePlayer):
     control_features_pinned: bool = False
     # stops taking the volume reports of the client before the protocol follows it itself
     _stop_taking_volume_reports: Callable[[], None] | None = None
-    # sample rate an automatic Sendspin format follows, set by the last playback session
+    # sample rate an automatic Sendspin format follows, set by the item the session sends
     _session_sample_rate: int | None = None
     # bit depth a lossless output of that session has, None when it has no first item: a
     # bridge reads it
@@ -1541,8 +1545,8 @@ class SendspinPlayer(SendspinBasePlayer):
             PlayerFeature.MULTI_DEVICE_DSP,
         }
         if not provider.server_api.allow_noncompliant_clients:
-            # Legacy clients keep the flow stream, which restarts where the sample rate
-            # setting of a player asks for another rate.
+            # Items played one by one switch format within the stream, which legacy
+            # clients cannot follow.
             self._attr_supported_features |= {
                 PlayerFeature.ENQUEUE,
                 PlayerFeature.GAPLESS_PLAYBACK,
@@ -1920,42 +1924,54 @@ class SendspinPlayer(SendspinBasePlayer):
 
     async def follow_session_sample_rate(
         self,
-        start_streamdetails: StreamDetails | None,
+        item_streamdetails: StreamDetails | None,
         *,
         crossfade_enabled: bool = False,
         overlay_active: bool = False,
+        later_item: bool = False,
     ) -> None:
         """
-        Match an automatic Sendspin format to the sample rate of a new playback session.
+        Match an automatic Sendspin format to the sample rate of the item the session sends.
 
-        The rate follows the player's sample rate setting for the first item of the session.
-        Without a first item, the client's own default format is used.
+        The rate follows the player's sample rate setting for that item.
+        Without an item, the client's own default format is used.
         An explicitly configured Sendspin format keeps its sample rate; a bridge may play it
         in fewer bits when the audio of the session has no more.
 
-        :param start_streamdetails: Stream details of the first item of the session, if any.
+        :param item_streamdetails: Stream details of the item the session sends, if any.
         :param crossfade_enabled: Whether the session blends the audio of its items.
         :param overlay_active: Whether an audio overlay is mixed into the session.
+        :param later_item: The item follows another one this player played in the session.
         """
-        if start_streamdetails is None:
+        if later_item and any(
+            isinstance(role, BridgePlayerRole) for role in self.api.roles_by_family("player")
+        ):
+            # a bridge restarts its stream to change formats, so it keeps the session's first one
+            return
+        if item_streamdetails is None:
             self._session_sample_rate = None
             self.session_bit_depth = None
         else:
             pcm_format = await self.mass.streams.audio.select_flow_pcm_format(
                 self,
-                start_streamdetails=start_streamdetails,
+                start_streamdetails=item_streamdetails,
                 crossfade_enabled=crossfade_enabled,
                 overlay_active=overlay_active,
             )
-            self._session_sample_rate = pcm_format.sample_rate
+            sample_rate = pcm_format.sample_rate
+            if later_item and self._session_sample_rate is not None:
+                sample_rate = later_item_sample_rate(
+                    self.config, sample_rate, self._session_sample_rate
+                )
+            self._session_sample_rate = sample_rate
             # the codec only stands for a lossless one here
             output_format = await self.mass.streams.audio.get_output_format(
                 "flac",
                 self,
-                pcm_format.sample_rate,
+                sample_rate,
                 pcm_format.bit_depth,
-                media_type=start_streamdetails.media_type,
-                source_bit_depth=start_streamdetails.audio_format.bit_depth,
+                media_type=item_streamdetails.media_type,
+                source_bit_depth=item_streamdetails.audio_format.bit_depth,
             )
             self.session_bit_depth = output_format.bit_depth
         await self._apply_preferred_format()

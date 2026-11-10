@@ -7,6 +7,7 @@ import time
 from collections import deque
 from contextlib import suppress
 from dataclasses import dataclass, field
+from itertools import groupby
 from typing import TYPE_CHECKING, Any, cast
 from uuid import UUID, uuid4
 
@@ -25,7 +26,7 @@ from music_assistant.constants import (
 )
 from music_assistant.controllers.streams.audio import overlay_mixed_in
 from music_assistant.controllers.streams.audio_processing import get_media_session_id
-from music_assistant.helpers.audio import arriving_audio_format, iter_pcm_slices
+from music_assistant.helpers.audio import arriving_audio_format, iter_pcm_slices, resample_pcm_audio
 from music_assistant.helpers.ffmpeg import FFMpeg
 from music_assistant.helpers.util import import_module_in_thread
 from music_assistant.models.player import PlayerMedia
@@ -39,8 +40,10 @@ from music_assistant.providers.sendspin.bridge_role import (
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator, Awaitable, Callable, Coroutine, Iterable
 
+    from music_assistant_models.config_entries import PlayerConfig
     from music_assistant_models.streamdetails import StreamDetails
 
+    from music_assistant.controllers.streams.audio_processing import AudioOutputPlan
     from music_assistant.controllers.streams.controller import AudioSourceStream
     from music_assistant.helpers.dsp import ComplexFilter
 
@@ -231,12 +234,15 @@ class _HistoryChunk:
     duration_us: int
     pcm: bytes
     timeline_start_us: int
+    pcm_format: AudioFormat
 
 
 @dataclass(slots=True)
 class _PendingChunk:
     pcm: bytes
     duration_us: int
+    # the later item whose first chunk this is
+    starts_item: PlayerMedia | None = None
 
 
 @dataclass(slots=True)
@@ -334,16 +340,16 @@ class SendspinPlaybackSession:
         self._preassigned_channels: dict[str, UUID] = {}
         self._mapping_dirty = True
         self._cancel_requested = False
-        # PCM formats are session-scoped and refreshed at the start of every
-        # _run_playback: the wire/MA-side rate follows the source within the range of
-        # rates the members play (see _select_session_pcm_formats), F32 is always used
-        # internally for DSP headroom.
+        # PCM formats are refreshed at the start of every _run_playback, and at each
+        # later item when items keep their own format: the wire/MA-side rate follows the
+        # source within the range of rates the members play (see _select_session_pcm_formats),
+        # F32 is always used internally for DSP headroom.
         self._pcm_format: AudioFormat = _DEFAULT_PCM_FORMAT
         self._sendspin_pcm_format: SendspinAudioFormat = _DEFAULT_SENDSPIN_PCM_FORMAT
         self._queue_id: str | None = None
         self._queue_session_id: str | None = None
-        # stream details of the session's first item, which the session sample rate follows
-        self._start_streamdetails: StreamDetails | None = None
+        # stream details of the item the session sends, which the players' sample rate follows
+        self._item_streamdetails: StreamDetails | None = None
         # whether the session blends the audio of its items, and whether it mixes an overlay in
         self._start_mixes: tuple[bool, bool] = (False, False)
         # the session's items in play order, each with where its audio starts in the session audio
@@ -641,7 +647,7 @@ class SendspinPlaybackSession:
         """Start dedicated join catchup processor fed from committed history."""
         async with self._state_lock:
             playback_active = self._playback_running and self._push_stream is not None
-        if not playback_active:
+        if not playback_active or not self._is_member(player_id):
             return
 
         pipeline = await self._sync_member_pipeline(player_id)
@@ -651,7 +657,8 @@ class SendspinPlaybackSession:
         await self._stop_join_catchup(player_id)
 
         ffmpeg_obj = self._create_member_ffmpeg(pipeline.config.filter_params)
-        processor = _BufferedFfmpegProcessor(ffmpeg_obj, self._pcm_format)
+        pcm_format = self._pcm_format
+        processor = _BufferedFfmpegProcessor(ffmpeg_obj, pcm_format)
         await processor.start()
         # Bounded queue sized to hold the full buffer duration with some headroom.
         queue_size = (_PRODUCER_BUFFER_LIMIT_US // _PRODUCER_SLICE_US) + _PRODUCER_BACKLOG_SIZE
@@ -681,28 +688,33 @@ class SendspinPlaybackSession:
         async def _drainer() -> None:
             await processor.drain_forever()
 
+        stale = False
         try:
             async with self._state_lock:
-                writer_task = asyncio.create_task(_writer())
-                drainer_task = asyncio.create_task(_drainer())
-                self._attach_task_exception_logger(writer_task, f"join_writer_{player_id}")
-                self._attach_task_exception_logger(drainer_task, f"join_drainer_{player_id}")
+                # a format switch or a leave while the processor started makes it stale
+                stale = self._pcm_format != pcm_format or not self._is_member(player_id)
+                if not stale:
+                    writer_task = asyncio.create_task(_writer())
+                    drainer_task = asyncio.create_task(_drainer())
+                    self._attach_task_exception_logger(writer_task, f"join_writer_{player_id}")
+                    self._attach_task_exception_logger(drainer_task, f"join_drainer_{player_id}")
 
-                state = _JoinCatchupState(
-                    processor=processor,
-                    input_queue=input_queue,
-                    writer_task=writer_task,
-                    drainer_task=drainer_task,
-                    history_end_us=history_end_us,
-                )
-                self._join_catchup[player_id] = state
-                # Start eagerly so the feed holds the write lock before any commit fanout.
-                snapshot_task = asyncio.create_task(
-                    self._feed_join_history(player_id, state, history_snapshot), eager_start=True
-                )
-                self._attach_task_exception_logger(snapshot_task, f"join_snapshot_{player_id}")
-                state.snapshot_task = snapshot_task
-                registered = True
+                    state = _JoinCatchupState(
+                        processor=processor,
+                        input_queue=input_queue,
+                        writer_task=writer_task,
+                        drainer_task=drainer_task,
+                        history_end_us=history_end_us,
+                    )
+                    self._join_catchup[player_id] = state
+                    # Start eagerly so the feed holds the write lock before any commit fanout.
+                    snapshot_task = asyncio.create_task(
+                        self._feed_join_history(player_id, state, history_snapshot),
+                        eager_start=True,
+                    )
+                    self._attach_task_exception_logger(snapshot_task, f"join_snapshot_{player_id}")
+                    state.snapshot_task = snapshot_task
+                    registered = True
         except BaseException:
             if not registered:
                 # If registered, cleanup is handled via _stop_join_catchup/_clear_join_catchup.
@@ -719,6 +731,11 @@ class SendspinPlaybackSession:
                 with suppress(Exception):
                     await processor.close()
             raise
+        if stale:
+            with suppress(Exception):
+                await processor.close()
+            if self._pcm_format != pcm_format and self._is_member(player_id):
+                await self._start_join_catchup(player_id)
 
     async def _feed_join_history(
         self,
@@ -731,7 +748,7 @@ class SendspinPlaybackSession:
         async with state.write_lock:
             first_history_start_us: int | None = None
             previous_end_us: int | None = None
-            for hist_chunk in history_snapshot:
+            for hist_chunk in await self._history_in_session_format(history_snapshot):
                 if first_history_start_us is None:
                     first_history_start_us = hist_chunk.start_time_us
                     async with self._state_lock:
@@ -751,24 +768,65 @@ class SendspinPlaybackSession:
                     if current is not None and current.processor is processor:
                         current.fed_until_us = previous_end_us
 
+    async def _history_in_session_format(self, history: list[_HistoryChunk]) -> list[_HistoryChunk]:
+        """
+        Return history with the audio sent before a format switch converted to the session format.
+
+        :param history: Committed history chunks, oldest first.
+        """
+        converted: list[_HistoryChunk] = []
+        for pcm_format, group in groupby(history, key=lambda chunk: chunk.pcm_format):
+            chunks = list(group)
+            if pcm_format == self._pcm_format:
+                converted.extend(chunks)
+                continue
+            start_us = chunks[0].start_time_us
+            frame_size = pcm_format.bit_depth // 8 * pcm_format.channels
+            pcm = bytearray()
+            previous_end_us = start_us
+            for chunk in chunks:
+                gap_frames = round(
+                    (chunk.start_time_us - previous_end_us) * pcm_format.sample_rate / 1_000_000
+                )
+                pcm += bytes(max(0, gap_frames) * frame_size)
+                pcm += chunk.pcm
+                previous_end_us = chunk.start_time_us + chunk.duration_us
+            resampled = b"".join(
+                [
+                    resampled_chunk
+                    async for resampled_chunk in resample_pcm_audio(
+                        bytes(pcm), pcm_format, self._pcm_format
+                    )
+                ]
+            )
+            converted.append(
+                _HistoryChunk(
+                    start_time_us=start_us,
+                    duration_us=previous_end_us - start_us,
+                    pcm=resampled,
+                    timeline_start_us=chunks[0].timeline_start_us,
+                    pcm_format=self._pcm_format,
+                )
+            )
+        return converted
+
     async def _stop_join_catchup(self, player_id: str) -> None:
         """Stop and remove dedicated join catchup processor for one player."""
         async with self._state_lock:
             state = self._join_catchup.pop(player_id, None)
         if state is None:
             return
+        tasks = [state.writer_task, state.drainer_task]
         if state.snapshot_task is not None:
-            state.snapshot_task.cancel()
-            with suppress(asyncio.CancelledError, Exception):
-                await state.snapshot_task
-        state.writer_task.cancel()
-        with suppress(asyncio.CancelledError, Exception):
-            await state.writer_task
-        state.drainer_task.cancel()
-        with suppress(asyncio.CancelledError, Exception):
-            await state.drainer_task
-        with suppress(Exception):
-            await state.processor.close()
+            tasks.append(state.snapshot_task)
+        for task in tasks:
+            task.cancel()
+        try:
+            # a cancel of the caller still reaches it through gather
+            await asyncio.gather(*tasks, return_exceptions=True)
+        finally:
+            with suppress(Exception):
+                await state.processor.close()
 
     async def _promote_join_catchup_processor(
         self,
@@ -851,10 +909,10 @@ class SendspinPlaybackSession:
             # refresh the session PCM format from the members' preferred outputs before
             # building any pipelines; member ffmpeg pipelines and pre-computed filter
             # params depend on this rate so the cache must also be cleared
-            self._start_streamdetails = (
+            self._item_streamdetails = (
                 source_stream.streamdetails
                 if source_stream is not None
-                else self._get_start_streamdetails(media)
+                else self._get_item_streamdetails(media)
             )
             self._start_mixes = self._get_start_mixes(media)
             await self._follow_session_sample_rate(
@@ -916,6 +974,8 @@ class SendspinPlaybackSession:
                 self._opening_item = item_media
                 try:
                     await _produce_item_chunks(item_media)
+                    # A source shorter than the start queue plays what it has.
+                    start_queued.set()
                 finally:
                     # an item that ends without audio still takes its turn, so the queue moves on
                     self._opening_item = None
@@ -987,11 +1047,14 @@ class SendspinPlaybackSession:
 
         async def _produce_item_chunks(item_media: PlayerMedia) -> None:
             nonlocal pending_duration_us, produced_us
+            starts_item = item_media if self._item_starts else None
             self._item_starts.append((produced_us, item_media))
             audio_source: AsyncGenerator[bytes] | None = None
             completed = False
             try:
                 await self._load_item_streamdetails(item_media)
+                if starts_item is not None:
+                    await _switch_to_item_format(item_media)
                 audio_source = (
                     source_stream.stream(self._pcm_format)
                     if source_stream is not None
@@ -1014,8 +1077,10 @@ class SendspinPlaybackSession:
                         if duration_us <= 0:
                             continue
                         await self._refresh_member_mappings()
-                        pending = _PendingChunk(pcm=slice_chunk, duration_us=duration_us)
-                        self._opening_item = None
+                        pending = _PendingChunk(
+                            pcm=slice_chunk, duration_us=duration_us, starts_item=starts_item
+                        )
+                        starts_item = self._opening_item = None
                         await pending_chunks.put(pending)
                         pending_backlog.append(pending)
                         pending_duration_us += duration_us
@@ -1046,8 +1111,6 @@ class SendspinPlaybackSession:
                                     result,
                                 )
                 completed = True
-                # A source shorter than the start queue plays what it has.
-                start_queued.set()
             except MusicAssistantError as err:
                 # an item that fails after another one keeps that one's audio playing
                 if len(self._item_starts) == 1:
@@ -1061,6 +1124,35 @@ class SendspinPlaybackSession:
                     except asyncio.CancelledError:
                         await close_task
                         raise
+
+        async def _switch_to_item_format(item_media: PlayerMedia) -> None:
+            if (streamdetails := self._get_item_streamdetails(item_media)) is None:
+                return
+            sample_rate = await self._later_item_sample_rate(streamdetails)
+            if sample_rate == self._pcm_format.sample_rate:
+                return
+            pcm_format, sendspin_pcm_format = _session_pcm_formats(sample_rate)
+            # the member DSP processes run at one rate, so they play out and restart at the new one
+            # and a join catch-up promoted while they drain gets its EOF too
+            self._producer_eof_sent = True
+            await self._write_eof_to_member_pipelines()
+            await _commit_queued_chunks()
+            async with self._state_lock:
+                self._pcm_format = pcm_format
+                self._sendspin_pcm_format = sendspin_pcm_format
+                self._producer_eof_sent = False
+            await self._restart_member_pipelines()
+            self.player.logger.debug(
+                "Sendspin session PCM format: %d Hz / F32", pcm_format.sample_rate
+            )
+
+        async def _commit_queued_chunks() -> None:
+            drained = asyncio.create_task(pending_chunks.join())
+            try:
+                await asyncio.wait({drained, commit_task}, return_when=asyncio.FIRST_COMPLETED)
+            finally:
+                drained.cancel()
+                await asyncio.gather(drained, return_exceptions=True)
 
         anchor_move_task_id = f"sendspin_anchor_move_{uuid4().hex}"
         first_heard_task_id = f"sendspin_first_heard_{uuid4().hex}"
@@ -1206,6 +1298,7 @@ class SendspinPlaybackSession:
                 if pending is None:
                     source_ended = True
                     break
+                pending_chunks.task_done()
                 pending_backlog.popleft()
                 pending_duration_us = max(0, pending_duration_us - pending.duration_us)
                 chunks.append(pending)
@@ -1236,6 +1329,14 @@ class SendspinPlaybackSession:
                 if commit_count == 0 and not self._join_catchup:
                     pending, source_ended = _take_start_queue(pending)
                 await self._inject_ready_join_historical(push_stream, pending_backlog, pending.pcm)
+                if pending.starts_item is not None:
+                    client_ids = [client.client_id for client in self.player.api.group.clients]
+                    if streamdetails := self._get_item_streamdetails(pending.starts_item):
+                        # each player's new format starts where the audio it was sent ends
+                        self._item_streamdetails = streamdetails
+                        await self._follow_session_sample_rate(client_ids, later_item=True)
+                    for client_id in client_ids:
+                        self._get_output_plan(client_id, pending.starts_item.queue_item_id)
                 push_stream.prepare_audio(
                     pending.pcm, self._sendspin_pcm_format, channel_id=MAIN_CHANNEL
                 )
@@ -1286,6 +1387,7 @@ class SendspinPlaybackSession:
                     pcm=pending.pcm,
                     # aiosendspin moves the schedule forward when the producer falls behind.
                     timeline_start_us=int(commit_start_us) - self._produced_audio_us,
+                    pcm_format=self._pcm_format,
                 )
                 async with self._state_lock:
                     # A commit in flight when the next playback replaced this stream still
@@ -1328,6 +1430,7 @@ class SendspinPlaybackSession:
                 previous_commit_called_us = commit_called_us
                 await _report_timeline(anchor_us, commit_now_us)
                 await self._fanout_history_chunk_to_join_processors(committed_history_chunk)
+                pending_chunks.task_done()
 
         commit_task = asyncio.create_task(_commit_pending_chunks())
         self._attach_task_exception_logger(commit_task, "commit_pending_chunks")
@@ -1607,6 +1710,9 @@ class SendspinPlaybackSession:
             if config.requires_transform:
                 ffmpeg_obj = self._create_member_ffmpeg(config.filter_params)
                 processor = _BufferedFfmpegProcessor(ffmpeg_obj, self._pcm_format)
+                if self._push_stream is not None and not self.player.requires_flow_mode:
+                    # a player switching format resumes from this cache where its sent audio ends
+                    self._push_stream.enable_pcm_cache_for_channel(channel_id)
                 start_processor = processor
             pipeline = _MemberPipeline(
                 player_id=player_id,
@@ -1652,53 +1758,62 @@ class SendspinPlaybackSession:
             # a client that renders nothing takes the audio as it is
             return _PipelineConfig(requires_transform=False, filter_params=())
         # a speaker of a multi-channel player plays with the settings of that player
-        protocol_id, channel, with_subwoofer = provider.speaker_output(player_id)
+        protocol_id = provider.speaker_output(player_id)[0]
         # the DSP settings are those of the player the member's protocol belongs to
         member = self.player.mass.players.get_player_by_protocol(protocol_id)
         dsp_config = self.player.mass.config.get_player_dsp_config(
             member.player_id if member else protocol_id
         )
         dsp_enabled = bool(dsp_config.enabled)
-        try:
-            output_format = self._get_member_output_format(player_id)
-            output_plan = self.player.mass.streams.audio.get_player_output_plan(
-                protocol_id,
-                self._pcm_format,
-                output_format,
-                handoff_format=self._pcm_format,
-                channel=channel,
-                with_subwoofer=with_subwoofer,
-            )
-            filter_params = tuple(output_plan.filter_params)
-        except Exception as err:  # noqa: BLE001 - any failure means no dedicated dsp channel
-            self.player.logger.debug("Could not build the output plan for %s: %s", player_id, err)
-            filter_params = ()
-            output_plan = None
+        # the session format is that of the newest item opened, and a flow stream has one
+        # output for all the items it carries
+        newest = self._item_starts[-1][1] if self._item_starts else None
+        queue_item_id = (
+            newest.queue_item_id if newest is not None and self._takes_handovers(newest) else None
+        )
+        output_plan = self._get_output_plan(player_id, queue_item_id)
+        filter_params = tuple(output_plan.filter_params) if output_plan is not None else ()
         # a ComplexFilter (e.g. convolution) is never a plain string, so it always counts
         custom_filter_graph = any(
             not isinstance(param, str) or param.strip() for param in filter_params
         )
         requires_transform = dsp_enabled or custom_filter_graph
-        if (
-            output_plan is not None
-            # a subwoofer plays along with the main speakers, which report for their player
-            and channel != SpeakerChannel.LFE
-            and self._queue_id is not None
-            and self._queue_session_id is not None
-        ):
-            self.player.mass.streams.audio_processing.update_output(
-                output_plan.output_details.player_ids[0],
-                output_plan,
-                queue_id=self._queue_id,
-                session_id=self._queue_session_id,
-            )
         return _PipelineConfig(
             requires_transform=requires_transform,
             filter_params=filter_params,
         )
 
-    def _get_start_streamdetails(self, media: PlayerMedia) -> StreamDetails | None:
-        """Return the resolved stream details of the queue item a session starts with."""
+    def _get_output_plan(self, player_id: str, queue_item_id: str | None) -> AudioOutputPlan | None:
+        """
+        Return a player's output plan at the session format, and report it for a queue item.
+
+        :param player_id: The player the plan is for.
+        :param queue_item_id: The queue item the plan is reported for, or None for the session.
+        """
+        provider = cast("SendspinProvider", self.player.provider)
+        if provider.is_silent_client(player_id):
+            return None
+        # a speaker of a multi-channel player plays with the settings of that player
+        protocol_id, channel, with_subwoofer = provider.speaker_output(player_id)
+        try:
+            return self.player.mass.streams.audio.get_player_output_plan(
+                protocol_id,
+                self._pcm_format,
+                self._get_member_output_format(player_id),
+                handoff_format=self._pcm_format,
+                # a subwoofer plays along with the main speakers, which report for their player
+                queue_id=self._queue_id if channel != SpeakerChannel.LFE else None,
+                session_id=self._queue_session_id,
+                queue_item_id=queue_item_id,
+                channel=channel,
+                with_subwoofer=with_subwoofer,
+            )
+        except Exception as err:  # noqa: BLE001 - any failure means no dedicated dsp channel
+            self.player.logger.debug("Could not build the output plan for %s: %s", player_id, err)
+            return None
+
+    def _get_item_streamdetails(self, media: PlayerMedia) -> StreamDetails | None:
+        """Return the resolved stream details of a queue item of this session."""
         if not media.source_id or not media.queue_item_id:
             return None
         queue_item = self.player.mass.player_queues.get_item(media.source_id, media.queue_item_id)
@@ -1732,8 +1847,15 @@ class SendspinPlaybackSession:
         if queue_item is not None and queue_item.streamdetails is None:
             await self.player.mass.streams.audio.get_stream_details(queue_item=queue_item)
 
-    async def _follow_session_sample_rate(self, player_ids: Iterable[str]) -> None:
-        """Let the given players' Sendspin formats follow the sample rate of this session."""
+    async def _follow_session_sample_rate(
+        self, player_ids: Iterable[str], *, later_item: bool = False
+    ) -> None:
+        """
+        Let the given players' Sendspin formats follow the sample rate of this session.
+
+        :param player_ids: The players to update.
+        :param later_item: The session's item follows another one the players played.
+        """
         from .player import SendspinPlayer  # noqa: PLC0415 - player.py imports this module
 
         crossfade_enabled, overlay_active = self._start_mixes
@@ -1741,9 +1863,10 @@ class SendspinPlaybackSession:
             player = self.player.provider.get_protocol(player_id)
             if isinstance(player, SendspinPlayer):
                 await player.follow_session_sample_rate(
-                    self._start_streamdetails,
+                    self._item_streamdetails,
                     crossfade_enabled=crossfade_enabled,
                     overlay_active=overlay_active,
+                    later_item=later_item,
                 )
 
     def _select_session_pcm_formats(self) -> tuple[AudioFormat, SendspinAudioFormat]:
@@ -1764,24 +1887,24 @@ class SendspinPlaybackSession:
             if not provider.is_silent_client(client.client_id)
             and (rate := self._get_member_sample_rate(client.client_id))
         ]
-        streamdetails = self._start_streamdetails
+        streamdetails = self._item_streamdetails
         sample_rate = self._pick_session_sample_rate(
             arriving_audio_format(streamdetails).sample_rate if streamdetails else 0,
             member_rates,
         )
-        pcm_format = AudioFormat(
-            content_type=ContentType.PCM_F32LE,
-            sample_rate=sample_rate,
-            bit_depth=32,
-            channels=2,
+        return _session_pcm_formats(sample_rate)
+
+    async def _later_item_sample_rate(self, streamdetails: StreamDetails) -> int:
+        """
+        Return the session sample rate for an item that follows another one in the session.
+
+        :param streamdetails: Stream details of the item.
+        """
+        return later_item_sample_rate(
+            self.player.config,
+            await self.get_session_sample_rate(streamdetails),
+            self._pcm_format.sample_rate,
         )
-        sendspin_pcm_format = SendspinAudioFormat(
-            sample_rate=sample_rate,
-            bit_depth=32,
-            channels=2,
-            sample_type="float",
-        )
-        return pcm_format, sendspin_pcm_format
 
     def _flow_restart_of_this_playback(self) -> Callable[[StreamDetails], Awaitable[bool]]:
         """
@@ -1944,6 +2067,23 @@ class SendspinPlaybackSession:
             if pipeline.processor is not None:
                 await self._close_member_ffmpeg(pipeline.processor)
 
+    async def _restart_member_pipelines(self) -> None:
+        """Start the member DSP processes and DSP catch-ups over from the next produced audio."""
+        async with self._state_lock:
+            self._pipeline_config_cache.clear()
+            self._mapping_dirty = True
+            joining = list(self._join_catchup)
+        await self._clear_join_catchup()
+        await self._clear_member_pipelines()
+        # a member still catching up starts over in the session's current format
+        for player_id in joining:
+            try:
+                await self._start_join_catchup(player_id)
+            except (MusicAssistantError, OSError) as err:
+                self.player.logger.warning(
+                    "Restarting the DSP catch-up of %s failed: %s", player_id, err
+                )
+
     # -- Push stream -----------------------------------------------------------
 
     def _create_push_stream(self) -> PushStream:
@@ -2007,7 +2147,7 @@ class SendspinPlaybackSession:
             self._timeline_start_us = None
             self._produced_audio_us = 0
             self._history.clear()
-            self._start_streamdetails = None
+            self._item_streamdetails = None
             self._start_mixes = (False, False)
             self._item_starts = []
             # Drop cached DSP decisions so next playback reflects latest config.
@@ -2061,7 +2201,7 @@ class SendspinPlaybackSession:
         if (upcoming := self.upcoming_item()) is None:
             return None, None
         # A crossfade into the item moves its start once its stream starts.
-        streamdetails = self._get_start_streamdetails(upcoming[1])
+        streamdetails = self._get_item_streamdetails(upcoming[1])
         return upcoming[1], None if streamdetails is None else streamdetails.seek_position
 
     def _takes_handovers(self, media: PlayerMedia) -> bool:
@@ -2150,6 +2290,10 @@ class SendspinPlaybackSession:
         samples = max(0, round((duration_us / 1_000_000) * int(self._pcm_format.sample_rate)))
         return b"\x00" * (samples * frame_size)
 
+    def _is_member(self, player_id: str) -> bool:
+        """Return whether a player is a member of this session or joining it."""
+        return player_id in self._members or player_id in self.pending_join_members
+
     def _is_live_source(self, media: PlayerMedia) -> bool:
         """
         Return whether this media plays as a live source.
@@ -2174,6 +2318,44 @@ class SendspinPlaybackSession:
         group_protocol = group_player.own_protocol if group_player else None
         group_media = group_protocol.current_media if group_protocol else None
         return group_media is not None and self._is_live_source(group_media)
+
+
+def later_item_sample_rate(config: PlayerConfig, sample_rate: int, session_sample_rate: int) -> int:
+    """
+    Return the sample rate a session plays a later item at, per a player's sample rate setting.
+
+    :param config: The config of the player whose setting applies.
+    :param sample_rate: The rate a session starting with the item would play at.
+    :param session_sample_rate: The rate the session plays at now.
+    """
+    if (
+        config.get_value(CONF_FLOW_MODE_SAMPLE_RATE, FLOW_MODE_SAMPLE_RATE_SMART)
+        != FLOW_MODE_SAMPLE_RATE_SMART
+    ):
+        return sample_rate
+    # smart switches a session only up, to a higher-rate item
+    return max(sample_rate, session_sample_rate)
+
+
+def _session_pcm_formats(sample_rate: int) -> tuple[AudioFormat, SendspinAudioFormat]:
+    """
+    Return the session PCM format (MA-side + wire) at a sample rate.
+
+    :param sample_rate: The sample rate of the session.
+    """
+    pcm_format = AudioFormat(
+        content_type=ContentType.PCM_F32LE,
+        sample_rate=sample_rate,
+        bit_depth=32,
+        channels=2,
+    )
+    sendspin_pcm_format = SendspinAudioFormat(
+        sample_rate=sample_rate,
+        bit_depth=32,
+        channels=2,
+        sample_type="float",
+    )
+    return pcm_format, sendspin_pcm_format
 
 
 def _to_audio_format(audio_format: SendspinAudioFormat, codec: SendspinAudioCodec) -> AudioFormat:

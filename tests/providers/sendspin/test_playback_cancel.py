@@ -125,7 +125,7 @@ async def test_a_line_in_session_follows_the_source_format(monkeypatch: pytest.M
     followed: list[object] = []
 
     async def follow(_player_ids: object) -> None:
-        followed.append(session._start_streamdetails)
+        followed.append(session._item_streamdetails)
 
     monkeypatch.setattr(session, "_follow_session_sample_rate", follow)
     media = _line_in()

@@ -62,7 +62,7 @@ def _short_session(monkeypatch: pytest.MonkeyPatch) -> SendspinPlaybackSession:
     push_stream.sleep_to_limit_buffer = AsyncMock()
     push_stream.now_us = MagicMock(return_value=CLOCK_NOW_US)
 
-    monkeypatch.setattr(session, "_get_start_streamdetails", MagicMock(return_value=None))
+    monkeypatch.setattr(session, "_get_item_streamdetails", MagicMock(return_value=None))
     monkeypatch.setattr(session, "_follow_session_sample_rate", AsyncMock())
     monkeypatch.setattr(
         session, "_select_session_pcm_formats", MagicMock(return_value=(PCM_FORMAT, MagicMock()))

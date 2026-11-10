@@ -11,16 +11,23 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from aiosendspin.server.audio import AudioFormat as SendspinAudioFormat
+from aiosendspin.server.push_stream import MAIN_CHANNEL
 from music_assistant_models.dsp import DSPConfig
 from music_assistant_models.errors import AudioError
 from music_assistant_models.media_items.audio_format import AudioFormat
 
 from music_assistant.models.player import PlayerMedia
-from music_assistant.providers.sendspin.playback import SendspinPlaybackSession
+from music_assistant.providers.sendspin.playback import (
+    SendspinPlaybackSession,
+    _HistoryChunk,
+    _PipelineConfig,
+)
 from music_assistant.providers.sendspin.player import SendspinPlayer
+from tests.providers.sendspin.test_dsp_channel_alignment import _FifoFFMpeg
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Callable
+    from uuid import UUID
 
 _SAMPLE_RATE = 48_000
 _CHUNK_DURATION_US = 100_000
@@ -33,6 +40,26 @@ _SEND_AHEAD_US = 500_000
 # the sessions here play for well under a second
 _LAST_AUDIO_LEAD_US = _CHUNK_DURATION_US
 _T0 = 10_000_000
+_real_sleep = asyncio.sleep
+
+
+class _TailHoldingFFMpeg(_FifoFFMpeg):
+    """Identity DSP that holds back its last input until stdin closes, like a real ffmpeg."""
+
+    def __init__(self) -> None:
+        super().__init__(None, yielding_writes=False)
+        self._tail = b""
+
+    async def write(self, data: bytes) -> None:
+        tail, self._tail = self._tail, data
+        if tail:
+            await super().write(tail)
+
+    async def write_eof(self) -> None:
+        if self._tail:
+            await super().write(self._tail)
+            self._tail = b""
+        await super().write_eof()
 
 
 class _FakePushStream:
@@ -41,13 +68,20 @@ class _FakePushStream:
     def __init__(self) -> None:
         self._commits = 0
         self.now = _T0 - _SEND_AHEAD_US
+        self.prepared: list[tuple[UUID, int]] = []
+        self.pcm_cached_channels: set[UUID] = set()
         self.is_stopped = False
+        # event loop turns each commit waits for, which lets the producer run ahead
+        self.commit_lag = 0
 
     def set_live_source(self, _live: bool) -> None:
         pass
 
-    def prepare_audio(self, *_args: object, **_kwargs: object) -> None:
-        pass
+    def enable_pcm_cache_for_channel(self, channel_id: UUID) -> None:
+        self.pcm_cached_channels.add(channel_id)
+
+    def prepare_audio(self, _pcm: bytes, audio_format: SendspinAudioFormat, **kwargs: Any) -> None:
+        self.prepared.append((kwargs["channel_id"], audio_format.sample_rate))
 
     async def commit_audio(self) -> int:
         start_us = _T0 + self._commits * _CHUNK_DURATION_US
@@ -56,7 +90,8 @@ class _FakePushStream:
         return start_us
 
     async def sleep_to_limit_buffer(self, _limit_us: int) -> None:
-        pass
+        for _ in range(self.commit_lag):
+            await _real_sleep(0)
 
     def now_us(self) -> int:
         return self.now
@@ -101,6 +136,8 @@ def _player() -> MagicMock:
         session_id=None, queue=SimpleNamespace(flow_mode=False)
     )
     player.api.group.stop = AsyncMock()
+    player.provider.is_silent_client.return_value = False
+    player.provider.speaker_output.side_effect = lambda client_id: (client_id, None, False)
     return player
 
 
@@ -589,3 +626,369 @@ def test_a_repeated_item_follows_its_own_pass_sent_ahead() -> None:
     # once the repeat ends, the pass sent ahead has to make way for the next item
     player.mass.player_queues.get_next_item.return_value = SimpleNamespace(queue_item_id="item-2")
     assert session.set_next_media(_media("item-2")) is False
+
+
+def _formats(sample_rate: int) -> tuple[AudioFormat, SendspinAudioFormat]:
+    return (
+        AudioFormat(sample_rate=sample_rate, bit_depth=32, channels=2),
+        SendspinAudioFormat(sample_rate=sample_rate, bit_depth=32, channels=2, sample_type="float"),
+    )
+
+
+def _two_rates_session(
+    monkeypatch: pytest.MonkeyPatch,
+    player: MagicMock,
+    *,
+    leader_rate: int | None = None,
+) -> tuple[SendspinPlaybackSession, _FakePushStream, list[tuple[int, int, bool]]]:
+    """
+    Build a session that plays a 48 kHz item-1, then a 44.1 kHz item-2.
+
+    :param leader_rate: A rate the leader is pinned at, instead of following each item.
+    :return: The session, its push stream, and each format follow as
+        (commits so far, rate, whether it follows a later item).
+    """
+    player.mass.player_queues.get_next_item.side_effect = _next_item_in(["item-1", "item-2"])
+    player.mass.streams.get_stream.side_effect = lambda media, *_args, **_kwargs: _chunks(
+        3 if media.queue_item_id == "item-1" else 2
+    )
+    session, push_stream = _session(monkeypatch, player)
+    push_stream.commit_lag = 3
+    monkeypatch.setattr(SendspinPlaybackSession, "_wait_for_buffer_drain", AsyncMock())
+    rates = {"item-1": 48_000, "item-2": 44_100}
+    monkeypatch.setattr(
+        session,
+        "_get_item_streamdetails",
+        lambda media: SimpleNamespace(sample_rate=rates[media.queue_item_id], seek_position=0),
+    )
+    monkeypatch.setattr(
+        session,
+        "_select_session_pcm_formats",
+        lambda: _formats(leader_rate or rates["item-1"]),
+    )
+    monkeypatch.setattr(
+        session,
+        "_later_item_sample_rate",
+        AsyncMock(side_effect=lambda streamdetails: leader_rate or streamdetails.sample_rate),
+    )
+    followed: list[tuple[int, int, bool]] = []
+
+    async def _follow(_player_ids: object, *, later_item: bool = False) -> None:
+        item = cast("Any", session._item_streamdetails)
+        followed.append((push_stream._commits, item.sample_rate, later_item))
+
+    monkeypatch.setattr(session, "_follow_session_sample_rate", _follow)
+    return session, push_stream, followed
+
+
+async def test_a_later_item_is_sent_in_its_own_format_from_its_first_chunk(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An item at another rate is sent in its own format from its first chunk on."""
+    first, second = _media("item-1"), _media("item-2")
+    player = _player()
+    player._attr_current_media = first
+    session, push_stream, _ = _two_rates_session(monkeypatch, player)
+    assert session.set_next_media(second)
+
+    await session._run_playback(first)
+
+    requested = [call.args[1].sample_rate for call in player.mass.streams.get_stream.call_args_list]
+    assert requested == [48_000, 44_100]
+    sent_rates = [rate for _, rate in push_stream.prepared]
+    assert sent_rates[:3] == [48_000] * 3
+    assert set(sent_rates[3:]) == {44_100}
+
+
+async def test_a_later_item_switches_format_after_a_start_that_joined_chunks(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A later item switches format once a first commit that joined the start queue is sent."""
+    first, second = _media("item-1"), _media("item-2")
+    player = _player()
+    player._attr_current_media = first
+    session, push_stream, followed = _two_rates_session(monkeypatch, player)
+    monkeypatch.setattr(
+        "music_assistant.providers.sendspin.playback._START_QUEUE_US", 10 * _CHUNK_DURATION_US
+    )
+    assert session.set_next_media(second)
+
+    await asyncio.wait_for(session._run_playback(first), timeout=5)
+
+    rates = [rate for _, rate in push_stream.prepared]
+    # item-1's 3 chunks go out in the first commit, item-2 follows in commits of its own
+    assert rates[0] == 48_000
+    assert set(rates[1:]) == {44_100}
+    assert followed == [(0, 48_000, False), (1, 44_100, True)]
+
+
+async def test_players_follow_a_later_item_only_once_its_first_chunk_is_sent(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Members follow the next item's rate at its first chunk, also while the leader's is pinned."""
+    first, second = _media("item-1"), _media("item-2")
+    player = _player()
+    player._attr_current_media = first
+    session, _, followed = _two_rates_session(monkeypatch, player, leader_rate=48_000)
+    assert session.set_next_media(second)
+
+    await session._run_playback(first)
+
+    # item-2 opens while item-1 is still being sent, and its rate applies after item-1's 3 chunks
+    assert followed == [(0, 48_000, False), (3, 44_100, True)]
+
+
+async def test_each_item_reports_its_own_output_once_the_players_follow_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A later item's output is reported under that item, leaving the playing item's as it is."""
+    first, second = _media("item-1"), _media("item-2")
+    player = _player()
+    player._attr_current_media = first
+    player.api.group.clients = [SimpleNamespace(client_id="leader")]
+    session, _, _ = _two_rates_session(monkeypatch, player)
+    # players take the rate of the item the session sends once they follow it
+    monkeypatch.setattr(
+        session,
+        "_get_member_output_format",
+        lambda _player_id: _formats(cast("Any", session._item_streamdetails).sample_rate)[0],
+    )
+    assert session.set_next_media(second)
+
+    await session._run_playback(first)
+
+    reports = [
+        (call.kwargs["queue_item_id"], call.args[1].sample_rate, call.args[2].sample_rate)
+        for call in player.mass.streams.audio.get_player_output_plan.call_args_list
+    ]
+    assert {report for report in reports if report[0] == "item-1"} == {("item-1", 48_000, 48_000)}
+    assert [report for report in reports if report[0] == "item-2"][-1] == (
+        "item-2",
+        44_100,
+        44_100,
+    )
+
+
+async def test_a_flow_stream_reports_one_output_for_all_its_items(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A flow stream's output is reported for the whole session, not under its first item."""
+    player = _player()
+    player._attr_current_media = _media("item-1")
+    player.mass.player_queues.queue_data_or_none.return_value.queue.flow_mode = True
+    player.mass.streams.get_stream.side_effect = lambda *_args, **_kwargs: _chunks(2)
+    session, _ = _session(monkeypatch, player)
+    monkeypatch.setattr(SendspinPlaybackSession, "_wait_for_buffer_drain", AsyncMock())
+
+    await session._run_playback(player.current_media)
+
+    reports = player.mass.streams.audio.get_player_output_plan.call_args_list
+    assert reports
+    assert {call.kwargs["queue_item_id"] for call in reports} == {None}
+
+
+async def test_member_dsp_restarts_at_the_rate_of_a_later_item(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A member's DSP process is flushed and replaced at the next item's rate, losing no chunk."""
+    first, second = _media("item-1"), _media("item-2")
+    player = _player()
+    player._attr_current_media = first
+    session, push_stream, _ = _two_rates_session(monkeypatch, player)
+    monkeypatch.setattr(
+        session,
+        "_read_pipeline_config",
+        lambda _player_id: _PipelineConfig(requires_transform=True, filter_params=("volume=1.0",)),
+    )
+    ffmpegs: list[tuple[_TailHoldingFFMpeg, int]] = []
+    flushed_when_replaced: list[bool] = []
+
+    def _create_ffmpeg(_params: object) -> _TailHoldingFFMpeg:
+        flushed_when_replaced.extend(ffmpeg._eof for ffmpeg, _ in ffmpegs)
+        ffmpeg = _TailHoldingFFMpeg()
+        ffmpegs.append((ffmpeg, session._pcm_format.sample_rate))
+        return ffmpeg
+
+    monkeypatch.setattr(session, "_create_member_ffmpeg", _create_ffmpeg)
+    assert session.set_next_media(second)
+
+    await asyncio.wait_for(session._run_playback(first), timeout=5)
+
+    assert [rate for _, rate in ffmpegs] == [48_000, 44_100]
+    assert flushed_when_replaced == [True]
+    channels: dict[UUID, list[int]] = {}
+    for channel_id, rate in push_stream.prepared:
+        channels.setdefault(channel_id, []).append(rate)
+    main, dsp = channels.values()
+    assert dsp == main
+    # the cache holds the audio from where each player's new format starts
+    assert push_stream.pcm_cached_channels == {next(iter(channels.keys() - {MAIN_CHANNEL}))}
+
+
+async def test_a_dsp_member_joining_after_a_format_switch_replays_older_audio_converted(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Audio sent before a format switch reaches a joining member's DSP in the new format."""
+    old_format, new_format = _formats(48_000)[0], _formats(44_100)[0]
+    session = SendspinPlaybackSession(_player())
+    session_state = cast("Any", session)
+    session_state._playback_running = True
+    session_state._push_stream = _FakePushStream()
+    session._pcm_format = new_format
+    session._history.extend(
+        [
+            _HistoryChunk(_T0, _CHUNK_DURATION_US, b"a", 0, old_format),
+            # the schedule moved forward by one chunk here
+            _HistoryChunk(_T0 + 2 * _CHUNK_DURATION_US, _CHUNK_DURATION_US, b"b", 0, old_format),
+            _HistoryChunk(_T0 + 3 * _CHUNK_DURATION_US, _CHUNK_DURATION_US, b"new", 0, new_format),
+        ]
+    )
+    pipeline = SimpleNamespace(config=_PipelineConfig(requires_transform=True, filter_params=()))
+    session_state._sync_member_pipeline = AsyncMock(return_value=pipeline)
+    session_state._create_member_ffmpeg = lambda _params: _FifoFFMpeg(None, yielding_writes=False)
+    resampled: list[tuple[bytes, int, int]] = []
+
+    async def _resample(
+        pcm: bytes, input_format: AudioFormat, output_format: AudioFormat
+    ) -> AsyncIterator[bytes]:
+        resampled.append((pcm, input_format.sample_rate, output_format.sample_rate))
+        yield b"converted"
+
+    monkeypatch.setattr("music_assistant.providers.sendspin.playback.resample_pcm_audio", _resample)
+    replayed: list[bytes] = []
+
+    async def _enqueue(_state: object, pcm: bytes) -> None:
+        replayed.append(pcm)
+
+    session_state._enqueue_join_pcm = _enqueue
+    session.pending_join_members.add("member")
+
+    await session._start_join_catchup("member")
+    state = session_state._join_catchup["member"]
+    await state.snapshot_task
+    first_history_start_us = state.first_history_start_us
+    await session._clear_join_catchup()
+
+    assert resampled == [(b"a" + bytes(4800 * 8) + b"b", 48_000, 44_100)]
+    assert replayed == [b"converted", b"new"]
+    assert first_history_start_us == _T0
+
+
+@pytest.mark.parametrize(
+    ("change", "expected_rate"), [("format_switch", 44_100), ("member_left", None)]
+)
+async def test_a_dsp_catch_up_that_went_stale_while_starting_is_not_kept(
+    change: str, expected_rate: int | None
+) -> None:
+    """A catch-up whose processor started across a format switch restarts, or ends on a leave."""
+    old_format, new_format = _formats(48_000)[0], _formats(44_100)[0]
+    session = SendspinPlaybackSession(_player())
+    session_state = cast("Any", session)
+    session_state._playback_running = True
+    session_state._push_stream = _FakePushStream()
+    session._pcm_format = old_format
+    session.pending_join_members.add("member")
+    pipeline = SimpleNamespace(config=_PipelineConfig(requires_transform=True, filter_params=()))
+    session_state._sync_member_pipeline = AsyncMock(return_value=pipeline)
+    session_state._feed_join_history = AsyncMock()
+    ffmpegs: list[_FifoFFMpeg] = []
+
+    async def _change_while_starting() -> None:
+        if len(ffmpegs) > 1:
+            return
+        if change == "format_switch":
+            session._pcm_format = new_format
+        else:
+            session.pending_join_members.discard("member")
+
+    def _create_ffmpeg(_params: object) -> _FifoFFMpeg:
+        ffmpegs.append(_FifoFFMpeg(_change_while_starting, yielding_writes=False))
+        return ffmpegs[-1]
+
+    session_state._create_member_ffmpeg = _create_ffmpeg
+
+    await session._start_join_catchup("member")
+
+    state = session_state._join_catchup.get("member")
+    assert (state and state.processor._sample_rate) == expected_rate
+    assert ffmpegs[0]._closed
+    await session._clear_join_catchup()
+
+
+@pytest.mark.parametrize("restart_fails", [False, True])
+async def test_a_dsp_member_catching_up_at_a_format_switch_starts_over_in_the_new_format(
+    monkeypatch: pytest.MonkeyPatch, restart_fails: bool
+) -> None:
+    """A member's DSP catch-up running when the format switches restarts at the new rate."""
+    first, second = _media("item-1"), _media("item-2")
+    player = _player()
+    player._attr_current_media = first
+    session, _, _ = _two_rates_session(monkeypatch, player)
+    session_state = cast("Any", session)
+    later_item_sample_rate = session._later_item_sample_rate
+    done = asyncio.get_running_loop().create_future()
+    done.set_result(None)
+
+    async def _later_item_rate_while_a_member_catches_up(streamdetails: Any) -> int:
+        session_state._join_catchup["member"] = SimpleNamespace(
+            processor=AsyncMock(),
+            writer_task=done,
+            drainer_task=done,
+            snapshot_task=None,
+            write_lock=asyncio.Lock(),
+            first_history_start_us=None,
+            fed_until_us=None,
+            history_end_us=None,
+            promotion_target_end_us=None,
+            promotion_armed_monotonic_s=None,
+        )
+        return await later_item_sample_rate(streamdetails)
+
+    monkeypatch.setattr(
+        session, "_later_item_sample_rate", _later_item_rate_while_a_member_catches_up
+    )
+    restarted: list[tuple[str, int]] = []
+
+    async def _start_join_catchup(player_id: str) -> None:
+        restarted.append((player_id, session._pcm_format.sample_rate))
+        if restart_fails:
+            raise AudioError("ffmpeg failed to start")
+
+    monkeypatch.setattr(session, "_start_join_catchup", _start_join_catchup)
+    assert session.set_next_media(second)
+
+    await session._run_playback(first)
+
+    assert restarted == [("member", 44_100)]
+    # a failed restart leaves that member without a catch-up, not the group without the item
+    played = [call.args[0].queue_item_id for call in player.mass.streams.get_stream.call_args_list]
+    assert played == ["item-1", "item-2"]
+
+
+async def test_stopping_a_dsp_catch_up_passes_on_a_cancel_of_its_caller() -> None:
+    """A cancel that lands while a catch-up stops still stops the task that stopped it."""
+    session = SendspinPlaybackSession(_player())
+    release = asyncio.Event()
+
+    async def _slow_to_stop() -> None:
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            await release.wait()
+            raise
+
+    writer = asyncio.create_task(_slow_to_stop())
+    done = asyncio.get_running_loop().create_future()
+    done.set_result(None)
+    cast("Any", session)._join_catchup["member"] = SimpleNamespace(
+        processor=AsyncMock(), writer_task=writer, drainer_task=done, snapshot_task=None
+    )
+    await asyncio.sleep(0)
+    stopper = asyncio.create_task(session._stop_join_catchup("member"))
+    await asyncio.sleep(0)
+
+    stopper.cancel()
+    release.set()
+
+    with pytest.raises(asyncio.CancelledError):
+        await stopper
