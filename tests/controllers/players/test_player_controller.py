@@ -35,6 +35,7 @@ from music_assistant_models.enums import (
     PlaybackState,
     PlayerFeature,
     PlayerType,
+    SleepTimerMode,
 )
 from music_assistant_models.errors import (
     InsufficientPermissions,
@@ -51,7 +52,10 @@ from music_assistant_models.player_queue import PlayerQueue
 
 from music_assistant.constants import (
     ANNOUNCE_ALERT_FILE,
+    ATTR_ANNOUNCEMENT_IN_PROGRESS,
     ATTR_FAKE_MUTE,
+    ATTR_FAKE_POWER,
+    ATTR_IDLE_SINCE,
     ATTR_MUTE_LOCK,
     ATTR_POWER_OFF_IN_PROGRESS,
     ATTR_POWER_ON_IN_PROGRESS,
@@ -59,6 +63,7 @@ from music_assistant.constants import (
     CONF_AUTO_PLAY,
     CONF_ENTRY_TTS_PRE_ANNOUNCE,
     CONF_ICON,
+    CONF_IDLE_POWER_OFF,
     CONF_MAX_VOLUME,
     CONF_MIN_VOLUME,
     CONF_MUTE_CONTROL,
@@ -975,6 +980,7 @@ class TestSleepTimer:
 
         assert controller.get_sleep_timer("player_1") == expires_at
         assert player.sleep_timer_expires_at == expires_at
+        assert player.state.sleep_timer_mode == SleepTimerMode.DURATION
         mock_mass.call_later.assert_called_with(
             30,
             controller._handle_sleep_timer_expired,
@@ -997,6 +1003,7 @@ class TestSleepTimer:
             object_id="player_1",
             data=None,
         )
+        assert player.state.sleep_timer_mode is None
 
     async def test_sleep_timer_removed_when_player_unregistered(self, mock_mass: MagicMock) -> None:
         """Unregistering a player cancels and clears its sleep timer."""
@@ -1004,6 +1011,7 @@ class TestSleepTimer:
         provider = MockProvider("test_provider", instance_id="test", mass=mock_mass)
         player = MockPlayer(provider, "player_1", "Player 1")
         controller._players = {"player_1": player}
+        player.set_sleep_timer_mode(SleepTimerMode.DURATION)
         player.set_sleep_timer_expires_at(123.0)
 
         await controller.unregister("player_1")
@@ -1017,6 +1025,7 @@ class TestSleepTimer:
         provider = MockProvider("test_provider", instance_id="test", mass=mock_mass)
         player = MockPlayer(provider, "player_1", "Player 1")
         controller._players = {"player_1": player}
+        player.set_sleep_timer_mode(SleepTimerMode.DURATION)
         player.set_sleep_timer_expires_at(123.0)
         controller.cmd_stop = AsyncMock()  # type: ignore[method-assign]
 
@@ -1038,13 +1047,103 @@ class TestSleepTimer:
         player = MockPlayer(provider, "player_1", "Player 1")
         controller._players = {"player_1": player}
 
-        # 0/-30 are non-positive; 10**400 exceeds the float range for the expiry math
-        for invalid in (0, -30, 10**400):
+        # None/0/-30 are no positive duration; 10**400 exceeds the float range for the expiry math
+        for invalid in (None, 0, -30, 10**400):
             with pytest.raises(InvalidDataError):
                 controller.set_sleep_timer("player_1", invalid)
+        with pytest.raises(InvalidDataError):
+            controller.set_sleep_timer("player_1", mode=SleepTimerMode.UNKNOWN)
 
         assert controller.get_sleep_timer("player_1") is None
         mock_mass.call_later.assert_not_called()
+
+    def test_set_and_clear_queue_sleep_timer(self, mock_mass: MagicMock) -> None:
+        """A timer that stops at a point in the queue is the queue's, the player keeps the mode."""
+        controller = PlayerController(mock_mass)
+        provider = MockProvider("test_provider", instance_id="test", mass=mock_mass)
+        player = MockPlayer(provider, "player_1", "Player 1")
+        controller._players = {"player_1": player}
+        mock_mass.players = controller
+        set_target = mock_mass.player_queues.set_sleep_timer_target
+        set_target.side_effect = InvalidDataError("nothing plays")
+
+        with pytest.raises(InvalidDataError):
+            controller.set_sleep_timer("player_1", mode=SleepTimerMode.END_OF_CHAPTER)
+        assert player.sleep_timer_mode is None
+
+        def _set_target(queue_id: str, mode: SleepTimerMode) -> float:
+            # the queue shows its target on the player
+            controller.update_sleep_timer(queue_id, mode, 123.0)
+            return 123.0
+
+        set_target.side_effect = _set_target
+        controller.set_sleep_timer("player_1", 30)
+        mock_mass.call_later.reset_mock()
+        expires_at = controller.set_sleep_timer("player_1", mode=SleepTimerMode.END_OF_CHAPTER)
+
+        assert expires_at == 123.0
+        set_target.assert_called_with("player_1", SleepTimerMode.END_OF_CHAPTER)
+        assert player.state.sleep_timer_mode == SleepTimerMode.END_OF_CHAPTER
+        assert player.state.sleep_timer_expires_at == 123.0
+        # the queue's timer replaces the duration timer, which stops nothing any more
+        mock_mass.cancel_timer.assert_called_with("player_sleep_timer_player_1")
+        # the queue stops itself, no stop is scheduled here
+        assert not any(
+            c.kwargs.get("task_id") == "player_sleep_timer_player_1"
+            for c in mock_mass.call_later.call_args_list
+        )
+        mock_mass.signal_event.assert_any_call(
+            EventType.PLAYER_SLEEP_TIMER_UPDATED,
+            object_id="player_1",
+            data=123.0,
+        )
+
+        # a duration timer replaces the queue's, the queue advances on its own again
+        mock_mass.player_queues.drop_sleep_timer_target.reset_mock()
+        controller.set_sleep_timer("player_1", 30)
+        mock_mass.player_queues.drop_sleep_timer_target.assert_called_once_with("player_1")
+        replaced_state = player.state
+        assert replaced_state.sleep_timer_mode == SleepTimerMode.DURATION
+
+        controller.clear_sleep_timer("player_1")
+
+        mock_mass.player_queues.drop_sleep_timer_target.assert_called_with("player_1")
+        assert player.sleep_timer_mode is None
+        assert player.sleep_timer_expires_at is None
+
+    @pytest.mark.parametrize(
+        ("update_mode", "expires_at", "update", "expected"),
+        [
+            # position reports jitter
+            (SleepTimerMode.END_OF_CHAPTER, 123.0, 123.4, 123.0),
+            (SleepTimerMode.END_OF_CHAPTER, 123.0, 125.0, 125.0),
+            # paused, and playing again
+            (SleepTimerMode.END_OF_CHAPTER, 123.0, None, None),
+            (SleepTimerMode.END_OF_CHAPTER, None, 125.0, 125.0),
+            # a chapter timer moved to an item without chapters
+            (SleepTimerMode.END_OF_ITEM, 123.0, 123.4, 123.4),
+        ],
+    )
+    def test_update_sleep_timer(
+        self,
+        mock_mass: MagicMock,
+        update_mode: SleepTimerMode,
+        expires_at: float | None,
+        update: float | None,
+        expected: float | None,
+    ) -> None:
+        """The queue's estimate replaces the expiry once it moved by more than report jitter."""
+        controller = PlayerController(mock_mass)
+        provider = MockProvider("test_provider", instance_id="test", mass=mock_mass)
+        player = MockPlayer(provider, "player_1", "Player 1")
+        controller._players = {"player_1": player}
+        player.set_sleep_timer_mode(SleepTimerMode.END_OF_CHAPTER)
+        player.set_sleep_timer_expires_at(expires_at)
+
+        controller.update_sleep_timer("player_1", update_mode, update)
+
+        assert player.sleep_timer_expires_at == expected
+        assert player.sleep_timer_mode == update_mode
 
 
 class TestUnregisterCleanup:
@@ -4374,6 +4473,280 @@ class TestOfflinePowerControl:
         cast("AsyncMock", control.power_off).assert_not_awaited()
 
 
+class TestIdlePowerOff:
+    """A player with an idle power off time is switched off once it has been stopped that long."""
+
+    def _setup(
+        self, mock_mass: MagicMock, *, minutes: int = 30
+    ) -> tuple[PlayerController, MockPlayer, AsyncMock]:
+        """
+        Build a controller with a stopped player that is switched on at its external control.
+
+        :param mock_mass: The mocked MusicAssistant instance to attach the controller to.
+        :param minutes: The player's idle power off time.
+        :return: The controller, the player and the power off callback of its control.
+        """
+        power_off = AsyncMock()
+        control = PlayerControl(
+            id="switch.smart_plug",
+            provider="hass",
+            name="Smart plug",
+            supports_power=True,
+            power_state=True,
+            power_on=AsyncMock(),
+            power_off=power_off,
+        )
+        mock_mass.config.get_raw_player_config_value = MagicMock(
+            side_effect=_player_config_stub({CONF_POWER_CONTROL: control.id})
+        )
+        controller = PlayerController(mock_mass)
+        provider = MockProvider("test_provider", instance_id="test", mass=mock_mass)
+        player = MockPlayer(provider, "player_1", "Player 1")
+        controller._controls = {control.id: control}
+        controller._players = {"player_1": player}
+        mock_mass.players = controller
+        config_get_value = player.config.get_value
+        player.config.get_value = MagicMock(  # type: ignore[method-assign]
+            side_effect=lambda key, *args, **kwargs: (
+                minutes if key == CONF_IDLE_POWER_OFF else config_get_value(key, *args, **kwargs)
+            )
+        )
+        player.set_initialized()
+        player.update_state(signal_event=False)
+        assert player.state.powered is True
+        assert player.state.playback_state == PlaybackState.IDLE
+        return controller, player, power_off
+
+    async def test_powers_off_once_stopped_for_the_configured_time(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """The power off follows the configured number of minutes after the player stopped."""
+        controller, player, power_off = self._setup(mock_mass)
+
+        controller._check_idle_power_off(player)
+        # the count starts when the player is first seen stopped
+        assert ATTR_IDLE_SINCE in player.extra_data
+        player.extra_data[ATTR_IDLE_SINCE] = time.monotonic() - 30 * 60 + 5
+        controller._check_idle_power_off(player)
+        mock_mass.create_task.assert_not_called()
+
+        player.extra_data[ATTR_IDLE_SINCE] = time.monotonic() - 30 * 60
+        controller._check_idle_power_off(player)
+        mock_mass.create_task.assert_called_once()
+        await mock_mass.create_task.call_args.args[0]
+
+        power_off.assert_awaited_once()
+        # a power off that does not come through is tried again after a full idle time
+        assert ATTR_IDLE_SINCE not in player.extra_data
+
+    @pytest.mark.parametrize("playback_state", [PlaybackState.PLAYING, PlaybackState.PAUSED])
+    def test_playback_starts_the_count_over(
+        self, mock_mass: MagicMock, playback_state: PlaybackState
+    ) -> None:
+        """A playing or paused player is not idle, so its count restarts once it stops."""
+        controller, player, _power_off = self._setup(mock_mass)
+        player.extra_data[ATTR_IDLE_SINCE] = time.monotonic() - 30 * 60
+        player._attr_playback_state = playback_state
+        player.update_state(signal_event=False)
+
+        controller._check_idle_power_off(player)
+
+        assert ATTR_IDLE_SINCE not in player.extra_data
+        mock_mass.create_task.assert_not_called()
+
+    @pytest.mark.parametrize(
+        ("minutes", "attribute", "value"),
+        [
+            pytest.param(0, None, None, id="not_configured"),
+            pytest.param(30, "_attr_available", False, id="unavailable"),
+            pytest.param(30, ATTR_ANNOUNCEMENT_IN_PROGRESS, True, id="announcing"),
+        ],
+    )
+    def test_player_that_is_not_idle_is_left_on(
+        self, mock_mass: MagicMock, minutes: int, attribute: str | None, value: bool | None
+    ) -> None:
+        """No idle power off without the setting, while unavailable or about to announce."""
+        controller, player, _power_off = self._setup(mock_mass, minutes=minutes)
+        if attribute == ATTR_ANNOUNCEMENT_IN_PROGRESS:
+            player.extra_data[attribute] = value
+        elif attribute:
+            setattr(player, attribute, value)
+            player.update_state(signal_event=False)
+        player.extra_data[ATTR_IDLE_SINCE] = time.monotonic() - 30 * 60
+
+        controller._check_idle_power_off(player)
+
+        assert ATTR_IDLE_SINCE not in player.extra_data
+        mock_mass.create_task.assert_not_called()
+
+    def test_player_switched_off_elsewhere_is_left_alone(self, mock_mass: MagicMock) -> None:
+        """A player that is already powered off has nothing to count down."""
+        controller, player, _power_off = self._setup(mock_mass)
+        controller._controls["switch.smart_plug"].power_state = False
+        player.refresh_state(signal_event=False)
+        assert player.state.powered is False
+        player.extra_data[ATTR_IDLE_SINCE] = time.monotonic() - 30 * 60
+
+        controller._check_idle_power_off(player)
+
+        assert ATTR_IDLE_SINCE not in player.extra_data
+        mock_mass.create_task.assert_not_called()
+
+    async def test_playback_started_while_waiting_for_the_lock_is_left_alone(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """A play command that holds the player when its time is up keeps the player on."""
+        controller, player, power_off = self._setup(mock_mass)
+        player.extra_data[ATTR_IDLE_SINCE] = time.monotonic() - 30 * 60
+        controller._check_idle_power_off(player)
+
+        async with _lock_held_elsewhere(controller, "player_1"):
+            power_off_task = asyncio.create_task(mock_mass.create_task.call_args.args[0])
+            await _yield_to_loop()
+            player._attr_playback_state = PlaybackState.PLAYING
+            player.update_state(signal_event=False)
+        await power_off_task
+
+        power_off.assert_not_awaited()
+
+    async def test_playback_that_ends_while_waiting_for_the_lock_starts_the_count_over(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """An announcement that holds the player when its time is up delays the power off."""
+        controller, player, power_off = self._setup(mock_mass)
+        player.extra_data[ATTR_IDLE_SINCE] = time.monotonic() - 30 * 60
+        controller._check_idle_power_off(player)
+
+        async with _lock_held_elsewhere(controller, "player_1"):
+            power_off_task = asyncio.create_task(mock_mass.create_task.call_args.args[0])
+            await _yield_to_loop()
+            controller.signal_player_state_update(
+                player, {"playback_state": (PlaybackState.IDLE, PlaybackState.PLAYING)}
+            )
+            controller.signal_player_state_update(
+                player, {"playback_state": (PlaybackState.PLAYING, PlaybackState.IDLE)}
+            )
+            controller._check_idle_power_off(player)
+        await power_off_task
+
+        power_off.assert_not_awaited()
+        assert time.monotonic() - player.extra_data[ATTR_IDLE_SINCE] < 60
+
+    async def test_play_command_starts_the_count_over(self, mock_mass: MagicMock) -> None:
+        """Playback the device reports only after the play command returned is not cut short."""
+        controller, player, power_off = self._setup(mock_mass)
+        mock_mass.player_queues.resume = AsyncMock()
+        player.extra_data[ATTR_IDLE_SINCE] = time.monotonic() - 30 * 60
+        controller._check_idle_power_off(player)
+        power_off_idle = mock_mass.create_task.call_args.args[0]
+
+        await controller._handle_cmd_resume("player_1")
+        # the device still reports idle when the power off gets its turn
+        controller._check_idle_power_off(player)
+        await power_off_idle
+
+        power_off.assert_not_awaited()
+
+    async def test_play_command_starts_the_count_over_for_its_members(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """A member is not taken out of a group that starts playing before it reports so."""
+        controller, leader, _power_off = self._setup(mock_mass)
+        mock_mass.player_queues.resume = AsyncMock()
+        member = MockPlayer(leader.provider, "player_2", "Player 2")  # type: ignore[arg-type]
+        controller._players["player_2"] = member
+        leader._attr_group_members = ["player_1", "player_2"]
+        leader.update_state(signal_event=False)
+        member.extra_data[ATTR_IDLE_SINCE] = time.monotonic() - 30 * 60
+
+        await controller._handle_cmd_resume("player_1")
+
+        assert ATTR_IDLE_SINCE not in member.extra_data
+
+    def test_playback_between_two_checks_starts_the_count_over(self, mock_mass: MagicMock) -> None:
+        """Playback that starts and ends before the next check still counts as activity."""
+        controller, player, _power_off = self._setup(mock_mass)
+        player.extra_data[ATTR_IDLE_SINCE] = time.monotonic() - 30 * 60
+
+        controller.signal_player_state_update(
+            player, {"playback_state": (PlaybackState.PLAYING, PlaybackState.IDLE)}
+        )
+        controller._check_idle_power_off(player)
+
+        assert time.monotonic() - player.extra_data[ATTR_IDLE_SINCE] < 60
+
+    def test_player_still_starting_up_is_not_idle(self, mock_mass: MagicMock) -> None:
+        """A device that is switched on but not online yet does not count down."""
+        controller, player, _power_off = self._setup(mock_mass, minutes=1)
+        player._attr_available = False
+        player.extra_data[ATTR_POWER_ON_IN_PROGRESS] = True
+        player.refresh_state(signal_event=False)
+        assert player.state.available is True
+        assert player.state.powered is True
+        assert player.state.playback_state == PlaybackState.IDLE
+        player.extra_data[ATTR_IDLE_SINCE] = time.monotonic() - 60
+
+        controller._check_idle_power_off(player)
+
+        assert ATTR_IDLE_SINCE not in player.extra_data
+        mock_mass.create_task.assert_not_called()
+
+    async def test_busy_player_is_not_powered_off(
+        self, mock_mass: MagicMock, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A power off that can't get the player lock in time gives up and keeps the count."""
+        monkeypatch.setattr(players_controller, "PLAYER_LOCK_SLOW_THRESHOLD", 0.01)
+        monkeypatch.setattr(players_controller, "PLAYER_LOCK_TIMEOUT", 0.05)
+        monkeypatch.setattr(players_controller, "PLAYER_LOCK_STRICT_TIMEOUT", 0.05)
+        controller, player, power_off = self._setup(mock_mass)
+        player.extra_data[ATTR_IDLE_SINCE] = time.monotonic() - 30 * 60
+        controller._check_idle_power_off(player)
+
+        async with _lock_held_elsewhere(controller, "player_1"):
+            await mock_mass.create_task.call_args.args[0]
+
+        power_off.assert_not_awaited()
+        assert ATTR_IDLE_SINCE in player.extra_data
+
+
+class TestSelectSourcePowerOn:
+    """Selecting a player's own source powers it on first."""
+
+    async def test_switched_off_player_is_powered_on_without_auto_play(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """The selected source plays, not the queue that auto play would resume."""
+        mock_mass.config.get_raw_player_config_value = MagicMock(
+            side_effect=_player_config_stub({CONF_POWER_CONTROL: PLAYER_CONTROL_FAKE})
+        )
+        mock_mass.cache.set = AsyncMock()
+        mock_mass.player_queues.get = MagicMock(return_value=None)
+        mock_mass.player_queues.resume = AsyncMock()
+        controller = PlayerController(mock_mass)
+        provider = MockProvider("test_provider", instance_id="test", mass=mock_mass)
+        player = MockPlayer(provider, "player_1", "Player 1")
+        player._attr_supported_features.add(PlayerFeature.SELECT_SOURCE)
+        player._attr_source_list = [PlayerSource(id="hdmi", name="HDMI")]
+        player.select_source = AsyncMock()  # type: ignore[method-assign]
+        controller._players = {"player_1": player}
+        mock_mass.players = controller
+        config_get_value = player.config.get_value
+        player.config.get_value = MagicMock(  # type: ignore[method-assign]
+            side_effect=lambda key, *args, **kwargs: (
+                True if key == CONF_AUTO_PLAY else config_get_value(key, *args, **kwargs)
+            )
+        )
+        player.set_initialized()
+        player.refresh_state(signal_event=False)
+        assert player.state.powered is False
+
+        await controller._handle_select_source("player_1", "hdmi")
+
+        assert player.extra_data[ATTR_FAKE_POWER] is True
+        player.select_source.assert_awaited_once_with("hdmi")
+        mock_mass.player_queues.resume.assert_not_awaited()
+
+
 class TestEnforceVolumeLimits:
     """External volume changes outside the min/max range must be corrected."""
 
@@ -6285,6 +6658,18 @@ class TestPlayAnnouncementCleanup:
         player.play_announcement.assert_awaited_once()
         assert announcements == {}
         mock_mass.streams.announcement_renderer.unregister.assert_awaited_once()
+
+    async def test_announcement_starts_the_idle_count_over(self, mock_mass: MagicMock) -> None:
+        """A native announcement that leaves the playback state as it was still counts."""
+        controller, player, _render = self._make_player(mock_mass, {})
+        player.play_announcement = AsyncMock()  # type: ignore[method-assign]
+        player.extra_data[ATTR_IDLE_SINCE] = time.monotonic() - 30 * 60
+
+        await controller.play_announcement("player_1", "http://test/announcement.mp3")
+
+        player.play_announcement.assert_awaited_once()
+        assert player.state.playback_state == PlaybackState.IDLE
+        assert ATTR_IDLE_SINCE not in player.extra_data
 
     async def test_announcement_data_removed_on_error(self, mock_mass: MagicMock) -> None:
         """The registered announcement data is released even when playback fails."""

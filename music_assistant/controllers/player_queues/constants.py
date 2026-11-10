@@ -6,6 +6,8 @@ from enum import StrEnum
 
 from music_assistant_models.enums import AlbumType, MediaType
 
+from music_assistant.controllers.streams.constants import BUFFER_INACTIVITY_TIMEOUT
+
 CONF_DEFAULT_ENQUEUE_SELECT_ARTIST = "default_enqueue_select_artist"
 CONF_DEFAULT_ENQUEUE_SELECT_ALBUM = "default_enqueue_select_album"
 
@@ -76,6 +78,13 @@ CONF_CROSSFADE_ENABLED = "crossfade_enabled"
 # global defaults the per-queue autoplay/crossfade toggles follow when not overridden
 DEFAULT_AUTOPLAY_ENABLED = False
 DEFAULT_CROSSFADE_ENABLED = False
+
+# seconds a queue may stay paused before it is stopped. Capped a minute below the time after
+# which an unread AudioBuffer releases its audio (a longer pause could not resume), and not
+# every player can stay paused for long
+CONF_PAUSE_TIMEOUT = "pause_timeout"
+DEFAULT_PAUSE_TIMEOUT = 30
+PAUSE_TIMEOUT_RANGE = (30, BUFFER_INACTIVITY_TIMEOUT - 60)
 
 CONF_SMART_SHUFFLE_LABEL = "smart_shuffle_label"
 CONF_SMART_SHUFFLE_ENABLED = "smart_shuffle_enabled"
@@ -149,6 +158,9 @@ PLAYBACK_START_TIMEOUT = 5.0
 # the per-track updates during playback) collapses into a single write instead of hitting the cache
 # db on every signal_update.
 QUEUE_CACHE_SAVE_DELAY = 5
+# How long the shutdown waits for a playing queue's player to stop, so a player that never
+# answers can't keep the queues from being saved.
+QUEUE_SHUTDOWN_STOP_TIMEOUT = 5
 # Bumped when the on-disk queue cache layout changes in a way older code can't read; a version
 # mismatch makes the restore fall back to a clean queue instead of trusting incompatible data.
 CACHE_FORMAT_VERSION = 1
@@ -164,3 +176,8 @@ PROBED_DURATION_MEDIA_TYPES = (
 # A forward skip never lands closer than this to the end of the item. The item then finishes on
 # its own and the queue advances normally.
 SKIP_END_MARGIN = 1
+
+# A player that holds its next item advances on its own when the current one ends. Durations
+# are rounded and position reports lag, so an item that changed within this many seconds of the
+# point a sleep timer stops at ended there. One that changed earlier was skipped on the device.
+SLEEP_TIMER_NATURAL_END_MARGIN = 5
