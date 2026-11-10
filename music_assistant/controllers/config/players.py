@@ -72,7 +72,11 @@ from music_assistant.constants import (
     NON_HTTP_PROVIDERS,
     PLAYER_CONTROL_PROTOCOL,
 )
-from music_assistant.controllers.config.constants import BASE_KEYS, _ConfigValueT
+from music_assistant.controllers.config.constants import (
+    BASE_KEYS,
+    PLAYER_VALUE_KEYS,
+    _ConfigValueT,
+)
 from music_assistant.controllers.config.helpers import (
     _mask_encrypted,
     _reject_encrypted_values,
@@ -227,6 +231,8 @@ class PlayerConfigMixin:
             if recovered is None:
                 raise KeyError(f"No config found for player id {player_id}")
             raw_conf = recovered
+            # the values of its native protocol are part of the player's own config
+            raw_conf["values"] = deepcopy(self._get_stored_player_values(player_id))
             # protocol- and plugin-prefixed entries are virtual mirrors of another config
             # (the linked protocol player resp. the plugin provider is the canonical store).
             # Drop any that linger in this player's persisted values so a stale copy can never
@@ -574,7 +580,7 @@ class PlayerConfigMixin:
         values = await self._update_plugin_provider_config(player_id, values)
         conf_key = f"{CONF_PLAYERS}/{player_id}"
         existing_raw = self.get(conf_key) or {}
-        existing_values = existing_raw.get("values", {})
+        existing_values = self._get_stored_player_values(player_id)
         if values.get(CONF_ICON) is None and CONF_ICON not in existing_values:
             values = {key: value for key, value in values.items() if key != CONF_ICON}
         config = await self.get_player_config(player_id)
@@ -601,14 +607,20 @@ class PlayerConfigMixin:
             # no changes
             return config
         # store updated config first (to prevent issues with enabling/disabling players)
-        new_raw["values"] = new_values
+        values_by_key = self._split_player_values(player_id, new_values)
+        new_raw["values"] = values_by_key.pop(f"{conf_key}/values")
+        existing_protocol_values = {key: self.get(key) or {} for key in values_by_key}
         self.set(conf_key, new_raw)
+        for values_key, protocol_values in values_by_key.items():
+            self.set(values_key, protocol_values)
         try:
             # validate/handle the update in the player manager
             await self.mass.players.on_player_config_change(config, changed_keys)
         except Exception:
             # rollback on error - use existing_raw to preserve all values
             self.set(conf_key, existing_raw)
+            for values_key, protocol_values in existing_protocol_values.items():
+                self.set(values_key, protocol_values)
             raise
         # send config updated event
         self.mass.signal_event(
@@ -709,6 +721,47 @@ class PlayerConfigMixin:
             conf_key,
             default_conf_raw,
         )
+
+    def _get_native_protocol_id(self, player_id: str) -> str:
+        """
+        Return the id of the protocol whose values are part of the player's own config.
+
+        :param player_id: ID of the player.
+        """
+        # a player and its native protocol share their id
+        return player_id
+
+    def _get_stored_player_values(self, player_id: str) -> dict[str, Any]:
+        """
+        Return the stored values of a player: its own and those of its native protocol.
+
+        :param player_id: ID of the player.
+        """
+        protocol_id = self._get_native_protocol_id(player_id)
+        return {
+            **(self.get(f"{CONF_PLAYER_PROTOCOLS}/{protocol_id}/values") or {}),
+            **(self.get(f"{CONF_PLAYERS}/{player_id}/values") or {}),
+        }
+
+    def _split_player_values(
+        self, player_id: str, values: dict[str, Any]
+    ) -> dict[str, dict[str, Any]]:
+        """
+        Return the values of a player by the storage key they are stored under.
+
+        A value is stored with the config of whoever declared its entry: the player
+        itself, or its native protocol.
+
+        :param player_id: ID of the player.
+        :param values: The values to store, by their key.
+        """
+        player_key = f"{CONF_PLAYERS}/{player_id}/values"
+        protocol_id = self._get_native_protocol_id(player_id)
+        protocol_key = f"{CONF_PLAYER_PROTOCOLS}/{protocol_id}/values"
+        values_by_key: dict[str, dict[str, Any]] = {player_key: {}, protocol_key: {}}
+        for key, value in values.items():
+            values_by_key[player_key if key in PLAYER_VALUE_KEYS else protocol_key][key] = value
+        return values_by_key
 
     def _get_stored_value(
         self, conf_key: str, key: str, default: ConfigValueType

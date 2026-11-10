@@ -385,6 +385,12 @@ Protocol links are persisted in player configuration:
 - `linked_protocol_ids` - List of protocol player IDs
 - Restored on restart for fast reconnection
 
+Stored config is read and written per scope, through the config controller:
+- `get_player_value` / `set_player_value` - a value of the player itself: the entries every player gets, such as its controls, volume limits, announcement settings, icon, visibility and preferred output (`PLAYER_VALUE_KEYS`)
+- `get_protocol_value` / `set_protocol_value` - a value of a protocol: an entry the protocol declares, an audio setting of its output, or what its provider stores for it
+
+Saving a player's config stores each value with whoever declared its entry: the player itself or its native protocol. Code that reads the stored config of a protocol as a whole, or its setup data, names the tree through `CONF_PLAYER_PROTOCOLS`.
+
 ### Key Methods (in protocol_linking.py)
 
 - `_evaluate_protocol_links()` - Entry point for link evaluation
