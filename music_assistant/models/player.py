@@ -1505,7 +1505,7 @@ class Player(ABC):
         """
         identifiers = set(self.device_info.identifiers.items())
         cached_arp_mac = self.mass.config.get(
-            f"{CONF_PLAYERS}/{self.player_id}/values/{CONF_CACHED_ARP_MAC}"
+            f"{CONF_PLAYER_PROTOCOLS}/{self.player_id}/values/{CONF_CACHED_ARP_MAC}"
         )
         for mac_address in (self.extra_data.get("reported_mac"), cached_arp_mac):
             if mac_address:
