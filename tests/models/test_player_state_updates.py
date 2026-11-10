@@ -16,17 +16,19 @@ from music_assistant_models.audio_processing import (
 from music_assistant_models.enums import (
     ContentType,
     CrossfadeMode,
+    ImageType,
     MediaType,
     PlaybackState,
     PlayerType,
     VolumeNormalizationMode,
 )
-from music_assistant_models.media_items import AudioFormat, AudioSource
+from music_assistant_models.media_items import AudioFormat, AudioSource, MediaItemImage
 from music_assistant_models.media_items.provider_mapping import ProviderMapping
 from music_assistant_models.player import PlayerOption, PlayerOptionType, PlayerSoundMode
 from music_assistant_models.player_queue import PlayerQueue
 from music_assistant_models.queue_item import QueueItem
 from music_assistant_models.streamdetails import StreamDetails, StreamMetadata
+from music_assistant_models.unique_list import UniqueList
 
 import music_assistant.models.player as player_module
 from music_assistant.controllers.players.audio_sources import AudioSourceSession
@@ -62,6 +64,16 @@ def player(mock_mass: MagicMock) -> MockPlayer:
     player.set_current_media(uri="http://test/stream", title="Test")
     player.update_state(signal_event=False)
     return player
+
+
+def _image() -> MediaItemImage:
+    """Return the image of a media item."""
+    return MediaItemImage(
+        type=ImageType.THUMB,
+        path="http://img/cover.jpg",
+        provider="url",
+        remotely_accessible=True,
+    )
 
 
 class TestUpdateStateChangeDetection:
@@ -747,6 +759,85 @@ class TestInputCollection:
 
         assert leader.state.group_members == ["leader", "member"]
         assert leader.state.group_volume == (80 if can_play else 20)
+
+    @pytest.mark.parametrize(
+        ("kind", "looked_up"),
+        [("own_queue", True), ("synced", False), ("external_source", False)],
+    )
+    def test_artwork_is_only_looked_up_for_the_queue_the_media_is_taken_from(
+        self, mock_mass: MagicMock, kind: str, looked_up: bool
+    ) -> None:
+        """A player that shows other media than the item of its queue needs no artwork of it."""
+        queue = PlayerQueue(
+            queue_id="player_1",
+            active=True,
+            display_name="Player 1",
+            available=True,
+            items=1,
+            current_item=QueueItem(
+                queue_id="player_1",
+                queue_item_id="item_1",
+                name="Song",
+                duration=200,
+                image=_image(),
+            ),
+        )
+        mock_mass.player_queues.get = MagicMock(side_effect={"player_1": queue}.get)
+        mock_mass.metadata.get_image_url = MagicMock(return_value="http://ma/cover.jpg")
+        provider = MockProvider("test_provider", mass=mock_mass)
+        player = MockPlayer(provider, "player_1", "Player 1")
+        player._attr_playback_state = PlaybackState.PLAYING
+        leader = MockPlayer(provider, "leader", "Leader")
+        if kind == "synced":
+            leader._attr_group_members = ["leader", "player_1"]
+        if kind == "external_source":
+            player._attr_active_source = "line_in"
+        players = {"leader": leader, "player_1": player}
+        mock_mass.players.get_player = MagicMock(side_effect=players.get)
+        mock_mass.players.iter_players = MagicMock(return_value=list(players.values()))
+
+        player.update_state(signal_event=False)
+
+        assert mock_mass.metadata.get_image_url.called is looked_up
+        media = player.state.current_media
+        assert (media.image_url if media else None) == (
+            "http://ma/cover.jpg" if looked_up else None
+        )
+
+    @pytest.mark.parametrize("stream_image_url", [None, "http://stream/now.jpg"])
+    def test_image_of_a_live_source_is_only_looked_up_when_what_it_plays_has_none(
+        self, mock_mass: MagicMock, stream_image_url: str | None
+    ) -> None:
+        """What a live source is playing may come with an image, which is the one shown."""
+        source = AudioSource(
+            item_id="main",
+            provider="test_instance",
+            name="Spotify Connect",
+            provider_mappings={
+                ProviderMapping(
+                    item_id="main",
+                    provider_domain="spotify_connect",
+                    provider_instance="test_instance",
+                )
+            },
+        )
+        source.metadata.images = UniqueList([_image()])
+        session = AudioSourceSession(
+            player_id="player_1",
+            source=source,
+            provider_instance_id="test_instance",
+            stream_metadata=StreamMetadata(title="Live Track", image_url=stream_image_url),
+        )
+        mock_mass.players.get_audio_source_session = MagicMock(return_value=session)
+        mock_mass.metadata.get_image_url = MagicMock(return_value="http://ma/source.jpg")
+        provider = MockProvider("test_provider", mass=mock_mass)
+        player = MockPlayer(provider, "player_1", "Player 1")
+
+        player.update_state(signal_event=False)
+
+        assert mock_mass.metadata.get_image_url.called is (stream_image_url is None)
+        assert player.state.current_media is not None
+        assert player.state.current_media.image_url == (stream_image_url or "http://ma/source.jpg")
 
 
 class TestUpdateStateTiming:

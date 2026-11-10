@@ -138,14 +138,17 @@ class QueueSnapshot:
     """
     A queue, with the artwork of its current item resolved to urls.
 
+    The urls are only given where they count: for the queue the player takes its
+    current media from (see resolve_media_queue).
+
     :param queue: The queue.
     :param item_image_url: Url of the image of the current queue item.
     :param media_item_image_url: Url of the image of the media item it holds.
     """
 
     queue: PlayerQueue
-    item_image_url: str | None
-    media_item_image_url: str | None
+    item_image_url: str | None = None
+    media_item_image_url: str | None = None
 
 
 @dataclass(slots=True, kw_only=True)
@@ -209,7 +212,8 @@ class StateInputs:
     :param mass_sources: The sources referred to that Music Assistant plays itself:
         a queue or a live audio source.
     :param session: Live audio source playing on the player.
-    :param session_image_url: Url of the image of that audio source.
+    :param session_image_url: Url of the image of that audio source. Only given where
+        it counts: for a source that reports no image of what it is playing.
     :param standing_sources: Audio sources that are selectable on the player without
         a session being active.
     """
@@ -439,6 +443,28 @@ def resolve_synced_to(
             # Sync parent is a protocol player, return its visible parent
             return parent.player_id
     return None
+
+
+def resolve_media_queue(inputs: StateInputs) -> QueueSnapshot | None:
+    """
+    Return the queue a player takes its current media from, if any.
+
+    :param inputs: Everything the state is derived from.
+    """
+    synced_to = resolve_synced_to(inputs.own, inputs.linked, inputs.peers)
+    active_group = _active_group(inputs)
+    foreign_app = _shown_foreign_app(inputs, synced_to, active_group)
+    if synced_to or active_group or foreign_app or inputs.session is not None:
+        # the media is that of another player, an app or a live external source
+        return None
+    if (
+        inputs.player_type == PlayerType.PROTOCOL
+        and inputs.protocol_parent_id
+        and inputs.protocol_parent_id in inputs.peers
+    ):
+        # a protocol player has the media of its parent player
+        return None
+    return _active_queue(inputs, _active_source(inputs, synced_to, active_group, foreign_app))
 
 
 def reconcile_position_anchor(
@@ -1011,12 +1037,7 @@ def _current_media(
     if foreign_app:
         return foreign_app.current_media
     # if MA queue is active, return those details
-    active_queue: QueueSnapshot | None = None
-    if active_source:
-        active_queue = inputs.queues.get(active_source)
-    if not active_queue and own.active_source is None:
-        active_queue = inputs.queues.get(inputs.player_id)
-    if active_queue:
+    if active_queue := _active_queue(inputs, active_source):
         return _queue_media(inputs, active_queue)
     # return the media the player reports itself if no group/queue is active
     if own.current_media:
@@ -1042,6 +1063,16 @@ def _current_media(
             elapsed_time_last_updated=media_elapsed_time_last_updated,
         )
     return None
+
+
+def _active_queue(inputs: StateInputs, active_source: str | None) -> QueueSnapshot | None:
+    """Return the queue of the active source, or the own queue of a player that reports none."""
+    active_queue: QueueSnapshot | None = None
+    if active_source:
+        active_queue = inputs.queues.get(active_source)
+    if not active_queue and inputs.own.active_source is None:
+        active_queue = inputs.queues.get(inputs.player_id)
+    return active_queue
 
 
 def _queue_media(inputs: StateInputs, active_queue: QueueSnapshot) -> PlayerMedia | None:

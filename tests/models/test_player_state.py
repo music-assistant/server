@@ -52,6 +52,7 @@ from music_assistant.models.player_state import (
     StateEffects,
     derive_player_state,
     reconcile_position_anchor,
+    resolve_media_queue,
 )
 from tests.common import (
     make_group_snapshot,
@@ -1831,6 +1832,75 @@ class TestCurrentMedia:
         assert other is not None
         assert shown.palette is palette
         assert other.palette is None
+
+
+class TestMediaQueue:
+    """The queue a player takes its current media from."""
+
+    @pytest.mark.parametrize(
+        ("values", "queue_id"),
+        [
+            ({}, PLAYER_ID),
+            ({"active_mass_source": "queue_x"}, "queue_x"),
+            ({"active_mass_source": "no_queue"}, PLAYER_ID),
+            (
+                {"own": _own(active_source="queue_x", playback_state=PlaybackState.PLAYING)},
+                "queue_x",
+            ),
+            (
+                {"own": _own(active_source="spotify", playback_state=PlaybackState.PLAYING)},
+                None,
+            ),
+            ({"own": _own(synced_to="leader"), "peers": {"leader": _peer("leader")}}, None),
+            ({"groups": (_group(),), "peers": {"group_1": _group_peer(_group())}}, None),
+            (
+                {
+                    "player_type": PlayerType.PROTOCOL,
+                    "protocol_parent_id": "parent",
+                    "peers": {"parent": _peer("parent")},
+                },
+                None,
+            ),
+            ({"player_type": PlayerType.PROTOCOL, "protocol_parent_id": "gone"}, PLAYER_ID),
+            ({"session": _session()}, None),
+            ({"linked": (_app_protocol(),), "foreign_app": _app_protocol()}, None),
+        ],
+        ids=[
+            "own_queue",
+            "queue_of_the_active_source",
+            "source_that_is_no_queue",
+            "reported_queue",
+            "external_source",
+            "synced",
+            "grouped",
+            "protocol_child",
+            "protocol_without_its_parent",
+            "live_source",
+            "foreign_app",
+        ],
+    )
+    def test_media_queue_is_the_queue_the_media_is_taken_from(
+        self, values: dict[str, Any], queue_id: str | None
+    ) -> None:
+        """Only a player that shows the item of a queue takes its media from that queue."""
+        queues = {
+            queue_id: _queue(
+                queue_id,
+                current_item=_queue_item(),
+                item_image_url=f"http://img/{queue_id}.jpg",
+            )
+            for queue_id in (PLAYER_ID, "queue_x")
+        }
+        inputs = make_state_inputs(queues=queues, **values)
+
+        media_queue = resolve_media_queue(inputs)
+
+        assert media_queue is (queues[queue_id] if queue_id else None)
+        # which makes it the only queue whose artwork the state shows
+        media = derive_player_state(inputs)[0].current_media
+        assert (media.image_url if media else None) == (
+            media_queue.item_image_url if media_queue else None
+        )
 
 
 class TestMediaPositionAnchor:

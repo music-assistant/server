@@ -81,6 +81,7 @@ from music_assistant.models.player_state import (
     StateInputs,
     derive_player_state,
     reconcile_position_anchor,
+    resolve_media_queue,
     resolve_synced_to,
 )
 from music_assistant.models.plugin import PluginProvider
@@ -93,7 +94,6 @@ if TYPE_CHECKING:
     )
     from music_assistant_models.enums import RepeatMode
     from music_assistant_models.media_items import AudioSource, MediaItemPalette
-    from music_assistant_models.player_queue import PlayerQueue
 
     from .player_provider import PlayerProvider
     from .setup_flow import SetupSession
@@ -2754,7 +2754,7 @@ class Player(ABC):
         session = self.mass.players.get_audio_source_session(self.player_id)
         source_ids = {self.__active_mass_source, own.active_source}
         queues = {
-            queue_id: self.__queue_snapshot(queue)
+            queue_id: QueueSnapshot(queue=queue)
             for queue_id in {self.player_id, *source_ids}
             if queue_id is not None and (queue := self.mass.player_queues.get(queue_id))
         }
@@ -2763,7 +2763,7 @@ class Player(ABC):
             source_ids.add(session.active_source)
         if foreign_app:
             source_ids.add(foreign_app.active_source)
-        return StateInputs(
+        inputs = StateInputs(
             player_id=self.player_id,
             provider=self.provider_id,
             player_type=self.type,
@@ -2816,11 +2816,18 @@ class Player(ABC):
             session=session,
             session_image_url=(
                 self.mass.metadata.get_image_url(session.source.image, size=512)
-                if session is not None and session.source.image
+                if session is not None
+                and session.source.image
+                # what the source is playing may come with an image of its own
+                and not (session.stream_metadata and session.stream_metadata.image_url)
                 else None
             ),
             standing_sources=self.__collect_standing_sources(),
         )
+        # artwork is only looked up for the queue the player takes its media from
+        if queues and (media_queue := resolve_media_queue(inputs)):
+            self.__resolve_artwork(media_queue)
+        return inputs
 
     @final
     def __collect_protocols(
@@ -3034,23 +3041,17 @@ class Player(ABC):
         )
 
     @final
-    def __queue_snapshot(self, queue: PlayerQueue) -> QueueSnapshot:
-        """Return the snapshot of a queue, with the artwork of its current item resolved."""
-        item_image_url: str | None = None
-        media_item_image_url: str | None = None
-        if current_item := queue.current_item:
-            # the image format needs to be 512x512 jpeg for maximum compatibility with players
-            if current_item.image:
-                item_image_url = self.mass.metadata.get_image_url(current_item.image, size=512)
-            if current_item.media_item and current_item.media_item.image:
-                media_item_image_url = self.mass.metadata.get_image_url(
-                    current_item.media_item.image, size=512
-                )
-        return QueueSnapshot(
-            queue=queue,
-            item_image_url=item_image_url,
-            media_item_image_url=media_item_image_url,
-        )
+    def __resolve_artwork(self, snapshot: QueueSnapshot) -> None:
+        """Resolve the artwork of the current item of a queue into its snapshot."""
+        if not (current_item := snapshot.queue.current_item):
+            return
+        # the image format needs to be 512x512 jpeg for maximum compatibility with players
+        if current_item.image:
+            snapshot.item_image_url = self.mass.metadata.get_image_url(current_item.image, size=512)
+        if current_item.media_item and current_item.media_item.image:
+            snapshot.media_item_image_url = self.mass.metadata.get_image_url(
+                current_item.media_item.image, size=512
+            )
 
     @final
     def __power_control_state(self) -> bool | None:
