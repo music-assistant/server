@@ -12,7 +12,7 @@ CONF_SYNC_INTERVAL = "sync_interval"
 CONF_DELETED_PROVIDERS = "deleted_providers"
 CONF_KEEP_REMASTERS_APART: Final[str] = "keep_remasters_apart"
 
-DB_SCHEMA_VERSION: Final[int] = 71
+DB_SCHEMA_VERSION: Final[int] = 73
 # headroom kept free on top of what moving the audio analysis out of library.db writes
 DB_FREE_SPACE_MARGIN: Final[int] = 100 * 1024 * 1024
 
@@ -31,6 +31,9 @@ LISTING_CACHE_EXPIRATION: Final[int] = 15 * 60
 BROWSE_CACHE_EXPIRATION: Final[int] = 2 * 60
 # how many similar artists or tracks the providers are asked for, the size of such a listing
 SIMILAR_ITEMS_LIMIT: Final[int] = 25
+# caps the album track lookups in flight when an artist's tracks are listed from its albums,
+# so a large discography does not flood a provider
+ARTIST_ALBUM_LOOKUP_BATCH: Final[int] = 5
 
 # max time to wait for a single provider's search results before
 # contributing empty results for it, so one slow provider can never block
@@ -150,3 +153,5 @@ AUDIO_ANALYSIS_MOVE_BATCH_SIZE: Final[int] = 5000
 # twice (decoded and packed) while it converts. Progress is logged once per this many rows.
 AUDIO_ANALYSIS_PACK_BATCH_SIZE: Final[int] = 100
 AUDIO_ANALYSIS_PACK_PROGRESS_ROWS: Final[int] = 2000
+# a collapsed collection shows the covers of its first items with a thumb as a stack
+COLLECTION_COVER_COUNT: Final[int] = 3

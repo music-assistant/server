@@ -5,9 +5,10 @@ from __future__ import annotations
 import functools
 import random
 from collections.abc import Awaitable, Callable, Coroutine
-from typing import TYPE_CHECKING, Any, Concatenate, Protocol, TypedDict, TypeGuard
+from typing import TYPE_CHECKING, Any, Concatenate, Protocol, TypedDict, TypeGuard, overload
 
-from music_assistant_models.enums import MediaType
+from music_assistant_models.enums import MediaType, SleepTimerMode
+from music_assistant_models.errors import PlayerUnavailableError
 from music_assistant_models.media_items import (
     ItemMapping,
     MediaItemMetadata,
@@ -19,6 +20,7 @@ from music_assistant_models.queue_item import QueueItem, QueueItemOrigin
 
 from music_assistant.constants import ATTR_PLAY_ACTION_IN_PROGRESS
 from music_assistant.controllers.player_queues.constants import ArtistOrder
+from music_assistant.controllers.players.constants import SwitchedOffAction
 
 if TYPE_CHECKING:
     from music_assistant_models.enums import ContentType, PlaybackState
@@ -74,9 +76,34 @@ class _PlayActionHost(Protocol):
     ) -> None: ...
 
 
+@overload
 def handle_play_action[PlayActionHostT: _PlayActionHost, **P, R](
     func: Callable[Concatenate[PlayActionHostT, P], Awaitable[R]],
-) -> Callable[Concatenate[PlayActionHostT, P], Coroutine[Any, Any, R]]:
+) -> Callable[Concatenate[PlayActionHostT, P], Coroutine[Any, Any, R | None]]: ...
+
+
+@overload
+def handle_play_action[PlayActionHostT: _PlayActionHost, **P, R](
+    func: None = None,
+    *,
+    switched_off: SwitchedOffAction = SwitchedOffAction.REFUSE,
+) -> Callable[
+    [Callable[Concatenate[PlayActionHostT, P], Awaitable[R]]],
+    Callable[Concatenate[PlayActionHostT, P], Coroutine[Any, Any, R | None]],
+]: ...
+
+
+def handle_play_action[PlayActionHostT: _PlayActionHost, **P, R](
+    func: Callable[Concatenate[PlayActionHostT, P], Awaitable[R]] | None = None,
+    *,
+    switched_off: SwitchedOffAction = SwitchedOffAction.REFUSE,
+) -> (
+    Callable[Concatenate[PlayActionHostT, P], Coroutine[Any, Any, R | None]]
+    | Callable[
+        [Callable[Concatenate[PlayActionHostT, P], Awaitable[R]]],
+        Callable[Concatenate[PlayActionHostT, P], Coroutine[Any, Any, R | None]],
+    ]
+):
     """
     Decorator for queue playback actions.
 
@@ -87,42 +114,67 @@ def handle_play_action[PlayActionHostT: _PlayActionHost, **P, R](
     rather than run alongside it.
     Uses an internal refcount so nested actions don't clear the flag prematurely.
 
-    :param func: The function to wrap.
+    :param func: The function to wrap (when used without parentheses).
+    :param switched_off: What the action does with a queue whose player is switched off at
+        its external power control (see SwitchedOffAction), handled before the locks are
+        taken: refused by default, ignored, powered on first for actions that start
+        playback, or run as is for actions that handle it themselves.
     """  # noqa: D401
 
-    @functools.wraps(func)
-    async def wrapper(self: PlayActionHostT, /, *args: P.args, **kwargs: P.kwargs) -> R:
-        """Execute function with playback lock and play action flag set."""
-        queue_id = kwargs.get("queue_id") or args[0]
-        assert isinstance(queue_id, str)  # for type checking
-        queue_data = self._queue_data.get(queue_id)
-        if queue_data is None:
-            return await func(self, *args, **kwargs)
-        queue = queue_data.queue
-        # a play action on the queue of a player captured by a (sync)group releases the
-        # player from it first, which takes the group's lock - so that one is taken before
-        # the player's own (see PlayerController.get_group_and_player_lock)
-        async with self.mass.players.get_group_and_player_lock(queue_id, strict=True):
-            prev_in_progress = queue.extra_attributes.get(ATTR_PLAY_ACTION_IN_PROGRESS, False)
-            try:
-                queue_data.play_action_refcount += 1
-                queue.extra_attributes[ATTR_PLAY_ACTION_IN_PROGRESS] = True
-                if not prev_in_progress:
-                    self.signal_update(queue_id)
-                return await func(self, *args, **kwargs)
-            finally:
-                queue_data.play_action_refcount -= 1
-                if queue_data.play_action_refcount <= 0:
-                    queue_data.play_action_refcount = 0
-                    queue.extra_attributes[ATTR_PLAY_ACTION_IN_PROGRESS] = False
-                    # the queue follows the player through a debounced update, which is also
-                    # suppressed while an action is transitioning; recalculate it here so the
-                    # update that clears the flag already carries the action's resulting state
-                    if (player := self.mass.players.get_player(queue_id)) is not None:
-                        self.on_player_update(player, {})
-                    self.signal_update(queue_id)
+    def decorator(
+        fn: Callable[Concatenate[PlayActionHostT, P], Awaitable[R]],
+    ) -> Callable[Concatenate[PlayActionHostT, P], Coroutine[Any, Any, R | None]]:
+        @functools.wraps(fn)
+        async def wrapper(self: PlayActionHostT, /, *args: P.args, **kwargs: P.kwargs) -> R | None:
+            """Execute function with playback lock and play action flag set."""
+            queue_id = kwargs.get("queue_id") or args[0]
+            assert isinstance(queue_id, str)  # for type checking
+            queue_data = self._queue_data.get(queue_id)
+            if queue_data is None:
+                return await fn(self, *args, **kwargs)
+            if (
+                player := self.mass.players.get_player(queue_id)
+            ) is not None and player.offline_by_power_control:
+                if switched_off == SwitchedOffAction.REFUSE:
+                    msg = f"Player {player.display_name} is switched off"
+                    raise PlayerUnavailableError(msg)
+                if switched_off == SwitchedOffAction.IGNORE:
+                    return None
+                if switched_off == SwitchedOffAction.POWER_ON:
+                    await self.mass.players._power_on_switched_off_player(queue_id)
+                    # the queue can register anew while its device comes online
+                    queue_data = self._queue_data[queue_id]
+            queue = queue_data.queue
+            # a play action on the queue of a player captured by a (sync)group releases the
+            # player from it first, which takes the group's lock - so that one is taken
+            # before the player's own (see PlayerController.get_group_and_player_lock)
+            async with self.mass.players.get_group_and_player_lock(queue_id, strict=True):
+                prev_in_progress = queue.extra_attributes.get(ATTR_PLAY_ACTION_IN_PROGRESS, False)
+                try:
+                    queue_data.play_action_refcount += 1
+                    queue.extra_attributes[ATTR_PLAY_ACTION_IN_PROGRESS] = True
+                    if not prev_in_progress:
+                        self.signal_update(queue_id)
+                    return await fn(self, *args, **kwargs)
+                finally:
+                    queue_data.play_action_refcount -= 1
+                    if queue_data.play_action_refcount <= 0:
+                        queue_data.play_action_refcount = 0
+                        queue.extra_attributes[ATTR_PLAY_ACTION_IN_PROGRESS] = False
+                        # the queue follows the player through a debounced update, which is
+                        # also suppressed while an action is transitioning; recalculate it
+                        # here so the update that clears the flag already carries the
+                        # action's resulting state
+                        if (player := self.mass.players.get_player(queue_id)) is not None:
+                            self.on_player_update(player, {})
+                        self.signal_update(queue_id)
 
-    return wrapper
+        return wrapper
+
+    # Support both @handle_play_action and @handle_play_action(switched_off=...)
+    if func is not None:
+        return decorator(func)
+    return decorator
 
 
 def is_dynamic_source(item: MediaItemType | BrowseFolder) -> TypeGuard[Playlist | Radio]:
@@ -248,6 +300,39 @@ def get_current_playback_speed(queue: PlayerQueue) -> float:
     if queue.current_item is None:
         return 1.0
     return float(queue.current_item.extra_attributes.get("playback_speed") or 1.0)
+
+
+def get_sleep_timer_stop_position(
+    mode: SleepTimerMode, queue_item: QueueItem, elapsed_time: float
+) -> float | None:
+    """
+    Return the position in the queue item at which a sleep timer in the given mode stops it.
+
+    Returns None when the item has no known end. Outside of any chapter, END_OF_CHAPTER stops
+    at the end of the item.
+
+    :param mode: END_OF_ITEM or END_OF_CHAPTER.
+    :param queue_item: The queue item that is playing.
+    :param elapsed_time: The (media-time) position in the queue item.
+    """
+    if not queue_item.duration:
+        return None
+    item_end = float(queue_item.duration)
+    if mode != SleepTimerMode.END_OF_CHAPTER or queue_item.media_item is None:
+        return item_end
+    chapters = sorted(queue_item.media_item.metadata.chapters or [], key=lambda x: x.start)
+    # a seek takes whole seconds, so a seek to a chapter start lands up to a second before it
+    position = elapsed_time + 1
+    for index, chapter in enumerate(chapters):
+        if chapter.end is not None:
+            chapter_end = chapter.end
+        elif index + 1 < len(chapters):
+            chapter_end = chapters[index + 1].start
+        else:
+            chapter_end = item_end
+        if chapter.start <= position < chapter_end:
+            return chapter_end
+    return item_end
 
 
 def committed_index(queue: PlayerQueue) -> int | None:

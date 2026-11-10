@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock, MagicMock, PropertyMock, patch
 import pytest
 from aiosendspin.models.types import PlayerCommand
 from aiosendspin.server.roles.player.events import OutputDelayChangedEvent
+from aiosendspin.server.roles.player.v1 import PlayerPersistentState
 
 from music_assistant.providers.sendspin.constants import CONF_SENDSPIN_STATIC_DELAY
 from music_assistant.providers.sendspin.player import SendspinBasePlayer, SendspinPlayer
@@ -65,3 +66,32 @@ async def test_delay_setting_follows_the_declared_commands(
         entries = await player.get_config_entries()
 
     assert (CONF_SENDSPIN_STATIC_DELAY in {entry.key for entry in entries}) is offered
+
+
+@pytest.mark.parametrize(
+    ("connected", "commands", "noted"),
+    [
+        (False, [PlayerCommand.SET_STATIC_DELAY], True),
+        (False, [PlayerCommand.VOLUME], False),
+        (True, [PlayerCommand.SET_STATIC_DELAY], False),
+    ],
+)
+async def test_a_detached_player_says_when_its_delay_setting_returns(
+    connected: bool, commands: list[PlayerCommand], noted: bool
+) -> None:
+    """The note follows the commands the disconnected device last declared."""
+    player = object.__new__(SendspinPlayer)
+    player.api = MagicMock()
+    player.api.is_connected = connected
+    player.api.get_role_state.return_value = PlayerPersistentState(
+        state_supported_commands=commands
+    )
+
+    with (
+        patch.object(SendspinBasePlayer, "get_config_entries", AsyncMock(return_value=[])),
+        patch.object(SendspinPlayer, "_player_role", new_callable=PropertyMock) as role,
+    ):
+        role.return_value = None
+        entries = await player.get_config_entries()
+
+    assert ("sendspin_static_delay_disconnected" in {entry.key for entry in entries}) is noted

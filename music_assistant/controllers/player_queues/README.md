@@ -207,7 +207,9 @@ else goes, including what sessions that ended earlier left behind: sessions rota
 so a claim that is no longer current marks audio nobody will come back for. A clear or a replace
 drops the items themselves, so all of their audio goes with them.
 
-A paused queue keeps its session and its buffers until the pause watcher stops it after 30 seconds.
+A paused queue keeps its session and its buffers until the pause watcher stops it once the
+configured pause timeout passes (30 seconds by default, at most 4 minutes, so before an unread
+buffer releases its audio).
 When playback on another queue finds no free provider stream slot and one of those buffers holds
 one, the paused queue is stopped right away. It resumes later from where it was paused, with a new
 source stream. Preparing the next track ahead of time never stops a paused queue. A player that
@@ -238,8 +240,10 @@ Two distinct refill paths share the same "running low" trigger:
 - **Autoplay** is the single "keep going" switch; what it appends is dispatched on the media type of
   the queue's last item, since that is the item the appended ones follow. Music continues with the
   per-queue configured mode, owned by `autoplay.py`: similar tracks (seeded from the enqueued items),
-  an infinite library mix (genre-biased, least-played), a chosen playlist, or an automatic mode that
-  tries similar first and falls back to the library mix. The mode is read from the per-queue config;
+  an infinite library mix (genre-biased, least-played), a chosen playlist, similar artists, or an
+  automatic mode that tries similar first and falls back to the library mix. The similar artists
+  mode plays an artist similar to the last track's artist that has no track in the queue yet, the
+  same way as playing that artist. The mode is read from the per-queue config;
   the playlist for playlist-mode is a per-queue config value. A podcast episode or audiobook instead
   continues with its own successor — the next episode of the podcast, the next book in the collection
   — resolved by `media_resolver.py`, and simply ends the queue when there is none. Live sources

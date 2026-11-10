@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Awaitable, Callable, Coroutine, Iterable, Sequence
-from contextlib import suppress
+from collections.abc import Awaitable, Callable, Coroutine, Iterable, Mapping, Sequence
+from contextlib import aclosing, suppress
 from copy import deepcopy
 from datetime import datetime
 from itertools import zip_longest
@@ -36,6 +36,7 @@ from music_assistant_models.errors import (
     InvalidProviderURI,
     MediaNotFoundError,
     MusicAssistantError,
+    ProviderUnavailableError,
     ResourceTemporarilyUnavailable,
     UnsupportedFeaturedException,
 )
@@ -74,6 +75,7 @@ from music_assistant.constants import (
     DB_TABLE_TRACKS,
     PROVIDERS_WITH_SHAREABLE_URLS,
 )
+from music_assistant.controllers.music.bookmarks import BookmarksController
 from music_assistant.controllers.music.constants import (
     BROWSE_CACHE_EXPIRATION,
     CACHE_CATEGORY_SEARCH_RESULTS,
@@ -159,6 +161,7 @@ from music_assistant.helpers.json import json_loads, serialize_to_json
 from music_assistant.helpers.provider_access import (
     access_allows,
     exact_provider,
+    hidden_music_sources,
     own_music_sources,
     playback_instance_for,
     source_owner,
@@ -409,6 +412,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         self.recommendations = RecommendationsController(self.mass)
         self.recency = RecencyEngine(self.mass)
         self.favorites = FavoritesStore(self.mass)
+        self.bookmarks = BookmarksController(self.mass)
         self._database: DatabaseConnection | None = None
         self._sync_lock = asyncio.Lock()
         # a sync ran that MUSIC_SYNC_COMPLETED has not announced yet
@@ -546,6 +550,37 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             ],
         )
 
+    def get_visible_provider(
+        self, instance_id_or_domain: str, strict: bool = False
+    ) -> ProviderInstanceType | None:
+        """
+        Return the provider serving this instance id or domain, if the current user may see it.
+
+        :param instance_id_or_domain: The provider instance id or domain to look up.
+        :param strict: Serve exactly this instance, never another account of the service.
+        """
+        return visible_provider(self.mass, instance_id_or_domain, get_current_user(), strict)
+
+    def resolve_visible_provider(
+        self, instance_id_or_domain: str, strict: bool = False
+    ) -> ProviderInstanceType:
+        """
+        Return the provider serving this instance id or domain, which the current user may see.
+
+        :param instance_id_or_domain: The provider instance id or domain to look up.
+        :param strict: Serve exactly this instance, never another account of the service.
+        :raises InsufficientPermissions: The source is not one of the user's music sources.
+        :raises ProviderUnavailableError: No provider the user may see serves it.
+        """
+        user = get_current_user()
+        if provider := visible_provider(self.mass, instance_id_or_domain, user, strict):
+            return provider
+        if user and instance_id_or_domain in hidden_music_sources(self.mass, user):
+            raise InsufficientPermissions(
+                f"{instance_id_or_domain} is not a music source of this user"
+            )
+        raise ProviderUnavailableError(f"{instance_id_or_domain} is not available")
+
     @api_command("music/sync", required_scope=Scope.LIBRARY_MANAGE)
     async def start_sync(
         self,
@@ -656,7 +691,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             search_providers = [
                 instance_id
                 for instance_id in all_search_providers
-                if (prov := self.mass.get_provider(instance_id))
+                if (prov := self.get_visible_provider(instance_id))
                 and (prov.instance_id in requested_providers or prov.domain in requested_providers)
             ]
         # use cache to avoid repeated searches; the library results are narrowed to what
@@ -713,7 +748,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             )
             provider_searches: list[Coroutine[Any, Any, SearchResults | None]] = []
             for provider_instance in search_providers:
-                if not (prov := self.mass.get_provider(provider_instance)):
+                if not (prov := self.get_visible_provider(provider_instance)):
                     continue
                 # skip media types for which the library already holds a (near)
                 # exact match that is mapped to this provider: searching the
@@ -1124,8 +1159,11 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         Return the sort options a listing offers, the listing's default first.
 
         :param listing: The listing to get the sort options of.
+        :raises InvalidDataError: When this server does not serve the listing.
         """
-        return list(LISTING_SORT_OPTIONS[listing])
+        if (options := LISTING_SORT_OPTIONS.get(listing)) is None:
+            raise InvalidDataError(f"Listing {listing.value} is not supported")
+        return list(options)
 
     @api_command("music/recently_played_items", required_scope=Scope.LIBRARY_READ)
     async def recently_played(
@@ -1198,7 +1236,18 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             )
         else:
             provider_clause = f"p.provider IN {available_providers_str}"
-        query = f"SELECT p.* FROM {DB_TABLE_MEDIA_PROGRESS} p WHERE {media_type_clause} AND {provider_clause} "
+        # a play is logged under the id it was started from, so resolve provider rows to the
+        # library item they map to; one item can otherwise show up twice
+        entry_item_id = "COALESCE(CAST(l.item_id AS TEXT), p.item_id)"
+        entry_provider = "CASE WHEN l.item_id IS NULL THEN p.provider ELSE 'library' END"
+        query = (
+            f"SELECT p.*, {entry_item_id} AS entry_item_id, {entry_provider} AS entry_provider "
+            f"FROM {DB_TABLE_MEDIA_PROGRESS} p "
+            f"LEFT JOIN {DB_TABLE_PROVIDER_MAPPINGS} l ON p.provider != 'library' "
+            "AND l.media_type = p.media_type AND l.provider_instance = p.provider "
+            "AND l.provider_item_id = p.item_id "
+            f"WHERE {media_type_clause} AND {provider_clause} "
+        )
         if fully_played_only:
             query += "AND p.fully_played = 1 "
         if userid:
@@ -1213,13 +1262,11 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         if played_after_timestamp is not None:
             query += "AND p.timestamp >= :played_after_timestamp "
             params["played_after_timestamp"] = played_after_timestamp
-        query += "ORDER BY p.timestamp DESC"
-        db_rows = await self.mass.music.database.get_rows_from_query(
-            query, params=params or None, limit=limit
-        )
+        query += "ORDER BY p.timestamp DESC, p.rowid DESC"
         result: list[ItemMapping] = []
         available_providers = ("library", *get_global_cache_value("available_providers", []))
-        for db_row in db_rows:
+        # an entry keeps the id its newest play was logged under, so it matches a playlog row
+        for db_row in await self._get_newest_playlog_entries(query, params, limit):
             provider = db_row["provider"]
             result.append(
                 ItemMapping.from_dict(
@@ -1441,7 +1488,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
 
         return result
 
-    @api_command("music/item_by_uri", required_scope=Scope.LIBRARY_READ)
+    @api_command("music/item_by_uri", required_scope=Scope.LIBRARY_READ, allow_impersonation=True)
     async def get_item_by_uri(
         self, uri: str, allow_update_metadata: bool = False
     ) -> MediaItemType | BrowseFolder:
@@ -1468,7 +1515,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         )
         return [item for sublist in results_per_provider for item in sublist]
 
-    @api_command("music/item", required_scope=Scope.LIBRARY_READ)
+    @api_command("music/item", required_scope=Scope.LIBRARY_READ, allow_impersonation=True)
     async def get_item(
         self,
         media_type: MediaType,
@@ -1537,7 +1584,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             # Sound effects are not library-backed; resolve them live from the
             # owning music provider. Returning the live MediaItem lets play_media
             # create a queue item the standard way.
-            prov = self.mass.get_provider(provider_instance_id_or_domain)
+            prov = self.get_visible_provider(provider_instance_id_or_domain)
             if isinstance(prov, MusicProvider) and (
                 ProviderFeature.SOUND_EFFECTS in prov.supported_features
             ):
@@ -1555,19 +1602,23 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             allow_update_metadata=allow_update_metadata,
         )
 
-    @api_command("music/get_library_item", required_scope=Scope.LIBRARY_READ)
+    @api_command(
+        "music/get_library_item", required_scope=Scope.LIBRARY_READ, allow_impersonation=True
+    )
     async def get_library_item_by_prov_id(
         self,
         media_type: MediaType,
         item_id: str,
         provider_instance_id_or_domain: str,
     ) -> MediaItemType | None:
-        """Get the library item for the given provider item, if present."""
+        """Get the library item for the given provider item, if present on the user's sources."""
         ctrl = self.get_controller(media_type)
-        item = await ctrl.get_library_item_by_prov_id(
+        item = await ctrl.get_visible_library_item_by_prov_id(
             item_id=item_id,
             provider_instance_id_or_domain=provider_instance_id_or_domain,
         )
+        if item is None:
+            return None
         if isinstance(item, Playlist) and not self.playlists.visible_to_caller(item):
             return None
         return item
@@ -1821,6 +1872,12 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             return media_item
 
         library_id = media_item.item_id if media_item.provider == "library" else None
+
+        if media_type == MediaType.TRACK:
+            # a wrong measured volume is not kept, the track is measured again
+            await self.mass.streams.audio_analysis.delete_measured_loudness(
+                media_item.provider_mappings
+            )
 
         # cache in_library state before the provider fetch overwrites media_item
         in_library_cache: dict[tuple[str, str], bool] = {}
@@ -2564,6 +2621,29 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
                 "Provider %s was not not fully removed from library", provider_instance
             )
 
+    async def cleanup_provider_images(self, provider_instance: str) -> None:
+        """
+        Remove the images of a removed metadata provider from all library items.
+
+        :param provider_instance: The instance ID of the removed provider.
+        """
+        # no per-item MEDIA_ITEM_UPDATED events for this bulk removal, to not flood subscribers
+        token = SUPPRESS_MEDIA_ITEM_UPDATES.set(True)
+        try:
+            for ctrl in (
+                self.artists,
+                self.albums,
+                self.tracks,
+                self.playlists,
+                self.radio,
+                self.audiobooks,
+                self.podcasts,
+                self.genres,
+            ):
+                await ctrl.remove_all_provider_images(provider_instance)
+        finally:
+            SUPPRESS_MEDIA_ITEM_UPDATES.reset(token)
+
     async def cleanup_provider_shortcuts(self, provider_instance: str) -> None:
         """
         Clean up sidebar shortcuts after a music provider is removed.
@@ -3084,7 +3164,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
 
         :param mapping: The provider mapping to resolve.
         """
-        return visible_provider(self.mass, mapping.provider_instance, get_current_user())
+        return self.get_visible_provider(mapping.provider_instance)
 
     def _visible_search_results(self, results: SearchResults) -> SearchResults:
         """Return the search results with only the items the current user may see."""
@@ -3101,6 +3181,25 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             podcasts=visible_items(self.mass, results.podcasts, user),
             sound_effects=visible_items(self.mass, results.sound_effects, user),
         )
+
+    async def _get_newest_playlog_entries(
+        self, query: str, params: dict[str, Any], limit: int
+    ) -> list[Mapping[str, Any]]:
+        """Return the newest playlog row of each entry, up to limit entries (0 for all)."""
+        # the limit counts entries rather than rows, so it can't go into the query
+        entries: list[Mapping[str, Any]] = []
+        seen: set[tuple[str, str, str]] = set()
+        db_rows = self.mass.music.database.iter_rows_from_query(query, params or None)
+        async with aclosing(db_rows):
+            async for db_row in db_rows:
+                entry = (db_row["media_type"], db_row["entry_provider"], db_row["entry_item_id"])
+                if entry in seen:
+                    continue
+                seen.add(entry)
+                entries.append(db_row)
+                if len(entries) == limit:
+                    break
+        return entries
 
     async def _search_shareable_url(self, search_query: str) -> SearchResults | None:
         """
@@ -3168,15 +3267,10 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         :param soft_timeout: Seconds to wait before returning None while the search
                              continues in the background; None waits for it to finish.
         """
-        prov = self.mass.get_provider(
-            provider_instance_id_or_domain,
-            return_unavailable=strict_provider_instance,
-            provider_type=MediaCatalogMixin,
+        prov = visible_provider(
+            self.mass, provider_instance_id_or_domain, get_current_user(), strict_provider_instance
         )
-        if not prov or (
-            strict_provider_instance
-            and (prov.instance_id != provider_instance_id_or_domain or not prov.available)
-        ):
+        if not isinstance(prov, MediaCatalogMixin):
             return None if strict_provider_instance else SearchResults()
         if ProviderFeature.SEARCH not in prov.supported_features:
             return SearchResults()

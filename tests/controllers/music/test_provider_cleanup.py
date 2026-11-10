@@ -33,6 +33,7 @@ from music_assistant.mass import MusicAssistant
 
 FS_INSTANCE = "filesystem_local--AbCd"
 STREAM_INSTANCE = "spotify--EfGh"
+METADATA_INSTANCE = "local_metadata--IjKl"
 
 
 @pytest.fixture(name="mass")
@@ -134,6 +135,48 @@ async def test_cleanup_filesystem_provider_does_not_reset_database(mass: MusicAs
     with pytest.raises(MediaNotFoundError):
         await artists.get_library_item(int(db_fs_only.item_id))
     assert await artists.get_library_item(int(db_survivor.item_id))
+
+
+async def test_cleanup_provider_images_strips_only_that_providers_images(
+    mass: MusicAssistant,
+) -> None:
+    """Removing a metadata provider drops its images from every media type, nothing else."""
+    artists = mass.music.artists
+    podcasts = mass.music.podcasts
+    db_artist = await artists.add_item_to_library(_artist_with_two_providers("Enriched Artist"))
+    db_podcast = await podcasts.add_item_to_library(
+        Podcast(
+            item_id="show1",
+            provider=FS_INSTANCE,
+            name="Enriched Show",
+            provider_mappings={
+                ProviderMapping(
+                    item_id="show1",
+                    provider_domain="filesystem_local",
+                    provider_instance=FS_INSTANCE,
+                )
+            },
+        )
+    )
+    image = MediaItemImage(
+        type=ImageType.FANART,
+        path="Artist/fanart.jpg?v=1",
+        provider=METADATA_INSTANCE,
+        remotely_accessible=False,
+    )
+    for controller, db_id in ((artists, db_artist.item_id), (podcasts, db_podcast.item_id)):
+        await controller.replace_metadata(db_id, provider_images={METADATA_INSTANCE: [image]})
+
+    await mass.music.cleanup_provider_images(METADATA_INSTANCE)
+
+    updated_artist = await artists.get_library_item(db_artist.item_id)
+    assert [img.provider for img in updated_artist.metadata.images or []] == [
+        FS_INSTANCE,
+        STREAM_INSTANCE,
+    ]
+    assert len(updated_artist.provider_mappings) == 2
+    updated_podcast = await podcasts.get_library_item(db_podcast.item_id)
+    assert updated_podcast.metadata.images is None
 
 
 async def test_remove_single_provider_mapping_strips_provider_images(mass: MusicAssistant) -> None:

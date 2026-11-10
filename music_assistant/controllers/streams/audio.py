@@ -59,7 +59,7 @@ from music_assistant_models.errors import (
     QueueEmpty,
     RetriesExhausted,
 )
-from music_assistant_models.media_items import Album, AudioFormat, Track
+from music_assistant_models.media_items import Album, AudioFormat, Playlist, Track
 from music_assistant_models.player_queue import PlayLogEntry
 from music_assistant_models.streamdetails import MultiPartPath, StreamMetadata
 
@@ -106,6 +106,7 @@ from music_assistant.controllers.streams.constants import (
     CONF_ALLOW_CROSSFADE_SAME_ALBUM,
     DEFAULT_VOLUME_NORMALIZATION_MODE,
     HLS_RADIO_INPUT_BURST,
+    ICY_PLACEHOLDER_IMAGE_URLS,
     MIN_VOICE_OVER_DURATION,
     NO_TRACK_MATCH_EXPIRATION,
     OUTCOME_ONLY_NORMALIZATION_MODES,
@@ -182,7 +183,7 @@ from music_assistant.helpers.throttle_retry import RequestPriority, request_prio
 from music_assistant.helpers.util import (
     clean_stream_title,
     detect_charset,
-    parse_quoted_stream_title,
+    parse_station_stream_title,
     parse_title_and_version,
     remove_file,
 )
@@ -220,6 +221,11 @@ PREFETCH_HANDOVER_TIMEOUT = 5.0
 # the current track buffered meanwhile.
 CROSSFADE_HANDOFF_WAIT = 30.0
 
+# The same wait for an incoming item with a realtime source. A speaker gives up on a
+# request that sends no audio for about 10 s (seen on Sonos) and drops the item, which
+# aborts that source: its single stream slot then has to start over for the next item.
+REALTIME_CROSSFADE_HANDOFF_WAIT = 5.0
+
 # Size of the tail slices played out while a fade waits for the incoming track's
 # audio. The fade is sized on what is left of the tail once that audio shows up,
 # so a small slice keeps it from losing more of the tail than the wait took.
@@ -241,6 +247,12 @@ RADIO_MIRROR_FAILOVER_ERRORS = (
     RetriesExhausted,
     InvalidDataError,
 )
+
+# Signed radio urls expire, so a failing station restarts on fresh stream details. Runs
+# shorter than the minimum playtime count toward the limit so its provider is not hammered.
+RADIO_MAX_FAILED_RESTARTS = 3
+RADIO_RESTART_MIN_PLAYTIME = 60
+RADIO_RESTART_DELAY = 1.0
 
 
 @dataclass
@@ -722,6 +734,8 @@ class StreamsAudio:
             connected; once it reports False, no source is opened for it.
         :return: The buffer, or None when the consumer reported it left.
         :raises ProviderStreamLimitError: If no source slot becomes available within the budget.
+        :raises ProviderStreamHeldError: If another player's realtime playback holds the only
+            slot of the source and the item needs a new one, refused without waiting.
         """
         lock_key = (queue_item.queue_id, queue_item.queue_item_id)
         if (buffer_lock := self._audio_buffer_locks.get(lock_key)) is None:
@@ -750,6 +764,9 @@ class StreamsAudio:
         """
         Get audio stream for given media details as raw PCM.
 
+        A radio station that fails after it played is restarted on fresh stream details
+        from its provider, which are updated in place.
+
         :param streamdetails: Details of the stream to fetch.
         :param pcm_format: Target PCM format the consumer expects.
         :param seek_position: Seek offset in seconds (only honoured when the
@@ -763,7 +780,12 @@ class StreamsAudio:
             on the providing music provider, or None to wait without a timeout.
         :raises ProviderStreamLimitError: If the provider has no free slot within the timeout.
         """
-        media_stream = self._get_media_stream(
+        get_stream = (
+            self._get_restarting_radio_media_stream
+            if streamdetails.media_type == MediaType.RADIO
+            else self._get_media_stream
+        )
+        media_stream = get_stream(
             streamdetails,
             pcm_format,
             seek_position,
@@ -2097,6 +2119,9 @@ class StreamsAudio:
             discard_position = float(streamdetails.seek_position)
 
         total_chunks_received = 0
+        # the buffer this item plays from, as of its first chunk: a stop detaches it from
+        # the streamdetails before it releases it, and the duration writeback must see that
+        source_buffer: AudioBuffer | None = None
         playback_speed = cast("float", queue_item.extra_attributes.get("playback_speed", 1.0))
         try:
             async for chunk in self.get_queue_item_stream(
@@ -2110,6 +2135,8 @@ class StreamsAudio:
                 consumer_connected=consumer_connected,
             ):
                 total_chunks_received += 1
+                if total_chunks_received == 1 and queue_item.streamdetails:
+                    source_buffer = queue_item.streamdetails.buffer
                 tail_window.extend(chunk)
                 del chunk
                 hold_target = tail_hold_target(queue_item, crossfade_buffer_size, frame_size)
@@ -2406,10 +2433,12 @@ class StreamsAudio:
                         first_part_written / pcm_format.pcm_sample_size,
                         crossfade_timing.post_crossfade_duration,
                     )
+                    # the tail play-out and the mix's pre-fade plus overlap are pulled at
+                    # playback pace inside this interval: it is mostly audio played, not work
                     crossfade_elapsed = asyncio.get_event_loop().time() - crossfade_start_time
                     self.logger.debug(
                         "Stored crossfade data for queue %s"
-                        " - next queue_item_id: %s (preparation took %.1fs)",
+                        " - next queue_item_id: %s (%.1fs after the outgoing source ended)",
                         queue.display_name,
                         next_queue_item.queue_item_id,
                         crossfade_elapsed,
@@ -2445,7 +2474,7 @@ class StreamsAudio:
         streamdetails.seconds_streamed = seconds_streamed
         # an externally aborted source ends in a clean EOF mid-track, so the
         # streamed length must not be written back as the item's duration
-        source_buffer = streamdetails.buffer
+        source_buffer = source_buffer or streamdetails.buffer
         if source_buffer is None or not source_buffer.cancelled:
             uncredited_tail_seconds = uncredited_tail_bytes / pcm_format.pcm_sample_size
             # streamdetails.duration is in media-time; seconds_streamed is stream-time
@@ -2829,6 +2858,10 @@ class StreamsAudio:
                 bytes_written = 0
                 crossfade_buffer = bytearray()
                 first_chunk_received = False
+                # the buffer this item plays from, as of its first chunk: a stop detaches it
+                # from the streamdetails before it releases it, which the duration writeback
+                # must see
+                source_buffer: AudioBuffer | None = None
                 holding_back = item_crossfade_mode != CrossfadeMode.DISABLED
 
                 item_stream = await incoming_prefetcher.take(queue_track, int(raw_seek_position))
@@ -2862,6 +2895,7 @@ class StreamsAudio:
                         total_chunks_received += 1
                         if not first_chunk_received:
                             first_chunk_received = True
+                            source_buffer = queue_track.streamdetails.buffer
                             # inform the queue that the track is now loaded in the buffer
                             # so the next track can be preloaded
                             self.mass.player_queues.track_loaded_in_buffer(
@@ -3072,6 +3106,15 @@ class StreamsAudio:
                             del crossfade_buffer[: len(pcm_slice)]
                             await asyncio.sleep(0)
 
+                if _superseded():
+                    # a stop ends the session before it releases its audio (a clean EOF):
+                    # booked as finished, the queue would end and resume from its start
+                    self.logger.debug(
+                        "Flow stream for queue %s superseded - exiting before end-of-track",
+                        queue.display_name,
+                    )
+                    return
+
                 # A source error after partial audio must not look like a completed item.
                 # Progress reporting skips items with stream_error, so the item is not
                 # marked played; move on to the next queue item like the zero-audio path.
@@ -3152,6 +3195,9 @@ class StreamsAudio:
                         await asyncio.sleep(0)
                 crossfade_buffer = bytearray()
 
+                if _superseded():
+                    # the tail flush above yields, so a stop can land between the two checks
+                    return
                 # update duration details based on the actual pcm data we sent
                 # this also accounts for crossfade and silence stripping
                 seconds_streamed = bytes_written / pcm_sample_size
@@ -3159,7 +3205,7 @@ class StreamsAudio:
                 play_log_entry.seconds_streamed = seconds_streamed
                 # an externally aborted source ends in a clean EOF mid-track, so the
                 # streamed length must not be written back as the item's duration
-                source_buffer = queue_track.streamdetails.buffer
+                source_buffer = source_buffer or queue_track.streamdetails.buffer
                 source_aborted = source_buffer is not None and source_buffer.cancelled
                 if not source_aborted:
                     # the held-back crossfade tail still counts as this track's media-time
@@ -3376,6 +3422,28 @@ class StreamsAudio:
         # and release anything waiting on a fade this queue will never finish mixing
         if pending := self._crossfade_pending.pop(queue_id, None):
             pending[1].set()
+
+    def get_stream_providers(
+        self, mapping: ProviderMapping, allowed: list[str] | None
+    ) -> list[Provider]:
+        """
+        Return the loaded providers that can stream the item a provider mapping points to.
+
+        :param mapping: The provider mapping of the item.
+        :param allowed: Music sources the playback user may use, or None for all of them.
+        """
+        return self._get_mapping_providers(mapping, allowed)
+
+    def has_alternative_match_providers(
+        self, media_item: Playlist | Album | Track, allowed: list[str] | None
+    ) -> bool:
+        """
+        Return whether a streaming provider the item has no mapping on could stream a match.
+
+        :param media_item: The item whose own mappings define the providers it is known on.
+        :param allowed: Music sources the playback user may use, or None for all of them.
+        """
+        return self._has_alternative_match_providers(media_item, allowed)
 
     async def get_shoutcast_stream(
         self, url: str, streamdetails: StreamDetails
@@ -3762,23 +3830,7 @@ class StreamsAudio:
                 self._fill_in_mapping_audio_format(media_item, streamdetails)
 
             # work out how to handle radio stream
-            if (
-                streamdetails.stream_type in (StreamType.ICY, StreamType.HLS, StreamType.HTTP)
-                and streamdetails.media_type == MediaType.RADIO
-                and isinstance(streamdetails.path, str)
-            ):
-                resolved_url, stream_type = await self.resolve_radio_stream(streamdetails.path)
-                streamdetails.path = resolved_url
-                streamdetails.stream_type = stream_type
-                # Set up metadata monitoring callback for HLS radio streams, if not already set
-                if (
-                    stream_type == StreamType.HLS
-                    and not streamdetails.stream_metadata_update_callback
-                ):
-                    streamdetails.stream_metadata_update_callback = partial(
-                        self._update_hls_radio_metadata
-                    )
-                    streamdetails.stream_metadata_update_interval = 5
+            await self._resolve_radio_stream_details(streamdetails)
 
         # providers report an unknown duration as either None or 0
         if not streamdetails.duration:
@@ -3961,14 +4013,24 @@ class StreamsAudio:
             # probe (0s) whenever a reselection can still follow: a free slot is still
             # acquired instantly, while a busy one fails fast instead of spending the
             # whole budget on this candidate. Block only on the last resort.
-            source_wait = (
-                0.0
-                if (
-                    not final_pass
-                    and (alternatives_left or busy_instances or match_pending or paused_holder)
-                )
-                else remaining
+            last_resort = final_pass or not (
+                alternatives_left or busy_instances or match_pending or paused_holder
             )
+            # an item that resumes from its own buffer (the reuse check of get_buffer) opens
+            # no new source, so a held slot is nothing to refuse it over
+            own_buffer = streamdetails.buffer
+            resumes = (
+                own_buffer is not None
+                and not own_buffer.has_error
+                and own_buffer.is_valid(seek_position_ms)
+            )
+            if last_resort and not resumes:
+                # a realtime source keeps its slot until its item ends, so the budget would
+                # run out with nothing to show for it: refuse right away instead
+                self.mass.player_queues.refuse_held_stream_slot(
+                    streamdetails.provider, queue_item.queue_id
+                )
+            source_wait = remaining if last_resort else 0.0
             # record whose audio this is before it exists: a queue stop releases only the
             # buffers of the session it is tearing down, and details resolved by an earlier
             # session are reused as they are, so the claim has to be made where the buffer
@@ -4213,12 +4275,12 @@ class StreamsAudio:
         )
 
     def _has_alternative_match_providers(
-        self, media_item: Track, allowed: list[str] | None
+        self, media_item: Playlist | Album | Track, allowed: list[str] | None
     ) -> bool:
         """
         Return whether any configured streaming provider could carry an unmapped match.
 
-        :param media_item: Track whose existing mappings define the known provider domains.
+        :param media_item: Item whose existing mappings define the known provider domains.
         :param allowed: Music sources the playback user may use, or None for all of them.
         """
         known_domains = {mapping.provider_domain for mapping in media_item.provider_mappings}
@@ -4719,6 +4781,87 @@ class StreamsAudio:
                 streamdetails.uri,
             )
 
+    async def _get_restarting_radio_media_stream(
+        self,
+        streamdetails: StreamDetails,
+        pcm_format: AudioFormat,
+        seek_position: int,
+        filter_params: list[str] | None,
+        chunk_seconds: float,
+    ) -> AsyncGenerator[bytes]:
+        """Stream a radio station as raw PCM, restarting it on fresh stream details when it fails."""
+        played = False
+        failed_restarts = 0
+        while True:
+            run_bytes = 0
+            try:
+                if played:
+                    await self._refresh_radio_stream_details(streamdetails)
+                async with aclosing(
+                    self._get_media_stream(
+                        streamdetails, pcm_format, seek_position, filter_params, chunk_seconds
+                    )
+                ) as media_stream:
+                    async for chunk in media_stream:
+                        played = True
+                        run_bytes += len(chunk)
+                        yield chunk
+                return
+            except ProviderStreamLimitError:
+                raise
+            except (MusicAssistantError, aiohttp.ClientError, TimeoutError) as err:
+                if not played:
+                    raise
+                if run_bytes / pcm_format.pcm_sample_size >= RADIO_RESTART_MIN_PLAYTIME:
+                    failed_restarts = 0
+                failed_restarts += 1
+                if failed_restarts > RADIO_MAX_FAILED_RESTARTS:
+                    raise
+                self.logger.warning(
+                    "Radio stream %s failed (%s), restarting on fresh stream details (%d/%d)",
+                    streamdetails.uri,
+                    err,
+                    failed_restarts,
+                    RADIO_MAX_FAILED_RESTARTS,
+                )
+            await asyncio.sleep(RADIO_RESTART_DELAY)
+
+    async def _refresh_radio_stream_details(self, streamdetails: StreamDetails) -> None:
+        """Point radio stream details at a fresh stream from the provider that issued them."""
+        # pin the exact instance, see _resolve_media_stream_source
+        provider = self.mass.get_provider(streamdetails.provider, return_unavailable=True)
+        if provider is None or not provider.available:
+            raise ProviderUnavailableError(
+                f"Provider {streamdetails.provider} for stream is no longer available"
+            )
+        stream_prov = cast("AudioStreamMixin", provider)
+        with request_priority(RequestPriority.HIGH):
+            fresh = await stream_prov.get_stream_details(
+                streamdetails.item_id, streamdetails.media_type
+            )
+        await self._resolve_radio_stream_details(fresh)
+        # updated in place: the queue item holds these details, metadata callback included
+        streamdetails.path = fresh.path
+        streamdetails.stream_type = fresh.stream_type
+        streamdetails.audio_format = fresh.audio_format
+        streamdetails.data = fresh.data
+
+    async def _resolve_radio_stream_details(self, streamdetails: StreamDetails) -> None:
+        """Resolve the playable url and stream type of radio stream details in place."""
+        if not (
+            streamdetails.stream_type in (StreamType.ICY, StreamType.HLS, StreamType.HTTP)
+            and streamdetails.media_type == MediaType.RADIO
+            and isinstance(streamdetails.path, str)
+        ):
+            return
+        resolved_url, stream_type = await self.resolve_radio_stream(streamdetails.path)
+        streamdetails.path = resolved_url
+        streamdetails.stream_type = stream_type
+        # Set up metadata monitoring callback for HLS radio streams, if not already set
+        if stream_type == StreamType.HLS and not streamdetails.stream_metadata_update_callback:
+            streamdetails.stream_metadata_update_callback = partial(self._update_hls_radio_metadata)
+            streamdetails.stream_metadata_update_interval = 5
+
     def _report_crossfade_mode(
         self,
         queue_id: str,
@@ -4814,15 +4957,17 @@ class StreamsAudio:
         if pending is None or pending[0] != queue_item.queue_item_id:
             return None
         handoff = pending[1]
+        realtime = queue_item.streamdetails is not None and queue_item.streamdetails.is_realtime
+        max_wait = REALTIME_CROSSFADE_HANDOFF_WAIT if realtime else CROSSFADE_HANDOFF_WAIT
         self.logger.debug(
             "Waiting up to %.1fs for the fade into %s being mixed for queue %s",
-            CROSSFADE_HANDOFF_WAIT,
+            max_wait,
             queue_item.name,
             queue.display_name,
         )
         waited_from = asyncio.get_event_loop().time()
         with suppress(TimeoutError):
-            await asyncio.wait_for(handoff.wait(), CROSSFADE_HANDOFF_WAIT)
+            await asyncio.wait_for(handoff.wait(), max_wait)
         # claimed (popped) only when it is this item's own boundary; a stale entry
         # for another item stays for its own request
         handover = await self._claim_crossfade_handover(queue, queue_item, session_id)
@@ -5286,7 +5431,7 @@ class StreamsAudio:
         # Parse the original title for structured fields first so stations that announce
         # an album can refine the artwork lookup; fall back to the "Artist - Track" split.
         album: str | None = None
-        if parsed := parse_quoted_stream_title(stream_title):
+        if parsed := parse_station_stream_title(stream_title):
             track_name, artist_name_raw, album = parsed
         elif " - " in cleaned_stream_title:
             artist_name_raw, track_name = (
@@ -5333,6 +5478,8 @@ class StreamsAudio:
         if parsed.scheme not in ("http", "https"):
             return None
         if not parsed.path.lower().endswith((".png", ".jpg", ".jpeg")):
+            return None
+        if image_url in ICY_PLACEHOLDER_IMAGE_URLS:
             return None
         self.logger.debug("ICY metadata: StreamUrl image='%s'", image_url)
         return image_url

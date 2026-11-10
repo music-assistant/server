@@ -14,6 +14,7 @@ from music_assistant_models.enums import ConfigEntryType, FlowStepType
 from music_assistant_models.errors import PlayerCommandFailed
 from pyatv.const import Protocol
 
+from music_assistant.constants import CONF_PASSWORD
 from music_assistant.models.setup_flow import AbortFlow, SetupFlowContext, SetupSession
 from music_assistant.providers.airplay.constants import (
     AIRPLAY_DISCOVERY_TYPE,
@@ -26,7 +27,6 @@ from music_assistant.providers.airplay.constants import (
     CONF_PAIR_NOW,
     CONF_PAIRING_PASSWORD,
     CONF_PAIRING_PIN,
-    CONF_PASSWORD,
     CONF_RAOP_CREDENTIALS,
 )
 from music_assistant.providers.airplay.control_player import AirPlayControlPlayer

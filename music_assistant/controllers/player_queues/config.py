@@ -4,11 +4,13 @@ Config-entry schema for the Player Queues controller.
 Two related schemas are built from shared builders:
 
 * the **core-module** entries — the *global* queue-controller defaults: the per-media-type enqueue
-  behaviour, plus the global smart-shuffle / autoplay / crossfade / volume-normalization settings.
+  behaviour, plus the global smart-shuffle / autoplay / crossfade / volume-normalization settings
+  and the pause timeout.
 * the **per-queue** entries — the same feature settings, but each headline setting gains a "global"
   option (its default) that follows the matching global value, mirroring the ``log_level`` "GLOBAL"
-  pattern. The smart-shuffle recency windows and the crossfade duration are global-only (they can't
-  sensibly follow-or-override per queue), so they appear only in the core schema.
+  pattern. The smart-shuffle recency windows, the crossfade duration and the pause timeout are
+  global-only (they can't sensibly follow-or-override per queue), so they appear only in the core
+  schema.
 
 Kept separate from the controller so the schema reads as one self-contained unit; the controller
 exposes these through thin delegators.
@@ -71,6 +73,7 @@ from music_assistant.controllers.player_queues.constants import (
     CONF_DEFAULT_ENQUEUE_SELECT_ARTIST,
     CONF_DEFAULT_PLAY_ACTION_ALBUM_TRACK,
     CONF_DEFAULT_PLAY_ACTION_PLAYLIST_TRACK,
+    CONF_PAUSE_TIMEOUT,
     CONF_SMART_SHUFFLE_ARTIST_RECENCY,
     CONF_SMART_SHUFFLE_DUPLICATE_GAP,
     CONF_SMART_SHUFFLE_ENABLED,
@@ -79,9 +82,11 @@ from music_assistant.controllers.player_queues.constants import (
     CONF_SMART_SHUFFLE_SONG_RECENCY,
     DEFAULT_AUTOPLAY_ENABLED,
     DEFAULT_CROSSFADE_ENABLED,
+    DEFAULT_PAUSE_TIMEOUT,
     ENQUEUE_ORDER_ARTIST_DEFAULT_VALUE,
     ENQUEUE_SELECT_ALBUM_DEFAULT_VALUE,
     ENQUEUE_SELECT_ARTIST_DEFAULT_VALUE,
+    PAUSE_TIMEOUT_RANGE,
     PLAY_ACTION_PLAY_FROM_HERE,
     PLAY_ACTION_PLAY_TRACK,
     PLAY_ACTION_TRACK_DEFAULT_VALUE,
@@ -105,6 +110,7 @@ CATEGORY_SMART_SHUFFLE = "smart_shuffle"
 CATEGORY_AUTOPLAY = "autoplay"
 CATEGORY_CROSSFADE = "crossfade"
 CATEGORY_AUDIO = "audio"
+CATEGORY_PLAYBACK = "playback"
 
 
 def core_config_entries(mass: MusicAssistant) -> tuple[ConfigEntry, ...]:
@@ -114,7 +120,7 @@ def core_config_entries(mass: MusicAssistant) -> tuple[ConfigEntry, ...]:
     These are the queue-controller-wide defaults: the per-media-type enqueue behaviour, the click
     actions clients apply to a media item, plus the global smart-shuffle, autoplay, crossfade and
     volume-normalization settings that individual queues follow (via their "global" option) or
-    override.
+    override, and how long a queue may stay paused before it is stopped.
 
     Kept option-free (the global autoplay-playlist dropdown is populated by the config controller
     when serving the entries to the UI) so this stays cheap for the config parse/value path.
@@ -128,6 +134,7 @@ def core_config_entries(mass: MusicAssistant) -> tuple[ConfigEntry, ...]:
         *_autoplay_entries(mass, None, per_queue=False),
         *_crossfade_entries(mass, per_queue=False),
         _volume_normalization_entry(per_queue=False),
+        _pause_timeout_entry(),
     )
 
 
@@ -377,11 +384,18 @@ def _autoplay_entries(
         ProviderFeature.SIMILAR_TRACKS in provider.supported_features
         for provider in mass.music.providers
     )
+    similar_artists_available = any(
+        ProviderFeature.SIMILAR_ARTISTS in provider.supported_features
+        for provider in mass.music.providers
+    )
     mode_options = [
         ConfigValueOption(AutoplayMode.AUTO.value),
         ConfigValueOption(AutoplayMode.SIMILAR.value, disabled=not similar_available),
         ConfigValueOption(AutoplayMode.LIBRARY.value),
         ConfigValueOption(AutoplayMode.PLAYLIST.value),
+        ConfigValueOption(
+            AutoplayMode.SIMILAR_ARTISTS.value, disabled=not similar_artists_available
+        ),
     ]
     if per_queue:
         mode_options.append(ConfigValueOption(CONF_VALUE_GLOBAL))
@@ -482,4 +496,16 @@ def _volume_normalization_entry(*, per_queue: bool) -> ConfigEntry:
         per_queue=per_queue,
         global_default=CONF_VALUE_ENABLED,
         reload_on_change=True,
+    )
+
+
+def _pause_timeout_entry() -> ConfigEntry:
+    """Global-only: the seconds a queue may stay paused before it is stopped."""
+    return ConfigEntry(
+        key=CONF_PAUSE_TIMEOUT,
+        type=ConfigEntryType.INTEGER,
+        range=PAUSE_TIMEOUT_RANGE,
+        default_value=DEFAULT_PAUSE_TIMEOUT,
+        category=CATEGORY_PLAYBACK,
+        advanced=True,
     )

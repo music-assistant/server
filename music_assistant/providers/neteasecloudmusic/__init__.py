@@ -231,6 +231,7 @@ class NcmApiClient:
         if params:
             req_params.update(params)
         headers: dict[str, str] = {
+            # mimics a browser on the NetEase Cloud Music website (#3640)
             "User-Agent": (
                 "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
                 "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
@@ -1950,7 +1951,8 @@ class NeteaseCloudMusicProvider(MusicProvider):
             )
             bitrate = stream_info.get("br")
             if isinstance(bitrate, int) and bitrate > 0:
-                audio_format.bit_rate = bitrate
+                # The API reports br in bits/s; AudioFormat stores kbps.
+                audio_format.bit_rate = int(bitrate / 1000) if bitrate > 10000 else bitrate
             stream_sr = _to_positive_int(stream_info.get("sr"))
             if stream_sr > 0 and (
                 level_quality_obj is None or audio_format.sample_rate in (0, 44100)

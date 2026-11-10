@@ -4,13 +4,15 @@ from __future__ import annotations
 
 from unittest.mock import AsyncMock, MagicMock
 
+import aiohttp
 import pytest
 from music_assistant_models.enums import RepeatMode
 
-from music_assistant.providers.raumfeld.constants import RENDERER_QUERY_TIMEOUT
+from music_assistant.providers.raumfeld.constants import HOST_CHECK_TIMEOUT, RENDERER_QUERY_TIMEOUT
 from music_assistant.providers.raumfeld.helpers import (
     container_object_id,
     external_source,
+    host_is_valid,
     library_uri,
     parse_control_url,
     parse_didl_metadata,
@@ -225,6 +227,49 @@ async def test_last_change_query_has_a_short_timeout() -> None:
     session.post.return_value = request
     assert await query_last_change(session, "http://192.168.1.42:54730/AVTransport/ctrl") == {}
     assert session.post.call_args.kwargs["timeout"].total == RENDERER_QUERY_TIMEOUT
+
+
+def _session_answering(
+    status: int = 200, body: str = "", error: Exception | None = None
+) -> MagicMock:
+    """Build an HTTP session whose GET answers with the given status and body, or raises."""
+    response = MagicMock(status=status)
+    response.text = AsyncMock(return_value=body)
+    request = MagicMock()
+    request.__aenter__ = AsyncMock(return_value=response, side_effect=error)
+    request.__aexit__ = AsyncMock(return_value=None)
+    session = MagicMock()
+    session.get.return_value = request
+    return session
+
+
+_HOST_INFO = (
+    "<?xml version='1.0' encoding='UTF-8'?>"
+    "<hostInfo><hostName>Teufel Connector</hostName><roomName>Living</roomName></hostInfo>"
+)
+
+
+async def test_a_host_that_names_itself_is_valid() -> None:
+    """The host check reads getHostInfo through the given session, with a 10 s timeout."""
+    session = _session_answering(body=_HOST_INFO)
+    assert await host_is_valid(session, "192.168.1.23", 47365)
+    assert session.get.call_args.args[0] == "http://192.168.1.23:47365/getHostInfo"
+    assert session.get.call_args.kwargs["timeout"].total == HOST_CHECK_TIMEOUT
+
+
+@pytest.mark.parametrize(
+    "session",
+    [
+        _session_answering(body="<hostInfo><roomName>Living</roomName></hostInfo>"),
+        _session_answering(body="<html>not a raumfeld host"),
+        _session_answering(status=404),
+        _session_answering(error=TimeoutError()),
+        _session_answering(error=aiohttp.ClientConnectionError()),
+    ],
+)
+async def test_anything_else_is_not_a_host(session: MagicMock) -> None:
+    """No host name, no XML, an error status, a timeout or no connection: not a host."""
+    assert not await host_is_valid(session, "192.168.1.23", 47365)
 
 
 _LIBRARY_DIDL = (

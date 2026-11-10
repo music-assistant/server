@@ -9,7 +9,7 @@ from abc import ABCMeta, abstractmethod
 from collections.abc import Iterable
 from contextlib import suppress
 from contextvars import ContextVar
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, Final, Literal, TypeVar, cast, final, overload
 
@@ -43,6 +43,7 @@ from music_assistant_models.media_items import (
     ItemMapping,
     ItemMappingSummary,
     MediaCollection,
+    MediaCollectionMetadata,
     MediaItem,
     MediaItemImage,
     MediaItemMetadata,
@@ -70,6 +71,7 @@ from music_assistant.constants import (
 from music_assistant.controllers.music.constants import (
     BASE_SORT_FIELD_SQL,
     CACHE_CATEGORY_SEARCH_RESULTS,
+    COLLECTION_COVER_COUNT,
     RANDOM_SORT_FIELDS,
 )
 from music_assistant.controllers.music.helpers import (
@@ -77,6 +79,7 @@ from music_assistant.controllers.music.helpers import (
     provider_mappings_from_urls,
     search_name_match_clause,
     sibling_instance_mappings,
+    usable_thumb,
 )
 from music_assistant.controllers.music.listing import (
     apply_listing,
@@ -105,6 +108,7 @@ from music_assistant.helpers.external_ids import (
 from music_assistant.helpers.json import json_loads, serialize_to_json
 from music_assistant.helpers.provider_access import (
     exact_provider,
+    has_visible_source,
     hidden_music_sources,
     visible_music_sources,
 )
@@ -287,7 +291,10 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
             allow_impersonation=True,
         )
         self.mass.register_api_command(
-            f"music/{api_base}/get", self.get, required_scope=Scope.LIBRARY_READ
+            f"music/{api_base}/get",
+            self.get,
+            required_scope=Scope.LIBRARY_READ,
+            allow_impersonation=True,
         )
         self.mass.register_api_command(
             f"music/{api_base}/get_by_external_id",
@@ -305,6 +312,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
             f"music/{api_base}/get_{self.media_type}",
             self.get,
             required_scope=Scope.LIBRARY_READ,
+            allow_impersonation=True,
             alias=True,
         )
         self._register_update_command()
@@ -482,6 +490,9 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
                     "item_id": prov_mapping.item_id,
                     "provider": prov_mapping.provider_instance,
                 },
+            )
+            await self.mass.music.bookmarks.remove_copy(
+                self.media_type, prov_mapping.provider_instance, prov_mapping.item_id
             )
         # delete genre exclusions for this media item
         await self.mass.music.database.delete(
@@ -773,10 +784,9 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         :param allow_update_metadata: Schedule a metadata refresh on access.
             Set to False when fetching items in bulk (e.g. provider sync).
         """
-        # always prefer the full library item if we have it
-        if library_item := await self.get_library_item_by_prov_id(
-            item_id,
-            provider_instance_id_or_domain,
+        # always prefer the full library item if we have it (on a source the user may see)
+        if library_item := await self.get_visible_library_item_by_prov_id(
+            item_id, provider_instance_id_or_domain
         ):
             # schedule a refresh of the metadata on access of the item
             # e.g. the item is being played or opened in the UI
@@ -784,6 +794,9 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
                 assert library_item.uri is not None
                 self.mass.metadata.schedule_update_metadata(library_item)
             return library_item
+        if provider_instance_id_or_domain == "library":
+            # a library item is either served above, or on no source the user may see
+            raise MediaNotFoundError(f"{self.media_type.value} {item_id} not found in library")
         # grab full details from the provider
         return await self.get_provider_item(
             item_id,
@@ -803,7 +816,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
             return await self.library_items(
                 search=search_query, limit=limit, summary=False, collapse_collections=False
             )
-        if not (prov := self.mass.get_provider(provider_instance_id_or_domain)):
+        if not (prov := self.mass.music.get_visible_provider(provider_instance_id_or_domain)):
             return []
         if prov.type != ProviderType.MUSIC:
             return []
@@ -854,7 +867,13 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         """
         name = get_collection_name_from_item_id(item_id)
         query_params: dict[str, Any] = {"collection_name": name}
-        sql_query, base_query_params = self._build_final_query([], [], summary=False)
+        query_parts: list[str] = []
+        if provider_filter := self._ensure_provider_filter(None):
+            query_parts.append(
+                self._provider_filter_clause(query_params, provider_filter, in_library_only=True)
+            )
+        query_parts.extend(self.listing_filter(query_params))
+        sql_query, base_query_params = self._build_final_query(query_parts, [], summary=False)
         for key, value in base_query_params.items():
             query_params.setdefault(key, value)
         sql_query = await self._adapt_query_for_collections(
@@ -892,6 +911,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
                 provider="library",
                 provider_mappings=set(),
                 items=items,
+                metadata=self._parse_collection_metadata(db_rows[0], hidden_sources),
             ),
         )
 
@@ -926,6 +946,38 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
             provider_item_id=item_id,
         ):
             return item
+        return None
+
+    @final
+    async def get_visible_library_item_by_prov_id(
+        self,
+        item_id: str,
+        provider_instance_id_or_domain: str,
+    ) -> ItemCls | None:
+        """
+        Return the library item for the provider item, if present on one of the user's sources.
+
+        A streaming provider stamps its domain on the items it serves, so the plain lookup
+        also finds a library copy that only another account of the service holds.
+
+        :param item_id: The item id on the provider, or its library id.
+        :param provider_instance_id_or_domain: The provider the id belongs to, or "library".
+        """
+        library_item = await self.get_library_item_by_prov_id(
+            item_id, provider_instance_id_or_domain
+        )
+        if library_item is None or self._has_visible_source(library_item):
+            return library_item
+        if provider_instance_id_or_domain == "library":
+            return None
+        # a provider item id is not unique across rows either: the first row is hidden, but
+        # another row with the same id may lie on the user's sources
+        for candidate in await self.get_library_items_by_prov_id(
+            provider_instance_id_or_domain=provider_instance_id_or_domain,
+            provider_item_id=item_id,
+        ):
+            if self._has_visible_source(candidate):
+                return candidate
         return None
 
     @final
@@ -1102,10 +1154,12 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         external_id_type: ExternalID | None = None,
     ) -> ItemCls | None:
         """Get item by external ID, querying library then active providers."""
-        if library_item := await self.get_library_item_by_external_id(
-            external_id, external_id_type
+        # an external id is not unique, so the first library item on the user's sources wins
+        for library_item in await self.get_library_items_by_external_id(
+            external_id, external_id_type, limit=None
         ):
-            return library_item
+            if self._has_visible_source(library_item):
+                return library_item
 
         if external_id_type is None:
             return None
@@ -1139,10 +1193,10 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
                 if result:
                     if result.provider == "library":
                         return result
-                    return (
-                        await self.get_library_item_by_prov_id(result.item_id, result.provider)
-                        or result
+                    library_match = await self.get_visible_library_item_by_prov_id(
+                        result.item_id, result.provider
                     )
+                    return library_match or result
             except NotImplementedError, MediaNotFoundError:
                 continue
             except ProviderUnavailableError as err:
@@ -1294,15 +1348,9 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         """
         if provider_instance_id_or_domain == "library":
             return await self.get_library_item(item_id)
-        provider = self.mass.get_provider(
-            provider_instance_id_or_domain,
-            return_unavailable=strict_provider_instance,
+        provider = self.mass.music.resolve_visible_provider(
+            provider_instance_id_or_domain, strict=strict_provider_instance
         )
-        if provider is None or (
-            strict_provider_instance
-            and (provider.instance_id != provider_instance_id_or_domain or not provider.available)
-        ):
-            raise ProviderUnavailableError(f"{provider_instance_id_or_domain} is not available")
         catalog_prov = cast("MediaCatalogMixin", provider)
         with suppress(MediaNotFoundError):
             async with self.mass.cache.handle_refresh(force_refresh):
@@ -1331,7 +1379,8 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         # There is a possibility that the (streaming) provider changed the id of the item
         # so we return the previous details (if we have any) marked as unavailable, so
         # at least we have the possibility to sort out the new id through matching logic.
-        fallback = fallback or await self.get_library_item_by_prov_id(
+        # a stored item counts only when it lies on a source the user may see
+        fallback = fallback or await self.get_visible_library_item_by_prov_id(
             item_id, provider_instance_id_or_domain
         )
         if (
@@ -1584,6 +1633,9 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
                 "provider": provider_instance_id,
             },
         )
+        await self.mass.music.bookmarks.remove_copy(
+            self.media_type, provider_instance_id, provider_item_id
+        )
         library_item.provider_mappings = remaining_mappings
         # if this was the last mapping for the provider instance, strip any artwork
         # that belonged to it (e.g. local file paths that are no longer resolvable)
@@ -1652,6 +1704,10 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
                 "provider_instance": provider_instance_id,
             },
         )
+        for prov_mapping in library_item.provider_mappings - remaining_mappings:
+            await self.mass.music.bookmarks.remove_copy(
+                self.media_type, provider_instance_id, prov_mapping.item_id
+            )
         library_item.provider_mappings = remaining_mappings
         # the item is kept (it still has other providers), but it may carry artwork
         # that belonged to the removed provider (e.g. local file paths that are no
@@ -1726,6 +1782,65 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         db_id = int(item_id)  # ensure integer
         if not await self._remove_provider_images(db_id, provider_instance_id, set(paths)):
             return
+        if not SUPPRESS_MEDIA_ITEM_UPDATES.get():
+            item = await self.get_library_item(db_id)
+            self.mass.signal_event(EventType.MEDIA_ITEM_UPDATED, item.uri, item)
+
+    @final
+    async def remove_all_provider_images(self, provider_instance_id: str) -> None:
+        """
+        Remove all images of a provider from the library items of this media type.
+
+        :param provider_instance_id: The provider instance the images belong to.
+        """
+        query = (
+            f"SELECT item_id FROM {self.db_table} WHERE EXISTS ("
+            f"SELECT 1 FROM json_each({self.db_table}.metadata, '$.images') "
+            "WHERE json_extract(value, '$.provider') = :provider_instance)"
+        )
+        params = {"provider_instance": provider_instance_id}
+        for db_row in await self.mass.music.database.get_rows_from_query(query, params, limit=0):
+            db_id = int(db_row["item_id"])
+            if (
+                await self._remove_provider_images(db_id, provider_instance_id)
+                and not SUPPRESS_MEDIA_ITEM_UPDATES.get()
+            ):
+                item = await self.get_library_item(db_id)
+                self.mass.signal_event(EventType.MEDIA_ITEM_UPDATED, item.uri, item)
+
+    @final
+    async def replace_metadata(
+        self,
+        item_id: str | int,
+        values: Mapping[str, Any] | None = None,
+        provider_images: Mapping[str, Iterable[MediaItemImage]] | None = None,
+    ) -> None:
+        """
+        Overwrite metadata values and provider images stored for a library item.
+
+        A library update only fills in missing values and adds images; this replaces them.
+
+        :param item_id: The library item ID.
+        :param values: Metadata field names mapped to the values that replace the stored ones.
+        :param provider_images: Provider instance ids mapped to the images that replace
+            the images stored for that provider (an empty iterable removes them).
+        """
+        db_id = int(item_id)  # ensure integer
+        metadata = await self._get_stored_metadata(db_id)
+        images = list(metadata.images or [])
+        for provider_instance_id, given in (provider_images or {}).items():
+            new_images = list(given)
+            if [img for img in images if img.provider == provider_instance_id] != new_images:
+                images = [img for img in images if img.provider != provider_instance_id]
+                images.extend(new_images)
+        updated = replace(metadata, **(values or {}), images=UniqueList(images) or None)
+        if updated == metadata:
+            return
+        await self.mass.music.database.update(
+            self.db_table,
+            {"item_id": db_id},
+            {"metadata": serialize_to_json(updated)},
+        )
         if not SUPPRESS_MEDIA_ITEM_UPDATES.get():
             item = await self.get_library_item(db_id)
             self.mass.signal_event(EventType.MEDIA_ITEM_UPDATED, item.uri, item)
@@ -1999,6 +2114,21 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         if collapse_collections:
             if search:
                 query_params["search"] = f"%{search}%"
+            # the metadata of a collection ignores the filters that only narrow the view
+            scope_query = None
+            if favorite is not None or played_only or genre_ids:
+                scope_parts = list(extra_query_parts) if extra_query_parts else []
+                self._apply_filters(
+                    query_parts=scope_parts,
+                    query_params=query_params,
+                    favorite=None,
+                    search=None,
+                    genre_ids=None,
+                    provider_filter=provider_filter,
+                    in_library_only=in_library_only,
+                    reachable_via=reachable_via,
+                )
+                scope_query, _ = self._build_final_query(scope_parts, join_parts, summary=summary)
             sql_query = await self._adapt_query_for_collections(
                 sql_query,
                 query_params,
@@ -2007,6 +2137,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
                 sort_direction=sort_direction,
                 search=search,
                 random_seed=random_seed,
+                scope_query=scope_query,
             )
 
         db_rows = await self.mass.music.database.get_rows_from_query(
@@ -2039,6 +2170,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
                             items=UniqueList(
                                 [_parse_method(x) for x in json_loads(db_row["media_data"])]
                             ),
+                            metadata=self._parse_collection_metadata(db_row, hidden_sources),
                         )
                     )
             return items
@@ -2862,9 +2994,8 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         """
         Return a listing of one of this type's items, assembled once and served from the cache.
 
-        The listing is assembled from, and kept under, the provider instance the selector
-        resolves to; when no instance answers for it, it is assembled for the selector as
-        given and not kept.
+        The listing is assembled from, and kept under, the visible provider instance the
+        selector resolves to.
 
         :param listing: The listing being served.
         :param item_id: The item id on the provider, or its library id.
@@ -2872,20 +3003,31 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         :param assemble: Assembles the whole listing from the given provider instance (or
             "library"): a Listing, or just its items when the assembly is always complete.
         :param item_type: The type of the items, to rebuild them from the cache.
-        :param narrowed_to: The provider instances the calling user's music sources narrow
-            the assembly to, when they do.
+        :param narrowed_to: The provider instances the assembly is narrowed to; the calling
+            user's music sources when omitted.
+        :raises InsufficientPermissions: The source is not one of the user's music sources.
+        :raises ProviderUnavailableError: No provider the user may see serves it.
         """
 
         async def _assemble(provider_id: str) -> Listing[T]:
+            if provider_id != "library":
+                # the pinned account dropping before the fill is raised, not answered for by
+                # another account of the service (see `mass.get_provider`)
+                self.mass.music.resolve_visible_provider(provider_id, strict=True)
             assembled = await assemble(provider_id)
             return assembled if isinstance(assembled, Listing) else Listing(list(assembled))
 
+        if narrowed_to is None:
+            # the assembly follows the calling user's music sources, so the listing is kept
+            # per set of them
+            narrowed_to = self._ensure_provider_filter(None)
         if provider_instance_id_or_domain == "library":
             instance_id = "library"
-        elif provider := self.mass.get_provider(provider_instance_id_or_domain):
-            instance_id = provider.instance_id
         else:
-            return (await _assemble(provider_instance_id_or_domain)).items
+            # resolved once, so the listing is assembled by and kept under one visible account
+            instance_id = self.mass.music.resolve_visible_provider(
+                provider_instance_id_or_domain
+            ).instance_id
         return await cached_listing(
             self.mass,
             listing,
@@ -2939,8 +3081,6 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
             provider_instance_id_or_domain,
             assemble,
             item_type=self.item_cls,
-            # the search only covers the music sources the calling user may see
-            narrowed_to=self._ensure_provider_filter(None),
         )
         return apply_listing(
             versions,
@@ -2976,8 +3116,12 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         user = get_current_user()
         visible_sources = visible_music_sources(self.mass, user) if user else None
         if visible_sources is None:
-            mapping = ordered_mappings[0]
-            return (mapping.provider_instance, mapping.item_id)
+            # the first mapping with a loaded instance, so a down account does not block the item
+            for mapping in ordered_mappings:
+                if exact_provider(self.mass, mapping.provider_instance):
+                    return (mapping.provider_instance, mapping.item_id)
+            msg = f"{library_item.name} is currently not available on any provider"
+            raise MediaNotFoundError(msg)
 
         # First prefer music provider mappings that are explicitly allowed for this user.
         # Only the exact instance counts: the domain fallback of get_provider must not
@@ -3049,6 +3193,10 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         """Return the music sources hidden from the current user."""
         user = get_current_user()
         return hidden_music_sources(self.mass, user) if user else set()
+
+    def _has_visible_source(self, item: MediaItemType) -> bool:
+        """Return whether the current user may see one of the item's sources."""
+        return has_visible_source(self.mass, item.provider_mappings, get_current_user())
 
     @final
     async def _get_stored_metadata(self, db_id: int) -> MediaItemMetadata:
@@ -3214,6 +3362,26 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
             for raw_mapping in json_loads(db_row["artists"])
         )
 
+    def _parse_collection_metadata(
+        self, db_row: Mapping[str, Any], hidden_sources: set[str]
+    ) -> MediaCollectionMetadata:
+        """Return the metadata computed over all items of a collection row."""
+        raw_metadata = db_row["collection_metadata"]
+        metadata = json_loads(raw_metadata) if raw_metadata else {}
+        # the covers of the first books with a thumb, less those the viewer can't be shown
+        thumbs = [
+            self._summary_thumb([thumb], hidden_sources)
+            for images in metadata.get("covers") or []
+            if (thumb := usable_thumb(images, hidden_sources))
+        ]
+        return MediaCollectionMetadata(
+            images=UniqueList(thumb for thumb in thumbs if thumb) or None,
+            total_items=metadata.get("total_items"),
+            duration=metadata.get("duration"),
+            fully_played=parse_optional_bool(metadata.get("fully_played")),
+            in_progress=parse_optional_bool(metadata.get("in_progress")),
+        )
+
     async def _adapt_query_for_collections(
         self,
         sql_query: str,
@@ -3224,7 +3392,15 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         collection_name: str | None = None,
         search: str | None = None,
         random_seed: int | None = None,
+        scope_query: str | None = None,
     ) -> str:
+        """
+        Wrap a listing query so the items of a collection come back as one collection row.
+
+        :param scope_query: The query of all items in scope, which the metadata of a
+            collection is computed over. None when sql_query applies no view filters
+            (favorite, genre, played).
+        """
         cache_key_json_object = f"collection_{self.api_base}"
         json_object = await self.mass.cache.get(key=cache_key_json_object, category=int(summary))
         if json_object is None:
@@ -3244,6 +3420,11 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
                 json_object = "json_object()"
 
         collections_column = "collections" if summary else "json_extract(metadata, '$.collections')"
+        images_column = "images" if summary else "json_extract(metadata, '$.images')"
+        # all books in scope make a collection's metadata, the ones in view its items
+        scope_table = f"scope_table as ({scope_query})," if scope_query else ""
+        extract_source = "scope_table" if scope_query else "joined_table"
+        in_view = "item_id IN (SELECT item_id FROM joined_table)" if scope_query else "1"
 
         # the sort fields a collapsed listing offers: those aggregated per collection below
         supported_sort_fields = {
@@ -3261,13 +3442,44 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         # single is targeting a single media item, collection the aggregated ones
         single_extra_order_keys = ""
         collection_extra_order_keys = ""
+        # the order of the items within a collection, which the covers follow as well
+        sequence_order = """
+                -- null case
+                CASE WHEN collection_sequence IS NULL THEN 1 ELSE 0 END,
+                -- numeric before text
+                CASE WHEN collection_sequence_is_numeric THEN 0 ELSE 1 END,
+                -- order NUMERIC
+                CASE WHEN collection_sequence_is_numeric
+                    THEN CAST(collection_sequence AS REAL)
+                END,
+                -- order TEXT
+                CASE WHEN NOT collection_sequence_is_numeric
+                    THEN collection_sequence
+                END COLLATE NOCASE,
+                -- order by media name if no sequence given
+                CASE
+                    WHEN collection_sequence IS NULL
+                    THEN media_name
+                END COLLATE NOCASE"""
+
+        # the played state of a collection, from the columns this media type has
+        collection_extract_keys = ""
+        fully_played_stat = in_progress_stat = duration_stat = "NULL"
         if self.media_type == MediaType.AUDIOBOOK:
             single_extra_order_keys = "duration,"
             collection_extra_order_keys = "SUM(duration) as duration,"
+            collection_extract_keys = "fully_played, resume_position_ms,"
+            duration_stat = "SUM(duration)"
+            fully_played_stat = "MIN(COALESCE(fully_played, 0))"
+            # some book started or finished, but not all of them finished
+            in_progress_stat = (
+                "MAX(COALESCE(fully_played, 0) OR COALESCE(resume_position_ms, 0) > 0)"
+                f" AND NOT {fully_played_stat}"
+            )
             supported_sort_fields.add(SortField.DURATION)
         elif self.media_type == MediaType.ALBUM:
             single_extra_order_keys = "year,"
-            collection_extra_order_keys = "MIN(year) as year,"
+            collection_extra_order_keys = "MIN(CASE WHEN in_view THEN year END) as year,"
             supported_sort_fields.add(SortField.YEAR)
 
         sql_query = f"""
@@ -3275,6 +3487,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
 
             WITH
                 joined_table as ({sql_query}),
+                {scope_table}
                 collection_extract as (
                     SELECT
                         item_id,
@@ -3284,6 +3497,13 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
                         last_played,
                         play_count,
                         {single_extra_order_keys}
+                        {collection_extract_keys}
+                        {in_view} as in_view,
+                        {images_column} as images,
+                        EXISTS(
+                            SELECT 1 FROM json_each({images_column}) as iter_img
+                            WHERE json_extract(iter_img.value, '$.type') = 'thumb'
+                        ) as has_thumb,
                         json_extract(iter_coll.value, '$.title') as collection_title,
                         json_extract(iter_coll.value, '$.sequence') as collection_sequence,
                         json_extract(iter_coll.value, '$.search_title') as collection_search_title,
@@ -3301,54 +3521,52 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
                             END
                             ELSE 0
                         END as collection_sequence_is_numeric,
-                        {json_object} as media_data
+                        -- only the items in view are listed, so only they need their data
+                        CASE WHEN {in_view} THEN {json_object} END as media_data
                     FROM (
-                        SELECT * FROM joined_table
+                        SELECT * FROM {extract_source}
                     ), json_each({collections_column}) as iter_coll
                 )
             SELECT
                 'collection' as type,
-                MIN(item_id) as random_item_id,
+                MIN(CASE WHEN in_view THEN item_id END) as random_item_id,
                 collection_title as name,
                 COALESCE(MAX(collection_search_title), replace(lower(collection_title),' ','')) AS search_name,
                 COALESCE(MAX(collection_search_sort_title), replace(lower(collection_title),' ','')) AS search_sort_name,
-                MAX(timestamp_added) as timestamp_added,
-                MAX(timestamp_modified) as timestamp_modified,
-                MAX(last_played) as last_played,
-                SUM(play_count) as play_count,
+                MAX(CASE WHEN in_view THEN timestamp_added END) as timestamp_added,
+                MAX(CASE WHEN in_view THEN timestamp_modified END) as timestamp_modified,
+                MAX(CASE WHEN in_view THEN last_played END) as last_played,
+                SUM(CASE WHEN in_view THEN play_count END) as play_count,
                 {collection_extra_order_keys}
-                json_group_array(media_data) as media_data
+                json_object(
+                    'total_items', COUNT(*),
+                    'duration', {duration_stat},
+                    'fully_played', {fully_played_stat},
+                    'in_progress', {in_progress_stat},
+                    'covers', json_group_array(json(images))
+                        FILTER (WHERE has_thumb AND cover_rank <= {COLLECTION_COVER_COUNT})
+                ) as collection_metadata,
+                json_group_array(media_data) FILTER (WHERE in_view) as media_data
             FROM (
-                SELECT * FROM collection_extract
+                SELECT *,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY collection_title, has_thumb ORDER BY {sequence_order}
+                    ) as cover_rank
+                FROM collection_extract
                 -- NOTE: The following ORDER_BY to control the aggregation order of json_group_array is undocumented sqlite behavior
                 -- Confirmed working with sqlite 3.40.1 & 3.53
                 -- Once our image moves to sqlite 3.44 we can and should make use of ORDER_BY in the aggregate itself
-                ORDER BY collection_title,
-                -- null case
-                CASE WHEN collection_sequence IS NULL THEN 1 ELSE 0 END,
-                -- numeric before text
-                CASE WHEN collection_sequence_is_numeric THEN 0 ELSE 1 END,
-                -- order NUMERIC
-                CASE WHEN collection_sequence_is_numeric
-                    THEN CAST(collection_sequence AS REAL)
-                END,
-                -- order TEXT
-                CASE WHEN NOT collection_sequence_is_numeric
-                    THEN collection_sequence
-                END COLLATE NOCASE,
-                -- order by media name if no sequence given
-                CASE
-                    WHEN collection_sequence IS NULL
-                    THEN media_name
-                END COLLATE NOCASE
+                ORDER BY collection_title, {sequence_order}
             )
             GROUP BY collection_title
+            HAVING MAX(in_view)
 
             UNION ALL
 
             SELECT 'single', item_id as random_item_id, name, search_name, search_sort_name,
                 timestamp_added, timestamp_modified, last_played, play_count,
                 {single_extra_order_keys}
+                NULL as collection_metadata,
                 {json_object} FROM joined_table
                 WHERE {collections_column} IS NULL
                     OR {collections_column} = '[]'

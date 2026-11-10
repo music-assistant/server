@@ -506,6 +506,8 @@ class ProviderConfigMixin:
             await self.mass.music.cleanup_provider_shortcuts(instance_id)
             await self.mass.music.cleanup_provider(instance_id)
             await self.mass.music.cleanup_library_shortcuts()
+        if existing["type"] == "metadata":
+            await self.mass.music.cleanup_provider_images(instance_id)
         if existing["type"] == "player":
             # all players should already be removed by now through unload_provider
             for player in list(self.mass.players):
@@ -713,6 +715,14 @@ class ProviderConfigMixin:
         if not changed_keys and (config.enabled == available):
             # no changes
             return config
+        if not config.enabled:
+            prov_manifest = self.mass.get_provider_manifest(config.domain)
+            if not prov_manifest.allow_disable:
+                raise InvalidDataError(
+                    f"{prov_manifest.name} cannot be disabled",
+                    translation_key="provider_can_not_be_disabled",
+                    translation_args=[prov_manifest.name],
+                )
         # validate the new config
         config.validate()
         # save the config first to prevent issues when the
@@ -746,10 +756,6 @@ class ProviderConfigMixin:
             await self.mass.load_provider_config(config)
         else:
             # disable provider
-            prov_manifest = self.mass.get_provider_manifest(config.domain)
-            if not prov_manifest.allow_disable:
-                msg = "Provider can not be disabled."
-                raise RuntimeError(msg)
             # also unload any other providers dependent of this provider
             for dep_prov in self.mass.providers:
                 if dep_prov.manifest.depends_on == config.domain:

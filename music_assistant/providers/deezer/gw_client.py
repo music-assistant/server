@@ -20,6 +20,7 @@ if TYPE_CHECKING:
     from aiohttp import ClientResponse
     from music_assistant_models.streamdetails import StreamDetails
 
+# mimics a browser on the Deezer web player, whose private gw-light API this uses (#625)
 USER_AGENT_HEADER = (
     "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) "
     "Chrome/79.0.3945.130 Safari/537.36"
@@ -188,7 +189,8 @@ class GWClient:
                     "next": bool(next_track),
                 },
                 "lt": int(seconds_streamed),
-                "ctxt": {"t": "search_page", "id": last_track.item_id},
+                "ctxt": last_track.data.get("context")
+                or {"t": "search_page", "id": last_track.item_id},
                 "dev": {"v": "10020230525142740", "t": 0},
                 "ls": [],
                 "ts_listen": int(last_track.data["start_ts"]),

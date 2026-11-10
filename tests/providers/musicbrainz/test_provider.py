@@ -1819,6 +1819,29 @@ async def test_resolve_recording_by_isrc_needs_a_credit_for_a_named_artist() -> 
     assert recording.id == "rec-cover"
 
 
+@pytest.mark.parametrize("named_artist", [True, False])
+async def test_resolve_recording_by_isrc_of_a_single_recording_needs_no_title(
+    named_artist: bool,
+) -> None:
+    """An ISRC naming one recording identifies a track titled otherwise, by its credited artist."""
+    isrc_lookup = {
+        "isrc": ISRC,
+        "recordings": [_recording_lookup("rec-1", title="15 Step (In Rainbows version)")],
+    }
+    provider, _ = _routed_provider(
+        {f"isrc/{ISRC}": isrc_lookup, "recording/rec-1": _recording_lookup("rec-1")}
+    )
+    track = _track_item(
+        artist="Radiohead" if named_artist else None,
+        album=None,
+        external_ids={(ExternalID.ISRC, ISRC)},
+    )
+
+    recording = await provider.resolve_recording(track)
+
+    assert (recording.id if recording else None) == ("rec-1" if named_artist else None)
+
+
 async def test_resolve_recording_falls_back_to_a_name_search() -> None:
     """A track with an album and artist but no ids is searched by name as the last resort."""
     search_result = {

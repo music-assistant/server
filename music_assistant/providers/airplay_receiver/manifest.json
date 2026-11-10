@@ -5,6 +5,7 @@
   "name": "AirPlay Receiver",
   "description": "Receive AirPlay audio streams and use them as a source in Music Assistant.",
   "codeowners": ["@music-assistant"],
+  "tier": "core",
   "credits": [
     "[ShairPort Sync by Mike Brady](https://github.com/mikebrady/shairport-sync)"
   ],

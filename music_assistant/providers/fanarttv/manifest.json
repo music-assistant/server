@@ -5,9 +5,10 @@
   "name": "fanart.tv",
   "description": "Provides high-quality artist and album artwork from Fanart.tv, used throughout the Music Assistant UI.",
   "codeowners": ["@music-assistant"],
+  "tier": "core",
   "credits": ["[Fanart.tv](https://fanart.tv)"],
   "requirements": [],
-  "documentation": "",
+  "documentation": "https://music-assistant.io/metadata/artwork/",
   "multi_instance": false,
   "builtin": true,
   "icon": "folder-information"

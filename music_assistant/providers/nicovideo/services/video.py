@@ -20,7 +20,7 @@ from music_assistant.providers.nicovideo.services.base import NicovideoBaseServi
 if TYPE_CHECKING:
     from music_assistant_models.media_items import Track
     from music_assistant_models.streamdetails import StreamDetails
-    from niconico.objects.video.watch import WatchData, WatchMediaDomandAudio
+    from niconico.objects.video.watch import WatchData, WatchLazyData, WatchMediaAudio
 
     from music_assistant.providers.nicovideo.services.manager import NicovideoServiceManager
 
@@ -59,14 +59,20 @@ class NicovideoVideoService(NicovideoBaseService):
         )
 
         if watch_data:
-            return self.converter_manager.track.convert_by_watch_data(watch_data)
+            watch_lazy_data = await self._get_watch_lazy_data(watch_data)
+            return self.converter_manager.track.convert_by_watch_data(watch_data, watch_lazy_data)
 
         return None
 
-    async def get_stream_details(self, video_id: str) -> StreamDetails:
-        """Get StreamDetails for a video using WatchData and converter."""
+    async def get_stream_details(self, video_id: str, track: Track) -> StreamDetails:
+        """
+        Get StreamDetails for a video.
+
+        :param video_id: The video to stream.
+        :param track: The track of the video, used for the stream metadata.
+        """
         conversion_data = await self._prepare_conversion_data(video_id)
-        return self.converter_manager.stream.convert_from_conversion_data(conversion_data)
+        return self.converter_manager.stream.convert_from_conversion_data(conversion_data, track)
 
     async def _prepare_conversion_data(self, video_id: str) -> StreamConversionData:
         """Prepare StreamConversionData for a video."""
@@ -100,11 +106,23 @@ class NicovideoVideoService(NicovideoBaseService):
             hls_playlist_text=playlist_text,
         )
 
-    def _select_best_audio(self, watch_data: WatchData) -> WatchMediaDomandAudio:
+    async def _get_watch_lazy_data(self, watch_data: WatchData) -> WatchLazyData | None:
+        """Get the lazily loaded owner and series data of a video, or None if unavailable."""
+        watch_lazy_data = await self.service_manager._call_with_throttler(
+            self.niconico_py_client.video.watch.get_watch_lazy_data, watch_data
+        )
+        if watch_lazy_data is None:
+            self.logger.debug(
+                "No lazy watch data for video %s, continuing without owner and series",
+                watch_data.video.id_,
+            )
+        return watch_lazy_data
+
+    def _select_best_audio(self, watch_data: WatchData) -> WatchMediaAudio:
         """Select the best available audio from WatchData."""
         best_audio = None
         best_quality = -1
-        for audio in watch_data.media.domand.audios:
+        for audio in watch_data.media.contents.audios:
             if audio.is_available and audio.quality_level > best_quality:
                 best_audio = audio
                 best_quality = audio.quality_level
@@ -114,9 +132,7 @@ class NicovideoVideoService(NicovideoBaseService):
 
         return best_audio
 
-    async def _get_hls_url(
-        self, watch_data: WatchData, selected_audio: WatchMediaDomandAudio
-    ) -> str:
+    async def _get_hls_url(self, watch_data: WatchData, selected_audio: WatchMediaAudio) -> str:
         """Get HLS URL for selected audio."""
         # Create outputs list with selected audio ID only (audio-only)
         outputs = [selected_audio.id_]
@@ -133,14 +149,10 @@ class NicovideoVideoService(NicovideoBaseService):
 
     async def _fetch_media_playlist_text(self, hls_url: str, domand_bid: str) -> str:
         """
-        Fetch media playlist text from HLS stream.
+        Fetch the (unparsed) media playlist text from an HLS stream.
 
-        Args:
-            hls_url: URL to the HLS playlist (master or media)
-            domand_bid: Authentication cookie value
-
-        Returns:
-            Media playlist text (not parsed)
+        :param hls_url: URL to the HLS playlist (master or media).
+        :param domand_bid: Authentication cookie value.
         """
         headers = {
             "User-Agent": NICOVIDEO_USER_AGENT,
@@ -167,14 +179,10 @@ class NicovideoVideoService(NicovideoBaseService):
 
     def _extract_media_playlist_url(self, master_playlist: str, base_url: str) -> str:
         """
-        Extract media playlist URL from master playlist.
+        Extract the absolute media playlist URL from a master playlist.
 
-        Args:
-            master_playlist: Master playlist text
-            base_url: Base URL for resolving relative URLs
-
-        Returns:
-            Absolute URL to media playlist
+        :param master_playlist: Master playlist text.
+        :param base_url: Base URL for resolving relative URLs.
         """
         lines = master_playlist.split("\n")
         for i, line in enumerate(lines):

@@ -417,8 +417,7 @@ class IBroadcastProvider(MusicProvider):
         genres: set[str] = set()
         if track_obj["genre"]:
             genres.add(track_obj["genre"])
-        if track_obj["genres_additional"]:
-            genres.add(track_obj["genres_additional"])
+        genres.update(track_obj.get("genres_additional") or [])
         track.metadata.genres = genres
         # album info
         if album:

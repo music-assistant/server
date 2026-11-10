@@ -8,19 +8,19 @@ import logging
 import time
 from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
+from functools import partial
 from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from music_assistant_models.constants import PLAYER_CONTROL_NONE
 from music_assistant_models.enums import PlaybackState, PlayerFeature, PlayerType, RepeatMode
-from music_assistant_models.errors import PlayerCommandFailed
+from music_assistant_models.errors import PlayerCommandFailed, PlayerUnavailableError
 from music_assistant_models.player import OutputProtocol, PlayerMedia, PlayerSource
 
 from music_assistant.constants import (
     CONF_GROUP_MEMBERS,
     CONF_MUTE_CONTROL,
-    CONF_PLAYERS,
     CONF_VOLUME_CONTROL,
     PROTOCOL_PRIORITY,
 )
@@ -61,6 +61,8 @@ def _make_mock_mass() -> MagicMock:
     wait_ctx.__aexit__.return_value = False
     mass.players.wait_for_player_update = MagicMock(return_value=wait_ctx)
     mass.players.trigger_player_update = MagicMock()
+    # the real routing: through the sync leader, or from the member's own side
+    mass.players._detach_member = partial(PlayerController._detach_member, mass.players)
     mass.call_later = MagicMock()
     mass.cancel_timer = MagicMock()
     mass.config = MagicMock()
@@ -94,6 +96,7 @@ def _make_mock_player(
     player.player_id = player_id
     player.display_name = player_id
     player.available = available
+    player.available_for_playback = available
     player.active_output_protocol = active_output_protocol
     player.playback_state = playback_state
     player.protocol_parent_id = None
@@ -292,6 +295,24 @@ class TestProtocolAwareLeaderSelection:
         mass.players.get_player = _player_lookup({"light": light, "player_b": player_b})
 
         sgp._attr_group_members = ["light", "player_b"]
+
+        leader = sgp._select_sync_leader()
+        assert leader == player_b
+
+    def test_select_leader_skips_member_switched_off_at_its_power_control(self) -> None:
+        """A member reported available while it is switched off is never picked as leader."""
+        mass = _make_mock_mass()
+        sgp = _make_sync_group(mass)
+
+        switched_off = _make_mock_player("switched_off")
+        # clients still see it as available (and off), the device itself is offline
+        switched_off.available = switched_off.available_for_playback = False
+        player_b = _make_mock_player("player_b")
+        mass.players.get_player = _player_lookup(
+            {"switched_off": switched_off, "player_b": player_b}
+        )
+
+        sgp._attr_group_members = ["switched_off", "player_b"]
 
         leader = sgp._select_sync_leader()
         assert leader == player_b
@@ -650,6 +671,36 @@ class TestActiveProtocolDomain:
         assert sorted(triggered) == ["leader", "member"]
         # the members must recalculate against the ended session, not the old leader
         assert leader_at_trigger == [None, None]
+
+    @pytest.mark.asyncio
+    async def test_dissolve_completes_when_leader_cannot_be_reached(self) -> None:
+        """Failing ungroup and stop commands on the leader never abort the dissolve."""
+        mass = _make_mock_mass()
+        sgp = _make_sync_group(mass)
+        leader = _make_mock_player("leader", provider_domain="wiim")
+        m2 = _make_mock_player("m2", provider_domain="wiim")
+        # the members ended up on a provider-promoted leader, which we stop as well
+        promoted = _make_mock_player("promoted", provider_domain="wiim")
+        promoted.state.group_members = ["promoted", "m2"]
+        mass.players.get_player = _player_lookup({"leader": leader, "m2": m2, "promoted": promoted})
+        sgp.sync_leader = leader
+        sgp._attr_group_members = ["leader", "m2"]
+        mass.players._handle_set_members.side_effect = RuntimeError("Not connected")
+        mass.players._handle_cmd_stop.side_effect = RuntimeError("Not connected")
+
+        with (
+            patch.object(sgp, "update_state") as update_state,
+            patch.object(sgp, "_protocol_group_leader", return_value=promoted),
+        ):
+            await sgp._dissolve_syncgroup()
+
+        mass.players._handle_set_members.assert_awaited_once()
+        mass.players._handle_cmd_stop.assert_awaited_once_with("promoted")
+        assert getattr(sgp, "sync_leader") is None  # noqa: B009
+        update_state.assert_called()
+        mass.players.schedule_active_output_protocol_clear.assert_any_call(promoted)
+        mass.players.schedule_active_output_protocol_clear.assert_any_call(leader)
+        mass.players.trigger_player_update.assert_any_call("m2")
 
 
 class TestDynamicLeaderSwitch:
@@ -1780,104 +1831,6 @@ class TestGetConfigEntriesMemberPicker:
         assert option_ids == {"leader", "follower"}
 
 
-class TestMembersFilterMigration:
-    """Test the members_filter (exclusion) -> allowed_members (inclusion) migration."""
-
-    def _run_migrate(self, data: dict[str, Any]) -> dict[str, Any]:
-        """Run the migration block against a copy of the provided data dict."""
-        all_player_configs = data.get(CONF_PLAYERS, {})
-        if isinstance(all_player_configs, dict):
-            group_provider_domains = {"sync_group", "universal_group"}
-            universe = {
-                pid
-                for pid, cfg in all_player_configs.items()
-                if isinstance(cfg, dict) and cfg.get("provider") not in group_provider_domains
-            }
-            for player_cfg in all_player_configs.values():
-                if not isinstance(player_cfg, dict):
-                    continue
-                if player_cfg.get("provider") != "sync_group":
-                    continue
-                values = player_cfg.setdefault("values", {})
-                old_exclude = values.get("members_filter") or []
-                if not old_exclude or values.get("allowed_members") is not None:
-                    continue
-                values["allowed_members"] = sorted(universe - set(old_exclude))
-                values["members_filter"] = []
-        return data
-
-    def test_inverts_exclusion_to_inclusion(self) -> None:
-        """An exclusion list of [X] becomes an inclusion list of universe - {X}."""
-        data = {
-            CONF_PLAYERS: {
-                "a": {"provider": "sonos", "player_id": "a"},
-                "b": {"provider": "airplay", "player_id": "b"},
-                "c": {"provider": "chromecast", "player_id": "c"},
-                "syncgroup_1": {
-                    "provider": "sync_group",
-                    "player_id": "syncgroup_1",
-                    "values": {"members_filter": ["b"]},
-                },
-            }
-        }
-        out = self._run_migrate(data)
-        sg = out[CONF_PLAYERS]["syncgroup_1"]["values"]
-        assert sg["allowed_members"] == ["a", "c"]
-        assert sg["members_filter"] == []
-
-    def test_idempotent_when_already_migrated(self) -> None:
-        """Re-running migration on already-migrated config is a no-op."""
-        data = {
-            CONF_PLAYERS: {
-                "a": {"provider": "sonos", "player_id": "a"},
-                "syncgroup_1": {
-                    "provider": "sync_group",
-                    "player_id": "syncgroup_1",
-                    "values": {"allowed_members": ["a"], "members_filter": []},
-                },
-            }
-        }
-        out = self._run_migrate(data)
-        sg = out[CONF_PLAYERS]["syncgroup_1"]["values"]
-        assert sg["allowed_members"] == ["a"]
-        assert sg["members_filter"] == []
-
-    def test_skips_when_no_exclusion_list(self) -> None:
-        """A sync_group without a members_filter is left untouched."""
-        data = {
-            CONF_PLAYERS: {
-                "syncgroup_1": {
-                    "provider": "sync_group",
-                    "player_id": "syncgroup_1",
-                    "values": {},
-                },
-            }
-        }
-        out = self._run_migrate(data)
-        sg = out[CONF_PLAYERS]["syncgroup_1"]["values"]
-        assert "allowed_members" not in sg
-
-    def test_excludes_group_providers_from_universe(self) -> None:
-        """Group-providing players (sync_group/universal_group) are not in the universe."""
-        data = {
-            CONF_PLAYERS: {
-                "a": {"provider": "sonos", "player_id": "a"},
-                "ug": {"provider": "universal_group", "player_id": "ug"},
-                "sg": {"provider": "sync_group", "player_id": "sg"},
-                "syncgroup_1": {
-                    "provider": "sync_group",
-                    "player_id": "syncgroup_1",
-                    "values": {"members_filter": ["a"]},
-                },
-            }
-        }
-        out = self._run_migrate(data)
-        sg = out[CONF_PLAYERS]["syncgroup_1"]["values"]
-        # Universe = {a} (sg/ug/syncgroup_1 are group providers excluded).
-        # Inversion removes a, so allowed_members is empty.
-        assert sg["allowed_members"] == []
-
-
 class TestIsActiveSession:
     """The is_active_session property gates whether children report active_group."""
 
@@ -2566,7 +2519,7 @@ class TestFormReconcilesIncompatibleMembers:
         leader.state.can_group_with = {"m2"}
         member = _make_mock_player("m2", provider_domain="sonos")
         offline = _make_mock_player("off", provider_domain="sonos")
-        offline.state.available = False
+        offline.available_for_playback = offline.state.available = False
         mass.players.get_player = _player_lookup({"leader": leader, "m2": member, "off": offline})
         sgp.sync_leader = leader
         sgp._attr_group_members = ["leader", "m2", "off"]
@@ -2619,12 +2572,26 @@ class TestWaitMemberUnsynced:
         mass.players.cmd_ungroup.assert_not_awaited()
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("registered", [True, False])
+    async def test_does_not_wait_on_a_member_that_is_gone(self, registered: bool) -> None:
+        """An offline or unregistered member can not clear its state, so it is not waited on."""
+        mass = _make_mock_mass()
+        sgp = _make_sync_group(mass)
+        players = {"m1": _make_mock_player("m1", available=False)} if registered else {}
+        mass.players.get_player = _player_lookup(players)
+
+        ok = await sgp._wait_member_unsynced("m1")
+
+        assert ok is True
+        mass.players.wait_for_player_update.assert_not_called()
+
+    @pytest.mark.asyncio
     async def test_attempts_recovery_when_stuck(self) -> None:
         """If the first wait doesn't clear it, kick the member from its stale parent directly."""
         mass = _make_mock_mass()
         sgp = _make_sync_group(mass)
         member = _make_mock_player("m1")
-        member.synced_to = "old_leader"  # still stale after first wait
+        member.synced_to = member.state.synced_to = "old_leader"  # still stale after first wait
         old_leader = _make_mock_player("old_leader")
         mass.players.get_player = _player_lookup({"m1": member, "old_leader": old_leader})
 
@@ -2632,7 +2599,7 @@ class TestWaitMemberUnsynced:
         # We make it succeed by side-effect-clearing synced_to.
         async def _kick(_parent: Any, player_ids_to_remove: list[str]) -> None:
             assert player_ids_to_remove == ["m1"]
-            member.synced_to = None
+            member.synced_to = member.state.synced_to = None
 
         mass.players._handle_set_members = AsyncMock(side_effect=_kick)
         mass.players.cmd_ungroup = AsyncMock()
@@ -2651,7 +2618,7 @@ class TestWaitMemberUnsynced:
         mass = _make_mock_mass()
         sgp = _make_sync_group(mass)
         member = _make_mock_player("m1")
-        member.synced_to = "old_leader"  # stays stuck even after recovery
+        member.synced_to = member.state.synced_to = "old_leader"  # stays stuck after recovery
         old_leader = _make_mock_player("old_leader")
         mass.players.get_player = _player_lookup({"m1": member, "old_leader": old_leader})
         mass.players._handle_set_members = AsyncMock()  # no-op: state stays stale
@@ -2664,17 +2631,46 @@ class TestWaitMemberUnsynced:
         )
 
     @pytest.mark.asyncio
-    async def test_returns_false_when_stale_parent_gone(self) -> None:
-        """If the stale parent no longer exists, skip the kick and report stuck."""
+    @pytest.mark.parametrize("parent_registered", [True, False])
+    async def test_member_leaves_on_its_own_when_stale_parent_is_offline(
+        self, parent_registered: bool
+    ) -> None:
+        """A stale parent that is gone or offline can't release the member, so it leaves itself."""
         mass = _make_mock_mass()
         sgp = _make_sync_group(mass)
         member = _make_mock_player("m1")
-        member.synced_to = "old_leader"  # parent is no longer registered
-        mass.players.get_player = _player_lookup({"m1": member})
+        member.synced_to = member.state.synced_to = "old_leader"
+        players = {"m1": member}
+        if parent_registered:
+            players["old_leader"] = _make_mock_player("old_leader", available=False)
+        mass.players.get_player = _player_lookup(players)
+
+        async def _leave() -> None:
+            member.synced_to = member.state.synced_to = None
+
+        member.ungroup = AsyncMock(side_effect=_leave)
+
+        ok = await sgp._wait_member_unsynced("m1")
+
+        assert ok is True
+        member.ungroup.assert_awaited_once()
+        mass.players._handle_set_members.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_returns_false_when_member_stays_synced_after_leaving(self) -> None:
+        """A member that keeps reporting the offline parent after leaving is reported stuck."""
+        mass = _make_mock_mass()
+        sgp = _make_sync_group(mass)
+        member = _make_mock_player("m1")
+        member.synced_to = member.state.synced_to = "old_leader"
+        member.ungroup = AsyncMock()  # no-op: state stays stale
+        old_leader = _make_mock_player("old_leader", available=False)
+        mass.players.get_player = _player_lookup({"m1": member, "old_leader": old_leader})
 
         ok = await sgp._wait_member_unsynced("m1")
 
         assert ok is False
+        member.ungroup.assert_awaited_once()
         mass.players._handle_set_members.assert_not_awaited()
 
 
@@ -3156,6 +3152,177 @@ class TestDebouncedReform:
 
         play.assert_awaited_once()
         assert sgp._reform_task is None
+
+    @pytest.mark.asyncio
+    async def test_unavailable_leader_removal_still_reforms(self) -> None:
+        """A leader that dropped off the network can't be stopped, yet the group re-forms."""
+        mass = _make_mock_mass()
+        sgp = self._setup_group(mass, members=["leader", "m2", "m3"])
+        mass.players.cmd_resume = AsyncMock()
+        leader = mass.players.get_player("leader")
+        leader.available = leader.available_for_playback = False
+        leader.state.available = False
+        leader.state.group_members = ["leader", "m2", "m3"]
+        mass.players.get_player("m2").state.can_group_with = {"m3"}
+
+        def _fail_for_leader(player_id: str) -> None:
+            if player_id == "leader":
+                raise PlayerUnavailableError(player_id)
+
+        mass.players._handle_cmd_stop.side_effect = _fail_for_leader
+        mass.players._handle_set_members.side_effect = lambda parent, **_k: _fail_for_leader(
+            parent.player_id
+        )
+
+        with (
+            patch("music_assistant.providers.sync_group.player.REFORM_DEBOUNCE_SECONDS", 0.05),
+            patch.object(sgp, "update_state"),
+        ):
+            await sgp.set_members(player_ids_to_remove=["leader"])
+
+            mass.players._handle_cmd_stop.assert_any_await("leader")
+            assert sgp.sync_leader is None
+            assert sgp._attr_group_members == ["m2", "m3"]
+            task = sgp._reform_task
+            assert task is not None
+
+            await task
+
+        assert sgp.sync_leader is mass.players.get_player("m2")
+        mass.players._handle_set_members.assert_any_await(
+            sgp.sync_leader, player_ids_to_add=["m3"], new_content=False
+        )
+        mass.players.cmd_resume.assert_awaited_once()
+        assert sgp._reform_task is None
+
+    @pytest.mark.asyncio
+    async def test_reform_does_not_wait_on_a_member_that_is_gone(self) -> None:
+        """A member the controller no longer knows can not delay the re-form by its unsync wait."""
+        mass = _make_mock_mass()
+        sgp = self._setup_group(mass, members=["leader", "m2"])
+        mass.players.cmd_resume = AsyncMock()
+        # recorded as a member, but no longer registered with the controller
+        sgp._attr_group_members.append("gone")
+
+        with (
+            patch("music_assistant.providers.sync_group.player.REFORM_DEBOUNCE_SECONDS", 0.05),
+            patch.object(sgp, "update_state"),
+        ):
+            await sgp.set_members(player_ids_to_remove=["leader"])
+            task = sgp._reform_task
+            assert task is not None
+            await task
+
+        assert sgp.sync_leader is mass.players.get_player("m2")
+        assert sgp._attr_group_members == ["m2", "gone"]
+        waited_on = {call.args[0] for call in mass.players.wait_for_player_update.call_args_list}
+        assert "gone" not in waited_on
+        mass.players.cmd_resume.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_reform_with_no_available_member_keeps_them_for_a_later_play(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """A re-form with only offline members left logs why and does not try to resume."""
+        mass = _make_mock_mass()
+        sgp = self._setup_group(mass, members=["leader", "m2"])
+        sgp.logger = logging.getLogger("test.sync_group")
+        mass.players.cmd_resume = AsyncMock()
+        offline = mass.players.get_player("m2")
+        offline.available = offline.available_for_playback = offline.state.available = False
+
+        with (
+            patch("music_assistant.providers.sync_group.player.REFORM_DEBOUNCE_SECONDS", 0.05),
+            patch.object(sgp, "update_state"),
+            caplog.at_level(logging.INFO),
+        ):
+            await sgp.set_members(player_ids_to_remove=["leader"])
+            task = sgp._reform_task
+            assert task is not None
+            await task
+
+        assert "none of its members can lead right now" in caplog.text
+        assert sgp.sync_leader is None
+        assert sgp._attr_group_members == ["m2"]
+        assert sgp._reform_task is None
+        mass.players.cmd_resume.assert_not_awaited()
+        mass.players._handle_play_media.assert_not_awaited()
+
+    def _setup_offline_leader_with_stale_members(
+        self, mass: MagicMock
+    ) -> tuple[SyncGroupPlayer, list[MagicMock]]:
+        """Group whose leader went offline while its members keep reporting it as their leader."""
+        sgp = self._setup_group(mass, members=["leader", "m2", "m3"])
+        mass.players.cmd_resume = AsyncMock()
+        leader = mass.players.get_player("leader")
+        leader.available = leader.available_for_playback = leader.state.available = False
+        leader.state.group_members = ["leader", "m2", "m3"]
+        members = [mass.players.get_player("m2"), mass.players.get_player("m3")]
+        members[0].state.can_group_with = {"m3"}
+        for member in members:
+            member.synced_to = member.state.synced_to = "leader"
+
+        def _fail_for_leader(player_id: str) -> None:
+            if player_id == "leader":
+                raise PlayerUnavailableError(player_id)
+
+        mass.players._handle_cmd_stop.side_effect = _fail_for_leader
+        mass.players._handle_set_members.side_effect = lambda parent, **_k: _fail_for_leader(
+            parent.player_id
+        )
+        return sgp, members
+
+    @pytest.mark.asyncio
+    async def test_reform_releases_members_stuck_on_the_offline_leader(self) -> None:
+        """Members still synced to the offline leader leave on their own, then the group re-forms."""
+        mass = _make_mock_mass()
+        sgp, members = self._setup_offline_leader_with_stale_members(mass)
+
+        for member in members:
+
+            async def _leave(member: MagicMock = member) -> None:
+                member.synced_to = member.state.synced_to = None
+
+            member.ungroup = AsyncMock(side_effect=_leave)
+
+        with (
+            patch("music_assistant.providers.sync_group.player.REFORM_DEBOUNCE_SECONDS", 0.05),
+            patch.object(sgp, "update_state"),
+        ):
+            await sgp.set_members(player_ids_to_remove=["leader"])
+            task = sgp._reform_task
+            assert task is not None
+            await task
+
+        for member in members:
+            member.ungroup.assert_awaited_once()
+        assert sgp.sync_leader is members[0]
+        mass.players.cmd_resume.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_reform_aborts_when_members_stay_stuck_on_the_offline_leader(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """A member that keeps reporting the offline leader after leaving aborts the re-form."""
+        mass = _make_mock_mass()
+        sgp, members = self._setup_offline_leader_with_stale_members(mass)
+        sgp.logger = logging.getLogger("test.sync_group")
+        for member in members:
+            member.ungroup = AsyncMock()  # no-op: state stays stale
+
+        with (
+            patch("music_assistant.providers.sync_group.player.REFORM_DEBOUNCE_SECONDS", 0.05),
+            patch.object(sgp, "update_state"),
+            caplog.at_level(logging.ERROR),
+        ):
+            await sgp.set_members(player_ids_to_remove=["leader"])
+            task = sgp._reform_task
+            assert task is not None
+            await task
+
+        assert "still report synced_to after recovery attempts" in caplog.text
+        assert sgp.sync_leader is None
+        mass.players.cmd_resume.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_cascaded_unjoins_coalesce_into_single_reform(self) -> None:

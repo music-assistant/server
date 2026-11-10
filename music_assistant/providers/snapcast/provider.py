@@ -28,6 +28,7 @@ from music_assistant.helpers.util import get_ip_pton
 from music_assistant.models.player_provider import PlayerProvider
 from music_assistant.providers.snapcast.constants import (
     CONF_CATEGORY_BUILT_IN,
+    CONF_EXTERNAL_SERVER_BUFFER_SIZE,
     CONF_HELP_LINK,
     CONF_SERVER_BUFFER_SIZE,
     CONF_SERVER_CHUNK_MS,
@@ -224,6 +225,16 @@ class SnapCastProvider(PlayerProvider):
                 advanced=local_snapserver_present,
             ),
             ConfigEntry(
+                key=CONF_EXTERNAL_SERVER_BUFFER_SIZE,
+                type=ConfigEntryType.INTEGER,
+                range=(20, 6000),
+                default_value=1000,
+                required=False,
+                depends_on=CONF_USE_EXTERNAL_SERVER,
+                advanced=True,
+                help_link=CONF_HELP_LINK,
+            ),
+            ConfigEntry(
                 key=CONF_STREAM_IDLE_THRESHOLD,
                 type=ConfigEntryType.INTEGER,
                 default_value=DEFAULT_SNAPSTREAM_IDLE_THRESHOLD,
@@ -282,6 +293,9 @@ class SnapCastProvider(PlayerProvider):
             self._snapcast_server_host = str(self.config.get_value(CONF_SERVER_HOST))
             self._snapcast_server_control_port = int(
                 str(self.config.get_value(CONF_SERVER_CONTROL_PORT))
+            )
+            self._snapcast_server_buffer_size = cast(
+                "int", self.config.get_value(CONF_EXTERNAL_SERVER_BUFFER_SIZE)
             )
         self._snapcast_stream_idle_threshold = self.config.get_value(CONF_STREAM_IDLE_THRESHOLD)
         # Higher rates / 24-bit are only supported with an external Snapserver for now.
