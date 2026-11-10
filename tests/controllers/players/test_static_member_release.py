@@ -251,26 +251,32 @@ async def test_universal_group_static_member_ends_the_session(
     }
 
 
+# the group iterates its members in hash order, so each member is commanded once to have the
+# member the user may not use switched off first under every hash seed
+@pytest.mark.parametrize("member", ["a", "b"])
 @pytest.mark.parametrize("command", COMMANDS)
 @pytest.mark.parametrize(
     "user",
     [
-        pytest.param(lambda: as_user(["b"]), id="limited-to-member"),
-        pytest.param(lambda: as_user([]), id="unlimited"),
-        pytest.param(nullcontext, id="no-user"),
+        pytest.param(lambda member: as_user([member]), id="limited-to-member"),
+        pytest.param(lambda _member: as_user([]), id="unlimited"),
+        pytest.param(lambda _member: nullcontext(), id="no-user"),
     ],
 )
 async def test_idle_universal_group_static_member_ends_the_session(
-    mass: MagicMock, user: Callable[[], AbstractContextManager[object]], command: str
+    mass: MagicMock,
+    user: Callable[[str], AbstractContextManager[object]],
+    command: str,
+    member: str,
 ) -> None:
     """An idle powered universal group switches its members off, also for a user limited to one."""
     controller, group = await _build(mass, UniversalGroupPlayer, power_control=True, playing=False)
 
-    with user():
-        await _send(controller, command, "b")
+    with user(member):
+        await _send(controller, command, member)
     await _settle()
 
-    member_off = [("b", "power", False)] if command == "power" else []
+    member_off = [(member, "power", False)] if command == "power" else []
     assert sorted(mass.calls) == sorted([("a", "power", False), ("b", "power", False), *member_off])
     assert group.powered is False
     off: tuple[Any, ...] = (False, PlaybackState.IDLE, None, None, [])
