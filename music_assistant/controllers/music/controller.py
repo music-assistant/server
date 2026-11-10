@@ -3662,11 +3662,11 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
     async def _found_on_provider(
         self, ctrl: MediaControllerBase[Any], mapping: ProviderMapping
     ) -> bool:
-        """Return whether the mapping's own provider finds its item."""
+        """Return whether the mapping's own provider finds its item and reports it available."""
         try:
             # a cached answer may predate the not found that marked the mapping
             with request_priority(RequestPriority.LOW):
-                await ctrl.get_provider_item(
+                provider_item: MediaItemType = await ctrl.get_provider_item(
                     mapping.item_id,
                     mapping.provider_instance,
                     force_refresh=True,
@@ -3681,7 +3681,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
                 "%s/%s is still unavailable: %s", mapping.provider_instance, mapping.item_id, err
             )
             return False
-        return True
+        return provider_item.available
 
     async def _set_provider_mapping_available(
         self, media_item: MediaItemType, mapping: ProviderMapping, available: bool

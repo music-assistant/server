@@ -36,6 +36,7 @@ class _StubProvider(MusicProvider):
         self.manifest.type = ProviderType.MUSIC
         self.logger = MagicMock()
         self.available = True
+        self.radio_available = True
 
     async def get_podcast(self, prov_podcast_id: str) -> Podcast:
         """Return the podcast, or raise the error the test set."""
@@ -66,7 +67,10 @@ class _StubProvider(MusicProvider):
         self.lookups += 1
         if self.error:
             raise self.error
-        return _radio()
+        radio = _radio()
+        for mapping in radio.provider_mappings:
+            mapping.available = self.radio_available
+        return radio
 
 
 @pytest.fixture(name="mass")
@@ -230,6 +234,20 @@ async def test_the_daily_check_brings_back_what_the_provider_has_again(
         await mass.music._check_unavailable_mappings()
     assert await _available(mass, db_podcast)
     assert await _available(mass, db_radio)
+
+
+async def test_the_daily_check_keeps_what_the_provider_reports_unavailable(
+    mass: MusicAssistant,
+) -> None:
+    """A station its provider finds but still reports unavailable stays greyed out."""
+    provider = _StubProvider()
+    provider.radio_available = False
+    db_radio = await mass.music.radio.add_item_to_library(_radio())
+    await _set_unavailable(mass, db_radio)
+    with _with_provider(mass, provider):
+        await mass.music._check_unavailable_mappings()
+    assert provider.lookups == 1
+    assert not await _available(mass, db_radio)
 
 
 @pytest.mark.parametrize(
