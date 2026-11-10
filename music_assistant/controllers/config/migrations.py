@@ -1250,7 +1250,9 @@ def _release_protocol_children(
     if isinstance(parent_values, dict) and isinstance(
         stored_ids := parent_values.get(CONF_LINKED_PROTOCOL_IDS), list
     ):
-        parent_values[CONF_LINKED_PROTOCOL_IDS] = [pid for pid in stored_ids if pid in kept]
+        parent_values[CONF_LINKED_PROTOCOL_IDS] = [
+            pid for pid in stored_ids if isinstance(pid, str) and pid in kept
+        ]
     if released:
         LOGGER.warning(
             "Released %d protocol player(s) from %s: it held an output of another device",
