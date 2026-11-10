@@ -111,8 +111,11 @@ def _make_control_player(
     provider.mass.config.encrypt_string.side_effect = lambda value: value
     # raw player config values live in their own store (individual tests override
     # this); without it they would read back as (truthy) mocks
-    provider.mass.config.get_raw_player_config_value.side_effect = (
-        lambda _player_id, _key, default=None: default
+    provider.mass.config.get_player_value.side_effect = lambda _player_id, _key, default=None: (
+        default
+    )
+    provider.mass.config.get_protocol_value.side_effect = lambda _player_id, _key, default=None: (
+        default
     )
     # Real Companion services advertise the flags under the mixed-case key
     # "rpFl"; zeroconf preserves TXT key casing as sent on the wire.
@@ -340,7 +343,7 @@ def test_duplicate_native_volume_update_is_ignored() -> None:
     with patch.object(player, "update_state") as update_state:
         player._handle_volume_update("companion", 42)
 
-    cast("MagicMock", player.mass.config).set_raw_player_config_value.assert_not_called()
+    cast("MagicMock", player.mass.config).set_protocol_value.assert_not_called()
     update_state.assert_not_called()
 
 
@@ -359,7 +362,7 @@ def test_native_volume_update_ignored_while_streaming() -> None:
 
     assert player.volume_level == 62
     assert player.volume_muted is False
-    cast("MagicMock", player.mass.config).set_raw_player_config_value.assert_not_called()
+    cast("MagicMock", player.mass.config).set_protocol_value.assert_not_called()
     update_state.assert_not_called()
 
 
@@ -378,7 +381,7 @@ def test_transient_mrp_volume_report_never_latches_mute() -> None:
 
     assert player.volume_muted is False
     assert player.volume_level == 62
-    cast("MagicMock", player.mass.config).set_raw_player_config_value.assert_not_called()
+    cast("MagicMock", player.mass.config).set_protocol_value.assert_not_called()
     update_state.assert_not_called()
 
 
@@ -1111,8 +1114,8 @@ async def test_provider_selects_player_model_from_device_identity(
     provider.mass.discovery.async_find_mdns_service = AsyncMock(return_value=None)
     provider.mass.players.register = AsyncMock()
     provider.mass.players.get_player.return_value = None
-    provider.mass.config.get_raw_player_config_value.side_effect = (
-        lambda _player_id, key, default=None: True if key == "enabled" else default
+    provider.mass.config.get_protocol_value.side_effect = lambda _player_id, key, default=None: (
+        True if key == "enabled" else default
     )
     info = _service_info(
         AIRPLAY_DISCOVERY_TYPE,
@@ -1163,8 +1166,8 @@ async def test_apple_device_setup_attaches_discovered_companion_service() -> Non
     provider.mass.discovery.async_find_mdns_service = AsyncMock(side_effect=_find_service)
     provider.mass.players.register = AsyncMock()
     provider.mass.players.get_player.return_value = None
-    provider.mass.config.get_raw_player_config_value.side_effect = (
-        lambda _player_id, key, default=None: True if key == "enabled" else default
+    provider.mass.config.get_protocol_value.side_effect = lambda _player_id, key, default=None: (
+        True if key == "enabled" else default
     )
     info = _service_info(
         AIRPLAY_DISCOVERY_TYPE,
@@ -1321,8 +1324,8 @@ async def test_generic_device_setup_skips_control_discovery() -> None:
     provider.mass.discovery.async_find_mdns_service = AsyncMock(return_value=None)
     provider.mass.players.register = AsyncMock()
     provider.mass.players.get_player.return_value = None
-    provider.mass.config.get_raw_player_config_value.side_effect = (
-        lambda _player_id, key, default=None: True if key == "enabled" else default
+    provider.mass.config.get_protocol_value.side_effect = lambda _player_id, key, default=None: (
+        True if key == "enabled" else default
     )
     info = _service_info(
         AIRPLAY_DISCOVERY_TYPE,

@@ -591,7 +591,7 @@ class SnapCastProvider(PlayerProvider):
     def _handle_player_init(self, snap_client: SnapclientProto) -> SnapCastPlayer | None:
         """Process Snapcast add to Player controller."""
         player_id = self._generate_and_register_id(snap_client.identifier)
-        if not self.mass.config.get_raw_player_config_value(player_id, CONF_ENABLED, True):
+        if not self.mass.config.get_protocol_value(player_id, CONF_ENABLED, True):
             self.logger.debug("Ignoring disabled snapcast player: %s", player_id)
             return None
         player = self.get_protocol(player_id)

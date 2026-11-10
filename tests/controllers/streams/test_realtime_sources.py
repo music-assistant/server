@@ -2337,7 +2337,7 @@ def _flow_handler(
     )
     mass.player_queues.flow_stream_finished.return_value = False
     mass.player_queues.get_item.return_value = start_queue_item
-    mass.config.get_raw_player_config_value.return_value = "disabled"
+    mass.config.get_protocol_value.return_value = "disabled"
     player = MagicMock(player_id="player-1", protocol_parent_id=None)
     player.get_config_value = MagicMock(return_value="default")
     player.state.name = "Player"
@@ -2434,7 +2434,7 @@ async def test_flow_with_icy_framing_writes_small_blocks_and_counts_to_the_inter
     a near-realtime player below its restart threshold (server#7147).
     """
     controller, request, _ = _flow_handler(monkeypatch, is_realtime=False)
-    controller.mass.config.get_raw_player_config_value.return_value = "full"
+    controller.mass.config.get_protocol_value.return_value = "full"
     request.headers = {"Icy-MetaData": "1"}
     seen: dict[str, Any] = {}
     written: list[bytes] = []

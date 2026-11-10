@@ -571,7 +571,7 @@ class MusicCastPlayer(PlayerProtocol):
         ):
             return
         if not bool(
-            self.mass.config.get_raw_player_config_value(
+            self.mass.config.get_protocol_value(
                 self.player_id, CONF_PLAYER_AUTO_ADVANCE, default=True
             )
         ):

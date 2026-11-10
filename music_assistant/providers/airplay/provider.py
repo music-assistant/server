@@ -21,7 +21,7 @@ from zeroconf.asyncio import AsyncServiceInfo
 
 from music_assistant.constants import (
     CONF_LOG_LEVEL,
-    CONF_PLAYERS,
+    CONF_PLAYER_PROTOCOLS,
     CONF_PROVIDERS,
     VERBOSE_LOG_LEVEL,
 )
@@ -437,7 +437,7 @@ class AirPlayProvider(PlayerProvider):
     ) -> None:
         """Handle setup of a new player that is discovered using mdns."""
         # return early if player is disabled in config
-        if not self.mass.config.get_raw_player_config_value(player_id, "enabled", True):
+        if not self.mass.config.get_protocol_value(player_id, "enabled", True):
             self.logger.debug("Ignoring %s in discovery as it is disabled.", display_name)
             return
         # Filter out this server's own AirPlay Receiver (shairport-sync) instances
@@ -487,9 +487,7 @@ class AirPlayProvider(PlayerProvider):
 
         # Get stored volume from playerconfig
         volume = int(
-            self.mass.config.get_raw_player_config_value(
-                player_id, CONF_STORED_VOLUME, FALLBACK_VOLUME
-            )
+            self.mass.config.get_protocol_value(player_id, CONF_STORED_VOLUME, FALLBACK_VOLUME)
         )
 
         # Final check before registration to handle race conditions
@@ -623,9 +621,9 @@ class AirPlayProvider(PlayerProvider):
                 if player := self.mass.players.get_player(player_id):
                     player_name: str | None = player.display_name
                 else:
-                    stored_name = self.mass.config.get_raw_player_config_value(
+                    stored_name = self.mass.config.get_player_value(
                         player_id, "name"
-                    ) or self.mass.config.get_raw_player_config_value(player_id, "default_name")
+                    ) or self.mass.config.get_player_value(player_id, "default_name")
                     player_name = str(stored_name) if stored_name else None
                 if player_name:
                     receiver_names.add(resolve_publish_name(template, player_name))
@@ -1223,15 +1221,13 @@ class AirPlayProvider(PlayerProvider):
         # walks the stored configs rather than get_player_configs(), which drops
         # every protocol player - the type each non-Apple receiver is registered
         # as - and only lists the ones discovered so far
-        for player_id, raw_conf in self.mass.config.get(CONF_PLAYERS, {}).items():
+        for player_id, raw_conf in self.mass.config.get(CONF_PLAYER_PROTOCOLS, {}).items():
             if not isinstance(raw_conf, dict) or raw_conf.get("provider") != self.instance_id:
                 continue
-            if not self.mass.config.get_raw_player_config_value(
-                player_id, CONF_PASSWORD_INVALID, False
-            ):
+            if not self.mass.config.get_protocol_value(player_id, CONF_PASSWORD_INVALID, False):
                 continue
             self.logger.info("Clearing the unverified password marker on %s", player_id)
-            self.mass.config.set_raw_player_config_value(player_id, CONF_PASSWORD_INVALID, False)
+            self.mass.config.set_protocol_value(player_id, CONF_PASSWORD_INVALID, False)
         # last, so a failure part-way through leaves the review to be retried on
         # the next load instead of stranding the players it never reached
         self.mass.config.set_raw_provider_config_value(
@@ -1256,18 +1252,16 @@ class AirPlayProvider(PlayerProvider):
         # walks the stored configs rather than get_player_configs(), which drops
         # every protocol player - the type each non-Apple receiver is registered
         # as - and only lists the ones discovered so far
-        for player_id, raw_conf in self.mass.config.get(CONF_PLAYERS, {}).items():
+        for player_id, raw_conf in self.mass.config.get(CONF_PLAYER_PROTOCOLS, {}).items():
             if not isinstance(raw_conf, dict) or raw_conf.get("provider") != self.instance_id:
                 continue
             if (
-                self.mass.config.get_raw_player_config_value(player_id, CONF_STREAMING_MODE)
+                self.mass.config.get_protocol_value(player_id, CONF_STREAMING_MODE)
                 != STREAMING_MODE_AP2_COMPAT
             ):
                 continue
             self.logger.info("Resetting the streaming mode of %s back to Automatic", player_id)
-            self.mass.config.set_raw_player_config_value(
-                player_id, CONF_STREAMING_MODE, STREAMING_MODE_AUTO
-            )
+            self.mass.config.set_protocol_value(player_id, CONF_STREAMING_MODE, STREAMING_MODE_AUTO)
         # last, so a failure part-way through leaves the reset to be retried on
         # the next load instead of stranding the players it never reached
         self.mass.config.set_raw_provider_config_value(

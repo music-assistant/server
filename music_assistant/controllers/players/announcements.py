@@ -242,14 +242,14 @@ class AnnouncementsMixin:
             assert url is not None  # for type checking
             # determine pre-announce from (group)player config
             if pre_announce is None and (is_speech or "tts" in url):
-                conf_pre_announce = self.mass.config.get_raw_player_config_value(
+                conf_pre_announce = self.mass.config.get_player_value(
                     player_id,
                     CONF_ENTRY_TTS_PRE_ANNOUNCE.key,
                     CONF_ENTRY_TTS_PRE_ANNOUNCE.default_value,
                 )
                 pre_announce = cast("bool", conf_pre_announce)
             if pre_announce_url is None:
-                if conf_pre_announce_url := self.mass.config.get_raw_player_config_value(
+                if conf_pre_announce_url := self.mass.config.get_player_value(
                     player_id,
                     CONF_PRE_ANNOUNCE_CHIME_URL,
                 ):
@@ -283,7 +283,7 @@ class AnnouncementsMixin:
         :param volume_override: Volume level that overrides the configured strategy.
         """
         player = self.get_player(player_id)
-        volume_strategy = self.mass.config.get_raw_player_config_value(
+        volume_strategy = self.mass.config.get_player_value(
             player_id,
             CONF_ENTRY_ANNOUNCE_VOLUME_STRATEGY.key,
             None,
@@ -298,7 +298,7 @@ class AnnouncementsMixin:
                 if player is None or self.announce_output_supports_volume(player)
                 else "none"
             )
-        volume_strategy_volume = self.mass.config.get_raw_player_config_value(
+        volume_strategy_volume = self.mass.config.get_player_value(
             player_id,
             CONF_ENTRY_ANNOUNCE_VOLUME.key,
             CONF_ENTRY_ANNOUNCE_VOLUME.default_value,
@@ -324,7 +324,7 @@ class AnnouncementsMixin:
         if volume_level is not None:
             announce_volume_min = cast(
                 "float",
-                self.mass.config.get_raw_player_config_value(
+                self.mass.config.get_player_value(
                     player_id,
                     CONF_ENTRY_ANNOUNCE_VOLUME_MIN.key,
                     CONF_ENTRY_ANNOUNCE_VOLUME_MIN.default_value,
@@ -333,7 +333,7 @@ class AnnouncementsMixin:
             volume_level = max(int(announce_volume_min), volume_level)
             announce_volume_max = cast(
                 "float",
-                self.mass.config.get_raw_player_config_value(
+                self.mass.config.get_player_value(
                     player_id,
                     CONF_ENTRY_ANNOUNCE_VOLUME_MAX.key,
                     CONF_ENTRY_ANNOUNCE_VOLUME_MAX.default_value,

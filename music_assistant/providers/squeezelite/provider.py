@@ -124,9 +124,7 @@ class SqueezelitePlayerProvider(PlayerProvider):
 
     def get_corrected_elapsed_milliseconds(self, slimplayer: SlimClient) -> int:
         """Return corrected elapsed milliseconds for a slimplayer."""
-        sync_delay = self.mass.config.get_raw_player_config_value(
-            slimplayer.player_id, CONF_SYNC_ADJUST, 0
-        )
+        sync_delay = self.mass.config.get_protocol_value(slimplayer.player_id, CONF_SYNC_ADJUST, 0)
         return int(slimplayer.elapsed_milliseconds - sync_delay)
 
     def _lookup_display_name(self, player_id: str) -> str | None:

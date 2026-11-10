@@ -22,7 +22,11 @@ from typing import TYPE_CHECKING, Protocol, cast
 
 from music_assistant_models.enums import EventType
 
-from music_assistant.constants import CONF_PLAYERS, CONF_PROTOCOL_PARENT_ID
+from music_assistant.constants import (
+    CONF_PLAYER_PROTOCOLS,
+    CONF_PLAYERS,
+    CONF_PROTOCOL_PARENT_ID,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -179,7 +183,7 @@ class SendspinBridgeManagerBase[BridgeT: SendspinBridge](ABC):
             if self.mass.players.get_protocol(client_id):
                 await self.mass.players.unregister(client_id, permanent=True)
                 removed_any = True
-            elif self.mass.config.get(f"{CONF_PLAYERS}/{client_id}"):
+            elif self.mass.config.get(f"{CONF_PLAYER_PROTOCOLS}/{client_id}"):
                 self.mass.players.delete_player_config(client_id)
                 removed_any = True
         if removed_any:
@@ -276,7 +280,7 @@ class SendspinBridgeManagerBase[BridgeT: SendspinBridge](ABC):
 
     def _is_player_enabled(self, player_id: str) -> bool:
         """Return the persisted enabled state for a player (default True)."""
-        raw_conf = self.mass.config.get(f"{CONF_PLAYERS}/{player_id}")
+        raw_conf = self.mass.config.get(f"{CONF_PLAYER_PROTOCOLS}/{player_id}")
         if not raw_conf:
             return True
         return bool(raw_conf.get("enabled", True))
@@ -288,7 +292,7 @@ class SendspinBridgeManagerBase[BridgeT: SendspinBridge](ABC):
         :param player: The base player a bridge is wanted for.
         :param client_id: The Sendspin bridge client_id computed for the player.
         """
-        raw_conf = self.mass.config.get(f"{CONF_PLAYERS}/{client_id}")
+        raw_conf = self.mass.config.get(f"{CONF_PLAYER_PROTOCOLS}/{client_id}")
         if not raw_conf or raw_conf.get("enabled", True):
             return
         if self.sendspin_server is None or not self._is_player_enabled(player.player_id):

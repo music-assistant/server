@@ -45,7 +45,7 @@ def _setup() -> tuple[PlayerQueuesController, MockPlayer, PlayerQueueData]:
     def _player_config(_player_id: str, _key: str, default: Any = None) -> Any:
         return default
 
-    mass.config.get_raw_player_config_value = MagicMock(side_effect=_player_config)
+    mass.config.get_player_value = MagicMock(side_effect=_player_config)
     mass.get_providers = MagicMock(return_value=[])
 
     ctrl = PlayerQueuesController.__new__(PlayerQueuesController)

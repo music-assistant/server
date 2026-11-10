@@ -2476,9 +2476,9 @@ def _icy_provider(stored: dict[str, Any]) -> RaumfeldPlayerProvider:
     """
     provider = RaumfeldPlayerProvider.__new__(RaumfeldPlayerProvider)
     mass = MagicMock()
-    mass.config.get_raw_player_config_value.side_effect = lambda _pid, key: stored.get(key)
-    mass.config.set_raw_player_config_value.side_effect = lambda _pid, key, value: (
-        stored.__setitem__(key, value)
+    mass.config.get_protocol_value.side_effect = lambda _pid, key: stored.get(key)
+    mass.config.set_protocol_value.side_effect = lambda _pid, key, value: stored.__setitem__(
+        key, value
     )
     provider.mass = mass
     return provider

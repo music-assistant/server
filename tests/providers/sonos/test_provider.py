@@ -30,7 +30,7 @@ def _bind_provider(mass: MusicAssistant | MagicMock) -> SonosPlayerProvider:
 def _make_provider(enabled: bool = False) -> tuple[SonosPlayerProvider, MagicMock]:
     """Create a Sonos provider with mocked discovery dependencies."""
     mass = MagicMock()
-    mass.config.get_raw_player_config_value.return_value = enabled
+    mass.config.get_protocol_value.return_value = enabled
     mass.players.get_player.return_value = None
     return _bind_provider(mass), mass
 
@@ -38,7 +38,7 @@ def _make_provider(enabled: bool = False) -> tuple[SonosPlayerProvider, MagicMoc
 def _bind_discovering_provider(mass: MusicAssistant) -> SonosPlayerProvider:
     """Create a Sonos provider that discovers players on the real timer machinery."""
     mass.config = MagicMock()
-    mass.config.get_raw_player_config_value.return_value = True
+    mass.config.get_protocol_value.return_value = True
     mass.players = MagicMock()
     mass.players.get_player.return_value = None
     mass.streams = MagicMock()
@@ -81,9 +81,9 @@ async def test_disabled_discovery_logs_again_after_reenable(
 
     with caplog.at_level(logging.DEBUG, logger=provider.logger.name):
         await provider.on_mdns_service_state_change(SERVICE_NAME, ServiceStateChange.Added, info)
-        mass.config.get_raw_player_config_value.return_value = True
+        mass.config.get_protocol_value.return_value = True
         await provider.on_mdns_service_state_change(SERVICE_NAME, ServiceStateChange.Updated, info)
-        mass.config.get_raw_player_config_value.return_value = False
+        mass.config.get_protocol_value.return_value = False
         await provider.on_mdns_service_state_change(SERVICE_NAME, ServiceStateChange.Updated, info)
 
     mass.call_later.assert_called_once()

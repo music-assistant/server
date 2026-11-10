@@ -26,7 +26,7 @@ from music_assistant_models.errors import (
 )
 from music_assistant_models.setup_flow import SetupFlowStep
 
-from music_assistant.constants import CONF_PLAYERS, CONF_PROVIDERS
+from music_assistant.constants import CONF_PLAYER_PROTOCOLS, CONF_PROVIDERS
 from music_assistant.controllers.config.helpers import _AUTH_ERROR_CODES
 from music_assistant.helpers.api import api_command
 from music_assistant.helpers.util import import_module_in_thread, load_provider_module
@@ -571,7 +571,7 @@ class SetupFlowMixin:
         """Finish handler for player setup flows: persist and apply the collected setup data."""
         player_id = session.context.player_id
         assert player_id is not None  # always set for player flows
-        conf_key = f"{CONF_PLAYERS}/{player_id}"
+        conf_key = f"{CONF_PLAYER_PROTOCOLS}/{player_id}"
         raw_conf = self.get(conf_key)
         if not raw_conf:
             raise SetupFlowError(f"No config found for player {player_id}")
@@ -598,7 +598,7 @@ class SetupFlowMixin:
 
     def _player_flow_context(self, player: Player) -> SetupFlowContext:
         """Build the setup flow context (with decrypted prefill) for the given player."""
-        raw_conf = self.get(f"{CONF_PLAYERS}/{player.player_id}") or {}
+        raw_conf = self.get(f"{CONF_PLAYER_PROTOCOLS}/{player.player_id}") or {}
         return SetupFlowContext(
             kind="setup",
             reason="user",
@@ -669,7 +669,7 @@ class SetupFlowMixin:
         child = next((candidate for candidate in children if candidate.player_id == child_id), None)
         if child is None:
             raise AbortFlow("nothing_to_configure")
-        child_raw = self.get(f"{CONF_PLAYERS}/{child_id}") or {}
+        child_raw = self.get(f"{CONF_PLAYER_PROTOCOLS}/{child_id}") or {}
         session.retarget(
             domain=child.provider.domain,
             instance_id=child.provider.instance_id,

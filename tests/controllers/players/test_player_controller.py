@@ -99,7 +99,7 @@ def _player_config_stub(
     max_volume: int = 100,
 ) -> Callable[..., object]:
     """
-    Build a ``get_raw_player_config_value`` side effect.
+    Build a ``get_player_value`` side effect.
 
     :param values: Extra config keys to answer, e.g. ``{CONF_MUTE_CONTROL: PLAYER_CONTROL_FAKE}``.
     :param min_volume: Value returned for the ``min_volume`` key.
@@ -214,7 +214,7 @@ def mock_mass() -> Iterator[MagicMock]:
     mass.loop = None
     mass.config = MagicMock()
     mass.config.get = MagicMock(return_value=[])
-    mass.config.get_raw_player_config_value = MagicMock(side_effect=_player_config_stub())
+    mass.config.get_player_value = MagicMock(side_effect=_player_config_stub())
     # Return "GLOBAL" for log level config (standard default)
     mass.config.get_raw_core_config_value = MagicMock(return_value="GLOBAL")
     mass.config.set = MagicMock()
@@ -1495,13 +1495,13 @@ async def _yield_to_loop() -> None:
 
 def _set_play_media_override(mock_mass: MagicMock, value: bool) -> None:
     """
-    Configure get_raw_player_config_value to return ``value`` for the play-media override key.
+    Configure get_player_value to return ``value`` for the play-media override key.
 
     Other keys keep the existing defaults from the shared fixture. Use this in
     tests for ``play_media`` override behavior so the legacy/new branch is
     selected deterministically.
     """
-    original = mock_mass.config.get_raw_player_config_value.side_effect
+    original = mock_mass.config.get_player_value.side_effect
 
     def _side_effect(player_id: str, key: str, default: object = None) -> object:
         if key == "play_media_overrides_group":
@@ -1510,7 +1510,7 @@ def _set_play_media_override(mock_mass: MagicMock, value: bool) -> None:
             return original(player_id, key, default)
         return default
 
-    mock_mass.config.get_raw_player_config_value = MagicMock(side_effect=_side_effect)
+    mock_mass.config.get_player_value = MagicMock(side_effect=_side_effect)
 
 
 class TestRegisterFailureRollback:
@@ -2087,7 +2087,7 @@ class TestCmdUngroupNewBranches:
         group._attr_supported_features = {PlayerFeature.POWER}
 
         # ensure power_control resolves to NATIVE so cmd_ungroup uses the power path
-        mock_mass.config.get_raw_player_config_value = MagicMock(
+        mock_mass.config.get_player_value = MagicMock(
             side_effect=_player_config_stub({CONF_POWER_CONTROL: PLAYER_CONTROL_NATIVE})
         )
 
@@ -2297,7 +2297,7 @@ class TestPowerOffEndsTheQueue:
         player = MockPlayer(provider, "player_1", "Player 1", player_type=player_type)
         # no power control, so the command returns right after the stop - which is
         # the only part of it these tests are about
-        mock_mass.config.get_raw_player_config_value = MagicMock(
+        mock_mass.config.get_player_value = MagicMock(
             side_effect=_player_config_stub({CONF_POWER_CONTROL: PLAYER_CONTROL_NONE})
         )
         player._attr_powered = True
@@ -2394,7 +2394,7 @@ class TestPowerOffEndsTheQueue:
         self, mock_mass: MagicMock, member_type: PlayerType
     ) -> None:
         """A member of a group is ungrouped instead of stopped, so the group plays on."""
-        mock_mass.config.get_raw_player_config_value = MagicMock(
+        mock_mass.config.get_player_value = MagicMock(
             side_effect=_player_config_stub({CONF_POWER_CONTROL: PLAYER_CONTROL_NONE})
         )
         controller, group_player, member = _group_with_member(mock_mass, member_type=member_type)
@@ -2442,7 +2442,7 @@ class TestSyncLeaderPowerOffUngroup:
         :param player_type: The type to register the leader as.
         :return: The controller and the leader.
         """
-        mock_mass.config.get_raw_player_config_value = MagicMock(side_effect=_player_config_stub())
+        mock_mass.config.get_player_value = MagicMock(side_effect=_player_config_stub())
         controller = PlayerController(mock_mass)
         provider = MockProvider("test_provider", instance_id="test", mass=mock_mass)
         # the leader has no power control of its own, so the command returns right after
@@ -2663,7 +2663,7 @@ class TestSyncLeaderPowerOffUngroup:
         active output protocol and surface on the resolved state. An external power off
         already reads that resolved state, so an MA power off must ungroup it too.
         """
-        mock_mass.config.get_raw_player_config_value = MagicMock(side_effect=_player_config_stub())
+        mock_mass.config.get_player_value = MagicMock(side_effect=_player_config_stub())
         controller = PlayerController(mock_mass)
         provider = MockProvider("test_provider", instance_id="test", mass=mock_mass)
         leader = MockPlayer(provider, "leader", "Leader")
@@ -3574,7 +3574,7 @@ class TestVolumeScalingOnRedirect:
                 return 50 if player_id == "user_player" else 100
             return default
 
-        mock_mass.config.get_raw_player_config_value = MagicMock(side_effect=_conf)
+        mock_mass.config.get_player_value = MagicMock(side_effect=_conf)
 
         protocol = self._volume_player("protocol_player", PLAYER_CONTROL_NATIVE)
         user = self._volume_player("user_player", "protocol_player")
@@ -3604,7 +3604,7 @@ class TestVolumeScalingOnRedirect:
                 return 50
             return default
 
-        mock_mass.config.get_raw_player_config_value = MagicMock(side_effect=_conf)
+        mock_mass.config.get_player_value = MagicMock(side_effect=_conf)
 
         protocol = self._volume_player("protocol_player", PLAYER_CONTROL_NATIVE)
         user = self._volume_player("user_player", "protocol_player")
@@ -3624,7 +3624,7 @@ class TestVolumeScalingOnRedirect:
         self, controller: PlayerController, mock_mass: MagicMock
     ) -> None:
         """A volume command redirected to an external control honors the user-facing max_volume."""
-        mock_mass.config.get_raw_player_config_value = MagicMock(
+        mock_mass.config.get_player_value = MagicMock(
             side_effect=_player_config_stub(max_volume=50)
         )
 
@@ -3653,7 +3653,7 @@ class TestVolumeScalingOnRedirect:
         self, controller: PlayerController, mock_mass: MagicMock
     ) -> None:
         """A volume command redirected to a control lacking volume support is rejected."""
-        mock_mass.config.get_raw_player_config_value = MagicMock(
+        mock_mass.config.get_player_value = MagicMock(
             side_effect=_player_config_stub(max_volume=50)
         )
 
@@ -3686,7 +3686,7 @@ class TestExternalPowerControl:
         self, mock_mass: MagicMock, control: PlayerControl
     ) -> tuple[PlayerController, MockPlayer]:
         """Build a controller with a single player whose power control is the given control."""
-        mock_mass.config.get_raw_player_config_value = MagicMock(
+        mock_mass.config.get_player_value = MagicMock(
             side_effect=_player_config_stub({CONF_POWER_CONTROL: control.id})
         )
         controller = PlayerController(mock_mass)
@@ -3822,7 +3822,7 @@ class TestOfflinePowerControl:
             power_on=AsyncMock(),
             power_off=AsyncMock(),
         )
-        mock_mass.config.get_raw_player_config_value = MagicMock(
+        mock_mass.config.get_player_value = MagicMock(
             side_effect=_player_config_stub({CONF_POWER_CONTROL: control.id})
         )
         mock_mass.player_queues.resume = AsyncMock()
@@ -4496,7 +4496,7 @@ class TestIdlePowerOff:
             power_on=AsyncMock(),
             power_off=power_off,
         )
-        mock_mass.config.get_raw_player_config_value = MagicMock(
+        mock_mass.config.get_player_value = MagicMock(
             side_effect=_player_config_stub({CONF_POWER_CONTROL: control.id})
         )
         controller = PlayerController(mock_mass)
@@ -4716,7 +4716,7 @@ class TestSelectSourcePowerOn:
         self, mock_mass: MagicMock
     ) -> None:
         """The selected source plays, not the queue that auto play would resume."""
-        mock_mass.config.get_raw_player_config_value = MagicMock(
+        mock_mass.config.get_player_value = MagicMock(
             side_effect=_player_config_stub({CONF_POWER_CONTROL: PLAYER_CONTROL_FAKE})
         )
         mock_mass.cache.set = AsyncMock()
@@ -4752,7 +4752,7 @@ class TestEnforceVolumeLimits:
 
     @staticmethod
     def _set_limits(mock_mass: MagicMock, min_volume: int, max_volume: int) -> None:
-        mock_mass.config.get_raw_player_config_value = MagicMock(
+        mock_mass.config.get_player_value = MagicMock(
             side_effect=_player_config_stub(min_volume=min_volume, max_volume=max_volume)
         )
 
@@ -4829,7 +4829,7 @@ class TestFakeMuteControl:
         :param mock_mass: the mocked MusicAssistant instance.
         :param volume_level: initial volume level of the player, None if unknown.
         """
-        mock_mass.config.get_raw_player_config_value = MagicMock(
+        mock_mass.config.get_player_value = MagicMock(
             side_effect=_player_config_stub({CONF_MUTE_CONTROL: PLAYER_CONTROL_FAKE})
         )
         controller = PlayerController(mock_mass)
@@ -5670,7 +5670,7 @@ class TestGroupVolumeReference:
         self, mock_mass: MagicMock
     ) -> None:
         """Correcting a volume that ran past its limit is not a level the group commanded."""
-        mock_mass.config.get_raw_player_config_value = MagicMock(
+        mock_mass.config.get_player_value = MagicMock(
             side_effect=_player_config_stub(min_volume=20)
         )
         use_real_create_task(mock_mass)
@@ -5709,7 +5709,7 @@ class TestFakeMuteInGroup:
                 player_id, key, default
             )
 
-        mock_mass.config.get_raw_player_config_value = MagicMock(side_effect=_conf)
+        mock_mass.config.get_player_value = MagicMock(side_effect=_conf)
         controller = PlayerController(mock_mass)
         provider = MockProvider("test_provider", instance_id="test", mass=mock_mass)
         players: dict[str, MockPlayer] = {}
@@ -5853,7 +5853,7 @@ class TestMuteControlGuard:
         features: set[PlayerFeature] | None = None,
     ) -> tuple[PlayerController, MockPlayer]:
         """Build a controller with a single player using the given control config."""
-        mock_mass.config.get_raw_player_config_value = MagicMock(
+        mock_mass.config.get_player_value = MagicMock(
             side_effect=_player_config_stub(
                 {CONF_MUTE_CONTROL: mute_control, CONF_VOLUME_CONTROL: volume_control}
             )
@@ -6241,7 +6241,7 @@ class TestMuteLockAfterUngroup:
 
         :param member_mute_control: Mute control to configure on both players.
         """
-        mock_mass.config.get_raw_player_config_value = MagicMock(
+        mock_mass.config.get_player_value = MagicMock(
             side_effect=_player_config_stub({CONF_MUTE_CONTROL: member_mute_control})
         )
         controller = PlayerController(mock_mass)
@@ -6862,7 +6862,7 @@ class TestNativeAnnouncementVolumeRouting:
             )
         }
         mock_mass.players = controller
-        mock_mass.config.get_raw_player_config_value = MagicMock(
+        mock_mass.config.get_player_value = MagicMock(
             side_effect=_player_config_stub({CONF_VOLUME_CONTROL: volume_control})
         )
         for player in controller._players.values():
@@ -7180,7 +7180,7 @@ class TestPlayAnnouncementMessage:
         announcements: dict[str, object] = {}
         controller, _announce = self._make_player(mock_mass, announcements)
         engine = self._make_engine()
-        mock_mass.config.get_raw_player_config_value = MagicMock(
+        mock_mass.config.get_player_value = MagicMock(
             side_effect=lambda _player_id, key, default=None: (
                 True if key == CONF_ENTRY_TTS_PRE_ANNOUNCE.key else default
             )
@@ -7966,7 +7966,7 @@ class TestPlayAnnouncementRestore:
         self, mock_mass: MagicMock
     ) -> None:
         """A player that can only be muted is unmuted for the announcement all the same."""
-        mock_mass.config.get_raw_player_config_value = MagicMock(
+        mock_mass.config.get_player_value = MagicMock(
             side_effect=_player_config_stub({CONF_VOLUME_CONTROL: PLAYER_CONTROL_NONE})
         )
         controller, player, _ = self._make_player(
@@ -8059,7 +8059,7 @@ class TestPlayAnnouncementRestore:
         self, mock_mass: MagicMock
     ) -> None:
         """A fake muted player announces at its real volume, not at the zero it is parked on."""
-        mock_mass.config.get_raw_player_config_value = MagicMock(
+        mock_mass.config.get_player_value = MagicMock(
             side_effect=_player_config_stub({CONF_MUTE_CONTROL: PLAYER_CONTROL_FAKE})
         )
         controller, player, _ = self._make_player(
@@ -8177,7 +8177,7 @@ class TestPlayNativeAnnouncement:
         self, mock_mass: MagicMock
     ) -> None:
         """The announcement volume is resolved after the unmute, not from the parked zero."""
-        mock_mass.config.get_raw_player_config_value = MagicMock(
+        mock_mass.config.get_player_value = MagicMock(
             side_effect=_player_config_stub({CONF_MUTE_CONTROL: PLAYER_CONTROL_FAKE})
         )
         controller, player, announce_mock = self._make_player(mock_mass)
@@ -8281,7 +8281,7 @@ class TestRemovePlayerControl:
         # run the scheduled refresh straight away so each step is observable
         mock_mass.loop = MagicMock()
         mock_mass.loop.call_soon.side_effect = lambda callback, *args: callback(*args)
-        mock_mass.config.get_raw_player_config_value.side_effect = _player_config_stub(
+        mock_mass.config.get_player_value.side_effect = _player_config_stub(
             {CONF_POWER_CONTROL: "switch.amp"}
         )
         controller = PlayerController(mock_mass)

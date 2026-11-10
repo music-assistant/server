@@ -2689,7 +2689,7 @@ class TestSupportedFeaturesFromActiveMembers:
         mass = _make_mock_mass()
         # the stored controls resolve to "none", which the final feature set must not
         # apply to a group (an unconfigured mock would resolve to a mock player control)
-        mass.config.get_raw_player_config_value = MagicMock(side_effect=_raw_controls_none)
+        mass.config.get_player_value = MagicMock(side_effect=_raw_controls_none)
         sgp = _make_sync_group(mass)
         leader = _make_mock_player("display", provider_domain="sendspin")
         # the live session is what the leader reports, not the configured list
@@ -2809,7 +2809,7 @@ class TestSupportedFeaturesPower:
         """No power_control config → POWER feature not advertised."""
         mass = _make_mock_mass()
         # default config: no CONF_POWER_CONTROL
-        mass.config.get_raw_player_config_value = MagicMock(return_value=None)
+        mass.config.get_player_value = MagicMock(return_value=None)
         sgp = _make_sync_group(mass)
         assert PlayerFeature.POWER not in sgp.supported_features
 
@@ -2824,7 +2824,7 @@ class TestSupportedFeaturesPower:
                 return "fake"
             return default
 
-        mass.config.get_raw_player_config_value = MagicMock(side_effect=_get_raw)
+        mass.config.get_player_value = MagicMock(side_effect=_get_raw)
         sgp = _make_sync_group(mass)
         assert PlayerFeature.POWER in sgp.supported_features
 
@@ -2834,7 +2834,7 @@ class TestLeaderTransportForwarding:
 
     def _make_group_with_leader(self) -> tuple[SyncGroupPlayer, MagicMock, MagicMock]:
         mass = _make_mock_mass()
-        mass.config.get_raw_player_config_value = MagicMock(return_value=None)
+        mass.config.get_player_value = MagicMock(return_value=None)
         mass.players._handle_cmd_pause = AsyncMock()
         mass.players._handle_cmd_play = AsyncMock()
         mass.players.cmd_resume = AsyncMock()
@@ -2863,7 +2863,7 @@ class TestLeaderTransportForwarding:
     def test_transport_features_not_advertised_without_leader(self) -> None:
         """An unformed group does not borrow transport features from its members."""
         mass = _make_mock_mass()
-        mass.config.get_raw_player_config_value = MagicMock(return_value=None)
+        mass.config.get_player_value = MagicMock(return_value=None)
         member = _make_mock_player("member")
         member.state.supported_features = {PlayerFeature.PLAY_MEDIA, PlayerFeature.PAUSE}
         mass.players.get_player = _player_lookup({"member": member})

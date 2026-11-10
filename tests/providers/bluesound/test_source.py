@@ -107,7 +107,7 @@ def test_published_source_after_ma_to_library_switch(own_stream: bool) -> None:
     """Publish library metadata despite the remembered MA queue, but trust no MA stream."""
     mass = MagicMock()
     mass.closing = False
-    mass.config.get_raw_player_config_value = MagicMock(
+    mass.config.get_player_value = MagicMock(
         side_effect=lambda _player_id, _key, default=None: default
     )
     mass.player_queues.get = MagicMock(return_value=None)

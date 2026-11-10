@@ -276,7 +276,7 @@ class TestCastBridgePolicy:
         mass.subscribe = MagicMock(return_value=MagicMock())
         mass.players.subscribe_player_state_update = MagicMock(return_value=MagicMock())
         mass.create_task = MagicMock()
-        mass.config.get_raw_player_config_value = MagicMock(return_value=None)
+        mass.config.get_protocol_value = MagicMock(return_value=None)
         external_clients: set[str] = set()
         sendspin_server = mass.get_provider.return_value.server_api
         sendspin_server.is_external_player = MagicMock(side_effect=external_clients.__contains__)
@@ -399,7 +399,7 @@ class TestCastBridgePolicy:
         mass.players.get_player = MagicMock(return_value=parent)
         assert manager._should_have_bridge(cast_player) is True
 
-        mass.config.get_raw_player_config_value = MagicMock(
+        mass.config.get_protocol_value = MagicMock(
             side_effect=lambda _player_id, key, default=None: (
                 True if key == CONF_SENDSPIN_UNSUPPORTED else default
             )
@@ -547,8 +547,8 @@ class TestCastBridgeOptIn:
         mass.config.get = MagicMock(
             side_effect=lambda key, default=None: player_configs.get(key, default)
         )
-        mass.config.get_raw_player_config_value = MagicMock(side_effect=get_raw)
-        mass.config.set_raw_player_config_value = MagicMock(side_effect=set_raw)
+        mass.config.get_protocol_value = MagicMock(side_effect=get_raw)
+        mass.config.set_protocol_value = MagicMock(side_effect=set_raw)
         mass.config.save_player_config = AsyncMock(side_effect=save)
         mass.create_task = MagicMock(
             side_effect=lambda target, *_a, **_kw: scheduled.append(target)
@@ -629,7 +629,7 @@ class TestCastBridgeOptIn:
             await manager.evaluate_bridge(cast_player)
 
         assert not scheduled
-        mass.config.set_raw_player_config_value.assert_not_called()
+        mass.config.set_protocol_value.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_the_warning_text_is_authored(self) -> None:
@@ -728,7 +728,7 @@ class TestCastBridgeOptIn:
             return default
 
         manager._bridges[cast_player.player_id] = MagicMock()
-        mass.config.get_raw_player_config_value = MagicMock(side_effect=get_raw)
+        mass.config.get_protocol_value = MagicMock(side_effect=get_raw)
 
         with patch.object(bridge_module, "SENDSPIN_LINK_WAIT_INTERVAL", 0):
             assert await manager._wait_for_protocol_link(cast_player.player_id, client_id) is False
@@ -750,7 +750,7 @@ class TestCastBridgeOptIn:
 
         await manager._flag_bridge_experimental(cast_player.player_id, client_id, disable=True)
 
-        mass.config.set_raw_player_config_value.assert_not_called()
+        mass.config.set_protocol_value.assert_not_called()
         mass.config.save_player_config.assert_not_awaited()
 
 
@@ -766,7 +766,7 @@ class TestCastFatalAudioError:
         order: list[str] = []
 
         mass = MagicMock()
-        mass.config.set_raw_player_config_value = MagicMock(
+        mass.config.set_protocol_value = MagicMock(
             side_effect=lambda player_id, key, value: raw_values.__setitem__(
                 (player_id, key), value
             )

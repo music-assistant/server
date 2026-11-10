@@ -100,6 +100,7 @@ from music_assistant.constants import (
     CONF_MUTE_CONTROL,
     CONF_PLAY_MEDIA_OVERRIDES_GROUP,
     CONF_PLAYER_DSP,
+    CONF_PLAYER_PROTOCOLS,
     CONF_PLAYER_QUEUES,
     CONF_PLAYERS,
     CONF_POWER_CONTROL,
@@ -1235,7 +1236,7 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
             target_player.state.synced_to or target_player.state.active_group
         ):
             override = bool(
-                self.mass.config.get_raw_player_config_value(
+                self.mass.config.get_player_value(
                     target_player.player_id,
                     CONF_PLAY_MEDIA_OVERRIDES_GROUP,
                     True,
@@ -2095,18 +2096,14 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
             )
         else:
             if source_raw.get("name") and not target_raw.get("name"):
-                self.mass.config.set_raw_player_config_value(
-                    replacement_player_id, "name", source_raw["name"]
-                )
+                self.mass.config.set_player_value(replacement_player_id, "name", source_raw["name"])
             source_values = source_raw.get("values")
             target_values = target_raw.get("values")
             target_values = target_values if isinstance(target_values, dict) else {}
             for key, value in (source_values if isinstance(source_values, dict) else {}).items():
                 if key in target_values and key != CONF_PROTOCOL_PARENT_ID:
                     continue
-                self.mass.config.set_raw_player_config_value(
-                    replacement_player_id, key, deepcopy(value)
-                )
+                self.mass.config.set_player_value(replacement_player_id, key, deepcopy(value))
         source_dsp = self.mass.config.get(f"{CONF_PLAYER_DSP}/{player_id}")
         if source_dsp and not self.mass.config.get(f"{CONF_PLAYER_DSP}/{replacement_player_id}"):
             self.mass.config.set(f"{CONF_PLAYER_DSP}/{replacement_player_id}", deepcopy(source_dsp))
@@ -2829,7 +2826,7 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
 
         :param player: The player to resolve the MAC address(es) for.
         """
-        conf_base = f"{CONF_PLAYERS}/{player.player_id}/values"
+        conf_base = f"{CONF_PLAYER_PROTOCOLS}/{player.player_id}/values"
         # Save the original MAC reported by the provider (before ARP enrichment)
         reported_mac = player.device_info.identifiers.get(IdentifierType.MAC_ADDRESS)
 
@@ -3084,7 +3081,7 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         return {
             str(value)
             for conf_key in (CONF_POWER_CONTROL, CONF_VOLUME_CONTROL, CONF_MUTE_CONTROL)
-            if (value := self.mass.config.get_raw_player_config_value(player_id, conf_key))
+            if (value := self.mass.config.get_player_value(player_id, conf_key))
         }
 
     def _get_volume_step(self, current_volume: int) -> int:
@@ -3107,7 +3104,7 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         min_volume = int(
             cast(
                 "int",
-                self.mass.config.get_raw_player_config_value(
+                self.mass.config.get_player_value(
                     player_id, CONF_MIN_VOLUME, CONF_ENTRY_MIN_VOLUME.default_value
                 ),
             )
@@ -3115,7 +3112,7 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         max_volume = int(
             cast(
                 "int",
-                self.mass.config.get_raw_player_config_value(
+                self.mass.config.get_player_value(
                     player_id, CONF_MAX_VOLUME, CONF_ENTRY_MAX_VOLUME.default_value
                 ),
             )
@@ -3573,9 +3570,7 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
                     new_members.append(corrected_id)
 
             if changes:
-                self.mass.config.set_raw_player_config_value(
-                    group_id, CONF_GROUP_MEMBERS, new_members
-                )
+                self.mass.config.set_protocol_value(group_id, CONF_GROUP_MEMBERS, new_members)
                 total_fixes += changes
                 fixed_groups.append(group_id)
 

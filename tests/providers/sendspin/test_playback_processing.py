@@ -26,7 +26,7 @@ def test_empty_plan_does_not_require_transform(
     """A plan without filters keeps the member on the shared Sendspin channel."""
     player = MagicMock(player_id="leader")
     player.mass.config.get_player_dsp_config.return_value = DSPConfig(enabled=False)
-    player.mass.config.get_raw_player_config_value.return_value = "stereo"
+    player.mass.config.get_protocol_value.return_value = "stereo"
     pcm_format = AudioFormat(
         content_type=ContentType.PCM_F32LE,
         sample_rate=48000,

@@ -242,7 +242,7 @@ class SonosPlayerProvider(PlayerProvider):
         :param player_id: The discovered Sonos player ID.
         :param name: The discovered Sonos service name.
         """
-        if self.mass.config.get_raw_player_config_value(player_id, "enabled", True):
+        if self.mass.config.get_protocol_value(player_id, "enabled", True):
             self._ignored_disabled_players.discard(player_id)
             return False
         if player_id not in self._ignored_disabled_players:

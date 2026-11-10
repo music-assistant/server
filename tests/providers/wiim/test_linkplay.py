@@ -159,7 +159,7 @@ def mock_provider() -> MagicMock:
     config.get_value = MagicMock(return_value=None)
     provider.mass.config.get_base_player_config.return_value = config
     # used by the core final-state calculation to resolve power/volume controls
-    provider.mass.config.get_raw_player_config_value = MagicMock(
+    provider.mass.config.get_player_value = MagicMock(
         side_effect=lambda _player_id, _key, default=None: default
     )
     return provider
@@ -681,7 +681,7 @@ class TestDefaultProtocolSelection:
     def _controller(self, protocol_players: dict[str, Any], preferred: Any = None) -> MagicMock:
         controller = MagicMock()
         controller.get_player.side_effect = protocol_players.get
-        controller.mass.config.get_raw_player_config_value.return_value = preferred
+        controller.mass.config.get_player_value.return_value = preferred
         controller._get_grouped_output_protocol.return_value = None
         controller.logger = MagicMock()
         return controller

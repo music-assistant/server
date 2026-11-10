@@ -88,14 +88,10 @@ class AuracastPlayer(PlayerProtocol):
             0,
             min(
                 100,
-                int(
-                    provider.mass.config.get_raw_player_config_value(
-                        player_id, CONF_STORED_VOLUME, 100
-                    )
-                ),
+                int(provider.mass.config.get_protocol_value(player_id, CONF_STORED_VOLUME, 100)),
             ),
         )
-        stored_broadcast_id = provider.mass.config.get_raw_player_config_value(
+        stored_broadcast_id = provider.mass.config.get_protocol_value(
             player_id, CONF_STORED_BROADCAST_ID
         )
         if isinstance(stored_broadcast_id, int) and not isinstance(stored_broadcast_id, bool):
@@ -110,7 +106,7 @@ class AuracastPlayer(PlayerProtocol):
         if not 0 < broadcast_id < 0x1000000:
             broadcast_id = secrets.randbelow(0xFFFFFF) + 1
         device_address = parse_device_address(
-            provider.mass.config.get_raw_player_config_value(player_id, CONF_STORED_DEVICE_ADDRESS)
+            provider.mass.config.get_protocol_value(player_id, CONF_STORED_DEVICE_ADDRESS)
         )
         if device_address is None:
             device_address = generate_device_address()
@@ -240,7 +236,7 @@ class AuracastPlayer(PlayerProtocol):
         :param volume_level: Volume level from 0 to 100.
         """
         self._attr_volume_level = max(0, min(100, volume_level))
-        self.mass.config.set_raw_player_config_value(
+        self.mass.config.set_protocol_value(
             self.player_id, CONF_STORED_VOLUME, self._attr_volume_level
         )
         self.update_state()
@@ -273,8 +269,8 @@ class AuracastPlayer(PlayerProtocol):
             (CONF_STORED_BROADCAST_ID, broadcast_config.broadcast_id),
             (CONF_STORED_DEVICE_ADDRESS, broadcast_config.device_address),
         ):
-            if self.mass.config.get_raw_player_config_value(self.player_id, key) != value:
-                self.mass.config.set_raw_player_config_value(self.player_id, key, value)
+            if self.mass.config.get_protocol_value(self.player_id, key) != value:
+                self.mass.config.set_protocol_value(self.player_id, key, value)
 
     async def on_unload(self) -> None:
         """Stop playback and release controller resources when removed."""

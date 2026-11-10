@@ -70,7 +70,7 @@ from music_assistant.constants import (
     CONF_ENABLED,
     CONF_ENTRY_MANUAL_DISCOVERY_IPS,
     CONF_LOG_LEVEL,
-    CONF_PLAYERS,
+    CONF_PLAYER_PROTOCOLS,
     CONF_PROVIDERS,
     SENDSPIN_SERVER_PORT,
     VERBOSE_LOG_LEVEL,
@@ -616,10 +616,7 @@ class SendspinProvider(PlayerProvider):
             existing.static_delay_default_ms = default_ms
             # If no user-set value exists, push the new default to the device now
             # so already-connected clients pick it up without a config edit.
-            if (
-                self.mass.config.get_raw_player_config_value(client_id, CONF_SENDSPIN_STATIC_DELAY)
-                is None
-            ):
+            if self.mass.config.get_protocol_value(client_id, CONF_SENDSPIN_STATIC_DELAY) is None:
                 self.mass.create_task(existing._apply_static_delay())
             return
         self._bridge_static_delay_defaults[client_id] = default_ms
@@ -757,9 +754,7 @@ class SendspinProvider(PlayerProvider):
                 raise
             raise SetupFailedError(f"Failed to create virtual player {player_id}") from err
         # persist the owner so orphaned configs can be swept after a restart
-        self.mass.config.set_raw_player_config_value(
-            player_id, CONF_VIRTUAL_PLAYER_OWNER, owner_instance_id
-        )
+        self.mass.config.set_protocol_value(player_id, CONF_VIRTUAL_PLAYER_OWNER, owner_instance_id)
         self.logger.info("Virtual player %s created for %s", player_id, owner_instance_id)
         return player_id
 
@@ -1707,7 +1702,7 @@ class SendspinProvider(PlayerProvider):
             if not self._is_current_client_event(client_id, event_version):
                 self.logger.debug("Skipping stale add event for %s", client_id)
                 return
-            if not self.mass.config.get_raw_player_config_value(client_id, CONF_ENABLED, True):
+            if not self.mass.config.get_protocol_value(client_id, CONF_ENABLED, True):
                 self.logger.debug("Ignoring disabled sendspin client: %s", client_id)
                 return
             await self._auto_trust_guest_access(client_id, sendspin_client, event_version)
@@ -1862,7 +1857,7 @@ class SendspinProvider(PlayerProvider):
 
     def _get_virtual_player_config_owner(self, player_id: str) -> str | None:
         """Return the owner instance id from a stored virtual player config, if any."""
-        raw_conf = self.mass.config.get(f"{CONF_PLAYERS}/{player_id}")
+        raw_conf = self.mass.config.get(f"{CONF_PLAYER_PROTOCOLS}/{player_id}")
         if not isinstance(raw_conf, dict) or raw_conf.get("provider") != self.instance_id:
             return None
         values = raw_conf.get("values")
@@ -1980,7 +1975,7 @@ class SendspinProvider(PlayerProvider):
 
     def _remove_orphan_virtual_player_configs(self) -> None:
         """Delete stored configs of virtual players whose owner provider is gone."""
-        all_player_configs = self.mass.config.get(CONF_PLAYERS, {})
+        all_player_configs = self.mass.config.get(CONF_PLAYER_PROTOCOLS, {})
         for player_id, raw_conf in list(all_player_configs.items()):
             if not isinstance(raw_conf, dict) or raw_conf.get("provider") != self.instance_id:
                 continue
@@ -2018,9 +2013,9 @@ class SendspinProvider(PlayerProvider):
             return None
         mac_player_id = mac_address.upper()
         config = self.mass.config
-        if config.get_raw_player_config_value(mac_player_id, "provider") != self.instance_id:
+        if config.get_protocol_value(mac_player_id, "provider") != self.instance_id:
             return None
-        if not config.get_raw_player_config_value(mac_player_id, CONF_ENABLED, True):
+        if not config.get_protocol_value(mac_player_id, CONF_ENABLED, True):
             return None
         if (mac_client := self.server_api.get_client(mac_player_id)) and mac_client.is_connected:
             return None

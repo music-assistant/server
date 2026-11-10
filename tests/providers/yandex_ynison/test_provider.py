@@ -277,7 +277,7 @@ class TestProviderInit:
         """Provider startup before player registration still advertises its stored name."""
         provider = _make_provider("living-room")
         provider.mass.players.get_player.return_value = None
-        provider.mass.config.get_raw_player_config_value.side_effect = lambda player_id, key: (
+        provider.mass.config.get_player_value.side_effect = lambda player_id, key: (
             "Stored kitchen" if (player_id, key) == ("living-room", "name") else None
         )
 

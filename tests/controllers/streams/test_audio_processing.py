@@ -890,7 +890,7 @@ def test_player_output_plan_matches_ffmpeg_filters() -> None:
         output_gain=-0.5,
         preset_id="night",
     )
-    mass.config.get_raw_player_config_value.return_value = "left"
+    mass.config.get_protocol_value.return_value = "left"
     audio = StreamsAudio(cast("Any", mass))
     input_format = _format(ContentType.PCM_F32LE, 96000, 32)
     output_format = _format(ContentType.FLAC, 48000, 16, channels=1)
@@ -931,7 +931,7 @@ def test_player_output_plan_downmixes_to_mono() -> None:
     mass = MagicMock()
     mass.players.get_player.return_value = None
     mass.config.get_player_dsp_config.return_value = DSPConfig(enabled=False)
-    mass.config.get_raw_player_config_value.return_value = "mono"
+    mass.config.get_protocol_value.return_value = "mono"
     audio = StreamsAudio(cast("Any", mass))
     input_format = _format(ContentType.PCM_F32LE, 48000, 32)
     output_format = _format(ContentType.FLAC, 48000, 16, channels=1)
@@ -954,7 +954,7 @@ def test_player_output_plan_feeds_every_output_channel() -> None:
     mass = MagicMock()
     mass.players.get_player.return_value = None
     mass.config.get_player_dsp_config.return_value = DSPConfig(enabled=False)
-    mass.config.get_raw_player_config_value.return_value = "mono"
+    mass.config.get_protocol_value.return_value = "mono"
     audio = StreamsAudio(cast("Any", mass))
     audio_format = _format(ContentType.PCM_F32LE, 48000, 32)
 
@@ -976,7 +976,7 @@ def test_player_output_plan_skips_channel_selection_for_mono_source() -> None:
     mass = MagicMock()
     mass.players.get_player.return_value = None
     mass.config.get_player_dsp_config.return_value = DSPConfig(enabled=False)
-    mass.config.get_raw_player_config_value.return_value = "mono"
+    mass.config.get_protocol_value.return_value = "mono"
     audio = StreamsAudio(cast("Any", mass))
     audio_format = _format(ContentType.PCM_F32LE, 48000, 32, channels=1)
 
@@ -998,7 +998,7 @@ def test_player_output_plan_pans_for_the_handoff_format() -> None:
     mass = MagicMock()
     mass.players.get_player.return_value = None
     mass.config.get_player_dsp_config.return_value = DSPConfig(enabled=False)
-    mass.config.get_raw_player_config_value.return_value = "mono"
+    mass.config.get_protocol_value.return_value = "mono"
     audio = StreamsAudio(cast("Any", mass))
     pcm_format = _format(ContentType.PCM_F32LE, 48000, 32)
 
@@ -1040,7 +1040,7 @@ def test_player_output_plan_excludes_neutral_filters() -> None:
         enabled=True,
         filters=[ToneControlFilter(enabled=True)],
     )
-    mass.config.get_raw_player_config_value.return_value = "stereo"
+    mass.config.get_protocol_value.return_value = "stereo"
     audio = StreamsAudio(cast("Any", mass))
     audio_format = _format(ContentType.PCM_F32LE, 48000, 32)
 
@@ -1069,7 +1069,7 @@ def _convolution_plan(known_ir_ids: list[str]) -> AudioOutputPlan:
         filters=[ConvolutionFilter(enabled=True, ir_id="abc123")],
     )
     mass.config.get_dsp_irs.return_value = [{"ir_id": ir_id} for ir_id in known_ir_ids]
-    mass.config.get_raw_player_config_value.return_value = "stereo"
+    mass.config.get_protocol_value.return_value = "stereo"
     audio = StreamsAudio(cast("Any", mass))
     audio_format = _format(ContentType.PCM_F32LE, 48000, 32)
     return audio.get_player_output_plan(
@@ -1107,7 +1107,7 @@ def test_player_output_plan_prefers_rendering_player_channels() -> None:
     player.state.synced_to = None
     mass.players.get_player.return_value = player
     mass.config.get_player_dsp_config.return_value = DSPConfig(enabled=False)
-    mass.config.get_raw_player_config_value.side_effect = lambda player_id, _key, default: (
+    mass.config.get_protocol_value.side_effect = lambda player_id, _key, default: (
         "left" if player_id == "child-1" else default
     )
     audio = StreamsAudio(cast("Any", mass))
@@ -1134,7 +1134,7 @@ async def test_output_format_prefers_rendering_player_channels() -> None:
     mass = MagicMock()
     player = MagicMock(player_id="child-1", protocol_parent_id="parent-1")
     player.get_supported_sample_rates.return_value = [(48000, 24)]
-    mass.config.get_raw_player_config_value.side_effect = lambda player_id, _key, default: (
+    mass.config.get_protocol_value.side_effect = lambda player_id, _key, default: (
         "left" if player_id == "child-1" else default
     )
     audio = StreamsAudio(cast("Any", mass))
@@ -1149,7 +1149,7 @@ def _hires_capable_audio() -> tuple[StreamsAudio, MagicMock]:
     mass = MagicMock()
     player = MagicMock(player_id="player-1", protocol_parent_id=None)
     player.get_supported_sample_rates.return_value = [(96000, 24)]
-    mass.config.get_raw_player_config_value.side_effect = lambda _player_id, _key, default: default
+    mass.config.get_protocol_value.side_effect = lambda _player_id, _key, default: default
     return StreamsAudio(cast("Any", mass)), player
 
 
@@ -1327,7 +1327,7 @@ def test_protocol_output_uses_parent_settings(monkeypatch: pytest.MonkeyPatch) -
         "protocol-2": shared_player,
     }.get(player_id)
     mass.config.get_player_dsp_config.return_value = DSPConfig(enabled=False)
-    mass.config.get_raw_player_config_value.side_effect = lambda _player_id, _key, default: (
+    mass.config.get_protocol_value.side_effect = lambda _player_id, _key, default: (
         False if isinstance(default, bool) else "right"
     )
     audio = StreamsAudio(cast("Any", mass))
@@ -1353,7 +1353,7 @@ def test_protocol_output_uses_parent_settings(monkeypatch: pytest.MonkeyPatch) -
     assert plan.output_details.source_channel == AudioChannel.FR
     # the output channels are looked up on the rendering player first (no value
     # stored there in this scenario), then resolved from the user-facing parent
-    assert {call.args[0] for call in mass.config.get_raw_player_config_value.call_args_list} == {
+    assert {call.args[0] for call in mass.config.get_protocol_value.call_args_list} == {
         "player-1",
         "protocol-1",
     }
@@ -1385,7 +1385,7 @@ def test_single_member_group_uses_child_dsp_preset() -> None:
         if player_id == "child-1"
         else DSPConfig(enabled=False)
     )
-    mass.config.get_raw_player_config_value.return_value = "stereo"
+    mass.config.get_protocol_value.return_value = "stereo"
     audio = StreamsAudio(cast("Any", mass))
     pcm_format = _format(ContentType.PCM_F32LE, 48000, 32)
 
@@ -1410,7 +1410,7 @@ def test_unsupported_group_preserves_configured_preset() -> None:
         enabled=True,
         preset_id="group-preset",
     )
-    mass.config.get_raw_player_config_value.return_value = "stereo"
+    mass.config.get_protocol_value.return_value = "stereo"
     audio = StreamsAudio(cast("Any", mass))
     pcm_format = _format(ContentType.PCM_F32LE, 48000, 32)
 
@@ -2166,7 +2166,7 @@ def _native_stream_handler_context(
     mass.player_queues.flow_stream_finished.return_value = False
     mass.player_queues.get_item.return_value = queue_item
     mass.config.get_raw_core_config_value.return_value = 8
-    mass.config.get_raw_player_config_value.return_value = "disabled"
+    mass.config.get_protocol_value.return_value = "disabled"
 
     group_members = ["player-1", "player-2"]
     player = MagicMock(player_id="player-1", protocol_parent_id=None)

@@ -58,6 +58,7 @@ from music_assistant.constants import (
     CONF_HIDE_IN_UI,
     CONF_ICON,
     CONF_MUTE_CONTROL,
+    CONF_PLAYER_PROTOCOLS,
     CONF_PLAYERS,
     CONF_PLUGIN_KEY_SPLITTER,
     CONF_POWER_CONTROL,
@@ -446,7 +447,7 @@ class PlayerConfigMixin:
             specified type matches the actual config value type.
         """
         # prefer stored value so we don't have to retrieve all config entries every time
-        if (raw_value := self.get_raw_player_config_value(player_id, key)) is not None:
+        if (raw_value := self.get_player_value(player_id, key)) is not None:
             if not unpack_splitted_values:
                 return _mask_encrypted(raw_value)
         conf = await self.get_player_config(player_id)
@@ -466,31 +467,87 @@ class PlayerConfigMixin:
     if TYPE_CHECKING:
         # Overload for when default is provided - return type matches default type
         @overload
-        def get_raw_player_config_value(
+        def get_player_value(
             self, player_id: str, key: str, default: _ConfigValueT
         ) -> _ConfigValueT: ...
 
         # Overload for when no default is provided - return ConfigValueType | None
         @overload
-        def get_raw_player_config_value(
+        def get_player_value(
             self, player_id: str, key: str, default: None = None
         ) -> ConfigValueType | None: ...
 
-    def get_raw_player_config_value(
+    def get_player_value(
         self, player_id: str, key: str, default: ConfigValueType = None
     ) -> ConfigValueType:
         """
-        Return (raw) single configentry value for a player.
+        Return the stored value of a key of a player's own config.
 
         Note that this only returns the stored value without any validation or default.
+
+        :param player_id: ID of the player.
+        :param key: A base key (such as ``enabled`` or ``name``) or the key of a value of
+            the player itself (such as its controls or its announcement settings).
+        :param default: Value to return when nothing is stored for the key.
         """
-        return cast(
-            "ConfigValueType",
-            self.get(
-                f"{CONF_PLAYERS}/{player_id}/values/{key}",
-                self.get(f"{CONF_PLAYERS}/{player_id}/{key}", default),
-            ),
-        )
+        return self._get_stored_value(f"{CONF_PLAYERS}/{player_id}", key, default)
+
+    def set_player_value(self, player_id: str, key: str, value: ConfigValueType) -> None:
+        """
+        Store the value of a key of a player's own config.
+
+        Note that this only stores the value without any validation or default.
+
+        :param player_id: ID of the player.
+        :param key: A base key (such as ``name``) or the key of a value of the player itself.
+        :param value: The value to store.
+        :raises KeyError: If no config is stored for the player.
+        """
+        self._set_stored_value(f"{CONF_PLAYERS}/{player_id}", key, value)
+        self._sync_config_copy(self.mass.players.get_player(player_id, False), key, value)
+
+    if TYPE_CHECKING:
+        # Overload for when default is provided - return type matches default type
+        @overload
+        def get_protocol_value(
+            self, protocol_id: str, key: str, default: _ConfigValueT
+        ) -> _ConfigValueT: ...
+
+        # Overload for when no default is provided - return ConfigValueType | None
+        @overload
+        def get_protocol_value(
+            self, protocol_id: str, key: str, default: None = None
+        ) -> ConfigValueType | None: ...
+
+    def get_protocol_value(
+        self, protocol_id: str, key: str, default: ConfigValueType = None
+    ) -> ConfigValueType:
+        """
+        Return the stored value of a key of a protocol's config.
+
+        Note that this only returns the stored value without any validation or default.
+
+        :param protocol_id: ID of the protocol object.
+        :param key: A base key (such as ``enabled`` or ``provider``) or the key of a value
+            of the protocol: one it declares a config entry for, an audio setting of its
+            output, or one its provider stores for it.
+        :param default: Value to return when nothing is stored for the key.
+        """
+        return self._get_stored_value(f"{CONF_PLAYER_PROTOCOLS}/{protocol_id}", key, default)
+
+    def set_protocol_value(self, protocol_id: str, key: str, value: ConfigValueType) -> None:
+        """
+        Store the value of a key of a protocol's config.
+
+        Note that this only stores the value without any validation or default.
+
+        :param protocol_id: ID of the protocol object.
+        :param key: A base key (such as ``enabled``) or the key of a value of the protocol.
+        :param value: The value to store.
+        :raises KeyError: If no config is stored for the protocol.
+        """
+        self._set_stored_value(f"{CONF_PLAYER_PROTOCOLS}/{protocol_id}", key, value)
+        self._sync_config_copy(self.mass.players.get_protocol(protocol_id), key, value)
 
     def get_base_player_config(self, player_id: str, provider: str) -> PlayerConfig:
         """
@@ -653,26 +710,52 @@ class PlayerConfigMixin:
             default_conf_raw,
         )
 
-    def set_raw_player_config_value(self, player_id: str, key: str, value: ConfigValueType) -> None:
+    def _get_stored_value(
+        self, conf_key: str, key: str, default: ConfigValueType
+    ) -> ConfigValueType:
         """
-        Set (raw) single config(entry) value for a player.
+        Return the stored value of a key of a stored config.
 
-        Note that this only stores the (raw) value without any validation or default.
+        :param conf_key: Storage key of the config.
+        :param key: A base key or the key of a value.
+        :param default: Value to return when nothing is stored for the key.
         """
-        if not self.get(f"{CONF_PLAYERS}/{player_id}"):
+        return cast(
+            "ConfigValueType",
+            self.get(f"{conf_key}/values/{key}", self.get(f"{conf_key}/{key}", default)),
+        )
+
+    def _set_stored_value(self, conf_key: str, key: str, value: ConfigValueType) -> None:
+        """
+        Store the value of a key of a stored config.
+
+        :param conf_key: Storage key of the config.
+        :param key: A base key or the key of a value.
+        :param value: The value to store.
+        :raises KeyError: If no config is stored under the storage key.
+        """
+        if not self.get(conf_key):
             # only allow setting raw values if main entry exists
-            msg = f"Invalid player_id: {player_id}"
+            msg = f"No config found for {conf_key}"
             raise KeyError(msg)
         if key in BASE_KEYS:
-            self.set(f"{CONF_PLAYERS}/{player_id}/{key}", value)
+            self.set(f"{conf_key}/{key}", value)
         else:
-            self.set(f"{CONF_PLAYERS}/{player_id}/values/{key}", value)
-            # also update the player's in-place config copy so object-local
-            # value reads stay in sync with raw writes
-            if (player := self.mass.players.get_player(player_id, False)) and (
-                entry := player.config.values.get(key)
-            ):
-                entry.value = value
+            self.set(f"{conf_key}/values/{key}", value)
+
+    @staticmethod
+    def _sync_config_copy(owner: Player | None, key: str, value: ConfigValueType) -> None:
+        """
+        Apply a stored value to the config copy its registered owner holds.
+
+        :param owner: The registered object the stored config belongs to, if any.
+        :param key: The key the value was stored under.
+        :param value: The stored value.
+        """
+        # also update the player's in-place config copy so object-local
+        # value reads stay in sync with raw writes
+        if owner and (entry := owner.config.values.get(key)):
+            entry.value = value
 
     def _ensure_player_config_base_keys(
         self, player_id: str, raw_conf: Any, provider: str | None = None
@@ -792,7 +875,7 @@ class PlayerConfigMixin:
             else CONF_ENTRY_PLAYER_ICON
         )
         icon_entry.default_value = player.default_icon
-        icon_entry.value = self.get_raw_player_config_value(player.player_id, CONF_ICON)
+        icon_entry.value = self.get_player_value(player.player_id, CONF_ICON)
 
         # some base entries for all player types
         # note that these may NOT be playback/audio related
@@ -990,7 +1073,7 @@ class PlayerConfigMixin:
         for protocol in output_protocols:
             if protocol.is_native:
                 continue
-            underlying_id = self.get_raw_player_config_value(
+            underlying_id = self.get_protocol_value(
                 protocol.output_protocol_id, CONF_UNDERLYING_PLAYER_ID
             )
             if not underlying_id:
@@ -1068,11 +1151,11 @@ class PlayerConfigMixin:
             # off and carries the provider's warning above the toggle.
             experimental_note = cast(
                 "str | None",
-                self.get_raw_player_config_value(
+                self.get_protocol_value(
                     protocol.output_protocol_id, CONF_PROTOCOL_EXPERIMENTAL_NOTE
                 ),
             )
-            protocol_player_enabled = self.get_raw_player_config_value(
+            protocol_player_enabled = self.get_protocol_value(
                 protocol.output_protocol_id, CONF_ENABLED, True
             )
             provider_available = self.mass.get_provider(protocol.protocol_domain) is not None
@@ -1091,8 +1174,9 @@ class PlayerConfigMixin:
             base_enabled = True
             if base_protocol is not None:
                 base_name = self._get_protocol_display_name(base_protocol.protocol_domain)
-                base_raw_conf = self.get(f"{CONF_PLAYERS}/{base_protocol.output_protocol_id}") or {}
-                base_enabled = bool(base_raw_conf.get("enabled", True))
+                base_enabled = bool(
+                    self.get_protocol_value(base_protocol.output_protocol_id, CONF_ENABLED, True)
+                )
                 category_translation_key = "protocol_output_settings_via"
                 category_translation_params = [protocol_name, base_name]
             if not protocol.is_native:
@@ -1209,7 +1293,7 @@ class PlayerConfigMixin:
         for protocol_player_id, proto_values in protocol_values.items():
             if not proto_values.get(CONF_ENABLED):
                 continue
-            underlying_player_id = self.get_raw_player_config_value(
+            underlying_player_id = self.get_protocol_value(
                 protocol_player_id, CONF_UNDERLYING_PLAYER_ID
             )
             if (
@@ -1221,15 +1305,14 @@ class PlayerConfigMixin:
             underlying_enabled = (
                 underlying_values[CONF_ENABLED]
                 if underlying_values and CONF_ENABLED in underlying_values
-                else self.get_raw_player_config_value(underlying_player_id, CONF_ENABLED, True)
+                else self.get_protocol_value(underlying_player_id, CONF_ENABLED, True)
             )
             if not underlying_enabled:
                 raise RuntimeError(
                     f"Can not enable {protocol_player_id}: underlying player "
                     f"{underlying_player_id} is disabled"
                 )
-            underlying_config = self.get(f"{CONF_PLAYERS}/{underlying_player_id}") or {}
-            provider_id = underlying_config.get("provider")
+            provider_id = self.get_protocol_value(underlying_player_id, "provider")
             if not isinstance(provider_id, str) or self.mass.get_provider(provider_id) is None:
                 raise RuntimeError(
                     f"Can not enable {protocol_player_id}: underlying player provider "
@@ -1258,7 +1341,7 @@ class PlayerConfigMixin:
             if CONF_PROTOCOL_KEY_SPLITTER not in entry.key:
                 continue
             protocol_player_id, actual_key = entry.key.split(CONF_PROTOCOL_KEY_SPLITTER)
-            stored_value = self.get_raw_player_config_value(protocol_player_id, actual_key)
+            stored_value = self.get_protocol_value(protocol_player_id, actual_key)
             if stored_value is None:
                 continue
             values[entry.key] = stored_value
@@ -1273,7 +1356,7 @@ class PlayerConfigMixin:
         """
         if protocol.is_native:
             return "needs_setup" if player.needs_setup else "unavailable"
-        if not self.get_raw_player_config_value(protocol.output_protocol_id, CONF_ENABLED, True):
+        if not self.get_protocol_value(protocol.output_protocol_id, CONF_ENABLED, True):
             return "turned_off"
         protocol_player = self.mass.players.get_player(protocol.output_protocol_id)
         if protocol_player is not None and protocol_player.needs_setup:
@@ -1292,8 +1375,7 @@ class PlayerConfigMixin:
 
         :param protocol_player_id: The protocol player to resolve the namespace for.
         """
-        raw_conf = self.get(f"{CONF_PLAYERS}/{protocol_player_id}")
-        if not raw_conf or not (provider := raw_conf.get("provider")):
+        if not (provider := self.get_protocol_value(protocol_player_id, "provider")):
             return None
         return f"provider.{str(provider).split('--', maxsplit=1)[0]}"
 

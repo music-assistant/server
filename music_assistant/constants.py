@@ -138,6 +138,8 @@ CONF_IP_ADDRESS: Final[str] = "ip_address"
 CONF_PORT: Final[str] = "port"
 CONF_PROVIDERS: Final[str] = "providers"
 CONF_PLAYERS: Final[str] = "players"
+# the config of a protocol object is stored among the player configs, under its own id
+CONF_PLAYER_PROTOCOLS: Final[str] = CONF_PLAYERS
 CONF_PLAYER_QUEUES: Final[str] = "player_queues"
 CONF_CORE: Final[str] = "core"
 CONF_PATH: Final[str] = "path"

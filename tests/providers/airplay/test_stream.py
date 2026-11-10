@@ -2084,7 +2084,7 @@ def test_clock_stall_warns_without_touching_config() -> None:
         "ready_in_ms=0 ready_at_unix_ms=0"
     )
     assert stream._clock_stall_warned is True
-    player.provider.mass.config.set_raw_player_config_value.assert_not_called()
+    player.provider.mass.config.set_protocol_value.assert_not_called()
     player.provider.mass.create_task.assert_not_called()
 
     # A superseded stream's stalled clock is the newer session resetting it on
@@ -2119,7 +2119,7 @@ def test_native_control_failure_warns_once_and_never_touches_config(
         stream._handle_status_line("[ERROR] AirPlay 2 control channel failed")
 
     assert caplog.text.count("stopped answering native AirPlay 2 control keepalives") == 1
-    player.provider.mass.config.set_raw_player_config_value.assert_not_called()
+    player.provider.mass.config.set_protocol_value.assert_not_called()
     player.provider.mass.create_task.assert_not_called()
 
     # a pinned native route gets the same warning, and equally no config write
@@ -2130,7 +2130,7 @@ def test_native_control_failure_warns_once_and_never_touches_config(
     with caplog.at_level(logging.WARNING):
         pinned._handle_status_line("[ERROR] AirPlay 2 control channel failed")
     assert pinned._native_control_failure_warned is True
-    pinned_player.provider.mass.config.set_raw_player_config_value.assert_not_called()
+    pinned_player.provider.mass.config.set_protocol_value.assert_not_called()
 
 
 def test_native_control_failure_on_a_superseded_stream_stays_silent() -> None:
@@ -2147,7 +2147,7 @@ def test_native_control_failure_on_a_superseded_stream_stays_silent() -> None:
     stream._handle_status_line("[ERROR] AirPlay 2 control channel failed")
 
     assert stream._native_control_failure_warned is False
-    player.provider.mass.config.set_raw_player_config_value.assert_not_called()
+    player.provider.mass.config.set_protocol_value.assert_not_called()
 
 
 @pytest.mark.parametrize("teardown_flag", ["superseded", "_stopping"])
@@ -2222,7 +2222,7 @@ def test_native_control_failure_before_publication_stays_reportable(
         stream._handle_status_line("[ERROR] AirPlay 2 control channel failed")
 
     assert "stopped answering native AirPlay 2 control keepalives" in caplog.text
-    player.provider.mass.config.set_raw_player_config_value.assert_not_called()
+    player.provider.mass.config.set_protocol_value.assert_not_called()
 
 
 def test_unrelated_cli_error_is_not_a_control_channel_verdict() -> None:

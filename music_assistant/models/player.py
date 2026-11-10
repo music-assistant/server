@@ -66,6 +66,7 @@ from music_assistant.constants import (
     CONF_LEGACY_IDS,
     CONF_LINKED_PROTOCOL_IDS,
     CONF_MUTE_CONTROL,
+    CONF_PLAYER_PROTOCOLS,
     CONF_PLAYERS,
     CONF_POWER_CONTROL,
     CONF_PREFERRED_OUTPUT_PROTOCOL,
@@ -1215,7 +1216,9 @@ class Player(ABC):
         :param key: The setup data key to retrieve.
         :param default: Value to return when the key is not present.
         """
-        setup_data = self.mass.config.get(f"{CONF_PLAYERS}/{self.player_id}/setup_data") or {}
+        setup_data = (
+            self.mass.config.get(f"{CONF_PLAYER_PROTOCOLS}/{self.player_id}/setup_data") or {}
+        )
         if key in setup_data:
             value = setup_data[key]
             return self.mass.config.decrypt_string(value) if isinstance(value, str) else value
@@ -1568,16 +1571,14 @@ class Player(ABC):
     @final
     def icon(self) -> str:
         """Return the player icon."""
-        icon = self.mass.config.get_raw_player_config_value(
-            self.player_id, CONF_ENTRY_PLAYER_ICON.key
-        )
+        icon = self.mass.config.get_player_value(self.player_id, CONF_ENTRY_PLAYER_ICON.key)
         return icon if isinstance(icon, str) and icon else self.default_icon
 
     @cached_property
     @final
     def legacy_ids(self) -> list[str]:
         """Return the ids the player was known under before, which it keeps answering to."""
-        legacy_ids = self.mass.config.get_raw_player_config_value(self.player_id, CONF_LEGACY_IDS)
+        legacy_ids = self.mass.config.get_player_value(self.player_id, CONF_LEGACY_IDS)
         if not isinstance(legacy_ids, list):
             return []
         return [legacy_id for legacy_id in legacy_ids if isinstance(legacy_id, str)]
@@ -2462,13 +2463,13 @@ class Player(ABC):
         :param immediate: Persist to disk right away (the default) instead of on the
             debounced save timer, so a critical value survives a crash.
         """
-        if not self.mass.config.get(f"{CONF_PLAYERS}/{self.player_id}"):
+        if not self.mass.config.get(f"{CONF_PLAYER_PROTOCOLS}/{self.player_id}"):
             # only allow setting setup data if the main config entry exists
             msg = f"Invalid player: {self.player_id}"
             raise KeyError(msg)
         stored_value = self.mass.config.encrypt_string(value) if isinstance(value, str) else value
         self.mass.config.set(
-            f"{CONF_PLAYERS}/{self.player_id}/setup_data/{key}",
+            f"{CONF_PLAYER_PROTOCOLS}/{self.player_id}/setup_data/{key}",
             stored_value,
             immediate=immediate,
         )
@@ -2540,7 +2541,7 @@ class Player(ABC):
         # fallback to preferred protocol from config. the stored value survives a
         # relink, so it only counts while it still names one of this player's own
         # outputs - otherwise the command would land on another speaker.
-        preferred_conf = self.mass.config.get_raw_player_config_value(
+        preferred_conf = self.mass.config.get_player_value(
             self.player_id, CONF_PREFERRED_OUTPUT_PROTOCOL
         )
         if preferred_conf and preferred_conf not in ("auto", "native"):
@@ -2586,7 +2587,7 @@ class Player(ABC):
         :param conf_key: Config key holding the control selection.
         :param feature: Feature a NATIVE selection requires the player to advertise.
         """
-        conf = self.mass.config.get_raw_player_config_value(self.player_id, conf_key)
+        conf = self.mass.config.get_player_value(self.player_id, conf_key)
         if conf == PLAYER_CONTROL_NATIVE and not self.supports_feature(feature):
             return None
         return conf

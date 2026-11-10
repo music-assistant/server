@@ -55,10 +55,13 @@ ALAC_48000_24 = 1 << 21
 def _stub_raw_config(provider: MagicMock, stored: dict[str, object] | None = None) -> None:
     """Serve raw player config values from a dict instead of an (always truthy) mock."""
     values = stored if stored is not None else {}
-    provider.mass.config.get_raw_player_config_value.side_effect = (
-        lambda _player_id, key, default=None: values.get(key, default)
+    provider.mass.config.get_player_value.side_effect = lambda _player_id, key, default=None: (
+        values.get(key, default)
     )
-    provider.mass.config.set_raw_player_config_value.side_effect = lambda _player_id, key, value: (
+    provider.mass.config.get_protocol_value.side_effect = lambda _player_id, key, default=None: (
+        values.get(key, default)
+    )
+    provider.mass.config.set_protocol_value.side_effect = lambda _player_id, key, value: (
         values.__setitem__(key, value)
     )
 
@@ -1087,7 +1090,7 @@ def test_update_volume_from_device_keeps_native_parent_feedback(
         airplay_player.update_volume_from_device(57)
 
     assert airplay_player._attr_volume_level == 57
-    airplay_player.mass.config.set_raw_player_config_value.assert_called_once_with(  # type: ignore[attr-defined]
+    airplay_player.mass.config.set_protocol_value.assert_called_once_with(  # type: ignore[attr-defined]
         airplay_player.player_id, CONF_STORED_VOLUME, 57
     )
     mock_update.assert_called_once()
@@ -2142,7 +2145,7 @@ def test_rejected_password_marker_survives_a_restart(airplay_player: AirPlayPlay
 
     airplay_player.set_password_invalid(True)
 
-    airplay_player.mass.config.set_raw_player_config_value.assert_called_once_with(  # type: ignore[attr-defined]
+    airplay_player.mass.config.set_protocol_value.assert_called_once_with(  # type: ignore[attr-defined]
         "test_player", CONF_PASSWORD_INVALID, True
     )
 
@@ -2150,7 +2153,7 @@ def test_rejected_password_marker_survives_a_restart(airplay_player: AirPlayPlay
 def test_clearing_the_marker_only_writes_when_it_was_set(airplay_player: AirPlayPlayer) -> None:
     """Every successful connect clears the marker, but must not write the config."""
     _set_password_discovery(airplay_player, flags="0x80", password="hunter2", paired=True)
-    set_raw = airplay_player.mass.config.set_raw_player_config_value
+    set_raw = airplay_player.mass.config.set_protocol_value
 
     airplay_player.set_password_invalid(False)
     set_raw.assert_not_called()  # type: ignore[attr-defined]

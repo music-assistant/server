@@ -31,10 +31,10 @@ def create_player(raw_config: dict[str, Any] | None = None) -> AuracastPlayer:
     """Build a player with a minimal provider and mass stub, and stored raw config values."""
     mass = MagicMock()
     mass.config.get_base_player_config.return_value = MagicMock()
-    mass.config.get_raw_player_config_value.return_value = 100
+    mass.config.get_protocol_value.return_value = 100
     if raw_config is not None:
-        mass.config.get_raw_player_config_value.side_effect = lambda _player_id, key, *_: (
-            raw_config.get(key, 100)
+        mass.config.get_protocol_value.side_effect = lambda _player_id, key, *_: raw_config.get(
+            key, 100
         )
     mass.streams.audio.get_player_output_plan.return_value = MagicMock(filter_params=[])
     mass.create_task = lambda coro: asyncio.create_task(coro)
@@ -457,10 +457,10 @@ async def test_volume_set_is_supported_and_scales_little_endian_pcm() -> None:
     assert _apply_volume(pcm, 100) == pcm
 
     # The web UI's volume command updates the attenuation applied to subsequent frames.
-    player.mass.config.set_raw_player_config_value.reset_mock()
+    player.mass.config.set_protocol_value.reset_mock()
     await player.volume_set(35)
     assert player.volume_level == 35
-    player.mass.config.set_raw_player_config_value.assert_called_once_with(
+    player.mass.config.set_protocol_value.assert_called_once_with(
         player.player_id, "auracast_stored_volume", 35
     )
     player.update_state.assert_called_once()
@@ -469,7 +469,7 @@ async def test_volume_set_is_supported_and_scales_little_endian_pcm() -> None:
 def test_player_restores_persisted_volume() -> None:
     """Restore the previously selected software volume after player reload."""
     player = create_player()
-    cast("Any", player.mass.config.get_raw_player_config_value).return_value = 42
+    cast("Any", player.mass.config.get_protocol_value).return_value = 42
 
     restored_player = AuracastPlayer(cast("Any", player.provider), player.player_id)
 
@@ -494,13 +494,13 @@ def test_player_shows_controller_details_from_setup_probe() -> None:
 async def test_new_player_generates_and_stores_a_static_device_address() -> None:
     """Create the address once and store it with the player once its config is loaded."""
     player = create_player()
-    cast("Any", player.mass.config).set_raw_player_config_value.assert_not_called()
+    cast("Any", player.mass.config).set_protocol_value.assert_not_called()
 
     await player.on_config_updated()
 
     stored = {
         call.args[1]: call.args[2]
-        for call in cast("Any", player.mass.config).set_raw_player_config_value.call_args_list
+        for call in cast("Any", player.mass.config).set_protocol_value.call_args_list
     }
     address = stored["auracast_device_address"]
     assert parse_device_address(address) == address
@@ -517,7 +517,7 @@ async def test_invalid_stored_device_address_is_replaced(stored: object) -> None
     address = player._broadcaster.config.device_address
     assert address is not None
     assert parse_device_address(address) == address
-    cast("Any", player.mass.config).set_raw_player_config_value.assert_any_call(
+    cast("Any", player.mass.config).set_protocol_value.assert_any_call(
         "auracast_test", "auracast_device_address", address
     )
 
@@ -530,7 +530,6 @@ async def test_stored_device_address_is_reused() -> None:
 
     assert player._broadcaster.config.device_address == "F0:F1:F2:F3:F4:F5"
     written_keys = [
-        call.args[1]
-        for call in cast("Any", player.mass.config).set_raw_player_config_value.call_args_list
+        call.args[1] for call in cast("Any", player.mass.config).set_protocol_value.call_args_list
     ]
     assert "auracast_device_address" not in written_keys

@@ -36,7 +36,7 @@ def _make_provider(
     mass: MagicMock, mac_client: SendspinClient | None = None, allow_unencrypted: bool = True
 ) -> SendspinProvider:
     stored_mac_player = {"provider": "sendspin", "enabled": True}
-    mass.config.get_raw_player_config_value.side_effect = lambda player_id, key, default=None: (
+    mass.config.get_protocol_value.side_effect = lambda player_id, key, default=None: (
         stored_mac_player.get(key, default) if player_id == MAC_PLAYER_ID else default
     )
     mass.players.unregister = AsyncMock()

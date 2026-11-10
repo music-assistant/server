@@ -35,6 +35,7 @@ from pychromecast.error import PyChromecastError
 
 from music_assistant.constants import (
     CONF_ENABLED,
+    CONF_PLAYER_PROTOCOLS,
     CONF_PLAYERS,
     CONF_PROTOCOL_EXPERIMENTAL_NOTE,
     CONF_PROTOCOL_PARENT_ID,
@@ -538,7 +539,7 @@ class SendspinChromecastBridge:
         )
         # Recorded on the Cast player, not on the bridge: the re-evaluation below takes
         # the bridge and its config away for good, so this device is never offered again.
-        self.mass.config.set_raw_player_config_value(
+        self.mass.config.set_protocol_value(
             self.cast_player.player_id, CONF_SENDSPIN_UNSUPPORTED, True
         )
         # Bubbles up to the frontend toast via play_media / set_members awaiting this
@@ -793,7 +794,7 @@ class SendspinChromecastBridge:
         # sendspin-js's SendspinCore appends `/sendspin` to baseUrl when constructing
         # the WebSocket URL. Send the bare server URL here so it ends up correct.
         server_url = f"ws://{format_ip_for_url(publish_ip)}:{SENDSPIN_SERVER_PORT}"
-        raw_delay = self.mass.config.get_raw_player_config_value(
+        raw_delay = self.mass.config.get_protocol_value(
             self._bridge_client_id, CONF_SENDSPIN_STATIC_DELAY
         )
         if raw_delay is None:
@@ -862,26 +863,24 @@ class SendspinBridgeManager(SendspinBridgeManagerBase[SendspinChromecastBridge])
         client_id = self._bridge_client_id(player)
         if (
             client_id
-            and not self.mass.config.get(f"{CONF_PLAYERS}/{client_id}")
-            and self.mass.config.get(f"{CONF_PLAYERS}/{player.player_id}")
+            and not self.mass.config.get(f"{CONF_PLAYER_PROTOCOLS}/{client_id}")
+            and self.mass.config.get(f"{CONF_PLAYER_PROTOCOLS}/{player.player_id}")
             and self._should_have_bridge(player)
         ):
             # This device was never offered the bridge, so its output has to end up off.
             # Recorded before the bridge registers and before anything can go wrong with
             # applying it, because registration is what creates the config this reads.
-            self.mass.config.set_raw_player_config_value(
+            self.mass.config.set_protocol_value(
                 player.player_id, CONF_SENDSPIN_OPT_OUT_PENDING, True
             )
         await super().evaluate_bridge(player)
         if not client_id or not self._has_bridge(player.player_id):
             return
-        if self.mass.config.get_raw_player_config_value(client_id, CONF_PROTOCOL_EXPERIMENTAL_NOTE):
+        if self.mass.config.get_protocol_value(client_id, CONF_PROTOCOL_EXPERIMENTAL_NOTE):
             # the note is written last, so its presence means this output is settled
             return
         never_offered = bool(
-            self.mass.config.get_raw_player_config_value(
-                player.player_id, CONF_SENDSPIN_OPT_OUT_PENDING
-            )
+            self.mass.config.get_protocol_value(player.player_id, CONF_SENDSPIN_OPT_OUT_PENDING)
         )
         self.mass.create_task(
             self._flag_bridge_experimental(player.player_id, client_id, disable=never_offered),
@@ -970,9 +969,7 @@ class SendspinBridgeManager(SendspinBridgeManagerBase[SendspinChromecastBridge])
         if not (bridge_client_id := get_bridge_client_id(cast_player)):
             return False
 
-        if self.mass.config.get_raw_player_config_value(
-            cast_player.player_id, CONF_SENDSPIN_UNSUPPORTED
-        ):
+        if self.mass.config.get_protocol_value(cast_player.player_id, CONF_SENDSPIN_UNSUPPORTED):
             # the receiver told us it cannot run the Sendspin client, so do not offer it
             return False
 
@@ -1240,10 +1237,10 @@ class SendspinBridgeManager(SendspinBridgeManagerBase[SendspinChromecastBridge])
             )
             await self.mass.config.save_player_config(client_id, {CONF_ENABLED: False})
         # written last: a missing note is what makes the next evaluation retry all of this
-        self.mass.config.set_raw_player_config_value(
+        self.mass.config.set_protocol_value(
             client_id, CONF_PROTOCOL_EXPERIMENTAL_NOTE, SENDSPIN_CAST_EXPERIMENTAL_NOTE
         )
-        self.mass.config.set_raw_player_config_value(player_id, CONF_SENDSPIN_OPT_OUT_PENDING, None)
+        self.mass.config.set_protocol_value(player_id, CONF_SENDSPIN_OPT_OUT_PENDING, None)
 
     async def _wait_for_protocol_link(self, player_id: str, client_id: str) -> bool:
         """
@@ -1258,9 +1255,7 @@ class SendspinBridgeManager(SendspinBridgeManagerBase[SendspinChromecastBridge])
                 # the bridge was taken away again, e.g. because the device turned out to
                 # also speak AirPlay, so there is no output left to settle
                 return False
-            parent_id = self.mass.config.get_raw_player_config_value(
-                client_id, CONF_PROTOCOL_PARENT_ID
-            )
+            parent_id = self.mass.config.get_protocol_value(client_id, CONF_PROTOCOL_PARENT_ID)
             if parent_id and self.mass.config.get(f"{CONF_PLAYERS}/{parent_id}"):
                 return True
             await asyncio.sleep(SENDSPIN_LINK_WAIT_INTERVAL)

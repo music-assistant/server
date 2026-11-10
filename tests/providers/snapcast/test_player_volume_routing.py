@@ -27,7 +27,7 @@ def mock_mass() -> MagicMock:
     mass.loop = None
     mass.config = MagicMock()
     mass.config.get = MagicMock(return_value=[])
-    mass.config.get_raw_player_config_value = MagicMock(
+    mass.config.get_player_value = MagicMock(
         side_effect=lambda _player_id, _key, default=None: default
     )
     mass.config.get_raw_core_config_value = MagicMock(return_value="GLOBAL")
@@ -162,7 +162,7 @@ class TestSnapCastVolumeFeatureExposure:
         controller: PlayerController,
     ) -> None:
         """An explicit Native setting is set aside while Sendspin plays - deliberate."""
-        provider.mass.config.get_raw_player_config_value = MagicMock(
+        provider.mass.config.get_player_value = MagicMock(
             side_effect=lambda player_id, key, default=None: (
                 PLAYER_CONTROL_NATIVE
                 if player_id == snapcast_player.player_id

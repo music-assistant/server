@@ -148,9 +148,7 @@ class SyncGroupPlayer(PlayerProtocol):
         # the toggle. The raw config value is read here to avoid recursion via
         # the power_control property (which itself may inspect supported features).
         base_features: set[PlayerFeature] = {PlayerFeature.PLAY_MEDIA}
-        raw_power_conf = self.mass.config.get_raw_player_config_value(
-            self.player_id, CONF_POWER_CONTROL
-        )
+        raw_power_conf = self.mass.config.get_player_value(self.player_id, CONF_POWER_CONTROL)
         if raw_power_conf == PLAYER_CONTROL_FAKE:
             base_features.add(PlayerFeature.POWER)
         if self.is_dynamic:

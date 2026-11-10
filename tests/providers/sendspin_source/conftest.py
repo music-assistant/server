@@ -247,7 +247,7 @@ class _FakeConfigController:
         self.values: dict[tuple[str, str], Any] = {}
         self.defaults: dict[tuple[str, str], Any] = {}
 
-    def get_raw_player_config_value(self, player_id: str, key: str, default: Any = None) -> Any:
+    def get_protocol_value(self, player_id: str, key: str, default: Any = None) -> Any:
         return self.values.get((player_id, key), default)
 
     async def get_player_config_value(

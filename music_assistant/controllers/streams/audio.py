@@ -5066,7 +5066,7 @@ class StreamsAudio:
         if flow_mode or not sample_rate or not next_sample_rate or sample_rate == next_sample_rate:
             return True
         return bool(
-            self.mass.config.get_raw_player_config_value(
+            self.mass.config.get_protocol_value(
                 player_id,
                 CONF_ENTRY_CROSSFADE_DIFFERENT_SAMPLE_RATES.key,
                 CONF_ENTRY_CROSSFADE_DIFFERENT_SAMPLE_RATES.default_value,
@@ -5576,10 +5576,10 @@ class StreamsAudio:
         native section); the rendering player's own stored value wins.
         """
         parent_id = player.protocol_parent_id if player and player.protocol_parent_id else player_id
-        parent_value = self.mass.config.get_raw_player_config_value(
+        parent_value = self.mass.config.get_protocol_value(
             parent_id, CONF_OUTPUT_CHANNELS, "stereo"
         )
-        return self.mass.config.get_raw_player_config_value(
+        return self.mass.config.get_protocol_value(
             player.player_id if player else player_id, CONF_OUTPUT_CHANNELS, parent_value
         )
 
@@ -5676,7 +5676,7 @@ class StreamsAudio:
         if protocol_player is None:
             protocol_player = self.mass.players.get_player(queue_id)
         if protocol_player is None:
-            flow_mode_sample_rate_conf = self.mass.config.get_raw_player_config_value(
+            flow_mode_sample_rate_conf = self.mass.config.get_protocol_value(
                 queue_id, CONF_FLOW_MODE_SAMPLE_RATE, FLOW_MODE_SAMPLE_RATE_SMART
             )
             return flow_mode_sample_rate_conf, []

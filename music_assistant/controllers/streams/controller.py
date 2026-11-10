@@ -1484,7 +1484,7 @@ class StreamsController(CoreController):
             ),
         )
         # work out ICY metadata support
-        icy_preference = self.mass.config.get_raw_player_config_value(
+        icy_preference = self.mass.config.get_protocol_value(
             player_id,
             CONF_ENTRY_ENABLE_ICY_METADATA.key,
             CONF_ENTRY_ENABLE_ICY_METADATA.default_value,

@@ -254,7 +254,7 @@ async def test_protocol_prefixed_reset_to_default_sticks(mass: MusicAssistant) -
     assert config.values[PREFIXED_KEY].value == FLOW_MODE_SAMPLE_RATE_BIT_PERFECT
     # canonical store is the child protocol player; the parent must not carry a copy
     assert (
-        mass.config.get_raw_player_config_value(CHILD_ID, CONF_FLOW_MODE_SAMPLE_RATE)
+        mass.config.get_protocol_value(CHILD_ID, CONF_FLOW_MODE_SAMPLE_RATE)
         == FLOW_MODE_SAMPLE_RATE_BIT_PERFECT
     )
     assert PREFIXED_KEY not in _parent_stored_values(mass)
@@ -263,7 +263,7 @@ async def test_protocol_prefixed_reset_to_default_sticks(mass: MusicAssistant) -
     await mass.config.save_player_config(PARENT_ID, {PREFIXED_KEY: FLOW_MODE_SAMPLE_RATE_SMART})
 
     # the child drops the now-default value, and the parent retains no shadowing copy
-    assert mass.config.get_raw_player_config_value(CHILD_ID, CONF_FLOW_MODE_SAMPLE_RATE) is None
+    assert mass.config.get_protocol_value(CHILD_ID, CONF_FLOW_MODE_SAMPLE_RATE) is None
     assert PREFIXED_KEY not in _parent_stored_values(mass)
     config = await mass.config.get_player_config(PARENT_ID)
     assert config.values[PREFIXED_KEY].value == FLOW_MODE_SAMPLE_RATE_SMART
@@ -283,7 +283,7 @@ async def test_stale_prefixed_copy_does_not_shadow_default(mass: MusicAssistant)
     mass.config.set(f"players/{PARENT_ID}/values/{PREFIXED_KEY}", FLOW_MODE_SAMPLE_RATE_BIT_PERFECT)
     assert PREFIXED_KEY in _parent_stored_values(mass)
     # child protocol player is at its default (nothing stored)
-    assert mass.config.get_raw_player_config_value(CHILD_ID, CONF_FLOW_MODE_SAMPLE_RATE) is None
+    assert mass.config.get_protocol_value(CHILD_ID, CONF_FLOW_MODE_SAMPLE_RATE) is None
 
     # read-back must reflect the protocol player's default, not the stale parent copy
     config = await mass.config.get_player_config(PARENT_ID)

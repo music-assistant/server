@@ -31,7 +31,7 @@ def _controller(stored_configs: Any) -> PlayerController:
     mass.config.get = MagicMock(
         side_effect=lambda key, default=None: stored_configs if key == CONF_PLAYERS else default
     )
-    mass.config.get_raw_player_config_value = MagicMock(
+    mass.config.get_player_value = MagicMock(
         side_effect=lambda player_id, key, default=None: (
             stored_configs.get(player_id, {}).get("values", {}).get(key, default)
         )
