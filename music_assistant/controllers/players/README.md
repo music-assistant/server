@@ -88,6 +88,9 @@ and resolved in one place, `PlayerController.resolve_player_id`. They resolve in
 A command called inside the server is not rewritten: it takes the id of the player itself.
 Protocol ids never resolve.
 
+The state a player publishes lists its legacy ids (`legacy_ids`), so a client can tell which ids
+it answers to.
+
 The lookup is built from the stored player configs at startup and again whenever a player
 config is deleted. An id resolves to the player that lists it only while no player is
 registered under that id and no config is stored under it.

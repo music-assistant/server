@@ -31,6 +31,11 @@ def _controller(stored_configs: Any) -> PlayerController:
     mass.config.get = MagicMock(
         side_effect=lambda key, default=None: stored_configs if key == CONF_PLAYERS else default
     )
+    mass.config.get_raw_player_config_value = MagicMock(
+        side_effect=lambda player_id, key, default=None: (
+            stored_configs.get(player_id, {}).get("values", {}).get(key, default)
+        )
+    )
     mass.config.remove = MagicMock(
         side_effect=lambda key: stored_configs.pop(key.removeprefix(f"{CONF_PLAYERS}/"), None)
     )
@@ -144,6 +149,20 @@ def test_id_of_a_deleted_player_becomes_a_legacy_id_of_the_player_that_lists_it(
     # the deleted player is gone with its saved queue, whoever answers to its id from now on
     purge = cast("MagicMock", controller.mass).player_queues.purge_saved_queue
     purge.assert_called_once_with(BEDROOM)
+
+
+def test_state_of_a_player_lists_its_legacy_ids() -> None:
+    """Clients read the legacy ids of a player from the state it publishes."""
+    controller = _controller({KITCHEN: _stored("old_kitchen", "older_kitchen"), BEDROOM: _stored()})
+    kitchen = _register(controller, KITCHEN)
+    bedroom = _register(controller, BEDROOM)
+
+    kitchen.update_state(signal_event=False)
+    bedroom.update_state(signal_event=False)
+
+    assert kitchen.state.legacy_ids == ["old_kitchen", "older_kitchen"]
+    assert kitchen.to_dict()["legacy_ids"] == ["old_kitchen", "older_kitchen"]
+    assert bedroom.state.legacy_ids == []
 
 
 @pytest.mark.parametrize(

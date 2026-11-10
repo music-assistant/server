@@ -25,6 +25,7 @@ from music_assistant_models.enums import (
 )
 from music_assistant_models.media_items import AudioFormat, AudioSource, MediaItemImage, Track
 from music_assistant_models.media_items.provider_mapping import ProviderMapping
+from music_assistant_models.player import Player as PlayerState
 from music_assistant_models.player import PlayerOption, PlayerOptionType, PlayerSoundMode
 from music_assistant_models.player_queue import PlayerQueue
 from music_assistant_models.queue_item import QueueItem
@@ -32,6 +33,7 @@ from music_assistant_models.streamdetails import StreamDetails, StreamMetadata
 from music_assistant_models.unique_list import UniqueList
 
 import music_assistant.models.player as player_module
+from music_assistant.constants import CONF_LEGACY_IDS
 from music_assistant.controllers.players.audio_sources import AudioSourceSession
 from music_assistant.models.player_state import derive_player_state
 from tests.common import MockPlayer, MockProvider
@@ -108,6 +110,8 @@ class TestUpdateStateChangeDetection:
         # nor the lists the properties of the player build on every read
         assert "sound_mode_list" not in player._cache
         assert "options" not in player._cache
+        # nor the config the state takes its legacy ids from
+        assert "legacy_ids" not in player._cache
 
     def test_position_tick_does_not_rebuild(self, player: MockPlayer) -> None:
         """A regular playback tick keeps the anchor and builds nothing."""
@@ -970,6 +974,71 @@ class TestInputCollection:
         assert mock_mass.metadata.get_image_url.called is (stream_image_url is None)
         assert player.state.current_media is not None
         assert player.state.current_media.image_url == (stream_image_url or "http://ma/source.jpg")
+
+
+class TestLegacyIds:
+    """The legacy ids stored with the config of a player reach its state."""
+
+    @pytest.mark.parametrize(
+        ("stored", "expected"),
+        [
+            pytest.param(["old_1", "old_2"], ["old_1", "old_2"], id="list"),
+            pytest.param(None, [], id="none_stored"),
+            pytest.param("old_1", [], id="not_a_list"),
+            pytest.param([None, 7, "old_1", ["old_2"]], ["old_1"], id="not_strings"),
+        ],
+    )
+    def test_stored_legacy_ids_reach_the_state(
+        self, mock_mass: MagicMock, stored: Any, expected: list[str]
+    ) -> None:
+        """The stored list is published as it is, entries of an unexpected shape left out."""
+        _store_legacy_ids(mock_mass, stored)
+        provider = MockProvider("test_provider", mass=mock_mass)
+        player = MockPlayer(provider, "player_1", "Player 1")
+
+        player.update_state(signal_event=False)
+
+        assert player.state.legacy_ids == expected
+
+    def test_changed_legacy_ids_publish_an_update(
+        self, mock_mass: MagicMock, player: MockPlayer
+    ) -> None:
+        """Clients hear of legacy ids stored for a player once its state is recalculated."""
+        _store_legacy_ids(mock_mass, ["old_1"])
+
+        player.mark_state_dirty()
+        player.update_state()
+
+        mock_mass.players.signal_player_state_update.assert_called_once()
+        changed_values = mock_mass.players.signal_player_state_update.call_args.args[1]
+        assert changed_values["legacy_ids"] == ((), ("old_1",))
+        assert player.state.legacy_ids == ["old_1"]
+
+    def test_wire_form_of_the_state_lists_the_legacy_ids(self, mock_mass: MagicMock) -> None:
+        """The serialized state carries the legacy ids, and a client reads them back."""
+        _store_legacy_ids(mock_mass, ["old_1"])
+        provider = MockProvider("test_provider", mass=mock_mass)
+        player = MockPlayer(provider, "player_1", "Player 1")
+
+        player.update_state(signal_event=False)
+        wire_form = player.to_dict()
+
+        assert wire_form["legacy_ids"] == ["old_1"]
+        assert PlayerState.from_dict(wire_form).legacy_ids == ["old_1"]
+
+
+def _store_legacy_ids(mock_mass: MagicMock, stored: Any) -> None:
+    """
+    Store the given value as the legacy ids of every player.
+
+    :param mock_mass: The mocked Music Assistant instance.
+    :param stored: The value to store.
+    """
+    mock_mass.config.get_raw_player_config_value = MagicMock(
+        side_effect=lambda _player_id, key, default=None: (
+            stored if key == CONF_LEGACY_IDS else default
+        )
+    )
 
 
 def _queue_item(**values: Any) -> QueueItem:
