@@ -396,14 +396,29 @@ class MusicAssistant:
         LOGGER.info("Stop called, cleaning up...")
         # set state to stopping to signal we're shutting down
         self._set_state(CoreState.STOPPING)
-        # cancel all running tasks
+        # the queues are closed first: unloading a player provider removes the queues of its
+        # players (and their pending state to persist), while stopping their playback still
+        # needs the providers' running tasks and the pending player updates
+        if (player_queues := getattr(self, "player_queues", None)) is not None:
+            try:
+                await player_queues.close()
+            except Exception:
+                LOGGER.exception("Error while closing the player_queues controller")
+        # cancel all running tasks and pending timers
         for task in list(self._tracked_tasks.values()):
             task.cancel()
+        self._cancel_tracked_timers()
         # cleanup all providers
-        await asyncio.gather(
-            *[self.unload_provider(prov_id) for prov_id in list(self._providers.keys())],
+        prov_ids = list(self._providers)
+        results = await asyncio.gather(
+            *[self.unload_provider(prov_id) for prov_id in prov_ids],
             return_exceptions=True,
         )
+        for prov_id, result in zip(prov_ids, results, strict=True):
+            if isinstance(result, Exception):
+                LOGGER.error(
+                    "Error while unloading provider %s: %s", prov_id, result, exc_info=result
+                )
         # stop core controllers, cache and config last because the others rely on them.
         # a failed startup may not have created (or fully set up) every controller, so
         # each one is closed independently: leaving a database open here would keep its
@@ -415,7 +430,6 @@ class MusicAssistant:
             "tasks",
             "metadata",
             "music",
-            "player_queues",
             "players",
             "translations",
             "diagnostics",
@@ -435,6 +449,8 @@ class MusicAssistant:
             await self._http_session.close()
         if self._http_session_no_ssl and not self._http_session_no_ssl.closed:
             await self._http_session_no_ssl.close()
+        # the teardown above can schedule new timers (e.g. when stopping playback)
+        self._cancel_tracked_timers()
         self._set_state(CoreState.STOPPED)
 
     @property
@@ -1661,6 +1677,12 @@ class MusicAssistant:
             await mkdirs(self.storage_path)
         if not await isdir(self.cache_path):
             await mkdirs(self.cache_path)
+
+    def _cancel_tracked_timers(self) -> None:
+        """Cancel all pending timers scheduled with call_later."""
+        for timer in self._tracked_timers.values():
+            timer.cancel()
+        self._tracked_timers.clear()
 
     def _set_state(self, new_state: CoreState) -> None:
         """Set new state and signal state change."""

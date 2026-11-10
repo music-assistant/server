@@ -70,7 +70,7 @@ PLAYLIST_MEDIA_TYPES: Final[tuple[MediaType, ...]] = (
 # a new enum value or error code, a change in what an existing field holds, or a command that
 # only the bundled frontend uses: the frontend ships in lockstep with the server and never
 # gates on this.
-API_SCHEMA_VERSION: Final[int] = 105
+API_SCHEMA_VERSION: Final[int] = 106
 
 # MIN_SCHEMA_VERSION is the minimum API schema version that the current server
 # version can work with. Only bump when there are breaking changes to existing
@@ -124,7 +124,6 @@ CONF_ONBOARD_DONE: Final[str] = "onboard_done"
 CONF_SERVER_ID: Final[str] = "server_id"
 CONF_ENCRYPTION_KEY: Final[str] = "encryption_key"
 CONF_ENCRYPTION_KEY_MIGRATED: Final[str] = "encryption_key_migrated"
-CONF_NFS_SUBFOLDER_MIGRATED: Final[str] = "nfs_subfolder_migrated"
 CONF_APPLE_MUSIC_SYNC_SCHEDULE_MIGRATED: Final[str] = "apple_music_sync_schedule_migrated"
 CONF_EMBY_ALBUM_ARTISTS_HEAL_MIGRATED: Final[str] = "emby_album_artists_heal_migrated"
 CONF_RAUMFELD_ICY_BASIC_MIGRATED: Final[str] = "raumfeld_icy_basic_migrated"

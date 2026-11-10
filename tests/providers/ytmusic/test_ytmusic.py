@@ -1130,7 +1130,7 @@ async def test_on_played_reports_episode_playback(
     mock_tracking.assert_awaited_once()
     start, first, stop = _reported(reporting_provider)
     assert start["url"] == ["https://s.youtube.com/api/stats/playback"]
-    assert start["cmt"] == ["0"]
+    assert start["cmt"] == ["100"]
     assert first["url"] == stop["url"] == ["https://s.youtube.com/api/stats/watchtime"]
     assert (first["st"], first["et"]) == (["100"], ["100"])
     assert (stop["st"], stop["et"]) == (["100"], ["400"])
@@ -1171,8 +1171,10 @@ async def test_on_played_reports_after_a_resume_without_a_new_stream(
         await _played(reporting_provider, 160, is_playing=False)
 
     assert mock_tracking.await_count == 2
-    *_, stop = _reported(reporting_provider)
-    assert (stop["st"], stop["et"]) == (["130"], ["160"])
+    reports = _reported(reporting_provider)
+    announcements = [r for r in reports if r["url"] == ["https://s.youtube.com/api/stats/playback"]]
+    assert [a["cmt"] for a in announcements] == [["100"], ["130"]]
+    assert (reports[-1]["st"], reports[-1]["et"]) == (["130"], ["160"])
 
 
 async def test_get_stream_details_marks_an_episode_as_a_podcast_episode(

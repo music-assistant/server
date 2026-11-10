@@ -352,6 +352,7 @@ def _host_room_player() -> RaumfeldPlayer:
     provider.room_model = MagicMock(  # type: ignore[attr-defined]
         return_value="Raumfeld Soundbar"
     )
+    provider.room_software_version = MagicMock(return_value="2.21.0")  # type: ignore[attr-defined]
     host = MagicMock()
     host.power_state.return_value = "MANUAL_STANDBY"
     provider.host = host  # type: ignore[attr-defined]
@@ -367,7 +368,19 @@ def test_room_on_the_host_gets_its_ip_identifier() -> None:
     player = _host_room_player()
     assert player.device_info.identifiers[IdentifierType.IP_ADDRESS] == "192.168.1.41"
     assert player.device_info.model == "Raumfeld Soundbar"
+    assert player.device_info.software_version == "2.21.0"
     assert player.powered is False
+
+
+def test_a_software_version_read_later_is_shown() -> None:
+    """A version read after the player was made replaces the one shown; an unread one does not."""
+    player = _host_room_player()
+    with patch.object(player, "update_state") as update_state:
+        player.set_software_version("2.22.0")
+        player.set_software_version(None)
+        player.set_software_version("2.22.0")
+    assert player.device_info.software_version == "2.22.0"
+    update_state.assert_called_once()
 
 
 _RENDERER = "http://192.168.1.42:54730/renderer.xml"
@@ -2663,6 +2676,52 @@ async def test_the_announcement_describes_the_track_on_the_same_flow_url() -> No
     assert "Morphine" in didl
     assert "Cure for Pain" in didl
     assert "cover.jpg" in didl
+
+
+def _seeked_media() -> PlayerMedia:
+    """Return a track started 4 s before its end."""
+    return PlayerMedia(
+        uri="library://track/1",
+        title="Buena",
+        duration=198,
+        stream_duration=4,
+        queue_item_id="q2",
+    )
+
+
+async def test_the_announcement_gives_the_whole_track_after_a_seek() -> None:
+    """A flow carries on past the track, so the seconds left are not what the zone gets."""
+    player = _announcing_player()
+    cast("MagicMock", player.mass.player_queues).player_media_from_queue_item = AsyncMock(
+        return_value=_seeked_media()
+    )
+    with (
+        patch.object(player, "_active_zone", return_value=["Bar"]),
+        patch.object(player, "_zone_command", AsyncMock()) as zone_command,
+    ):
+        await player._announce_flow_item(FLOW_URL, "q2", 0)
+
+    assert 'duration="00:03:18"' in zone_command.call_args.kwargs["CurrentURIMetaData"]
+
+
+@pytest.mark.parametrize(
+    ("url", "duration"),
+    [
+        (f"{BASE_URL}/flow/session1/raumfeld_bar/item1.flac", "00:03:18"),
+        (f"{BASE_URL}/single/session1/raumfeld_bar/item1.flac", "00:00:04"),
+    ],
+    ids=["flow", "single_item"],
+)
+async def test_only_a_flow_describes_the_whole_track_after_a_seek(url: str, duration: str) -> None:
+    """A stream of one item does end after the seconds left; a flow carries on."""
+    player, action = _zone_player()
+    cast("MagicMock", player.mass.streams).resolve_stream_url = AsyncMock(return_value=url)
+
+    with patch.object(player, "update_state"), _flow_mode_on():
+        await player.play_media(_seeked_media())
+
+    didl = action.await_args_list[0].kwargs["CurrentURIMetaData"]
+    assert f'duration="{duration}"' in didl
 
 
 async def test_a_refused_announcement_leaves_playback_alone() -> None:

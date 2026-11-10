@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import time
 from collections.abc import AsyncIterator
+from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, MagicMock, PropertyMock, patch
 
 import pytest
@@ -17,8 +18,15 @@ from music_assistant.constants import (
     CONF_OUTPUT_CODEC,
     CONF_PREFER_WAV_FOR_LIVE_SOURCES,
 )
+from music_assistant.providers.squeezelite.constants import (
+    CONF_ENTRY_DISPLAY,
+    CONF_ENTRY_VISUALIZATION,
+)
 from music_assistant.providers.squeezelite.player import SqueezelitePlayer, is_protocol_only_device
 from tests.common import use_real_create_task
+
+if TYPE_CHECKING:
+    from music_assistant_models.config_entries import ConfigEntry
 
 
 async def test_squeezelite_prefers_wav_for_live_sources_by_default() -> None:
@@ -339,3 +347,11 @@ async def test_play_media_drops_heartbeat_from_before_the_flush() -> None:
         )
 
     assert player._attr_elapsed_time == 0
+
+
+@pytest.mark.parametrize("entry", [CONF_ENTRY_DISPLAY, CONF_ENTRY_VISUALIZATION])
+def test_the_settings_entries_of_a_player_can_be_serialized(entry: ConfigEntry) -> None:
+    """The settings page of a player turns its entries into a dict, which a bad default breaks."""
+    entry.to_dict()
+    if entry.options:
+        assert entry.default_value in {option.value for option in entry.options}
