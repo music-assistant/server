@@ -1241,7 +1241,7 @@ def _id3_get_tag_text(tags: ID3Tags, key: str) -> Any | None:
     return None
 
 
-def _parse_id3_tags(tags: ID3Tags) -> dict[str, Any]:  # noqa: PLR0912, PLR0915
+def _parse_id3_tags(tags: ID3Tags) -> dict[str, Any]:  # noqa: C901, PLR0912, PLR0915
     """
     Parse ID3 tags (MP3 files) from mutagen ID3Tags object.
 
@@ -1274,9 +1274,15 @@ def _parse_id3_tags(tags: ID3Tags) -> dict[str, Any]:  # noqa: PLR0912, PLR0915
     if genre := _id3_get_tag_text(tags, "TCON"):
         result["genre"] = genre
 
-    # Explicit multi-value artist tag (takes precedence)
+    # Explicit multi-value artist tags (take precedence)
     if artists := _id3_get_tag_text(tags, "TXXX:ARTISTS"):
         result["artists"] = artists
+    # Picard 3.0+ writes TXXX:ALBUMARTISTS and renames an existing TXXX:Album Artists to it
+    # on save. TXXX descriptions are case-sensitive, so accept the older spelling as well.
+    if albumartists := _id3_get_tag_text(tags, "TXXX:ALBUMARTISTS") or _id3_get_tag_text(
+        tags, "TXXX:Album Artists"
+    ):
+        result["albumartists"] = albumartists
 
     # MusicBrainz tags (single value)
     if albumid := _id3_get_tag_text(tags, "TXXX:MusicBrainz Album Id"):
@@ -1576,9 +1582,11 @@ def _parse_apev2_tags(tags: APEv2) -> dict[str, Any]:  # noqa: C901, PLR0912, PL
     if genre := _apev2_get_multi(tags, "Genre"):
         result["genre"] = genre
 
-    # Explicit multi-artist support (ARTISTS tag takes precedence)
+    # Explicit multi-artist support (ARTISTS/ALBUMARTISTS tags take precedence)
     if artists := _apev2_get_multi(tags, "Artists"):
         result["artists"] = artists
+    if albumartists := _apev2_get_multi(tags, "ALBUMARTISTS"):
+        result["albumartists"] = albumartists
 
     # MusicBrainz IDs - single value
     if mb_albumid := _apev2_get_single(tags, "MUSICBRAINZ_ALBUMID"):
