@@ -106,11 +106,6 @@ class DemoPlayerprovider(PlayerProvider):
         # e.g. you can stop polling the player or disconnect from it.
         super().on_player_disabled(player_id)
 
-    async def remove_player(self, player_id: str) -> None:
-        """Remove a player from this provider."""
-        # OPTIONAL - required only if you specified ProviderFeature.REMOVE_PLAYER
-        # this is used to actually remove a player.
-
     async def on_mdns_service_state_change(
         self, name: str, state_change: ServiceStateChange, info: AsyncServiceInfo | None
     ) -> None:

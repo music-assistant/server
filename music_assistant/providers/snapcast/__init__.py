@@ -14,7 +14,6 @@ if TYPE_CHECKING:
 
 SUPPORTED_FEATURES = {
     ProviderFeature.SYNC_PLAYERS,
-    ProviderFeature.REMOVE_PLAYER,
 }
 
 

@@ -1645,15 +1645,14 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
 
     @api_command("players/remove_group_player", required_scope=Scope.CONFIG_PLAYERS_WRITE)
     async def remove_group_player(self, player_id: str) -> None:
-        """Remove a group player."""
-        if not (player := self.get_player(player_id)):
-            # we simply permanently delete the player by wiping its config
-            self.mass.config.remove(f"players/{player_id}")
-            return
-        if player.state.type != PlayerType.GROUP:
+        """
+        Remove a group player for good.
+
+        :param player_id: ID of the group player to remove.
+        """
+        if (player := self.get_player(player_id)) and player.state.type != PlayerType.GROUP:
             raise UnsupportedFeaturedException(f"Player {player.state.name} is not a group player")
-        player.provider.check_feature(ProviderFeature.REMOVE_GROUP_PLAYER)
-        await player.provider.remove_group_player(player_id)
+        await self.remove(player_id)
 
     @api_command("players/add_currently_playing_to_favorites", required_scope=Scope.LIBRARY_WRITE)
     async def add_currently_playing_to_favorites(self, player_id: str) -> None:
@@ -1989,22 +1988,25 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
     @api_command("players/remove", required_scope=Scope.CONFIG_PLAYERS_WRITE)
     async def remove(self, player_id: str) -> None:
         """
-        Remove a player from a provider.
+        Remove a player for good: the player itself, its config and its queue.
 
-        Can only be called when a PlayerProvider supports ProviderFeature.REMOVE_PLAYER.
+        A device its provider still finds comes back as a new player.
+
+        :param player_id: ID of the player to remove.
         """
         player = self.get_player(player_id)
         if player is None:
             # we simply permanently delete the player config since it is not registered
             self.delete_player_config(player_id)
             return
-        if player.state.type == PlayerType.GROUP:
-            # Handle group player removal
-            player.provider.check_feature(ProviderFeature.REMOVE_GROUP_PLAYER)
-            await player.provider.remove_group_player(player_id)
-            return
-        player.provider.check_feature(ProviderFeature.REMOVE_PLAYER)
-        await player.provider.remove_player(player_id)
+        player_id = player.player_id
+        await self.unregister(player_id, permanent=True)
+        # the provider only cleans up what it keeps about the player itself. Best-effort:
+        # the player is gone by now, whatever happens to that
+        try:
+            await player.on_remove()
+        except Exception:
+            self.logger.exception("Error removing player %s", player.name)
         # check for group memberships that need to be updated
         if player.state.active_group and (
             group_player := self.mass.players.get_player(player.state.active_group)
@@ -2014,8 +2016,6 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
                 await group_player.set_members(
                     player_ids_to_remove=[player_id],
                 )
-        # We removed the player and can now clean up its config
-        self.delete_player_config(player_id)
 
     def delete_player_config(
         self, player_id: str, replacement_player_id: str | None = None

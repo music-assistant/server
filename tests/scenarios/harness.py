@@ -30,7 +30,6 @@ from music_assistant_models.enums import (
     PlaybackState,
     PlayerFeature,
     PlayerType,
-    ProviderFeature,
     ProviderType,
 )
 from music_assistant_models.player import DeviceInfo
@@ -314,7 +313,7 @@ class FakePlayerProvider(PlayerProvider):
         :param config: The provider instance config.
         :param devices: The devices of the scenario, by protocol id.
         """
-        super().__init__(mass, manifest, config, {ProviderFeature.REMOVE_PLAYER})
+        super().__init__(mass, manifest, config)
         self._devices = devices
         self._protocols: dict[str, FakeProtocol] = {}
 
@@ -358,10 +357,6 @@ class FakePlayerProvider(PlayerProvider):
                 continue
             if self.mass.players.get_protocol(protocol_id) is None:
                 await self.mass.players.register_or_update(self._protocol_for(protocol_id))
-
-    async def remove_player(self, player_id: str) -> None:
-        """Remove a player from this provider."""
-        await self.mass.players.unregister(player_id, permanent=True)
 
     def _protocol_for(self, protocol_id: str) -> FakeProtocol:
         """Return the protocol object of a device on this provider instance."""

@@ -41,7 +41,11 @@ from music_assistant.providers.hass.constants import (
     parse_supported_features,
 )
 
-from .constants import CONF_ENTRY_WARN_HASS_INTEGRATION, NATIVE_SUPPORTED_HASS_INTEGRATIONS
+from .constants import (
+    CONF_ENTRY_WARN_HASS_INTEGRATION,
+    CONF_PLAYERS,
+    NATIVE_SUPPORTED_HASS_INTEGRATIONS,
+)
 from .helpers import ESPHomeSupportedAudioFormat, native_player_macs, normalized_mac
 
 if TYPE_CHECKING:
@@ -373,6 +377,15 @@ class HomeAssistantPlayer(PlayerProtocol):
                 service="join",
                 service_data={"group_members": player_ids_to_add},
                 target={"entity_id": self.player_id},
+            )
+
+    async def on_remove(self) -> None:
+        """Take the player out of the players this provider is set up with."""
+        player_ids = cast("list[str]", self.provider.config.get_value(CONF_PLAYERS))
+        if self.player_id in player_ids:
+            player_ids.remove(self.player_id)
+            self.mass.config.set_raw_provider_config_value(
+                self.provider.instance_id, CONF_PLAYERS, player_ids
             )
 
     def update_from_compressed_state(self, state: CompressedState) -> None:

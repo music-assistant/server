@@ -343,18 +343,14 @@ def test_name_kept_when_remaining_protocol_player_has_a_player_id_name() -> None
     assert universal.name == "Kitchen"
 
 
-async def test_remove_player_unregisters_before_deleting_stale_protocol_configs() -> None:
-    """The universal player is removed before the configs of its offline protocols."""
+async def test_removed_player_deletes_the_configs_of_its_offline_protocols() -> None:
+    """A removed universal player takes the configs of its unregistered protocols along."""
     mass = _make_mock_mass()
-    universal = _make_universal_player(mass, ["airplay_1"])
-    _register_players(mass, universal)  # type: ignore[arg-type]
-    calls = MagicMock()
-    mass.players.unregister = AsyncMock(side_effect=lambda *_a, **_kw: calls.unregister())
-    mass.players.delete_player_config = MagicMock(side_effect=lambda *_a: calls.delete())
-    provider = _make_universal_provider(mass)
+    cast = _make_protocol_player("cast_1", "chromecast")
+    _register_players(mass, cast)
+    universal = _make_universal_player(mass, ["airplay_1", "cast_1"])
+    mass.players.delete_player_config = MagicMock()
 
-    await provider.remove_player("up_test")
+    await universal.on_remove()
 
-    mass.players.unregister.assert_awaited_once_with("up_test", permanent=True)
     mass.players.delete_player_config.assert_called_once_with("airplay_1")
-    assert [c[0] for c in calls.mock_calls] == ["unregister", "delete"]

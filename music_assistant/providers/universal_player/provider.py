@@ -184,16 +184,6 @@ class UniversalPlayerProvider(PlayerProvider):
             await self._save_player_data(player_id, player)
             player.update_state()
 
-    async def remove_universal_player(self, player_id: str) -> None:
-        """
-        Remove a universal player.
-
-        Called when all protocol players for a device are removed.
-
-        :param player_id: ID of the universal player to remove.
-        """
-        await self.mass.players.unregister(player_id, permanent=True)
-
     async def ensure_universal_players_for_protocols(
         self, protocol_players: list[Player]
     ) -> dict[str, Player]:
@@ -281,29 +271,6 @@ class UniversalPlayerProvider(PlayerProvider):
             if isinstance(player, UniversalPlayer):
                 return player
         return None
-
-    async def remove_player(self, player_id: str) -> None:
-        """Remove a universal player and clean up any stale protocol player configs."""
-        player = self.get_universal_player(player_id)
-        # Clean up configs for protocol players tracked by this universal player
-        # that are not currently registered (unavailable/stale).
-        # Available protocol players are handled by _cleanup_protocol_links
-        # in the player controller (clears parent + schedules re-evaluation).
-        # The configs are deleted after the removal, as deleting the last one first
-        # would already unregister the emptied universal player.
-        stale_protocol_ids = [
-            protocol_id
-            for protocol_id in (player._protocol_player_ids if player else [])
-            if not self.mass.players.get_player(protocol_id)
-        ]
-        await self.remove_universal_player(player_id)
-        for protocol_id in stale_protocol_ids:
-            self.logger.info(
-                "Cleaning up stale protocol config %s from universal player %s",
-                protocol_id,
-                player_id,
-            )
-            self.mass.players.delete_player_config(protocol_id)
 
     async def _restore_player(self, player_id: str) -> None:
         """

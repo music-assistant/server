@@ -34,7 +34,6 @@ from music_assistant_models.enums import (
     PlaybackState,
     PlayerFeature,
     PlayerType,
-    ProviderFeature,
     ProviderType,
 )
 
@@ -196,7 +195,7 @@ async def _get_queue_cache(mass: MusicAssistant, player_id: str) -> list[object]
 
 
 class _TestProvider:
-    """Minimal PlayerProvider stand-in that supports removing its players."""
+    """Minimal PlayerProvider stand-in."""
 
     def __init__(self, mass: MusicAssistant) -> None:
         """Initialize the test provider."""
@@ -211,13 +210,6 @@ class _TestProvider:
         self.manifest.name = self.name
         self.manifest.type = ProviderType.PLAYER
         self.type = ProviderType.PLAYER
-
-    def check_feature(self, feature: ProviderFeature) -> None:
-        """Accept every feature check."""
-
-    async def remove_player(self, player_id: str) -> None:
-        """Remove the player, like a real provider does."""
-        await self.mass.players.unregister(player_id, permanent=True)
 
     async def unload(self, is_removed: bool = False) -> None:
         """Unload the provider (nothing to clean up)."""

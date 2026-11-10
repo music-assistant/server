@@ -218,6 +218,10 @@ class FullyKioskPlayer(PlayerProtocol):
         await super().on_unload()
         self._dashboards.unregister(self.player_id)
 
+    async def on_remove(self) -> None:
+        """Take the device out of the hosts the provider is set up with."""
+        cast("FullyKioskProvider", self.provider).forget_host(self.host, self.port)
+
     async def _connect(self) -> None:
         """Establish a connection to the Fully Kiosk device."""
         password = cast("str | None", self.get_setup_value(CONF_PASSWORD) or None)

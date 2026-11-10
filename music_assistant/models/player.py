@@ -1311,6 +1311,16 @@ class Player(ABC):
                     err,
                 )
 
+    async def on_remove(self) -> None:
+        """
+        Handle logic when the player is removed for good.
+
+        Called after the player was unloaded and its config was deleted. Override this
+        method in your player implementation if the provider keeps something of its own
+        about the player, such as an entry in its list of manually added devices.
+        """
+        return
+
     async def group_with(self, target_player_id: str) -> None:
         """
         Handle GROUP_WITH command on the player.

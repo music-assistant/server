@@ -26,10 +26,6 @@ from music_assistant_models.enums import (
     PlayerFeature,
     PlayerType,
 )
-from music_assistant_models.errors import (
-    ActionUnavailable,
-    UnsupportedFeaturedException,
-)
 
 from music_assistant.constants import (
     CONF_ENABLED,
@@ -639,18 +635,8 @@ class PlayerConfigMixin:
         if not player_config:
             msg = f"Player configuration for {player_id} does not exist"
             raise KeyError(msg)
-        if self.mass.players.get_player(player_id):
-            try:
-                await self.mass.players.remove(player_id)
-            except UnsupportedFeaturedException:
-                # removing a player config while it is active is not allowed
-                # unless the provider reports it has the remove_player feature
-                raise ActionUnavailable("Can not remove config for an active player!")
-            # tell the player manager to remove the player if its lingering around
-            # set permanent to false otherwise we end up in an infinite loop
-            await self.mass.players.unregister(player_id, permanent=False)
-        # all of the above passed, so wipe the config (incl. DSP and linked protocol players)
-        self.mass.players.delete_player_config(player_id)
+        # removing the player wipes its config (incl. DSP and linked protocol players)
+        await self.mass.players.remove(player_id)
 
     def set_player_default_name(self, player_id: str, default_name: str) -> None:
         """Set (or update) the default name for a player."""

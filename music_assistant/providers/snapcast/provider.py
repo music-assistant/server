@@ -652,8 +652,12 @@ class SnapCastProvider(PlayerProvider):
             task_id=f"load_provider_{self.instance_id}",
         )
 
-    async def remove_player(self, player_id: str) -> None:
-        """Remove the client from the snapserver when it is deleted."""
+    async def remove_client(self, player_id: str) -> None:
+        """
+        Remove the client of a player from the snapserver.
+
+        :param player_id: ID of the player the client belongs to.
+        """
         success, error_msg = await self._snapserver.delete_client(
             self._get_snapclient_id(player_id)
         )

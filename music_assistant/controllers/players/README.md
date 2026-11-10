@@ -367,6 +367,10 @@ When implementing a native provider (e.g., Sonos, Bluesound) that should link to
   - The controller will attempt ARP lookup to resolve real MACs automatically
 - `IP_ADDRESS` is only used as a last resort after strong identifiers were checked first
 
+### Removing a Player
+
+Every player can be removed, and the controller does it itself: `players/remove` unregisters the player for good and deletes its config, its DSP and queue settings and its saved queue, and takes it out of groups and user filters. The provider is not asked. A provider that keeps something of its own about a player, such as an entry in its list of manually added hosts or a client on its server, implements `on_remove()` on the player object, which is called once the player is gone. A device that its provider still finds comes back as a new player.
+
 ### Testing Protocol Linking
 
 Key scenarios to test:

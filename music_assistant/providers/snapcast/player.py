@@ -430,6 +430,10 @@ class SnapCastPlayer(PlayerProtocol):
             CONF_ENTRY_HTTP_PROFILE_HIDDEN,
         ]
 
+    async def on_remove(self) -> None:
+        """Remove the client from the snapserver when it is deleted."""
+        await self.snap_provider.remove_client(self.player_id)
+
     def _handle_player_update(self, snap_client: SnapclientProto) -> None:
         """Forward snap_client updates."""
         self.poke_player_update()

@@ -393,6 +393,15 @@ class DemoPlayer(PlayerProtocol):
         # This is called when the player is removed from the Player controller.
         self.logger.info("Player %s unloaded", self.name)
 
+    async def on_remove(self) -> None:
+        """Handle logic when the player is removed for good."""
+        # OPTIONAL
+        # this method is optional and should be implemented if your provider keeps
+        # something about the player outside of the player's own config, e.g. an entry
+        # in a list of manually added devices that would otherwise bring it back.
+        # The player is unloaded and its config is deleted by the time this is called.
+        self.logger.info("Player %s removed", self.name)
+
     def _set_attributes(self) -> None:
         """Update/set (dynamic) properties."""
         self._attr_powered = True

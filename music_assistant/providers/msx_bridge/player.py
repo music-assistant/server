@@ -91,6 +91,10 @@ class MSXPlayer(PlayerProtocol):
         """Return per-player config entries — codec is configurable per TV."""
         return [CONF_ENTRY_OUTPUT_CODEC_DEFAULT_MP3, CONF_ENTRY_HTTP_PROFILE_DEFAULT_1]
 
+    async def on_remove(self) -> None:
+        """Stop the TV when its player is removed."""
+        cast("MSXBridgeProvider", self.provider).forget_player(self.player_id)
+
     def mark_available(self) -> None:
         """Mark the player available after proof of life from the TV."""
         if not self._attr_available:

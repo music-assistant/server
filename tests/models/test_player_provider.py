@@ -1,12 +1,13 @@
-"""Tests for the protocol lookups of the PlayerProvider base class."""
+"""Tests for the PlayerProvider base class: its protocol lookups and its features."""
 
 from __future__ import annotations
 
 import logging
 from unittest.mock import MagicMock
 
+import pytest
 from music_assistant_models.config_entries import ProviderConfig
-from music_assistant_models.enums import ProviderType
+from music_assistant_models.enums import ProviderFeature, ProviderType
 from music_assistant_models.provider import ProviderManifest
 
 from music_assistant.models.player_provider import PlayerProvider
@@ -15,12 +16,15 @@ from tests.common import MockPlayer, capture_log_records
 PLAYER_ID = "test_player"
 
 
-def _make_provider(mass: MagicMock, instance_id: str) -> PlayerProvider:
+def _make_provider(
+    mass: MagicMock, instance_id: str, supported_features: set[ProviderFeature] | None = None
+) -> PlayerProvider:
     """
     Create a bare player provider on the given (mocked) Music Assistant instance.
 
     :param mass: The mocked Music Assistant instance.
     :param instance_id: Instance id of the provider.
+    :param supported_features: The features the provider declares itself.
     """
     return PlayerProvider(
         mass,
@@ -38,6 +42,7 @@ def _make_provider(mass: MagicMock, instance_id: str) -> PlayerProvider:
             instance_id=instance_id,
             name="Test",
         ),
+        supported_features=supported_features,
     )
 
 
@@ -86,3 +91,18 @@ def test_get_protocol_of_mocked_player_does_not_warn() -> None:
         assert provider.get_protocol(PLAYER_ID) is player
 
     assert not [record for record in records if record.levelno == logging.WARNING]
+
+
+@pytest.mark.parametrize(
+    "declared",
+    [None, {ProviderFeature.SYNC_PLAYERS}, {ProviderFeature.REMOVE_PLAYER}],
+)
+def test_every_player_provider_offers_the_removal_of_players(
+    declared: set[ProviderFeature] | None,
+) -> None:
+    """A player provider advertises removal next to the features it declares itself."""
+    provider = _make_provider(MagicMock(), "test", declared)
+
+    assert provider.supported_features == {*(declared or ()), ProviderFeature.REMOVE_PLAYER}
+    assert provider.supports_feature(ProviderFeature.REMOVE_PLAYER)
+    assert provider.to_dict()["supported_features"].count("remove_player") == 1

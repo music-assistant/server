@@ -264,6 +264,31 @@ async def test_on_player_disabled_does_not_unregister(
     provider.mass.players.unregister.assert_not_called()  # type: ignore[attr-defined]
 
 
+async def test_removed_player_stops_the_tv_and_is_forgotten(
+    provider: MSXBridgeProvider, player: MSXPlayer
+) -> None:
+    """A removed player has its TV stopped, its streams cancelled and its activity dropped."""
+    mock_server = Mock()
+    provider.http_server = mock_server
+    provider.on_player_activity(player.player_id)
+
+    await player.on_remove()
+
+    mock_server.broadcast_stop.assert_called_once_with("msx_test")
+    mock_server.cancel_streams_for_player.assert_called_once_with("msx_test")
+    assert player.player_id not in provider._player_last_activity
+    provider.mass.players.unregister.assert_not_called()  # type: ignore[attr-defined]
+
+
+async def test_removed_player_noop_when_no_server(
+    provider: MSXBridgeProvider, player: MSXPlayer
+) -> None:
+    """Removing a player does not crash when http_server is None."""
+    provider.http_server = None
+
+    await player.on_remove()  # should not raise
+
+
 async def test_on_player_disabled_noop_when_no_server(
     provider: MSXBridgeProvider,
 ) -> None:

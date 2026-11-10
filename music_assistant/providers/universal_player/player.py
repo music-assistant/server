@@ -136,6 +136,20 @@ class UniversalPlayer(ProtocolBackedPlayer):
         if protocol_player_id in self._protocol_player_ids:
             self._protocol_player_ids.remove(protocol_player_id)
 
+    async def on_remove(self) -> None:
+        """Clean up the configs of the protocol players of this player that are not registered."""
+        # Available protocol players are handled by _cleanup_protocol_links
+        # in the player controller (clears parent + schedules re-evaluation).
+        for protocol_id in list(self._protocol_player_ids):
+            if self.mass.players.get_player(protocol_id):
+                continue
+            self.logger.info(
+                "Cleaning up stale protocol config %s from universal player %s",
+                protocol_id,
+                self.player_id,
+            )
+            self.mass.players.delete_player_config(protocol_id)
+
     def _backing_protocol_player_ids(self) -> list[str]:
         """Return the ids of the protocol players backing this player."""
         return self._protocol_player_ids
