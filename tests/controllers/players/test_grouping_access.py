@@ -37,10 +37,10 @@ def _api(controller: PlayerController, command: str) -> Callable[..., Awaitable[
     return cast("MagicMock", controller.mass).command_handlers[command].target  # type: ignore[no-any-return]
 
 
-def _sync(controller: PlayerController, leader_id: str, member_id: str) -> None:
-    """Sync the given member to the given leader."""
+def _sync(controller: PlayerController, leader_id: str, *member_ids: str) -> None:
+    """Sync the given members to the given leader."""
     leader = controller._players[leader_id]
-    leader._attr_group_members = [leader_id, member_id]
+    leader._attr_group_members = [leader_id, *member_ids]
     for player in controller._players.values():
         player.update_state(signal_event=False)
 
@@ -129,6 +129,20 @@ async def test_removing_a_player_from_another_players_group_is_refused(
         await _set_members("b", remove=["c"])(controller)
 
     _assert_unchanged(controller)
+
+
+async def test_removing_several_players_needs_access_to_each_of_them(
+    controller: PlayerController,
+) -> None:
+    """A player of one's own among the players removed does not let the others go as well."""
+    _sync(controller, "c", "a", "b")
+
+    with as_user(["a"]), pytest.raises(InsufficientPermissions, match="Player B"):
+        await _set_members("c", remove=["a", "b"])(controller)
+
+    _assert_unchanged(controller)
+    assert controller._players["a"].synced_to == "c"
+    assert controller._players["b"].synced_to == "c"
 
 
 @pytest.mark.parametrize(
