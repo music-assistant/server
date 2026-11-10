@@ -768,7 +768,7 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         if (source_uri := await _resolve_audio_source_request(media)) is not None:
             await self.mass.players.select_source(queue_id, source_uri)
             return
-        queue_id = await self._get_play_media_queue_id(queue_id, media, option, radio_mode)
+        queue_id, option = await self._get_play_media_target(queue_id, media, option, radio_mode)
         if (
             option not in (QueueOption.ADD, QueueOption.NEXT, QueueOption.REPLACE_NEXT)
             and (player := self.mass.players.get_player(queue_id)) is not None
@@ -2247,15 +2247,15 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
             msg = f"{current_user.username} does not have access to queue {queue_id}"
             raise InsufficientPermissions(msg)
 
-    async def _get_play_media_queue_id(
+    async def _get_play_media_target(
         self,
         queue_id: str,
         media: MediaItemType | ItemMapping | str | list[MediaItemType | ItemMapping | str],
         option: QueueOption | None,
         radio_mode: bool,
-    ) -> str:
+    ) -> tuple[str, QueueOption | None]:
         """
-        Return the queue a play request naming the given queue is handled on.
+        Return the queue a play request naming the given queue is handled on, and its option.
 
         A player that is synced to another player or captured by a group plays the queue of
         that owner. Media added to what it plays goes to that queue, and so does new content,
@@ -2266,51 +2266,53 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         :param media: The media of the play request.
         :param option: The enqueue option of the play request, None for the default.
         :param radio_mode: The deprecated radio mode of the play request.
+        :return: The queue id and the enqueue option to load the media with. A request
+            without an option for a captured player gets the default the media implies,
+            otherwise the option is returned as given.
         :raises InsufficientPermissions: When the request goes to the owner's queue and the
             current user lacks access to the owner.
         """
         if (player := self.mass.players.get_player(queue_id)) is None:
-            return queue_id
+            return queue_id, option
         owner = self.mass.players._resolve_playback_owner(player)
         if owner is player or self.get(owner.player_id) is None:
-            return queue_id
+            return queue_id, option
         if option is None and radio_mode:
             # the loader plays a radio mode request as a radio playlist
             option = self._default_enqueue_option(MediaType.PLAYLIST)
         if option is None and (option := await self._get_default_play_option(media)) is None:
-            return queue_id
+            return queue_id, option
         if option in (QueueOption.PLAY, QueueOption.REPLACE) and bool(
             self.mass.config.get_raw_player_config_value(
                 player.player_id, CONF_PLAY_MEDIA_OVERRIDES_GROUP, True
             )
         ):
-            return queue_id
+            return queue_id, option
         self._check_player_permission(owner.player_id)
         self.logger.info(
             "Player %s is synced or grouped, its play request goes to the queue of %s",
             player.display_name,
             owner.display_name,
         )
-        return owner.player_id
+        return owner.player_id, option
 
     async def _get_default_play_option(
         self,
         media: MediaItemType | ItemMapping | str | list[MediaItemType | ItemMapping | str],
     ) -> QueueOption | None:
         """
-        Return the enqueue option a play request that names none uses.
+        Return the enqueue option a play request that names none loads its media with.
 
         :param media: The media of the play request.
-        :return: The option of the first item with a known media type, None when there is none.
+        :return: The default option of the first entry the request plays, None when it
+            plays none.
         """
+        user = get_current_user()
         for entry in media if isinstance(media, list) else [media]:
-            media_type = await _media_type(entry)
-            if media_type == MediaType.UNKNOWN and isinstance(entry, str):
-                # a plain url or file only has a media type once it is resolved
-                with suppress(MusicAssistantError):
-                    media_type = (await self.mass.music.get_item_by_uri(entry)).media_type
-            if media_type != MediaType.UNKNOWN:
-                return self._default_enqueue_option(media_type)
+            # an entry the loader skips does not decide the option either
+            with suppress(MusicAssistantError):
+                media_item = await self._resolve_play_media_entry(entry, user)
+                return self._default_enqueue_option(media_item.media_type)
         return None
 
     @handle_play_action(switched_off=SwitchedOffAction.RUN)

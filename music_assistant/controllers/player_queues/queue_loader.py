@@ -87,6 +87,7 @@ from music_assistant.helpers.uri import parse_uri
 from music_assistant.models.music_provider import MusicProvider, ProviderStreamLimitError
 
 if TYPE_CHECKING:
+    from music_assistant_models.auth import User
     from music_assistant_models.enums import SortDirection, SortField
     from music_assistant_models.queue_item import QueueItem
 
@@ -910,42 +911,23 @@ class QueueLoaderMixin(_PlayerQueuesBase):
         # resolve all media items
         for item in media_list:
             try:
-                # parse provided uri into a MA MediaItem or Basic QueueItem from URL
-                media_item: MediaItemType | ItemMapping | BrowseFolder
-                if isinstance(item, str):
-                    media_item = await self.mass.music.get_item_by_uri(item)
-                elif isinstance(item, dict):  # type: ignore[unreachable]
+                requested = item
+                if isinstance(requested, dict):
                     # TODO: Investigate why the API parser sometimes passes raw dicts instead of
                     # converting them to MediaItem objects. The parse_value function in api.py
                     # should handle dict-to-object conversion, but dicts are slipping through
                     # in some cases. This is defensive handling for that parser bug.
-                    media_item = media_from_dict(item)  # type: ignore[unreachable]
-                    self.logger.debug("Converted to: %s", type(media_item))
-                else:
-                    # item is MediaItemType | ItemMapping at this point
-                    media_item = item
+                    requested = media_from_dict(requested)  # type: ignore[unreachable]
+                    self.logger.debug("Converted to: %s", type(requested))
+                media_item = await self._resolve_play_media_entry(requested, playback_user)
 
                 # an audiobook keeps the account it was started from, which the library item
                 # that can take its place no longer names
                 played_copy = (
-                    await self._played_copy(item if isinstance(item, str) else media_item)
+                    await self._played_copy(requested)
                     if media_item.media_type == MediaType.AUDIOBOOK
                     else None
                 )
-
-                if isinstance(media_item, ItemMapping):
-                    # Resolve any ItemMapping to its full media item, exactly as the str-uri
-                    # form above already does. Everything below needs the real object: the
-                    # enqueued/source bookkeeping only accepts full items (so a mapping would
-                    # otherwise never count as a user-initiated play), and the dynamic check
-                    # needs details such as a playlist's 'is_dynamic'.
-                    if media_item.uri is None:
-                        raise InvalidDataError("ItemMapping has no URI")
-                    media_item = await self.mass.music.get_item_by_uri(media_item.uri)
-
-                # never enqueue what this user has no music source for; failing here keeps
-                # the caller from finding out only when the item is about to be streamed
-                self.mass.music.check_item_playable_for_user(media_item, playback_user)
 
                 # handle default enqueue option if needed
                 if option is None:
@@ -1169,6 +1151,34 @@ class QueueLoaderMixin(_PlayerQueuesBase):
         await self._enqueue_with_option(
             queue_id, queue_items, option, pin_first=start_item is not None
         )
+
+    async def _resolve_play_media_entry(
+        self, entry: MediaItemType | ItemMapping | str, user: User | None
+    ) -> MediaItemType | BrowseFolder:
+        """
+        Return the media item one entry of a play request plays.
+
+        :param entry: One entry of a play request.
+        :param user: The user the playback is for; None for anonymous playback.
+        :raises MusicAssistantError: When the entry can not be played, the request then skips it.
+        """
+        # parse provided uri into a MA MediaItem or Basic QueueItem from URL
+        media_item = (
+            await self.mass.music.get_item_by_uri(entry) if isinstance(entry, str) else entry
+        )
+        if isinstance(media_item, ItemMapping):
+            # Resolve any ItemMapping to its full media item, exactly as the str-uri
+            # form above already does. The loader needs the real object: the
+            # enqueued/source bookkeeping only accepts full items (so a mapping would
+            # otherwise never count as a user-initiated play), and the dynamic check
+            # needs details such as a playlist's 'is_dynamic'.
+            if media_item.uri is None:
+                raise InvalidDataError("ItemMapping has no URI")
+            media_item = await self.mass.music.get_item_by_uri(media_item.uri)
+        # never enqueue what this user has no music source for; failing here keeps
+        # the caller from finding out only when the item is about to be streamed
+        self.mass.music.check_item_playable_for_user(media_item, user)
+        return media_item
 
     async def _played_copy(
         self, requested: str | MediaItemType | ItemMapping | BrowseFolder

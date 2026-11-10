@@ -18,8 +18,15 @@ from unittest.mock import AsyncMock, MagicMock, Mock
 
 import pytest
 from music_assistant_models.enums import MediaType, PlayerFeature, PlayerType, QueueOption
-from music_assistant_models.errors import InsufficientPermissions
-from music_assistant_models.media_items import ItemMapping, ProviderMapping, Track
+from music_assistant_models.errors import InsufficientPermissions, MediaNotFoundError
+from music_assistant_models.media_items import (
+    ItemMapping,
+    MediaItemType,
+    Playlist,
+    ProviderMapping,
+    Radio,
+    Track,
+)
 from music_assistant_models.player_queue import PlayerQueue
 from music_assistant_models.unique_list import UniqueList
 
@@ -56,7 +63,13 @@ def _caller(user: str, kind: str) -> contextlib.AbstractContextManager[None]:
 class _Setup:
     """The controllers of one test, with what they recorded."""
 
-    def __init__(self, kind: str | None, overrides_group: bool, track_default: str) -> None:
+    def __init__(
+        self,
+        kind: str | None,
+        overrides_group: bool,
+        track_default: str,
+        radio_default: str = QueueOption.REPLACE.value,
+    ) -> None:
         """
         Build players a and b (and group g), each with an empty queue.
 
@@ -64,6 +77,8 @@ class _Setup:
             None for no capture at all.
         :param overrides_group: a's play_media_overrides_group setting.
         :param track_default: The enqueue option a track uses when a request names none.
+        :param radio_default: The enqueue option a radio station uses when a request names none;
+            any other media type uses REPLACE.
         """
         self.played: list[tuple[str, str | None]] = []
         self.released: list[str] = []
@@ -94,7 +109,7 @@ class _Setup:
             group._attr_group_members = ["a", "b"]
             group._attr_static_group_members = ["a", "b"] if kind == "static" else []
             group._attr_active_source = "g"
-        self.queues = self._queue_controller(mass, track_default)
+        self.queues = self._queue_controller(mass, track_default, radio_default)
         mass.player_queues = self.queues
         self._stub_player_side(players)
         # the owner first, so its members derive their state from its final one
@@ -114,7 +129,7 @@ class _Setup:
             if item.media_item is not None
         ]
 
-    def _queue_controller(self, mass: MagicMock, track_default: str) -> Any:
+    def _queue_controller(self, mass: MagicMock, track_default: str, radio_default: str) -> Any:
         """Build the queue controller over the players, its play_index starting the player."""
         ctrl: Any = PlayerQueuesController.__new__(PlayerQueuesController)
         ctrl.logger = Mock()
@@ -135,12 +150,12 @@ class _Setup:
         ctrl.on_player_update = Mock()
         ctrl.refuse_held_item = Mock()
         ctrl.get_next_item = Mock(return_value=None)
+        defaults = {
+            "default_enqueue_option_track": track_default,
+            "default_enqueue_option_live_sources": radio_default,
+        }
         ctrl.get_config_value = Mock(
-            side_effect=lambda key, *_args, **_kwargs: (
-                track_default
-                if key == "default_enqueue_option_track"
-                else QueueOption.REPLACE.value
-            )
+            side_effect=lambda key, *_args, **_kwargs: defaults.get(key, QueueOption.REPLACE.value)
         )
         ctrl._managed_pool = Mock()
         ctrl._smart_shuffle = Mock()
@@ -149,7 +164,13 @@ class _Setup:
         ctrl._media_resolver._resolve_media_items = AsyncMock(
             side_effect=lambda media_item, *_args, **_kwargs: [ResolvedItem(media_item)]
         )
-        mass.music.check_item_playable_for_user = Mock()
+        mass.music.get_item_by_uri = AsyncMock(side_effect=_lookup)
+
+        def _check_playable(item: MediaItemType, _user: Any) -> None:
+            if item.item_id == "forbidden":
+                raise MediaNotFoundError(f"{item.name} is not available on any music source")
+
+        mass.music.check_item_playable_for_user = Mock(side_effect=_check_playable)
 
         async def _play_index(queue_id: str, *_args: Any, **_kwargs: Any) -> None:
             # what play_index does: check the caller's access, then the queue's player plays it
@@ -194,10 +215,29 @@ def _track(item_id: str = "t1") -> Track:
         artists=UniqueList(
             [ItemMapping(item_id="x", provider="test", name="X", media_type=MediaType.ARTIST)]
         ),
-        provider_mappings={
-            ProviderMapping(item_id=item_id, provider_domain="test", provider_instance="test")
-        },
+        provider_mappings=_mappings(item_id),
     )
+
+
+def _lookup(uri: str) -> MediaItemType:
+    """Return the media item a uri names; the "missing" track is not found."""
+    if uri == "test://track/missing":
+        raise MediaNotFoundError("Track missing not found")
+    if uri == "test://radio/r":
+        return Radio(item_id="r", provider="test", name="Station", provider_mappings=_mappings("r"))
+    if uri == "radio_playlist://playlist/test://track/t1":
+        return Playlist(
+            item_id="mix",
+            provider="radio_playlist",
+            name="Radio Mix",
+            is_dynamic=True,
+            provider_mappings=_mappings("mix"),
+        )
+    raise AssertionError(f"unexpected lookup of {uri}")
+
+
+def _mappings(item_id: str) -> set[ProviderMapping]:
+    return {ProviderMapping(item_id=item_id, provider_domain="test", provider_instance="test")}
 
 
 @pytest.mark.parametrize("user", USERS)
@@ -284,36 +324,125 @@ async def test_a_request_for_the_owner_queue_needs_access_to_the_owner(
     assert setup.released == []
 
 
-@pytest.mark.parametrize(
-    ("track_default", "lands_in"),
-    [(QueueOption.ADD.value, "g"), (QueueOption.PLAY.value, "a")],
-)
-async def test_a_request_without_option_follows_the_default_for_its_media(
-    track_default: str, lands_in: str
-) -> None:
-    """The enqueue default of the media decides, like an explicit option would."""
-    setup = _Setup("dynamic", True, track_default)
+@pytest.mark.parametrize("kind", KINDS)
+async def test_a_request_without_option_that_adds_goes_to_the_owner(kind: str) -> None:
+    """A track defaulting to ADD is added to the owner's queue, nothing starts playing."""
+    setup = _Setup(kind, True, QueueOption.ADD.value)
 
     await setup.queues.play_media("a", _track())
 
-    assert setup.items(lands_in) == ["t1"]
+    assert setup.items(OWNER[kind]) == ["t1"]
+    assert setup.items("a") == []
+    assert setup.played == []
+    assert setup.released == []
 
 
-async def test_a_radio_mode_request_follows_the_playlist_default() -> None:
+@pytest.mark.parametrize("kind", KINDS)
+async def test_a_request_without_option_that_plays_follows_the_setting(kind: str) -> None:
+    """A track defaulting to PLAY makes the player leave its group with the setting on."""
+    setup = _Setup(kind, True, QueueOption.PLAY.value)
+
+    await setup.queues.play_media("a", _track())
+
+    assert setup.items("a") == ["t1"]
+    assert setup.items(OWNER[kind]) == []
+    assert setup.played == [("a", "a")]
+    assert setup.released == [RELEASE[kind]]
+
+
+@pytest.mark.parametrize("kind", KINDS)
+async def test_a_radio_mode_request_follows_the_playlist_default(kind: str) -> None:
     """
     A radio mode request plays a radio playlist, so the playlist default decides.
 
-    Tracks default to ADD here and playlists to REPLACE, so the request stays on the player's
-    own queue rather than going to the group's.
+    Tracks default to ADD here and playlists to REPLACE, so with the setting on the player
+    leaves its group and plays the radio playlist's tracks on its own queue.
     """
-    setup = _Setup("dynamic", True, QueueOption.ADD.value)
-    # the radio playlist the seed turns into is looked up by its uri
-    setup.queues.mass.music.get_item_by_uri = AsyncMock(return_value=_track())
+    setup = _Setup(kind, True, QueueOption.ADD.value)
+    setup.queues._managed_pool.fill = AsyncMock(return_value=[_track("p1"), _track("p2")])
 
     await setup.queues.play_media("a", _track(), radio_mode=True)
 
-    assert setup.items("a") == ["t1"]
-    assert setup.items("g") == []
+    assert setup.items("a") == ["p1", "p2"]
+    assert setup.items(OWNER[kind]) == []
+    assert setup.played == [("a", "a")]
+    assert setup.released == [RELEASE[kind]]
+
+
+# the first entry of these batches is skipped by the loader: a track that is not found, or one
+# the user's music sources do not reach; the radio station behind it decides the option
+SKIPPED_FIRST: dict[str, MediaItemType | str] = {
+    "missing": "test://track/missing",
+    "forbidden": _track("forbidden"),
+}
+
+
+@pytest.mark.parametrize("user", [*USERS, "member-only"])
+@pytest.mark.parametrize("first", list(SKIPPED_FIRST))
+@pytest.mark.parametrize("kind", KINDS)
+async def test_the_first_played_entry_decides_a_default_that_plays(
+    kind: str, first: str, user: str
+) -> None:
+    """
+    A batch whose first entry is skipped plays by the default of the entry that plays.
+
+    Tracks default to ADD and radio to REPLACE, so with the setting on the player leaves its
+    group and plays the radio station alone, which needs access to the player only.
+    """
+    setup = _Setup(kind, True, QueueOption.ADD.value, QueueOption.REPLACE.value)
+
+    with _caller(user, kind):
+        await setup.queues.play_media("a", [SKIPPED_FIRST[first], "test://radio/r"])
+
+    assert setup.items("a") == ["r"]
+    assert setup.items(OWNER[kind]) == []
+    assert setup.played == [("a", "a")]
+    assert setup.released == [RELEASE[kind]]
+
+
+@pytest.mark.parametrize("user", USERS)
+@pytest.mark.parametrize("first", list(SKIPPED_FIRST))
+@pytest.mark.parametrize("kind", KINDS)
+async def test_the_first_played_entry_decides_a_default_that_adds(
+    kind: str, first: str, user: str
+) -> None:
+    """
+    A batch whose first entry is skipped adds by the default of the entry that plays.
+
+    Tracks default to PLAY and radio to ADD, so the radio station is added to the owner's
+    queue and the player stays in its group.
+    """
+    setup = _Setup(kind, True, QueueOption.PLAY.value, QueueOption.ADD.value)
+
+    with _caller(user, kind):
+        await setup.queues.play_media("a", [SKIPPED_FIRST[first], "test://radio/r"])
+
+    assert setup.items(OWNER[kind]) == ["r"]
+    assert setup.items("a") == []
+    assert setup.played == []
+    assert setup.released == []
+
+
+@pytest.mark.parametrize("first", list(SKIPPED_FIRST))
+@pytest.mark.parametrize("kind", KINDS)
+async def test_the_first_played_entry_decides_the_access_a_default_needs(
+    kind: str, first: str
+) -> None:
+    """A batch that adds to the owner's queue by the default of its played entry needs the owner."""
+    setup = _Setup(kind, True, QueueOption.PLAY.value, QueueOption.ADD.value)
+
+    with (
+        _caller("member-only", kind),
+        pytest.raises(
+            InsufficientPermissions, match=f"limited does not have access to player {OWNER[kind]}"
+        ),
+    ):
+        await setup.queues.play_media("a", [SKIPPED_FIRST[first], "test://radio/r"])
+
+    assert setup.items(OWNER[kind]) == []
+    assert setup.items("a") == []
+    assert setup.played == []
+    assert setup.released == []
 
 
 @pytest.mark.parametrize("overrides_group", [True, False])
