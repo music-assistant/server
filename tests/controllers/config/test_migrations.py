@@ -1450,6 +1450,30 @@ def test_migrate_own_domain_protocol_links_survives_malformed_data(players: Any)
     assert _migrate_own_domain_protocol_links({"players": players}) is False
 
 
+def test_migrate_own_domain_protocol_links_drops_non_string_ids() -> None:
+    """A stored list with a non-string entry is cleaned up and later players still repair."""
+    data = _own_domain_takeover_data()
+    data["players"]["cast_dongle"]["values"]["linked_protocol_ids"].append({})
+    data["players"]["ap_dongle"] = {
+        "provider": "airplay",
+        "player_type": "player",
+        "values": {"linked_protocol_ids": ["ap_other"]},
+    }
+    data["players"]["ap_other"] = {
+        "provider": "airplay",
+        "player_type": "protocol",
+        "values": {"protocol_parent_id": "ap_dongle"},
+    }
+
+    assert _migrate_own_domain_protocol_links(data) is True
+
+    players = data["players"]
+    assert players["cast_dongle"]["values"]["linked_protocol_ids"] == ["spb_dongle"]
+    assert players["cast_tv"]["values"]["protocol_parent_id"] is None
+    assert players["ap_dongle"]["values"]["linked_protocol_ids"] == []
+    assert players["ap_other"]["values"]["protocol_parent_id"] is None
+
+
 async def test_migrate_drops_released_disabled_protocols() -> None:
     """A released protocol that was disabled with the dongle is cleaned up as orphaned."""
     data = _own_domain_takeover_data()
