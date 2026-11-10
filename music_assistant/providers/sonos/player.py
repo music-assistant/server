@@ -85,7 +85,7 @@ from music_assistant.providers.sonos.options import (
     SonosOption,
     read_player_options,
 )
-from music_assistant.providers.sonos.upnp import UPNP_ERRORS
+from music_assistant.providers.sonos.upnp import UPNP_ERRORS, SonosSpeakerUpnp
 
 if TYPE_CHECKING:
     from aiosonos.api.models import (
@@ -99,7 +99,6 @@ if TYPE_CHECKING:
     from music_assistant_models.queue_item import QueueItem
 
     from .provider import SonosPlayerProvider
-    from .upnp import SonosSpeakerUpnp
 
 SUPPORTED_FEATURES = {
     PlayerFeature.PLAY_MEDIA,
@@ -250,7 +249,7 @@ class SonosPlayer(Player):
             self.device_info.ip_address, self.mass.http_session_no_ssl
         )
         provider = cast("SonosPlayerProvider", self._provider)
-        self.upnp = provider.upnp.speaker(self.device_info.ip_address, self.logger)
+        self.upnp = SonosSpeakerUpnp(provider.upnp, self.device_info.ip_address, self.logger)
         await self._connect(False)
 
         # collect supported features
@@ -440,7 +439,7 @@ class SonosPlayer(Player):
 
     @property
     def poll_interval(self) -> int:
-        """Return the poll interval: long while events come in and no option needs polling."""
+        """Return the poll interval of the player options."""
         if self.upnp.follows and not any(option.polled for option in self._offered_options):
             return OPTIONS_EVENTS_POLL_INTERVAL
         return OPTIONS_POLL_INTERVAL

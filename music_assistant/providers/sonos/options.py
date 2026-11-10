@@ -70,20 +70,10 @@ class SonosDevice:
         """Return if the speaker drives a subwoofer."""
         return self.model == AMP_MODEL or self.client.player.has_subwoofer
 
-    @property
-    def has_surrounds(self) -> bool:
-        """Return if surround speakers are bonded to the speaker."""
-        return self.client.player.has_surrounds
-
 
 @dataclass(frozen=True, kw_only=True)
 class SonosOption:
-    """
-    A player option: how to read and write it, and whether a speaker has it.
-
-    An option is offered when available() passes and read() returns a value; one without
-    write is read-only.
-    """
+    """A player option: offered when available() passes and read() returns a value."""
 
     key: str
     name: str
@@ -102,12 +92,29 @@ class SonosOption:
         return self.read_over_upnp and not self.sends_events
 
 
-def _setting(*path: str) -> OptionReader:
+def _setting_option(
+    key: str,
+    name: str,
+    option_type: PlayerOptionType,
+    path: tuple[str, ...],
+    write: OptionWriter | None = None,
+    value_range: OptionRange | None = None,
+) -> SonosOption:
+    """Return an option read from the player's (websocket) settings at path."""
+
     async def _read(device: SonosDevice) -> PlayerOptionValueType | None:
         value: PlayerOptionValueType | None = device.setting(*path)
         return value
 
-    return _read
+    return SonosOption(
+        key=key,
+        name=name,
+        option_type=option_type,
+        read=_read,
+        write=write,
+        value_range=value_range,
+        read_over_upnp=False,
+    )
 
 
 def _home_theater_option(name: str) -> OptionWriter:
@@ -218,34 +225,31 @@ async def _write_ir_repeater(device: SonosDevice, value: bool) -> None:
 
 
 SONOS_OPTIONS: tuple[SonosOption, ...] = (
-    SonosOption(
-        key="bass",
-        name="Bass",
-        option_type=PlayerOptionType.INTEGER,
-        read=_setting("eq", "bass"),
-        read_over_upnp=False,
+    _setting_option(
+        "bass",
+        "Bass",
+        PlayerOptionType.INTEGER,
+        ("eq", "bass"),
         write=lambda device, value: device.upnp.rendering_control(
             "SetBass", DesiredBass=int(value)
         ),
         value_range=EQ_RANGE,
     ),
-    SonosOption(
-        key="treble",
-        name="Treble",
-        option_type=PlayerOptionType.INTEGER,
-        read=_setting("eq", "treble"),
-        read_over_upnp=False,
+    _setting_option(
+        "treble",
+        "Treble",
+        PlayerOptionType.INTEGER,
+        ("eq", "treble"),
         write=lambda device, value: device.upnp.rendering_control(
             "SetTreble", DesiredTreble=int(value)
         ),
         value_range=EQ_RANGE,
     ),
-    SonosOption(
-        key="loudness",
-        name="Loudness",
-        option_type=PlayerOptionType.BOOLEAN,
-        read=_setting("eq", "loudness"),
-        read_over_upnp=False,
+    _setting_option(
+        "loudness",
+        "Loudness",
+        PlayerOptionType.BOOLEAN,
+        ("eq", "loudness"),
         write=lambda device, value: device.upnp.rendering_control(
             "SetLoudness", Channel="Master", DesiredLoudness=bool(value)
         ),
@@ -276,34 +280,22 @@ SONOS_OPTIONS: tuple[SonosOption, ...] = (
         ),
         sends_events=False,
     ),
-    SonosOption(
-        key="mono_mode",
-        name="Mono",
-        option_type=PlayerOptionType.BOOLEAN,
-        read=_setting("monoMode"),
-        read_over_upnp=False,
+    _setting_option("mono_mode", "Mono", PlayerOptionType.BOOLEAN, ("monoMode",)),
+    _setting_option(
+        "spatial_audio", "Spatial audio", PlayerOptionType.BOOLEAN, ("enableSpatialAudio",)
     ),
-    SonosOption(
-        key="spatial_audio",
-        name="Spatial audio",
-        option_type=PlayerOptionType.BOOLEAN,
-        read=_setting("enableSpatialAudio"),
-        read_over_upnp=False,
-    ),
-    SonosOption(
-        key="night_mode",
-        name="Night mode",
-        option_type=PlayerOptionType.BOOLEAN,
-        read=_setting("homeTheater", "nightMode"),
-        read_over_upnp=False,
+    _setting_option(
+        "night_mode",
+        "Night mode",
+        PlayerOptionType.BOOLEAN,
+        ("homeTheater", "nightMode"),
         write=_home_theater_option("nightMode"),
     ),
-    SonosOption(
-        key="speech_enhancement",
-        name="Speech enhancement",
-        option_type=PlayerOptionType.BOOLEAN,
-        read=_setting("homeTheater", "enhanceDialog"),
-        read_over_upnp=False,
+    _setting_option(
+        "speech_enhancement",
+        "Speech enhancement",
+        PlayerOptionType.BOOLEAN,
+        ("homeTheater", "enhanceDialog"),
         write=_home_theater_option("enhanceDialog"),
     ),
     _eq_option(
@@ -366,21 +358,21 @@ SONOS_OPTIONS: tuple[SonosOption, ...] = (
         "Surround speakers",
         EqType.SURROUND_ENABLED,
         PlayerOptionType.BOOLEAN,
-        available=lambda device: device.has_surrounds,
+        available=lambda device: device.client.player.has_surrounds,
     ),
     _eq_option(
         "surround_mode",
         "Full-volume surround for music",
         EqType.SURROUND_MODE,
         PlayerOptionType.BOOLEAN,
-        available=lambda device: device.has_surrounds,
+        available=lambda device: device.client.player.has_surrounds,
     ),
     _eq_option(
         "surround_level",
         "Surround level (TV)",
         EqType.SURROUND_LEVEL,
         PlayerOptionType.INTEGER,
-        available=lambda device: device.has_surrounds,
+        available=lambda device: device.client.player.has_surrounds,
         value_range=SURROUND_LEVEL_RANGE,
     ),
     _eq_option(
@@ -388,7 +380,7 @@ SONOS_OPTIONS: tuple[SonosOption, ...] = (
         "Surround level (music)",
         EqType.MUSIC_SURROUND_LEVEL,
         PlayerOptionType.INTEGER,
-        available=lambda device: device.has_surrounds,
+        available=lambda device: device.client.player.has_surrounds,
         value_range=SURROUND_LEVEL_RANGE,
     ),
 )

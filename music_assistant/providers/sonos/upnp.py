@@ -71,15 +71,6 @@ class SonosUpnp(UpnpNotifyServer):  # type: ignore[misc,unused-ignore]
         """Return the URL the speakers send their events to."""
         return f"{self._mass.streams.base_url}{EVENTS_PATH}"
 
-    def speaker(self, player_ip: str, logger: logging.Logger) -> SonosSpeakerUpnp:
-        """
-        Return the UPnP of a speaker.
-
-        :param player_ip: The speaker's IP address.
-        :param logger: The player's logger.
-        """
-        return SonosSpeakerUpnp(self, player_ip, logger)
-
     def close(self) -> None:
         """Stop receiving events; the speakers end their own subscriptions on unload."""
         self._unregister()
@@ -102,10 +93,7 @@ class SonosSpeakerUpnp:
     """
     The UPnP services of one speaker: action calls and the RenderingControl events.
 
-    The speaker counts as followed only once its first event came in. Until then, and after
-    the subscription is lost, its settings have to be polled. After UPNP_TIMEOUT_LIMIT
-    timeouts in a row nothing is sent until reset_timeouts: the player poll loop of all
-    players waits for each request.
+    After UPNP_TIMEOUT_LIMIT timeouts in a row nothing is sent until reset_timeouts.
     """
 
     def __init__(self, upnp: SonosUpnp, player_ip: str, logger: logging.Logger) -> None:
@@ -131,12 +119,12 @@ class SonosSpeakerUpnp:
 
     @property
     def follows(self) -> bool:
-        """Return whether the speaker's RenderingControl events come in."""
+        """Return whether the speaker's events come in: false until the first one arrived."""
         return self._events_service is not None and self._events_live
 
     @property
     def answers(self) -> bool:
-        """Return whether requests are sent: not after UPNP_TIMEOUT_LIMIT timeouts in a row."""
+        """Return whether requests are sent to the speaker."""
         return self._timeouts < UPNP_TIMEOUT_LIMIT
 
     def reset_timeouts(self) -> None:

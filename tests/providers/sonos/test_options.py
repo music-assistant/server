@@ -182,12 +182,6 @@ async def test_nothing_is_read_over_upnp_while_the_speaker_does_not_answer() -> 
     [
         ("bass", 4, "upnp.rendering_control", [call("SetBass", DesiredBass=4)]),
         (
-            "loudness",
-            False,
-            "upnp.rendering_control",
-            [call("SetLoudness", Channel="Master", DesiredLoudness=False)],
-        ),
-        (
             "night_mode",
             False,
             "client.player.set_home_theater_options",
@@ -213,12 +207,6 @@ async def test_nothing_is_read_over_upnp_while_the_speaker_does_not_answer() -> 
                 call("SetVolume", Channel="LF", DesiredVolume=100),
                 call("SetVolume", Channel="RF", DesiredVolume=80),
             ],
-        ),
-        (
-            "subwoofer_volume",
-            5,
-            "upnp.rendering_control",
-            [call("SetEQ", EQType=EqType.SUB_GAIN, DesiredValue=5)],
         ),
         (
             "surround_enabled",

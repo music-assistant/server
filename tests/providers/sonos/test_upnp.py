@@ -148,7 +148,7 @@ async def speaker(monkeypatch: pytest.MonkeyPatch) -> AsyncIterator[FakeSpeaker]
         fake.mass.http_session_no_ssl = session
         fake.mass.streams.base_url = "http://192.168.1.10:8097"
         logger = logging.getLogger("test.sonos.upnp")
-        fake.upnp = SonosUpnp(fake.mass, logger).speaker("127.0.0.1", logger)
+        fake.upnp = SonosSpeakerUpnp(SonosUpnp(fake.mass, logger), "127.0.0.1", logger)
         yield fake
     await server.close()
 
