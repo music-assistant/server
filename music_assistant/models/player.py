@@ -2922,6 +2922,9 @@ class Player(ABC):
     @final
     def __collect_standing_sources(self) -> tuple[AudioSource, ...]:
         """Collect the audio sources plugins bound to the player or report as its inputs."""
+        if self.type == PlayerType.PROTOCOL:
+            # a protocol player publishes its bare source list
+            return ()
         # a device's own inputs may be reported on one of its linked protocol players
         device_player_ids = [
             self.player_id,

@@ -720,9 +720,13 @@ class TestActiveSource:
 
         assert state.active_source == "Spotify"
 
-    @pytest.mark.parametrize(("trusted", "source"), [(True, "qplay"), (False, "queue_x")])
+    @pytest.mark.parametrize(
+        ("trusted", "listed", "source"),
+        [(True, True, "qplay"), (False, True, "queue_x"), (True, False, "queue_x")],
+        ids=["trusted_and_listed", "not_trusted", "not_listed"],
+    )
     def test_listed_source_takes_over_only_on_a_player_that_reports_accurately(
-        self, trusted: bool, source: str
+        self, trusted: bool, listed: bool, source: str
     ) -> None:
         """A source on the player's own list counts for a provider that vouches for it."""
         state = _derive(
@@ -731,7 +735,7 @@ class TestActiveSource:
             own=_own(
                 active_source="qplay",
                 playback_state=PlaybackState.PLAYING,
-                source_list=[PlayerSource(id="qplay", name="QPlay")],
+                source_list=[PlayerSource(id="qplay", name="QPlay")] if listed else [],
             ),
         )
 
@@ -761,6 +765,26 @@ class TestActiveSource:
     def test_last_ma_source_is_kept_when_nothing_else_is_active(self) -> None:
         """The remembered MA source stays the active one on an idle player."""
         assert _derive(active_mass_source="queue_x").active_source == "queue_x"
+
+    @pytest.mark.parametrize(
+        "own",
+        [
+            _own(active_source="spotify", playback_state=PlaybackState.IDLE),
+            _own(
+                active_source=PLAYER_ID,
+                playback_state=PlaybackState.PLAYING,
+                source_list=[PlayerSource(id=PLAYER_ID, name="Native")],
+            ),
+        ],
+        ids=["idle_on_an_external_source", "playing_its_own_listed_queue_source"],
+    )
+    def test_last_ma_source_comes_back_when_a_takeover_plays_nothing(
+        self, own: ProtocolSnapshot
+    ) -> None:
+        """A takeover that is not something the player plays leaves the remembered MA source."""
+        state = _derive(active_mass_source="queue_x", trusts_reported_source=True, own=own)
+
+        assert state.active_source == "queue_x"
 
 
 class TestActiveSourceAudio:
@@ -848,6 +872,7 @@ class TestSourceList:
 
         state = _derive(own=_own(source_list=[own_source]), queues={PLAYER_ID: _queue(items=0)})
 
+        assert [x for x in state.source_list if x.id == PLAYER_ID] == [own_source]
         assert _source(state, PLAYER_ID) is own_source
 
     def test_ordering_source_advertises_its_controls(self) -> None:
@@ -1159,10 +1184,12 @@ class TestGroupMembers:
     def test_protocol_player_keeps_its_members_as_reported(self) -> None:
         """A protocol player groups protocol players, which are not translated."""
         state = _derive(
-            player_type=PlayerType.PROTOCOL, own=_own(group_members=[PLAYER_ID, "airplay_2"])
+            player_type=PlayerType.PROTOCOL,
+            own=_own(group_members=["airplay_3", PLAYER_ID, "airplay_2"]),
         )
 
-        assert state.group_members == [PLAYER_ID, "airplay_2"]
+        # in the order reported, but for the player itself, which leads
+        assert state.group_members == [PLAYER_ID, "airplay_3", "airplay_2"]
 
     def test_group_player_does_not_list_itself(self) -> None:
         """A group player lists its members, of which it is not one."""
@@ -1214,10 +1241,16 @@ class TestCanGroupWith:
 
         assert state.can_group_with == set()
 
-    def test_idle_leader_is_offered(self) -> None:
-        """A player with members that plays nothing can still be grouped."""
-        candidate = _peer("player_2", group_members=["player_2", "x"])
-
+    @pytest.mark.parametrize(
+        "candidate",
+        [
+            _peer("player_2", group_members=["player_2", "x"]),
+            _peer("player_2", playback_state=PlaybackState.PLAYING),
+        ],
+        ids=["idle_leader", "playing_alone"],
+    )
+    def test_candidate_that_leads_nothing_playing_is_offered(self, candidate: PeerSnapshot) -> None:
+        """Only a player that plays to members of its own is taken."""
         state = _derive(can_group_with={"player_2"}, peers={"player_2": candidate})
 
         assert state.can_group_with == {"player_2"}
@@ -1683,6 +1716,16 @@ class TestCurrentMedia:
         assert state.current_media.title == "Theirs"
         assert state.current_media.source_id == "queue_x"
 
+    def test_own_queue_stands_in_for_a_source_that_is_no_queue(self) -> None:
+        """A remembered source without a queue behind it leaves the player's own queue."""
+        state = _derive(
+            active_mass_source="no_queue",
+            queues={PLAYER_ID: _queue(current_item=_queue_item(name="Mine"))},
+        )
+
+        assert state.current_media is not None
+        assert state.current_media.title == "Mine"
+
     def test_own_queue_is_not_shown_while_the_device_reports_another_source(self) -> None:
         """A device on a source of its own shows its own media, not the idle MA queue."""
         own_media = PlayerMedia(uri="spotify:track:1", title="Shout")
@@ -1828,9 +1871,33 @@ class TestMediaPositionAnchor:
         assert state.current_media.elapsed_time == 90
         assert effects.media_position_jumped is False
 
-    def test_mirrored_media_is_never_changed(self) -> None:
-        """The media object of the leader is shared, so a member only reports the jump."""
-        media = PlayerMedia(uri="http://stream", elapsed_time=90, elapsed_time_last_updated=NOW)
+    @staticmethod
+    def _mirroring(media: PlayerMedia, kind: str) -> dict[str, Any]:
+        """Return the inputs of a player that publishes the given media of another player."""
+        owner: dict[str, Any] = {"playback_state": PlaybackState.PLAYING, "current_media": media}
+        if kind == "synced":
+            return {"own": _own(synced_to="leader"), "peers": {"leader": _peer("leader", **owner)}}
+        if kind == "grouped":
+            group = _group(**owner)
+            return {
+                "own": _own(playback_state=PlaybackState.PLAYING),
+                "groups": (group,),
+                "peers": {"group_1": group},
+            }
+        if kind == "protocol_child":
+            return {
+                "player_type": PlayerType.PROTOCOL,
+                "protocol_parent_id": "parent",
+                "own": _own(playback_state=PlaybackState.PLAYING),
+                "peers": {"parent": _peer("parent", **owner)},
+            }
+        app = _app_protocol(current_media=media)
+        return {"linked": (app,), "foreign_app": app}
+
+    @pytest.mark.parametrize("kind", ["synced", "grouped", "protocol_child", "foreign_app"])
+    def test_mirrored_media_keeps_the_anchor_of_its_owner(self, kind: str) -> None:
+        """The media object of another player is shared, so its anchor is never rewritten."""
+        media = PlayerMedia(uri="http://stream", elapsed_time=15, elapsed_time_last_updated=NOW)
         previous = make_player_state(
             PLAYER_ID,
             playback_state=PlaybackState.PLAYING,
@@ -1840,19 +1907,29 @@ class TestMediaPositionAnchor:
         )
 
         state, effects = derive_player_state(
-            make_state_inputs(
-                previous_state=previous,
-                own=_own(synced_to="leader"),
-                peers={
-                    "leader": _peer(
-                        "leader", playback_state=PlaybackState.PLAYING, current_media=media
-                    )
-                },
-            )
+            make_state_inputs(previous_state=previous, **self._mirroring(media, kind))
         )
 
         assert state.current_media is media
-        assert (media.elapsed_time, media.elapsed_time_last_updated) == (90, NOW)
+        # steady playback, which would keep the previous anchor on media of the player itself
+        assert (media.elapsed_time, media.elapsed_time_last_updated) == (15, NOW)
+        assert effects.media_position_jumped is False
+
+    def test_jump_of_mirrored_media_is_reported(self) -> None:
+        """A member reports the seek its leader made."""
+        media = PlayerMedia(uri="http://stream", elapsed_time=90, elapsed_time_last_updated=NOW)
+        previous = make_player_state(
+            PLAYER_ID,
+            playback_state=PlaybackState.PLAYING,
+            current_media=PlayerMedia(
+                uri="http://stream", elapsed_time=10, elapsed_time_last_updated=NOW - 5
+            ),
+        )
+
+        _, effects = derive_player_state(
+            make_state_inputs(previous_state=previous, **self._mirroring(media, "synced"))
+        )
+
         assert effects.media_position_jumped is True
 
 
