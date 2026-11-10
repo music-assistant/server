@@ -3449,12 +3449,9 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
 
         Scans player configs with a protocol_parent_id set and clears parent_ids
         that point to player configs that no longer exist (e.g., deleted universal
-        players). Native players that took over the protocols of another device are
-        released first (see _release_own_domain_protocol_links). A valid parent link
-        also proves the player is a protocol child, so a stale player_type (left
-        behind by an aborted registration) is healed.
+        players). A valid parent link also proves the player is a protocol child,
+        so a stale player_type (left behind by an aborted registration) is healed.
         """
-        self._release_own_domain_protocol_links()
         all_player_configs = self.mass.config.get(CONF_PLAYERS, {})
         for player_id, player_config in all_player_configs.items():
             values = player_config.get("values") or {}

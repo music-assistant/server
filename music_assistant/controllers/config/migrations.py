@@ -29,6 +29,7 @@ from music_assistant.constants import (
     CONF_PROVIDERS,
     CONF_RAUMFELD_ICY_BASIC_MIGRATED,
     CONF_SMART_FADES_MODE,
+    CONF_UNDERLYING_PLAYER_ID,
     CONF_VOLUME_NORMALIZATION,
 )
 from music_assistant.controllers.tasks.constants import TASK_STATE_CONFIG_KEY
@@ -548,6 +549,14 @@ async def migrate(data: dict[str, Any]) -> bool:
     # because BluOS only plays back correctly on the forced content length profile.
     # TODO: remove after 2.12 release
     if _migrate_bluesound_http_profile(data):
+        changed = True
+
+    # Release the protocols of native players that took over another device of their own
+    # protocol domain (e.g. a Chromecast dongle holding the Cast player of a TV), so the
+    # foreign device gets its own player again. Runs before the orphan cleanup below, which
+    # then also drops released protocols that were disabled along with the native player.
+    # TODO: remove after 2.11 release
+    if _migrate_own_domain_protocol_links(data):
         changed = True
 
     # Drop disabled protocol player configs that lost their parent player: the device they
@@ -1182,6 +1191,111 @@ def _migrate_orphaned_disabled_protocol_configs(data: dict[str, Any]) -> bool:
             dsp_configs.pop(player_id, None)
         LOGGER.warning("Removed orphaned player configuration %s", player_id)
     return bool(orphaned)
+
+
+def _migrate_own_domain_protocol_links(data: dict[str, Any]) -> bool:
+    """
+    Release the stored protocols of native players that hold a base protocol of their own domain.
+
+    A native player already is the output of its own provider domain, so such a protocol
+    belongs to another device that was matched through a shared identifier (e.g. a reused IP
+    address), along with that device's other protocols. The stored membership of the native
+    player can't be trusted, so all of it is released; protocols that really belong to it
+    relink by their identifiers when they register. Derived protocols riding on the native
+    player itself (e.g. its Sendspin bridge) are kept. Never raises.
+    """
+    try:
+        all_player_configs = data.get(CONF_PLAYERS, {})
+        if not isinstance(all_player_configs, dict):
+            return False
+        changed = False
+        for parent_id, children in _stored_protocol_children(all_player_configs).items():
+            parent_domain = _player_config_domain(all_player_configs.get(parent_id))
+            if not parent_domain or parent_domain == "universal_player":
+                continue
+            if not any(
+                _player_config_domain(child_cfg) == parent_domain
+                and not _player_config_underlying_id(child_cfg)
+                for child_id in children
+                if isinstance(child_cfg := all_player_configs.get(child_id), dict)
+            ):
+                continue
+            if _release_protocol_children(all_player_configs, parent_id, children):
+                changed = True
+        return changed
+    except Exception:
+        LOGGER.exception("Error while releasing protocol links of native players")
+        return False
+
+
+def _release_protocol_children(
+    all_player_configs: dict[str, Any], parent_id: str, children: set[str]
+) -> bool:
+    """Release the stored protocol children of a parent, except those riding on it."""
+    kept: set[str] = set()
+    released = 0
+    for child_id in sorted(children):
+        child_cfg = all_player_configs.get(child_id)
+        if isinstance(child_cfg, dict) and _player_config_underlying_id(child_cfg) == parent_id:
+            kept.add(child_id)
+            continue
+        child_values = child_cfg.get("values") if isinstance(child_cfg, dict) else None
+        if (
+            isinstance(child_values, dict)
+            and child_values.get(CONF_PROTOCOL_PARENT_ID) == parent_id
+        ):
+            child_values[CONF_PROTOCOL_PARENT_ID] = None
+        released += 1
+    parent_values = all_player_configs[parent_id].get("values")
+    if isinstance(parent_values, dict) and isinstance(
+        stored_ids := parent_values.get(CONF_LINKED_PROTOCOL_IDS), list
+    ):
+        parent_values[CONF_LINKED_PROTOCOL_IDS] = [pid for pid in stored_ids if pid in kept]
+    if released:
+        LOGGER.warning(
+            "Released %d protocol player(s) from %s: it held an output of another device",
+            released,
+            parent_id,
+        )
+    return bool(released)
+
+
+def _stored_protocol_children(all_player_configs: dict[str, Any]) -> dict[str, set[str]]:
+    """Return the stored protocol children per parent id, from both sides of the link."""
+    result: dict[str, set[str]] = {}
+    for player_id, player_cfg in all_player_configs.items():
+        if not isinstance(player_cfg, dict):
+            continue
+        player_values = player_cfg.get("values")
+        if not isinstance(player_values, dict):
+            continue
+        if isinstance(cached_ids := player_values.get(CONF_LINKED_PROTOCOL_IDS), list):
+            for protocol_id in cached_ids:
+                if isinstance(protocol_id, str) and protocol_id != player_id:
+                    result.setdefault(player_id, set()).add(protocol_id)
+        parent_id = player_values.get(CONF_PROTOCOL_PARENT_ID)
+        if isinstance(parent_id, str) and parent_id != player_id:
+            if isinstance(all_player_configs.get(parent_id), dict):
+                result.setdefault(parent_id, set()).add(player_id)
+    return result
+
+
+def _player_config_domain(player_cfg: object) -> str | None:
+    """Return the provider domain of a stored player config, if known."""
+    if not isinstance(player_cfg, dict) or not isinstance(
+        provider := player_cfg.get("provider"), str
+    ):
+        return None
+    return provider.split("--", 1)[0] or None
+
+
+def _player_config_underlying_id(player_cfg: dict[str, Any]) -> str | None:
+    """Return the stored underlying player id of a derived protocol player config, if any."""
+    player_values = player_cfg.get("values")
+    if not isinstance(player_values, dict):
+        return None
+    underlying_id = player_values.get(CONF_UNDERLYING_PLAYER_ID)
+    return underlying_id if isinstance(underlying_id, str) and underlying_id else None
 
 
 def _migrate_msx_bridge_settings(data: dict[str, Any]) -> bool:

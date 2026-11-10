@@ -5,6 +5,7 @@ from __future__ import annotations
 from copy import deepcopy
 from typing import TYPE_CHECKING, Any
 
+import pytest
 from music_assistant_models.errors import InvalidDataError
 
 from music_assistant.constants import (
@@ -23,6 +24,7 @@ from music_assistant.controllers.config.migrations import (
     _migrate_emby_album_artists_heal,
     _migrate_nicovideo_drop_mail_login,
     _migrate_orphaned_disabled_protocol_configs,
+    _migrate_own_domain_protocol_links,
     _migrate_player_icons,
     _migrate_player_setup_data,
     _migrate_raumfeld_icy_basic,
@@ -34,8 +36,6 @@ from music_assistant.controllers.config.migrations import (
 
 if TYPE_CHECKING:
     from pathlib import Path
-
-    import pytest
 
 
 def _fake_encrypt(value: str) -> str:
@@ -1319,3 +1319,143 @@ def test_migrate_provider_setup_data_moves_opensubsonic_legacy_auth() -> None:
     assert second["values"] == {}
     assert second["setup_data"]["enable_legacy_auth"] is True
     assert migrate_provider_setup_data(data, _fake_encrypt) is False
+
+
+def _own_domain_takeover_data() -> dict[str, Any]:
+    """Return settings of a Chromecast dongle that took over a TV's protocols (support#6998)."""
+    return {
+        "players": {
+            "cast_dongle": {
+                "provider": "chromecast",
+                "player_type": "player",
+                "values": {
+                    "linked_protocol_ids": ["spb_dongle", "dlna_old", "ap_tv", "cast_tv"],
+                },
+            },
+            "spb_dongle": {
+                "provider": "sendspin",
+                "player_type": "protocol",
+                "values": {
+                    "protocol_parent_id": "cast_dongle",
+                    "underlying_player_id": "cast_dongle",
+                },
+            },
+            "ap_tv": {
+                "provider": "airplay",
+                "player_type": "protocol",
+                "values": {"protocol_parent_id": "cast_dongle"},
+            },
+            "spb_ap_tv": {
+                "provider": "sendspin",
+                "player_type": "protocol",
+                "values": {"protocol_parent_id": "cast_dongle", "underlying_player_id": "ap_tv"},
+            },
+            "cast_tv": {
+                "provider": "chromecast",
+                "player_type": "protocol",
+                "values": {"protocol_parent_id": "cast_dongle"},
+            },
+            "dlna_tv": {
+                "provider": "dlna--abc123",
+                "player_type": "protocol",
+                "values": {"protocol_parent_id": "cast_dongle"},
+            },
+        }
+    }
+
+
+def test_migrate_own_domain_protocol_links_releases_the_foreign_device() -> None:
+    """The TV's protocols are released, the dongle keeps the bridge riding on itself."""
+    data = _own_domain_takeover_data()
+
+    assert _migrate_own_domain_protocol_links(data) is True
+
+    players = data["players"]
+    assert players["cast_dongle"]["values"]["linked_protocol_ids"] == ["spb_dongle"]
+    assert players["spb_dongle"]["values"]["protocol_parent_id"] == "cast_dongle"
+    for child_id in ("ap_tv", "spb_ap_tv", "cast_tv", "dlna_tv"):
+        assert players[child_id]["values"]["protocol_parent_id"] is None, child_id
+    # the protocol configs themselves (and their settings) are kept
+    assert players["ap_tv"]["player_type"] == "protocol"
+
+
+def test_migrate_own_domain_protocol_links_is_idempotent() -> None:
+    """A second run finds nothing left to release."""
+    data = _own_domain_takeover_data()
+    _migrate_own_domain_protocol_links(data)
+    migrated = deepcopy(data)
+
+    assert _migrate_own_domain_protocol_links(data) is False
+    assert data == migrated
+
+
+def test_migrate_own_domain_protocol_links_detects_parent_side_only() -> None:
+    """A same-domain protocol listed only on the parent's side still marks it."""
+    data = _own_domain_takeover_data()
+    data["players"]["cast_tv"]["values"]["protocol_parent_id"] = None
+
+    assert _migrate_own_domain_protocol_links(data) is True
+    assert data["players"]["ap_tv"]["values"]["protocol_parent_id"] is None
+    assert data["players"]["cast_dongle"]["values"]["linked_protocol_ids"] == ["spb_dongle"]
+
+
+def test_migrate_own_domain_protocol_links_keeps_healthy_parents() -> None:
+    """Native players with other domains only, and universal players, are left alone."""
+    data: dict[str, Any] = {
+        "players": {
+            "sonos_1": {
+                "provider": "sonos",
+                "values": {"linked_protocol_ids": ["ap_1", "spb_1"]},
+            },
+            "ap_1": {
+                "provider": "airplay",
+                "player_type": "protocol",
+                "values": {"protocol_parent_id": "sonos_1"},
+            },
+            "spb_1": {
+                "provider": "sendspin",
+                "player_type": "protocol",
+                "values": {"protocol_parent_id": "sonos_1", "underlying_player_id": "ap_1"},
+            },
+            "up_1": {
+                "provider": "universal_player",
+                "values": {"linked_protocol_ids": ["cast_1"]},
+            },
+            "cast_1": {
+                "provider": "chromecast",
+                "player_type": "protocol",
+                "values": {"protocol_parent_id": "up_1"},
+            },
+        }
+    }
+    original = deepcopy(data)
+
+    assert _migrate_own_domain_protocol_links(data) is False
+    assert data == original
+
+
+@pytest.mark.parametrize(
+    "players",
+    [
+        None,
+        {"cast_dongle": None},
+        {"cast_dongle": {"provider": "chromecast", "values": None}},
+        {"cast_dongle": {"provider": "chromecast", "values": {"linked_protocol_ids": "x"}}},
+        {"cast_dongle": {"provider": 5, "values": {"linked_protocol_ids": [None, 3]}}},
+        {"cast_tv": {"provider": None, "values": {"protocol_parent_id": "gone"}}},
+    ],
+)
+def test_migrate_own_domain_protocol_links_survives_malformed_data(players: Any) -> None:
+    """Half-written stored values are skipped instead of raising."""
+    assert _migrate_own_domain_protocol_links({"players": players}) is False
+
+
+async def test_migrate_drops_released_disabled_protocols() -> None:
+    """A released protocol that was disabled with the dongle is cleaned up as orphaned."""
+    data = _own_domain_takeover_data()
+    data["players"]["cast_tv"]["enabled"] = False
+
+    assert await migrate(data) is True
+
+    assert "cast_tv" not in data["players"]
+    assert data["players"]["ap_tv"]["values"]["protocol_parent_id"] is None
