@@ -63,9 +63,6 @@ class ProviderConfigMixin:
     if TYPE_CHECKING:
         mass: MusicAssistant
 
-        @property
-        def onboard_done(self) -> bool: ...  # noqa: D102
-
         def get(self, key: str, default: Any = None) -> Any: ...  # noqa: D102
 
         def set(self, key: str, value: Any, immediate: bool = False) -> None: ...  # noqa: D102
@@ -77,8 +74,6 @@ class ProviderConfigMixin:
         def encrypt_string(self, str_value: str) -> str: ...  # noqa: D102
 
         def decrypt_string(self, encrypted_str: str) -> str: ...  # noqa: D102
-
-        async def set_onboard_complete(self) -> None: ...  # noqa: D102
 
     @api_command("config/providers", required_scope=Scope.CONFIG_PROVIDERS_READ)
     async def get_provider_configs(
@@ -631,9 +626,6 @@ class ProviderConfigMixin:
             # loading failed, remove config
             self.remove(conf_key)
             raise
-        if not self.onboard_done:
-            # mark onboard as complete as soon as the first provider is added
-            await self.set_onboard_complete()
         if manifest.type == ProviderType.MUSIC:
             # correct any multi-instance provider mappings
             self.mass.music.queue_provider_mapping_correction_task()
