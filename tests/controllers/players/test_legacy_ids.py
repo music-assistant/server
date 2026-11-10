@@ -31,6 +31,9 @@ def _controller(stored_configs: Any) -> PlayerController:
     mass.config.get = MagicMock(
         side_effect=lambda key, default=None: stored_configs if key == CONF_PLAYERS else default
     )
+    mass.config.remove = MagicMock(
+        side_effect=lambda key: stored_configs.pop(key.removeprefix(f"{CONF_PLAYERS}/"), None)
+    )
     controller = PlayerController(mass)
     mass.players = controller
     controller._build_legacy_id_index()
@@ -108,16 +111,21 @@ def test_registered_player_keeps_its_own_id() -> None:
 
 def test_legacy_ids_of_a_deleted_player_no_longer_resolve() -> None:
     """Deleting the config of a player ends the legacy ids it held."""
-    stored_configs = {KITCHEN: _stored("old_kitchen"), BEDROOM: _stored("old_bedroom")}
-    controller = _controller(stored_configs)
-    controller.mass.config.remove = MagicMock(  # type: ignore[method-assign]
-        side_effect=lambda key: stored_configs.pop(key.removeprefix(f"{CONF_PLAYERS}/"), None)
-    )
+    controller = _controller({KITCHEN: _stored("old_kitchen"), BEDROOM: _stored("old_bedroom")})
 
     controller.delete_player_config(KITCHEN)
 
     assert controller.resolve_player_id("old_kitchen") == "old_kitchen"
     assert controller.resolve_player_id("old_bedroom") == BEDROOM
+
+
+def test_id_of_a_deleted_player_becomes_a_legacy_id_of_the_player_that_lists_it() -> None:
+    """A player that lists the id of another one answers to it once that player is deleted."""
+    controller = _controller({KITCHEN: _stored(BEDROOM), BEDROOM: _stored()})
+
+    controller.delete_player_config(BEDROOM)
+
+    assert controller.resolve_player_id(BEDROOM) == KITCHEN
 
 
 @pytest.mark.parametrize(
