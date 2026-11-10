@@ -145,6 +145,7 @@ def _provider_mapping(
     *,
     available: bool = True,
     is_unique: bool | None = None,
+    audio_format: AudioFormat | None = None,
 ) -> ProviderMapping:
     """Create a ProviderMapping for the given item."""
     return ProviderMapping(
@@ -153,6 +154,7 @@ def _provider_mapping(
         provider_instance=provider.instance_id,
         available=available,
         is_unique=is_unique,
+        audio_format=audio_format or AudioFormat(),
     )
 
 
@@ -169,6 +171,20 @@ def _track_available(
     if media.rights.sub is None:
         return False
     return bool(media.rights.sub.available)
+
+
+def _track_audio_format(
+    provider: DeezerProvider,
+    track: TrackFields | SearchSearchResultsTracksEdgesNode | GetTrackTrack,
+) -> AudioFormat:
+    """Return the best format the track has among those the account asks for."""
+    if track.media is None:
+        return AudioFormat()
+    sizes = track.media.estimated_sizes.model_dump(by_alias=True)
+    for fmt in provider.gw_client.formats:
+        if sizes.get(fmt["format"]):
+            return parse_audio_format(fmt["format"])
+    return AudioFormat()
 
 
 def parse_track(
@@ -246,7 +262,12 @@ def parse_track(
         artists=artists,
         album=album,
         provider_mappings={
-            _provider_mapping(provider, track.id, available=_track_available(track))
+            _provider_mapping(
+                provider,
+                track.id,
+                available=_track_available(track),
+                audio_format=_track_audio_format(provider, track),
+            )
         },
         metadata=_parse_track_metadata(provider, track),
         track_number=track_number,
@@ -971,8 +992,10 @@ def parse_date(date_value: str | None) -> datetime | None:
 
 
 def parse_audio_format(deezer_format: str) -> AudioFormat:
-    """Return the audio format of a Deezer format name, with the bit rate an MP3 name carries."""
+    """Return the audio format a Deezer format name stands for."""
     return AudioFormat(
         content_type=ContentType.try_parse(deezer_format.split("_", maxsplit=1)[0]),
+        # the sample rate of a FLAC_24 file is only known from the file itself
+        bit_depth=24 if deezer_format == "FLAC_24" else 16,
         bit_rate={"MP3_320": 320, "MP3_128": 128}.get(deezer_format),
     )

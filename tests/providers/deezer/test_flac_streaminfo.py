@@ -90,16 +90,20 @@ async def test_cached_format_skips_the_probe(monkeypatch: pytest.MonkeyPatch) ->
     provider.mass.http_session.get.assert_not_called()
 
 
+@pytest.mark.parametrize(("track_format", "bit_depth"), [("FLAC", 16), ("FLAC_24", 24)])
 @pytest.mark.parametrize("first_chunk", [TimeoutError(), b"ID3" * 700])
 async def test_failed_probe_keeps_default_format(
-    monkeypatch: pytest.MonkeyPatch, first_chunk: bytes | Exception
+    monkeypatch: pytest.MonkeyPatch,
+    first_chunk: bytes | Exception,
+    track_format: str,
+    bit_depth: int,
 ) -> None:
-    """A probe that fails keeps the default format and caches nothing."""
-    streaming, provider = _streaming(monkeypatch, "FLAC", first_chunk)
+    """A probe that fails keeps the format the name gives and caches nothing."""
+    streaming, provider = _streaming(monkeypatch, track_format, first_chunk)
 
     details = await streaming.get_stream_details("1", MediaType.TRACK)
 
-    assert (details.audio_format.sample_rate, details.audio_format.bit_depth) == (44100, 16)
+    assert (details.audio_format.sample_rate, details.audio_format.bit_depth) == (44100, bit_depth)
     provider.mass.cache.set.assert_not_called()
 
 
