@@ -132,21 +132,15 @@ async def test_protocol_only_player_names_the_provider_of_its_protocol(scenario:
     assert [player.provider for player in scenario.players_carrying(kitchen)] == ["airplay"]
 
 
-@pytest.mark.xfail(
-    strict=True,
-    raises=(AssertionError, AttributeError),
-    reason="phase 2 (#416): a zone identifier tells the zones of one chassis apart",
-)
 async def test_zones_of_one_chassis_are_one_player_each(scenario: Scenario) -> None:
     """
     The zones of a multi-zone device behind one MAC and IP are one player each.
 
-    The audio protocols of a zone land on that zone's player. The zone identifier type does
-    not exist yet.
+    The audio protocols of a zone land on that zone's player.
     """
     bluesound = await scenario.add_provider("bluesound")
     airplay = await scenario.add_provider("airplay")
-    zone = IdentifierType.ZONE  # type: ignore[attr-defined]
+    zone = IdentifierType.ZONE
     zone_1 = bluesound.protocol("bluesound_zone_1", "Zone 1", identifiers={**CHASSIS, zone: "1"})
     zone_2 = bluesound.protocol("bluesound_zone_2", "Zone 2", identifiers={**CHASSIS, zone: "2"})
     airplay_1 = airplay.protocol(

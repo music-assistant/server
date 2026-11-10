@@ -12,6 +12,7 @@ SERIAL = IdentifierType.SERIAL_NUMBER
 UUID = IdentifierType.UUID
 CAST_UUID = IdentifierType.CAST_UUID
 AIRPLAY_ID = IdentifierType.AIRPLAY_ID
+ZONE = IdentifierType.ZONE
 IP = IdentifierType.IP_ADDRESS
 
 HARDWARE_MAC = "54:78:C9:E6:0D:A0"
@@ -223,6 +224,38 @@ def test_differing_airplay_ids_veto_the_shared_host(other_domains: str | tuple[s
     assert not same_device(
         identity("airplay", {MAC: HARDWARE_MAC, IP: HOST, AIRPLAY_ID: "ap-kitchen"}),
         identity(other_domains, {MAC: HARDWARE_MAC, IP: HOST, AIRPLAY_ID: "ap-den"}),
+    )
+
+
+@pytest.mark.parametrize("output_domain", ["airplay", "sendspin", "bluesound"])
+def test_differing_zones_veto_the_shared_chassis(output_domain: str) -> None:
+    """
+    The zones of a multi-zone amplifier (one MAC address and IP) are one player each.
+
+    Reported as music-assistant/support#6847: the outputs of one zone landed on another
+    zone of the chassis. The veto holds against an output of another protocol as well as
+    against another zone of the same provider.
+    """
+    zone_1 = identity("bluesound", {MAC: HARDWARE_MAC, IP: HOST, ZONE: "1"}, native=True)
+    assert not same_device(
+        zone_1, identity(output_domain, {MAC: HARDWARE_MAC, IP: HOST, ZONE: "2"})
+    )
+    assert same_device(zone_1, identity(output_domain, {MAC: HARDWARE_MAC, IP: HOST, ZONE: "1"}))
+
+
+def test_shared_zone_is_no_match_on_its_own() -> None:
+    """The first zone of one chassis is not the first zone of another."""
+    assert not same_device(
+        identity("bluesound", {MAC: HARDWARE_MAC, ZONE: "1"}, native=True),
+        identity("airplay", {MAC: OTHER_MAC, ZONE: "1"}),
+    )
+
+
+def test_a_zone_only_one_side_reports_never_vetoes() -> None:
+    """An output that does not know its zone still lands on the chassis it shares."""
+    assert same_device(
+        identity("bluesound", {MAC: HARDWARE_MAC, IP: HOST, ZONE: "2"}, native=True),
+        identity("airplay", {MAC: HARDWARE_MAC, IP: HOST}),
     )
 
 

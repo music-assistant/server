@@ -86,6 +86,8 @@ class _Rule(NamedTuple):
 # A UUID or serial number only vetoes within one domain: a Chromecast reports its cast uuid
 # as UUID, DLNA the UDN, MusicCast and Bose their device id, so one device has several.
 # An AirPlay or Cast id is unique per receiver, whichever protocol reports it.
+# A zone tells the outputs of one chassis apart, which share its MAC address and IP. It
+# identifies nothing on its own: every chassis has a first zone.
 # A MAC address never vetoes: a device has one per network interface, and some protocols
 # report a variant of it.
 # An IP address is no row: it ties two sides only as the last resort, see identifiers_match.
@@ -95,6 +97,7 @@ _RULES: dict[IdentifierType, _Rule] = {
     IdentifierType.UUID: _Rule(_Veto.SAME_DOMAIN, identifies=True),
     IdentifierType.CAST_UUID: _Rule(_Veto.ANY_DOMAIN, identifies=True),
     IdentifierType.AIRPLAY_ID: _Rule(_Veto.ANY_DOMAIN, identifies=True),
+    IdentifierType.ZONE: _Rule(_Veto.ANY_DOMAIN, identifies=False),
 }
 
 
@@ -109,7 +112,7 @@ def _comparable_values(identity: DeviceIdentity) -> defaultdict[IdentifierType, 
             # a protocol may report the hardware MAC address with the
             # locally-administered bit set
             values[identifier_type].add(normalize_mac_for_matching(value))
-        elif identifier_type == IdentifierType.IP_ADDRESS:
+        elif identifier_type in (IdentifierType.IP_ADDRESS, IdentifierType.ZONE):
             values[identifier_type].add(value)
         else:
             values[identifier_type].add(value.lower().replace(":", "").replace("-", ""))

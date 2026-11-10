@@ -219,11 +219,13 @@ The rules are one table. Two sides *differ* in a type when both report it and sh
 | `UUID` | when both sides share a protocol domain | yes |
 | `CAST_UUID` | always | yes |
 | `AIRPLAY_ID` | always | yes |
+| `ZONE` | always | no |
 | `IP_ADDRESS` | never | as a last resort |
 
-Every veto is checked before any shared value may match, so two sides that differ in their AirPlay id never match, even when they share an IP and MAC address.
+Every veto is checked before any shared value may match, so two sides that differ in their AirPlay id or zone never match, even when they share an IP and MAC address.
 
 - A UUID or serial number only vetoes within one domain: a Chromecast reports its cast uuid as UUID, DLNA its UDN, MusicCast and Bose their device id, so one device has several of them.
+- A zone tells the outputs of one chassis apart, which share its MAC address and IP. It identifies nothing on its own, as every chassis has a first zone.
 - A MAC address never vetoes, as a device has one per network interface. Null and broadcast addresses identify nothing, and the locally-administered bit is ignored because some protocols report the hardware address with that bit set.
 - A shared IP address alone is the last resort. It never ties two native devices that each have a hardware MAC address, as one host can carry several of them.
 
