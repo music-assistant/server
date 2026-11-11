@@ -1676,6 +1676,11 @@ class Player:
         own = self._own_protocol
         return own is not None and feature in own.supported_features
 
+    def _own_controls(self, feature: PlayerFeature) -> bool:
+        """Return whether the own protocol of the player has a feature and can be reached."""
+        own = self._own_protocol
+        return own is not None and own.available and feature in own.supported_features
+
     def _stored_protocol_name(self) -> str | None:
         """Return the name a protocol of the player was last seen with, its own protocol first."""
         names: list[tuple[bool, int, str, str]] = []
@@ -1805,7 +1810,8 @@ class Player:
         Resolve the control a volume or mute command goes to right now.
 
         Without a selection in the config that is the protocol rendering the audio,
-        else the native protocol, else any available protocol with the feature.
+        else the native protocol while it can be reached, else any available protocol
+        with the feature.
 
         :param feature: The feature the control has to support.
         :param conf_key: Config key holding the control selection.
@@ -1832,7 +1838,7 @@ class Player:
         ):
             # the protocol that renders the audio owns its level
             return protocol.protocol_id
-        if self._own_supports(feature):
+        if self._own_controls(feature):
             return PLAYER_CONTROL_NATIVE
         if protocol := self._get_audio_protocol_for_feature(feature):
             return protocol.protocol_id
@@ -1896,7 +1902,7 @@ class Player:
         # Deliberately no fallback to a sibling audio protocol: the caller named the output
         # that carries the audio, so anything but the device's own control is by definition
         # not in that signal path.
-        if self._own_supports(feature):
+        if self._own_controls(feature):
             return PLAYER_CONTROL_NATIVE
         return PLAYER_CONTROL_NONE
 

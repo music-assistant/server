@@ -12,7 +12,7 @@ from music_assistant_models.enums import (
     PlayerType,
 )
 
-from music_assistant.constants import CONF_OUTPUT_CHANNELS
+from music_assistant.constants import CONF_OUTPUT_CHANNELS, CONF_VOLUME_CONTROL
 from tests.common import grouping_player_controller
 from tests.scenarios.harness import DEFAULT_FEATURES, FakeProtocol, Scenario
 
@@ -117,6 +117,85 @@ async def test_native_protocol_owns_the_volume_while_nothing_else_renders(
 
     assert native.commands[-1] == ("volume_set", 25)
     assert "volume_set" not in _names(audio)
+
+
+async def test_native_protocol_that_can_not_be_reached_leaves_the_controls_to_the_others(
+    scenario: Scenario,
+) -> None:
+    """While its native protocol is attached but unreachable, the player is controlled through AirPlay."""
+    player_id, native, audio = await _native_and_airplay(
+        scenario,
+        volume_level=30,
+        powered=True,
+        supported_features={*DEFAULT_FEATURES, PlayerFeature.POWER},
+    )
+
+    await scenario.report(native, available=False)
+
+    state = scenario.player(player_id)
+    assert state is not None
+    assert state.available
+    assert (state.volume_control, state.mute_control) == ("ap_kitchen", "ap_kitchen")
+    assert state.volume_level == 80
+    # powering on a device that can not be reached is how its own protocol wakes it
+    assert state.power_control == "native"
+    native.commands.clear()
+
+    await scenario.mass.players.cmd_volume_set(player_id, 44)
+    await scenario.mass.players.cmd_volume_mute(player_id, True)
+    await scenario.idle()
+
+    assert native.commands == []
+    assert {("volume_set", 44), ("volume_mute", True)} <= set(audio.commands)
+
+    # a control that is stored as the choice of the user stays where it is
+    player = scenario.mass.players.get_player(player_id)
+    assert player is not None
+    scenario.mass.config.set_player_value(player_id, CONF_VOLUME_CONTROL, "native")
+    player.update_state(force_update=True)
+
+    state = scenario.player(player_id)
+    assert state is not None
+    assert state.volume_control == "native"
+
+    # back in reach, the native protocol owns the controls again
+    scenario.mass.config.set_player_value(player_id, CONF_VOLUME_CONTROL, None)
+    await scenario.report(native, available=True)
+
+    state = scenario.player(player_id)
+    assert state is not None
+    assert (state.volume_control, state.mute_control, state.power_control) == (
+        "native",
+        "native",
+        "native",
+    )
+
+
+async def test_output_without_a_volume_of_its_own_gets_none_while_the_native_is_unreachable(
+    scenario: Scenario,
+) -> None:
+    """The level of an output that has no volume goes nowhere while the native can not be reached."""
+    sonos = await scenario.add_provider("sonos")
+    airplay = await scenario.add_provider("airplay")
+    native = sonos.protocol("RINCON_KITCHEN", "Kitchen", identifiers=KITCHEN, volume_level=30)
+    audio = airplay.protocol(
+        "ap_kitchen",
+        "Kitchen",
+        role="audio",
+        identifiers=KITCHEN,
+        supported_features={PlayerFeature.PLAY_MEDIA, PlayerFeature.PAUSE},
+    )
+    await scenario.attach(native)
+    await scenario.attach(audio)
+    await scenario.idle()
+    player = scenario.mass.players.get_player(scenario.single_player(native, audio).player_id)
+    assert player is not None
+    assert player.volume_control_for_output("ap_kitchen") == "native"
+
+    await scenario.report(native, available=False)
+
+    assert player.volume_control_for_output("ap_kitchen") == "none"
+    assert player.mute_control_for_output("ap_kitchen") == "none"
 
 
 async def test_detach_of_the_idle_native_leaves_the_playing_output_alone(
