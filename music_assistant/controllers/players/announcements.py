@@ -54,7 +54,8 @@ from music_assistant.helpers.tts import (
     resolve_tts_stream_path,
 )
 from music_assistant.helpers.util import TaskManager, validate_announcement_chime_url
-from music_assistant.models.player import AnnouncementFeature, Player
+from music_assistant.models.player import Player
+from music_assistant.models.player_protocol import AnnouncementFeature, PlayerProtocol
 
 from .constants import PlayerLockPurpose, SwitchedOffAction
 from .helpers import AnnounceData, handle_player_command
@@ -80,7 +81,7 @@ class AnnouncementsMixin:
     Handles:
     - Resolving the pre-announce chime and announcement volume from configuration
     - Forwarding a group announcement to its individual members, when they can start it together
-    - Native announcement support (on the player itself or a linked protocol)
+    - Native announcement support (on the own protocol of a player or an audio protocol)
     - The fallback implementation for players without native support
 
     This mixin expects to be mixed with a class that provides:
@@ -132,7 +133,7 @@ class AnnouncementsMixin:
             player: Player,
             required_feature: PlayerFeature,
             require_active: bool = False,
-        ) -> Player | None: ...
+        ) -> PlayerProtocol | None: ...
 
         async def _wait_for_playback_state(
             self,
@@ -410,22 +411,19 @@ class AnnouncementsMixin:
             announce_player = await self._resolve_ready_announce_player(
                 player, render, url, volume_level
             )
-            native_announce_support = announce_player is not None
-            if announce_player is None:
-                if native_only:
-                    # the member was judged on the state it had before its own lock was
-                    # taken, so a native route it lost meanwhile is not made up for here
-                    self.logger.warning(
-                        "Announcement to player %s - the player no longer announces "
-                        "natively, skipping it",
-                        player.state.name,
-                    )
-                    return
-                announce_player = player
+            if announce_player is None and native_only:
+                # the member was judged on the state it had before its own lock was
+                # taken, so a native route it lost meanwhile is not made up for here
+                self.logger.warning(
+                    "Announcement to player %s - the player no longer announces "
+                    "natively, skipping it",
+                    player.state.name,
+                )
+                return
             # create a PlayerMedia object for the announcement so
             # we can send a regular play-media call downstream
             announce_data["announce_player_id"] = (
-                announce_player.player_id if native_announce_support else None
+                announce_player.protocol_id if announce_player else None
             )
             announcement = PlayerMedia(
                 uri=self.mass.streams.get_announcement_url(player.player_id),
@@ -433,8 +431,8 @@ class AnnouncementsMixin:
                 title="Announcement",
                 custom_data=dict(announce_data),
             )
-            # handle native announce support (player or linked protocol)
-            if native_announce_support:
+            # handle native announce support (the own protocol or an audio protocol)
+            if announce_player is not None:
                 await self._play_native_announcement(
                     player, announce_player, announcement, volume_level
                 )
@@ -467,7 +465,7 @@ class AnnouncementsMixin:
             await self._run_announcement(member, announce_data, volume_level, native_only=True)
 
     def _native_route_ignores_wanted_volume(
-        self, player: Player, announce_player: Player, volume_level: int | None
+        self, player: Player, announce_player: PlayerProtocol, volume_level: int | None
     ) -> bool:
         """
         Return True if the builtin path should apply a requested volume the native route drops.
@@ -477,7 +475,7 @@ class AnnouncementsMixin:
         restored anyway.
 
         :param player: The player the announcement is played on.
-        :param announce_player: The player (or linked protocol) that announces natively.
+        :param announce_player: The protocol of the player that announces natively.
         :param volume_level: Optional volume level override for the announcement.
         """
         if AnnouncementFeature.SUPPORTS_VOLUME in announce_player.announcement_features:
@@ -489,21 +487,22 @@ class AnnouncementsMixin:
             and player.state.volume_level is not None
         )
 
-    def _resolve_announce_player(self, player: Player) -> Player | None:
+    def _resolve_announce_player(self, player: Player) -> PlayerProtocol | None:
         """
-        Return the player (or linked protocol) that plays an announcement natively.
+        Return the protocol of a player that plays an announcement natively.
 
         Returns None when nothing in the chain announces natively, so the caller has to
         fall back to the default implementation.
 
         :param player: The player the announcement is played on.
         """
-        if PlayerFeature.PLAY_ANNOUNCEMENT in player.supported_features:
+        own = player.own_protocol
+        if own is not None and PlayerFeature.PLAY_ANNOUNCEMENT in own.supported_features:
             # The device's own announcement handler is built for exactly this and
             # overlays the clip on whatever the speaker is playing - including the
-            # stream a linked protocol renders into it (e.g. Sonos audioClip while
-            # the Sonos plays through its AirPlay child), so it always wins.
-            return player
+            # stream an audio protocol renders into it (e.g. Sonos audioClip while
+            # the Sonos plays through its AirPlay protocol), so it always wins.
+            return own
         if announce_player := self._get_control_target(
             player,
             required_feature=PlayerFeature.PLAY_ANNOUNCEMENT,
@@ -515,9 +514,9 @@ class AnnouncementsMixin:
             # second mechanism firing beside the playback.
             return announce_player
         if player.state.playback_state != PlaybackState.PLAYING:
-            # An idle player may announce through any linked protocol. A
+            # An idle player may announce through any audio protocol. A
             # PLAYING player deliberately gets no such fallback: routing to
-            # an idle linked protocol (e.g. the AirPlay child of a WiiM
+            # an idle audio protocol (e.g. the AirPlay protocol of a WiiM
             # playing natively) would seize the device from the active
             # output, with nothing restoring that playback afterwards.
             # The pick is deliberately not published as the active output
@@ -533,9 +532,9 @@ class AnnouncementsMixin:
 
     async def _resolve_ready_announce_player(
         self, player: Player, render: AnnouncementRender, url: str, volume_level: int | None
-    ) -> Player | None:
+    ) -> PlayerProtocol | None:
         """
-        Return the player that plays the announcement natively, once its audio is ready.
+        Return the protocol that plays the announcement natively, once its audio is ready.
 
         Returns None when nothing in the chain announces natively (any more), so the
         caller has to fall back to the default implementation.
@@ -605,7 +604,7 @@ class AnnouncementsMixin:
     async def _play_native_announcement(
         self,
         player: Player,
-        announce_player: Player,
+        announce_player: PlayerProtocol,
         announcement: PlayerMedia,
         volume_level: int | None,
     ) -> None:
@@ -613,7 +612,7 @@ class AnnouncementsMixin:
         Hand an announcement to a player that plays it natively.
 
         :param player: The player the announcement is played on.
-        :param announce_player: The player (or linked protocol) that plays the announcement.
+        :param announce_player: The protocol of the player that plays the announcement.
         :param announcement: The announcement to play.
         :param volume_level: Optional volume level override for the announcement.
         """
@@ -699,9 +698,13 @@ class AnnouncementsMixin:
         # announcement holds no user content, so there is nothing to restore for it.
         # The raw media attribute is read here (instead of state.current_media, which
         # reports the active queue item) since it tells what the device is playing.
+        device_media = (
+            output_protocol.current_media
+            if (output_protocol := player.resolve_output_protocol())
+            else None
+        )
         restore_playback = prev_state == PlaybackState.PLAYING and not (
-            player.current_media is not None
-            and player.current_media.media_type == MediaType.ANNOUNCEMENT
+            device_media is not None and device_media.media_type == MediaType.ANNOUNCEMENT
         )
         # filled while the players are unmuted and the temporary volume is applied below
         prev_volumes: dict[str, int] = {}
@@ -1010,24 +1013,24 @@ class AnnouncementsMixin:
         )
         await self._handle_cmd_volume_set(volume_player.player_id, announcement_volume)
 
-    def _output_owns_volume(self, player: Player, announce_player: Player) -> bool:
+    def _output_owns_volume(self, player: Player, announce_player: PlayerProtocol) -> bool:
         """
         Return True if the announcing output can apply the announcement volume itself.
 
         :param player: The player the announcement is played on.
-        :param announce_player: The player (or linked protocol) that plays the announcement.
+        :param announce_player: The protocol of the player that plays the announcement.
         """
-        volume_control = player.volume_control_for_output(announce_player.player_id)
+        volume_control = player.volume_control_for_output(announce_player.protocol_id)
         if volume_control == PLAYER_CONTROL_NATIVE:
             # A native volume lives on the player itself, so only its own output can
-            # apply it: a linked protocol rendering the audio has no way to reach it.
-            return announce_player.player_id == player.player_id
-        if volume_control == announce_player.player_id:
+            # apply it: an audio protocol rendering the audio has no way to reach it.
+            return announce_player is player.own_protocol
+        if volume_control == announce_player.protocol_id:
             # the volume lives on the device the announcing output talks to
             return True
-        # a bridge player riding on the announcing output forwards its volume to it
-        if control_player := self.get_player(volume_control):
-            return control_player.underlying_player_id == announce_player.player_id
+        # a bridge protocol riding on the announcing output forwards its volume to it
+        if control_protocol := player.protocols.get(volume_control):
+            return control_protocol.underlying_protocol_id == announce_player.protocol_id
         return False
 
     async def _set_announcement_volume(

@@ -2,15 +2,16 @@
 MusicAssistant PlayerController.
 
 Handles all logic to control supported players,
-which are provided by Player Providers.
+whose devices are provided by Player Providers.
 
-Note that the PlayerController has a concept of a 'player' and a 'playerstate'.
-The Player is the actual object that is provided by the provider,
-which incorporates the (unaltered) state of the player (e.g. volume, state, etc)
-and functions for controlling the player (e.g. play, pause, etc).
+Note that the PlayerController has a concept of a 'player', a 'protocol' and a 'playerstate'.
+The Player is what users and clients see, one per device, and is owned by this controller.
+A protocol is the object a provider attaches to a player for its device: it
+incorporates the (unaltered) state the device reports (e.g. volume, state, etc)
+and the functions for controlling the device (e.g. play, pause, etc).
 
-The playerstate is the (final) state of the player, including any user customizations
-and transformations that are applied to the player.
+The playerstate is the (final) state of the player, derived from what its protocols
+report, including any user customizations and transformations that are applied to it.
 The playerstate is the object that is exposed to the outside world (via the API).
 """
 
@@ -22,11 +23,9 @@ import time
 import weakref
 from collections.abc import AsyncIterator
 from contextlib import suppress
-from copy import deepcopy
 from typing import TYPE_CHECKING, Any, cast
 
 from music_assistant_models.auth import Scope, UserRole
-from music_assistant_models.background_task import TaskSchedule
 from music_assistant_models.config_entries import ConfigEntry
 from music_assistant_models.constants import (
     PLAYER_CONTROL_FAKE,
@@ -41,6 +40,7 @@ from music_assistant_models.enums import (
     PlaybackState,
     PlayerFeature,
     PlayerType,
+    ProtocolRole,
     ProviderFeature,
     ProviderType,
     RepeatMode,
@@ -74,7 +74,6 @@ from music_assistant.constants import (
     ATTR_GROUP_MEMBERS,
     ATTR_GROUP_VOLUME_SNAPSHOT,
     ATTR_IDLE_SINCE,
-    ATTR_LAST_POLL,
     ATTR_MUTE_CONTROL,
     ATTR_MUTE_LOCK,
     ATTR_POWER_CONTROL,
@@ -91,21 +90,18 @@ from music_assistant.constants import (
     CONF_CACHED_ARP_MAC,
     CONF_ENTRY_MAX_VOLUME,
     CONF_ENTRY_MIN_VOLUME,
-    CONF_GROUP_MEMBERS,
     CONF_IDLE_POWER_OFF,
     CONF_LEGACY_IDS,
-    CONF_LINKED_PROTOCOL_IDS,
     CONF_MAX_VOLUME,
     CONF_MIN_VOLUME,
     CONF_MUTE_CONTROL,
     CONF_PLAY_MEDIA_OVERRIDES_GROUP,
     CONF_PLAYER_DSP,
-    CONF_PLAYER_PROTOCOLS,
     CONF_PLAYER_QUEUES,
     CONF_PLAYERS,
     CONF_POWER_CONTROL,
-    CONF_PROTOCOL_PARENT_ID,
     CONF_REPORTED_MAC,
+    CONF_SESSION_ONLY,
     CONF_VOLUME_CONTROL,
     CONF_VOLUME_STEP,
     VERBOSE_LOG_LEVEL,
@@ -203,6 +199,22 @@ UNGROUP_ON_POWER_OFF_TYPES = {PlayerType.PLAYER, PlayerType.STEREO_PAIR}
 _SENTINEL: Any = object()
 
 
+class _Attach:
+    """
+    An attach of a protocol that is in progress.
+
+    The one stored for its protocol id is the current attach of that protocol: a detach
+    takes it away, after which the attach stops at its next step.
+    """
+
+    __slots__ = ("minted_player_id",)
+
+    def __init__(self) -> None:
+        """Initialize the state of an attach."""
+        # id of the player whose config this attach stored for a new device
+        self.minted_player_id: str | None = None
+
+
 class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixin, CoreController):
     """Controller holding all logic to control registered players."""
 
@@ -212,6 +224,18 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         """Initialize core controller."""
         super().__init__(mass)
         self._players: dict[str, Player] = {}
+        # the protocol objects the providers attached, by their id: bound to their
+        # player, or held while it is not known yet which player they belong to
+        self._protocols: dict[str, PlayerProtocol] = {}
+        # the protocol objects the providers hold that were not attached, as their
+        # player is disabled or the user switched the protocol off
+        self._unattached: weakref.WeakValueDictionary[str, PlayerProtocol] = (
+            weakref.WeakValueDictionary()
+        )
+        # the attach that is setting up a protocol, by protocol id
+        self._attaching: dict[str, _Attach] = {}
+        # when each protocol that needs polling was last polled, by protocol id
+        self._last_polls: dict[str, float] = {}
         # the player id behind every legacy id of the stored players
         self._legacy_ids: dict[str, str] = {}
         self._controls: dict[str, PlayerControl] = {}
@@ -227,12 +251,10 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         self._task_held_locks: weakref.WeakKeyDictionary[asyncio.Task[Any], set[str]] = (
             weakref.WeakKeyDictionary()
         )
-        # Lock to prevent race conditions during player registration
+        # Lock to prevent race conditions while protocols attach
         self._register_lock = asyncio.Lock()
-        # Track pending protocol player evaluations (delayed to allow all protocols to register)
+        # the end of the wait of every held protocol whose identifiers may still arrive
         self._pending_protocol_evaluations: dict[str, asyncio.TimerHandle] = {}
-        # Serialize delayed evaluations to prevent race conditions
-        self._delayed_evaluation_lock = asyncio.Lock()
         # Live external AudioSource playing on a player, keyed on player_id
         self._source_sessions: dict[str, AudioSourceSession] = {}
         # Subscribers for player state updates (called with player + changed_values)
@@ -341,20 +363,12 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
 
     async def setup(self, config: CoreConfig) -> None:
         """Async initialize of module."""
-        self._repair_protocol_parent_links()
         self._build_legacy_id_index()
         self._poll_task = self.mass.create_task(self._poll_players())
-        self.mass.tasks.register_scheduled_task(
-            task_id="fix_group_member_configs",
-            name="Fix sync group member configurations",
-            handler=self._fix_group_member_configs,
-            schedule=TaskSchedule.weekly(
-                days_of_week=[0],
-                hour=4,
-                minute=0,
-            ),
-            initial_delay=300,
-        )
+
+    async def post_setup(self) -> None:
+        """Bring back the stored players, before any provider attaches a protocol."""
+        await self._restore_players()
 
     async def close(self) -> None:
         """Cleanup on exit."""
@@ -380,13 +394,39 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
                 bool(player.extra_data.get(ATTR_ANNOUNCEMENT_IN_PROGRESS)) for player in players
             ),
             "pending_protocol_evaluations": len(self._pending_protocol_evaluations),
+            # how the players are made up, without anything that names them
+            "player_protocols": [
+                {
+                    "type": player.state.type.value,
+                    "available": player.state.available,
+                    "protocols": [
+                        {
+                            "domain": protocol.domain,
+                            "role": protocol.role.value,
+                            "available": protocol.available,
+                            "active": protocol.active,
+                        }
+                        for protocol in player.state.protocols
+                    ],
+                }
+                for player in players
+            ],
         }
 
     async def on_provider_loaded(self, provider: PlayerProvider) -> None:
         """Handle logic when a provider is loaded."""
 
     async def on_provider_unload(self, provider: PlayerProvider) -> None:
-        """Handle logic when a provider is (about to get) unloaded."""
+        """
+        Handle logic when a provider is (about to get) unloaded.
+
+        Its protocols are detached: the players stay, on what their other protocols offer.
+        """
+        # a discovery that was asked for must not run against the instance that goes
+        self.mass.cancel_timer(f"discover_players_{provider.instance_id}")
+        for protocol in list(self._protocols.values()):
+            if protocol.provider.instance_id == provider.instance_id:
+                await self.detach(protocol.protocol_id)
 
     @property
     def providers(self) -> list[PlayerProvider]:
@@ -398,10 +438,9 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         return_unavailable: bool = True,
         return_disabled: bool = False,
         provider_filter: str | None = None,
-        return_protocol_players: bool = False,
     ) -> Iterator[Player]:
         """
-        Iterate over all registered players, regardless of who is asking.
+        Iterate over all players, regardless of who is asking.
 
         Use this for internal logic - state derivation, bookkeeping and topology
         lookups - which must stay correct no matter which user's command happened
@@ -409,8 +448,7 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
 
         :param return_unavailable [bool]: Include unavailable players.
         :param return_disabled [bool]: Include disabled players.
-        :param provider_filter [str]: Optional filter by provider lookup key.
-        :param return_protocol_players [bool]: Include protocol players (hidden by default).
+        :param provider_filter [str]: Optional filter by the provider (instance) a player names.
         """
         for player in list(self._players.values()):
             if not (player.state.available or return_unavailable):
@@ -419,29 +457,38 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
                 continue
             if not player.initialized.is_set():
                 continue
-            if provider_filter is not None and player.provider.instance_id != provider_filter:
-                continue
-            if not return_protocol_players and player.state.type == PlayerType.PROTOCOL:
+            if provider_filter is not None and player.provider_id != provider_filter:
                 continue
             yield player
+
+    def iter_protocols(self, provider_filter: str | None = None) -> Iterator[PlayerProtocol]:
+        """
+        Iterate over the protocol objects the providers attached.
+
+        A protocol that is held until it is known which player it belongs to is
+        included; its ``player`` is None.
+
+        :param provider_filter: Only the protocols of this provider instance.
+        """
+        for protocol in list(self._protocols.values()):
+            if provider_filter is None or protocol.provider.instance_id == provider_filter:
+                yield protocol
 
     def all_players(
         self,
         return_unavailable: bool = True,
         return_disabled: bool = False,
         provider_filter: str | None = None,
-        return_protocol_players: bool = False,
     ) -> list[Player]:
         """
-        Return the registered players the current user is allowed to see.
+        Return the players the current user is allowed to see.
 
         Note that this applies user filters for players (for non admin users),
         which makes it unsuitable for internal logic - use :meth:`iter_players` there.
 
         :param return_unavailable [bool]: Include unavailable players.
         :param return_disabled [bool]: Include disabled players.
-        :param provider_filter [str]: Optional filter by provider lookup key.
-        :param return_protocol_players [bool]: Include protocol players (hidden by default).
+        :param provider_filter [str]: Optional filter by the provider (instance) a player names.
 
         :return: List of Player objects.
         """
@@ -452,7 +499,6 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
                 return_unavailable=return_unavailable,
                 return_disabled=return_disabled,
                 provider_filter=provider_filter,
-                return_protocol_players=return_protocol_players,
             )
             if has_player_access(current_user, player.player_id, player)
         ]
@@ -463,15 +509,13 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         return_unavailable: bool = True,
         return_disabled: bool = False,
         provider_filter: str | None = None,
-        return_protocol_players: bool = False,
     ) -> list[PlayerState]:
         """
-        Return PlayerState for all registered players.
+        Return PlayerState for all players.
 
         :param return_unavailable [bool]: Include unavailable players.
         :param return_disabled [bool]: Include disabled players.
-        :param provider_filter [str]: Optional filter by provider lookup key.
-        :param return_protocol_players [bool]: Include protocol players (hidden by default).
+        :param provider_filter [str]: Optional filter by the provider (instance) a player names.
 
         :return: List of PlayerState objects.
         """
@@ -481,7 +525,6 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
                 return_unavailable=return_unavailable,
                 return_disabled=return_disabled,
                 provider_filter=provider_filter,
-                return_protocol_players=return_protocol_players,
             )
         ]
 
@@ -527,14 +570,46 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
 
     def get_protocol(self, protocol_id: str) -> PlayerProtocol | None:
         """
-        Return the protocol object of any player provider by its id.
+        Return the attached protocol object of any player provider by its id.
 
         Meant for provider code that needs a protocol object of another provider;
         a provider looks up its own protocol objects through its own `get_protocol`.
 
         :param protocol_id: ID of the protocol object.
         """
-        return self.get_player(protocol_id)
+        return self._protocols.get(protocol_id)
+
+    def get_output_protocol(self, protocol_or_player_id: str) -> PlayerProtocol | None:
+        """
+        Return the protocol that renders the audio an id asks for.
+
+        A protocol fetches its stream under its own id; a stream that is asked for
+        under the id of a player is rendered by the protocol that plays for that player
+        now.
+
+        :param protocol_or_player_id: ID of an attached protocol or of a player, or one
+            of the legacy ids of a player.
+        """
+        if protocol := self._protocols.get(protocol_or_player_id):
+            return protocol
+        if player := self.get_player(protocol_or_player_id):
+            return player.resolve_output_protocol()
+        return None
+
+    def get_player_by_protocol(self, protocol_or_player_id: str) -> Player | None:
+        """
+        Return the player an id names: the one a protocol is attached to, or the player itself.
+
+        For the ids protocols report, such as their group members: protocols of one
+        provider name each other by protocol id, a group names its members by player id.
+
+        :param protocol_or_player_id: ID of an attached protocol or of a player, or one
+            of the legacy ids of a player.
+        """
+        protocol = self._protocols.get(protocol_or_player_id)
+        if protocol is not None and protocol.player is not None:
+            return protocol.player
+        return self.get_player(protocol_or_player_id)
 
     @api_command("players/get", required_scope=Scope.PLAYERS_READ)
     def get_player_state(
@@ -876,7 +951,7 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
             msg = f"Player {player.display_name} does not support seeking"
             raise UnsupportedFeaturedException(msg)
         # handle command on player directly
-        await (player.foreign_protocol_player or player).seek(position)
+        await self._get_transport_protocol(player).seek(position)
 
     @api_command("players/cmd/shuffle", required_scope=Scope.PLAYERS_CONTROL)
     @handle_player_command
@@ -910,7 +985,7 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
             if not active_source.can_shuffle:
                 msg = "This action is (currently) unavailable for this source."
                 raise PlayerCommandFailed(msg)
-            await player.set_shuffle(shuffle_enabled)
+            await self._get_transport_protocol(player).set_shuffle(shuffle_enabled)
             return
         msg = f"There is nothing playing on {player.state.name} to shuffle."
         raise PlayerCommandFailed(msg)
@@ -950,7 +1025,7 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
             if not active_source.can_repeat:
                 msg = "This action is (currently) unavailable for this source."
                 raise PlayerCommandFailed(msg)
-            await player.set_repeat(repeat_mode)
+            await self._get_transport_protocol(player).set_repeat(repeat_mode)
             return
         msg = f"There is nothing playing on {player.state.name} to repeat."
         raise PlayerCommandFailed(msg)
@@ -973,7 +1048,7 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
                 (x for x in player.state.source_list if x.id == active_source_id), None
             )
             if active_source and active_source.can_next_previous:
-                await (player.foreign_protocol_player or player).next_track()
+                await self._get_transport_protocol(player).next_track()
                 return
             msg = "This action is (currently) unavailable for this source."
             raise PlayerCommandFailed(msg)
@@ -999,7 +1074,7 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
                 (x for x in player.state.source_list if x.id == active_source_id), None
             )
             if active_source and active_source.can_next_previous:
-                await (player.foreign_protocol_player or player).previous_track()
+                await self._get_transport_protocol(player).previous_track()
                 return
             msg = "This action is (currently) unavailable for this source."
             raise PlayerCommandFailed(msg)
@@ -1008,7 +1083,7 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         raise UnsupportedFeaturedException(msg)
 
     @api_command("players/cmd/power", required_scope=Scope.PLAYERS_CONTROL)
-    @handle_player_command(switched_off=SwitchedOffAction.RUN)
+    @handle_player_command(switched_off=SwitchedOffAction.RUN, accept_unavailable=True)
     async def cmd_power(self, player_id: str, powered: bool) -> None:
         """
         Send POWER command to given player.
@@ -1271,23 +1346,24 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         player = self.get_player(player_id, True)
         assert player is not None  # for type checking
 
-        if PlayerFeature.SELECT_SOUND_MODE not in player.supported_features:
+        protocol = player.own_protocol
+        if protocol is None or PlayerFeature.SELECT_SOUND_MODE not in protocol.supported_features:
             raise UnsupportedFeaturedException(
                 f"Player {player.display_name} does not support sound mode selection"
             )
 
-        prev_sound_mode = player.active_sound_mode
+        prev_sound_mode = protocol.active_sound_mode
         if sound_mode == prev_sound_mode:
             return
 
         # basic check if sound mode is valid for player
-        if not any(x for x in player.sound_mode_list if x.id == sound_mode):
+        if not any(x for x in protocol.sound_mode_list if x.id == sound_mode):
             raise PlayerCommandFailed(
                 f"{sound_mode} is an invalid sound_mode for player {player.display_name}"
             )
 
         # forward to player
-        await player.select_sound_mode(sound_mode)
+        await protocol.select_sound_mode(sound_mode)
 
     @api_command("players/cmd/set_option", required_scope=Scope.PLAYERS_CONTROL)
     @handle_player_command
@@ -1304,12 +1380,13 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         player = self.get_player(player_id, True)
         assert player is not None  # for type checking
 
-        if PlayerFeature.OPTIONS not in player.supported_features:
+        protocol = player.own_protocol
+        if protocol is None or PlayerFeature.OPTIONS not in protocol.supported_features:
             raise UnsupportedFeaturedException(
                 f"Player {player.display_name} does not support set_option"
             )
 
-        prev_player_option = next((x for x in player.options if x.key == option_key), None)
+        prev_player_option = next((x for x in protocol.options if x.key == option_key), None)
         if not prev_player_option:
             return
         if prev_player_option.value == option_value:
@@ -1321,7 +1398,7 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
             )
 
         # forward to player
-        await player.set_option(option_key=option_key, option_value=option_value)
+        await protocol.set_option(option_key=option_key, option_value=option_value)
 
     @api_command("players/cmd/select_source", required_scope=Scope.PLAYERS_CONTROL)
     @handle_player_command(switched_off=SwitchedOffAction.POWER_ON)
@@ -1489,7 +1566,7 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         """
         parent_player = self._get_reachable_player(target_player)
         if PlayerFeature.SET_MEMBERS not in parent_player.state.supported_features:
-            msg = f"Player {parent_player.name} does not support group commands"
+            msg = f"Player {parent_player.display_name} does not support group commands"
             raise UnsupportedFeaturedException(msg)
 
         # if the target player is a member of an active group player (e.g. a syncgroup),
@@ -1497,15 +1574,15 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         if group_player := self._get_set_members_group(parent_player):
             self.logger.debug(
                 "Redirecting set_members from %s to its group player %s",
-                parent_player.name,
-                group_player.name,
+                parent_player.display_name,
+                group_player.display_name,
             )
             await self.cmd_set_members(
                 group_player.player_id, player_ids_to_add, player_ids_to_remove
             )
             return
 
-        if parent_player.synced_to:
+        if parent_player.state.synced_to:
             # handle edge case: target player is already synced itself to another player
             # automatically ungroup it first and wait for state to propagate
             await self._auto_ungroup_if_synced(parent_player, "setting members")
@@ -1562,7 +1639,7 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
             # a group player the command is passed on to only gains players the user may use
             for player_id in (target_player, *player_ids_to_add):
                 self.check_player_access(player_id)
-        elif not player_ids_to_remove or (target and target.synced_to and not group_player):
+        elif not player_ids_to_remove or (target and target.state.synced_to and not group_player):
             # cmd_set_members detaches a synced target first, unless it passes the
             # command on to the target's group player
             self.check_player_access(target_player)
@@ -1792,175 +1869,147 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         # if we reach here, we could not resolve the currently playing item
         raise PlayerCommandFailed("No current item to add to favorites")
 
-    async def register(self, player: Player) -> None:
-        """Register a player on the Player Controller."""
-        if self._teardown_in_progress(player):
-            return
+    async def attach(self, protocol: PlayerProtocol) -> None:
+        """
+        Attach a protocol to its player: its provider found the device, or found it again.
 
-        # Use lock to prevent race conditions during concurrent player registrations
+        The player the protocol belongs to is created when the device is new. Nothing is
+        attached for a player the user disabled or a protocol the user switched off.
+        Attaching the object that is attached already publishes what it reports now;
+        another object under the same id takes its place.
+
+        :param protocol: The protocol object to attach.
+        """
+        if self._teardown_in_progress(protocol):
+            return
+        protocol_id = protocol.protocol_id
+        # the lock ensures a replacement is never swapped in while an attach of the
+        # same protocol is still setting it up
         async with self._register_lock:
             # a teardown may have started while this waited for the lock
-            if self._teardown_in_progress(player):
+            if self._teardown_in_progress(protocol):
                 return
-
-            player_id = player.player_id
-
-            if player_id in self._players:
-                msg = f"Player {player_id} is already registered!"
-                raise AlreadyRegisteredError(msg)
-
-            self.mass.config.create_default_player_config(
-                player_id, player.provider_id, player.type, player.name, player.enabled_by_default
-            )
-
-            # ignore disabled players
-            if not player.state.enabled:
+            if self._protocols.get(protocol_id) is protocol:
+                await self._refresh_protocol(protocol)
                 return
-
-            if player.type not in (PlayerType.GROUP, PlayerType.STEREO_PAIR):
-                await self._resolve_mac_addresses(player)
-
-            # restore 'fake' power state from cache if available.
-            # Group players intentionally do NOT restore their fake-power
-            # state across restarts: at boot there is no sync session yet, so
-            # a restored 'powered=True' would put the group in an inconsistent
-            # 'active without captured session' state where children appear
-            # owned by a group that has no leader. Users who want their
-            # 'group captured' state preserved across restarts would need
-            # explicit session restoration which is out of scope here.
-            if player.type != PlayerType.GROUP:
-                cached_value = await self.mass.cache.get(
-                    key=player.player_id,
-                    provider=self.domain,
-                    category=CACHE_CATEGORY_PLAYER_POWER,
-                    default=False,
-                )
-                if cached_value is not None:
-                    player.extra_data[ATTR_FAKE_POWER] = cached_value
-
-            # _registration_aborted below only works once the player is in the registry;
-            # until then the unregister pass of a provider unload cannot see it, so re-check
-            # the guard from the top of this method, which the awaits above may have staled
-            if self._teardown_in_progress(player):
-                return
-
-            # finally actually register it
-
-            # Despite the fact that the player is not fully ready yet
-            # (config not loaded, protocol links not evaluated),
-            # we already add it to the _players dict here because we
-            # want to make sure the player is available in the controller
-            # during the rest of the registration process
-            # (such as when fetching config or evaluating protocol links).
-            # We use the 'initialized' attribute to indicate that the player
-            # is still in the process of being registered so we can filter it out where needed.
-            self._players[player_id] = player
-            try:
-                # update state to ensure player.state reflects the final attributes
-                # (e.g. player type) set after super().__init__() in the player subclass,
-                # before we fetch config (which relies on state.type for entry resolution)
-                player.update_state(signal_event=False)
-                # ensure we fetch and set the latest/full config for the player
-                player_config = await self.mass.config.get_player_config(player_id)
-                if self._registration_aborted(player):
-                    return
-                player.set_config(player_config)
-                # update state again now that config is loaded
-                player.update_state(signal_event=False)
-                self._save_underlying_player_id(player)
-                # call hook after the player is registered and config is set
-                await player.on_config_updated()
-                if self._registration_aborted(player):
-                    return
-
-                # Handle protocol linking
-                self._evaluate_protocol_links(player)
-            except Exception, asyncio.CancelledError:
-                # a player whose setup failed never becomes initialized, which hides it
-                # everywhere while it keeps blocking every later registration of the same id.
-                # Cancellation counts too: a re-triggered provider discovery aborts the task
-                # this runs in. Only roll back while the player is still ours: an unregister
-                # may have dropped it already, and it unloads the player itself.
-                if self._players.get(player_id) is player:
-                    del self._players[player_id]
-                    # players claim resources in their constructor (event subscriptions,
-                    # connections) that only on_unload releases. Best-effort, so a failing
-                    # teardown cannot mask the error that got us here.
-                    try:
-                        await player.on_unload()
-                    except Exception:
-                        self.logger.exception("Error unloading player %s", player.name)
-                raise
-
-            # now we're ready to signal the player is added and available
-            player.set_initialized()
-            self.logger.info(
-                "Player (type %s) registered: %s/%s",
-                player.state.type.value,
-                player_id,
-                player.state.name,
-            )
-            # signal event that a player was added
-            if player.state.type != PlayerType.PROTOCOL:
-                self.mass.signal_event(
-                    EventType.PLAYER_ADDED, object_id=player.player_id, data=player
-                )
-            # register playerqueue for this player (if not a protocol player)
-            if player.state.type != PlayerType.PROTOCOL:
-                await self.mass.player_queues.on_player_register(player)
-                if self._registration_aborted(player):
-                    # the queue restore outlived the unregister that already cleaned it up,
-                    # so drop the queue we just recreated for a player that is gone
-                    self.mass.player_queues.on_player_remove(player_id, permanent=False)
-
+            await self._run_attach(protocol)
         # Schedule debounced update of all players since can_group_with values may change
-        # when a new player is added (provider IDs expand to include the new player)
+        # when a protocol is attached (provider IDs expand to include it)
         self._schedule_update_all_players(2)
 
-    async def register_or_update(self, player: Player) -> None:
-        """Register a new player on the controller or update existing one."""
-        if self._teardown_in_progress(player):
+    async def detach(self, protocol_id: str) -> None:
+        """
+        Detach a protocol from its player: its provider lost the device, or unloads.
+
+        The player stays and keeps its queue; it is unavailable while none of its other
+        protocols is available. A player that only exists while its device is connected
+        goes with its last protocol. Silently ignored for a protocol that is not attached.
+
+        :param protocol_id: Id of the protocol to detach.
+        """
+        # an attach that is still setting this protocol up stops at its next step
+        self._attaching.pop(protocol_id, None)
+        if (protocol := self._protocols.get(protocol_id)) is None:
             return
+        if player := await self._unbind(protocol):
+            self.logger.info(
+                "Protocol %s detached from player %s", protocol_id, player.display_name
+            )
+            await self._settle_player(player)
+        # Schedule debounced update of all players since can_group_with values may change
+        self._schedule_update_all_players()
 
-        # the register lock ensures a replacement is never swapped in while register()
-        # is still setting the player up
-        async with self._register_lock:
-            if (existing := self._players.get(player.player_id)) is not None:
-                # a protocol player is hidden behind its parent and owns no queue, every
-                # other player does. Reading the role the player is leaving off that
-                # published reality keeps it independent of when the player's state was
-                # last recalculated, which providers cannot control (they flip the type
-                # before this call).
-                was_protocol = self.mass.player_queues.get(player.player_id) is None
-                becomes_protocol = player.type == PlayerType.PROTOCOL
-                role_changed = becomes_protocol != was_protocol
-                if role_changed:
-                    # release the topology of the role the player is leaving
-                    self._cleanup_player_type_transition(
-                        existing, becomes_protocol=becomes_protocol
-                    )
-                self._players[player.player_id] = player
-                if existing is not player:
-                    # a fresh instance starts out with a base config only, so it needs
-                    # the config the registration resolved before it can be used
-                    player.set_config(existing.config)
-                    await player.on_config_updated()
-                    if self._registration_aborted(player):
-                        return
-                # the replacement takes over the identity of an already registered
-                # player, so it must be marked initialized as well
-                player.set_initialized()
-                player.update_state()
-                # the derived-transport edge may have been set/revoked after the
-                # initial registration (e.g. via a bridge claim)
-                self._save_underlying_player_id(player)
-                if role_changed:
-                    await self._finish_player_type_transition(player)
-                # Also schedule update when replacing existing player
-                self._schedule_update_all_players()
-                return
+    async def remove_protocol(self, protocol_id: str) -> None:
+        """
+        Remove a protocol for good: its provider forgets the device.
 
-        await self.register(player)
+        The protocol is detached and its config deleted. The player it belonged to goes
+        with it when no other protocol of it is left.
+
+        :param protocol_id: Id of the protocol to remove.
+        """
+        protocol = self._protocols.get(protocol_id)
+        player_id = self._get_player_id_of_protocol(protocol_id)
+        await self.detach(protocol_id)
+        self.mass.config.remove_protocol_record(protocol_id)
+        if protocol is not None:
+            # the provider forgot the device, so what it stored about it is not needed anymore
+            self._unattached.pop(protocol_id, None)
+        if player_id is None:
+            return
+        if player := self._players.get(player_id):
+            player.remove_protocol(protocol_id, forget=True)
+        if self.mass.config.get_protocol_ids_of_player(player_id) or (player and player.protocols):
+            if player:
+                player.refresh_state()
+            return
+        await self._remove_player(player_id, rediscover=False)
+
+    @api_command("players/remove", required_scope=Scope.CONFIG_PLAYERS_WRITE)
+    async def remove(self, player_id: str) -> None:
+        """
+        Remove a player for good: the player itself, its protocols, its config and its queue.
+
+        A device its provider still finds comes back as a new player.
+
+        :param player_id: ID of the player to remove.
+        """
+        await self._remove_player(self.resolve_player_id(player_id), rediscover=True)
+
+    @api_command("players/remove_unavailable", required_scope=Scope.CONFIG_PLAYERS_WRITE)
+    async def remove_unavailable(self) -> list[str]:
+        """
+        Remove every player that is unavailable while its providers are running.
+
+        A player of a provider that is not loaded is left alone, as is a disabled one.
+        Returns the ids of the players that were removed.
+        """
+        removed: list[str] = []
+        for player in list(self._players.values()):
+            if player.state.available or not player.initialized.is_set():
+                continue
+            provider_ids = {
+                str(record.get("provider"))
+                for protocol_id in self.mass.config.get_protocol_ids_of_player(player.player_id)
+                if (record := self.mass.config.get_protocol_record(protocol_id))
+            }
+            if not all(self.mass.get_provider(provider_id) for provider_id in provider_ids):
+                continue
+            await self._remove_player(player.player_id, rediscover=False)
+            removed.append(player.player_id)
+        return removed
+
+    def wants_protocol(self, protocol_id: str) -> bool:
+        """
+        Return whether the server wants a protocol attached now.
+
+        Not when the user disabled the player it belongs to, or switched the protocol
+        itself off as an output of that player. A provider that sets up a connection
+        for a device before it attaches it can ask this first.
+
+        :param protocol_id: Id of the protocol.
+        """
+        if (record := self.mass.config.get_protocol_record(protocol_id)) is None:
+            return True
+        if not record.get("enabled", True):
+            return False
+        if not (player_id := record.get("player_id")):
+            return True
+        return bool(self.mass.config.get(f"{CONF_PLAYERS}/{player_id}/enabled", True))
+
+    def on_unattached_protocol_update(self, protocol: PlayerProtocol) -> None:
+        """
+        Handle an update of a protocol that waits for the player it belongs to.
+
+        :param protocol: The protocol that reported new values.
+        """
+        if self._protocols.get(protocol.protocol_id) is not protocol or self.mass.closing:
+            return
+        # the identifiers that tell which player it belongs to may have arrived
+        self.mass.create_task(
+            self._evaluate_pending_protocol(protocol.protocol_id, final=False),
+            task_id=f"evaluate_protocol_{protocol.protocol_id}",
+        )
 
     def trigger_player_update(
         self, player_id: str, force_update: bool = False, debounce_delay: float = 0.25
@@ -1981,217 +2030,6 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
             force_update=force_update,
             task_id=task_id,
         )
-
-    async def unregister(
-        self,
-        player_id: str,
-        permanent: bool = False,
-        replacement_player_id: str | None = None,
-    ) -> None:
-        """
-        Unregister a player from the player controller.
-
-        Called (by a PlayerProvider) when a player is removed or no longer available
-        (for a longer period of time). This will remove the player from the player
-        controller and optionally remove the player's config from the mass config.
-        If the player is not registered, this will silently be ignored.
-
-        :param player_id: Player ID of the player to unregister.
-        :param permanent: If True, remove the player permanently by deleting its config.
-                          If False, the player config will not be removed.
-        :param replacement_player_id: Player ID that takes this player's place, only
-                                      used for a permanent removal.
-        """
-        player = self._players.get(player_id)
-        if player is None:
-            return
-        # a player that is going away is done with any live source it was playing,
-        # so let the owning plugin release an upstream session pointing at us
-        await self._release_audio_source(player_id)
-        del self._players[player_id]
-        # clean up all lock entries for this player
-        for prefix in [p.value for p in PlayerLockPurpose]:
-            self._player_command_locks.pop(f"{prefix}_{player_id}", None)
-        if handle := self._pending_protocol_evaluations.pop(player_id, None):
-            handle.cancel()
-        self._clear_sleep_timer(player)
-        self.mass.player_queues.on_player_remove(player_id, permanent=permanent)
-        # teardown is best-effort: a provider that fails to release its player must not
-        # strand the other players of that provider, nor the provider unload itself
-        try:
-            await player.on_unload()
-        except Exception:
-            self.logger.exception("Error unloading player %s", player.name)
-        if permanent:
-            # player permanent removal: cleanup protocol links, delete config
-            # and signal PLAYER_REMOVED event.
-            # No group detach is issued here: the player is already out of the registry,
-            # so it is filtered out of every group's live member list, and its persisted
-            # membership is settled by delete_player_config below.
-            self._cleanup_protocol_links(player)
-            self.delete_player_config(player_id, replacement_player_id)
-            self.logger.info("Player removed: %s", player.name)
-            if player.state.type != PlayerType.PROTOCOL:
-                self.mass.signal_event(EventType.PLAYER_REMOVED, player_id)
-        else:
-            # temporary unavailable: mark player as unavailable
-            # note: the player will be re-registered later if it comes back online
-            player.state.available = False
-            self.logger.info("Player unavailable: %s", player.name)
-            if player.state.type != PlayerType.PROTOCOL:
-                self.mass.signal_event(
-                    EventType.PLAYER_UPDATED, object_id=player.player_id, data=player.state
-                )
-        # Schedule debounced update of all players since can_group_with values may change
-        self._schedule_update_all_players()
-
-    @api_command("players/remove", required_scope=Scope.CONFIG_PLAYERS_WRITE)
-    async def remove(self, player_id: str) -> None:
-        """
-        Remove a player for good: the player itself, its config and its queue.
-
-        A device its provider still finds comes back as a new player.
-
-        :param player_id: ID of the player to remove.
-        """
-        player = self.get_player(player_id)
-        if player is None:
-            # we simply permanently delete the player config since it is not registered
-            self.delete_player_config(player_id)
-            return
-        player_id = player.player_id
-        # check for group memberships that need to be updated
-        if player.state.active_group and (
-            group_player := self.mass.players.get_player(player.state.active_group)
-        ):
-            # try to remove from the group
-            with suppress(
-                UnsupportedFeaturedException, PlayerCommandFailed, PlayerUnavailableError
-            ):
-                await group_player.set_members(
-                    player_ids_to_remove=[player_id],
-                )
-        await self.unregister(player_id, permanent=True)
-        # the provider only cleans up what it keeps about the player itself. Best-effort:
-        # the player is gone by now, whatever happens to that
-        try:
-            await player.on_remove()
-        except Exception:
-            self.logger.exception("Error removing player %s", player.name)
-        provider = player.provider
-        if (
-            player.type != PlayerType.GROUP
-            and self.mass.get_provider(provider.instance_id) is provider
-        ):
-            # a device still on the network is found again as a new player
-            provider.schedule_discovery()
-
-    def delete_player_config(
-        self, player_id: str, replacement_player_id: str | None = None
-    ) -> None:
-        """
-        Permanently delete a player's configuration, including its DSP and queue settings.
-
-        The saved queue of a player that is no longer registered is dropped along with it,
-        so a device that returns under the same id starts out fresh. The player itself is
-        not unregistered.
-        The config of a linked protocol player is wiped along with it, so the device
-        returns as a brand new player once it is discovered again. Protocol players that
-        are still registered or that already moved to another parent keep their config;
-        registered ones are detached from the removed player and re-evaluated.
-        A deleted protocol player is dropped from the parent that links it.
-        Any group that lists the player as a member follows the replacement, or loses
-        the member when there is none.
-
-        :param player_id: Player ID of the player to delete the configuration of.
-        :param replacement_player_id: Player ID that takes this player's place, so users
-                                      restricted to it and groups it belongs to follow
-                                      the replacement.
-        """
-        self._detach_protocol_children(player_id)
-        self._unlink_protocol_from_parents(player_id)
-        self._update_group_memberships(player_id, replacement_player_id)
-        player_ids = [
-            protocol_id
-            for protocol_id in self.mass.config.get(CONF_PLAYERS, {})
-            if self._get_cached_protocol_parent_id(protocol_id) == player_id
-            and self.get_player(protocol_id) is None
-        ]
-        player_ids.append(player_id)
-        for pid in player_ids:
-            for key in (
-                f"{CONF_PLAYERS}/{pid}",
-                f"{CONF_PLAYER_DSP}/{pid}",
-                f"{CONF_PLAYER_QUEUES}/{pid}",
-            ):
-                self.mass.config.remove(key)
-            if pid not in self._players:
-                self.mass.player_queues.purge_saved_queue(pid)
-        self._build_legacy_id_index()
-        # a user access filter is an allow-list of player ids, so it must not be left
-        # pointing at a player whose config was just wiped: a replaced player hands its
-        # entries over to its replacement, a removed one has them dropped
-        if replacement_player_id:
-            self.mass.create_task(
-                self.mass.webserver.auth.replace_player_in_user_filters(
-                    player_id, replacement_player_id, removed_player_ids=player_ids
-                )
-            )
-        else:
-            self.mass.create_task(
-                self.mass.webserver.auth.remove_from_user_filters(player_ids=player_ids)
-            )
-
-    def carry_over_player_config(self, player_id: str, replacement_player_id: str) -> None:
-        """
-        Copy a player's stored config onto the player that replaces it under a new id.
-
-        The replacement keeps the name, values and DSP settings it already has and takes
-        over the protocol parent of the replaced player. Call this before the replacement
-        registers, then delete the old config with delete_player_config once it has.
-
-        :param player_id: Player ID of the player that is replaced.
-        :param replacement_player_id: Player ID that takes its place.
-        """
-        source_raw = self.mass.config.get(f"{CONF_PLAYERS}/{player_id}")
-        if not isinstance(source_raw, dict):
-            return
-        target_key = f"{CONF_PLAYERS}/{replacement_player_id}"
-        target_raw = self.mass.config.get(target_key)
-        previous_parent_id = self._get_cached_protocol_parent_id(replacement_player_id)
-        if not isinstance(target_raw, dict):
-            self.mass.config.set(
-                target_key, {**deepcopy(source_raw), "player_id": replacement_player_id}
-            )
-        else:
-            if source_raw.get("name") and not target_raw.get("name"):
-                self.mass.config.set_player_value(replacement_player_id, "name", source_raw["name"])
-            source_values = source_raw.get("values")
-            target_values = target_raw.get("values")
-            target_values = target_values if isinstance(target_values, dict) else {}
-            for key, value in (source_values if isinstance(source_values, dict) else {}).items():
-                if key in target_values and key != CONF_PROTOCOL_PARENT_ID:
-                    continue
-                self.mass.config.set_player_value(replacement_player_id, key, deepcopy(value))
-        source_dsp = self.mass.config.get(f"{CONF_PLAYER_DSP}/{player_id}")
-        if source_dsp and not self.mass.config.get(f"{CONF_PLAYER_DSP}/{replacement_player_id}"):
-            self.mass.config.set(f"{CONF_PLAYER_DSP}/{replacement_player_id}", deepcopy(source_dsp))
-        # a parent that gets enabled or disabled only cascades to the protocol players it lists
-        parent_id = self._get_cached_protocol_parent_id(replacement_player_id)
-        if previous_parent_id and previous_parent_id != parent_id:
-            if previous_parent := self.get_player(previous_parent_id):
-                self._remove_protocol_ids_from_parent(previous_parent, {replacement_player_id})
-            else:
-                self._remove_protocol_id_from_cache(previous_parent_id, replacement_player_id)
-        if parent_id and (parent := self.get_player(parent_id)):
-            self._migrate_protocol_ids_to_parent(parent, {replacement_player_id})
-        elif parent_id and isinstance(self.mass.config.get(f"{CONF_PLAYERS}/{parent_id}"), dict):
-            cached_ids = self._get_cached_protocol_ids(parent_id)
-            if replacement_player_id not in cached_ids:
-                self.mass.config.set(
-                    f"{CONF_PLAYERS}/{parent_id}/values/{CONF_LINKED_PROTOCOL_IDS}",
-                    [*cached_ids, replacement_player_id],
-                )
 
     def scale_volume_to_device(self, player_id: str, logical_volume: int) -> int:
         """Scale logical volume (0-100) to device volume (min_volume-max_volume)."""
@@ -2249,15 +2087,11 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         if self.mass.closing:
             return
 
-        # ignore updates for disabled players
-        if not player.state.enabled and ATTR_ENABLED not in changed_values:
-            return
-
-        # register() publishes the player itself once its config is loaded
+        # a player that was just created is published once its config is loaded
         if not player.initialized.is_set():
             return
 
-        # a debounced update can still run on a player that was unregistered meanwhile
+        # a debounced update can still run on a player that was removed meanwhile
         if self._players.get(player_id) is not player:
             return
 
@@ -2278,23 +2112,22 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
             self.logger.log(
                 VERBOSE_LOG_LEVEL,
                 "Player state updated for %s: changed fields: %s",
-                player.name,
+                player.display_name,
                 ", ".join(changed_values.keys()),
             )
 
         # signal update to the playerqueue
-        if player.state.type != PlayerType.PROTOCOL:
-            self.mass.call_later(
-                0.5,
-                self.mass.player_queues.on_player_update,
-                player,
-                changed_values,
-                task_id=f"queue_on_player_update_{player.player_id}",
-            )
+        self.mass.call_later(
+            0.5,
+            self.mass.player_queues.on_player_update,
+            player,
+            changed_values,
+            task_id=f"queue_on_player_update_{player.player_id}",
+        )
 
         # Kick async palette extraction on cold cache. On transition prefetch
         # the next queue item too. Skip players that mirror another player's media
-        # (grouped/synced members, protocol children): their current_media - palette
+        # (grouped/synced members): their current_media - palette
         # included - is taken wholesale from the owner, so resolving it per member is
         # wasted work that also produces duplicate state updates across the group.
         if (
@@ -2351,8 +2184,7 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         self._dispatch_state_update_subscribers(player, changed_values)
 
         # signal player update on the eventbus
-        if player.state.type != PlayerType.PROTOCOL:
-            self.mass.signal_event(EventType.PLAYER_UPDATED, object_id=player_id, data=player)
+        self.mass.signal_event(EventType.PLAYER_UPDATED, object_id=player_id, data=player)
 
         # signal a separate PlayerOptionsUpdated event
         if options := changed_values.get("options"):
@@ -2383,8 +2215,7 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
             key in changed_values
             for key in ("group_members", "synced_to", ATTR_AVAILABLE, ATTR_REACHABLE)
         ):
-            for prov_player in player.provider.protocols:
-                self.trigger_player_update(prov_player.player_id, debounce_delay=2)
+            self._trigger_provider_players_update(player)
 
     async def register_player_control(self, player_control: PlayerControl) -> None:
         """Register a new PlayerControl on the controller."""
@@ -2455,12 +2286,6 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         # refreshed, so let them fall back to their remaining options right away
         self.update_player_control(control_id)
 
-    def get_player_provider(self, player_id: str) -> PlayerProvider:
-        """Return PlayerProvider for given player."""
-        player = self._players[player_id]
-        assert player  # for type checker
-        return player.provider
-
     def get_active_queue(self, player: Player) -> PlayerQueue | None:
         """Return the current active queue for a player (if any)."""
         # account for player that is synced (sync child)
@@ -2475,10 +2300,6 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         active_source = player.state.active_source or player.player_id
         if active_queue := self.mass.player_queues.get(active_source):
             return active_queue
-        # handle active protocol player with parent player queue
-        if player.type == PlayerType.PROTOCOL and player.protocol_parent_id:
-            if parent_player := self.mass.players.get_player(player.protocol_parent_id):
-                return self.get_active_queue(parent_player)
         return None
 
     async def set_group_volume(self, group_player: Player, volume_level: int) -> None:
@@ -2682,80 +2503,70 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
             if min_vol > max_vol:
                 msg = "Minimum volume cannot exceed maximum volume"
                 raise InvalidDataError(msg)
-        player = self.get_player(config.player_id)
-        player_provider = self.mass.get_provider(config.provider)
-        player_disabled = ATTR_ENABLED in changed_keys and not config.enabled
-        player_enabled = ATTR_ENABLED in changed_keys and config.enabled
-
-        if player_disabled and player and player.state.available:
-            # edge case: ensure that the player is powered off if the player gets disabled
-            if player.state.power_control != PLAYER_CONTROL_NONE:
-                await self._handle_cmd_power(config.player_id, False)
-            elif player.state.playback_state != PlaybackState.IDLE:
-                await self.cmd_stop(config.player_id)
-
-        # signal player provider that the player got enabled/disabled
-        if (player_enabled or player_disabled) and player_provider:
-            assert isinstance(player_provider, PlayerProvider)  # for type checking
-            # Collect linked protocol IDs to cascade the enable/disable to.
-            # Without this, a disabled native parent leaves its linked protocols
-            # registered after restart; they then fail to find their parent and
-            # get wrapped in a fresh Universal Player.
-            cascade_protocol_ids: list[str] = []
-            parent_is_protocol = player.state.type == PlayerType.PROTOCOL if player else False
-            if not parent_is_protocol:
-                if player and player.linked_output_protocols:
-                    cascade_protocol_ids = [
-                        link.output_protocol_id for link in player.linked_output_protocols
-                    ]
-                else:
-                    cascade_protocol_ids = self._get_cached_protocol_ids(config.player_id)
-            if player_disabled:
-                player_provider.on_player_disabled(config.player_id)
-            elif player_enabled:
-                player_provider.on_player_enabled(config.player_id)
-            for protocol_id in cascade_protocol_ids:
-                protocol_raw = self.mass.config.get(f"{CONF_PLAYERS}/{protocol_id}")
-                if not protocol_raw:
-                    continue
-                if bool(protocol_raw.get("enabled", True)) == bool(player_enabled):
-                    continue
-                self.mass.create_task(
-                    self.mass.config.save_player_config(
-                        protocol_id, {ATTR_ENABLED: bool(player_enabled)}
-                    )
-                )
-            if not (player_enabled and player):
-                return  # enabling/disabling a player will be handled by the provider
-            # a player can be registered while disabled (e.g. a new player that is disabled
-            # by default), so it takes the enabled config like any other config change
-
+        player_id = config.player_id
+        player = self._players.get(player_id)
+        if ATTR_ENABLED in changed_keys and not config.enabled:
+            if player is not None:
+                await self._disable_player(player)
+            return
+        if ATTR_ENABLED in changed_keys and player is None:
+            await self._enable_player(player_id)
+            return
         if not player:
-            return  # guard against player not being registered (yet)
-
-        resume_queue: PlayerQueue | None = (
-            self.mass.player_queues.get(player.state.active_source)
-            if player.state.active_source
-            else None
-        )
+            return  # a player that is not there takes its config when it comes back
 
         # ensure player state gets updated with any updated config
-        player.set_config(config)
-        await player.on_config_updated()
+        player.set_config(await self.mass.config.get_player_object_config(player))
+        if (own := player.own_protocol) is not None:
+            # the settings of its own protocol are part of the config of the player
+            own.set_config(await self.mass.config.get_protocol_config(own))
+            await own.on_config_updated()
         player.update_state()
-        # if the PlayerQueue was playing, restart playback
-        if resume_queue and resume_queue.state == PlaybackState.PLAYING:
-            requires_restart = any(
+        await self._restart_playback_after_config_change(
+            player,
+            any(
                 v.requires_reload
                 for v in config.values.values()
                 if f"values/{v.key}" in changed_keys
-            )
-            if requires_restart:
-                # always stop first to ensure the player uses the new config
-                await self.mass.player_queues.stop(resume_queue.queue_id)
-                self.mass.call_later(
-                    1, self.mass.player_queues.resume, resume_queue.queue_id, False
-                )
+            ),
+        )
+
+    async def on_protocol_config_change(self, protocol_id: str, changed_keys: set[str]) -> None:
+        """
+        Call (by config manager) when the configuration of one protocol of a player changes.
+
+        :param protocol_id: Id of the protocol.
+        :param changed_keys: The keys that changed: ``enabled`` for whether the user
+            wants the protocol used, ``values/<key>`` for a setting, ``setup_data/<key>``
+            for what a setup flow collected.
+        """
+        protocol = self._protocols.get(protocol_id)
+        if ATTR_ENABLED in changed_keys:
+            if not self.wants_protocol(protocol_id):
+                # the user switched this output of the player off
+                await self.detach(protocol_id)
+                return
+            if protocol is None or protocol.player is None:
+                # its provider attaches it when it looks for its devices again
+                stored = self.mass.config.get_protocol_record(protocol_id) or {}
+                provider = self.mass.get_provider(str(stored.get("provider")))
+                if isinstance(provider, PlayerProvider):
+                    provider.schedule_discovery()
+                return
+        if protocol is None or (player := protocol.player) is None:
+            return
+        config = await self.mass.config.get_protocol_config(protocol)
+        protocol.set_config(config)
+        await protocol.on_config_updated()
+        player.update_state()
+        await self._restart_playback_after_config_change(
+            player,
+            any(
+                v.requires_reload
+                for v in config.values.values()
+                if f"values/{v.key}" in changed_keys
+            ),
+        )
 
     async def on_player_dsp_change(
         self, player_id: str, *, after_group_change: bool = False
@@ -2889,109 +2700,630 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
             )
             raise ResourceBusyError(msg) from None
 
-    async def _resolve_mac_addresses(self, player: Player) -> None:
+    async def _run_attach(self, protocol: PlayerProtocol, final: bool = False) -> None:
         """
-        Resolve and persist the MAC addresses used to match the player against protocols.
+        Attach a protocol object to its player, and undo what was done when that fails.
 
-        :param player: The player to resolve the MAC address(es) for.
+        :param protocol: The protocol object to attach: a new one, or one that is held.
+        :param final: A held protocol that matches no player has waited long enough.
         """
-        conf_base = f"{CONF_PLAYER_PROTOCOLS}/{player.player_id}/values"
-        # Save the original MAC reported by the provider (before ARP enrichment)
-        reported_mac = player.device_info.identifiers.get(IdentifierType.MAC_ADDRESS)
+        protocol_id = protocol.protocol_id
+        attach = self._attaching[protocol_id] = _Attach()
+        try:
+            await self._attach(protocol, attach, final)
+        except Exception, asyncio.CancelledError:
+            # a protocol whose setup failed must not stay attached half way, where
+            # it keeps blocking every later attach of the same id. Cancellation
+            # counts too: a re-triggered provider discovery aborts the task this
+            # runs in.
+            await self._rollback_attach(protocol, attach)
+            raise
+        finally:
+            if self._attaching.get(protocol_id) is attach:
+                del self._attaching[protocol_id]
 
-        # Try to use cached ARP MAC from config for fast matching on restart.
-        # This allows protocol linking to work immediately even if ARP is slow/fails.
-        cached_arp_mac: str | None = self.mass.config.get(
-            f"{conf_base}/{CONF_CACHED_ARP_MAC}", None
+    async def _attach(self, protocol: PlayerProtocol, attach: _Attach, final: bool) -> None:
+        """
+        Find the player of a protocol object and bind it, or hold it until that is known.
+
+        :param protocol: The protocol object to attach.
+        :param attach: The state of this attach, see _attach_aborted.
+        :param final: A held protocol that matches no player has waited long enough.
+        """
+        protocol_id = protocol.protocol_id
+        player_id: str | None = None
+        existing = self._protocols.get(protocol_id)
+        held = existing is protocol and protocol.player is None
+        if not held:
+            # the attached object goes without anything being published: another object
+            # of the protocol takes its place, or it attaches again in another role
+            replaced_player = await self._unbind(existing) if existing else None
+            if protocol.role != ProtocolRole.VIRTUAL and protocol.type not in (
+                PlayerType.GROUP,
+                PlayerType.STEREO_PAIR,
+            ):
+                await self._resolve_mac_addresses(protocol)
+                # the await above may have staled the guards of attach()
+                if self._attach_aborted(protocol, attach) or self._teardown_in_progress(protocol):
+                    return
+            if (
+                replaced_player is not None
+                and replaced_player.player_id in self._players
+                and self._can_attach_to(
+                    protocol,
+                    self._identity_of(protocol),
+                    replaced_player.player_id,
+                    attached_only=True,
+                )
+            ):
+                player_id = replaced_player.player_id
+        if player_id is None:
+            player_id = self._resolve_player_id(protocol)
+        if player_id is None:
+            if self._awaits_identity(protocol) and (not final or protocol.underlying_protocol_id):
+                if not held:
+                    self._hold_protocol(protocol)
+                return
+            player_id = attach.minted_player_id = self._mint_player(protocol)
+        self._store_protocol(protocol, player_id)
+        if not self.wants_protocol(protocol_id):
+            # no player for a device the user does not want: its provider keeps the
+            # object, which a removal of the player still has to reach
+            if held:
+                self._release_held_protocol(protocol)
+            self._unattached[protocol_id] = protocol
+            return
+        await self._bind(protocol, player_id, attach)
+
+    async def _bind(self, protocol: PlayerProtocol, player_id: str, attach: _Attach) -> None:
+        """
+        Bind a protocol to its player and publish the result.
+
+        :param protocol: The protocol object to bind.
+        :param player_id: Id of the player it belongs to.
+        :param attach: The state of this attach, see _attach_aborted.
+        """
+        protocol_id = protocol.protocol_id
+        if (player := self._players.get(player_id)) is None:
+            # a new player, or one that only exists while its device is connected
+            player = self._create_player(player_id, protocol)
+        self._unattached.pop(protocol_id, None)
+        self._release_held_protocol(protocol)
+        # The protocol is bound before it is fully ready (config not loaded), so it can
+        # be found during the rest of the attach, such as when fetching its config.
+        # A player that is new stays unpublished until the end.
+        self._protocols[protocol_id] = protocol
+        player.add_protocol(protocol, protocol.role)
+        protocol.set_player(player)
+        protocol.set_config(await self.mass.config.get_protocol_config(protocol))
+        # call hooks after the protocol is bound and its config is set
+        if not self._attach_aborted(protocol, attach):
+            await protocol.on_config_updated()
+        if not self._attach_aborted(protocol, attach):
+            await protocol.on_attach(player)
+        if self._attach_aborted(protocol, attach):
+            # a hook may have finished after the detach that stopped this attach, which
+            # also left a player nobody saw yet to it
+            await self._run_on_detach(protocol)
+            self._discard_unpublished_player(player, attach)
+            return
+        self._store_player_base(player)
+        if not player.initialized.is_set():
+            await self._publish_player(player)
+        else:
+            player.set_config(await self.mass.config.get_player_object_config(player))
+            if self._attach_aborted(protocol, attach):
+                return
+            player.update_state()
+        self.logger.info(
+            "Protocol %s (%s) attached to player %s/%s",
+            protocol_id,
+            protocol.role.value,
+            player_id,
+            player.display_name,
         )
-        if cached_arp_mac and is_valid_mac_address(cached_arp_mac):
-            player.device_info.add_identifier(IdentifierType.MAC_ADDRESS, cached_arp_mac)
+        self._schedule_held_protocols()
 
-        # Enrich device MAC address via ARP if needed
-        # (handles invalid MACs, locally-administered MACs, and missing MACs)
-        await enrich_device_mac_address(player.device_info, self.logger)
-
-        # Cache the resolved MAC for fast matching on subsequent restarts
-        current_mac = player.device_info.identifiers.get(IdentifierType.MAC_ADDRESS)
-        if current_mac and is_valid_mac_address(current_mac) and current_mac != cached_arp_mac:
-            self.mass.config.set(f"{conf_base}/{CONF_CACHED_ARP_MAC}", current_mac)
-
-        # Store original reported MAC if it differs from the resolved MAC.
-        # This enables multi-MAC matching for devices with multiple interfaces
-        # (e.g., WiFi + Ethernet) where ARP resolves one interface but the
-        # protocol reports the other.
-        if reported_mac and is_valid_mac_address(reported_mac) and current_mac:
-            if reported_mac.upper() != current_mac.upper():
-                player.extra_data["reported_mac"] = reported_mac
-                self.mass.config.set(f"{conf_base}/{CONF_REPORTED_MAC}", reported_mac)
-            else:
-                # Provider's reported MAC matches the resolved MAC; clear any stale
-                # stored reported MAC to avoid false-positive multi-MAC matches.
-                self.mass.config.set(f"{conf_base}/{CONF_REPORTED_MAC}", None)
-        elif not reported_mac or not is_valid_mac_address(reported_mac):
-            # Restore reported MAC from config on restart only when the provider
-            # did not supply a usable MAC address.
-            cached_reported_mac: str | None = self.mass.config.get(
-                f"{conf_base}/{CONF_REPORTED_MAC}", None
-            )
-            if cached_reported_mac and is_valid_mac_address(cached_reported_mac):
-                if current_mac and cached_reported_mac.upper() == current_mac.upper():
-                    # Cached value matches the resolved MAC; clear stale entry.
-                    self.mass.config.set(f"{conf_base}/{CONF_REPORTED_MAC}", None)
-                else:
-                    player.extra_data["reported_mac"] = cached_reported_mac
-
-    def _teardown_in_progress(self, player: Player) -> bool:
+    async def _refresh_protocol(self, protocol: PlayerProtocol) -> None:
         """
-        Return True if the server or this player's provider is shutting down.
+        Publish what an attached protocol object reports now, its role included.
 
-        :param player: The player that is in the process of being registered.
+        :param protocol: The protocol object, which is the one attached under its id.
         """
-        return self.mass.closing or player.provider.unloading
+        protocol_id = protocol.protocol_id
+        if (player := protocol.player) is None:
+            # it waits for its player: match it again on what it reports now
+            self.on_unattached_protocol_update(protocol)
+            return
+        if protocol.role != player.get_role(protocol_id):
+            # a protocol in another role leaves its player and attaches again: to the
+            # same player, unless that has no place for it in its new role
+            await self._run_attach(protocol)
+            if protocol.player is not player:
+                await self._settle_player(player)
+            return
+        self._store_protocol(protocol, player.player_id)
+        player.refresh_state()
+        self._schedule_held_protocols()
 
-    def _registration_aborted(self, player: Player) -> bool:
+    async def _rollback_attach(self, protocol: PlayerProtocol, attach: _Attach) -> None:
         """
-        Return True if the given player is no longer the registered player for its ID.
+        Undo what a failed attach bound.
 
-        :param player: The player that is in the process of being registered.
+        :param protocol: The protocol object that failed to attach.
+        :param attach: The state of that attach.
         """
-        # registration awaits provider I/O while the player is already in the registry,
-        # so an unregister (e.g. a provider unload or a device disconnect) can drop or
-        # replace it in the meantime, after which registration must stop
-        if self._players.get(player.player_id) is player:
+        protocol_id = protocol.protocol_id
+        if self._attaching.get(protocol_id) is not attach:
+            # a detach dropped it already, and it released the protocol itself
+            return
+        player = protocol.player
+        if self._protocols.get(protocol_id) is protocol:
+            del self._protocols[protocol_id]
+        self._release_held_protocol(protocol)
+        if player is not None:
+            player.remove_protocol(protocol_id)
+            protocol.set_player(None)
+        self._discard_unpublished_player(player, attach)
+        # protocols claim resources (event subscriptions, connections) that only
+        # on_detach releases
+        await self._run_on_detach(protocol)
+
+    def _discard_unpublished_player(self, player: Player | None, attach: _Attach) -> None:
+        """
+        Drop what an attach that did not complete created and nobody saw yet.
+
+        That is the player it created, and the config it stored for a new device: a
+        device that is found again starts from scratch.
+
+        :param player: The player the protocol was bound to, if it got that far.
+        :param attach: The state of the attach.
+        """
+        if player is not None and player.initialized.is_set():
+            return
+        if player is not None and self._players.get(player.player_id) is player:
+            del self._players[player.player_id]
+        if (player_id := attach.minted_player_id) and player_id not in self._players:
+            self.mass.config.remove(f"{CONF_PLAYERS}/{player_id}")
+            for protocol_id in self.mass.config.get_protocol_ids_of_player(player_id):
+                self.mass.config.remove_protocol_record(protocol_id)
+
+    def _release_held_protocol(self, protocol: PlayerProtocol) -> None:
+        """
+        Stop holding a protocol that waited for its player.
+
+        :param protocol: The protocol, which may not be held at all.
+        """
+        protocol_id = protocol.protocol_id
+        if handle := self._pending_protocol_evaluations.pop(protocol_id, None):
+            handle.cancel()
+        if protocol.player is None and self._protocols.get(protocol_id) is protocol:
+            del self._protocols[protocol_id]
+
+    async def _settle_player(self, player: Player) -> None:
+        """
+        Publish a player that lost a protocol, or drop it when it only existed with it.
+
+        :param player: The player a protocol was taken off.
+        """
+        if self._players.get(player.player_id) is not player or not player.initialized.is_set():
+            # an attach that is still setting the player up drops it
+            return
+        if player.session_only and not player.protocols:
+            await self._drop_player(player, permanent=False)
+            self.logger.info("Player removed: %s", player.display_name)
+            return
+        player.set_config(await self.mass.config.get_player_object_config(player))
+        player.update_state()
+
+    def _attach_aborted(self, protocol: PlayerProtocol, attach: _Attach) -> bool:
+        """
+        Return True if an attach is not the current one of its protocol anymore.
+
+        :param protocol: The protocol object that is being attached.
+        :param attach: The state of the attach.
+        """
+        # an attach awaits provider I/O while the protocol is already bound, so a detach
+        # (e.g. a provider unload or a device disconnect) can drop it in the meantime,
+        # after which the attach must stop
+        if self._attaching.get(protocol.protocol_id) is attach:
             return False
         self.logger.debug(
-            "Registration of player %s aborted: it was unregistered while setting up",
-            player.player_id,
+            "Attach of protocol %s aborted: it was detached while setting up",
+            protocol.protocol_id,
         )
         return True
 
-    async def _finish_player_type_transition(self, player: Player) -> None:
+    async def _unbind(self, protocol: PlayerProtocol) -> Player | None:
         """
-        Publish a registered player that moved in or out of the protocol role.
+        Take a protocol object out of the registry and off its player, without publishing.
 
-        :param player: The player, with its new type already applied to its state.
+        Returns the player it was bound to, if any.
+
+        :param protocol: The protocol object to unbind.
         """
-        self._evaluate_protocol_links(player)
-        if player.state.type == PlayerType.PROTOCOL:
-            # the player is hidden behind its parent from now on and no longer owns a queue.
-            # only the queue is dropped, never the playback: the player either just became a
-            # (hidden) bridge client with nothing playing on it, or is already serving its
-            # parent, where a stop would cut that parent's stream short. A protocol player
-            # has no active group of its own either, so there is nothing to detach here.
-            # the queue goes first, so its final update cannot re-add it after the removal
-            self.mass.player_queues.on_player_remove(
-                player.player_id, permanent=False, release_audio=False
+        protocol_id = protocol.protocol_id
+        if self._protocols.get(protocol_id) is protocol:
+            del self._protocols[protocol_id]
+        if handle := self._pending_protocol_evaluations.pop(protocol_id, None):
+            handle.cancel()
+        self._last_polls.pop(protocol_id, None)
+        player = protocol.player
+        if player is not None and player.protocols.get(protocol_id) is protocol:
+            was_playback_path = player.resolve_output_protocol() is protocol
+            player.remove_protocol(protocol_id)
+            if was_playback_path and player.initialized.is_set():
+                # the audio of the player went with this protocol: let the plugin owning
+                # a live source release its session, and the queue go idle
+                await self._release_audio_source(player.player_id)
+                self.mass.player_queues.on_player_detached(player.player_id)
+        protocol.set_player(None)
+        await self._run_on_detach(protocol)
+        return player
+
+    async def _run_on_detach(self, protocol: PlayerProtocol) -> None:
+        """
+        Let a protocol object release what it claimed, whatever comes of it.
+
+        :param protocol: The protocol object that was taken off its player.
+        """
+        # teardown is best-effort: a provider that fails to release its protocol must not
+        # strand the other protocols of that provider, nor the provider unload itself,
+        # nor mask the error of a failed attach
+        try:
+            await protocol.on_detach()
+        except Exception:
+            self.logger.exception("Error detaching protocol %s", protocol.protocol_id)
+
+    def _create_player(self, player_id: str, protocol: PlayerProtocol | None = None) -> Player:
+        """
+        Create the player with the given id, which stays unpublished for now.
+
+        :param player_id: Id of the player.
+        :param protocol: The protocol the player is created for, when it has no config.
+        """
+        stored = self.mass.config.get(f"{CONF_PLAYERS}/{player_id}")
+        provider_id = protocol.provider_id if protocol else ""
+        config = self.mass.config.get_base_player_config(player_id, provider_id)
+        if stored is None and protocol is not None:
+            config.default_name = protocol.name
+            config.player_type = protocol.type
+        session_only = bool(
+            (stored.get("values") or {}).get(CONF_SESSION_ONLY)
+            if isinstance(stored, dict)
+            else protocol is not None and protocol.session_only
+        )
+        player = Player(self.mass, player_id, config, session_only=session_only)
+        player.protocol_ids.update(self.mass.config.get_protocol_ids_of_player(player_id))
+        self._players[player_id] = player
+        return player
+
+    async def _publish_player(self, player: Player) -> None:
+        """
+        Publish a player that was created: to clients, and with its queue.
+
+        :param player: The player, which is in the registry but not initialized yet.
+        """
+        player_id = player.player_id
+        # restore 'fake' power state from cache if available.
+        # Group players intentionally do NOT restore their fake-power
+        # state across restarts: at boot there is no sync session yet, so
+        # a restored 'powered=True' would put the group in an inconsistent
+        # 'active without captured session' state where children appear
+        # owned by a group that has no leader. Users who want their
+        # 'group captured' state preserved across restarts would need
+        # explicit session restoration which is out of scope here.
+        if player.type != PlayerType.GROUP:
+            cached_value = await self.mass.cache.get(
+                key=player_id,
+                provider=self.domain,
+                category=CACHE_CATEGORY_PLAYER_POWER,
+                default=False,
             )
-            self.mass.signal_event(EventType.PLAYER_REMOVED, player.player_id)
+            if cached_value is not None:
+                player.extra_data[ATTR_FAKE_POWER] = cached_value
+        config = await self.mass.config.get_player_object_config(player)
+        if self._players.get(player_id) is not player:
+            # removed while the awaits above ran
             return
-        # the player surfaces on its own, which leaves it unusable without a queue
-        self.mass.signal_event(EventType.PLAYER_ADDED, object_id=player.player_id, data=player)
+        player.set_config(config)
+        player.update_state(signal_event=False)
+        # now we're ready to signal the player is added
+        player.set_initialized()
+        self.logger.info(
+            "Player (type %s) added: %s/%s",
+            player.state.type.value,
+            player_id,
+            player.state.name,
+        )
+        self.mass.signal_event(EventType.PLAYER_ADDED, object_id=player_id, data=player)
         await self.mass.player_queues.on_player_register(player)
-        if self._registration_aborted(player):
-            # the queue restore outlived the unregister that already cleaned it up,
-            # so drop the queue we just recreated for a player that is gone
-            self.mass.player_queues.on_player_remove(player.player_id, permanent=False)
+
+    async def _drop_player(self, player: Player, *, permanent: bool) -> None:
+        """
+        Take a player out of the registry and let clients know that it is gone.
+
+        :param player: The player to drop, whose protocols are detached already.
+        :param permanent: Also delete the saved queue of the player.
+        """
+        player_id = player.player_id
+        # a player that is going away is done with any live source it was playing,
+        # so let the owning plugin release an upstream session pointing at us
+        await self._release_audio_source(player_id)
+        if self._players.get(player_id) is player:
+            del self._players[player_id]
+        # clean up all lock entries for this player
+        for prefix in [p.value for p in PlayerLockPurpose]:
+            self._player_command_locks.pop(f"{prefix}_{player_id}", None)
+        self._clear_sleep_timer(player)
+        self.mass.cancel_timer(f"player_update_state_{player_id}")
+        self.mass.player_queues.on_player_remove(player_id, permanent=permanent)
+        if player.initialized.is_set() and not self.mass.closing:
+            self.mass.signal_event(EventType.PLAYER_REMOVED, player_id)
+
+    async def _remove_player(self, player_id: str, *, rediscover: bool) -> None:
+        """
+        Remove a player for good, with everything that is stored about it.
+
+        :param player_id: Id of the player to remove.
+        :param rediscover: Ask the providers of its protocols to look for their devices
+            again afterwards, so a device that is still there comes back as a new player.
+        """
+        player = self._players.get(player_id)
+        stored = self.mass.config.get(f"{CONF_PLAYERS}/{player_id}")
+        protocol_ids = set(self.mass.config.get_protocol_ids_of_player(player_id))
+        if player is not None:
+            protocol_ids.update(player.protocols)
+        if player is None and stored is None and not protocol_ids:
+            return
+        # check for group memberships that need to be updated
+        if (
+            player is not None
+            and player.state.active_group
+            and (group_player := self.get_player(player.state.active_group))
+        ):
+            # try to remove from the group
+            with suppress(
+                UnsupportedFeaturedException, PlayerCommandFailed, PlayerUnavailableError
+            ):
+                if group_protocol := group_player.own_protocol:
+                    await group_protocol.set_members(player_ids_to_remove=[player_id])
+        is_group = (
+            player.type if player else (stored or {}).get("player_type")
+        ) == PlayerType.GROUP
+        provider_ids = {
+            str(record.get("provider"))
+            for protocol_id in protocol_ids
+            if (record := self.mass.config.get_protocol_record(protocol_id))
+        }
+        # the objects the providers hold, also of a protocol that is not attached
+        protocols = [
+            protocol
+            for protocol_id in protocol_ids
+            if (protocol := self._protocols.get(protocol_id) or self._unattached.get(protocol_id))
+        ]
+        for protocol in protocols:
+            provider_ids.add(protocol.provider_id)
+            self._attaching.pop(protocol.protocol_id, None)
+            self._unattached.pop(protocol.protocol_id, None)
+            await self._unbind(protocol)
+        # No group detach is issued for its persisted memberships: the player is out of
+        # the registry, so it is filtered out of every group's live member list, and
+        # its persisted membership is settled by the config cleanup below.
+        if player is not None:
+            await self._drop_player(player, permanent=True)
+        self._delete_player_config(player_id, protocol_ids)
+        self.logger.info("Player removed: %s", player.display_name if player else player_id)
+        for protocol in protocols:
+            # the provider only cleans up what it keeps about the device itself.
+            # Best-effort: the player is gone by now, whatever happens to that
+            try:
+                await protocol.on_remove()
+            except Exception:
+                self.logger.exception("Error removing protocol %s", protocol.protocol_id)
+        if not rediscover or is_group:
+            # a group is no device on the network: with its config gone there is nothing
+            # left for its provider to find
+            return
+        for provider_id in provider_ids:
+            if isinstance(provider := self.mass.get_provider(provider_id), PlayerProvider):
+                # a device still on the network is found again as a new player
+                provider.schedule_discovery()
+
+    def _delete_player_config(self, player_id: str, protocol_ids: set[str]) -> None:
+        """
+        Permanently delete everything stored about a player.
+
+        That is its own config and those of its protocols, its DSP and queue settings and
+        its saved queue, so a device that returns starts out fresh. Any group that lists
+        the player as a member loses the member, and so do the user access filters.
+
+        :param player_id: Id of the player to delete the configuration of.
+        :param protocol_ids: Ids of the protocols that belong to the player.
+        """
+        self._update_group_memberships(player_id)
+        for protocol_id in protocol_ids:
+            self.mass.config.remove_protocol_record(protocol_id)
+        for key in (
+            f"{CONF_PLAYERS}/{player_id}",
+            f"{CONF_PLAYER_DSP}/{player_id}",
+            f"{CONF_PLAYER_QUEUES}/{player_id}",
+        ):
+            self.mass.config.remove(key)
+        if player_id not in self._players:
+            self.mass.player_queues.purge_saved_queue(player_id)
+        self._build_legacy_id_index()
+        # a user access filter is an allow-list of player ids, so it must not be left
+        # pointing at a player whose config was just wiped
+        self.mass.create_task(
+            self.mass.webserver.auth.remove_from_user_filters(player_ids=[player_id])
+        )
+
+    def _store_player_base(self, player: Player) -> None:
+        """
+        Store the provider and type a player has now, for when none of its protocols is attached.
+
+        :param player: The player, which may have no stored config at all.
+        """
+        conf_key = f"{CONF_PLAYERS}/{player.player_id}"
+        if not isinstance(stored := self.mass.config.get(conf_key), dict):
+            return
+        if stored.get("provider") != player.provider_id:
+            self.mass.config.set(f"{conf_key}/provider", player.provider_id)
+        if stored.get("player_type") != player.type:
+            self.mass.config.set(f"{conf_key}/player_type", player.type)
+
+    def _get_player_id_of_protocol(self, protocol_id: str) -> str | None:
+        """
+        Return the id of the player a protocol belongs to, attached or not.
+
+        :param protocol_id: Id of the protocol.
+        """
+        if (protocol := self._protocols.get(protocol_id)) and protocol.player:
+            return protocol.player.player_id
+        if record := self.mass.config.get_protocol_record(protocol_id):
+            return cast("str | None", record.get("player_id"))
+        return None
+
+    async def _restore_players(self) -> None:
+        """Bring back every stored player that is enabled and kept while its device is away."""
+        stored_players = self.mass.config.get(CONF_PLAYERS, {})
+        for player_id, stored in list(stored_players.items()):
+            if not isinstance(stored, dict) or not stored.get("enabled", True):
+                continue
+            if (stored.get("values") or {}).get(CONF_SESSION_ONLY):
+                continue
+            if player_id in self._players:
+                continue
+            try:
+                await self._publish_player(self._create_player(player_id))
+            except Exception:
+                self.logger.exception("Could not restore player %s", player_id)
+                self._players.pop(player_id, None)
+
+    async def _disable_player(self, player: Player) -> None:
+        """
+        Take a player the user disabled out of use: the player goes, its config stays.
+
+        :param player: The player to disable.
+        """
+        player_id = player.player_id
+        if player.state.available:
+            # edge case: ensure that the player is powered off if the player gets disabled
+            if player.state.power_control != PLAYER_CONTROL_NONE:
+                await self._handle_cmd_power(player_id, False)
+            elif player.state.playback_state != PlaybackState.IDLE:
+                await self.cmd_stop(player_id)
+        for protocol in list(player.protocols.values()):
+            self._attaching.pop(protocol.protocol_id, None)
+            await self._unbind(protocol)
+            # its provider keeps the object, which a removal of the player still has to reach
+            self._unattached[protocol.protocol_id] = protocol
+        await self._drop_player(player, permanent=False)
+        self.logger.info("Player disabled: %s", player.display_name)
+        self._schedule_update_all_players()
+
+    async def _enable_player(self, player_id: str) -> None:
+        """
+        Bring back a player the user enabled, and let its providers look for its device.
+
+        :param player_id: Id of the player, whose config is stored as enabled already.
+        """
+        stored = self.mass.config.get(f"{CONF_PLAYERS}/{player_id}")
+        if not isinstance(stored, dict):
+            return
+        # a player that only exists while its device is connected comes back when it attaches
+        if not (stored.get("values") or {}).get(CONF_SESSION_ONLY):
+            await self._publish_player(self._create_player(player_id))
+        provider_ids = {
+            str(record.get("provider"))
+            for protocol_id in self.mass.config.get_protocol_ids_of_player(player_id)
+            if (record := self.mass.config.get_protocol_record(protocol_id))
+        }
+        for provider_id in provider_ids:
+            if isinstance(provider := self.mass.get_provider(provider_id), PlayerProvider):
+                provider.schedule_discovery()
+
+    async def _restart_playback_after_config_change(
+        self, player: Player, requires_restart: bool
+    ) -> None:
+        """
+        Restart the queue a player is playing, for a changed setting that needs it.
+
+        :param player: The player whose config changed.
+        :param requires_restart: Whether a setting changed that only applies to a new stream.
+        """
+        if not requires_restart or not player.state.active_source:
+            return
+        resume_queue = self.mass.player_queues.get(player.state.active_source)
+        # if the PlayerQueue was playing, restart playback
+        if resume_queue and resume_queue.state == PlaybackState.PLAYING:
+            # always stop first to ensure the player uses the new config
+            await self.mass.player_queues.stop(resume_queue.queue_id)
+            self.mass.call_later(1, self.mass.player_queues.resume, resume_queue.queue_id, False)
+
+    def _get_transport_protocol(self, player: Player) -> PlayerProtocol:
+        """
+        Return the protocol that takes the transport commands for what the device plays itself.
+
+        That is the audio protocol whose app is shown on the player, else its own protocol.
+
+        :param player: The player the command was issued on.
+        :raises PlayerUnavailableError: When the player has neither of them attached.
+        """
+        if protocol := player.foreign_protocol or player.own_protocol:
+            return protocol
+        msg = f"Player {player.display_name} is not available"
+        raise PlayerUnavailableError(msg)
+
+    async def _resolve_mac_addresses(self, protocol: PlayerProtocol) -> None:
+        """
+        Resolve the MAC addresses used to match the protocol to its player.
+
+        :param protocol: The protocol to resolve the MAC address(es) for.
+        """
+        protocol_id = protocol.protocol_id
+        config = self.mass.config
+        # Save the original MAC reported by the provider (before ARP enrichment)
+        reported_mac = protocol.device_info.identifiers.get(IdentifierType.MAC_ADDRESS)
+
+        # Try to use cached ARP MAC from config for fast matching on restart.
+        # This allows matching to work immediately even if ARP is slow/fails.
+        cached_arp_mac = config.get_protocol_value(protocol_id, CONF_CACHED_ARP_MAC)
+        if isinstance(cached_arp_mac, str) and is_valid_mac_address(cached_arp_mac):
+            protocol.device_info.add_identifier(IdentifierType.MAC_ADDRESS, cached_arp_mac)
+
+        # Enrich device MAC address via ARP if needed
+        # (handles invalid MACs, locally-administered MACs, and missing MACs)
+        await enrich_device_mac_address(protocol.device_info, self.logger)
+
+        # Keep the original reported MAC if it differs from the resolved MAC.
+        # This enables multi-MAC matching for devices with multiple interfaces
+        # (e.g., WiFi + Ethernet) where ARP resolves one interface but the
+        # protocol reports the other.
+        current_mac = protocol.device_info.identifiers.get(IdentifierType.MAC_ADDRESS)
+        if reported_mac and is_valid_mac_address(reported_mac) and current_mac:
+            # Provider's reported MAC matching the resolved MAC is no second address
+            differs = reported_mac.upper() != current_mac.upper()
+            protocol.set_reported_mac(reported_mac if differs else None)
+        elif not reported_mac or not is_valid_mac_address(reported_mac):
+            # Restore reported MAC from config on restart only when the provider
+            # did not supply a usable MAC address.
+            cached_reported_mac = config.get_protocol_value(protocol_id, CONF_REPORTED_MAC)
+            if (
+                isinstance(cached_reported_mac, str)
+                and is_valid_mac_address(cached_reported_mac)
+                and not (current_mac and cached_reported_mac.upper() == current_mac.upper())
+            ):
+                protocol.set_reported_mac(cached_reported_mac)
+
+    def _teardown_in_progress(self, protocol: PlayerProtocol) -> bool:
+        """
+        Return True if the server or the provider of this protocol is shutting down.
+
+        :param protocol: The protocol that is in the process of being attached.
+        """
+        return self.mass.closing or protocol.provider.unloading
 
     async def _release_player_for_play_media(self, player: Player) -> None:
         """
@@ -3073,7 +3405,7 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         """
         Return True if the player's current_media is taken from another player.
 
-        Grouped/synced members and protocol children mirror their parent's
+        Grouped/synced members mirror their parent's
         current_media (palette included), so they must not resolve it themselves.
 
         :param player: The player to check.
@@ -3082,9 +3414,7 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         # a self-referential active_group/synced_to is not a real parent (mirror the
         # != self guard of the state derivation), so it must not skip resolution
         parent_id = state.active_group or state.synced_to
-        if parent_id and parent_id != player.player_id:
-            return True
-        return state.type == PlayerType.PROTOCOL and player.protocol_parent_id is not None
+        return bool(parent_id and parent_id != player.player_id)
 
     def _schedule_palette_fetch(
         self, player_id: str, image_url: str | None, *, trigger_update: bool = True
@@ -3213,40 +3543,42 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
     def _forward_state_update(
         self, player: Player, changed_values: dict[str, tuple[Any, Any]]
     ) -> None:
-        """Forward a player state update to related players (groups, sync parent, protocols)."""
+        """Forward a player state update to related players (groups, sync parent)."""
         # TODO: make this fan-out change-aware (skip relatives that derive nothing from
         # the changed fields) once reverse indexes for synced_to/active_group exist.
         # Propagate group or sync-leader updates to child players.
         if player.state.group_members:
             for child_player in self.iter_group_members(player, exclude_self=True):
-                if player.type == PlayerType.GROUP:
-                    child_player.on_group_updated(player, changed_values)
-                else:
-                    child_player.on_sync_parent_updated(player, changed_values)
+                for protocol in list(child_player.protocols.values()):
+                    if player.type == PlayerType.GROUP:
+                        protocol.on_group_updated(player, changed_values)
+                    else:
+                        protocol.on_sync_parent_updated(player, changed_values)
         # update/signal group player(s) when a member updates. A sync leader is a member of the
         # group player that formed the sync group and gaining members of its own does not change
         # that: a group player mirrors its leader, so it depends on exactly these updates.
         for group_player in self._get_player_groups(player):
-            group_player.on_group_member_updated(player, changed_values)
+            if group_protocol := group_player.own_protocol:
+                group_protocol.on_group_member_updated(player, changed_values)
+            else:
+                self.trigger_player_update(group_player.player_id)
 
         # update/signal manually sync-parent player when child updates
         if (_sync_parent_id := player.state.synced_to) and (
             _sync_parent := self.get_player(_sync_parent_id)
         ):
             self.trigger_player_update(_sync_parent.player_id)
-        # If this is a protocol player, forward the state update to the parent player
-        if (
-            player.type == PlayerType.PROTOCOL
-            and player.protocol_parent_id
-            and (_protocol_parent := self.mass.players.get_player(player.protocol_parent_id))
-        ):
-            _protocol_parent.on_protocol_player_updated(player, changed_values)
-        # If this is a parent player with linked protocols, forward state updates
-        # to linked protocol players so their state reflects parent dependencies
-        if player.state.type != PlayerType.PROTOCOL and player.linked_output_protocols:
-            for linked in player.linked_output_protocols:
-                if protocol_player := self.mass.players.get_player(linked.output_protocol_id):
-                    protocol_player.on_protocol_parent_updated(player, changed_values)
+
+    def _trigger_provider_players_update(self, player: Player) -> None:
+        """
+        Trigger an update of the players that share a provider with the given player.
+
+        :param player: The player whose grouping or availability changed.
+        """
+        for protocol in player.protocols.values():
+            for related in self.iter_protocols(protocol.provider.instance_id):
+                if related.player is not None and related.player is not player:
+                    self.trigger_player_update(related.player.player_id, debounce_delay=2)
 
     def _invalidate_group_volume_snapshot(self, player_id: str) -> None:
         """Clear the cached group volume snapshot for all groups this player belongs to."""
@@ -3479,8 +3811,8 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
             self.logger.info(
                 "Player %s is synced or grouped and can not accept playback related "
                 "commands itself, redirected the command to %s.",
-                player.name,
-                target.name,
+                player.display_name,
+                target.display_name,
             )
         return target
 
@@ -3518,8 +3850,8 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         """
         Return the player whose source the given player is hearing.
 
-        Mirrors ``get_active_queue``: a sync child hears its leader, a group member
-        hears its group, and a protocol player hears its parent.
+        Mirrors ``get_active_queue``: a sync child hears its leader and a group member
+        hears its group.
 
         :param player: The player to resolve the owner for.
         """
@@ -3529,9 +3861,6 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         if player.state.active_group and player.state.active_group != player.player_id:
             if group_player := self.get_player(player.state.active_group):
                 return self._audio_source_owner(group_player)
-        if player.type == PlayerType.PROTOCOL and player.protocol_parent_id:
-            if parent_player := self.get_player(player.protocol_parent_id):
-                return self._audio_source_owner(parent_player)
         return player
 
     def _get_player_groups(self, player: Player) -> Iterator[Player]:
@@ -3570,99 +3899,14 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
                 if isinstance(legacy_id, str):
                     legacy_ids.setdefault(legacy_id, player_id)
 
-    def _repair_protocol_parent_links(self) -> None:
-        """
-        Repair protocol parent links in player configs on startup.
-
-        Scans player configs with a protocol_parent_id set and clears parent_ids
-        that point to player configs that no longer exist (e.g., deleted universal
-        players). A valid parent link also proves the player is a protocol child,
-        so a stale player_type (left behind by an aborted registration) is healed.
-        """
-        all_player_configs = self.mass.config.get(CONF_PLAYERS, {})
-        for player_id, player_config in all_player_configs.items():
-            values = player_config.get("values") or {}
-            parent_id = values.get(CONF_PROTOCOL_PARENT_ID)
-            if not parent_id:
-                continue
-            # Check if parent config still exists
-            parent_config = all_player_configs.get(parent_id)
-            if not parent_config:
-                self.logger.debug(
-                    "Clearing stale protocol_parent_id %s for %s (parent config deleted)",
-                    parent_id,
-                    player_id,
-                )
-                conf_key = f"{CONF_PLAYERS}/{player_id}/values/{CONF_PROTOCOL_PARENT_ID}"
-                self.mass.config.set(conf_key, None)
-                continue
-            if player_config.get("player_type") != PlayerType.PROTOCOL.value:
-                self.logger.info(
-                    "Repairing player type of %s - linked as protocol child of %s",
-                    player_id,
-                    parent_id,
-                )
-                self.mass.config.set_player_type(player_id, PlayerType.PROTOCOL)
-
-    async def _fix_group_member_configs(self) -> None:
-        """
-        Fix stale protocol player IDs in sync group member configs.
-
-        When a sync group references a protocol player ID instead of
-        the parent player ID, correct it using the cached protocol parent mapping.
-        """
-        all_player_configs = self.mass.config.get(CONF_PLAYERS, {})
-        total_fixes = 0
-        fixed_groups: list[str] = []
-
-        for group_id, group_config in list(all_player_configs.items()):
-            if group_config.get("provider") != "sync_group":
-                continue
-            old_members: list[str] = group_config.get("values", {}).get(CONF_GROUP_MEMBERS, [])
-            if not old_members:
-                continue
-
-            new_members: list[str] = []
-            changes = 0
-            for member_id in old_members:
-                parent_id = self._get_cached_protocol_parent_id(member_id)
-                corrected_id = parent_id or member_id
-                if corrected_id != member_id:
-                    changes += 1
-                    self.logger.debug(
-                        "Sync group %s: corrected member %s -> %s",
-                        group_id,
-                        member_id,
-                        corrected_id,
-                    )
-                if corrected_id not in new_members:
-                    new_members.append(corrected_id)
-
-            if changes:
-                self.mass.config.set_protocol_value(group_id, CONF_GROUP_MEMBERS, new_members)
-                total_fixes += changes
-                fixed_groups.append(group_id)
-
-        for group_id in fixed_groups:
-            if (group_player := self.get_player(group_id)) and group_player.available:
-                await group_player.on_config_updated()
-
-        if total_fixes:
-            self.logger.info(
-                "Fixed %d stale member reference(s) across %d sync group(s)",
-                total_fixes,
-                len(fixed_groups),
-            )
-
     async def _poll_players(self) -> None:
-        """Background task that polls players for updates."""
+        """Background task that polls the protocols of the players for updates."""
         while True:
             for player in list(self._players.values()):
                 self._check_idle_power_off(player)
                 # if the player is playing, update elapsed time every tick
                 # to ensure the queue has accurate details
-                player_playing = player.state.playback_state == PlaybackState.PLAYING
-                if player_playing and player.type != PlayerType.PROTOCOL:
+                if player.state.playback_state == PlaybackState.PLAYING:
                     self.mass.call_later(
                         0.5,
                         self.mass.player_queues.on_player_update,
@@ -3670,24 +3914,25 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
                         {"corrected_elapsed_time": (None, player.state.corrected_elapsed_time)},
                         task_id=f"queue_on_player_update_{player.player_id}",
                     )
-                # Poll player;
-                if not player.needs_poll:
+            for protocol in list(self._protocols.values()):
+                # Poll protocol;
+                if not protocol.needs_poll:
                     continue
-                try:
-                    last_poll: float = player.extra_data[ATTR_LAST_POLL]
-                except KeyError:
-                    last_poll = 0.0
-                if (self.mass.loop.time() - last_poll) < player.poll_interval:
+                last_poll = self._last_polls.get(protocol.protocol_id, 0.0)
+                if (self.mass.loop.time() - last_poll) < protocol.poll_interval:
                     continue
-                player.extra_data[ATTR_LAST_POLL] = self.mass.loop.time()
+                if self._protocols.get(protocol.protocol_id) is not protocol:
+                    # detached while the protocols before it were polled
+                    continue
+                self._last_polls[protocol.protocol_id] = self.mass.loop.time()
                 try:
-                    await player.poll()
+                    await protocol.poll()
                 except PlayerUnavailableError:
-                    self.logger.debug("Player %s is unavailable", player.state.name)
+                    self.logger.debug("Player %s is unavailable", protocol.display_name)
                 except Exception as err:
                     self.logger.warning(
                         "Error while requesting latest state from player %s: %s",
-                        player.state.name,
+                        protocol.display_name,
                         str(err),
                         exc_info=err if self.logger.isEnabledFor(10) else None,
                     )
@@ -3860,19 +4105,16 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
 
         When a player has an active grouped output protocol (e.g., AirPlay group) and
         an external source (e.g., Spotify Connect, TV input) takes over playback,
-        we need to clear the active output protocol and ungroup the protocol players.
+        we need to clear the active output protocol and ungroup the protocols.
 
         This prevents the situation where the player appears grouped via protocol
         but is actually playing from a different source.
 
         :param player: The player whose active_source changed.
         """
-        # Only relevant for non-protocol players
-        if player.type == PlayerType.PROTOCOL:
-            return
-
-        # Not a takeover if the player is not actively playing
-        if player.playback_state != PlaybackState.PLAYING:
+        # Not a takeover if the device itself is not actively playing
+        own = player.own_protocol
+        if own is None or own.playback_state != PlaybackState.PLAYING:
             return
 
         # Only relevant if we have an active output protocol (not native)
@@ -3885,8 +4127,8 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         if self._is_ma_managed_source(player, new_source):
             return
 
-        # Get the active protocol player
-        protocol_player = self.get_player(player.active_output_protocol)
+        # Get the active protocol
+        protocol_player = player.protocols.get(player.active_output_protocol)
         if not protocol_player:
             return
 
@@ -3916,7 +4158,7 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         # Set active output protocol to native
         player.set_active_output_protocol("native")
 
-        # Ungroup the protocol player (async task)
+        # Ungroup the protocol (async task)
         self.mass.create_task(protocol_player.ungroup())
 
     def _is_ma_managed_source(self, player: Player, source: str | None) -> bool:
@@ -3960,11 +4202,7 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         if self.mass.closing:
             return
 
-        for player in self.all_players(
-            return_unavailable=True,
-            return_disabled=False,
-            return_protocol_players=True,
-        ):
+        for player in self.iter_players(return_unavailable=True, return_disabled=False):
             self.trigger_player_update(player.player_id, debounce_delay=delay)
 
     async def _auto_ungroup_if_synced(self, player: Player, log_context: str) -> None:
@@ -3978,7 +4216,7 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
             return
         self.logger.info(
             "Player %s is already synced to %s, ungrouping it first before %s",
-            player.name,
+            player.display_name,
             player.state.synced_to or player.state.active_group,
             log_context,
         )
@@ -4000,7 +4238,7 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
             except Exception:
                 self.logger.warning(
                     "Failed to auto-ungroup %s from %s, proceeding anyway",
-                    player.name,
+                    player.display_name,
                     synced_to,
                 )
 
@@ -4014,34 +4252,36 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         """
         parent = self.get_player(member.state.synced_to) if member.state.synced_to else None
         if parent and parent.available_for_playback:
-            self.logger.debug("Removing %s from its sync leader %s", member.name, parent.name)
+            self.logger.debug(
+                "Removing %s from its sync leader %s", member.display_name, parent.display_name
+            )
             await self._handle_set_members(parent, player_ids_to_remove=[member.player_id])
             return
         # a sync leader that is gone (or offline) can't release its members, so the
         # member has to leave the group from its own side: natively, or through the
-        # linked protocol player that holds the membership (e.g. an AirPlay group)
-        target = member
-        if not member.synced_to:
-            for linked in member.linked_output_protocols:
-                protocol_player = self.get_player(linked.output_protocol_id)
-                if protocol_player and protocol_player.synced_to:
-                    target = protocol_player
-                    break
+        # audio protocol that holds the membership (e.g. an AirPlay group)
+        target = member.own_protocol
+        if target is None or not target.synced_to:
+            target = next(
+                (protocol for protocol in member.audio_protocols if protocol.synced_to), target
+            )
+        msg = (
+            f"{member.display_name} is synced to the unavailable player "
+            f"{member.state.synced_to} and could not leave the group on its own"
+        )
+        if target is None:
+            raise PlayerUnavailableError(msg)
         self.logger.debug(
             "Sync leader %s of %s is unavailable, letting %s leave the group on its own",
             member.state.synced_to,
-            member.name,
-            target.name,
+            member.display_name,
+            target.protocol_id,
         )
         try:
             await target.ungroup()
         except asyncio.CancelledError:
             raise
         except Exception as err:
-            msg = (
-                f"{member.name} is synced to the unavailable player {member.state.synced_to} "
-                "and could not leave the group on its own"
-            )
             raise PlayerUnavailableError(msg) from err
 
     async def _dissolve_own_group(self, player: Player, target_name: str) -> bool:
@@ -4057,7 +4297,8 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         :param target_name: Name of the group being joined, for the log messages.
         :return: False when the group is still in place, so the player must not join.
         """
-        if not player.native_grouping_requires_own_stream:
+        own = player.own_protocol
+        if own is None or not own.native_grouping_requires_own_stream:
             return True
         members = [
             member_id for member_id in player.state.group_members if member_id != player.player_id
@@ -4070,13 +4311,13 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
             # started. Tearing the group down now would cut its members off mid-track.
             self.logger.warning(
                 "Player %s is still serving its own group, leaving it out of %s",
-                player.name,
+                player.display_name,
                 target_name,
             )
             return False
         self.logger.info(
             "Player %s leads a group of its own, dissolving it before it joins %s",
-            player.name,
+            player.display_name,
             target_name,
         )
         # Removing the members rather than the leader keeps this out of the leadership
@@ -4091,7 +4332,7 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
             # dissolve exists to prevent, and one the player can no longer be talked out of.
             self.logger.warning(
                 "Could not dissolve the group of %s, leaving it out of %s",
-                player.name,
+                player.display_name,
                 target_name,
             )
             return False
@@ -4142,7 +4383,7 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         player_ids_to_remove: list[str] | None = None,
         *,
         new_content: bool = False,
-    ) -> tuple[Player, object] | None:
+    ) -> tuple[PlayerProtocol, object] | None:
         """
         Handle the actual set_members logic.
 
@@ -4192,7 +4433,7 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
                 return None
             self.logger.info(
                 "Dissolving sync group of player %s as it is being removed from itself",
-                parent_player.name,
+                parent_player.display_name,
             )
             player_ids_to_add = None
             player_ids_to_remove = [
@@ -4218,8 +4459,8 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
             if child_player_id not in parent_player.state.can_group_with:
                 self.logger.warning(
                     "Player %s can not be grouped with %s",
-                    child_player.name,
-                    parent_player.name,
+                    child_player.display_name,
+                    parent_player.display_name,
                 )
                 continue
 
@@ -4245,7 +4486,9 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
                 child_player.state.synced_to,
                 child_player.state.active_group,
             }:
-                await self._auto_ungroup_if_synced(child_player, f"joining {parent_player.name}")
+                await self._auto_ungroup_if_synced(
+                    child_player, f"joining {parent_player.display_name}"
+                )
 
             # handle edge case: the child leads a native group of its own, which it cannot
             # keep serving from inside this one
@@ -4265,15 +4508,9 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
                     continue
                 # also accept the removal if the child player itself reports
                 # being synced to this parent - handles race conditions where the
-                # parent's group_members state is stale/not yet updated. The
-                # native synced_to is checked as well: a protocol child's state
-                # value is translated to the visible parent, which would reject
-                # a removal correctly addressed at its native sync leader.
+                # parent's group_members state is stale/not yet updated.
                 child_player = self.get_player(child_player_id)
-                if child_player and target_player in (
-                    child_player.state.synced_to,
-                    child_player.synced_to,
-                ):
+                if child_player and target_player == child_player.state.synced_to:
                     final_player_ids_to_remove.append(child_player_id)
                     continue
 
@@ -4283,8 +4520,9 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         if (
             parent_player.type == PlayerType.GROUP
             and PlayerFeature.SET_MEMBERS in parent_player.state.supported_features
+            and (group_protocol := parent_player.own_protocol)
         ):
-            await parent_player.set_members(
+            await group_protocol.set_members(
                 player_ids_to_add=final_player_ids_to_add,
                 player_ids_to_remove=final_player_ids_to_remove,
             )
@@ -4314,17 +4552,17 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         player_ids_to_remove: list[str],
         *,
         new_content: bool = False,
-    ) -> tuple[Player, object] | None:
+    ) -> tuple[PlayerProtocol, object] | None:
         """
         Handle set_members considering protocol and native members.
 
         Skips permission checks, locking, and all redirect logic (internal use only).
-        Translates visible player IDs to protocol player IDs when appropriate,
-        and forwards to the correct player's set_members.
+        Translates player IDs to the IDs of the protocols that carry the group,
+        and forwards to the set_members of the right protocol of the parent.
 
         :param parent_player: The parent player to add/remove members to/from.
-        :param player_ids_to_add: List of visible player IDs to add as members.
-        :param player_ids_to_remove: List of visible player IDs to remove from members.
+        :param player_ids_to_add: List of player IDs to add as members.
+        :param player_ids_to_remove: List of player IDs to remove from members.
         :param new_content: Set when the caller is about to publish new content, so the
             protocol owner can clear its stale metadata before the member joins.
         :return: The opened takeover transaction as a ``(owner, token)`` pair, or None
@@ -4332,14 +4570,16 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
             transaction and must call ``on_group_content_takeover_finished`` or
             ``on_group_content_takeover_aborted`` on it; a raised call is already aborted.
         """
-        # Get parent's active protocol domain and player if available
+        # Get parent's active protocol and its domain if available
         parent_protocol_domain = None
-        parent_protocol_player = None
+        parent_protocol_player: PlayerProtocol | None = None
         if (
             parent_player.active_output_protocol
             and parent_player.active_output_protocol != "native"
         ):
-            parent_protocol_player = self.get_player(parent_player.active_output_protocol)
+            parent_protocol_player = parent_player.protocols.get(
+                parent_player.active_output_protocol
+            )
             if parent_protocol_player:
                 parent_protocol_domain = parent_protocol_player.provider.domain
 
@@ -4375,8 +4615,8 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
             )
         )
 
-        # Forward protocol members to protocol player's set_members
-        takeover_owner: Player | None = None
+        # Forward protocol members to the protocol's set_members
+        takeover_owner: PlayerProtocol | None = None
         takeover_token: object | None = None
         if protocol_members_to_add and parent_protocol_player and new_content:
             takeover_owner = parent_protocol_player
@@ -4390,19 +4630,24 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
                     protocol_members_to_remove,
                 )
 
-            # Forward native members to parent player's set_members
-            if native_members_to_add or native_members_to_remove:
+            # Forward native members to the set_members of the parent's own protocol
+            parent_own = parent_player.own_protocol
+            if (native_members_to_add or native_members_to_remove) and parent_own is not None:
                 filtered_native_add = self._filter_native_members(
                     native_members_to_add, parent_player
                 )
-                # For removal, allow protocol players if they're actually in the parent's group_members
-                # This handles native protocol players (e.g., native AirPlay) where group_members
-                # contains protocol player IDs
+                # For removal, allow the audio protocol of a member only if it is actually in
+                # the group_members of the parent's own protocol. This handles a native
+                # protocol of an audio domain (e.g., native AirPlay) where group_members
+                # contains the audio protocols of other players
                 filtered_native_remove = [
                     pid
                     for pid in native_members_to_remove
-                    if (p := self.get_player(pid))
-                    and (p.type != PlayerType.PROTOCOL or pid in parent_player.group_members)
+                    if (member := self.get_player_by_protocol(pid))
+                    and (
+                        pid in parent_own.group_members
+                        or pid == self._native_member_id(parent_player, member)
+                    )
                 ]
                 self.logger.debug(
                     "Native grouping on %s: filtered_add=%s, filtered_remove=%s",
@@ -4411,14 +4656,14 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
                     filtered_native_remove,
                 )
                 if filtered_native_add or filtered_native_remove:
-                    if PlayerFeature.SET_MEMBERS in parent_player.state.supported_features:
+                    if PlayerFeature.SET_MEMBERS in parent_own.supported_features:
                         self.logger.info(
                             "Calling set_members on native player %s with add=%s, remove=%s",
                             parent_player.state.name,
                             filtered_native_add,
                             filtered_native_remove,
                         )
-                        await parent_player.set_members(
+                        await parent_own.set_members(
                             player_ids_to_add=filtered_native_add or None,
                             player_ids_to_remove=filtered_native_remove or None,
                         )
@@ -4450,7 +4695,7 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         new_leader_id = self._select_ad_hoc_leader(leader, remaining_members)
         self.logger.info(
             "Transferring leadership of %s to %s (%s remaining member(s))",
-            leader.name,
+            leader.display_name,
             new_leader_id,
             len(remaining_members),
         )
@@ -4492,7 +4737,7 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         ]
         active_domain: str | None = None
         if leader.active_output_protocol and leader.active_output_protocol != "native":
-            if protocol_player := self.get_player(leader.active_output_protocol):
+            if protocol_player := leader.protocols.get(leader.active_output_protocol):
                 active_domain = protocol_player.provider.domain
         if active_domain:
             for member_id in candidates:
@@ -4543,7 +4788,8 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         if player is None or player.sleep_timer_expires_at is None:
             return
         self._clear_sleep_timer(player)
-        await self.cmd_stop(player_id)
+        if player.available_for_playback:
+            await self.cmd_stop(player_id)
 
     def _signal_sleep_timer_updated(self, player: Player, expires_at: float | None) -> None:
         """
@@ -4553,8 +4799,6 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         :param expires_at: New expiry timestamp, or None when the timer was cleared or waits
             for paused playback (see the player's sleep_timer_mode).
         """
-        if player.state.type == PlayerType.PROTOCOL:
-            return
         self.mass.signal_event(
             EventType.PLAYER_SLEEP_TIMER_UPDATED,
             object_id=player.player_id,
@@ -4598,14 +4842,14 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
             and PlayerFeature.PAUSE in player.state.supported_features
         ):
             # player has some other source active and native resume support
-            await player.play()
+            await self._get_transport_protocol(player).play()
             return
         if active_source and not active_source.passive:
             await self.select_source(player_id, active_source.id)
             return
         if media:
             # try to re-play the current media item
-            await player.play_media(media)
+            await self._handle_play_media(player.player_id, media)
             return
         # fallback: just try to resume queue playback
         await self.mass.player_queues.resume(player.player_id)
@@ -4622,8 +4866,11 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         :param powered: True to power on, False to power off.
         :param skip_auto_play: If True, skip auto-play on power on.
         """
-        player = self.get_player(player_id, True)
-        assert player is not None  # for type checking
+        # power on is the one command a player takes while it is unavailable
+        player = self.get_player(player_id, raise_unavailable=not powered)
+        if player is None:
+            msg = f"Player {player_id} is not available"
+            raise PlayerUnavailableError(msg)
         player_state = player.state
 
         # a power on that still waits for the device is waited for (power on) or called off
@@ -4674,9 +4921,10 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
             return
         if player_state.power_control == PLAYER_CONTROL_NATIVE:
             # player supports power command natively: forward to player provider
-            await player.power(powered)
-            if powered:
-                await wait_for_power_on(self.logger, player)
+            if own := player.own_protocol:
+                await own.power(powered)
+                if powered:
+                    await wait_for_power_on(self.logger, player)
         elif player_state.power_control == PLAYER_CONTROL_FAKE:
             # user wants to use fake power control - so we (optimistically) update the state
             # and store the state in the cache
@@ -4684,11 +4932,11 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
             # Group players need to actively form/dissolve their session when the
             # user toggles fake power — otherwise the toggle would only update the
             # cosmetic state without ever capturing or releasing the members.
-            if player_state.type == PlayerType.GROUP:
-                await player.power(powered)
+            if player_state.type == PlayerType.GROUP and (own := player.own_protocol):
+                await own.power(powered)
             player.update_state()  # trigger update of the player state
             if player_state.type != PlayerType.GROUP:
-                # see register(): group fake-power is intentionally not persisted
+                # see _publish_player(): group fake-power is intentionally not persisted
                 # because there is no session to restore at boot.
                 await self.mass.cache.set(
                     key=player_id,
@@ -4754,15 +5002,16 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         Power on a player that is switched off at its external power control.
 
         Returns right away for a player that is not switched off. Otherwise it returns once
-        the device is online and registered again, while the player stays available to
-        clients in the meantime. Takes no lock: waiting for the device takes far longer than
-        other commands wait for a player lock, so it must run before any lock is taken.
+        the device is online and one of its protocols attached again, while the player stays
+        available to clients in the meantime. Takes no lock: waiting for the device takes
+        far longer than other commands wait for a player lock, so it must run before any
+        lock is taken.
 
         :param player_id: The player to power on.
         :raises InsufficientPermissions: When the current user has no access to the player.
         :raises PlayerUnavailableError: When the device does not come online in time, or
             it is switched off again before it does.
-        :return: The player, which may be a newly registered instance once it is online.
+        :return: The player.
         """
         player = self.get_player(player_id, True)
         assert player is not None  # for type checking
@@ -4790,13 +5039,15 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
             try:
                 async with asyncio.timeout(OFFLINE_POWER_ON_TIMEOUT):
                     while True:
-                        if (online_player := self._get_online_player(player_id)) is not None:
+                        if player.available_for_playback:
                             # a device can come online before its control reports on, while
                             # what follows (e.g. an announcement) reads the power state
                             if (control := self._controls.get(control_id)) is not None:
-                                await wait_for_power_on(self.logger, online_player, control)
-                            return online_player
-                        if ATTR_POWER_ON_IN_PROGRESS not in player.extra_data:
+                                await wait_for_power_on(self.logger, player, control)
+                            return player
+                        if ATTR_POWER_ON_IN_PROGRESS not in player.extra_data or (
+                            self._players.get(player_id) is not player
+                        ):
                             # a power off called it off, or the power on waited for has ended
                             msg = f"Player {player.display_name} is switched off"
                             raise PlayerUnavailableError(msg)
@@ -4826,39 +5077,6 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         """
         if player.extra_data.pop(ATTR_POWER_ON_IN_PROGRESS, None) is not None:
             self.logger.debug("Called off the power on of player %s", player.display_name)
-
-    def _get_online_player(self, player_id: str) -> Player | None:
-        """
-        Return the player once its device is online and it is fully registered again.
-
-        A returning device may come back as a newly registered instance, which can only be
-        played to once its registration finished: its queue is restored, and a player that
-        plays through its linked protocols needs the protocol player that brought it back
-        to be registered too.
-
-        :param player_id: The player to look up.
-        """
-        player = self.get_player(player_id)
-        if (
-            player is None
-            or not player.available
-            or not player.initialized.is_set()
-            or self.mass.player_queues.get(player_id) is None
-        ):
-            return None
-        if PlayerFeature.PLAY_MEDIA in player.supported_features or not (
-            player.linked_output_protocols
-        ):
-            return player
-        for linked in player.linked_output_protocols:
-            protocol_player = self.get_player(linked.output_protocol_id)
-            if (
-                protocol_player is not None
-                and protocol_player.available_for_playback
-                and protocol_player.initialized.is_set()
-            ):
-                return player
-        return None
 
     def _resolve_group_volume_player(self, player: Player) -> Player | None:
         """
@@ -4941,9 +5159,9 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         await self._notify_source_volume_change(player, volume_level)
 
         # Handle native volume control support
-        if player.volume_control == PLAYER_CONTROL_NATIVE:
+        if player.volume_control == PLAYER_CONTROL_NATIVE and (own := player.own_protocol):
             # player supports volume command natively: forward to player
-            await player.volume_set(device_volume)
+            await own.volume_set(device_volume)
             return
         # Handle fake volume control support
         if player.volume_control == PLAYER_CONTROL_FAKE:
@@ -4970,11 +5188,11 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
             # raw device volume and does not apply min/max scaling of its own
             await player_control.volume_set(device_volume)
             return
-        if protocol_player := self.get_player(player.state.volume_control):
-            # forward the already-scaled device volume: the limits configured on this
-            # (user-facing) player are the only ones that apply to the command
+        if protocol_player := player.protocols.get(player.state.volume_control):
+            # forward the already-scaled device volume: the limits configured on the
+            # player are the only ones that apply to the command
             self.logger.debug(
-                "Redirecting volume command to protocol player %s",
+                "Redirecting volume command to protocol %s",
                 protocol_player.provider.manifest.name,
             )
             await protocol_player.volume_set(device_volume)
@@ -4994,15 +5212,9 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         A lock is only earned inside a group and only holds for as long as the player
         is still grouped, so it can not outlive the group it was earned in.
 
-        :param player: The player to check, which may be a protocol player.
+        :param player: The player to check.
         """
-        if player.extra_data.get(ATTR_MUTE_LOCK) and self._is_in_group(player.state):
-            return True
-        # cmd_volume_mute stores the lock on the parent player, while the volume command
-        # may arrive with the protocol player ID (e.g. during group volume changes)
-        if player.protocol_parent_id and (parent := self.get_player(player.protocol_parent_id)):
-            return bool(parent.extra_data.get(ATTR_MUTE_LOCK)) and self._is_in_group(parent.state)
-        return False
+        return bool(player.extra_data.get(ATTR_MUTE_LOCK)) and self._is_in_group(player.state)
 
     def _stays_silent_on_volume_change(self, player: Player) -> bool:
         """Check if a volume command for the given player lands at 0 to keep it silent."""
@@ -5040,9 +5252,9 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         :param mute_control: the already resolved mute control of the player.
         :param muted: bool if player should be muted.
         """
-        if mute_control == PLAYER_CONTROL_NATIVE:
+        if mute_control == PLAYER_CONTROL_NATIVE and (own := player.own_protocol):
             # player supports mute command natively: forward to player
-            await player.volume_mute(muted)
+            await own.volume_mute(muted)
             return
         if mute_control == PLAYER_CONTROL_FAKE:
             # user wants to use fake mute control - so we use volume instead
@@ -5087,10 +5299,10 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
             await player_control.mute_set(muted)
             return
 
-        # handle to protocol player as volume_mute control
-        if protocol_player := self.get_player(mute_control):
+        # handle a protocol as volume_mute control
+        if protocol_player := player.protocols.get(mute_control):
             self.logger.debug(
-                "Redirecting mute command to protocol player %s",
+                "Redirecting mute command to protocol %s",
                 protocol_player.provider.manifest.name,
             )
             await protocol_player.volume_mute(muted)
@@ -5127,7 +5339,7 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         # or native playback (and it may point at a player that is gone by now).
         # A group left on a protocol that none of its members need anymore is
         # regrouped first, as it would otherwise keep that grouped protocol selected.
-        target_player: Player | None = None
+        target_player: PlayerProtocol | None = None
         output_protocol: OutputProtocol | None = None
         is_fresh_start = player.state.playback_state not in (
             PlaybackState.PLAYING,
@@ -5137,7 +5349,7 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
             not is_fresh_start
             and player.active_output_protocol
             and player.active_output_protocol != "native"
-            and (protocol_player := self.get_player(player.active_output_protocol))
+            and (protocol_player := player.protocols.get(player.active_output_protocol))
         ):
             # Use the already-set protocol directly
             output_protocol = player.get_linked_protocol(player.active_output_protocol)
@@ -5148,17 +5360,19 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
                 await self._regroup_off_unneeded_protocol(player)
             target_player, output_protocol = self._select_best_output_protocol(player)
 
-        if target_player.player_id != player.player_id:
-            # Playing via linked protocol - update active output protocol
-            # output_protocol is guaranteed to be non-None when target_player != player
+        own = player.own_protocol
+        if target_player is not own:
+            # Playing via an audio protocol - update active output protocol
+            # output_protocol is guaranteed to be non-None when the target is not the own protocol
             assert output_protocol is not None
             self.logger.debug(
                 "Starting playback on %s via protocol %s (target=%s), group_members=%s",
                 player.state.name,
                 output_protocol.name,
-                target_player.display_name,
-                target_player.state.group_members,
+                target_player.protocol_id,
+                target_player.group_members,
             )
+            await self._hand_over_volume(player, output_protocol.output_protocol_id)
             player.set_active_output_protocol(output_protocol.output_protocol_id)
         elif player.type != PlayerType.GROUP:
             # Native playback - group players don't have output protocols of their own
@@ -5168,16 +5382,44 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
                 player.state.name,
                 player.state.group_members,
             )
+            await self._hand_over_volume(player, "native")
             player.set_active_output_protocol("native")
 
-        async with player.prepare_play_media():
+        async with own.prepare_play_media() if own else contextlib.nullcontext():
             # skip auto-play since we're about to start playback
             await self._power_on_for_playback(player, skip_auto_play=True)
             await target_player.play_media(media)
-            if target_player.player_id != player.player_id:
-                # notify the native player that protocol playback started
+            if own is not None and target_player is not own:
+                # notify the native protocol that protocol playback started
                 assert output_protocol is not None
-                await player.on_protocol_playback(output_protocol=output_protocol)
+                await own.on_protocol_playback(output_protocol=output_protocol)
+
+    async def _hand_over_volume(self, player: Player, output_protocol_id: str) -> None:
+        """
+        Give the protocol that takes the audio of a player over its volume and mute.
+
+        The level and mute of a player are its own, whichever of its protocols renders
+        the audio: a protocol that becomes the one to control them starts out with them,
+        before it is made the active output and the stream starts.
+
+        :param player: The player whose output is about to be (re)selected.
+        :param output_protocol_id: Id of the output that takes the audio, "native" for
+            the own protocol of the player.
+        """
+        volume_control = player.volume_control_for_output(output_protocol_id)
+        if (
+            (volume_level := player.state.volume_level) is not None
+            and volume_control != player.volume_control
+            and (protocol := player.get_control_protocol(volume_control))
+        ):
+            await protocol.volume_set(self.scale_volume_to_device(player.player_id, volume_level))
+        mute_control = player.mute_control_for_output(output_protocol_id)
+        if (
+            (volume_muted := player.state.volume_muted) is not None
+            and mute_control != player.mute_control
+            and (protocol := player.get_control_protocol(mute_control))
+        ):
+            await protocol.volume_mute(volume_muted)
 
     async def _handle_enqueue_next_media(self, player_id: str, media: PlayerMedia) -> None:
         """
@@ -5195,17 +5437,18 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
             require_active=True,
         ):
             self.logger.debug(
-                "Redirecting enqueue command to protocol player %s",
+                "Redirecting enqueue command to protocol %s",
                 target_player.provider.manifest.name,
             )
             await target_player.enqueue_next_media(media)
             return
 
-        if PlayerFeature.ENQUEUE not in player.state.supported_features:
+        own = player.own_protocol
+        if own is None or PlayerFeature.ENQUEUE not in own.supported_features:
             raise UnsupportedFeaturedException(
                 f"Player {player.state.name} does not support enqueueing"
             )
-        await player.enqueue_next_media(media)
+        await own.enqueue_next_media(media)
 
     async def _notify_source_volume_change(self, player: Player, volume_level: int) -> None:
         """
@@ -5521,7 +5764,10 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         # the selected source plays, not the queue that auto play would resume
         await self._power_on_for_playback(player, skip_auto_play=True)
         # forward to player
-        await player.select_source(source)
+        if (own := player.own_protocol) is None:
+            msg = f"Player {player.state.name} is not available"
+            raise PlayerUnavailableError(msg)
+        await own.select_source(source)
 
     async def _release_group_session(self, group_id: str) -> None:
         """
@@ -5548,12 +5794,12 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         :param player_id: player_id of the player to handle the command.
         """
         player = self._get_reachable_player(player_id)
-        protocol_player: Player | None = player.foreign_protocol_player
+        protocol_player = player.foreign_protocol
         if player.active_output_protocol and player.active_output_protocol != "native":
-            protocol_player = self.get_player(player.active_output_protocol)
+            protocol_player = player.protocols.get(player.active_output_protocol)
         if player.state.playback_state == PlaybackState.IDLE:
             # The player already reports idle but an output protocol is still marked
-            # active: the protocol player may never have received a stop at all
+            # active: the protocol may never have received a stop at all
             # (e.g. the source stream ended on its own before this stop command
             # arrived). Forward an (idempotent) stop and schedule the protocol clear
             # so no stale session lingers on the device and the next playback
@@ -5564,23 +5810,26 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
                     self.schedule_active_output_protocol_clear(player)
             return
         player.mark_stop_called()
-        # Delegate to active protocol player if one is active
-        target_player = player
-        if protocol_player is not None:
-            target_player = protocol_player
-            if PlayerFeature.POWER in target_player.supported_features:
-                # if protocol player supports/requires power,
-                # we power it off instead of just stopping (which also stops playback)
-                # this is rare as most protocols do not support power control (except for cast)
-                await self._handle_cmd_power(target_player.player_id, False)
-                return
+        # Delegate to the active audio protocol if one is active
+        target_player = protocol_player or player.own_protocol
+        if target_player is None:
+            return
+        if (
+            protocol_player is not None
+            and PlayerFeature.POWER in protocol_player.supported_features
+        ):
+            # if the audio protocol supports/requires power,
+            # we power it off instead of just stopping (which also stops playback)
+            # this is rare as most protocols do not support power control (except for cast)
+            await protocol_player.power(False)
+            return
 
-        # handle command on player(protocol) directly
+        # handle command on the protocol directly
         await target_player.stop()
-        # Only clear active protocol if the protocol player has no remaining group members.
+        # Only clear active protocol if the audio protocol has no remaining group members.
         # If there are still protocol group members, keep the protocol active so that
         # when playback resumes it continues on the same protocol.
-        if target_player.player_id == player.player_id or len(target_player.group_members) <= 1:
+        if protocol_player is None or len(protocol_player.group_members) <= 1:
             self.schedule_active_output_protocol_clear(player)
 
     async def _handle_cmd_play(self, player_id: str) -> None:
@@ -5615,18 +5864,19 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
                     f"{player.state.name} does not support play/pause"
                 )
                 raise PlayerCommandFailed(msg)
-            # Delegate to active protocol player if one is active
-            if target_player := player.foreign_protocol_player or self._get_control_target(
+            # Delegate to the active audio protocol if one is active
+            if target_player := player.foreign_protocol or self._get_control_target(
                 player, PlayerFeature.PAUSE, require_active=True
             ):
                 await target_player.play()
                 return
-            # No active protocol target: if the player rendering the audio supports pause and
+            # No active protocol target: if the protocol rendering the audio supports pause and
             # the active (external) source can be paused, unpause it directly instead of
             # restarting the source.
-            output_player = player.resolve_output_player()
+            output_player = player.resolve_output_protocol()
             if (
-                active_source
+                output_player is not None
+                and active_source
                 and active_source.can_play_pause
                 and PlayerFeature.PAUSE in output_player.supported_features
             ):
@@ -5645,10 +5895,10 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
             return
         if media:
             # try to re-play the current media item
-            await player.play_media(media)
+            await self._handle_play_media(player_id, media)
             return
         # fallback: just send play command - which will fail if nothing can be played
-        await player.play()
+        await self._get_transport_protocol(player).play()
 
     async def _handle_cmd_pause(self, player_id: str) -> None:
         """
@@ -5678,18 +5928,19 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
                 f"{player.state.name} does not support play/pause"
             )
             raise PlayerCommandFailed(msg)
-        # Delegate to active protocol player if one is active
-        if target_player := player.foreign_protocol_player or self._get_control_target(
+        # Delegate to the active audio protocol if one is active
+        if target_player := player.foreign_protocol or self._get_control_target(
             player, PlayerFeature.PAUSE, require_active=True
         ):
             await target_player.pause()
             return
-        # No active protocol target: if the player rendering the audio supports pause and the
+        # No active protocol target: if the protocol rendering the audio supports pause and the
         # active (external) source can be paused, forward the command to it instead of stopping
         # it (mirrors the external-source handling in cmd_seek/cmd_next_track).
-        output_player = player.resolve_output_player()
+        output_player = player.resolve_output_protocol()
         if (
-            active_source
+            output_player is not None
+            and active_source
             and active_source.can_play_pause
             and PlayerFeature.PAUSE in output_player.supported_features
         ):
