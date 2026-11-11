@@ -336,9 +336,9 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         waiting for that lock. The locks are strict (see get_player_lock): the body never
         runs without them, as the command corrupts both players' state when it overlaps
         with a holder. The players are locked in one fixed order, every group first, as a
-        single command over a group and its member takes them. A player grouped or released while its lock is awaited has the locks taken
-        again for its new owner, so the body starts under the locks of the players'
-        current owners.
+        single command over a group and its member takes them. A player grouped or
+        released while its lock is awaited has the locks taken again for its new owner,
+        so the body starts under the locks of the players' current owners.
         The body receives a callable that hands back the locks taken for one of the players
         before the others, for a player the command is done with while it goes on with the
         rest; a lock another of the players was given too stays held for it.
