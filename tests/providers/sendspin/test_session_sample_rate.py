@@ -139,7 +139,8 @@ def _player(
         CONF_FLOW_MODE_SAMPLE_RATE: FLOW_MODE_SAMPLE_RATE_SMART,
     }
     player = SendspinPlayer.__new__(SendspinPlayer)
-    player._player_id = player_id
+    player._protocol_id = player_id
+    player._player = None
     player.api = client
     player.logger = MagicMock()
     player._config = MagicMock()

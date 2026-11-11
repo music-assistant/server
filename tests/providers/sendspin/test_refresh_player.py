@@ -13,7 +13,7 @@ from music_assistant_models.enums import PlayerType
 
 import music_assistant.providers.sendspin.player as player_module
 import music_assistant.providers.sendspin.provider as provider_module
-from music_assistant.models.player import Player
+from music_assistant.models.player_protocol import PlayerProtocol
 from music_assistant.providers.sendspin.player import (
     SendspinBasePlayer,
     SendspinPlayer,
@@ -36,9 +36,7 @@ def _make_provider(player: SendspinBasePlayer | None) -> SendspinProvider:
         "MusicAssistant",
         SimpleNamespace(
             loop=asyncio.get_running_loop(),
-            players=SimpleNamespace(
-                get_player=lambda _client_id: player, trigger_player_update=Mock()
-            ),
+            players=SimpleNamespace(get_protocol=lambda _client_id: player),
             create_task=Mock(side_effect=AssertionError("refresh must not spawn tasks")),
         ),
     )
@@ -54,10 +52,9 @@ def _make_provider(player: SendspinBasePlayer | None) -> SendspinProvider:
     return provider
 
 
-def _mock_player(*, initialized: bool = True) -> Mock:
+def _mock_player(*, attached: bool = True) -> Mock:
     player = Mock(spec=SendspinBasePlayer)
-    player.initialized.is_set.return_value = initialized
-    player.protocol_parent_id = None
+    player.player = Mock() if attached else None
     return player
 
 
@@ -70,26 +67,15 @@ async def test_refresh_player_updates_in_place() -> None:
     player.update_state.assert_called_once()
 
 
-async def test_refresh_player_refreshes_the_visible_player() -> None:
-    """A role change reaches the visible player, also when the device is the visible player."""
-    player = _mock_player()
-    provider = _make_provider(player)
-    await provider._refresh_player("c")
-    player.protocol_parent_id = "visible"
-    await provider._refresh_player("c")
-    trigger = cast("Mock", provider.mass.players.trigger_player_update)
-    assert [call.args for call in trigger.call_args_list] == [("c",), ("visible",)]
-
-
 async def test_refresh_player_ignores_unknown_player() -> None:
     """A refresh for a client without a registered player is a no-op."""
     provider = _make_provider(None)
     await provider._refresh_player("c")
 
 
-async def test_refresh_player_ignores_uninitialized_player() -> None:
-    """A refresh during initial registration is a no-op (registration applies config)."""
-    player = _mock_player(initialized=False)
+async def test_refresh_player_ignores_a_protocol_waiting_for_its_player() -> None:
+    """A refresh before the protocol is attached is a no-op (the attach applies config)."""
+    player = _mock_player(attached=False)
     provider = _make_provider(player)
     await provider._refresh_player("c")
     player.on_config_updated.assert_not_awaited()
@@ -114,9 +100,15 @@ class _StubPlayer:
         client_id: str,
         initial_hello: object | None = None,
     ) -> None:
-        self.player_id = client_id
+        self.protocol_id = client_id
+        self.api = SimpleNamespace(info_or_none=None)
+        self.session_only = False
         self._attr_type: PlayerType | None = None
-        self._attr_underlying_player_id: str | None = None
+        self._attr_underlying_protocol_id: str | None = None
+
+    @property
+    def underlying_protocol_id(self) -> str | None:
+        return self._attr_underlying_protocol_id
 
     def preserve_control_features_from(self, other: object) -> None:
         pass
@@ -124,9 +116,17 @@ class _StubPlayer:
 
 def _class_selection_provider(monkeypatch: pytest.MonkeyPatch) -> SendspinProvider:
     provider = SendspinProvider.__new__(SendspinProvider)
+    provider.mass = cast(
+        "MusicAssistant",
+        SimpleNamespace(
+            config=SimpleNamespace(
+                get_protocol_record=lambda _: None, get_protocol_value=lambda *_args: None
+            )
+        ),
+    )
     provider._bridge_identifiers = {}
     provider._bridge_player_types = {}
-    provider._bridge_underlying_players = {}
+    provider._bridge_underlying_protocols = {}
     provider._bridge_static_delay_defaults = {}
     monkeypatch.setattr(provider_module, "SendspinPlayer", _StubPlayer)
     monkeypatch.setattr(provider_module, "SendspinVisualizerPlayer", _StubPlayer)
@@ -197,9 +197,10 @@ def test_player_classes_declare_their_visibility() -> None:
 def test_player_classes_advertise_grouping_by_role(monkeypatch: pytest.MonkeyPatch) -> None:
     """Only Sendspin clients with an output role advertise grouping capability."""
 
-    def _init_player(self: Player, provider: PlayerProvider, player_id: str) -> None:
+    def _init_player(self: PlayerProtocol, provider: PlayerProvider, protocol_id: str) -> None:
         self._provider = provider
-        self._player_id = player_id
+        self._protocol_id = protocol_id
+        self._player = None
         self._attr_can_group_with = set()
 
     client = SimpleNamespace(info=SimpleNamespace(player_support=None))
@@ -211,7 +212,7 @@ def test_player_classes_advertise_grouping_by_role(monkeypatch: pytest.MonkeyPat
             server_api=SimpleNamespace(get_client=Mock(return_value=client)),
         ),
     )
-    monkeypatch.setattr(Player, "__init__", _init_player)
+    monkeypatch.setattr(PlayerProtocol, "__init__", _init_player)
     monkeypatch.setattr(SendspinBasePlayer, "_refresh_client_info", Mock())
     monkeypatch.setattr(SendspinBasePlayer, "_subscribe_client_callbacks", Mock())
     monkeypatch.setattr(SendspinPlayer, "_refresh_client_info", Mock())
