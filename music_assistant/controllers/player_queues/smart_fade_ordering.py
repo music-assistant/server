@@ -272,7 +272,7 @@ def _pick_order(
             ]
             best = max(score for score, _index in scored)
             near_ties = [index for score, index in scored if score >= (best - _NEAR_TIE_DELTA)]
-            picked = random.choice(near_ties)
+            picked = random.choice(near_ties)  # noqa: S311 - tie-break
 
         remaining.remove(picked)
         order.append(picked)

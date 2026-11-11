@@ -1,17 +1,10 @@
-"""
-Tests for progress extrapolation across a resume-from-stop gap.
-
-Pausing a Sendspin group falls back to STOP. On the first metadata push after
-resume, PlayerMedia.corrected_elapsed_time still extrapolates from the pre-stop
-elapsed_time_last_updated, which would report the entire stopped period (hours
-or days) as track progress. The computation must fall back to the retained
-elapsed time when the extrapolation window is not fresh.
-"""
+"""Tests for metadata progress extrapolation."""
 
 from __future__ import annotations
 
 import time
-from unittest.mock import MagicMock
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock
 
 from music_assistant_models.enums import PlaybackState
 from music_assistant_models.player import PlayerMedia
@@ -35,16 +28,10 @@ def _media(elapsed: int | None, *, updated_ago: float | None = None) -> PlayerMe
     )
 
 
-def test_fresh_extrapolation_is_trusted() -> None:
-    """A few seconds of interpolation past the last update is normal playback."""
-    result = _compute(_media(145, updated_ago=2.5), is_playing=True)
-    assert 147_000 <= result <= 148_500
-
-
-def test_stale_extrapolation_falls_back_to_retained_elapsed() -> None:
-    """A days-old anchor means the gap is stopped time, not track progress."""
-    five_days = 5 * 24 * 3600.0
-    assert _compute(_media(145, updated_ago=five_days), is_playing=True) == 145_000
+def test_steady_playback_extrapolates_from_an_old_anchor() -> None:
+    """A push 90 s into steady playback reports the live position, not the anchor."""
+    result = _compute(_media(0, updated_ago=90.0), is_playing=True)
+    assert 90_000 <= result <= 91_500
 
 
 def test_not_playing_keeps_the_fixed_position() -> None:
@@ -75,3 +62,51 @@ def test_metadata_builder_preserves_unknown_duration_progress() -> None:
 
     assert metadata.track_duration == 0
     assert metadata.track_progress == 12_000
+
+
+def test_metadata_builder_clamps_progress_to_duration() -> None:
+    """Extrapolation never reports a position past the end of the track."""
+    player = MagicMock()
+    player.state.playback_state = PlaybackState.PLAYING
+    player._compute_track_progress_ms = SendspinPlayer._compute_track_progress_ms.__get__(
+        player, SendspinPlayer
+    )
+    media = _media(170, updated_ago=60.0)
+    media.duration = 180
+    metadata = SendspinPlayer._build_current_media_metadata(player, media, None, is_playing=True)
+
+    assert metadata.track_progress == 180_000
+
+
+async def test_push_pairs_the_position_with_the_playing_state() -> None:
+    """A resume during the artwork lookup reports the fresh position, not the idle snapshot."""
+    player = MagicMock()
+    player.available = True
+    player._content_takeover_pending = False
+    player._metadata_generation = 1
+    for name in (
+        "_media_identity",
+        "_metadata_publish_allowed",
+        "_build_current_media_metadata",
+        "_compute_track_progress_ms",
+    ):
+        setattr(player, name, getattr(SendspinPlayer, name).__get__(player, SendspinPlayer))
+    player._queue_repeat_shuffle.return_value = (MagicMock(), False)
+    player._send_beat_schedule = AsyncMock()
+    idle_media = _media(74, updated_ago=360.0)
+    idle_media.duration = 309
+    player.state = SimpleNamespace(current_media=idle_media, playback_state=PlaybackState.IDLE)
+
+    async def resume_during_lookup(*_args: object, **_kwargs: object) -> None:
+        playing_media = _media(74, updated_ago=0.0)
+        playing_media.duration = 309
+        player.state = SimpleNamespace(
+            current_media=playing_media, playback_state=PlaybackState.PLAYING
+        )
+
+    player._send_album_artwork = AsyncMock(side_effect=resume_during_lookup)
+
+    await SendspinPlayer.send_current_media_metadata(player)
+
+    metadata = player._metadata_role.set_metadata.call_args.args[0]
+    assert 74_000 <= metadata.track_progress <= 75_500

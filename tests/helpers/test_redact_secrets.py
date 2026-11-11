@@ -27,6 +27,7 @@ FAKE_JWT = "eyJmYWtl.eyJmYWtlLXBheWxvYWQ.ZmFrZS1zaWduYXR1cmU"
         "Authorization",
         "code",
         "Code",
+        "code_verifier",
         "Values",
     ],
 )

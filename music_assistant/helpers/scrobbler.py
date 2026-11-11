@@ -109,7 +109,7 @@ class ScrobblerHelper:
         async def update_now_playing() -> None:
             try:
                 await self._update_now_playing(report)
-                self.logger.debug(f"track {report.uri} marked as 'now playing'")
+                self.logger.debug("track %s marked as 'now playing'", report.uri)
                 self.currently_playing = report.uri
             except self.scrobble_exceptions:
                 self.logger.exception("Error while marking track as 'now playing'")

@@ -24,7 +24,7 @@ from unittest.mock import MagicMock
 
 import pytest
 from fastmcp import Client, FastMCP
-from mcp.shared.exceptions import McpError
+from fastmcp.exceptions import McpError
 from music_assistant_models.access import PlaylistAccess
 from music_assistant_models.auth import UserRole
 from music_assistant_models.enums import ProviderSharing

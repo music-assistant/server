@@ -37,7 +37,7 @@ LOGGER = logging.getLogger(__name__)
 INHERIT_POLICY = "Inherit"
 LEGACY_READ_ONLY_POLICY = "Read-only"
 # Bandit B105: this is a UI display-name prefix, not credential material.
-MCP_TOKEN_NAME_PREFIX = "MCP — "  # nosec B105
+MCP_TOKEN_NAME_PREFIX = "MCP — "  # noqa: S105
 
 
 @dataclass(frozen=True, slots=True)

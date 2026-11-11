@@ -173,7 +173,7 @@ class TidalAPIClient:
 
     @throttle_with_retries
     async def _request(
-        self, method: str, endpoint: str, **kwargs: Any
+        self, /, method: str, endpoint: str, **kwargs: Any
     ) -> tuple[dict[str, Any], str]:
         """Handle API requests internally."""
         if not await self.auth.ensure_valid_token():

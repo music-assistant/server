@@ -213,15 +213,15 @@ class DSPConfigMixin:
             )
             if returncode != 0:
                 msg = output.decode(errors="replace").strip()
-                raise InvalidDataError(f"Uploaded file is not valid audio: {msg}")
+                raise InvalidDataError(f"Uploaded file is not valid audio: {msg}")  # noqa: TRY301 - cleanup in except below
             tags = await async_parse_tags(ir_path)
             if tags.channels > MAX_IR_CHANNELS:
-                raise InvalidDataError(
+                raise InvalidDataError(  # noqa: TRY301 - cleanup in except below
                     f"Impulse response has {tags.channels} channels: "
                     "only mono and stereo files are supported"
                 )
             if tags.duration is not None and tags.duration > MAX_IR_SECONDS:
-                raise InvalidDataError(
+                raise InvalidDataError(  # noqa: TRY301 - cleanup in except below
                     f"Impulse response is {tags.duration:.1f} seconds long: "
                     f"the limit is {MAX_IR_SECONDS:.0f} seconds"
                 )

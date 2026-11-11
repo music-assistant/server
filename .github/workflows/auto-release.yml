@@ -1,12 +1,13 @@
 name: Auto Release
 
 # Automatically creates releases with proper version increments.
-# - Nightly: runs at 05:00 Europe/Amsterdam with 2+ commits
+# - Nightly: runs at 04:00 Europe/Amsterdam with 2+ commits, an hour after the
+#   frontend and models nightlies so their version bumps are included
 # - Beta, RC, stable: manually triggered
 
 on:
   schedule:
-    - cron: "0 5 * * *"
+    - cron: "0 4 * * *"
       timezone: "Europe/Amsterdam"
   workflow_dispatch:
     inputs:

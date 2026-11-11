@@ -17,7 +17,7 @@ from music_assistant_models.errors import (
 
 from music_assistant.constants import CONF_PASSWORD, CONF_USERNAME
 from music_assistant.controllers.tasks.context import update_current_task_progress_text
-from music_assistant.helpers.tags import get_embedded_image
+from music_assistant.helpers.tags import AudioTags, async_parse_tags, get_embedded_image
 from music_assistant.providers.filesystem_local import LocalFileSystemProvider
 from music_assistant.providers.filesystem_local.constants import (
     CONF_ENTRY_CONTENT_TYPE,
@@ -39,7 +39,9 @@ from .helpers import WebDAVItem, build_webdav_url, webdav_propfind, webdav_test_
 
 if TYPE_CHECKING:
     from music_assistant_models.config_entries import ConfigEntry, ProviderConfig
+    from music_assistant_models.enums import MediaType
     from music_assistant_models.provider import ProviderManifest
+    from music_assistant_models.streamdetails import StreamDetails
 
     from music_assistant.mass import MusicAssistant
 
@@ -94,6 +96,16 @@ class WebDAVFileSystemProvider(LocalFileSystemProvider):
         if parsed.path and parsed.path != "/":
             return PurePosixPath(parsed.path).name
         return parsed.netloc
+
+    async def open_local_file(self, path: str) -> int | None:
+        """Return None: the stream path of a WebDAV file is its URL, which ffmpeg opens itself."""
+        return None
+
+    async def get_stream_details(self, item_id: str, media_type: MediaType) -> StreamDetails:
+        """Return the content details for the given track when it will be streamed."""
+        streamdetails = await super().get_stream_details(item_id, media_type)
+        streamdetails.verify_ssl = self.verify_ssl
+        return streamdetails
 
     @property
     def _auth_header(self) -> str | None:
@@ -229,6 +241,12 @@ class WebDAVFileSystemProvider(LocalFileSystemProvider):
             if resp.status != 200:
                 raise MediaNotFoundError(f"File not found: {path}")
             return await resp.read()
+
+    async def _parse_tags(self, file_item: FileSystemItem) -> AudioTags:
+        """Parse the tags of a file over HTTP."""
+        return await async_parse_tags(
+            file_item.absolute_path, file_item.file_size, verify_ssl=self.verify_ssl
+        )
 
     def _convert_webdav_items(
         self,
@@ -377,3 +395,7 @@ class WebDAVFileSystemProvider(LocalFileSystemProvider):
             self._session, self.base_url, self.username, self.password, timeout=10
         )
         return True
+
+    async def _unreachable_folders(self) -> list[str]:
+        """Return no folders: a WebDAV server has no storage locations below its root."""
+        return []

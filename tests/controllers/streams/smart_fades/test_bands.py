@@ -8,6 +8,7 @@ import pytest
 from music_assistant.controllers.streams.smart_fades.bands import (
     build_band_profile,
     instrumental_claim_confirmed,
+    kick_runs,
     loudness_referenced_level,
     smoothstep,
     window_duty,
@@ -112,6 +113,35 @@ class TestBandProfile:
         assert window_fraction(p_legacy, "low", 0.0, 60.0) == pytest.approx(
             window_fraction(p_modern, "low", 0.0, 60.0), abs=1e-9
         )
+
+
+class TestKickRuns:
+    """Kick runs merge consecutive kick bars and clip to the asked window."""
+
+    def test_runs_merge_consecutive_bars_and_clip_to_the_window(self) -> None:
+        """Kick bars outside two quiet gaps form three runs, clipped at the window edges."""
+        low = np.full(1800, 0.5, dtype=np.float32)
+        t = np.arange(1800) * (240.0 / 1800)
+        low[((t >= 10.0) & (t < 20.0)) | ((t >= 30.0) & (t < 40.0))] = 0.01
+        profile = build_band_profile(_analysis_with_bands(low, 0.1, 0.1, 0.1))
+        assert profile is not None
+
+        runs = kick_runs(profile, 0.5, 5.0, 45.0)
+
+        assert runs == [
+            pytest.approx((5.0, 10.0)),
+            pytest.approx((20.0, 30.0)),
+            pytest.approx((40.0, 45.0)),
+        ]
+
+    def test_a_kickless_window_has_no_runs(self) -> None:
+        """A window without a kick bar yields no run."""
+        low = np.full(1800, 0.5, dtype=np.float32)
+        low[np.arange(1800) * (240.0 / 1800) >= 200.0] = 0.01
+        profile = build_band_profile(_analysis_with_bands(low, 0.1, 0.1, 0.1))
+        assert profile is not None
+
+        assert kick_runs(profile, 0.5, 200.0, 240.0) == []
 
 
 class TestSmoothstep:

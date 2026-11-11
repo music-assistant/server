@@ -3,6 +3,16 @@
     "path": {
       "label": "Folder"
     },
+    "overlap_warning": {
+      "label": "Files in this folder are already read by: {0}. Using it would import them twice."
+    },
+    "overlap_choice": {
+      "label": "Use this folder anyway?",
+      "options": {
+        "use_folder": "Use this folder",
+        "choose_another": "Choose another folder"
+      }
+    },
     "setup_content_type": {
       "label": "What do you want to add?",
       "options": {
@@ -46,6 +56,9 @@
   "setup_flow": {
     "user": {
       "title": "Choose a folder"
+    },
+    "overlap": {
+      "title": "Already read by another source"
     }
   },
   "errors": {

@@ -1,11 +1,14 @@
 """Unit tests for the Spotify provider's search implementation."""
 
+import asyncio
 from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from music_assistant_models.enums import MediaType
+from music_assistant_models.errors import RetriesExhausted
 
+from music_assistant.providers.spotify import provider as provider_module
 from music_assistant.providers.spotify.provider import SpotifyProvider
 from tests.common import use_real_create_task
 
@@ -141,6 +144,103 @@ async def test_search_only_playlists_with_dev_session(
         use_global_session=True,
     )
     assert len(result.playlists) == 1
+
+
+@pytest.mark.asyncio
+async def test_search_playlists_fall_back_to_dev_session_when_global_is_limited(
+    provider: SpotifyProvider, get_data: AsyncMock
+) -> None:
+    """A rate limited global session neither fails the search nor drops its playlists."""
+    provider.dev_session_active = True
+
+    async def side_effect(endpoint: str, **kwargs: Any) -> dict[str, Any]:
+        if kwargs["use_global_session"]:
+            raise RetriesExhausted("Not retrying, asked to wait 600 seconds")
+        return _respond(endpoint, **kwargs)
+
+    get_data.side_effect = side_effect
+
+    result = await provider.search("chill", [MediaType.TRACK, MediaType.PLAYLIST], limit=10)
+
+    assert len(result.tracks) == 1
+    assert len(result.playlists) == 1
+
+
+@pytest.mark.asyncio
+async def test_search_playlists_fall_back_when_global_session_is_backing_off(
+    provider: SpotifyProvider, get_data: AsyncMock, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A global session that keeps retrying a rate limit is not waited out."""
+    provider.dev_session_active = True
+    monkeypatch.setattr(provider_module, "GLOBAL_SEARCH_TIMEOUT", 0.05)
+
+    async def side_effect(endpoint: str, **kwargs: Any) -> dict[str, Any]:
+        if kwargs["use_global_session"]:
+            await asyncio.sleep(160)
+        return _respond(endpoint, **kwargs)
+
+    get_data.side_effect = side_effect
+
+    async with asyncio.timeout(5):
+        result = await provider.search("chill", [MediaType.TRACK, MediaType.PLAYLIST], limit=10)
+
+    assert len(result.tracks) == 1
+    assert len(result.playlists) == 1
+
+
+def _respond_global_pages(failing_offset: int, **kwargs: Any) -> dict[str, Any] | None:
+    """Answer a dev request, or a full global playlist page before the failing offset."""
+    if not kwargs["use_global_session"]:
+        playlists = [_make_playlist_obj("g0", "Playlist"), _make_playlist_obj("p1", "Playlist")]
+        return {"playlists": {"items": playlists}}
+    if kwargs["offset"] >= failing_offset:
+        return None
+    offset = kwargs["offset"]
+    items = [_make_playlist_obj(f"g{offset + i}", "Playlist") for i in range(10)]
+    return {"playlists": {"items": items}}
+
+
+@pytest.mark.asyncio
+async def test_search_playlists_fallback_keeps_earlier_global_pages(
+    provider: SpotifyProvider, get_data: AsyncMock
+) -> None:
+    """A later global page that fails keeps the earlier ones, topped up without duplicates."""
+    provider.dev_session_active = True
+
+    async def side_effect(_endpoint: str, **kwargs: Any) -> dict[str, Any]:
+        if (result := _respond_global_pages(10, **kwargs)) is None:
+            raise RetriesExhausted("Not retrying, asked to wait 600 seconds")
+        return result
+
+    get_data.side_effect = side_effect
+
+    result = await provider.search("chill", [MediaType.PLAYLIST], limit=20)
+
+    assert [p.item_id for p in result.playlists] == [*(f"g{i}" for i in range(10)), "p1"]
+
+
+@pytest.mark.asyncio
+async def test_search_playlists_keep_throttled_global_pages_past_the_deadline(
+    provider: SpotifyProvider, get_data: AsyncMock, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Global pages fetched before the deadline are kept and topped up by the dev session."""
+    provider.dev_session_active = True
+    monkeypatch.setattr(provider_module, "GLOBAL_SEARCH_TIMEOUT", 0.05)
+
+    async def side_effect(_endpoint: str, **kwargs: Any) -> dict[str, Any]:
+        if (result := _respond_global_pages(20, **kwargs)) is None:
+            # the global session serves one request per 2 seconds
+            await asyncio.sleep(2)
+            return {"playlists": {"items": []}}
+        return result
+
+    get_data.side_effect = side_effect
+
+    result = await provider.search("chill", [MediaType.PLAYLIST], limit=25)
+
+    assert [p.item_id for p in result.playlists] == [*(f"g{i}" for i in range(20)), "p1"]
+    dev_calls = [c.kwargs for c in get_data.await_args_list if not c.kwargs["use_global_session"]]
+    assert [(c["offset"], c["limit"]) for c in dev_calls] == [(0, 5)]
 
 
 @pytest.mark.asyncio

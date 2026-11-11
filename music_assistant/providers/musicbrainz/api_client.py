@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING, Any
 
 from music_assistant_models.errors import RateLimited, ResourceTemporarilyUnavailable
 
+from music_assistant.constants import MASS_USER_AGENT
 from music_assistant.controllers.cache import use_cache
 from music_assistant.helpers.json import json_loads
 from music_assistant.helpers.throttle_retry import (
@@ -34,7 +35,7 @@ class MusicBrainzAPIClient:
 
     @use_cache(86400 * 30)  # Cache for 30 days
     @throttle_with_retries
-    async def get_data(self, endpoint: str, **kwargs: str) -> Any:
+    async def get_data(self, /, endpoint: str, **kwargs: str) -> Any:
         """
         Fetch data from the MusicBrainz API.
 
@@ -47,7 +48,7 @@ class MusicBrainzAPIClient:
 
     @use_cache(86400 * 7)  # Cache for 7 days
     @throttle_with_retries
-    async def get_browse_data(self, endpoint: str, **kwargs: str) -> Any:
+    async def get_browse_data(self, /, endpoint: str, **kwargs: str) -> Any:
         """
         Fetch a listing from the MusicBrainz API that grows as the catalog does.
 
@@ -61,9 +62,7 @@ class MusicBrainzAPIClient:
     async def _request(self, endpoint: str, **params: str) -> Any:
         """Perform one request against the MusicBrainz API and return its JSON body."""
         url = f"{MB_BASE_URL}/{endpoint}"
-        headers = {
-            "User-Agent": f"Music Assistant/{self.mass.version} (https://music-assistant.io)"
-        }
+        headers = {"User-Agent": MASS_USER_AGENT}
         params["fmt"] = "json"
         async with self.mass.http_session.get(url, headers=headers, params=params) as response:
             # handle rate limiter

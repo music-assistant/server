@@ -197,6 +197,9 @@ class AnnouncementRender:
             output_format=ANNOUNCEMENT_PCM_FORMAT,
             chunk_size=calculate_content_length(ANNOUNCEMENT_PCM_FORMAT, 1),
             extra_input_args=["-t", str(max_seconds)],
+            # the clip comes from Home Assistant, a TTS engine or a user url without a provider
+            # setting to consult, and self-signed certificates are common on those hosts
+            verify_ssl=False,
         )
         # aclosing guarantees the ffmpeg process is torn down immediately when the
         # render is cancelled, instead of lingering until garbage collection

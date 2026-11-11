@@ -16,6 +16,13 @@ if TYPE_CHECKING:
 
 
 @pytest.fixture
+async def music_mass_with_cache(music_mass: MusicAssistant) -> MusicAssistant:
+    """Return a library-only instance with a real cache, for tests that list a container."""
+    await music_mass.cache._setup_database()
+    return music_mass
+
+
+@pytest.fixture
 async def music_mass_with_audio_analysis(
     music_mass: MusicAssistant,
 ) -> AsyncGenerator[MusicAssistant]:

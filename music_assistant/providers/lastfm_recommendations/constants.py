@@ -23,6 +23,9 @@ CACHE_CATEGORY_TOP_GENRES = 2
 # Expiration time for cached resolved items (in seconds)
 CACHE_EXPIRATION_SECONDS = 60 * 60 * 24 * 90  # 90 days
 
+# Expiration for remembering an item no provider had, so it is not searched for on every refresh
+MISS_CACHE_EXPIRATION_SECONDS = 60 * 60 * 24  # 1 day
+
 # Expiration for the derived top genres; genre identity is stable and the genre rows only
 # rotate daily, so a daily recompute is plenty and keeps the per-artist tag fan-out cheap.
 TOP_GENRES_CACHE_EXPIRATION_SECONDS = 60 * 60 * 24  # 1 day

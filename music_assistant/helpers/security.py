@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import fcntl
 import os
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -33,9 +35,19 @@ def is_safe_path(path: str, base_path: str | None = None) -> bool:
         return False
 
 
-def is_safe_name(name: str) -> bool:
-    """Check if name is safe for use (no path separators or traversal components)."""
-    return not ("/" in name or "\\" in name or ".." in name)
+def real_path_of_fd(fd: int) -> str:
+    """
+    Return where the file of an open descriptor lies, with its symlinks resolved.
+
+    Unlike os.path.realpath on its path, this names the file that was actually opened, also
+    when its path was changed or re-pointed afterwards. NOT async friendly.
+
+    :param fd: The open file descriptor.
+    """
+    if sys.platform == "darwin":
+        # 1024 is MAXPATHLEN, the buffer size F_GETPATH writes the path into
+        return os.fsdecode(fcntl.fcntl(fd, fcntl.F_GETPATH, bytes(1024)).split(b"\0", 1)[0])
+    return str(Path(f"/proc/self/fd/{fd}").readlink())
 
 
 def has_control_chars(value: str) -> bool:

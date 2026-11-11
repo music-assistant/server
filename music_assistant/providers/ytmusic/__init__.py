@@ -6,22 +6,27 @@ import asyncio
 import gettext
 import importlib
 import logging
+import secrets
 import time
 from collections import Counter
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Iterable
 from contextlib import suppress
+from dataclasses import dataclass
 from datetime import datetime
 from functools import lru_cache
 from io import StringIO
+from itertools import zip_longest
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
-from urllib.parse import parse_qs, unquote, urlparse
+from urllib.parse import parse_qs, unquote, urlencode, urlparse
 
 import ytmusicapi
 from aiohttp import ClientError
 from duration_parser import parse as parse_str_duration
+from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption
 from music_assistant_models.enums import (
     AlbumType,
+    ConfigEntryType,
     ContentType,
     ImageType,
     MediaType,
@@ -53,9 +58,10 @@ from music_assistant_models.media_items import (
     UniqueList,
 )
 from music_assistant_models.streamdetails import StreamDetails
+from requests.exceptions import RequestException
 from ytmusicapi import LikeStatus
 from ytmusicapi.constants import SUPPORTED_LANGUAGES
-from ytmusicapi.exceptions import YTMusicServerError
+from ytmusicapi.exceptions import YTMusicError, YTMusicServerError
 from ytmusicapi.helpers import get_authorization, sapisid_from_cookie
 from ytmusicapi.parsers.podcasts import Description
 
@@ -66,6 +72,7 @@ from music_assistant.constants import (
     VERBOSE_LOG_LEVEL,
 )
 from music_assistant.controllers.cache import use_cache
+from music_assistant.controllers.music.constants import CACHE_CATEGORY_SEARCH_RESULTS
 from music_assistant.helpers.util import (
     import_module_in_thread,
     infer_album_type,
@@ -83,12 +90,14 @@ from .helpers import (
     get_album,
     get_artist,
     get_artist_albums,
+    get_episode_start_seconds,
     get_home,
     get_library_albums,
     get_library_artists,
     get_library_playlists,
     get_library_podcasts,
     get_library_tracks,
+    get_playback_tracking,
     get_playlist,
     get_podcast,
     get_podcast_episode,
@@ -103,16 +112,20 @@ from .helpers import (
 )
 
 if TYPE_CHECKING:
-    from music_assistant_models.config_entries import ConfigEntry, ProviderConfig
+    from music_assistant_models.config_entries import ProviderConfig
     from music_assistant_models.provider import ProviderManifest
 
     from music_assistant import MusicAssistant
     from music_assistant.models import ProviderInstanceType
 
 
+CONF_INCLUDE_VIDEOS = "include_videos_in_search"
 CONF_COOKIE = "cookie"
-CONF_PO_TOKEN_SERVER_URL = "po_token_server_url"
-DEFAULT_PO_TOKEN_SERVER_URL = "http://127.0.0.1:4416"
+CONF_PO_TOKEN_SERVER_URL = "po_token_server_url"  # noqa: S105 - URL
+CONF_STREAM_PROFILE = "stream_profile"
+STREAM_PROFILE_STABLE = "stable"
+STREAM_PROFILE_FAST = "fast"
+DEFAULT_PO_TOKEN_SERVER_URL = "http://127.0.0.1:4416"  # noqa: S105 - URL
 
 YTM_DOMAIN = "https://music.youtube.com"
 YTM_COOKIE_DOMAIN = ".youtube.com"
@@ -127,6 +140,10 @@ YT_PERSONAL_PODCAST_PLAYLISTS = (
     "SE",  # Episodes for later
     "RDPN",  # New episodes
 )
+# while an episode plays its position is reported at most this often (in seconds)
+PROGRESS_REPORT_INTERVAL = 300
+# characters of the client playback nonce (cpn), YouTube's id for one playback
+CPN_ALPHABET = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_"
 YT_PERSONAL_PLAYLISTS = (
     YT_LIKED_SONGS_PLAYLIST_ID,  # Liked songs
     "RDTMAK5uy_kset8DisdE7LSD4TNjEVvrKRTmG7a56sY",  # SuperMix
@@ -185,6 +202,17 @@ async def setup(
     return YoutubeMusicProvider(mass, manifest, config, SUPPORTED_FEATURES)
 
 
+@dataclass
+class EpisodePlayback:
+    """A playback of a podcast episode as reported to YouTube."""
+
+    cpn: str
+    position: int
+    reported_at: float = float("-inf")
+    announced: bool = False
+    watchtime_url: str | None = None
+
+
 class YoutubeMusicProvider(RecommendationPayloadMixin, MusicProvider):
     """Provider for Youtube Music."""
 
@@ -195,6 +223,7 @@ class YoutubeMusicProvider(RecommendationPayloadMixin, MusicProvider):
     _yt_user: str | None
     _cookie: str
     _yt_dlp_module = None
+    _episode_playbacks: dict[str, EpisodePlayback]
 
     @property
     def max_concurrent_streams(self) -> int:
@@ -203,7 +232,24 @@ class YoutubeMusicProvider(RecommendationPayloadMixin, MusicProvider):
 
     async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
         """Return Config entries to configure this provider."""
-        return (CONF_ENTRY_UNOFFICIAL_PROVIDER,)
+        return (
+            CONF_ENTRY_UNOFFICIAL_PROVIDER,
+            ConfigEntry(
+                key=CONF_INCLUDE_VIDEOS,
+                type=ConfigEntryType.BOOLEAN,
+                default_value=False,
+            ),
+            ConfigEntry(
+                key=CONF_STREAM_PROFILE,
+                type=ConfigEntryType.STRING,
+                options=[
+                    ConfigValueOption(STREAM_PROFILE_STABLE),
+                    ConfigValueOption(STREAM_PROFILE_FAST),
+                ],
+                default_value=STREAM_PROFILE_STABLE,
+                advanced=True,
+            ),
+        )
 
     async def handle_async_init(self) -> None:
         """Set up the YTMusic provider."""
@@ -229,6 +275,7 @@ class YoutubeMusicProvider(RecommendationPayloadMixin, MusicProvider):
         self._initialize_headers()
         self._initialize_context()
         self._cookies = {"CONSENT": "YES+1"}
+        self._episode_playbacks = {}
         # get default language (that is supported by YTM)
         mass_locale = self.mass.metadata.locale
         for lang_code in SUPPORTED_LANGUAGES:
@@ -240,8 +287,20 @@ class YoutubeMusicProvider(RecommendationPayloadMixin, MusicProvider):
         if not await self._user_has_ytm_premium():
             raise LoginFailed("User does not have Youtube Music Premium")
 
+    async def update_config(self, config: ProviderConfig, changed_keys: set[str]) -> None:
+        """Handle a config update."""
+        await super().update_config(config, changed_keys)
+        if f"values/{CONF_INCLUDE_VIDEOS}" in changed_keys:
+            # cached search results do not record the video preference they were made with
+            for provider in (self.instance_id, self.mass.music.domain):
+                await self.mass.cache.delete(
+                    None, category=CACHE_CATEGORY_SEARCH_RESULTS, provider=provider
+                )
+
     # the checksum invalidates entries cached before the search was pinned to English
-    @use_cache(3600 * 24 * 7, cache_checksum="english_search_v1")  # Cache for 7 days
+    @use_cache(
+        3600 * 24 * 7, category=CACHE_CATEGORY_SEARCH_RESULTS, cache_checksum="english_search_v1"
+    )  # Cache for 7 days
     async def search(
         self, search_query: str, media_types: list[MediaType], limit: int = 5
     ) -> SearchResults:
@@ -274,6 +333,11 @@ class YoutubeMusicProvider(RecommendationPayloadMixin, MusicProvider):
             ytm_filter=ytm_filter,
             limit=limit,
         )
+        if ytm_filter == "songs" and self.config.get_value(CONF_INCLUDE_VIDEOS):
+            # some tracks only exist as a video; interleave so videos survive the limit cut
+            videos = await search(query=search_query, ytm_filter="videos", limit=limit)
+            results = [item for pair in zip_longest(results, videos) for item in pair if item]
+            results = results[:limit]
         parsed_results = SearchResults()
         artists: list[Artist | ItemMapping] = []
         albums: list[Album | ItemMapping] = []
@@ -653,6 +717,88 @@ class YoutubeMusicProvider(RecommendationPayloadMixin, MusicProvider):
         episode.position = 0
         return episode
 
+    async def get_resume_position(
+        self, item_id: str, media_type: MediaType
+    ) -> tuple[bool, int, datetime | None]:
+        """
+        Get the resume point YouTube holds for a podcast episode.
+
+        :param item_id: The podcast episode id.
+        :param media_type: The media type of the item.
+        """
+        if media_type != MediaType.PODCAST_EPISODE:
+            raise NotImplementedError
+        video_id = item_id.split(PODCAST_EPISODE_SPLITTER)[1]
+        try:
+            episode_obj = await get_podcast_episode(
+                video_id, headers=self._headers, user=self._yt_user
+            )
+            # the percentage only tells whether the episode was finished, as YouTube updates it
+            # less often than the resume point
+            if int(episode_obj.get("progressPercentage") or 0) >= 100:
+                # the episode page only shows a rounded duration, the (cached) video details the exact one
+                duration = (await self.get_track(video_id)).duration
+                return True, duration * 1000, None
+            start_seconds = await get_episode_start_seconds(
+                video_id, headers=self._headers, user=self._yt_user
+            )
+        except (YTMusicError, RequestException, KeyError, MediaNotFoundError) as err:
+            # without YouTube's progress the episode resumes from Music Assistant's own
+            self.logger.debug("Unable to get the progress of episode %s: %s", video_id, err)
+            raise NotImplementedError from err
+        return False, start_seconds * 1000, None
+
+    async def on_stream_started(self, streamdetails: StreamDetails) -> None:
+        """Announce a started podcast episode to YouTube, so even a short listen is reported."""
+        if streamdetails.media_type != MediaType.PODCAST_EPISODE:
+            return
+        await self._start_episode_playback(streamdetails.item_id, int(streamdetails.seek_position))
+
+    async def on_played(
+        self,
+        media_type: MediaType,
+        prov_item_id: str,
+        fully_played: bool,
+        position: int,
+        media_item: MediaItemType,
+        is_playing: bool = False,
+    ) -> None:
+        """
+        Report the position of a podcast episode to YouTube, so its apps resume from there.
+
+        :param media_type: The media type of the played item.
+        :param prov_item_id: The provider item id.
+        :param fully_played: Whether the item was played to the end.
+        :param position: The last known position in seconds.
+        :param media_item: The played item.
+        :param is_playing: Whether the item is still playing.
+        """
+        if media_type != MediaType.PODCAST_EPISODE:
+            return
+        video_id = prov_item_id.split(PODCAST_EPISODE_SPLITTER)[1]
+        playback = self._episode_playbacks.get(video_id)
+        if playback is None:
+            # marking an episode (un)played is no playback, so YouTube gets no report of it
+            if not is_playing:
+                return
+            # the stream of a resumed pause is the same, so no start was announced for it
+            playback = await self._start_episode_playback(video_id, position)
+        if is_playing and time.monotonic() - playback.reported_at < PROGRESS_REPORT_INTERVAL:
+            return
+        # stamped before any request, so a failed or slow report is not retried every tick
+        playback.reported_at = time.monotonic()
+        if not is_playing:
+            # a pause, stop or finish ends this playback
+            self._episode_playbacks.pop(video_id, None)
+        # a failed announcement is tried again with the next report
+        if not playback.announced:
+            playback.watchtime_url = await self._announce_episode_playback(
+                video_id, playback.cpn, playback.position
+            )
+            playback.announced = True
+        if playback.watchtime_url:
+            await self._report_episode_position(playback, position)
+
     async def library_add(self, item: MediaItemType) -> bool:
         """Add an item to the library."""
         result = False
@@ -812,6 +958,7 @@ class YoutubeMusicProvider(RecommendationPayloadMixin, MusicProvider):
         stream_details = StreamDetails(
             provider=self.instance_id,
             item_id=item_id,
+            media_type=media_type,
             audio_format=AudioFormat(
                 content_type=ContentType.try_parse(stream_format["audio_ext"]),
             ),
@@ -988,6 +1135,7 @@ class YoutubeMusicProvider(RecommendationPayloadMixin, MusicProvider):
     def _initialize_headers(self) -> None:
         """Initialize the headers to include in the requests."""
         headers = {
+            # mimics a browser on the YouTube Music website, which has no public API
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:72.0) Gecko/20100101 Firefox/72.0",
             "Accept": "*/*",
             "Accept-Language": "en-US,en;q=0.5",
@@ -1039,7 +1187,11 @@ class YoutubeMusicProvider(RecommendationPayloadMixin, MusicProvider):
                     item_id=str(album_id),
                     provider_domain=self.domain,
                     provider_instance=self.instance_id,
-                    url=f"{YTM_DOMAIN}/playlist?list={album_obj.get('audioPlaylistId')}",
+                    url=(
+                        f"{YTM_DOMAIN}/playlist?list={playlist_id}"
+                        if (playlist_id := album_obj.get("audioPlaylistId"))
+                        else f"{YTM_DOMAIN}/browse/{album_id}"
+                    ),
                 )
             },
             favorite=_favorite_from_like_status(album_obj),
@@ -1052,11 +1204,11 @@ class YoutubeMusicProvider(RecommendationPayloadMixin, MusicProvider):
             album.metadata.description = unquote(description)
         if "isExplicit" in album_obj:
             album.metadata.explicit = album_obj["isExplicit"]
-        if "artists" in album_obj:
+        if album_artists := album_obj.get("artists"):
             album.artists = UniqueList(
                 [
                     self._get_artist_item_mapping(artist)
-                    for artist in album_obj["artists"]
+                    for artist in album_artists
                     if _artist_is_resolvable(artist)
                 ]
             )
@@ -1281,10 +1433,28 @@ class YoutubeMusicProvider(RecommendationPayloadMixin, MusicProvider):
                 episode.metadata.release_date = datetime.fromisoformat(release_date)
         return episode
 
-    async def _get_stream_format(self, item_id: str) -> dict[str, Any]:
+    async def _get_stream_format(
+        self, item_id: str, *, require_login: bool = False
+    ) -> dict[str, Any]:
         """Figure out the stream URL to use and return the highest quality."""
+        youtube_args: dict[str, list[str]] = {
+            "skip": ["translated_subs", "dash"],
+            "player_client": ["web_music"],
+        }
+        # Login checks and brand accounts need the webpage and config that fast skips.
+        # Premium web_music formats stream without a GVS PO token; missing_pot keeps them.
+        if (
+            self.config.get_value(CONF_STREAM_PROFILE) == STREAM_PROFILE_FAST
+            and not require_login
+            and self._yt_user is None
+        ):
+            youtube_args |= {
+                "player_skip": ["webpage", "configs", "initial_data"],
+                "fetch_pot": ["never"],
+                "formats": ["missing_pot"],
+            }
 
-        def _extract_best_stream_url_format() -> dict[str, Any]:
+        def _extract_best_stream_url_format() -> tuple[dict[str, Any], dict[str, str]]:
             if self._yt_dlp_module is None:
                 self._yt_dlp_module = importlib.import_module("yt_dlp")
             yt_dlp = self._yt_dlp_module
@@ -1298,26 +1468,97 @@ class YoutubeMusicProvider(RecommendationPayloadMixin, MusicProvider):
                     "youtubepot-bgutilhttp": {
                         "base_url": [self._po_token_server_url],
                     },
-                    "youtube": {
-                        "skip": ["translated_subs", "dash"],
-                        "player_client": ["web_music"],
-                    },
+                    "youtube": youtube_args,
                 },
             }
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                had_login = _has_login_cookie(ydl.cookiejar)
+                sent = {cookie.name: cookie.value for cookie in ydl.cookiejar}
                 try:
                     info = ydl.extract_info(url, download=False)
                 except yt_dlp.utils.DownloadError as err:
                     raise UnplayableMediaError(err) from err
+                # YouTube clears LOGIN_INFO when it invalidates the session, which is how
+                # yt-dlp detects rotated cookies
+                if require_login and had_login and not _has_login_cookie(ydl.cookiejar):
+                    raise LoginFailed(
+                        "Your YouTube Music cookies have expired. "
+                        "Please reconfigure this provider with fresh cookies, "
+                        "and close the browser window you exported them from right away.",
+                        translation_key="cookies_expired",
+                        translation_owner=self.translation_owner,
+                    )
                 format_selector = ydl.build_format_selector("m4a/bestaudio")
                 stream_format: dict[str, Any] | None = next(
                     format_selector({"formats": info["formats"]}), None
                 )
                 if not stream_format:
                     raise UnplayableMediaError("No stream formats found")
-                return stream_format
+                changed: dict[str, str] = {}
+                if _has_login_cookie(ydl.cookiejar):
+                    # only what YouTube changed, so cookies another stream stored aren't undone
+                    changed = {
+                        cookie.name: cookie.value
+                        for cookie in ydl.cookiejar
+                        if cookie.domain.endswith("youtube.com")
+                        and sent.get(cookie.name) != cookie.value
+                    }
+                return stream_format, changed
 
-        return await asyncio.to_thread(_extract_best_stream_url_format)
+        stream_format, changed = await asyncio.to_thread(_extract_best_stream_url_format)
+        self._store_cookies(changed)
+        return stream_format
+
+    async def _start_episode_playback(self, video_id: str, position: int) -> EpisodePlayback:
+        """Start tracking a playback of a podcast episode and announce it to YouTube."""
+        cpn = "".join(secrets.choice(CPN_ALPHABET) for _ in range(16))
+        playback = EpisodePlayback(cpn=cpn, position=position)
+        self._episode_playbacks[video_id] = playback
+        playback.watchtime_url = await self._announce_episode_playback(video_id, cpn, position)
+        playback.announced = True
+        return playback
+
+    async def _announce_episode_playback(
+        self, video_id: str, cpn: str, position: int
+    ) -> str | None:
+        """Announce a new playback of a podcast episode to YouTube and return its report address."""
+        tracking = await get_playback_tracking(video_id, headers=self._headers, user=self._yt_user)
+        playback_url = (tracking or {}).get("videostatsPlaybackUrl", {}).get("baseUrl")
+        watchtime_url = (tracking or {}).get("videostatsWatchtimeUrl", {}).get("baseUrl")
+        if not playback_url or not watchtime_url:
+            self.logger.debug("YouTube offers no playback reporting for episode %s", video_id)
+            return None
+        await self._send_playback_report(
+            playback_url, {"cpn": cpn, "docid": video_id, "cmt": str(position)}
+        )
+        return str(watchtime_url)
+
+    async def _report_episode_position(self, playback: EpisodePlayback, position: int) -> None:
+        """Report the segment played since the last report of an episode playback to YouTube."""
+        # a backward seek leaves nothing played since the last report
+        start = min(playback.position, position)
+        playback.position = position
+        await self._send_playback_report(
+            str(playback.watchtime_url),
+            {"cpn": playback.cpn, "cmt": str(position), "st": str(start), "et": str(position)},
+        )
+
+    async def _send_playback_report(self, url: str, params: dict[str, str]) -> None:
+        """Send a playback report to one of the tracking addresses YouTube handed out."""
+        parsed = urlparse(url)
+        query = parse_qs(parsed.query)
+        # YouTube checks the values it put in the address, so only missing ones are added
+        for key, value in {"ver": "2", **params}.items():
+            query.setdefault(key, [value])
+        try:
+            async with self.mass.http_session.get(
+                parsed._replace(query=urlencode(query, doseq=True)).geturl(),
+                headers=self._headers,
+                cookies=self._cookies,
+            ) as response:
+                response.raise_for_status()
+        except ClientError as err:
+            self.logger.debug("YouTube did not take a playback report: %s", err)
 
     def _get_item_mapping(self, media_type: MediaType, key: str, name: str) -> ItemMapping:
         return ItemMapping(
@@ -1348,9 +1589,33 @@ class YoutubeMusicProvider(RecommendationPayloadMixin, MusicProvider):
             self.logger.debug("PO Token server ping failed: %s", err)
             return False
 
+    def _store_cookies(self, updates: dict[str, str]) -> None:
+        """
+        Merge cookies YouTube changed during playback into the stored cookie.
+
+        :param updates: Cookie names and values YouTube returned.
+        """
+        if not updates or self.unloading:
+            return
+        if self.get_setup_value(CONF_COOKIE) != self._cookie:
+            # the user saved a new cookie while this (old) instance was still streaming
+            return
+        current = dict(
+            part.strip().partition("=")[::2] for part in self._cookie.split(";") if "=" in part
+        )
+        merged = current | updates
+        if merged == current:
+            return
+        self._cookie = "; ".join(f"{name}={value}" for name, value in merged.items())
+        self._netscape_cookie = convert_to_netscape(self._cookie, YTM_COOKIE_DOMAIN)
+        self._initialize_headers()
+        self._update_setup_data(CONF_COOKIE, self._cookie)
+
     async def _user_has_ytm_premium(self) -> bool:
         """Check if the user has Youtube Music Premium."""
-        stream_format = await self._get_stream_format(YTM_PREMIUM_CHECK_TRACK_ID)
+        stream_format = await self._get_stream_format(
+            YTM_PREMIUM_CHECK_TRACK_ID, require_login=True
+        )
         # Only premium users can stream the HQ stream of this song
         format_id: str = stream_format["format_id"]
         return format_id == "141"
@@ -1413,6 +1678,11 @@ def _favorite_from_like_status(item: dict[str, Any]) -> bool | None:
         case "DISLIKE":
             return False
     return None
+
+
+def _has_login_cookie(cookiejar: Iterable[Any]) -> bool:
+    """Return whether the cookie jar holds the YouTube LOGIN_INFO session cookie."""
+    return any(cookie.name == "LOGIN_INFO" for cookie in cookiejar)
 
 
 @lru_cache

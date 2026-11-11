@@ -381,7 +381,7 @@ class PocketCastsClient:
 
     @throttle_with_retries
     async def _request(
-        self, method: str, url: str, *, auth: bool = True, **kwargs: Any
+        self, /, method: str, url: str, *, auth: bool = True, **kwargs: Any
     ) -> dict[str, Any]:
         """
         Perform a request against the Pocket Casts API and return the decoded JSON body.

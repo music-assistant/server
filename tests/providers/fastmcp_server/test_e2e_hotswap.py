@@ -9,7 +9,7 @@ from unittest.mock import MagicMock
 
 import pytest
 from fastmcp import Client, FastMCP
-from mcp.shared.exceptions import McpError
+from fastmcp.exceptions import McpError
 
 from music_assistant.providers.fastmcp_server.capabilities import Capability
 from music_assistant.providers.fastmcp_server.constants import (
@@ -52,7 +52,7 @@ async def test_hot_swap_makes_disabled_resource_visible_without_restart(
     runtime, mcp = _build_runtime_with_resources(mock_mass, mock_config)
 
     async with Client(mcp) as client:
-        before = {template.uriTemplate for template in await client.list_resource_templates()}
+        before = {template.uri_template for template in await client.list_resource_templates()}
     assert "player://{player_id}" not in before
 
     _set_config_values(mock_config, **{policy_mode_key(Capability.QUERY_PLAYERS): "allow"})
@@ -62,7 +62,7 @@ async def test_hot_swap_makes_disabled_resource_visible_without_restart(
     )
 
     async with Client(mcp) as client:
-        after = {template.uriTemplate for template in await client.list_resource_templates()}
+        after = {template.uri_template for template in await client.list_resource_templates()}
     assert "player://{player_id}" in after
 
 
@@ -73,7 +73,7 @@ async def test_hot_swap_hides_previously_visible_resource(
     runtime, mcp = _build_runtime_with_resources(mock_mass, mock_config)
 
     async with Client(mcp) as client:
-        before = {template.uriTemplate for template in await client.list_resource_templates()}
+        before = {template.uri_template for template in await client.list_resource_templates()}
     assert "library://track/{track_id}" in before
 
     _set_config_values(
@@ -89,7 +89,7 @@ async def test_hot_swap_hides_previously_visible_resource(
     )
 
     async with Client(mcp) as client:
-        after = {template.uriTemplate for template in await client.list_resource_templates()}
+        after = {template.uri_template for template in await client.list_resource_templates()}
     assert "library://track/{track_id}" not in after
 
 
@@ -122,7 +122,7 @@ async def test_auth_off_runtime_resources_use_global_default_policy(
             )
             runtime._refresh_policy_resolver()
             templates = {
-                str(template.uriTemplate) for template in await client.list_resource_templates()
+                str(template.uri_template) for template in await client.list_resource_templates()
             }
             assert "library://track/{track_id}" not in templates
             with pytest.raises(McpError):

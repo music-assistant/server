@@ -26,6 +26,7 @@ from music_assistant_models.streamdetails import MultiPartPath
 
 from music_assistant.constants import (
     MASS_LOGGER_NAME,
+    MASS_USER_AGENT,
     VERBOSE_LOG_LEVEL,
 )
 from music_assistant.helpers.json import JSON_DECODE_EXCEPTIONS, json_loads
@@ -41,7 +42,7 @@ if TYPE_CHECKING:
 
 LOGGER = logging.getLogger(f"{MASS_LOGGER_NAME}.helpers.audio")
 
-HTTP_HEADERS = {"User-Agent": "Lavf/60.16.100.MusicAssistant"}
+HTTP_HEADERS = {"User-Agent": MASS_USER_AGENT}
 HTTP_HEADERS_ICY = {**HTTP_HEADERS, "Icy-MetaData": "1"}
 
 SLOW_PROVIDERS = ("tidal", "ytmusic", "apple_music")
@@ -231,7 +232,6 @@ def create_wave_header(
         bitspersample,  # 16 bits for two byte samples, etc.
     )
     # Generate data chunk
-    # duration = 3600*6.7
     data_chunk_spec = b"<4sL"
     if duration is None:
         # use max value possible
@@ -262,7 +262,6 @@ def create_wave_header(
     file.write(format_chunk)
     file.write(data_chunk)
 
-    # return file.getvalue(), all_chunks_size + 8
     return file.getvalue()
 
 
@@ -352,7 +351,8 @@ def get_parts_from_position(
         # the previous track. If we're within 2 second of the end, skip the current track
         if position + 2 >= part.duration:
             LOGGER.debug(
-                f"Skipping to the next part due to seek position being at the end: {position}",
+                "Skipping to the next part due to seek position being at the end: %s",
+                position,
             )
             if i + 1 < len(parts):
                 return parts[i + 1 :], 0
@@ -363,11 +363,12 @@ def get_parts_from_position(
     raise IndexError(f"Could not find any candidate part for position {seek_position}")
 
 
-def build_concat_filelist(paths: list[str]) -> str:
+def build_concat_filelist(paths: list[str], verify_ssl: bool = True) -> str:
     """
     Build the file list content for ffmpeg's concat demuxer.
 
     :param paths: The file paths to include, in playback order.
+    :param verify_ssl: Whether the certificate of an https part must be verified.
     """
     lines = []
     for path in paths:
@@ -375,6 +376,10 @@ def build_concat_filelist(paths: list[str]) -> str:
         # path must be written as '\'' to prevent the path being truncated at the quote.
         escaped_path = path.replace("'", "'\\''")
         lines.append(f"file '{escaped_path}'\n")
+        if not verify_ssl and path.startswith("http"):
+            # unlike the cli flag, the demuxer ignores this for a part that never uses TLS
+            # and honours it when a part redirects from http to https
+            lines.append("option tls_verify 0\n")
     return "".join(lines)
 
 
@@ -821,9 +826,18 @@ def decoded_pcm_format(streamdetails: StreamDetails) -> AudioFormat:
     return AudioFormat(
         content_type=ContentType.from_bit_depth(arriving.bit_depth),
         sample_rate=arriving.sample_rate,
-        bit_depth=arriving.bit_depth,
+        bit_depth=pcm_container_bit_depth(arriving.bit_depth),
         channels=min(arriving.channels, 2),
     )
+
+
+def pcm_container_bit_depth(bit_depth: int) -> int:
+    """
+    Return the PCM sample bit depth that matches ``ContentType.from_bit_depth``.
+
+    :param bit_depth: The bit depth of the source, e.g. 8 for probed DSD.
+    """
+    return bit_depth if bit_depth in (16, 24) else 32
 
 
 def get_bit_rate(fmt: AudioFormat) -> int:

@@ -9,10 +9,10 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from music_assistant_models.access import PlaylistAccess
-from music_assistant_models.api import CommandMessage, ErrorResultMessage
+from music_assistant_models.api import CommandMessage, ErrorResultMessage, SuccessResultMessage
 from music_assistant_models.auth import Scope, User, UserRole
 from music_assistant_models.enums import EventType, FlowStepType, ProviderSharing
-from music_assistant_models.errors import InsufficientPermissions
+from music_assistant_models.errors import InsufficientPermissions, ProviderStreamHeldError
 from music_assistant_models.event import MassEvent
 from music_assistant_models.media_items import Playlist, ProviderMapping
 from music_assistant_models.setup_flow import SetupFlowStep
@@ -28,6 +28,7 @@ from music_assistant.controllers.webserver.helpers.auth_middleware import (
     set_current_token,
     set_current_user,
     set_custom_role_scopes,
+    set_impersonated_user,
 )
 from music_assistant.controllers.webserver.websocket_client import WebsocketClientHandler
 from music_assistant.helpers.api import APICommandHandler
@@ -40,6 +41,17 @@ from music_assistant.helpers.throttle_retry import (
 
 async def _noop_command() -> None:
     """Test command target."""
+
+
+async def _held_command() -> None:
+    """Test command target that fails with structured error data."""
+    raise ProviderStreamHeldError("Spotify is already playing on Kitchen", data={"queue_id": "k"})
+
+
+async def _acting_user_command() -> str | None:
+    """Test command target that tells which user it ran as."""
+    user = get_current_user()
+    return user.user_id if user else None
 
 
 def _create_client(
@@ -87,6 +99,15 @@ def _sent_error_code(client: Any) -> str | None:
         message = call.args[0]
         if isinstance(message, ErrorResultMessage):
             return str(message.error_code)
+    return None
+
+
+def _sent_result(client: Any) -> Any:
+    """Return the result of the first sent success message, if any."""
+    for call in client._send_message.await_args_list:
+        message = call.args[0]
+        if isinstance(message, SuccessResultMessage):
+            return message.result
     return None
 
 
@@ -175,6 +196,57 @@ def custom_roles() -> Generator[None]:
     )
     yield
     set_custom_role_scopes({})
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("allow_impersonation", "required_scope", "ran_as"),
+    [
+        pytest.param(True, Scope.LIBRARY_READ, "guest_1", id="target_holds_the_scope"),
+        pytest.param(True, Scope.LIBRARY_WRITE, None, id="target_lacks_the_scope"),
+        pytest.param(False, Scope.LIBRARY_READ, "user_1", id="command_without_impersonation"),
+    ],
+)
+async def test_impersonated_command_runs_as_the_target(
+    allow_impersonation: bool, required_scope: Scope, ran_as: str | None
+) -> None:
+    """The user argument switches the command to the target, within the target's own scopes."""
+    handler = APICommandHandler.parse(
+        "test/protected",
+        _acting_user_command,
+        required_scope=required_scope,
+        allow_impersonation=allow_impersonation,
+    )
+    client = _create_client(UserRole.SERVICE, handler)
+    client.mass.webserver.auth.get_user = AsyncMock(
+        return_value=User(user_id="guest_1", username="guest", role=UserRole.GUEST)
+    )
+    set_current_user(client._authenticated_user)
+    try:
+        await client._run_handler(
+            handler,
+            CommandMessage(message_id="1", command="test/protected", args={"user": "guest_1"}),
+        )
+    finally:
+        set_impersonated_user(None)
+
+    if ran_as is None:
+        assert _sent_error_code(client) == PERMISSION_DENIED
+    else:
+        assert _sent_result(client) == ran_as
+
+
+async def test_an_errors_structured_data_reaches_the_client() -> None:
+    """Data a client acts on travels with the error result, next to the message."""
+    handler = APICommandHandler.parse("test/held", _held_command)
+    client = _create_client(UserRole.ADMIN, handler)
+
+    await client._run_handler(handler, CommandMessage(message_id="1", command="test/held"))
+
+    message = client._send_message.await_args.args[0]
+    assert isinstance(message, ErrorResultMessage)
+    assert message.error_code == ProviderStreamHeldError.error_code
+    assert message.data == {"queue_id": "k"}
 
 
 @pytest.mark.asyncio

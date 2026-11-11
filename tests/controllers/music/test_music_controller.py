@@ -13,7 +13,7 @@ from music_assistant_models.errors import (
     MusicAssistantError,
     UnsupportedFeaturedException,
 )
-from music_assistant_models.media_items import Radio, SoundEffect, Track
+from music_assistant_models.media_items import Radio, SearchResults, SoundEffect, Track
 
 from music_assistant.constants import VACUUM_MIN_RECLAIM_RATIO
 from music_assistant.controllers.music import MusicController
@@ -135,6 +135,25 @@ def _sound_effect() -> SoundEffect:
         name="rain",
         provider_mappings=set(),
     )
+
+
+async def test_get_track_by_name_matches_requested_version() -> None:
+    """An explicitly requested track version selects the search result with that version."""
+    controller = MusicController.__new__(MusicController)
+    studio, live = (
+        Track(
+            item_id=item_id,
+            provider="test",
+            name="Some Song",
+            version=version,
+            provider_mappings=set(),
+        )
+        for item_id, version in (("1", ""), ("2", "Live"))
+    )
+    controller.mass = MagicMock()
+    controller.mass.music.search = AsyncMock(return_value=SearchResults(tracks=[studio, live]))
+
+    assert await controller.get_track_by_name("Some Song", track_version="Live") is live
 
 
 async def test_add_to_favorites_rejects_sound_effect() -> None:

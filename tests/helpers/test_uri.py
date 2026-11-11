@@ -66,6 +66,8 @@ SPOTIFY_ID = "4Z8W4fKeB5YxbusRsdQVPb"
         ),
         # qobuz
         ("https://open.qobuz.com/album/0634904032432", (MediaType.ALBUM, "qobuz", "0634904032432")),
+        ("https://play.qobuz.com/artist/1044", (MediaType.ARTIST, "qobuz", "1044")),
+        ("https://play.qobuz.com/album/0634904032432", (MediaType.ALBUM, "qobuz", "0634904032432")),
         (
             "https://www.qobuz.com/us-en/album/in-rainbows-radiohead/0634904032432",
             (MediaType.ALBUM, "qobuz", "0634904032432"),
@@ -73,6 +75,14 @@ SPOTIFY_ID = "4Z8W4fKeB5YxbusRsdQVPb"
         (
             "https://www.qobuz.com/us-en/interpreter/radiohead/43840",
             (MediaType.ARTIST, "qobuz", "43840"),
+        ),
+        (
+            "https://www.qobuz.com/gb-en/interpreter/-/75739",
+            (MediaType.ARTIST, "qobuz", "75739"),
+        ),
+        (
+            "https://www.qobuz.com/gb-en/album/missa-solemnis-herbert-von-karajan/yfuixxirqr08b",
+            (MediaType.ALBUM, "qobuz", "yfuixxirqr08b"),
         ),
         # youtube music
         (
@@ -110,6 +120,7 @@ async def test_parse_uri_share_urls(url: str, expected: tuple[MediaType, str, st
         "https://open.spotify.com/track/",
         "https://tidal.com/browse/track/",
         "https://www.qobuz.com/us-en/label/xl-recordings/1234",
+        "https://www.qobuz.com/gb-en/interpreter/whitesnake/download-streaming-albums",
         "https://music.youtube.com/playlist?list=OLAK5uy_abc",
         "https://music.apple.com/gb",
         "https://www.deezer.com/artist/not-a-number",
@@ -129,7 +140,9 @@ async def test_parse_uri_rejects_truncated_or_unsupported_share_urls(url: str) -
         ("https://www.deezer.com/album/6575789", "deezer"),
         ("https://music.apple.com/us/album/in-rainbows/1109714933", "apple_music"),
         ("https://open.qobuz.com/album/0634904032432", "qobuz"),
+        ("https://play.qobuz.com/artist/1044", "qobuz"),
         ("https://www.qobuz.com/us-en/album/in-rainbows-radiohead/0634904032432", "qobuz"),
+        ("https://www.qobuz.com/gb-en/interpreter/whitesnake/download-streaming-albums", None),
         ("https://music.youtube.com/channel/UCr_iyUANcn9OX_yy9piYoLw", "ytmusic"),
         ("https://www.discogs.com/release/1157205", None),
         ("https://www.wikidata.org/wiki/Q862203", None),
@@ -171,6 +184,9 @@ def test_share_url_provider_of_a_media_type(url: str, expected: str | None) -> N
         ("ytmusic", MediaType.ARTIST, None, f"https://music.youtube.com/channel/{SPOTIFY_ID}"),
         ("ytmusic", MediaType.ALBUM, None, None),
         ("qobuz", MediaType.ALBUM, None, None),
+        ("qobuz", MediaType.TRACK, None, None),
+        # a performer without a Qobuz page, stored by name
+        ("qobuz", MediaType.ARTIST, None, None),
         ("spotify", MediaType.PLAYLIST, None, None),
     ],
 )
@@ -216,6 +232,7 @@ async def test_canonical_provider_url_round_trips_through_parse_uri() -> None:
         ("tidal", MediaType.TRACK),
         ("deezer", MediaType.ARTIST),
         ("ytmusic", MediaType.ARTIST),
+        ("qobuz", MediaType.ARTIST),
     ):
         url = canonical_provider_url(domain, media_type, "1234")
         assert url is not None

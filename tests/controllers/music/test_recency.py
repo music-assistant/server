@@ -9,7 +9,7 @@ from music_assistant_models.enums import MediaType
 from music_assistant_models.media_items import ItemMapping, ProviderMapping, Track
 from music_assistant_models.unique_list import UniqueList
 
-from music_assistant.constants import DB_TABLE_PLAYLOG
+from music_assistant.constants import DB_TABLE_MEDIA_PROGRESS
 from music_assistant.controllers.music.recency import RecencyWindows
 from music_assistant.helpers.json import serialize_to_json
 from music_assistant.mass import MusicAssistant
@@ -35,7 +35,7 @@ async def _add_playlog_row(
 ) -> None:
     """Insert a single row into the playlog."""
     await mass.music.database.insert(
-        DB_TABLE_PLAYLOG,
+        DB_TABLE_MEDIA_PROGRESS,
         {
             "item_id": item_id,
             "provider": provider,

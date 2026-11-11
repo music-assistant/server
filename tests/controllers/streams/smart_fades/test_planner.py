@@ -45,7 +45,10 @@ from music_assistant.controllers.streams.smart_fades.vocal import (
     WEIGHTED_COLLISION_LIMIT,
 )
 from music_assistant.models.audio_analysis import AudioAnalysisData
-from tests.controllers.streams.smart_fades.conftest import _analysis_with_bands
+from tests.controllers.streams.smart_fades.conftest import (
+    _analysis_with_bands,
+    disable_dressed_transitions,
+)
 
 LOGGER = logging.getLogger(__name__)
 
@@ -537,7 +540,9 @@ class TestFallbackCrossfade:
         assert plan.eq_plan.mid_out.steps[-1][1] == pytest.approx(-8.0)
         assert plan.eq_plan.mid_in is None
 
-    def test_sub_limit_collision_ships_the_fallback_without_the_duck(self) -> None:
+    def test_sub_limit_collision_ships_the_fallback_without_the_duck(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """
         A fallback whose own window stays under the candidate limit skips the duck.
 
@@ -547,6 +552,8 @@ class TestFallbackCrossfade:
         """
         out = _with_vocal_activity(_analysis(120.0, duration=240.0), [(200.0, 239.9)])
         inc = _with_vocal_activity(_analysis(150.0, duration=240.0), [(0.0, 1.0)])
+        # an 8s filter out rides the same early phrase and would win the rescue pass
+        disable_dressed_transitions(monkeypatch)
 
         plan = SmartCrossFadePlanner(LOGGER).plan(out, inc, 45.0)
 
@@ -567,9 +574,16 @@ class TestPlanSummaryLog:
         )
 
         assert line == (
-            "planned transition: tier=full_blend strategy=energy_aligned source=energy-ladder "
-            "bars=8 overlap=16.00s bpm=120.0->120.0 (+0.0%)"
+            "planned transition: style=blend tier=full_blend strategy=energy_aligned "
+            "source=energy-ladder bars=8 overlap=16.00s bpm=120.0->120.0 (+0.0%) stretch=off"
         )
+
+    def test_a_ramped_blend_logs_its_stretch(self, caplog: pytest.LogCaptureFixture) -> None:
+        """A blend that ships its tempo ramp logs it."""
+        line = _summary_line(caplog, _analysis(120.0), _analysis(122.0))
+
+        assert line.startswith("planned transition: style=blend ")
+        assert line.endswith(" bpm=120.0->122.0 (+1.7%) stretch=on")
 
     def test_quick_fade_names_its_trigger_and_signed_tempo_gap(
         self, caplog: pytest.LogCaptureFixture
@@ -577,7 +591,7 @@ class TestPlanSummaryLog:
         """A tempo-gap quick fade logs the tempo trigger and a negative gap for a slower B."""
         line = _summary_line(caplog, _analysis(150.0), _analysis(120.0))
 
-        assert line.startswith("planned transition: tier=quick_fade trigger=tempo ")
+        assert line.startswith("planned transition: style=cut tier=quick_fade trigger=tempo ")
         assert line.endswith(" bpm=150.0->120.0 (-20.0%)")
 
     def test_cross_meter_quick_fade_names_the_meter_trigger(
@@ -589,7 +603,7 @@ class TestPlanSummaryLog:
 
         line = _summary_line(caplog, _analysis(120.0), inc)
 
-        assert line.startswith("planned transition: tier=quick_fade trigger=meter ")
+        assert line.startswith("planned transition: style=cut tier=quick_fade trigger=meter ")
 
     def test_re_anchored_quick_fade_names_the_beat_grid(
         self, caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch
@@ -605,7 +619,7 @@ class TestPlanSummaryLog:
 
         line = _summary_line(caplog, out, inc)
 
-        assert line.startswith("planned transition: tier=quick_fade trigger=beat_grid ")
+        assert line.startswith("planned transition: style=cut tier=quick_fade trigger=beat_grid ")
 
     def test_rescue_pass_winner_is_marked(
         self, caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch

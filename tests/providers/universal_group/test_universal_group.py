@@ -34,12 +34,14 @@ def _make_mock_mass() -> MagicMock:
     mass.players._handle_cmd_stop = AsyncMock()
     mass.players._handle_play_media = AsyncMock()
     mass.players.cmd_power = AsyncMock()
+    mass.players._handle_cmd_power = AsyncMock()
     mass.players.iter_group_members = MagicMock(return_value=[])
 
     lock_ctx = AsyncMock()
     lock_ctx.__aenter__.return_value = None
     lock_ctx.__aexit__.return_value = False
     mass.players.get_player_lock = MagicMock(return_value=lock_ctx)
+    mass.players.get_group_and_player_lock = MagicMock(return_value=lock_ctx)
 
     wait_ctx = AsyncMock()
     wait_ctx.__aenter__.return_value = None
@@ -113,6 +115,7 @@ def _make_mock_player(
     player.display_name = player_id
     player.type = player_type
     player.available = available
+    player.available_for_playback = available
     player.enabled = enabled
     player.powered = powered
     player.power_control = "native"
@@ -442,7 +445,7 @@ class TestFakePowerLifecycle:
         ugp._attr_static_group_members = ["m1"]
         ugp._attr_group_members = ["m1", "extra"]
         ugp._attr_powered = True
-        # quietly powered-on member that should get cmd_power(False) on dissolve
+        # quietly powered-on member that should be powered off on dissolve
         member = _make_mock_player("m1", powered=True)
         mass.players.iter_group_members.side_effect = lambda *_args, **_kwargs: iter([member])
 
@@ -451,6 +454,7 @@ class TestFakePowerLifecycle:
 
         assert ugp._attr_group_members == ["m1"]
         assert ugp._attr_powered is False
+        mass.players._handle_cmd_power.assert_awaited_once_with("m1", False)
 
 
 class TestSupportedFeaturesPower:

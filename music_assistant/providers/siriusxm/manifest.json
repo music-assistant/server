@@ -5,8 +5,9 @@
   "name": "SiriusXM",
   "description": "Stream SiriusXM’s radio, talk, and curated music channels.",
   "codeowners": ["@btoconnor", "@MizterB"],
+  "tier": "community",
   "credits": ["[aiosxm](https://github.com/MizterB/aiosxm)"],
-  "requirements": ["aiosxm==0.3.0"],
+  "requirements": ["aiosxm==0.3.1"],
   "documentation": "https://music-assistant.io/music-providers/siriusxm/",
   "multi_instance": false
 }

@@ -41,15 +41,22 @@ class _FakeClient:
         *,
         name: str | None = None,
         has_source_role: bool = True,
+        has_player_role: bool = False,
         connected: bool = True,
+        held: bool = False,
     ) -> None:
         self.client_id = client_id
         self.info_or_none = None
         if name is not None:
             self.info_or_none = type("Info", (), {"name": name})()
-        self.is_connected = connected
+        # A client another server holds is retained without a connection or roles.
+        self.is_connected = connected and not held
+        self.connection: object | None = object() if self.is_connected else None
+        self.cleanup_on_mdns_removal = held
         self.negotiated_role_ids = ["source@v1"] if has_source_role else ["player@v1"]
-        self.source_role = _FakeSourceRole() if has_source_role else None
+        if has_player_role:
+            self.negotiated_role_ids.append("player@v1")
+        self.source_role = _FakeSourceRole() if has_source_role and not held else None
         self.listeners: list[Callable[[Any, Any], None]] = []
 
     def roles_by_family(self, family: str) -> list[Any]:
@@ -75,16 +82,46 @@ class _FakeClient:
             callback(self, event)
 
 
+class _FakePairingStore:
+    """Pairing store stand-in holding paired and approved client ids."""
+
+    def __init__(self) -> None:
+        self.paired: set[str] = set()
+        self.trusted: dict[str, frozenset[str]] = {}
+
+    async def record_by_client_id(self, client_id: str) -> Any:
+        return object() if client_id in self.paired else None
+
+    async def trusted_unpaired(self, client_id: str) -> Any:
+        if (roles := self.trusted.get(client_id)) is None:
+            return None
+        return SimpleNamespace(client_id=client_id, approved_roles=roles)
+
+
 class _FakeServerApi:
     """SendspinServer stand-in serving a fixed client set."""
 
     def __init__(self, clients: list[_FakeClient]) -> None:
         self._clients = {client.client_id: client for client in clients}
         self.listeners: list[Callable[[Any, Any], None]] = []
+        self.pairing_store = _FakePairingStore()
+        self.client_urls = {client.client_id: f"ws://{client.client_id}" for client in clients}
+        self.reclaim_requests: list[str] = []
+
+    @property
+    def clients(self) -> list[_FakeClient]:
+        return list(self._clients.values())
 
     @property
     def connected_clients(self) -> list[_FakeClient]:
         return [c for c in self._clients.values() if c.is_connected]
+
+    def get_client_url(self, client_id: str) -> str | None:
+        return self.client_urls.get(client_id)
+
+    def request_client_playback_connection(self, client_id: str) -> bool:
+        self.reclaim_requests.append(client_id)
+        return client_id in self.client_urls
 
     def get_client(self, client_id: str) -> _FakeClient | None:
         return self._clients.get(client_id)
@@ -109,8 +146,17 @@ class _FakeQueue:
 class _FakePlayer:
     """Player stand-in owning a queue."""
 
-    def __init__(self, player_id: str, state: PlaybackState = PlaybackState.IDLE) -> None:
+    def __init__(
+        self,
+        player_id: str,
+        state: PlaybackState = PlaybackState.IDLE,
+        *,
+        display_name: str | None = None,
+        protocol_parent_id: str | None = None,
+    ) -> None:
         self.player_id = player_id
+        self.display_name = display_name or player_id
+        self.protocol_parent_id = protocol_parent_id
         self.queue = _FakeQueue(player_id, state)
 
 
@@ -125,6 +171,7 @@ class _FakePlayers:
         # live source sessions, keyed on the player playing one
         self.source_sessions: dict[str, Any] = {}
         self.deselected: list[str] = []
+        self.updated: list[str] = []
 
     def get_player(self, player_id: str, *args: Any, **kwargs: Any) -> _FakePlayer | None:
         return self.players.get(player_id)
@@ -134,6 +181,9 @@ class _FakePlayers:
 
     def get_audio_source_session(self, player_id: str) -> Any:
         return self.source_sessions.get(player_id)
+
+    def trigger_player_update(self, player_id: str, **_: Any) -> None:
+        self.updated.append(player_id)
 
     async def deselect_source(
         self,
@@ -293,6 +343,7 @@ class _FakeConfig:
     """
 
     instance_id = "sendspin_source"
+    name = "Sendspin Source"
 
     def __init__(self, values: dict[str, Any] | None = None) -> None:
         self.values = values or {}

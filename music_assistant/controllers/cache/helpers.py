@@ -95,7 +95,7 @@ def use_cache(
             return cast("R", parse_value(func.__name__, cachedata, _resolve_return_hint(func)))
 
         @functools.wraps(func)
-        async def wrapper(self: ProviderT, *args: P.args, **kwargs: P.kwargs) -> R:
+        async def wrapper(self: ProviderT, /, *args: P.args, **kwargs: P.kwargs) -> R:
             cache = self.mass.cache
             provider_id = getattr(self, "instance_id", self.domain)
 

@@ -57,6 +57,7 @@ def _controller(*items: QueueItem) -> Any:
     """Build a bare controller holding a queue with the given items."""
     ctrl = PlayerQueuesController.__new__(PlayerQueuesController)
     ctrl.mass = MagicMock()
+    ctrl.mass.players.get_player.return_value.offline_by_power_control = False
     ctrl.logger = MagicMock()
     ctrl.mass.players.select_source = AsyncMock()
     queue = PlayerQueue(

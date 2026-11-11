@@ -49,6 +49,7 @@ from music_assistant.controllers.tasks.context import (
     update_current_task_progress_from_index,
     update_current_task_progress_text,
 )
+from music_assistant.controllers.webserver.helpers.auth_middleware import system_auth_context
 from music_assistant.helpers.api import api_command
 from music_assistant.helpers.compare import (
     ALBUM_RETAIL_SUFFIX_KEYS,
@@ -65,6 +66,7 @@ from .constants import (
     ALBUM_RECONCILIATION_TASK_ID,
     CONF_ENABLE_ONLINE_METADATA,
     CONF_ENABLE_RADIO_METADATA_LOOKUP,
+    CONF_LANGUAGE_CHANGED,
     CONF_LINK_PROVIDERS_VIA_MUSICBRAINZ,
     CONF_MUSICBRAINZ_LINKED_DOMAINS,
     CONF_PREFER_LOCAL_GENRES,
@@ -186,6 +188,14 @@ class MetaDataController(
                 multi_value=True,
                 hidden=True,
             ),
+            # when the preferred language last changed; declared so a config save carries it over
+            ConfigEntry(
+                key=CONF_LANGUAGE_CHANGED,
+                type=ConfigEntryType.INTEGER,
+                required=False,
+                default_value=0,
+                hidden=True,
+            ),
             ConfigEntry(
                 key=CONF_PREFER_LOCAL_GENRES,
                 type=ConfigEntryType.BOOLEAN,
@@ -228,6 +238,13 @@ class MetaDataController(
         self.mass.streams.unregister_dynamic_route("/imageproxy/*")
         self.mass.webserver.unregister_dynamic_route("/imageproxy/*")
 
+    async def update_config(self, config: CoreConfig, changed_keys: set[str]) -> None:
+        """Handle logic when the config is updated."""
+        previous_locale = str(self.config.get_value(CONF_LANGUAGE) or DEFAULT_LANGUAGE)
+        await super().update_config(config, changed_keys)
+        if f"values/{CONF_LANGUAGE}" in changed_keys:
+            self._note_language_change(previous_locale)
+
     @property
     def providers(self) -> list[MetadataProvider]:
         """Return all loaded/running MetadataProviders."""
@@ -248,6 +265,13 @@ class MetaDataController(
             self.domain, CONF_LANGUAGE, DEFAULT_LANGUAGE
         )
         return str(value)
+
+    @property
+    def language_changed(self) -> int:
+        """Return when the preferred language last changed (epoch seconds, 0 if never)."""
+        return int(
+            self.mass.config.get_raw_core_config_value(self.domain, CONF_LANGUAGE_CHANGED, 0) or 0
+        )
 
     @property
     def link_providers_via_musicbrainz(self) -> bool:
@@ -278,22 +302,20 @@ class MetaDataController(
         """
         # prefer exact match
         if lang in LOCALES:
-            self.mass.config.set_raw_core_config_value(self.domain, CONF_LANGUAGE, lang)
+            self._store_language(lang)
             return
         # try strict matching on either locale code or region
         lang = lang.lower().replace("-", "_")
         for locale_code, lang_name in LOCALES.items():
             if lang in (locale_code.lower(), lang_name.lower()):
-                self.mass.config.set_raw_core_config_value(self.domain, CONF_LANGUAGE, locale_code)
+                self._store_language(locale_code)
                 return
         # attempt loose match on language code or region code
         for lang_part in (lang[:2], lang[:-2]):
             for locale_code in tuple(LOCALES):
                 language_code, region_code = locale_code.lower().split("_", 1)
                 if lang_part in (language_code, region_code):
-                    self.mass.config.set_raw_core_config_value(
-                        self.domain, CONF_LANGUAGE, locale_code
-                    )
+                    self._store_language(locale_code)
                     return
         # if we reach this point, we couldn't match the language
         self.logger.warning("%s is not a valid language", lang)
@@ -301,40 +323,75 @@ class MetaDataController(
     @api_command("metadata/update_metadata", required_scope=Scope.LIBRARY_MANAGE)
     async def update_metadata(
         self, item: str | MediaItemType, force_refresh: bool = False
-    ) -> MediaItemType:
-        """Get/update extra/enhanced metadata for/on given MediaItem."""
-        async with self.cache.handle_refresh(force_refresh):
-            if isinstance(item, str):
-                retrieved_item = await self.mass.music.get_item_by_uri(item)
-                if isinstance(retrieved_item, BrowseFolder):
-                    raise TypeError("Cannot update metadata on a BrowseFolder item.")
-                item = retrieved_item
+    ) -> MediaItemType | None:
+        """
+        Get/update extra/enhanced metadata for/on given MediaItem.
 
-        if item.provider != "library":
-            # this shouldn't happen but just in case.
-            raise RuntimeError("Metadata can only be updated for library items")
-
+        :param item: The library item, or its uri.
+        :param force_refresh: Refresh the metadata even if it was refreshed recently.
+        :return: The item, or None when the item given by its uri is no longer in the library.
+        """
         async with self._throttler:
-            if item.media_type == MediaType.ARTIST:
-                await self._update_artist_metadata(
-                    cast("Artist", item), force_refresh=force_refresh
-                )
-            if item.media_type == MediaType.ALBUM:
-                await self._update_album_metadata(cast("Album", item), force_refresh=force_refresh)
-            if item.media_type == MediaType.TRACK:
-                await self._update_track_metadata(cast("Track", item), force_refresh=force_refresh)
-            if item.media_type == MediaType.PLAYLIST:
-                await self._update_playlist_metadata(
-                    cast("Playlist", item), force_refresh=force_refresh
-                )
-            if item.media_type == MediaType.AUDIOBOOK:
-                await self._update_audiobook_metadata(
-                    cast("Audiobook", item), force_refresh=force_refresh
-                )
-            if item.media_type == MediaType.PODCAST:
-                await self._update_podcast_metadata(
-                    cast("Podcast", item), force_refresh=force_refresh
-                )
+            # the refresh fills the household's library item from all its sources
+            with system_auth_context():
+                # an item given by its uri is read once it is its turn, as it may change meanwhile
+                async with self.cache.handle_refresh(force_refresh):
+                    if isinstance(item, str):
+                        try:
+                            retrieved_item = await self.mass.music.get_item_by_uri(item)
+                        except MediaNotFoundError:
+                            # a library item can be removed, or merged into another, while its
+                            # update waits
+                            if not item.startswith("library://"):
+                                raise
+                            self.logger.debug("%s was removed from the library, skipping", item)
+                            return None
+                        if isinstance(retrieved_item, BrowseFolder):
+                            raise TypeError("Cannot update metadata on a BrowseFolder item.")
+                        item = retrieved_item
+
+                if item.provider != "library":
+                    # this shouldn't happen but just in case.
+                    raise RuntimeError("Metadata can only be updated for library items")
+
+                try:
+                    if item.media_type == MediaType.ARTIST:
+                        await self._update_artist_metadata(
+                            cast("Artist", item), force_refresh=force_refresh
+                        )
+                        item = await self.mass.music.artists.get_merged_library_item(
+                            cast("Artist", item)
+                        )
+                    if item.media_type == MediaType.ALBUM:
+                        await self._update_album_metadata(
+                            cast("Album", item), force_refresh=force_refresh
+                        )
+                    if item.media_type == MediaType.TRACK:
+                        await self._update_track_metadata(
+                            cast("Track", item), force_refresh=force_refresh
+                        )
+                    if item.media_type == MediaType.PLAYLIST:
+                        await self._update_playlist_metadata(
+                            cast("Playlist", item), force_refresh=force_refresh
+                        )
+                    if item.media_type == MediaType.AUDIOBOOK:
+                        await self._update_audiobook_metadata(
+                            cast("Audiobook", item), force_refresh=force_refresh
+                        )
+                    if item.media_type == MediaType.PODCAST:
+                        await self._update_podcast_metadata(
+                            cast("Podcast", item), force_refresh=force_refresh
+                        )
+                except MediaNotFoundError:
+                    # the item can be removed from the library, or merged into another, while its
+                    # update runs
+                    if await self._in_library(item):
+                        raise
+                    self.logger.debug(
+                        "%s %s was removed from the library, skipping",
+                        item.media_type.value,
+                        item.name,
+                    )
         return item
 
     def schedule_update_metadata(self, item: MediaItemType) -> None:
@@ -343,23 +400,27 @@ class MetaDataController(
             # this shouldn't happen but just in case.
             return
         last_refresh = item.metadata.last_refresh or 0
-        needs_update = (time() - last_refresh) > REFRESH_INTERVAL
+        needs_update = (time() - last_refresh) > REFRESH_INTERVAL or (
+            item.media_type in (MediaType.ARTIST, MediaType.ALBUM, MediaType.TRACK)
+            and self._description_language_outdated(item.metadata)
+        )
         if not needs_update:
             return
         assert item.uri is not None
-        task_id = self._get_metadata_lookup_task_id(item.uri)
-        _item = item
+        uri = item.uri
+        task_id = self._get_metadata_lookup_task_id(uri)
 
         self.mass.tasks.run_background_task(
             task_id=task_id,
             name=f"Update metadata for {item.name}",
-            handler=lambda: self.update_metadata(_item),
+            # the item is read again when the task runs, as it may have changed meanwhile
+            handler=lambda: self.update_metadata(uri),
             translation_key="update_metadata",
             translation_args=[item.name],
             translation_owner=self.translation_owner,
             metadata={
                 "task_domain": "metadata_lookup",
-                "item_uri": item.uri,
+                "item_uri": uri,
             },
         )
 
@@ -373,10 +434,23 @@ class MetaDataController(
         :param item: The library artist, album or track.
         """
         if isinstance(item, Artist):
-            if not item.mbid and (mbid := await self._get_artist_mbid(item)):
-                item.mbid = mbid
-            await self._link_artist_to_musicbrainz(item)
+            merge_mbid: str | None = None
+            reliable = bool(item.mbid)
+            if not item.mbid and (found := await self._get_artist_mbid(item)):
+                item.mbid, by_name = found
+                merge_mbid = None if by_name else item.mbid
+                reliable = not by_name
+            looked_up_mbid = item.mbid
+            await self._link_artist_to_musicbrainz(item, follow_merged=reliable)
+            if looked_up_mbid and item.mbid != looked_up_mbid:
+                # the id an artist merged on MusicBrainz led to is as reliable as the old one
+                merge_mbid = item.mbid
             await self.mass.music.artists.update_item_in_library(item.item_id, item)
+            # an id a name search found may belong to a namesake, so only a reliable one merges
+            if merge_mbid:
+                await self.mass.music.artists.merge_library_artists_by_mbid(
+                    int(item.item_id), merge_mbid
+                )
         elif isinstance(item, Album):
             await self._link_album_to_musicbrainz(item)
             await self.mass.music.albums.update_item_in_library(item.item_id, item)
@@ -384,7 +458,9 @@ class MetaDataController(
             await self._link_track_to_musicbrainz(item)
             await self.mass.music.tracks.update_item_in_library(item.item_id, item)
 
-    @api_command("metadata/get_track_lyrics", required_scope=Scope.LIBRARY_READ)
+    @api_command(
+        "metadata/get_track_lyrics", required_scope=Scope.LIBRARY_READ, allow_impersonation=True
+    )
     async def get_track_lyrics(
         self,
         track: Track,
@@ -422,13 +498,21 @@ class MetaDataController(
             return track.metadata.lyrics, track.metadata.lrc_lyrics
 
         if track.provider == "library":
-            # try to update metadata first
-            await self._update_track_metadata(track, force_refresh=False)
+            # the stored item is refreshed, never the caller's copy of it; the refresh fills
+            # the household's library item from all its sources, so it runs as the server
+            track = await self.mass.music.tracks.get(
+                track.item_id, "library", allow_update_metadata=False
+            )
+            with system_auth_context():
+                await self._update_track_metadata(track, force_refresh=False)
             return track.metadata.lyrics, track.metadata.lrc_lyrics
 
         # prefer lyrics from the track's own provider
-        track_provider = self.mass.get_provider(track.provider, provider_type=MusicProvider)
-        if track_provider and ProviderFeature.LYRICS in track_provider.supported_features:
+        track_provider = self.mass.music.get_visible_provider(track.provider)
+        if (
+            isinstance(track_provider, MusicProvider)
+            and ProviderFeature.LYRICS in track_provider.supported_features
+        ):
             full_track = await self.mass.music.tracks.get_provider_item(
                 track.item_id, track.provider
             )
@@ -458,7 +542,7 @@ class MetaDataController(
     def _register_maintenance_tasks(self) -> None:
         """Register the recurring metadata maintenance background tasks."""
         # Spread across the full day so instances don't all hit the shared MusicBrainz mirror at once
-        utc_hour, utc_minute = divmod(random.randint(0, 24 * 60 - 1), 60)
+        utc_hour, utc_minute = divmod(random.randint(0, 24 * 60 - 1), 60)  # noqa: S311 - spreads the schedule
         desired_schedule = TaskSchedule.daily(hour=utc_hour, minute=utc_minute)
         self.mass.tasks.register_scheduled_task(
             task_id=MISSING_METADATA_SCAN_TASK_ID,
@@ -520,6 +604,19 @@ class MetaDataController(
         # a run already pending or running is not queued twice; the hourly schedule
         # covers whatever such a run misses
         self.mass.tasks.run_task(MUSICBRAINZ_LINK_TASK_ID)
+
+    def _store_language(self, locale_code: str) -> None:
+        """Store the preferred language, noting when it changes."""
+        previous_locale = self.locale
+        self.mass.config.set_raw_core_config_value(self.domain, CONF_LANGUAGE, locale_code)
+        self._note_language_change(previous_locale)
+
+    def _note_language_change(self, previous_locale: str) -> None:
+        """Store that the preferred language changed now, if it differs from the previous one."""
+        if previous_locale.split("_", maxsplit=1)[0] != self.preferred_language:
+            self.mass.config.set_raw_core_config_value(
+                self.domain, CONF_LANGUAGE_CHANGED, int(time())
+            )
 
     @staticmethod
     def _get_metadata_lookup_task_id(uri: str) -> str:
@@ -679,14 +776,24 @@ class MetaDataController(
         """Identify a batch of library items on MusicBrainz and link them to the music providers."""
         if (musicbrainz := self._musicbrainz_provider()) is None:
             update_current_task_progress_text("The MusicBrainz provider is not loaded")
+            self.logger.debug(
+                "MusicBrainz link run skipped, the MusicBrainz provider is not loaded"
+            )
             return
         if not self.link_providers_via_musicbrainz:
             update_current_task_progress_text("Linking through MusicBrainz is disabled")
+            self.logger.debug(
+                "MusicBrainz link run skipped, linking through MusicBrainz is disabled"
+            )
             return
-        if self.mass.music.active_sync_tasks:
+        if sync_tasks := self.mass.music.active_sync_tasks:
             # a sync is still adding items and their mappings, so the run waits for the
             # completed sync to queue it again
             update_current_task_progress_text("Waiting for music sync completion")
+            self.logger.debug(
+                "MusicBrainz link run skipped, %d music sync task(s) pending or running",
+                len(sync_tasks),
+            )
             return
         linked_domains = self._refresh_musicbrainz_linked_domains()
         processed: dict[str, int] = {}
@@ -715,6 +822,14 @@ class MetaDataController(
                     )
                     rate_limited = True
                     break
+                if not await self._in_library(item):
+                    # an earlier item of this run may have merged it into another library item
+                    self.logger.debug(
+                        "Skipping %s %s, it left the library earlier in this run",
+                        item.media_type.value,
+                        item.name,
+                    )
+                    continue
                 if processed:
                     # the pause between two items, so the run's first one starts right away
                     await asyncio.sleep(MUSICBRAINZ_LINK_ITEM_INTERVAL)

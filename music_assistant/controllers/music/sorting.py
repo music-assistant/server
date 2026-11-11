@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from typing import Final
 
 from music_assistant_models.api import SortOptionInfo
 from music_assistant_models.enums import ListingType, MediaType, SortDirection, SortField
 
-# what each sort field offers: whether it takes a direction and its default, and the label key
+# what each sort field offers: whether it takes a direction and its default, and the label key;
+# the models enum may hold fields no listing offers yet, and a request for one is rejected
 SORT_FIELD_DEFINITIONS: Final[dict[SortField, SortOptionInfo]] = {
     SortField.NAME: SortOptionInfo(
         field=SortField.NAME,
@@ -56,6 +58,12 @@ SORT_FIELD_DEFINITIONS: Final[dict[SortField, SortOptionInfo]] = {
         supports_direction=True,
         default_direction=SortDirection.DESC,
         label_key="year",
+    ),
+    SortField.RELEASE_DATE: SortOptionInfo(
+        field=SortField.RELEASE_DATE,
+        supports_direction=True,
+        default_direction=SortDirection.DESC,
+        label_key="release_date",
     ),
     SortField.POSITION: SortOptionInfo(
         field=SortField.POSITION,
@@ -122,14 +130,23 @@ _LIBRARY_SORT_FIELDS: Final[tuple[SortField, ...]] = (
 )
 
 
+def _sort_options(*fields: SortField | SortOptionInfo) -> tuple[SortOptionInfo, ...]:
+    """Return the sort options of a listing in the given order, each given as is or by its field."""
+    return tuple(
+        field if isinstance(field, SortOptionInfo) else SORT_FIELD_DEFINITIONS[field]
+        for field in fields
+    )
+
+
 def _library_sort_options(*own_fields: SortField) -> tuple[SortOptionInfo, ...]:
     """Return the sort options of a library listing: the shared fields, its own, then random."""
-    fields = (*_LIBRARY_SORT_FIELDS, *own_fields, SortField.RANDOM, SortField.RANDOM_PLAY_COUNT)
-    return tuple(SORT_FIELD_DEFINITIONS[field] for field in fields)
+    return _sort_options(
+        *_LIBRARY_SORT_FIELDS, *own_fields, SortField.RANDOM, SortField.RANDOM_PLAY_COUNT
+    )
 
 
-# the sort options each listing offers, the first one being the listing's default
-LISTING_SORT_OPTIONS: Final[dict[ListingType, tuple[SortOptionInfo, ...]]] = {
+# the sort options of the library listings, the first one being the listing's default
+_LIBRARY_LISTING_SORT_OPTIONS: Final[dict[ListingType, tuple[SortOptionInfo, ...]]] = {
     ListingType.LIBRARY_ARTISTS: _library_sort_options(),
     ListingType.LIBRARY_ALBUMS: _library_sort_options(SortField.YEAR, SortField.ARTIST_NAME),
     ListingType.LIBRARY_TRACKS: _library_sort_options(SortField.DURATION, SortField.ARTIST_NAME),
@@ -138,6 +155,68 @@ LISTING_SORT_OPTIONS: Final[dict[ListingType, tuple[SortOptionInfo, ...]]] = {
     ListingType.LIBRARY_AUDIOBOOKS: _library_sort_options(SortField.DURATION),
     ListingType.LIBRARY_PODCASTS: _library_sort_options(),
     ListingType.LIBRARY_GENRES: _library_sort_options(),
+}
+
+# the sort options each listing offers, the first one being the listing's default; the models
+# enum may hold listing types without a row, which the sort_options command rejects
+LISTING_SORT_OPTIONS: Final[dict[ListingType, tuple[SortOptionInfo, ...]]] = {
+    **_LIBRARY_LISTING_SORT_OPTIONS,
+    ListingType.ALBUM_TRACKS: _sort_options(
+        SortField.TRACK_NUMBER,
+        SortField.NAME,
+        SortField.SORT_NAME,
+        SortField.ARTIST_NAME,
+        SortField.DURATION,
+    ),
+    ListingType.PLAYLIST_TRACKS: _sort_options(
+        SortField.POSITION,
+        SortField.TIMESTAMP_ADDED,
+        SortField.NAME,
+        SortField.ARTIST_NAME,
+        SortField.ALBUM_NAME,
+        SortField.DURATION,
+    ),
+    # the newest episode first
+    ListingType.PODCAST_EPISODES: _sort_options(
+        replace(SORT_FIELD_DEFINITIONS[SortField.POSITION], default_direction=SortDirection.DESC),
+        SortField.NAME,
+        SortField.DURATION,
+    ),
+    ListingType.ARTIST_TRACKS: _sort_options(
+        SortField.SORT_NAME, SortField.NAME, SortField.ALBUM_NAME, SortField.DURATION
+    ),
+    ListingType.ARTIST_ALBUMS: _sort_options(
+        SortField.SORT_NAME, SortField.NAME, SortField.YEAR, SortField.RELEASE_DATE
+    ),
+    # an audiobook carries no year
+    ListingType.ARTIST_AUDIOBOOKS: _sort_options(
+        SortField.SORT_NAME, SortField.NAME, SortField.DURATION
+    ),
+    # the source lists these newest first
+    ListingType.ARTIST_APPEARS_ON: _sort_options(
+        SortField.ORIGINAL, SortField.NAME, SortField.SORT_NAME, SortField.YEAR
+    ),
+    ListingType.ARTIST_DISCOGRAPHY: _sort_options(
+        SortField.ORIGINAL, SortField.NAME, SortField.SORT_NAME, SortField.YEAR
+    ),
+    ListingType.TRACK_ALBUMS: _sort_options(
+        SortField.ORIGINAL, SortField.NAME, SortField.SORT_NAME, SortField.YEAR
+    ),
+    # the source lists these by its own ranking
+    ListingType.ARTIST_TOP_TRACKS: _sort_options(
+        SortField.ORIGINAL, SortField.NAME, SortField.DURATION
+    ),
+    ListingType.SIMILAR_TRACKS: _sort_options(
+        SortField.ORIGINAL, SortField.NAME, SortField.DURATION
+    ),
+    ListingType.ARTIST_TOP_ALBUMS: _sort_options(SortField.ORIGINAL, SortField.NAME),
+    ListingType.SIMILAR_ARTISTS: _sort_options(SortField.ORIGINAL, SortField.NAME),
+    ListingType.VERSIONS: _sort_options(SortField.ORIGINAL, SortField.NAME, SortField.PROVIDER),
+    # the contents of a genre are library listings narrowed to the genre
+    ListingType.GENRE_TRACKS: _LIBRARY_LISTING_SORT_OPTIONS[ListingType.LIBRARY_TRACKS],
+    ListingType.GENRE_ALBUMS: _LIBRARY_LISTING_SORT_OPTIONS[ListingType.LIBRARY_ALBUMS],
+    # the order of the folder
+    ListingType.BROWSE: _sort_options(SortField.ORIGINAL, SortField.NAME),
 }
 
 # the library listing of each media type

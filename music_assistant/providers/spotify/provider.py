@@ -97,6 +97,7 @@ from .constants import (
     CONF_SYNC_AUDIOBOOK_PROGRESS,
     CONF_SYNC_PODCAST_PROGRESS,
     CREDENTIALS_FILE,
+    GLOBAL_SEARCH_TIMEOUT,
     LIKED_SONGS_FAKE_PLAYLIST_ID_PREFIX,
     SOLOIST_DATA_DIR_NAME,
 )
@@ -520,7 +521,9 @@ class SpotifyProvider(MusicProvider):
                 searches.append((other_types, False))
         await asyncio.gather(
             *(
-                self._search_pages(search_query, types, limit, searchresult, use_global)
+                self._search_playlists_on_global_session(search_query, limit, searchresult)
+                if use_global
+                else self._search_pages(search_query, types, limit, searchresult, False)
                 for types, use_global in searches
             )
         )
@@ -631,25 +634,17 @@ class SpotifyProvider(MusicProvider):
         for idx, episode_data in enumerate(episodes_data):
             episode = parse_podcast_episode(episode_data, self, podcast)
             episode.position = total - idx
-
-            # Set played status if sync is enabled and resume data exists
-            if self.podcast_progress_sync_enabled and "resume_point" in episode_data:
-                resume_point = episode_data["resume_point"]
-                fully_played = resume_point.get("fully_played", False)
-                position_ms = resume_point.get("resume_position_ms", 0)
-
-                episode.fully_played = fully_played or None
-                episode.resume_position_ms = position_ms if position_ms > 0 else None
-
+            self._apply_resume_point(episode, episode_data)
             yield episode
 
-    @use_cache(86400)  # 24 hours
     async def get_podcast_episode(self, prov_episode_id: str) -> PodcastEpisode:
         """Get full podcast episode details by id."""
-        episode_obj = await self._get_data(f"episodes/{prov_episode_id}", market="from_token")
+        episode_obj = await self._get_podcast_episode_data(prov_episode_id)
         if not episode_obj:
             raise MediaNotFoundError(f"Episode not found: {prov_episode_id}")
-        return parse_podcast_episode(episode_obj, self)
+        episode = parse_podcast_episode(episode_obj, self)
+        self._apply_resume_point(episode, episode_obj)
+        return episode
 
     async def get_resume_position(
         self, item_id: str, media_type: MediaType
@@ -812,6 +807,7 @@ class SpotifyProvider(MusicProvider):
         page_size = 50
         offset = page * page_size
         known_global = use_global
+        spotify_result: dict[str, Any] = {}
 
         while True:
             try:
@@ -1025,6 +1021,18 @@ class SpotifyProvider(MusicProvider):
             can_seek=True,
         )
 
+    async def hint_next_item(self, playing: StreamDetails, upcoming: StreamDetails) -> None:
+        """
+        Let the playback backend line up the item that follows the one being streamed.
+
+        :param playing: Stream details of the item being streamed.
+        :param upcoming: Stream details of the item that follows it.
+        """
+        # an audiobook's next chapter follows it, not the queue's next item
+        if MediaType.AUDIOBOOK in (playing.media_type, upcoming.media_type):
+            return
+        await self.backend.feed_next(playing.uri, _spotify_uri(upcoming))
+
     async def get_audio_stream(
         self, streamdetails: StreamDetails, seek_position: int = 0
     ) -> AsyncGenerator[bytes]:
@@ -1091,10 +1099,7 @@ class SpotifyProvider(MusicProvider):
                     continue
         else:
             # Handle normal tracks and podcast episodes
-            media_type = (
-                "episode" if streamdetails.media_type == MediaType.PODCAST_EPISODE else "track"
-            )
-            spotify_uri = f"spotify:{media_type}:{streamdetails.item_id}"
+            spotify_uri = _spotify_uri(streamdetails)
             # a new stream of this item taking over (a seek) simply ends this one
             with suppress(StreamSupersededError):
                 async for chunk in self.backend.stream_spotify_uri(
@@ -1279,6 +1284,24 @@ class SpotifyProvider(MusicProvider):
             offset += page_limit
             if offset >= limit or items_received < page_limit:
                 break
+
+    async def _search_playlists_on_global_session(
+        self, search_query: str, limit: int, searchresult: SearchResults
+    ) -> None:
+        """Search playlists on the global session, topped up by the dev session if it fails."""
+        global_result = SearchResults()
+        try:
+            async with asyncio.timeout(GLOBAL_SEARCH_TIMEOUT):
+                await self._search_pages(
+                    search_query, [MediaType.PLAYLIST], limit, global_result, True
+                )
+        except RetriesExhausted, TimeoutError:
+            self.logger.debug("Global session is slow or rate limited, topping up on the dev one")
+            if (missing := limit - len(UniqueList(global_result.playlists))) > 0:
+                await self._search_pages(
+                    search_query, [MediaType.PLAYLIST], missing, global_result, False
+                )
+        searchresult.playlists = UniqueList(global_result.playlists)[:limit]
 
     def _build_search_types(self, media_types: list[MediaType]) -> str:
         """Build comma-separated search types string from media types."""
@@ -1697,6 +1720,30 @@ class SpotifyProvider(MusicProvider):
 
         return episodes_data
 
+    @use_cache(43200)  # 12 hours, as the episode listing, since it carries the progress
+    async def _get_podcast_episode_data(self, prov_episode_id: str) -> dict[str, Any]:
+        """
+        Get raw episode data from Spotify API (cached).
+
+        :param prov_episode_id: Spotify episode ID.
+        """
+        return await self._get_data(f"episodes/{prov_episode_id}", market="from_token")
+
+    def _apply_resume_point(self, episode: PodcastEpisode, episode_obj: dict[str, Any]) -> None:
+        """
+        Fill in the played state and resume position Spotify reports, when progress sync is on.
+
+        :param episode: The parsed episode to fill in.
+        :param episode_obj: The raw Spotify episode object it was parsed from.
+        """
+        if not self.podcast_progress_sync_enabled or "resume_point" not in episode_obj:
+            return
+        resume_point = episode_obj["resume_point"]
+        fully_played = resume_point.get("fully_played", False)
+        position_ms = resume_point.get("resume_position_ms", 0)
+        episode.fully_played = fully_played or None
+        episode.resume_position_ms = position_ms if position_ms > 0 else None
+
     @use_cache()
     async def _get_audiobook_chapters_data(self, prov_audiobook_id: str) -> list[dict[str, Any]]:
         """
@@ -1768,7 +1815,9 @@ class SpotifyProvider(MusicProvider):
                 if item is None:
                     continue
                 yield item
-            if len(result[key]) < limit:
+            # Spotify can return a short page mid-list while total says there is more,
+            # so a short page only ends the listing when the total is unknown
+            if not total and len(result[key]) < limit:
                 break
 
     async def _get_data_with_caching(
@@ -1793,7 +1842,7 @@ class SpotifyProvider(MusicProvider):
         return result
 
     @use_cache(120, allow_bypass=False)  # short cache: repeated traversals reuse metadata
-    async def _get_cached_paginated_meta(self, endpoint: str, **kwargs: Any) -> dict[str, Any]:
+    async def _get_cached_paginated_meta(self, /, endpoint: str, **kwargs: Any) -> dict[str, Any]:
         """Get cached pagination metadata for a paginated API endpoint."""
         return await self._get_paginated_meta(endpoint, **kwargs)
 
@@ -2012,3 +2061,9 @@ class SpotifyProvider(MusicProvider):
         if not stored_token:
             return False
         return stored_token != used_token
+
+
+def _spotify_uri(streamdetails: StreamDetails) -> str:
+    """Return the canonical Spotify URI of a track or podcast episode."""
+    media_type = "episode" if streamdetails.media_type == MediaType.PODCAST_EPISODE else "track"
+    return f"spotify:{media_type}:{streamdetails.item_id}"

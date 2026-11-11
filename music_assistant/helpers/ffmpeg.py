@@ -11,13 +11,14 @@ from collections.abc import AsyncGenerator, Sequence
 from contextlib import suppress
 from copy import copy
 from dataclasses import dataclass
+from itertools import pairwise
 from typing import TYPE_CHECKING, Final, NoReturn
 
 from music_assistant_models.enums import ContentType
 from music_assistant_models.errors import AudioError
 from music_assistant_models.helpers import get_global_cache_value, set_global_cache_values
 
-from music_assistant.constants import VERBOSE_LOG_LEVEL
+from music_assistant.constants import MASS_USER_AGENT, VERBOSE_LOG_LEVEL
 
 from .dsp import ComplexFilter, ComplexFilterInput
 from .json import json_loads
@@ -32,6 +33,7 @@ MINIMAL_FFMPEG_VERSION = 7
 CACHE_ATTR_LIBSOXR_PRESENT: Final[str] = "libsoxr_present"
 CACHE_ATTR_FFMPEG_VERSION: Final[str] = "ffmpeg_version"
 CACHE_ATTR_HLS_CMAF_BLOCKED: Final[str] = "hls_cmaf_blocked"
+CACHE_ATTR_READRATE_CATCHUP: Final[str] = "readrate_catchup"
 DEFAULT_MP3_BIT_RATE: Final[int] = 320
 # Maximum seconds to spend detecting the format of a source before it is decoded.
 AUDIO_PROBE_TIMEOUT: Final[int] = 5
@@ -99,7 +101,7 @@ class FFMpegStreamInfo:
 class FFMpeg(AsyncProcess):
     """FFMpeg wrapped as AsyncProcess."""
 
-    def __init__(
+    def __init__(  # noqa: PLR0913
         self,
         audio_input: AsyncGenerator[bytes] | str | int,
         input_format: AudioFormat,
@@ -110,6 +112,8 @@ class FFMpeg(AsyncProcess):
         audio_output: str | int = "-",
         collect_log_history: bool = False,
         loglevel: str = "info",
+        pass_fds: tuple[int, ...] = (),
+        verify_ssl: bool = True,
     ) -> None:
         """Initialize AsyncProcess."""
         ffmpeg_args = get_ffmpeg_args(
@@ -121,6 +125,7 @@ class FFMpeg(AsyncProcess):
             extra_input_args=extra_input_args or [],
             extra_output_args=extra_output_args or [],
             loglevel=loglevel,
+            verify_ssl=verify_ssl,
         )
         self.audio_input = audio_input
         self.input_format = input_format
@@ -158,6 +163,7 @@ class FFMpeg(AsyncProcess):
             stdin=stdin,
             stdout=stdout,
             stderr=True,
+            pass_fds=pass_fds,
         )
         self.logger = LOGGER
 
@@ -274,8 +280,8 @@ class FFMpeg(AsyncProcess):
         status = "running"
         chunk_count = 0
         self.logger.log(VERBOSE_LOG_LEVEL, "Start reading audio data from source...")
+        start = time.time()
         try:
-            start = time.time()
             while True:
                 try:
                     chunk = await anext(self.audio_input)
@@ -394,10 +400,38 @@ def apply_stream_info(audio_format: AudioFormat, info: FFMpegStreamInfo) -> None
         audio_format.channels = info.channels
 
 
+def tls_verify_args(input_path: str, verify_ssl: bool) -> list[str]:
+    """Return the input args that skip certificate verification of an https source."""
+    # FFmpeg 9 verifies certificates by default; announcements and providers with a
+    # verify_ssl setting opt out for self-signed hosts. FFmpeg rejects the option on an input
+    # that never uses TLS, so a plain-http url that redirects to https must add it itself
+    # (see audiobookshelf).
+    if verify_ssl or not input_path.startswith("https://"):
+        return []
+    return ["-tls_verify", "0"]
+
+
+def user_agent_args(input_path: str, input_args: Sequence[str] = ()) -> list[str]:
+    """
+    Return the input args that identify Music Assistant to an HTTP source.
+
+    Nothing is returned for a source that is not a URL, or when the input args already set
+    a user agent of their own.
+
+    :param input_path: Local file path or URL of the source.
+    :param input_args: The input arguments the caller already passes for the source.
+    """
+    if not input_path.startswith("http") or _sets_user_agent(input_args):
+        return []
+    return ["-user_agent", MASS_USER_AGENT]
+
+
 async def probe_audio_stream(
     input_path: str,
     extra_input_args: Sequence[str] = (),
     timeout: float = AUDIO_PROBE_TIMEOUT,
+    pass_fds: tuple[int, ...] = (),
+    verify_ssl: bool = True,
 ) -> FFMpegStreamInfo | None:
     """
     Detect the format of the first audio stream of a file or URL.
@@ -405,6 +439,8 @@ async def probe_audio_stream(
     :param input_path: Local file path or URL of the source.
     :param extra_input_args: Input arguments needed to open the source (e.g. headers).
     :param timeout: Maximum seconds the probe may take.
+    :param pass_fds: Descriptors ffprobe needs to open the source.
+    :param verify_ssl: Whether the certificate of an https source must be verified.
     :returns: The detected stream details, or None if the source could not be probed.
     """
     args = [
@@ -414,6 +450,8 @@ async def probe_audio_stream(
         "error",
         *_INPUT_READ_ARGS,
         *extra_input_args,
+        *tls_verify_args(input_path, verify_ssl),
+        *user_agent_args(input_path, extra_input_args),
         "-select_streams",
         "a:0",
         "-show_entries",
@@ -423,7 +461,7 @@ async def probe_audio_stream(
         "-i",
         input_path,
     ]
-    proc = AsyncProcess(args, stdout=True)
+    proc = AsyncProcess(args, stdout=True, pass_fds=pass_fds)
     try:
         await proc.start()
         stdout, _ = await proc.communicate(timeout=timeout)
@@ -465,12 +503,17 @@ async def get_ffmpeg_stream(
     chunk_size: int | None = None,
     extra_input_args: list[str] | None = None,
     extra_output_args: list[str] | None = None,
+    pass_fds: tuple[int, ...] = (),
+    verify_ssl: bool = True,
 ) -> AsyncGenerator[bytes]:
     """
     Get the ffmpeg audio stream as async generator.
 
     Takes care of resampling and/or recoding if needed,
     according to player preferences.
+
+    :param pass_fds: Descriptors ffmpeg needs to open its input(s).
+    :param verify_ssl: Whether the certificate of an https source must be verified.
     """
     async with FFMpeg(
         audio_input=audio_input,
@@ -480,6 +523,8 @@ async def get_ffmpeg_stream(
         extra_input_args=extra_input_args,
         extra_output_args=extra_output_args,
         collect_log_history=True,
+        pass_fds=pass_fds,
+        verify_ssl=verify_ssl,
     ) as ffmpeg_proc:
         # read final chunks from stdout
         iterator = ffmpeg_proc.iter_chunked(chunk_size) if chunk_size else ffmpeg_proc.iter_any()
@@ -505,6 +550,8 @@ async def get_ffmpeg_overlay_stream(
     pcm_format: AudioFormat,
     overlay_volume: int = 100,
     chunk_size: int | None = None,
+    pass_fds: tuple[int, ...] = (),
+    verify_ssl: bool = True,
 ) -> AsyncGenerator[bytes]:
     """
     Mix a looping audio overlay into a PCM audio stream.
@@ -520,6 +567,8 @@ async def get_ffmpeg_overlay_stream(
         percent (100 = equally loud, max 200).
     :param pcm_format: PCM format of both the main input and the mixed output.
     :param chunk_size: Optional exact chunk size for the yielded audio.
+    :param pass_fds: Descriptors ffmpeg needs to open the overlay input.
+    :param verify_ssl: Whether the certificate of an https overlay must be verified.
     """
     async with FFMpeg(
         audio_input=audio_input,
@@ -527,8 +576,9 @@ async def get_ffmpeg_overlay_stream(
         # so hand it a copy to keep that mutation off the caller's format.
         input_format=copy(pcm_format),
         output_format=pcm_format,
-        filter_params=[_build_overlay_mixer(overlay_input, pcm_format, overlay_volume)],
+        filter_params=[_build_overlay_mixer(overlay_input, pcm_format, overlay_volume, verify_ssl)],
         collect_log_history=True,
+        pass_fds=pass_fds,
     ) as ffmpeg_proc:
         iterator = ffmpeg_proc.iter_chunked(chunk_size) if chunk_size else ffmpeg_proc.iter_any()
         async for chunk in iterator:
@@ -586,6 +636,7 @@ def get_ffmpeg_args(
     extra_input_args: list[str] | None = None,
     extra_output_args: list[str] | None = None,
     loglevel: str = "error",
+    verify_ssl: bool = True,
 ) -> list[str]:
     """Collect all args to send to the ffmpeg process."""
     filter_params = list(filter_params)
@@ -605,6 +656,8 @@ def get_ffmpeg_args(
     # collect args for the main input, mirroring how _build_filtergraph_args opens the
     # extra inputs: the read args lead the group so the caller can still override them
     input_args = [*_INPUT_READ_ARGS, *extra_input_args]
+    input_args += tls_verify_args(input_path, verify_ssl)
+    input_args += user_agent_args(input_path, extra_input_args)
     if "-f" not in extra_input_args:
         # without an input format of their own, the caller leaves the input spec to us
         if input_path.startswith("http"):
@@ -640,7 +693,7 @@ def get_ffmpeg_args(
             } & {ContentType.MP3, ContentType.MPEG}:
                 # without a Xing TOC ffmpeg parses every frame up to the target; fastseek
                 # jumps there by byte offset via a Range request instead
-                _add_input_fflag(input_args, "+fastseek")
+                add_input_fflag(input_args, "+fastseek")
         if input_format.content_type.is_pcm():
             input_args += [
                 *get_ffmpeg_channel_args(input_format),
@@ -776,6 +829,35 @@ def get_ffmpeg_hls_cmaf_input_args() -> list[str]:
     return []
 
 
+def get_ffmpeg_readrate_catchup_args(speed: str) -> list[str]:
+    """
+    Return the input arguments that set how fast a paced input makes up a lag, if supported.
+
+    An ffmpeg without the option gets none and keeps its own catch-up.
+
+    :param speed: The read rate to catch up at, at least the input's own read rate.
+    """
+    if get_global_cache_value(CACHE_ATTR_READRATE_CATCHUP):
+        return ["-readrate_catchup", speed]
+    return []
+
+
+def add_input_fflag(input_args: list[str], flag: str) -> None:
+    """
+    Add a format flag to the input args, merging it into an existing -fflags option.
+
+    :param input_args: The ffmpeg input args to extend in place.
+    :param flag: The flag to add, including its sign (e.g. "+fastseek").
+    """
+    if "-fflags" in input_args:
+        # ffmpeg only honours the last -fflags given to an input
+        idx = len(input_args) - input_args[::-1].index("-fflags")
+        if flag not in input_args[idx]:
+            input_args[idx] += flag
+    else:
+        input_args += ["-fflags", flag]
+
+
 async def check_ffmpeg_version() -> None:
     """Check that ffmpeg is present and usable, and cache the capabilities it reports."""
     # check for FFmpeg presence
@@ -812,12 +894,16 @@ async def check_ffmpeg_version() -> None:
     cmaf_blocked = (
         returncode == 0 and b"extension_picky" in hls_options and b"cmfa" not in hls_options
     )
+    # -readrate_catchup arrived in 8.0, and a build without it refuses it as an unknown option
+    returncode, long_help = await check_output("ffmpeg", "-hide_banner", "-h", "long")
+    readrate_catchup = returncode == 0 and b"-readrate_catchup" in long_help
     # use globals as in-memory cache
     await set_global_cache_values(
         {
             CACHE_ATTR_LIBSOXR_PRESENT: libsoxr_support,
             CACHE_ATTR_FFMPEG_VERSION: version,
             CACHE_ATTR_HLS_CMAF_BLOCKED: cmaf_blocked,
+            CACHE_ATTR_READRATE_CATCHUP: readrate_catchup,
         }
     )
 
@@ -894,7 +980,7 @@ def _get_overlay_volume_filter(overlay_volume: int, output_channels: int) -> str
 
 
 def _build_overlay_mixer(
-    overlay_input: str, pcm_format: AudioFormat, overlay_volume: int
+    overlay_input: str, pcm_format: AudioFormat, overlay_volume: int, verify_ssl: bool = True
 ) -> ComplexFilter:
     """
     Build the filter that mixes a looping audio overlay into the main audio.
@@ -902,6 +988,7 @@ def _build_overlay_mixer(
     :param overlay_input: File path or URL of the overlay audio.
     :param pcm_format: PCM format of the main input and the mixed output.
     :param overlay_volume: Overlay loudness relative to the main audio in percent.
+    :param verify_ssl: Whether the certificate of an https overlay must be verified.
     """
     input_args = []
     if overlay_input.startswith("http"):
@@ -913,6 +1000,8 @@ def _build_overlay_mixer(
             "-reconnect_streamed",
             "1",
         ]
+    input_args += tls_verify_args(overlay_input, verify_ssl)
+    input_args += user_agent_args(overlay_input)
     input_args += ["-stream_loop", "-1"]
     # conform the overlay to the main stream's layout so amix sees two matching inputs;
     # an unnameable count is left to FFmpeg's own negotiation
@@ -1030,16 +1119,6 @@ def _is_stream_limit_error(err: BaseException) -> bool:
     return isinstance(err, ProviderStreamLimitError)
 
 
-def _add_input_fflag(input_args: list[str], flag: str) -> None:
-    """Add a format flag to the input, merging into an existing -fflags option."""
-    if "-fflags" in input_args:
-        # ffmpeg only honours the last -fflags given to an input
-        idx = len(input_args) - input_args[::-1].index("-fflags")
-        input_args[idx] += flag
-    else:
-        input_args += ["-fflags", flag]
-
-
 def _parse_ffprobe_stream_info(output: bytes) -> FFMpegStreamInfo | None:
     """
     Extract audio format details from ffprobe's json output for a single stream.
@@ -1064,3 +1143,15 @@ def _parse_ffprobe_stream_info(output: bytes) -> FFMpegStreamInfo | None:
     elif codec.is_lossless():
         info.bit_depth = _SAMPLE_FMT_BIT_DEPTH.get(stream.get("sample_fmt", ""))
     return info
+
+
+def _sets_user_agent(input_args: Sequence[str]) -> bool:
+    """Return whether the input args set a user agent, by option or inside -headers."""
+    for option, value in pairwise(input_args):
+        if option == "-user_agent":
+            return True
+        if option == "-headers" and any(
+            line.partition(":")[0].strip().lower() == "user-agent" for line in value.splitlines()
+        ):
+            return True
+    return False

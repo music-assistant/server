@@ -11,10 +11,13 @@ from __future__ import annotations
 
 import dataclasses
 import logging
-from typing import Any, Final
+from typing import TYPE_CHECKING, Any, Final
 
 from music_assistant.helpers.json import json_dumps, json_loads
 from music_assistant.models.audio_analysis import AudioAnalysisData
+
+if TYPE_CHECKING:
+    from collections.abc import Collection
 
 LOGGER = logging.getLogger(__name__)
 
@@ -80,15 +83,19 @@ def decode_extra_data(header: str | bytes) -> dict[str, Any] | None:
     return extra if isinstance(extra, dict) else None
 
 
-def decode(header: str | bytes, payload: bytes) -> AudioAnalysisData:
+def decode(
+    header: str | bytes, payload: bytes, *, arrays: Collection[str] | None = None
+) -> AudioAnalysisData:
     """
     Unpack a stored record.
 
     :param header: JSON header as written by :func:`encode`.
     :param payload: Binary payload as written by :func:`encode`.
+    :param arrays: The array fields to unpack; every other array field is left None and its
+        packed bytes are neither read nor validated. None (the default) unpacks them all.
     :raises TypeError: When the decoded header is not an object.
-    :raises ValueError: When the array index does not fit the payload, or an array holds
-        non-finite values.
+    :raises ValueError: When the array index does not fit the payload, or an unpacked array
+        holds non-finite values.
     """
     # numpy is imported here to keep it off the server startup path
     import numpy as np  # noqa: PLC0415
@@ -97,9 +104,12 @@ def decode(header: str | bytes, payload: bytes) -> AudioAnalysisData:
     if not isinstance(doc, dict):
         raise TypeError("packed audio analysis header must be an object")
     view = memoryview(payload)
+    decoded: dict[str, list[float]] = {}
     for name, tag, offset, nbytes in doc.pop("arrays", []):
         if name not in _ARRAY_FIELD_SET:
             LOGGER.warning("Ignoring unknown packed analysis array %s", name)
+            continue
+        if arrays is not None and name not in arrays:
             continue
         # a corrupt index must not slice from the end or past the payload
         if (
@@ -113,5 +123,11 @@ def decode(header: str | bytes, payload: bytes) -> AudioAnalysisData:
         arr = np.frombuffer(view[offset : offset + nbytes], dtype=_DTYPES[tag])
         if not np.isfinite(arr).all():
             raise ValueError(f"packed analysis array {name} contains non-finite values")
-        doc[name] = (arr.astype(np.float32) if tag == "f16" else arr).tolist()
-    return AudioAnalysisData.from_dict(doc)
+        decoded[name] = (arr.astype(np.float32) if tag == "f16" else arr).tolist()
+    analysis = AudioAnalysisData.from_dict(doc)
+    # tolist() already yields Python floats, so the arrays are attached after from_dict
+    # instead of going through its per-element coercion, which otherwise dominates the
+    # decode of a fully analysed track
+    for name, values in decoded.items():
+        setattr(analysis, name, values)
+    return analysis

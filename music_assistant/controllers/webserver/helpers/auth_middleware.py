@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable, Iterator, Mapping
+from contextlib import contextmanager
 from contextvars import ContextVar
 from types import TracebackType
 from typing import TYPE_CHECKING, Any, Final, Self, cast
@@ -33,6 +34,9 @@ if TYPE_CHECKING:
 
 # Context key for storing authenticated user in request
 USER_CONTEXT_KEY = "authenticated_user"
+# API websocket query parameter and Sendspin auth message field with which a browser
+# identifies itself over Home Assistant Ingress
+INGRESS_CLIENT_KEY: Final = "ingress_client_key"
 
 _GUEST_SCOPES: Final[frozenset[Scope]] = frozenset(
     {
@@ -257,19 +261,22 @@ async def resolve_impersonated_user(
     provider_type: AuthProviderType,
     provider_user_id: str,
     required: bool = True,
+    required_scope: Scope | tuple[Scope, ...] | None = None,
 ) -> User | None:
     """
     Resolve and validate the user to impersonate for the current call.
 
     A builtin user is looked up by user_id or username, users of other auth providers
     by their provider link. The authenticated caller may always impersonate itself,
-    impersonating another user requires the users.impersonate scope.
+    impersonating another user requires the users.impersonate scope. The target must hold
+    the command's required scope itself, so impersonation never grants more than its role.
 
     :param mass: The MusicAssistant instance.
     :param provider_type: The auth provider the user reference belongs to.
     :param provider_user_id: The user's id at that provider.
     :param required: Raise if the user cannot be found, instead of
         resolving to None (no impersonation).
+    :param required_scope: The scope(s) the command requires, None for no check.
     """
     authenticated_user = current_user.get()
     if authenticated_user is None:
@@ -302,10 +309,19 @@ async def resolve_impersonated_user(
         raise InsufficientPermissions(
             "The users.impersonate scope is required to impersonate another user."
         )
+    if required_scope and not has_scope(target_user, required_scope):
+        scopes = required_scope if isinstance(required_scope, tuple) else (required_scope,)
+        raise InsufficientPermissions(
+            f"The impersonated user lacks the {' or '.join(map(str, scopes))} scope"
+        )
     return target_user
 
 
-async def resolve_command_impersonation(mass: MusicAssistant, args: dict[str, Any]) -> User | None:
+async def resolve_command_impersonation(
+    mass: MusicAssistant,
+    args: dict[str, Any],
+    required_scope: Scope | tuple[Scope, ...] | None = None,
+) -> User | None:
     """
     Pop and resolve the optional impersonation argument for an API command invocation.
 
@@ -317,6 +333,8 @@ async def resolve_command_impersonation(mass: MusicAssistant, args: dict[str, An
 
     :param mass: The MusicAssistant instance.
     :param args: The (mutable) arguments dict of the incoming command.
+    :param required_scope: The scope(s) the command requires; the impersonated user
+        must hold it as well, so impersonation never grants more than its own role.
     """
     user_arg = args.pop("user", None)
     # username is accepted as (deprecated) alias for user
@@ -327,8 +345,12 @@ async def resolve_command_impersonation(mass: MusicAssistant, args: dict[str, An
     if not target:
         return None
     if isinstance(target, Mapping):
-        return await resolve_impersonated_user(mass, *_parse_provider_user_arg(target))
-    return await resolve_impersonated_user(mass, AuthProviderType.BUILTIN, str(target))
+        return await resolve_impersonated_user(
+            mass, *_parse_provider_user_arg(target), required_scope=required_scope
+        )
+    return await resolve_impersonated_user(
+        mass, AuthProviderType.BUILTIN, str(target), required_scope=required_scope
+    )
 
 
 def _parse_provider_user_arg(value: Mapping[str, Any]) -> tuple[AuthProviderType, str, bool]:
@@ -364,11 +386,18 @@ def is_own_client_player(player: Player | None) -> bool:
     A private client player (browser session, desktop or mobile app) is bound to the
     connection that announced it, so its owner may always use it regardless of their
     player filter. Only private players qualify, so a shared speaker cannot be claimed
-    by announcing its id.
+    by announcing its id. Another user the caller acts as never connected on it, so it does
+    not count for them.
 
     :param player: The player to check, or None.
     """
-    return player is not None and player.private and player.player_id == get_sendspin_player_id()
+    if player is None or not player.private or player.player_id != get_sendspin_player_id():
+        return False
+    acting_user = get_impersonated_user()
+    authenticated_user = current_user.get()
+    return acting_user is None or (
+        authenticated_user is not None and acting_user.user_id == authenticated_user.user_id
+    )
 
 
 def player_access_filter(user: User | None) -> list[str] | None:
@@ -427,6 +456,18 @@ def set_impersonated_user(user: User | None) -> None:
     :param user: The user to set as impersonated.
     """
     impersonated_user.set(user)
+
+
+@contextmanager
+def system_auth_context() -> Iterator[None]:
+    """Run the enclosed block as the server itself, without the requesting user."""
+    current_user_token = current_user.set(None)
+    impersonated_user_token = impersonated_user.set(None)
+    try:
+        yield
+    finally:
+        impersonated_user.reset(impersonated_user_token)
+        current_user.reset(current_user_token)
 
 
 def get_current_token() -> str | None:

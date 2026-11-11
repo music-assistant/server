@@ -964,7 +964,7 @@ class TestSilenceAwareAnchoring:
         buffer_duration = partial_bytes / PCM.pcm_sample_size
         # beats are on a strict 0.5s grid from t=0 in the analysis fixture;
         # in real buffer coordinates each beat must satisfy
-        # (beat + duration - buffer_duration) % 0.5 == 0
+        # (beat + duration - buffer_duration) % 0.5 == 0  # noqa: ERA001
         offset = duration - buffer_duration
         for beat in fade.fade_out_beats[:8]:
             track_pos = beat + offset
@@ -1047,13 +1047,16 @@ class TestQuickFadeMasteredFadeDeadZone:
             fade.build(_seconds(45), _seconds(45), PCM)
         return fade
 
-    def test_main_pass_rejects_every_candidate_on_the_trim_guard_alone(
+    def test_main_pass_rejects_every_cut_on_the_trim_guard_alone(
         self, caplog: pytest.LogCaptureFixture
     ) -> None:
-        """Every main-pass candidate dies on the one guard; the rescue pass ships the fade."""
+        """Every main-pass cut dies on the one guard; the rescue pass ships the fade."""
         self._build_fade(caplog)
+        # both cuts and two dressed transitions die on the trim guard; the surviving
+        # dressed transitions never win the main pass on their own
         assert (
-            "all 2 candidates rejected (audible trim exceeds a short fade's own duration x2)"
+            "no blend or cut survives (segues=0 dressed=6 of 10 candidates; rejected: "
+            "audible trim exceeds a short fade's own duration x4); none wins on its own"
             in caplog.text
         )
         assert "source=rescue-anchor (rescue pass)" in caplog.text

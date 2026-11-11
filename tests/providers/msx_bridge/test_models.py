@@ -54,3 +54,10 @@ def test_msx_content_serialization() -> None:
     assert data["template"]["type"] == "list"
     assert len(data["items"]) == 2
     assert data["items"][0]["title"] == "Item 1"
+
+
+def test_msx_content_compress_flag() -> None:
+    """Search keyboard pages must be able to mark the content as compressed."""
+    content = MsxContent(headline="Search", compress=True, items=[MsxItem(title="Hit")])
+    data = content.model_dump(by_alias=True, exclude_none=True)
+    assert data["compress"] is True

@@ -1,0 +1,12 @@
+{
+  "type": "music",
+  "domain": "sunshine_live",
+  "stage": "beta",
+  "name": "Sunshine Live",
+  "description": "Stream Sunshine Live, the German electronic music station, and its channels - from Classics to Hardtechno.",
+  "codeowners": ["@jordiboehme"],
+  "tier": "community",
+  "requirements": [],
+  "documentation": "https://music-assistant.io/music-providers/sunshine-live/",
+  "multi_instance": false
+}

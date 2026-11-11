@@ -262,6 +262,7 @@ def _make_provider(
     provider._pin_sessions = {}
     provider._management_sessions = {}
     provider._pairing_config_snapshots = {}
+    provider._held_elsewhere = set()
     provider.logger = logging.getLogger("test.sendspin.pin")
     refreshed: list[str] = []
 

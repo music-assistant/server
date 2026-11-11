@@ -18,7 +18,9 @@ from music_assistant.controllers.cache import CacheController
 from music_assistant.controllers.config import ConfigController
 from music_assistant.controllers.discovery import DiscoveryController
 from music_assistant.controllers.music import MusicController
+from music_assistant.controllers.statistics import StatisticsController
 from music_assistant.controllers.tasks import TasksController
+from music_assistant.helpers.compare import set_keep_remasters_apart
 from music_assistant.mass import MusicAssistant
 from tests.common import (
     adopt_bound_sendspin_port,
@@ -81,6 +83,24 @@ def isolate_models_global_cache() -> Generator[None]:
     """
     yield
     models_helpers._global_cache.clear()
+
+
+@pytest.fixture(autouse=True)
+def isolate_matching_options() -> Generator[None]:
+    """
+    Reset the library matching options between tests.
+
+    The music controller hands its matching options to the compare helpers as module-level
+    state, which a test that turns one on would otherwise leave on for later tests.
+    """
+    yield
+    set_keep_remasters_apart(False)
+
+
+@pytest.fixture
+def keep_remasters_apart() -> None:
+    """Turn on the matching option that keeps remastered versions apart."""
+    set_keep_remasters_apart(True)
 
 
 @pytest.fixture(name="caplog")
@@ -273,6 +293,7 @@ async def _music_mass_context(
         mass_instance.webserver = MagicMock()
         mass_instance.webserver.auth.list_users = AsyncMock(return_value=[])
 
+        mass_instance.statistics = StatisticsController(mass_instance)
         mass_instance.music = MusicController(mass_instance)
         music_config = await mass_instance.config.get_core_config(mass_instance.music.domain)
         await mass_instance.music.setup(music_config)

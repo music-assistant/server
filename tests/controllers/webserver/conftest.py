@@ -59,6 +59,7 @@ def _create_ws_client(
     current_token: str | None = None,
     webrtc_session_id: str | None = None,
     with_handle_task: bool = False,
+    request: web.Request | None = None,
 ) -> WebsocketClientHandler:
     """
     Create a registered websocket client handler backed by a mocked request.
@@ -69,9 +70,12 @@ def _create_ws_client(
     :param current_token: Raw access token the session holds.
     :param webrtc_session_id: WebRTC gateway session id carried in the request query.
     :param with_handle_task: Attach a long-running handle task that teardown can cancel.
+    :param request: The request the client connected with, replacing the mocked one
+        (webrtc_session_id is ignored then).
     """
-    query = f"?webrtc_session_id={webrtc_session_id}" if webrtc_session_id else ""
-    request = make_mocked_request("GET", f"/ws{query}", app=web.Application())
+    if request is None:
+        query = f"?webrtc_session_id={webrtc_session_id}" if webrtc_session_id else ""
+        request = make_mocked_request("GET", f"/ws{query}", app=web.Application())
     client = WebsocketClientHandler(webserver, request)
     client._authenticated_user = user
     client._token_id = token_id

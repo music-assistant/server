@@ -21,6 +21,7 @@ from music_assistant.constants import (
     CONF_ENTRY_HTTP_PROFILE_FORCED_2,
     CONF_ENTRY_OUTPUT_CODEC_DEFAULT_MP3,
     EXTERNAL_PAUSE_IDLE_TIMEOUT,
+    MASS_LOGO_ONLINE,
     create_output_codec_config_entry,
 )
 from music_assistant.helpers.datetime import from_iso_string
@@ -271,19 +272,24 @@ class HomeAssistantPlayer(Player):
     async def play_media(self, media: PlayerMedia) -> None:
         """Handle PLAY MEDIA on given player."""
         url = await self.provider.mass.streams.resolve_stream_url(self.player_id, media)
+        metadata: dict[str, Any] = {
+            "title": media.title,
+            "artist": media.artist,
+            "metadataType": 3,
+            "album": media.album,
+            "albumName": media.album,
+            "images": [{"url": media.image_url}] if media.image_url else None,
+            "imageUrl": media.image_url,
+            "duration": media.stream_duration or media.duration,
+        }
+        if self.extra_data.get("hass_domain") == "dlna_dmr":
+            # the HA DLNA integration reads the album art from this key, not the cast keys
+            metadata["album_art_uri"] = media.image_url or MASS_LOGO_ONLINE
         extra_data: dict[str, Any] = {
             # passing metadata to the player
-            # so far only supported by google cast, but maybe others can follow
-            "metadata": {
-                "title": media.title,
-                "artist": media.artist,
-                "metadataType": 3,
-                "album": media.album,
-                "albumName": media.album,
-                "images": [{"url": media.image_url}] if media.image_url else None,
-                "imageUrl": media.image_url,
-                "duration": media.stream_duration or media.duration,
-            },
+            # so far only supported by google cast and DLNA, but maybe others can follow.
+            # unset values are left out, the HA DLNA integration would send them as "None"
+            "metadata": {key: value for key, value in metadata.items() if value is not None},
         }
         if self.extra_data.get("hass_domain") == "esphome":
             # tell esphome mediaproxy to bypass the proxy,
@@ -426,7 +432,7 @@ class HomeAssistantPlayer(Player):
                 group_members: list[str] = (
                     [
                         # ignore integrations that incorrectly set the group members attribute
-                        # (e.g. linkplay)
+                        # such as linkplay
                         x
                         for x in value
                         if x.startswith("media_player.")
@@ -463,7 +469,10 @@ class HomeAssistantPlayer(Player):
         # entities that were seen echoing it can be judged by it - for the others the
         # play command we issued is what tells the two sources apart. Without either
         # signal the source stays as it was.
-        media_content_id = self._hass_attributes.get("media_content_id", "")
+        media_content_id = self._hass_attributes.get("media_content_id")
+        if not isinstance(media_content_id, str):
+            # some integrations (e.g. Kodi) report a library id here, which is never our URL
+            media_content_id = ""
         if media_content_id.startswith(self.mass.streams.base_url):
             self._reports_stream_url = True
             is_ma_playback = True

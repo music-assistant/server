@@ -11,11 +11,13 @@ from music_assistant.providers.spotify.constants import CONF_SYNC_PODCAST_PROGRE
 from music_assistant.providers.spotify.provider import SpotifyProvider
 
 
-def _make_provider(episode: dict[str, Any]) -> tuple[SpotifyProvider, AsyncMock]:
+def _make_provider(
+    episode: dict[str, Any], sync_enabled: bool = True
+) -> tuple[SpotifyProvider, AsyncMock]:
     """Return a Spotify provider whose mocked Spotify API serves the given episode."""
     provider = object.__new__(SpotifyProvider)
     provider.config = MagicMock(instance_id="spotify--test")
-    provider.config.get_value.side_effect = {CONF_SYNC_PODCAST_PROGRESS: True}.get
+    provider.config.get_value.side_effect = {CONF_SYNC_PODCAST_PROGRESS: sync_enabled}.get
     provider.logger = MagicMock()
     get_data = AsyncMock(return_value=episode)
     provider._get_data = get_data  # type: ignore[method-assign]
@@ -48,3 +50,27 @@ async def test_resume_position_unavailable(error: Exception | None) -> None:
     with pytest.raises(NotImplementedError):
         await provider.get_resume_position("episode1", MediaType.PODCAST_EPISODE)
     get_data.assert_awaited_once()
+
+
+@pytest.mark.parametrize(("sync_enabled", "expected"), [(True, True), (False, None)])
+async def test_single_episode_carries_spotify_progress(
+    sync_enabled: bool, expected: bool | None
+) -> None:
+    """A single episode looked up on its own carries Spotify's progress when sync is on."""
+    provider, _ = _make_provider({}, sync_enabled=sync_enabled)
+    provider.manifest = MagicMock(domain="spotify")
+    # bypass the cached lookup, @use_cache needs a running Music Assistant
+    provider._get_podcast_episode_data = AsyncMock(  # type: ignore[method-assign]
+        return_value={
+            "id": "episode1",
+            "name": "Episode 1",
+            "duration_ms": 60000,
+            "external_urls": {"spotify": "https://open.spotify.com/episode/episode1"},
+            "resume_point": {"fully_played": True, "resume_position_ms": 0},
+        }
+    )
+
+    episode = await provider.get_podcast_episode("episode1")
+
+    assert episode.fully_played is expected
+    assert episode.resume_position_ms is None

@@ -813,7 +813,7 @@ class DigitallyImportedProvider(MusicProvider):
 
             if not playlist or not isinstance(playlist, list):
                 msg = f"{self.domain}: No stream URLs returned from Digitally Imported API"
-                raise MediaNotFoundError(msg)
+                raise MediaNotFoundError(msg)  # noqa: TRY301 - re-raised by except below
 
             stream_list: list[str] = [url for url in playlist if url and isinstance(url, str)]
             self.logger.debug(
@@ -825,7 +825,7 @@ class DigitallyImportedProvider(MusicProvider):
 
             if not stream_list:
                 msg = f"{self.domain}: No valid stream URLs found in the playlist"
-                raise MediaNotFoundError(msg)
+                raise MediaNotFoundError(msg)  # noqa: TRY301 - re-raised by except below
 
             # Log all available URLs
             for i, url in enumerate(stream_list):

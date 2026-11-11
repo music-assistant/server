@@ -157,7 +157,7 @@ class PodcastImage:
             p = self.versions.get(key)
             if p:
                 return p
-        # fallback: any
+        # fall back to any version
         for p in self.versions.values():
             if p:
                 return p

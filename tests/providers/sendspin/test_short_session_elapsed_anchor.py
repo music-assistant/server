@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 from collections import deque
+from itertools import count
 from typing import TYPE_CHECKING, cast
 from unittest.mock import AsyncMock, MagicMock
 
@@ -26,6 +27,7 @@ PCM_FORMAT = AudioFormat(
     content_type=ContentType.PCM_F32LE, sample_rate=48000, bit_depth=32, channels=2
 )
 FIRST_CHUNK_START_US = 1_000_000
+CHUNK_DURATION_US = 100_000
 # The stream clock stays short of the first chunk's start for the whole session.
 CLOCK_NOW_US = 900_000
 
@@ -43,7 +45,6 @@ def _short_session(monkeypatch: pytest.MonkeyPatch) -> SendspinPlaybackSession:
     session._history = deque()
     session._produced_audio_us = 0
     session._timeline_start_us = None
-    session._first_commit_monotonic_us = None
     session._cancel_requested = False
 
     async def audio_source() -> AsyncIterator[bytes]:
@@ -53,7 +54,7 @@ def _short_session(monkeypatch: pytest.MonkeyPatch) -> SendspinPlaybackSession:
     session.player.mass.streams.get_stream = MagicMock(return_value=audio_source())
     push_stream = MagicMock()
     push_stream.is_stopped = False
-    push_stream.commit_audio = AsyncMock(return_value=FIRST_CHUNK_START_US)
+    push_stream.commit_audio = AsyncMock(side_effect=count(FIRST_CHUNK_START_US, CHUNK_DURATION_US))
     push_stream.sleep_to_limit_buffer = AsyncMock()
     push_stream.now_us = MagicMock(return_value=CLOCK_NOW_US)
 

@@ -111,7 +111,7 @@ A command that locks a member and only then reaches the group — a power off de
 
 `get_group_and_player_lock` does exactly that: it takes the lock of the group holding the player (following the same redirect as `cmd_set_members`) and then the player's own. A power off, an announcement and the queue play actions all use it, since each detaches the player from its group or joins it back. The re-entrancy is per task, so a group command that fans out to its members in separate tasks (a group announcement) has those tasks take the member's lock only.
 
-A playback command on a synced player (play, stop, resume, ...) is redirected to the owner of its playback: the sync leader, or the group holding that leader when it is captured by one. That redirect is what puts the command under the group's lock rather than the leader's.
+A playback command on a synced player (play, stop, resume, ...) is redirected to the owner of its playback: the sync leader, or the group holding that leader when it is captured by one. That redirect is what puts the command under the group's lock rather than the leader's. The playback commands flagged with `handle_player_command(to_playback_owner=True)` and the sleep timer commands need the caller's access to that owner as well as to the player they name. Taking the player out of its group (ungroup, power off, select source, play media with its `play_media_overrides_group` setting on) only needs access to the player itself.
 
 ## Player Types
 
@@ -179,7 +179,7 @@ Protocol players are matched to the same physical device using identifiers in or
 1. **MAC_ADDRESS** - Most reliable, unique to the network interface
 2. **SERIAL_NUMBER** - Unique device serial number
 3. **UUID** - Universally unique identifier
-4. **CAST_UUID / AIRPLAY_ID** - Protocol-specific stable identifiers
+4. **CAST_UUID / AIRPLAY_ID** - Protocol-specific stable identifiers (a differing AIRPLAY_ID rules out a match, as several AirPlay receivers can share one host, IP and MAC)
 5. **IP_ADDRESS** - Last resort only when strong identifiers are unavailable or unreliable
 6. **player_id** - Fallback device key for players without usable identifiers (e.g., Sendspin)
 

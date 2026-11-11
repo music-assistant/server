@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import time
 from collections import deque
 from collections.abc import AsyncGenerator, Callable
@@ -30,6 +31,7 @@ from music_assistant_models.errors import AudioError
 
 from music_assistant.constants import MASS_LOGGER_NAME, VERBOSE_LOG_LEVEL
 from music_assistant.controllers.streams.constants import (
+    BUFFER_INACTIVITY_TIMEOUT,
     BUFFER_SIZE_MAP,
     CONF_BUFFER_SIZE,
     CONF_BUFFER_SIZE_DEFAULT,
@@ -799,7 +801,7 @@ class AudioBuffer:
             self._inactivity_task = loop.create_task(self._monitor_inactivity())
 
     async def _monitor_inactivity(
-        self, inactivity_timeout: float = 300, check_interval: float = 30
+        self, inactivity_timeout: float = BUFFER_INACTIVITY_TIMEOUT, check_interval: float = 30
     ) -> None:
         """
         Clear the buffer once it has been inactive for inactivity_timeout seconds.
@@ -1039,7 +1041,23 @@ async def _probe_source_format(
             except Exception as err:
                 LOGGER.debug("Unable to resolve HLS substream of %s: %s", streamdetails.uri, err)
                 return
-        stream_info = await probe_audio_stream(input_path, streamdetails.extra_input_args)
+        try:
+            inputs, pass_fds = await mass.streams.audio.open_local_files(
+                streamdetails, [input_path]
+            )
+        except AudioError as err:
+            LOGGER.debug("Unable to open %s to detect its format: %s", streamdetails.uri, err)
+            return
+        try:
+            stream_info = await probe_audio_stream(
+                inputs[0],
+                streamdetails.extra_input_args,
+                pass_fds=pass_fds,
+                verify_ssl=streamdetails.verify_ssl,
+            )
+        finally:
+            for fd in pass_fds:
+                os.close(fd)
     if stream_info is None:
         LOGGER.debug("Unable to detect the audio format of %s", streamdetails.uri)
         return

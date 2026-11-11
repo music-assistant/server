@@ -22,14 +22,15 @@ _CANONICAL_URL_TYPES: Final[frozenset[MediaType]] = frozenset(
 # providers whose artist, album and track ids are plain numbers
 _NUMERIC_ID_PROVIDERS: Final[frozenset[str]] = frozenset({"tidal", "deezer", "apple_music"})
 
-# share URL hosts of the form open.<provider>.com, by provider domain
+# share URL hosts whose path is /<type>/<id>, by provider domain
 _OPEN_HOSTS: Final[dict[str, str]] = {
     "open.spotify.com": "spotify",
     "open.qobuz.com": "qobuz",
+    "play.qobuz.com": "qobuz",
 }
 
 _APPLE_TYPE_MAP: Final[dict[str, MediaType]] = {
-    "station": MediaType.PLAYLIST,
+    "station": MediaType.RADIO,
     "playlist": MediaType.PLAYLIST,
     "album": MediaType.ALBUM,
     "artist": MediaType.ARTIST,
@@ -109,7 +110,7 @@ async def parse_uri(uri: str, validate_id: bool = False) -> tuple[MediaType, str
             media_type = MediaType.UNKNOWN
             item_id = uri
         else:
-            raise KeyError
+            raise KeyError  # noqa: TRY301 - converted to InvalidProviderURI below
     except (TypeError, AttributeError, ValueError, KeyError, IndexError) as err:
         # IndexError covers truncated share URLs with no path segments.
         msg = f"Not a valid Music Assistant uri: {uri}"
@@ -169,6 +170,10 @@ def canonical_provider_url(
         return f"https://music.apple.com/{storefront}/{kind}/{item_id}"
     if provider_domain == "ytmusic" and media_type == MediaType.ARTIST:
         return f"https://music.youtube.com/channel/{item_id}"
+    # MusicBrainz mostly stores Qobuz albums as www.qobuz.com/<locale>/album/<slug>/<id>,
+    # which an id alone cannot rebuild. A performer without a Qobuz page has its name as id.
+    if provider_domain == "qobuz" and media_type == MediaType.ARTIST and item_id.isdigit():
+        return f"https://open.qobuz.com/artist/{item_id}"
     return None
 
 
@@ -225,6 +230,7 @@ def _parse_share_url(uri: str) -> tuple[MediaType, str, str] | None:
         # https://open.spotify.com/playlist/5lH9NjOeJvctAO92ZrKQNB?si=04a63c8234ac413e
         # https://open.spotify.com/intl-de/track/4cOdK2wGLETKBW3PvgPWqT
         # https://open.qobuz.com/album/0634904032432
+        # https://play.qobuz.com/artist/1044
         if path and path[0].startswith("intl-"):
             path = path[1:]
         return (MediaType(path[0]), domain, path[1])
@@ -238,7 +244,11 @@ def _parse_share_url(uri: str) -> tuple[MediaType, str, str] | None:
     if host in ("qobuz.com", "www.qobuz.com"):
         # https://www.qobuz.com/us-en/album/{slug}/{id}
         # https://www.qobuz.com/us-en/interpreter/{slug}/{id}
-        return (_QOBUZ_TYPE_MAP[path[1]], "qobuz", path[3])
+        media_type, item_id = _QOBUZ_TYPE_MAP[path[1]], path[3]
+        # some artist links end in a page name (download-streaming-albums) and carry no id
+        if media_type == MediaType.ARTIST and not item_id.isdigit():
+            raise KeyError(item_id)
+        return (media_type, "qobuz", item_id)
     if host == "music.youtube.com":
         return _parse_ytmusic_url(path, query)
     if host in _APPLE_HOSTS:

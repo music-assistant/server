@@ -169,7 +169,7 @@ class DiscoveryHandler(WamProviderFeatureBase):
             await temp_speaker.update()
             attrs = StateSyncMapper.create_speaker_attributes(temp_speaker)
             if not attrs.mac:
-                raise ConnectionError("Could not retrieve MAC address from speaker")
+                raise ConnectionError("Could not retrieve MAC address from speaker")  # noqa: TRY301 - handled by except below
         except Exception as err:
             self.logger.warning("Failed to set up player at %s: %s", ip_address, err)
             await temp_speaker.disconnect()

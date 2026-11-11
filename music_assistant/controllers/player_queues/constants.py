@@ -2,13 +2,39 @@
 
 from __future__ import annotations
 
-from music_assistant_models.enums import MediaType
+from enum import StrEnum
+
+from music_assistant_models.enums import AlbumType, MediaType
+
+from music_assistant.controllers.streams.constants import BUFFER_INACTIVITY_TIMEOUT
 
 CONF_DEFAULT_ENQUEUE_SELECT_ARTIST = "default_enqueue_select_artist"
 CONF_DEFAULT_ENQUEUE_SELECT_ALBUM = "default_enqueue_select_album"
 
 ENQUEUE_SELECT_ARTIST_DEFAULT_VALUE = "all_tracks"
 ENQUEUE_SELECT_ALBUM_DEFAULT_VALUE = "all_tracks"
+
+CONF_DEFAULT_ENQUEUE_ORDER_ARTIST = "default_enqueue_order_artist"
+
+
+class ArtistOrder(StrEnum):
+    """Enum with the orders an artist's tracks can play in."""
+
+    SHUFFLED_TRACKS = "shuffled_tracks"
+    RANDOM_ALBUMS = "random_albums"
+    ALBUMS_BY_RELEASE = "albums_by_release"
+
+    @property
+    def plays_albums(self) -> bool:
+        """Return True when the order plays the artist's albums one after the other."""
+        return self is not ArtistOrder.SHUFFLED_TRACKS
+
+
+ENQUEUE_ORDER_ARTIST_DEFAULT_VALUE = ArtistOrder.SHUFFLED_TRACKS.value
+# the album types an album order leaves out, as their songs are mostly on the artist's albums.
+# A local collection may hold only an artist's compilation, so a library one still plays
+LIBRARY_ALBUM_SKIPPED_TYPES = frozenset({AlbumType.SINGLE})
+PROVIDER_ALBUM_SKIPPED_TYPES = frozenset({AlbumType.SINGLE, AlbumType.COMPILATION})
 
 CONF_DEFAULT_ENQUEUE_OPTION_ARTIST = "default_enqueue_option_artist"
 CONF_DEFAULT_ENQUEUE_OPTION_ALBUM = "default_enqueue_option_album"
@@ -52,6 +78,13 @@ CONF_CROSSFADE_ENABLED = "crossfade_enabled"
 # global defaults the per-queue autoplay/crossfade toggles follow when not overridden
 DEFAULT_AUTOPLAY_ENABLED = False
 DEFAULT_CROSSFADE_ENABLED = False
+
+# seconds a queue may stay paused before it is stopped. Capped a minute below the time after
+# which an unread AudioBuffer releases its audio (a longer pause could not resume), and not
+# every player can stay paused for long
+CONF_PAUSE_TIMEOUT = "pause_timeout"
+DEFAULT_PAUSE_TIMEOUT = 30
+PAUSE_TIMEOUT_RANGE = (30, BUFFER_INACTIVITY_TIMEOUT - 60)
 
 CONF_SMART_SHUFFLE_LABEL = "smart_shuffle_label"
 CONF_SMART_SHUFFLE_ENABLED = "smart_shuffle_enabled"
@@ -100,7 +133,9 @@ MANAGED_POOL_SOURCE_CAP = 250
 # podcast or audiobook only makes sense front to back, and a radio station is a single endless
 # stream. Starting one of these plays it as it comes, switching the queue's shuffle off with it,
 # unless the caller asks for shuffle explicitly. Every other type (playlist, artist, genre, ...)
-# keeps whatever the queue is set to.
+# keeps whatever the queue is set to. An artist counts as sequenced too when it plays its albums
+# under an album order. Top tracks, an artist without albums, and authors or narrators keep the
+# queue's shuffle.
 ORDERED_MEDIA_TYPES = (
     MediaType.ALBUM,
     MediaType.AUDIOBOOK,
@@ -123,6 +158,9 @@ PLAYBACK_START_TIMEOUT = 5.0
 # the per-track updates during playback) collapses into a single write instead of hitting the cache
 # db on every signal_update.
 QUEUE_CACHE_SAVE_DELAY = 5
+# How long the shutdown waits for a playing queue's player to stop, so a player that never
+# answers can't keep the queues from being saved.
+QUEUE_SHUTDOWN_STOP_TIMEOUT = 5
 # Bumped when the on-disk queue cache layout changes in a way older code can't read; a version
 # mismatch makes the restore fall back to a clean queue instead of trusting incompatible data.
 CACHE_FORMAT_VERSION = 1
@@ -138,3 +176,8 @@ PROBED_DURATION_MEDIA_TYPES = (
 # A forward skip never lands closer than this to the end of the item. The item then finishes on
 # its own and the queue advances normally.
 SKIP_END_MARGIN = 1
+
+# A player that holds its next item advances on its own when the current one ends. Durations
+# are rounded and position reports lag, so an item that changed within this many seconds of the
+# point a sleep timer stops at ended there. One that changed earlier was skipped on the device.
+SLEEP_TIMER_NATURAL_END_MARGIN = 5

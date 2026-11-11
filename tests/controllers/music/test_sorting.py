@@ -139,10 +139,15 @@ async def artist_sorted_mass(music_mass_module: MusicAssistant) -> MusicAssistan
     return mass
 
 
-def test_every_sort_field_has_a_definition() -> None:
-    """Every sort field of the models package must have a definition."""
-    for field in SortField:
-        assert field in SORT_FIELD_DEFINITIONS, f"{field} has no definition"
+def test_every_definition_is_offered_by_a_listing() -> None:
+    """
+    Every defined field is offered by a listing, which in turn only offers defined fields.
+
+    The models enum is the wider set: a field this server does not define yet is offered
+    nowhere and rejected when requested, so a new member in a models release passes here.
+    """
+    offered = {option.field for options in LISTING_SORT_OPTIONS.values() for option in options}
+    assert offered == SORT_FIELD_DEFINITIONS.keys()
 
 
 def test_every_legacy_key_maps_to_a_defined_field() -> None:
@@ -193,10 +198,10 @@ def test_sort_options_command_serves_every_library_listing(mass: MusicAssistant)
         assert [option.field for option in options] == list(MEDIA_TYPE_SORT_FIELDS[media_type])
 
 
-def test_sort_options_command_rejects_listing_without_options(mass: MusicAssistant) -> None:
-    """A listing that does not sort on the server is rejected."""
-    with pytest.raises(InvalidDataError):
-        mass.music.sort_options(ListingType.ALBUM_TRACKS)
+def test_sort_options_command_rejects_a_listing_without_a_row(mass: MusicAssistant) -> None:
+    """A listing type this server has no row for is rejected instead of crashing the command."""
+    with patch.dict(LISTING_SORT_OPTIONS, {}, clear=True), pytest.raises(InvalidDataError):
+        mass.music.sort_options(ListingType.BROWSE)
 
 
 def test_library_sort_options_hold_the_listing_specific_fields() -> None:
@@ -212,7 +217,8 @@ def test_library_sort_options_hold_the_listing_specific_fields() -> None:
     assert SortField.DURATION in fields[ListingType.LIBRARY_AUDIOBOOKS]
     own_fields = {SortField.YEAR, SortField.ARTIST_NAME, SortField.DURATION}
     assert own_fields.isdisjoint(fields[ListingType.LIBRARY_ARTISTS])
-    for options in LISTING_SORT_OPTIONS.values():
+    for listing in LIBRARY_LISTINGS.values():
+        options = LISTING_SORT_OPTIONS[listing]
         random_options = options[-2:]
         assert [o.field for o in random_options] == [SortField.RANDOM, SortField.RANDOM_PLAY_COUNT]
         assert all(not o.supports_direction and o.default_direction is None for o in random_options)

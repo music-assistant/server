@@ -10,12 +10,14 @@ compose/reorder/disable them without touching the scoring math itself.
 
 from __future__ import annotations
 
+import math
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 
 from music_assistant.controllers.streams.smart_fades.models import (
+    DRESSED_STYLES,
     TransitionPlan,
-    TransitionStrategy,
+    TransitionStyle,
     TransitionTier,
 )
 from music_assistant.controllers.streams.smart_fades.vocal import (
@@ -89,6 +91,27 @@ class VocalCollisionPolicy(Policy):
         return Verdict.ok(normalized**2 * self.weighted_penalty_scale)
 
 
+class RhythmClashPolicy(Policy):
+    """Reject or penalize a segue or a dressed transition that plays both decks' kicks together."""
+
+    clash_bars_limit: float = 2.0
+    penalty_scale: float = 20.0
+
+    def evaluate(self, candidate: Candidate, ctx: TransitionContext) -> Verdict:
+        """Judge one candidate against the shared per-transition context."""
+        # a blend beatmatches its kicks, and a cut keeps the quick fade it always was: a
+        # clashing cut gives way to a dressed transition at selection instead
+        style = candidate.plan.style
+        if style is not TransitionStyle.SEGUE and style not in DRESSED_STYLES:
+            return Verdict.ok()
+        if ctx.kick_out is None or ctx.kick_in is None:
+            return Verdict.ok()
+        clash = candidate.metrics.rhythm_clash_bars
+        if clash > self.clash_bars_limit:
+            return Verdict.reject("kick clash exceeds the guard limit")
+        return Verdict.ok((clash / self.clash_bars_limit) ** 2 * self.penalty_scale)
+
+
 class VocalTruncationPolicy(Policy):
     """Reject a candidate that cuts off an audible outgoing vocal phrase."""
 
@@ -101,8 +124,9 @@ class VocalTruncationPolicy(Policy):
         if ctx.vocal_out_scoring is None:
             return Verdict.ok()
         # truncation = audible vocal BEYOND the candidate's anchor (cut off by the
-        # trim), not vocal inside the fade - a phrase riding the fade is normal
-        anchor = candidate.plan.fade_out_window
+        # trim), not vocal inside the fade - a phrase riding the fade is normal; an
+        # echo out stops the phrase at its cut
+        anchor = candidate.plan.outgoing_end
         truncated = sum(
             min(right, ctx.audio_end) - max(left, anchor)
             for left, right in ctx.vocal_out_scoring.windows
@@ -177,20 +201,32 @@ class DeadAirPolicy(Policy):
 
 
 class OverlapPreferencePolicy(Policy):
-    """Prefer the tier's top rung and the context's chosen tier."""
+    """Prefer the context's preferred style, the longest overlap and the context's chosen tier."""
 
     rung_penalty_per_step: float = 10.0
     tier_penalty_per_step: float = 15.0
+    # per halving of a segue's overlap below its longest step
+    segue_halving_penalty: float = 4.0
+    # a candidate of another style than the context prefers
+    style_penalty: float = 15.0
 
     def evaluate(self, candidate: Candidate, ctx: TransitionContext) -> Verdict:
         """Judge one candidate against the shared per-transition context."""
         spec = candidate.spec
-        if spec.strategy is TransitionStrategy.LAZY_OVERLAY:
-            return Verdict.ok()  # the overlay has no rung/tier notion to score
+        if candidate.plan.style is TransitionStyle.SEGUE:
+            assert spec.ideal_overlap_s is not None  # every segue spec carries its longest step
+            penalty = self.segue_halving_penalty * math.log2(
+                spec.ideal_overlap_s / candidate.plan.crossfade_duration
+            )
+            if ctx.preferred_style is TransitionStyle.BLEND:
+                penalty += self.style_penalty
+            return Verdict.ok(penalty)
         rung_gap = RUNG_LADDER.index(spec.bars) - RUNG_LADDER.index(candidate.ideal_bars)
         tier_steps = max(0, _TIER_ORDER.index(spec.tier) - _TIER_ORDER.index(ctx.tier))
         penalty = self.rung_penalty_per_step * rung_gap
         penalty += self.tier_penalty_per_step * tier_steps
+        if ctx.preferred_style is TransitionStyle.SEGUE:
+            penalty += self.style_penalty
         return Verdict.ok(penalty)
 
 
@@ -202,8 +238,8 @@ class AnchorAlignmentPolicy(Policy):
 
     def evaluate(self, candidate: Candidate, ctx: TransitionContext) -> Verdict:
         """Judge one candidate against the shared per-transition context."""
-        if candidate.spec.strategy is TransitionStrategy.LAZY_OVERLAY:
-            return Verdict.ok()  # an unphrased overlay doesn't pretend beat alignment
+        if candidate.plan.style is TransitionStyle.SEGUE:
+            return Verdict.ok()  # an unsynced segue doesn't pretend beat alignment
         penalty = 0.0
         if not candidate.metrics.anchor_on_downbeat:
             penalty += self.downbeat_penalty
@@ -219,6 +255,7 @@ def default_policies() -> tuple[Policy, ...]:
     """Return the standard policy set applied to every candidate, in evaluation order."""
     return (
         VocalCollisionPolicy(),
+        RhythmClashPolicy(),
         VocalTruncationPolicy(),
         AudibleTrimPolicy(),
         DeadAirPolicy(),

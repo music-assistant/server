@@ -4,7 +4,8 @@
   "name": "Yandex Disk",
   "description": "Stream music, audiobooks and podcasts stored on Yandex Disk",
   "documentation": "https://music-assistant.io/music-providers/yandex-disk/",
-  "codeowners": ["@TrudenBoy"],
+  "codeowners": ["@trudenboy"],
+  "tier": "community",
   "credits": [
     "[yadisk](https://github.com/ivknv/yadisk)"
   ],

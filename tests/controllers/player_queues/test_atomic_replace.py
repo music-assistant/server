@@ -26,6 +26,7 @@ from music_assistant_models.queue_item import QueueItem
 from music_assistant_models.unique_list import UniqueList
 
 from music_assistant.controllers.player_queues import PlayerQueuesController
+from music_assistant.controllers.player_queues.media_resolver import ResolvedItem
 from music_assistant.controllers.player_queues.state import PlayerQueueData
 from music_assistant.models.player import Player
 
@@ -68,7 +69,9 @@ def _controller(**queue_kwargs: Any) -> Any:
     ctrl = PlayerQueuesController.__new__(PlayerQueuesController)
     ctrl.logger = Mock()
     ctrl.mass = MagicMock()
-    ctrl.mass.players.get_player = Mock(return_value=Mock(extra_data={}))
+    ctrl.mass.players.get_player = Mock(
+        return_value=Mock(extra_data={}, offline_by_power_control=False)
+    )
     lock_cm = MagicMock()
     lock_cm.__aenter__ = AsyncMock(return_value=None)
     lock_cm.__aexit__ = AsyncMock(return_value=None)
@@ -86,7 +89,7 @@ def _controller(**queue_kwargs: Any) -> Any:
     ctrl._smart_shuffle.is_enabled = Mock(return_value=False)
     ctrl._media_resolver = Mock()
     ctrl._media_resolver._resolve_media_items = AsyncMock(
-        side_effect=lambda *_a, **_kw: [_track(item_id) for item_id in NEW_TRACKS]
+        side_effect=lambda *_a, **_kw: [ResolvedItem(_track(item_id)) for item_id in NEW_TRACKS]
     )
     queue = PlayerQueue(
         queue_id="q1", active=True, display_name="Q1", available=True, items=0, **queue_kwargs

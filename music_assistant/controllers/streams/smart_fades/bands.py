@@ -177,6 +177,38 @@ def detect_low_mix_out(profile: BandProfile, k: float) -> float | None:
     return float(profile.bar_starts[qualifying[-1]])
 
 
+def kick_runs(
+    profile: BandProfile, k: float, start_s: float, end_s: float
+) -> list[tuple[float, float]]:
+    """
+    Media-time runs of consecutive bars that carry a kick (low band), clipped to a window.
+
+    A bar carries a kick when its low-band power reaches ``k`` x the track's
+    reference low power.
+
+    :param profile: The track's band profile.
+    :param k: Reference multiplier a bar's low power must reach to count.
+    :param start_s: Window start in media seconds.
+    :param end_s: Window end in media seconds.
+    """
+    import numpy as np  # noqa: PLC0415
+
+    starts = profile.bar_starts
+    # the last bar ends one median bar after its downbeat, as in build_band_profile
+    ends = np.append(starts[1:], starts[-1] + float(np.median(np.diff(starts))))
+    kick = profile.bar_power["low"] >= k * profile.reference["low"]
+    runs: list[tuple[float, float]] = []
+    for bar_start, bar_end in zip(starts[kick], ends[kick], strict=True):
+        left, right = max(float(bar_start), start_s), min(float(bar_end), end_s)
+        if right <= left:
+            continue
+        if runs and left <= runs[-1][1]:
+            runs[-1] = (runs[-1][0], right)
+        else:
+            runs.append((left, right))
+    return runs
+
+
 def detect_low_groove_entry(profile: BandProfile, k: float) -> float | None:
     """
     Media time where the kick (low band) enters and holds.

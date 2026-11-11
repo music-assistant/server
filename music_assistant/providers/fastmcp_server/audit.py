@@ -11,7 +11,7 @@ LOGGER = logging.getLogger(__name__)
 
 ANONYMOUS_USER_ID = "ma-user:anonymous"
 # Bandit B105: this is a non-secret audit category, never credential material.
-NO_TOKEN_CLIENT_ID = "ma-token:none"  # nosec B105
+NO_TOKEN_CLIENT_ID = "ma-token:none"  # noqa: S105
 
 
 @dataclass(frozen=True, slots=True)
