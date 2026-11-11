@@ -82,7 +82,6 @@ AUTOMATIC_KEYS = frozenset(
         "sendspin_opt_out_pending",
         "sendspin_unsupported",
         "stored_volume",
-        "source_input_declined",
         CONF_PROTOCOL_EXPERIMENTAL_NOTE,
         CONF_UNDERLYING_PLAYER_ID,
     }

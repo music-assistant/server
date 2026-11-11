@@ -609,6 +609,90 @@ def test_session_only_players_are_deleted_unless_customised() -> None:
     }
 
 
+@pytest.mark.parametrize(
+    ("records", "players", "protocols"),
+    [
+        # a browser or app client whose audio input the user declined, and nothing else
+        (
+            [
+                _record(
+                    "ss_50",
+                    SENDSPIN,
+                    values={
+                        "source_input_declined": True,
+                        "sendspin_static_delay": 5,
+                        "created_at": 1,
+                    },
+                )
+            ],
+            {"ss_50": _record("ss_50", SENDSPIN, values={"created_at": 1, "session_only": True})},
+            {
+                "ss_50": _protocol_record(
+                    "ss_50",
+                    SENDSPIN,
+                    "ss_50",
+                    role="native",
+                    values={"source_input_declined": True, "sendspin_static_delay": 5},
+                )
+            },
+        ),
+        # one the user set up otherwise as well
+        (
+            [
+                _record(
+                    "ss_51",
+                    SENDSPIN,
+                    name="Tablet",
+                    values={"source_input_declined": True, "hide_in_ui": True},
+                )
+            ],
+            {
+                "ss_51": _record(
+                    "ss_51",
+                    SENDSPIN,
+                    name="Tablet",
+                    values={"hide_in_ui": True, "session_only": True},
+                )
+            },
+            {
+                "ss_51": _protocol_record(
+                    "ss_51",
+                    SENDSPIN,
+                    "ss_51",
+                    role="native",
+                    values={"source_input_declined": True},
+                )
+            },
+        ),
+        # the Sendspin client of a speaker with a line-in, a protocol of the speaker's player
+        (
+            [
+                _record("sq_52", SQUEEZELITE),
+                _protocol("ss_52", SENDSPIN, "sq_52", values={"source_input_declined": True}),
+            ],
+            {"sq_52": _record("sq_52", SQUEEZELITE)},
+            {
+                "sq_52": _protocol_record("sq_52", SQUEEZELITE, "sq_52", role="native"),
+                "ss_52": _protocol_record(
+                    "ss_52", SENDSPIN, "sq_52", values={"source_input_declined": True}
+                ),
+            },
+        ),
+    ],
+    ids=["session_only_declined", "session_only_declined_and_set_up", "protocol_of_a_speaker"],
+)
+def test_a_declined_audio_input_stays_with_the_protocol_of_its_client(
+    records: list[dict[str, Any]],
+    players: dict[str, Any],
+    protocols: dict[str, Any],
+) -> None:
+    """The answer of the user to the audio input of a Sendspin client survives the split."""
+    result = _migrated(_settings(*deepcopy(records)))
+
+    assert result[CONF_PLAYERS] == players
+    assert result[CONF_PLAYER_PROTOCOLS] == protocols
+
+
 @pytest.mark.parametrize("tree", [None, ["ss_40"]], ids=["null", "list"])
 def test_dsp_and_queue_trees_that_are_no_mapping_hold_no_customisation(
     tree: list[str] | None,
@@ -808,6 +892,26 @@ async def test_split_runs_again_after_a_save_that_was_interrupted(tmp_path: Path
 
     assert json.loads((interrupted / "settings.json").read_text()) == expected
     assert json.loads((interrupted / f"settings.json{BACKUP_SUFFIX}").read_text()) == before
+
+
+async def test_a_declined_audio_input_is_found_under_the_id_of_its_client(
+    tmp_path: Path,
+) -> None:
+    """After the upgrade a Sendspin client reads the decline from its own protocol config."""
+    before = _settings(
+        _record("ss_50", SENDSPIN, values={"source_input_declined": True}),
+        _record("sq_52", SQUEEZELITE),
+        _protocol("ss_52", SENDSPIN, "sq_52", values={"source_input_declined": True}),
+    )
+    (tmp_path / "settings.json").write_text(json.dumps(before))
+    controller = _make_controller(tmp_path)
+
+    await controller._load()
+    # as setup() does right after the load; its further steps need a running server
+    controller.initialized = True
+
+    for client_id in ("ss_50", "ss_52"):
+        assert controller.get_protocol_value(client_id, "source_input_declined", False) is True
 
 
 async def test_new_installation_gets_no_backup(tmp_path: Path) -> None:
