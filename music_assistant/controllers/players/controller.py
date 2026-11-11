@@ -196,9 +196,8 @@ EXTERNAL_POWER_OFF_STOP_DELAY = 15
 # brought it here.
 UNGROUP_ON_POWER_OFF_TYPES = {PlayerType.PLAYER, PlayerType.STEREO_PAIR}
 
-# How long a release for an explicit play_media waits for the player to report that it left
-# its group. A Sonos speaker that only reports a leave through its own groups event does so
-# about 7 seconds after the command.
+# How long a release for an explicit play_media waits for the player to confirm it left its group.
+# A Sonos speaker not reached by the direct refresh reports it ~7 s later; others can be late too.
 RELEASE_FOR_PLAY_MEDIA_TIMEOUT = 10
 
 # Sentinel used to detect omitted optional arguments where ``None`` is a valid value.

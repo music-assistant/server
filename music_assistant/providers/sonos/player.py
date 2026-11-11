@@ -121,6 +121,9 @@ MOVED_GROUP_TIMEOUT = 5
 # seconds a queue released on a session eviction still counts for a coordinator move:
 # the speaker may send the eviction just before the move
 EVICTED_QUEUE_GRACE = 5
+# seconds a speaker gets to answer for its grouping after a group change; a healthy one
+# answers within 50 ms, one that lost power never does
+GROUPS_REFRESH_TIMEOUT = 2
 # seconds past an announcement's own duration to wait for the speaker to report it done
 ANNOUNCEMENT_STATUS_MARGIN = 5
 # clip states after which the speaker no longer plays the clip
@@ -895,10 +898,17 @@ class SonosPlayer(Player):
                 player_ids_to_remove=player_ids_to_remove,
             )
             await self._wait_for_group_members(player_ids_to_add, player_ids_to_remove)
-            for player_id in {*player_ids_to_add, *player_ids_to_remove} - {self.player_id}:
-                member = self.mass.players.get_player(player_id)
-                if isinstance(member, SonosPlayer) and member.connected:
-                    await member._refresh_groups()
+            members = (
+                self.mass.players.get_player(player_id)
+                for player_id in {*player_ids_to_add, *player_ids_to_remove} - {self.player_id}
+            )
+            await asyncio.gather(
+                *(
+                    member._refresh_groups()
+                    for member in members
+                    if isinstance(member, SonosPlayer) and member.connected
+                )
+            )
 
     async def ungroup(self) -> None:
         """
@@ -1817,8 +1827,9 @@ class SonosPlayer(Player):
         # a speaker knows its new group at once, but holds its groups event back for seconds,
         # and sends none at all when its group is back to what it last reported by then
         try:
-            groups = await self.client.api.groups.get_groups(self.client.household_id)
-        except SonosException as err:
+            async with asyncio.timeout(GROUPS_REFRESH_TIMEOUT):
+                groups = await self.client.api.groups.get_groups(self.client.household_id)
+        except (SonosException, ClientError, OSError, TimeoutError) as err:
             self.logger.debug("Could not refresh the groups of %s: %s", self.name, err)
             return
         self.client._handle_groups_event(groups)
