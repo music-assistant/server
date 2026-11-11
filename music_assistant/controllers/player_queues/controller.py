@@ -2354,10 +2354,36 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
                 # only the stopped session's audio is released. A stop that had no session
                 # owns none of what is here, and taking it down would hit playback that
                 # started while this stop was still waiting on the device
-                if queue_data.session_id == session_id:
-                    queue_data.session_id = None
-                self.mass.streams.audio_processing.clear(queue_id, session_id)
-                self.mass.create_task(self._cleanup_queue_audio_data(queue_id, session_id))
+                self._end_session(queue_data, session_id)
+
+    def _end_session(self, queue_data: PlayerQueueData, session_id: str) -> None:
+        """
+        Release the audio of a playback session of the queue.
+
+        :param queue_data: The data of the queue the session belongs to.
+        :param session_id: The session to release.
+        """
+        queue_id = queue_data.queue.queue_id
+        if queue_data.session_id == session_id:
+            queue_data.session_id = None
+        self.mass.streams.audio_processing.clear(queue_id, session_id)
+        self.mass.create_task(self._cleanup_queue_audio_data(queue_id, session_id))
+
+    async def _end_failed_start(self, queue_data: PlayerQueueData) -> None:
+        """
+        End a start of the queue that could not load an item.
+
+        :param queue_data: The data of the queue whose start failed.
+        """
+        queue_id = queue_data.queue.queue_id
+        player = self.mass.players.get_player(queue_id)
+        if player is None or self.mass.players._resolve_playback_owner(player) is player:
+            await self.stop(queue_id)
+            return
+        # the player still plays the stream of its group or sync leader, which a stop
+        # would end on the device, so only the session this start opened is let go
+        if queue_data.session_id is not None:
+            self._end_session(queue_data, queue_data.session_id)
 
     def _cancel_pending_playback(self, queue_id: str) -> None:
         """Cancel the queue's pending play_index, preload, enqueue-next and prewarm work."""
@@ -2833,7 +2859,7 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
                             # the requested item is playable, its provider is just at capacity:
                             # report that instead of silently advancing to another item
                             self.logger.error("%s", load_err)
-                            await self.stop(queue_id)
+                            await self._end_failed_start(queue_data)
                             raise
                         err = load_err
                         attempts += 1
@@ -2857,7 +2883,7 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
                     else:
                         msg = f"Playback failed for {queue_item.name} - no more tracks available"
                     self.logger.error(msg)
-                    await self.stop(queue_id)
+                    await self._end_failed_start(queue_data)
                     raise MediaNotFoundError(msg) from err
                 self.logger.warning(
                     "Skipping unplayable item %s: %s",
@@ -2866,7 +2892,7 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
                 )
                 index = next_index
             if loaded_item is None:
-                await self.stop(queue_id)
+                await self._end_failed_start(queue_data)
                 raise MediaNotFoundError("No playable item found to start playback")
             queue_item = loaded_item
 

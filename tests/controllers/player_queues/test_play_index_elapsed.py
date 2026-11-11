@@ -51,6 +51,8 @@ def _controller_with_stale_queue() -> tuple[
     ctrl.player_media_from_queue_item = AsyncMock()  # type: ignore[method-assign]
     ctrl.mass = MagicMock()
     ctrl.mass.players.get_player.return_value.offline_by_power_control = False
+    # the queue's player is not in a group
+    ctrl.mass.players._resolve_playback_owner = Mock(side_effect=lambda player: player)
     ctrl.mass.players.play_media = AsyncMock()
     ctrl.logger = MagicMock()  # the retry-fallback path logs a warning
     return ctrl, queue, signals
