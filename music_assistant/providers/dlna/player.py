@@ -15,11 +15,11 @@ from aiohttp import ClientPayloadError
 from aiohttp.http_exceptions import ContentLengthError
 from async_upnp_client.exceptions import UpnpError, UpnpResponseError
 from async_upnp_client.profiles.dlna import DmrDevice, TransportState
-from music_assistant_models.enums import IdentifierType, PlaybackState, PlayerFeature, PlayerType
+from music_assistant_models.enums import IdentifierType, PlaybackState, PlayerFeature, ProtocolRole
 from music_assistant_models.errors import PlayerUnavailableError
 from music_assistant_models.player import PlayerSource
 
-from music_assistant.constants import CONF_PLAYER_PROTOCOLS, VERBOSE_LOG_LEVEL
+from music_assistant.constants import VERBOSE_LOG_LEVEL
 from music_assistant.helpers.upnp import create_didl_metadata
 from music_assistant.models.player import DeviceInfo
 from music_assistant.models.player_protocol import PlayerProtocol
@@ -67,30 +67,29 @@ def catch_request_errors[DLNAPlayerT: "DLNAPlayer", **P, R](
 
 class DLNAPlayer(PlayerProtocol):
     """
-    DLNA Player.
+    The DLNA renderer of a device.
 
-    All DLNA players are considered generic protocol endpoints (PlayerType.PROTOCOL)
-    and will be wrapped in a UniversalPlayer. Devices with native provider support
-    (e.g., Sonos) are handled by their respective providers and will link to
-    the DLNA player as a protocol output.
+    A DLNA renderer is an audio protocol: a device with native provider support
+    (e.g., Sonos) gets it as an output of its player, any other device becomes a
+    player of its own with DLNA as its only output.
     """
 
-    # All DLNA devices are generic protocol endpoints - no vendor has native DLNA support in MA
-    _attr_type = PlayerType.PROTOCOL
+    # no vendor has native DLNA support in MA
+    _attr_role = ProtocolRole.AUDIO
 
     def __init__(
         self,
         provider: DLNAPlayerProvider,
-        player_id: str,
+        protocol_id: str,
         description_url: str,
         device: DmrDevice | None = None,
     ) -> None:
         """
         Init Player.
 
-        The player_id is the udn.
+        The protocol_id is the udn.
         """
-        super().__init__(provider, player_id)
+        super().__init__(provider, protocol_id)
 
         self.device = device
         self.description_url = description_url  # last known location (description.xml) url
@@ -134,14 +133,19 @@ class DLNAPlayer(PlayerProtocol):
             # every regrouping, so each one would leave a subscription behind.
             await self._device_disconnect()
             # An install from before zone renderers were ignored may still hold a config
-            # for it, linked to a player that keeps being restored. Deleting the config
-            # drops those links as well.
-            if self.mass.config.get(f"{CONF_PLAYER_PROTOCOLS}/{self.player_id}"):
-                self.mass.players.delete_player_config(self.player_id)
+            # for it, linked to a player that keeps being restored. Removing the protocol
+            # drops its player as well when nothing else is left of it.
+            if self.mass.config.get_protocol_record(self.protocol_id):
+                await self.mass.players.remove_protocol(self.protocol_id)
             return False
 
         self.set_static_attributes()
-        await self.mass.players.register_or_update(self)
+        await self.mass.players.attach(self)
+        if self.provider.get_protocol(self.protocol_id) is not self:
+            # the attach skipped it (e.g. a disabled player or during a teardown):
+            # release the subscriptions setup opened, as only an attached protocol
+            # gets detached
+            await self.on_detach()
         return True
 
     def set_static_attributes(self) -> None:
@@ -269,7 +273,7 @@ class DLNAPlayer(PlayerProtocol):
         # always clear queue (by sending stop) first
         if self.device.can_stop:
             await self.stop()
-        url = await self.provider.mass.streams.resolve_stream_url(self.player_id, media)
+        url = await self.provider.mass.streams.resolve_stream_url(self.protocol_id, media)
         didl_metadata = create_didl_metadata(media, url)
         title = media.title or media.uri
         # optimistically set the state here to help in case of a player
@@ -292,7 +296,7 @@ class DLNAPlayer(PlayerProtocol):
     async def enqueue_next_media(self, media: PlayerMedia) -> None:
         """Handle enqueuing of the next queue item on the player."""
         assert self.device is not None  # for type checking
-        url = await self.provider.mass.streams.resolve_stream_url(self.player_id, media)
+        url = await self.provider.mass.streams.resolve_stream_url(self.protocol_id, media)
         didl_metadata = create_didl_metadata(media, url)
         title = media.title or media.uri
         try:
@@ -362,7 +366,7 @@ class DLNAPlayer(PlayerProtocol):
         self.mass.call_later(
             0.25,
             self._poll_volume_state,
-            task_id=f"dlna_poll_volume_{self.player_id}",
+            task_id=f"dlna_poll_volume_{self.protocol_id}",
         )
 
     @catch_request_errors
@@ -413,9 +417,9 @@ class DLNAPlayer(PlayerProtocol):
         finally:
             self.force_poll = False
 
-    async def on_unload(self) -> None:
-        """Handle logic when the player is unloaded from the Player controller."""
-        await super().on_unload()
+    async def on_detach(self) -> None:
+        """Handle logic when the protocol is detached from its player."""
+        await super().on_detach()
         await self._device_disconnect()
 
     async def _device_connect(self) -> None:
@@ -455,9 +459,9 @@ class DLNAPlayer(PlayerProtocol):
                     model=self.device.model_name,
                     manufacturer=self.device.manufacturer,
                 )
-                # Add UDN (player_id) as UUID identifier for matching with other protocols
+                # Add UDN (protocol_id) as UUID identifier for matching with other protocols
                 # Strip the "uuid:" prefix if present for proper matching
-                uuid_value = self.player_id
+                uuid_value = self.protocol_id
                 if uuid_value.lower().startswith("uuid:"):
                     uuid_value = uuid_value[5:]
                 # the UDN of a Sonos renderer is the UUID of its Sonos player plus "_MR"
@@ -522,10 +526,10 @@ class DLNAPlayer(PlayerProtocol):
             with suppress(PlayerUnavailableError):
                 await self.poll()
         prev_url = self._attr_current_media.uri if self._attr_current_media is not None else ""
-        prev_state = self.state
+        prev_state = self._attr_playback_state
         await self.set_dynamic_attributes()
         current_url = self._attr_current_media.uri if self._attr_current_media is not None else ""
-        current_state = self.state
+        current_state = self._attr_playback_state
 
         if (prev_url != current_url) or (prev_state != current_state):
             # fetch track details on state or url change
@@ -599,7 +603,7 @@ class DLNAPlayer(PlayerProtocol):
             return False
 
         # Extract base UUID (strip "uuid:" prefix and "_MR" suffix)
-        our_uuid = self.player_id.removeprefix("uuid:").removesuffix("_MR")
+        our_uuid = self.protocol_id.removeprefix("uuid:").removesuffix("_MR")
 
         # Query this device's topology
         upnp_device = self.device.profile_device.root_device
@@ -713,7 +717,7 @@ class DLNAPlayer(PlayerProtocol):
         # position on display until the next regular poll
         for index, delay in enumerate(COMMAND_REFRESH_DELAYS):
             self.mass.call_later(
-                delay, self._refresh_state, task_id=f"dlna_refresh_{index}_{self.player_id}"
+                delay, self._refresh_state, task_id=f"dlna_refresh_{index}_{self.protocol_id}"
             )
 
     async def _refresh_state(self) -> None:
