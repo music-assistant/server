@@ -210,7 +210,12 @@ class PlayerProtocol(ABC):
 
     @property
     def device_info(self) -> DeviceInfo:
-        """Return the device info of the player."""
+        """
+        Return the device info of the player.
+
+        Software players that share a host report an id of their own instance among its
+        identifiers as UUID or SERIAL_NUMBER, and the zones of one chassis their zone as ZONE.
+        """
         return self._attr_device_info
 
     @property
@@ -995,7 +1000,11 @@ class PlayerProtocol(ABC):
         return
 
     async def on_detach(self) -> None:
-        """Handle logic when the protocol is detached from its player."""
+        """
+        Handle logic when the protocol is detached from its player.
+
+        self.player is already None when this runs: release what the protocol holds itself.
+        """
         callbacks, self._on_detach_callbacks = self._on_detach_callbacks, []
         for callback in callbacks:
             try:
@@ -1014,7 +1023,9 @@ class PlayerProtocol(ABC):
         Called after the protocol was detached and its config was deleted, also for an
         object the provider holds that is not attached. Override this method in your
         player implementation if the provider keeps something of its own about the
-        device, such as an entry in its list of manually added devices.
+        device, such as an entry in its list of manually added devices. The players
+        controller holds an object that is not attached only weakly, so a provider with
+        such a list keeps a reference to the object of every device on it.
         """
         return
 
@@ -1150,7 +1161,11 @@ class PlayerProtocol(ABC):
     @property
     @final
     def config(self) -> PlayerConfig:
-        """Return the config of the protocol."""
+        """
+        Return the config of the protocol.
+
+        It has no name: the name the user gave the device is self.player.config.name.
+        """
         return self._config
 
     @cached_property
