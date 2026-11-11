@@ -84,9 +84,10 @@ def _member(state: PlaybackState, elapsed: float, *, synced_to: str | None = Non
         player_id=QUEUE_ID,
         type=PlayerType.PLAYER,
         extra_data={},
-        active_output_protocol=None,
-        current_media=SimpleNamespace(
-            source_id=source, queue_item_id="other" if synced_to else "own", uri=None
+        resolve_output_protocol=lambda: SimpleNamespace(
+            current_media=SimpleNamespace(
+                source_id=source, queue_item_id="other" if synced_to else "own", uri=None
+            )
         ),
         state=SimpleNamespace(
             name="Member",
