@@ -839,11 +839,10 @@ class WebRadioPlayer(Player):
             provider.refresh_station_route(self._station_slug)
 
     async def play_media(self, media: PlayerMedia) -> None:
-        """Mark the station as playing and start the wallclock progress anchor."""
+        """Mark the station as playing and queue the media for its broadcast."""
         # The station has no external sink: audio only leaves the box when an
-        # HTTP listener connects. We still anchor elapsed_time here so MA's
-        # queue controller can wallclock-advance current_item (and therefore
-        # the artwork/title shown in the UI) as if the queue were playing.
+        # HTTP listener connects. Until then the queue holds at the start item
+        # and the broadcast begins from it when the first listener tunes in.
         self._attr_current_media = media
         self._attr_playback_state = PlaybackState.PLAYING
         self._attr_elapsed_time = 0
