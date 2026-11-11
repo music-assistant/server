@@ -196,6 +196,11 @@ EXTERNAL_POWER_OFF_STOP_DELAY = 15
 # brought it here.
 UNGROUP_ON_POWER_OFF_TYPES = {PlayerType.PLAYER, PlayerType.STEREO_PAIR}
 
+# How long a release for an explicit play_media waits for the player to report that it left
+# its group. A Sonos speaker that only reports a leave through its own groups event does so
+# about 7 seconds after the command.
+RELEASE_FOR_PLAY_MEDIA_TIMEOUT = 10
+
 # Sentinel used to detect omitted optional arguments where ``None`` is a valid value.
 _SENTINEL: Any = object()
 
@@ -2971,7 +2976,7 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
                 player.player_id,
                 attribute_name="synced_to",
                 attribute_value=None,
-                timeout=5,
+                timeout=RELEASE_FOR_PLAY_MEDIA_TIMEOUT,
             ):
                 await self.cmd_ungroup(player.player_id)
             return
@@ -2994,7 +2999,7 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
                 player.player_id,
                 attribute_name="active_group",
                 attribute_value=None,
-                timeout=5,
+                timeout=RELEASE_FOR_PLAY_MEDIA_TIMEOUT,
             ):
                 await self.cmd_set_members(group.player_id, player_ids_to_remove=[player.player_id])
             return
@@ -3005,7 +3010,7 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
             player.player_id,
             attribute_name="active_group",
             attribute_value=None,
-            timeout=5,
+            timeout=RELEASE_FOR_PLAY_MEDIA_TIMEOUT,
         ):
             if group.state.power_control != PLAYER_CONTROL_NONE and group.state.powered:
                 self.logger.debug(

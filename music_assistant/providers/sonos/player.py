@@ -29,7 +29,13 @@ from aiosonos.api.models import (
 from aiosonos.client import SonosLocalApiClient
 from aiosonos.const import EventType as SonosEventType
 from aiosonos.const import SonosEvent
-from aiosonos.exceptions import CannotConnect, CommandTimeout, ConnectionFailed, FailedCommand
+from aiosonos.exceptions import (
+    CannotConnect,
+    CommandTimeout,
+    ConnectionFailed,
+    FailedCommand,
+    SonosException,
+)
 from music_assistant_models.constants import PLAYER_CONTROL_NATIVE
 from music_assistant_models.enums import (
     EventType,
@@ -889,6 +895,14 @@ class SonosPlayer(Player):
                 player_ids_to_remove=player_ids_to_remove,
             )
             await self._wait_for_group_members(player_ids_to_add, player_ids_to_remove)
+            for player_id in player_ids_to_remove:
+                removed_player = self.mass.players.get_player(player_id)
+                if (
+                    player_id != self.player_id
+                    and isinstance(removed_player, SonosPlayer)
+                    and removed_player.connected
+                ):
+                    await removed_player._refresh_groups()
 
     async def ungroup(self) -> None:
         """
@@ -1801,6 +1815,17 @@ class SonosPlayer(Player):
                 self.name,
                 player_ids_to_add,
             )
+
+    async def _refresh_groups(self) -> None:
+        """Update the grouping of this speaker from what the speaker reports right now."""
+        # a speaker that leaves a group knows it at once, but its groups event can follow
+        # seconds later; until then it is seen as synced and refuses to play
+        try:
+            groups = await self.client.api.groups.get_groups(self.client.household_id)
+        except SonosException as err:
+            self.logger.debug("Could not refresh the groups of %s: %s", self.name, err)
+            return
+        self.client._handle_groups_event(groups)
 
     def _extract_mac_from_player_id(self) -> str | None:
         """
