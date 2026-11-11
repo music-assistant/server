@@ -7,12 +7,18 @@ from typing import TYPE_CHECKING, Any
 from unittest.mock import PropertyMock, patch
 
 import pytest
-from music_assistant_models.enums import EventType, IdentifierType, PlaybackState, PlayerType
+from music_assistant_models.enums import (
+    EventType,
+    IdentifierType,
+    PlaybackState,
+    PlayerFeature,
+    PlayerType,
+)
 from music_assistant_models.errors import ActionUnavailable, PlayerUnavailableError
 
 from music_assistant.constants import CONF_PLAYER_PROTOCOLS, CONF_PLAYERS
 from music_assistant.controllers.players.controller import REMOVE_UNAVAILABLE_GRACE
-from tests.scenarios.harness import Event, FakeProtocol, Scenario
+from tests.scenarios.harness import DEFAULT_FEATURES, Event, FakeProtocol, Scenario
 
 if TYPE_CHECKING:
     from music_assistant.models.player import Player
@@ -753,6 +759,231 @@ async def test_group_that_is_removed_while_it_plays_stops_its_members(scenario: 
         state = scenario.player(member_id)
         assert state is not None
         assert state.playback_state == PlaybackState.IDLE
+
+
+@pytest.mark.parametrize("power", [False, True])
+@pytest.mark.parametrize("dynamic", [False, True])
+@pytest.mark.parametrize("group_type", ["universal_group", "sync_group"])
+async def test_group_plays_on_when_one_of_its_members_is_removed(
+    scenario: Scenario, group_type: str, dynamic: bool, power: bool
+) -> None:
+    """A member that is removed only leaves its group, also one that can not let it go."""
+    if group_type == "universal_group":
+        await scenario.mass.config._create_provider_instance(group_type, {})
+    else:
+        # a playing sync group of fake devices does not stop within the shutdown timeout
+        scenario.expect_log("Failed to stop queue")
+    sonos = await scenario.add_provider("sonos")
+    features = {*DEFAULT_FEATURES, PlayerFeature.SET_MEMBERS}
+    if power:
+        features.add(PlayerFeature.POWER)
+    reported: dict[str, Any] = {"powered": True} if power else {}
+    protocol_ids = ["RINCON_A", "RINCON_B", "RINCON_C"]
+    members: list[FakeProtocol] = []
+    for index, protocol_id in enumerate(protocol_ids):
+        member = sonos.protocol(
+            protocol_id,
+            f"Player {protocol_id[-1]}",
+            identifiers={IdentifierType.MAC_ADDRESS: f"54:78:C9:E6:0D:A{index}"},
+            supported_features=features,
+            can_group_with=set(protocol_ids) - {protocol_id},
+            **reported,
+        )
+        await scenario.attach(member)
+        members.append(member)
+    # the members learn who they can be grouped with
+    await scenario.advance(3)
+    member_ids = [scenario.single_player(member).player_id for member in members]
+    group = await scenario.mass.players.create_group_player(
+        group_type, "Group Z", member_ids, dynamic
+    )
+    await scenario.settle()
+    await scenario.play(group.player_id)
+    await scenario.advance(2)
+    for member in members:
+        member.commands.clear()
+    scenario.set_present("RINCON_C", False)
+
+    await scenario.remove(member_ids[2])
+    await scenario.advance(6)
+
+    group_state = scenario.player(group.player_id)
+    assert group_state is not None
+    assert group_state.playback_state == PlaybackState.PLAYING
+    assert group_state.group_members == member_ids[:2]
+    queue = scenario.queue(group.player_id)
+    assert queue is not None
+    assert queue.state == PlaybackState.PLAYING
+    assert scenario.mass.players.get_player(member_ids[2]) is None
+    for member in members[:2]:
+        assert ("stop",) not in member.commands
+    assert ("power", False) not in members[2].commands
+    if group_type == "universal_group" and dynamic:
+        # the group stops what the member it lets go still plays of it
+        assert members[2].commands == [("stop",)]
+    else:
+        assert ("stop",) not in members[2].commands
+
+
+async def test_sync_member_that_is_removed_only_leaves_its_leader(scenario: Scenario) -> None:
+    """The leader of a sync member that is removed plays on, without that member."""
+    sonos = await scenario.add_provider("sonos")
+    features = {*DEFAULT_FEATURES, PlayerFeature.SET_MEMBERS}
+    leader = sonos.protocol(
+        "RINCON_KITCHEN",
+        "Kitchen",
+        identifiers=KITCHEN,
+        supported_features=features,
+        can_group_with={"RINCON_HALL"},
+    )
+    member = sonos.protocol(
+        "RINCON_HALL",
+        "Hall",
+        identifiers={IdentifierType.MAC_ADDRESS: "54:78:C9:E6:0D:B0"},
+        supported_features=features,
+        can_group_with={"RINCON_KITCHEN"},
+    )
+    await scenario.attach(leader)
+    await scenario.attach(member)
+    leader_id = scenario.single_player(leader).player_id
+    member_id = scenario.single_player(member).player_id
+    await scenario.play(leader_id)
+    await scenario.mass.players.cmd_set_members(leader_id, player_ids_to_add=[member_id])
+    await scenario.idle()
+    member_state = scenario.player(member_id)
+    assert member_state is not None
+    assert member_state.synced_to == leader_id
+    leader.commands.clear()
+    member.commands.clear()
+    scenario.set_present("RINCON_HALL", False)
+
+    await scenario.remove(member_id)
+    await scenario.idle()
+
+    assert leader.commands == [("set_members", None, ["RINCON_HALL"])]
+    assert member.commands == []
+    leader_state = scenario.player(leader_id)
+    assert leader_state is not None
+    assert leader_state.playback_state == PlaybackState.PLAYING
+    assert leader_state.group_members == []
+    queue = scenario.queue(leader_id)
+    assert queue is not None
+    assert queue.state == PlaybackState.PLAYING
+
+
+@pytest.mark.parametrize("playing", [False, True])
+async def test_removed_player_is_stopped_but_not_powered_off(
+    scenario: Scenario, playing: bool
+) -> None:
+    """A removal ends what the player plays, and leaves the device on as it is."""
+    # a source of the device itself, which it plays without the server
+    reported: dict[str, Any] = (
+        {"playback_state": PlaybackState.PLAYING, "active_source": "hdmi1"} if playing else {}
+    )
+    musiccast = await scenario.add_provider("musiccast")
+    receiver = musiccast.protocol(
+        "avr_1",
+        "AVR",
+        identifiers=KITCHEN,
+        powered=True,
+        supported_features={*DEFAULT_FEATURES, PlayerFeature.POWER},
+        **reported,
+    )
+    await scenario.attach(receiver)
+    player_id = scenario.single_player(receiver).player_id
+    receiver.commands.clear()
+
+    await scenario.remove(player_id)
+
+    assert receiver.commands == ([("stop",)] if playing else [])
+
+
+@pytest.mark.parametrize("left", ["unreachable", "idle_output"])
+async def test_removed_player_without_playback_to_end_gets_no_command(
+    scenario: Scenario, left: str
+) -> None:
+    """A player that plays nothing it can stop is removed without a command or an error."""
+    sonos = await scenario.add_provider("sonos")
+    airplay = await scenario.add_provider("airplay")
+    native = sonos.protocol("RINCON_KITCHEN", "Kitchen", identifiers=KITCHEN)
+    audio = airplay.protocol("ap_kitchen", "Kitchen", role="audio", identifiers=KITCHEN)
+    await scenario.attach(native)
+    protocols = [native]
+    if left == "idle_output":
+        await scenario.attach(audio)
+        protocols.append(audio)
+    player_id = scenario.single_player(*protocols).player_id
+    if left == "idle_output":
+        await scenario.configure_player(player_id, preferred_output_protocol="ap_kitchen")
+    await scenario.play(player_id)
+    if left == "unreachable":
+        # the device drops while it plays, its last state stays
+        await scenario.report(native, available=False)
+    else:
+        # the stream ended on the output, which is still marked as the active one
+        await scenario.report(audio, playback_state=PlaybackState.IDLE, current_media=None)
+    for protocol in protocols:
+        protocol.commands.clear()
+    scenario.set_present("RINCON_KITCHEN", False)
+    scenario.set_present("ap_kitchen", False)
+
+    await scenario.remove(player_id)
+
+    assert [protocol.commands for protocol in protocols] == [[] for _ in protocols]
+    assert _stored(scenario) == ([], [])
+
+
+async def test_removed_player_leaves_its_power_control_switched_on(scenario: Scenario) -> None:
+    """A player on a smart plug is removed with the plug on, so its device is found again."""
+    squeezelite = await scenario.add_provider("squeezelite")
+    speaker = squeezelite.protocol("aa:bb:cc:00:00:01", "Bedroom", identifiers=KITCHEN)
+    await scenario.attach(speaker)
+    player_id = scenario.single_player(speaker).player_id
+    plug = await scenario.add_power_control("plug_1", "Plug", powered=True)
+    await scenario.configure_player(player_id, power_control=plug.control_id)
+    await scenario.play(player_id)
+    plug.commands.clear()
+
+    await scenario.remove(player_id)
+    await scenario.idle()
+
+    assert plug.commands == []
+    assert plug.powered is True
+    assert ("stop",) in speaker.commands
+    found_again = scenario.single_player(scenario.protocol("aa:bb:cc:00:00:01"))
+    assert found_again.player_id != player_id
+    assert found_again.available is True
+
+
+@pytest.mark.parametrize("failing", ["stop", "power"])
+async def test_removal_goes_through_when_the_device_fails_a_command(
+    scenario: Scenario, failing: str
+) -> None:
+    """A device that does not answer is removed all the same."""
+    musiccast = await scenario.add_provider("musiccast")
+    receiver = musiccast.protocol(
+        "avr_1",
+        "AVR",
+        identifiers=KITCHEN,
+        powered=True,
+        supported_features={*DEFAULT_FEATURES, PlayerFeature.POWER},
+    )
+    await scenario.attach(receiver)
+    player_id = scenario.single_player(receiver).player_id
+    await scenario.play(player_id)
+
+    async def _fail(*_args: Any) -> None:
+        raise ConnectionError("device does not answer")
+
+    setattr(receiver, failing, _fail)
+    scenario.set_present("avr_1", False)
+    if failing == "stop":
+        scenario.expect_log("before its removal")
+
+    await scenario.remove(player_id)
+
+    assert scenario.mass.players.get_player(player_id) is None
+    assert _stored(scenario) == ([], [])
 
 
 async def test_protocol_that_waits_takes_no_place_on_a_player_that_is_removed(

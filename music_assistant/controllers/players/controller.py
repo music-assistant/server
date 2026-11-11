@@ -3133,23 +3133,8 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
             return
         self._removing.add(player_id)
         try:
-            # check for group memberships that need to be updated
-            if (
-                player is not None
-                and player.state.active_group
-                and (group_player := self.get_player(player.state.active_group))
-            ):
-                # try to remove from the group
-                with suppress(
-                    UnsupportedFeaturedException, PlayerCommandFailed, PlayerUnavailableError
-                ):
-                    if group_protocol := group_player.own_protocol:
-                        await group_protocol.set_members(player_ids_to_remove=[player_id])
             if player is not None:
-                with suppress(
-                    UnsupportedFeaturedException, PlayerCommandFailed, PlayerUnavailableError
-                ):
-                    await self._stop_player_that_goes(player)
+                await self._release_player_that_is_removed(player)
             is_group = (
                 player.type if player else (stored or {}).get("player_type")
             ) == PlayerType.GROUP
@@ -3292,7 +3277,7 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
 
     async def _stop_player_that_goes(self, player: Player) -> None:
         """
-        Stop what a player plays before it is disabled or removed.
+        Stop what a player plays, or power it off, before it is disabled.
 
         :param player: The player that goes.
         """
@@ -3303,6 +3288,42 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
             await self._handle_cmd_power(player.player_id, False)
         elif player.state.playback_state != PlaybackState.IDLE:
             await self.cmd_stop(player.player_id)
+
+    async def _release_player_that_is_removed(self, player: Player) -> None:
+        """
+        End the playback a player owns before it is removed, without powering it off.
+
+        A member of a group or of a sync leader only leaves it, and the group plays on. A
+        command that fails is logged: the removal goes on regardless.
+
+        :param player: The player that is removed.
+        """
+        try:
+            if self._resolve_playback_owner(player) is player:
+                if (
+                    player.available_for_playback
+                    and player.state.playback_state != PlaybackState.IDLE
+                ):
+                    await self._handle_cmd_stop(player.player_id)
+                return
+            # check for group memberships that need to be updated: a static group refuses
+            # to let one member go and plays on, the member goes anyway
+            with suppress(
+                UnsupportedFeaturedException, PlayerCommandFailed, PlayerUnavailableError
+            ):
+                if (
+                    player.state.active_group
+                    and (group_player := self.get_player(player.state.active_group))
+                    and (group_protocol := group_player.own_protocol)
+                ):
+                    # try to remove from the group
+                    await group_protocol.set_members(player_ids_to_remove=[player.player_id])
+                elif player.state.synced_to:
+                    await self._detach_member(player)
+        except Exception:
+            self.logger.exception(
+                "Error ending the playback of %s before its removal", player.display_name
+            )
 
     async def _enable_player(self, player_id: str) -> None:
         """
