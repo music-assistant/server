@@ -133,22 +133,22 @@ def _make_venue_player(  # noqa: PLR0913
     playback_state: PlaybackState = PlaybackState.IDLE,
     linked_protocol: bool = False,
 ) -> SimpleNamespace:
-    """Return a player-shaped venue target for tests."""
+    """
+    Return a player-shaped venue target for tests.
+
+    Its client protocol has the id ``client_<player_id>``, which is what a client announces.
+    """
     supported_features = features if features is not None else {PlayerFeature.PLAY_MEDIA}
-    is_native_player = (
-        PlayerFeature.PLAY_MEDIA in supported_features
-        and player_type != PlayerType.PROTOCOL
-        and provider_domain != "universal_player"
-    )
     output_protocols = (
-        [SimpleNamespace(available=True)] if is_native_player or linked_protocol else []
+        [SimpleNamespace(available=True)]
+        if PlayerFeature.PLAY_MEDIA in supported_features or linked_protocol
+        else []
     )
     return SimpleNamespace(
         player_id=player_id,
         display_name=name,
-        private=private,
+        protocols={f"client_{player_id}": SimpleNamespace(private=private)},
         playback_state=playback_state,
-        is_native_player=is_native_player,
         provider=SimpleNamespace(domain=provider_domain),
         state=SimpleNamespace(
             available=available,
@@ -168,9 +168,9 @@ def _make_venue_player(  # noqa: PLR0913
 
 
 @contextmanager
-def _connected_on(client_player_id: str) -> Iterator[None]:
-    """Act as an API caller whose connection announced the given client player."""
-    token = sendspin_player_id.set(client_player_id)
+def _connected_on(client_protocol_id: str) -> Iterator[None]:
+    """Act as an API caller whose connection announced the given client protocol."""
+    token = sendspin_player_id.set(client_protocol_id)
     try:
         yield
     finally:
@@ -355,6 +355,7 @@ def _create_plugin(
         return None
 
     plugin.mass.players.get_player.side_effect = _get_player
+    plugin.mass.players.resolve_player_id.side_effect = lambda player_id: player_id
 
     def _create_task(target: Any, *args: Any, **_kwargs: Any) -> asyncio.Task[Any]:
         if asyncio.iscoroutine(target):
@@ -757,8 +758,12 @@ async def test_playback_options_filter_and_stably_rank_venue_players() -> None:
     active_group_member = _make_venue_player("group-member", "Active Group Member")
     active_group_member.state.active_group = "group"
     group.state.group_members = ["group-member"]
-    universal = _make_venue_player(
-        "universal", "Universal", provider_domain="universal_player", linked_protocol=True
+    audio_only = _make_venue_player(
+        "audio-only",
+        "Kitchen Speaker",
+        provider_domain="sendspin",
+        features=set(),
+        linked_protocol=True,
     )
     session_host = _make_venue_player("virtual", "Quiz Session", provider_domain="sendspin")
     sendspin_provider = cast("MagicMock", plugin.mass.get_provider).return_value
@@ -770,7 +775,6 @@ async def test_playback_options_filter_and_stably_rank_venue_players() -> None:
         synced_child,
         active_group_member,
         _make_venue_player("needs-setup", "Needs Setup", needs_setup=True),
-        _make_venue_player("protocol", "Protocol", player_type=PlayerType.PROTOCOL),
         _make_venue_player("display", "Display", player_type=PlayerType.DISPLAY),
         _make_venue_player("no-play", "No Playback", features=set()),
         _make_venue_player("browser", "Browser", provider_domain="sendspin", hidden=True),
@@ -780,7 +784,7 @@ async def test_playback_options_filter_and_stably_rank_venue_players() -> None:
         playing_bathroom,
         *excluded,
         group,
-        universal,
+        audio_only,
         alpha,
     ]
 
@@ -804,7 +808,7 @@ async def test_playback_options_filter_and_stably_rank_venue_players() -> None:
         "venue_players": [
             {"player_id": "alpha", "name": "Alpha Room"},
             {"player_id": "group", "name": "House Group"},
-            {"player_id": "universal", "name": "Universal"},
+            {"player_id": "audio-only", "name": "Kitchen Speaker"},
             {"player_id": "bathroom", "name": "Z Bathroom"},
         ],
     }
@@ -814,13 +818,14 @@ async def test_playback_options_filter_and_stably_rank_venue_players() -> None:
 
 
 @pytest.mark.asyncio
-async def test_playback_options_include_protocol_wrapped_speakers() -> None:
-    """Offer speakers that play through a linked protocol, such as a Sendspin CLI client."""
+async def test_playback_options_include_speakers_that_play_through_an_audio_protocol() -> None:
+    """Offer speakers that only play through an audio protocol, such as a Sendspin CLI client."""
     plugin = _create_plugin(player="__auto__")
     cli_speaker = _make_venue_player(
-        "universal_kitchen",
+        "pl_kitchen",
         "Kitchen",
-        provider_domain="universal_player",
+        provider_domain="sendspin",
+        features=set(),
         linked_protocol=True,
     )
     cast("MagicMock", plugin.mass.players.all_players).return_value = [cli_speaker]
@@ -828,8 +833,8 @@ async def test_playback_options_include_protocol_wrapped_speakers() -> None:
     options = await plugin.playback_options()
 
     assert options["venue_available"] is True
-    assert options["default_venue_player_id"] == "universal_kitchen"
-    assert options["venue_players"] == [{"player_id": "universal_kitchen", "name": "Kitchen"}]
+    assert options["default_venue_player_id"] == "pl_kitchen"
+    assert options["venue_players"] == [{"player_id": "pl_kitchen", "name": "Kitchen"}]
 
 
 @pytest.mark.asyncio
@@ -850,7 +855,7 @@ async def test_playback_options_offer_only_the_callers_own_hidden_web_player() -
     ]
 
     other_caller_options = await plugin.playback_options()
-    with _connected_on("own_web"):
+    with _connected_on("client_own_web"):
         own_caller_options = await plugin.playback_options()
 
     assert other_caller_options["venue_players"] == [{"player_id": "speaker", "name": "Speaker"}]
@@ -887,7 +892,7 @@ async def test_own_hidden_web_player_is_only_recommended_when_remembered(
     cast("MagicMock", plugin.mass.players.all_players).return_value = [web_player]
     cast("AsyncMock", plugin.mass.cache.get).return_value = preference
 
-    with _connected_on("own_web"):
+    with _connected_on("client_own_web"):
         options = await plugin.playback_options()
 
     assert options == {
@@ -897,6 +902,36 @@ async def test_own_hidden_web_player_is_only_recommended_when_remembered(
         "remote_available": True,
         "venue_players": [{"player_id": "own_web", "name": "Browser"}],
     }
+
+
+@pytest.mark.parametrize(
+    ("preference", "legacy_player"),
+    [
+        ({"playback_mode": "venue", "venue_player_id": "airplay_kitchen"}, "__auto__"),
+        (None, "airplay_kitchen"),
+    ],
+)
+@pytest.mark.asyncio
+async def test_remembered_venue_player_is_found_by_its_legacy_id(
+    preference: dict[str, str] | None,
+    legacy_player: str,
+) -> None:
+    """Recommend a remembered venue player that answers to another id since it was stored."""
+    plugin = _create_plugin(mode=None, player=legacy_player)
+    cast("MagicMock", plugin.mass.players.all_players).return_value = [
+        _make_venue_player("pl_alpha", "Alpha"),
+        _make_venue_player("pl_kitchen", "Kitchen"),
+    ]
+    cast("AsyncMock", plugin.mass.cache.get).return_value = preference
+    legacy_ids = {"airplay_kitchen": "pl_kitchen"}
+    cast("MagicMock", plugin.mass.players.resolve_player_id).side_effect = lambda player_id: (
+        legacy_ids.get(player_id, player_id)
+    )
+
+    options = await plugin.playback_options()
+
+    assert options["default_playback_mode"] == "venue"
+    assert options["default_venue_player_id"] == "pl_kitchen"
 
 
 @pytest.mark.asyncio
@@ -914,7 +949,7 @@ async def test_chosen_hidden_web_player_stays_the_venue_player() -> None:
             playback_mode="venue",
             venue_player_id="own_web",
         )
-    with _connected_on("own_web"):
+    with _connected_on("client_own_web"):
         await plugin.create_game(
             source_uris=["library://playlist/1"],
             playback_mode="venue",
