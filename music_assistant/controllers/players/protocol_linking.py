@@ -1678,7 +1678,7 @@ class ProtocolLinkingMixin:
         # and the provider resolves the member's volume control as it starts: unless its player
         # already points at this protocol, that resolution picks another interface of the same
         # device (e.g. its cast side) over the one carrying the audio.
-        self._activate_protocol_on_added_children(filtered_protocol_add)
+        await self._activate_protocol_on_added_children(filtered_protocol_add)
 
         self.logger.debug(
             "Calling set_members on protocol %s with add=%s, remove=%s",
@@ -1705,7 +1705,7 @@ class ProtocolLinkingMixin:
             parent_protocol.synced_to,
         )
 
-    def _activate_protocol_on_added_children(self, protocol_member_ids: list[str]) -> None:
+    async def _activate_protocol_on_added_children(self, protocol_member_ids: list[str]) -> None:
         """
         Point the player of each given protocol member at the protocol carrying the group audio.
 
@@ -1724,7 +1724,7 @@ class ProtocolLinkingMixin:
                 child_player.state.name,
                 child_protocol_id,
             )
-            child_player.set_active_output_protocol(child_protocol_id)
+            await self.mass.players._activate_output_protocol(child_player, child_protocol_id)
 
     def _release_protocol_on_removed_children(self, protocol_member_ids: list[str]) -> None:
         """Clear the active output protocol a player still holds for a protocol member that left."""
@@ -1779,7 +1779,9 @@ class ProtocolLinkingMixin:
         )
 
         if not (is_native_protocol and already_using_native):
-            parent_player.set_active_output_protocol(parent_protocol.protocol_id)
+            await self.mass.players._activate_output_protocol(
+                parent_player, parent_protocol.protocol_id
+            )
 
         handing_over = was_rendering and switching_protocols
         if handing_over:

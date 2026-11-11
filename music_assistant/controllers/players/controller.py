@@ -5377,8 +5377,7 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
                 target_player.protocol_id,
                 target_player.group_members,
             )
-            await self._hand_over_volume(player, output_protocol.output_protocol_id)
-            player.set_active_output_protocol(output_protocol.output_protocol_id)
+            await self._activate_output_protocol(player, output_protocol.output_protocol_id)
         elif player.type != PlayerType.GROUP:
             # Native playback - group players don't have output protocols of their own
             # (they delegate to a sync leader / member which manages its own protocol)
@@ -5387,8 +5386,7 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
                 player.state.name,
                 player.state.group_members,
             )
-            await self._hand_over_volume(player, "native")
-            player.set_active_output_protocol("native")
+            await self._activate_output_protocol(player, "native")
 
         async with own.prepare_play_media() if own else contextlib.nullcontext():
             # skip auto-play since we're about to start playback
@@ -5398,6 +5396,17 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
                 # notify the native protocol that protocol playback started
                 assert output_protocol is not None
                 await own.on_protocol_playback(output_protocol=output_protocol)
+
+    async def _activate_output_protocol(self, player: Player, output_protocol_id: str) -> None:
+        """
+        Make an output the active output of a player, starting at the level of the player.
+
+        :param player: The player whose output is (re)selected.
+        :param output_protocol_id: Id of the output that takes the audio, "native" for
+            the own protocol of the player.
+        """
+        await self._hand_over_volume(player, output_protocol_id)
+        player.set_active_output_protocol(output_protocol_id)
 
     async def _hand_over_volume(self, player: Player, output_protocol_id: str) -> None:
         """

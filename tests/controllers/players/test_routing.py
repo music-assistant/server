@@ -78,6 +78,56 @@ async def test_audio_protocol_that_takes_over_gets_the_level_of_the_player_first
     assert state.volume_level == 30
 
 
+async def test_players_grouped_through_an_audio_protocol_hand_it_their_level_and_mute(
+    scenario: Scenario,
+) -> None:
+    """The protocol that carries the audio of a group starts at the level and mute of each player."""
+    sonos = await scenario.add_provider("sonos")
+    airplay = await scenario.add_provider("airplay")
+    airplay_features = {*DEFAULT_FEATURES, PlayerFeature.SET_MEMBERS}
+    hall = {IdentifierType.MAC_ADDRESS: "54:78:C9:E6:0D:B0"}
+    protocols = [
+        sonos.protocol("RINCON_KITCHEN", "Kitchen", identifiers=KITCHEN, volume_level=30),
+        airplay.protocol(
+            "ap_kitchen",
+            "Kitchen",
+            role="audio",
+            identifiers=KITCHEN,
+            volume_level=80,
+            supported_features=airplay_features,
+            can_group_with={"ap_hall"},
+        ),
+        sonos.protocol("RINCON_HALL", "Hall", identifiers=hall, volume_level=20, volume_muted=True),
+        airplay.protocol(
+            "ap_hall",
+            "Hall",
+            role="audio",
+            identifiers=hall,
+            volume_level=90,
+            supported_features=airplay_features,
+            can_group_with={"ap_kitchen"},
+        ),
+    ]
+    for protocol in protocols:
+        await scenario.attach(protocol)
+    await scenario.idle()
+    kitchen_native, kitchen_airplay, hall_native, hall_airplay = protocols
+    kitchen_id = scenario.single_player(kitchen_native, kitchen_airplay).player_id
+    hall_id = scenario.single_player(hall_native, hall_airplay).player_id
+
+    await scenario.mass.players.cmd_set_members(kitchen_id, player_ids_to_add=[hall_id])
+    await scenario.idle()
+
+    kitchen_state, hall_state = scenario.player(kitchen_id), scenario.player(hall_id)
+    assert kitchen_state is not None
+    assert hall_state is not None
+    assert (kitchen_state.active_output_protocol, kitchen_state.volume_level) == ("ap_kitchen", 30)
+    assert ("volume_set", 30) in kitchen_airplay.commands
+    assert hall_state.active_output_protocol == "ap_hall"
+    assert (hall_state.volume_level, hall_state.volume_muted) == (20, True)
+    assert {("volume_set", 20), ("volume_mute", True)} <= set(hall_airplay.commands)
+
+
 async def test_volume_goes_to_the_output_that_renders_and_only_it_reports_back(
     scenario: Scenario,
 ) -> None:
