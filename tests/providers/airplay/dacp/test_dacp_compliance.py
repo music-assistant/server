@@ -43,7 +43,18 @@ async def test_transport_commands_dispatch(
     """Simple transport paths dispatch the matching player command with the player id."""
     player = make_player(mock_mass)
     await replay(airplay_provider, build_dacp_request(path))
-    getattr(mock_mass.players, cmd).assert_called_once_with(player.player_id)
+    getattr(mock_mass.players, cmd).assert_called_once_with(player.player.player_id)
+    assert player.player.player_id != player.protocol_id
+
+
+async def test_unattached_protocol_dispatches_nothing(
+    airplay_provider: AirPlayProvider, mock_mass: MagicMock
+) -> None:
+    """A protocol without a player has nothing a command could address."""
+    player = make_player(mock_mass)
+    player.player = None
+    await replay(airplay_provider, build_dacp_request("/ctrl-int/1/stop"))
+    mock_mass.players.cmd_stop.assert_not_called()
 
 
 async def test_play_when_not_playing_dispatches_play(
@@ -52,7 +63,7 @@ async def test_play_when_not_playing_dispatches_play(
     """/play starts playback when the player is not already playing."""
     player = make_player(mock_mass, playing=False)
     await replay(airplay_provider, build_dacp_request("/ctrl-int/1/play"))
-    mock_mass.players.cmd_play.assert_called_once_with(player.player_id)
+    mock_mass.players.cmd_play.assert_called_once_with(player.player.player_id)
 
 
 async def test_play_when_already_playing_is_ignored(
@@ -70,7 +81,7 @@ async def test_pause_when_playing_dispatches_pause(
     """/pause pauses when the player is playing."""
     player = make_player(mock_mass, playing=True)
     await replay(airplay_provider, build_dacp_request("/ctrl-int/1/pause"))
-    mock_mass.players.cmd_pause.assert_called_once_with(player.player_id)
+    mock_mass.players.cmd_pause.assert_called_once_with(player.player.player_id)
 
 
 async def test_pause_when_not_playing_is_ignored(
@@ -102,8 +113,8 @@ async def test_discrete_pause_schedules_debounced_pause(
     mock_mass.call_later.assert_called_once_with(
         1.0,
         mock_mass.players.cmd_pause,
-        player.player_id,
-        task_id=f"debounced_pause_{player.player_id}",
+        player.player.player_id,
+        task_id=f"debounced_pause_{player.player.player_id}",
     )
 
 
@@ -127,7 +138,7 @@ async def test_prevent_playback_cancels_pending_discrete_pause(
         airplay_provider,
         build_dacp_request("/ctrl-int/1/setproperty?device-prevent-playback=1"),
     )
-    mock_mass.cancel_timer.assert_any_call(f"debounced_pause_{player.player_id}")
+    mock_mass.cancel_timer.assert_any_call(f"debounced_pause_{player.player.player_id}")
 
 
 async def test_device_volume_updates_volume(
@@ -193,7 +204,7 @@ async def test_prevent_playback_ungroups_synced_player(
     """prevent-playback=1 on a synced player ungroups instead of stopping the stream."""
     player = make_player(mock_mass, synced_to="parent")
     await replay(airplay_provider, build_dacp_request(_PREVENT_1))
-    mock_mass.players.cmd_ungroup.assert_called_once_with(player.player_id)
+    mock_mass.players.cmd_ungroup.assert_called_once_with(player.player.player_id)
     player.stream.stop.assert_not_called()
 
 
@@ -239,7 +250,7 @@ async def test_prevent_playback_zero_schedules_reset(
         player.stream,
         "prevent_playback",
         False,
-        task_id=f"reset_prevent_playback_{player.player_id}",
+        task_id=f"reset_prevent_playback_{player.player.player_id}",
     )
 
 
@@ -278,7 +289,7 @@ async def test_headers_only_request_does_not_crash(
     player = make_player(mock_mass, playing=False)
     raw = b"POST /ctrl-int/1/play HTTP/1.1\r\nActive-Remote: 123"
     await replay(airplay_provider, raw)
-    mock_mass.players.cmd_play.assert_called_once_with(player.player_id)
+    mock_mass.players.cmd_play.assert_called_once_with(player.player.player_id)
 
 
 async def test_malformed_header_line_is_skipped(
@@ -292,7 +303,7 @@ async def test_malformed_header_line_is_skipped(
         b"Active-Remote: 123\r\n\r\n"
     )
     await replay(airplay_provider, raw)
-    mock_mass.players.cmd_play.assert_called_once_with(player.player_id)
+    mock_mass.players.cmd_play.assert_called_once_with(player.player.player_id)
 
 
 async def test_unknown_path_returns_204_without_command(

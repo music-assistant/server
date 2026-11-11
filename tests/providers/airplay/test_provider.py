@@ -23,10 +23,6 @@ from music_assistant.providers.airplay.constants import (
 from music_assistant.providers.airplay.helpers import CLI_CLOCK_OFFSET_NS
 from music_assistant.providers.airplay.player import AirPlayPlayer
 from music_assistant.providers.airplay.provider import ENV_PYATV_DEBUG, AirPlayProvider
-from music_assistant.providers.airplay.sendspin_bridge import (
-    SendspinAirPlayBridge,
-    SendspinBridgeManager,
-)
 from music_assistant.providers.airplay.stream import AirPlayStream
 from music_assistant.providers.airplay.stream_session import AirPlayStreamSession
 from music_assistant.providers.airplay_receiver import airplay_receiver_ports
@@ -53,58 +49,46 @@ def _make_provider() -> AirPlayProvider:
     return prov
 
 
-def test_remote_pause_routes_to_sendspin_session() -> None:
-    """A bridged device pause targets the owning Sendspin session."""
+def _remote_command_player(bridge_target: str | None) -> tuple[AirPlayProvider, MagicMock]:
+    """Build a provider and a playing AirPlay protocol attached to a player."""
     prov = _make_provider()
-    players = cast("MagicMock", prov.mass.players)
-    manager = SendspinBridgeManager(prov)
-    prov._bridge_manager = manager
-
+    prov._bridge_manager = MagicMock()
+    prov._bridge_manager.get_transport_command_target.return_value = bridge_target
     airplay_player = MagicMock()
-    airplay_player.player_id = "apc43875e9e53a"
+    airplay_player.protocol_id = "apc43875e9e53a"
+    airplay_player.player.player_id = "plc43875e9e53a"
     airplay_player.playback_state = PlaybackState.PLAYING
+    return prov, airplay_player
 
-    bridge = SendspinAirPlayBridge(prov, airplay_player, MagicMock())
-    bridge._bridge_client_id = "sendspin-bridge"
-    bridge._airplay_stream = airplay_player.stream = MagicMock()
-    manager._bridges[airplay_player.player_id] = bridge
 
-    bridge_player = MagicMock()
-    bridge_player.synced_to = "sendspin-leader"
-    bridge_player.protocol_parent_id = airplay_player.player_id
-    bridge_player.player_id = "sendspin-bridge"
-
-    sync_leader = MagicMock()
-    sync_leader.protocol_parent_id = "sendspin-session"
-    sync_leader.player_id = "sendspin-leader"
-    players.get_protocol.side_effect = {
-        "sendspin-bridge": bridge_player,
-        "sendspin-leader": sync_leader,
-    }.get
+def test_remote_pause_routes_to_sendspin_session() -> None:
+    """A bridged device pause targets the player the Sendspin bridge names."""
+    prov, airplay_player = _remote_command_player("sendspin-session")
 
     prov.handle_remote_command(airplay_player, AirPlayRemoteCommand.PAUSE)
 
-    players.cmd_pause.assert_called_once_with("sendspin-session")
+    bridge_manager = cast("MagicMock", prov._bridge_manager)
+    bridge_manager.get_transport_command_target.assert_called_once_with("apc43875e9e53a")
+    cast("MagicMock", prov.mass.players).cmd_pause.assert_called_once_with("sendspin-session")
 
 
 def test_remote_pause_keeps_normal_airplay_routing() -> None:
-    """An inactive bridge does not change normal AirPlay pause routing."""
-    prov = _make_provider()
-    players = cast("MagicMock", prov.mass.players)
-    manager = SendspinBridgeManager(prov)
-    prov._bridge_manager = manager
-    airplay_player = MagicMock()
-    airplay_player.player_id = "apc43875e9e53a"
-    airplay_player.playback_state = PlaybackState.PLAYING
-    airplay_player.stream = MagicMock()
-
-    bridge = SendspinAirPlayBridge(prov, airplay_player, MagicMock())
-    bridge._bridge_client_id = "sendspin-bridge"
-    manager._bridges[airplay_player.player_id] = bridge
+    """Without a bridge owning the stream, the pause targets the player of the protocol."""
+    prov, airplay_player = _remote_command_player(None)
 
     prov.handle_remote_command(airplay_player, AirPlayRemoteCommand.PAUSE)
 
-    players.cmd_pause.assert_called_once_with(airplay_player.player_id)
+    cast("MagicMock", prov.mass.players).cmd_pause.assert_called_once_with("plc43875e9e53a")
+
+
+def test_remote_command_of_an_unattached_protocol_is_dropped() -> None:
+    """A protocol without a player has nothing a command could address."""
+    prov, airplay_player = _remote_command_player(None)
+    airplay_player.player = None
+
+    prov.handle_remote_command(airplay_player, AirPlayRemoteCommand.PAUSE)
+
+    cast("MagicMock", prov.mass.players).cmd_pause.assert_not_called()
 
 
 async def test_unload_awaits_cancelled_ptp_stdout_reader() -> None:
@@ -630,13 +614,13 @@ async def test_raop_session_resolves_ptp_for_first_ap2_late_joiner() -> None:
     """A deferred AP2 join still commits the session to the shared PTP clock."""
     prov = MagicMock()
     raop_player = _raop_player()
-    raop_player.player_id = "raop"
+    raop_player.protocol_id = "raop"
     raop_player.playback_state = PlaybackState.PLAYING
     raop_player.stream = MagicMock()
     raop_player.stream.running = True
     raop_player.stream.cumulative_shift_seconds = 0.0
     ap2_player = _ap2_player()
-    ap2_player.player_id = "airplay2"
+    ap2_player.protocol_id = "airplay2"
     ap2_player.stream = None
     session = _make_ptp_session(prov, [raop_player])
     pcm_format = cast("MagicMock", session.pcm_format)
@@ -749,7 +733,7 @@ async def test_session_start_calculates_anchor_after_ptp_resolution() -> None:
 def _stream_player(*, ptp_daemon_ready: bool) -> MagicMock:
     """Build a minimal AirPlay player mock sufficient for _build_cli_args."""
     player = MagicMock()
-    player.player_id = "apaabbccddeeff"
+    player.protocol_id = "apaabbccddeeff"
     player.display_name = "Player A"
     player.address = "192.168.1.50"
     player.protocol = StreamingProtocol.AIRPLAY2
@@ -1038,7 +1022,7 @@ async def test_setup_player_skips_own_receiver_before_service_lookup() -> None:
     prov = AirPlayProvider.__new__(AirPlayProvider)
     prov.mass = MagicMock()
     prov.logger = logging.getLogger("test.airplay.provider")
-    prov.mass.config.get_protocol_value.return_value = True
+    prov.mass.players.wants_protocol.return_value = True
     prov._is_own_airplay_receiver = AsyncMock(return_value=True)  # type: ignore[method-assign]
     info = _discovery_info(["192.168.1.10"])
     info.type = "_raop._tcp.local."
@@ -1046,7 +1030,7 @@ async def test_setup_player_skips_own_receiver_before_service_lookup() -> None:
     await prov._setup_player("apdb1ff0aae80e", "Garage [AirPlay]", info)
 
     prov.mass.discovery.async_find_mdns_service.assert_not_called()
-    prov.mass.players.register.assert_not_called()
+    prov.mass.players.attach.assert_not_called()
 
 
 @pytest.mark.parametrize(
@@ -1066,8 +1050,9 @@ async def test_setup_player_flags_shairport_on_this_host(
     prov.logger = logging.getLogger("test.airplay.provider")
     prov.mass.config.get_protocol_value.side_effect = lambda _player_id, _key, default=None: default
     prov.mass.discovery.async_find_mdns_service = AsyncMock(return_value=None)
-    prov.mass.players.get_player.return_value = None
-    prov.mass.players.register = AsyncMock()
+    prov.mass.players.wants_protocol.return_value = True
+    prov.mass.players.get_protocol.return_value = None
+    prov.mass.players.attach = AsyncMock()
     prov._is_own_airplay_receiver = AsyncMock(return_value=False)  # type: ignore[method-assign]
     prov._bridge_manager = MagicMock(evaluate_bridge=AsyncMock())
     info = _discovery_info([address], properties={"am": model})
@@ -1084,17 +1069,17 @@ async def test_setup_player_flags_shairport_on_this_host(
 
 
 def _password_marker_provider(
-    reviewed: bool, markers: dict[str, bool], player_type: str = "player"
+    reviewed: bool, markers: dict[str, bool], role: str = "audio"
 ) -> tuple[AirPlayProvider, MagicMock]:
-    """Build a provider whose stored configs hold the given password markers."""
+    """Build a provider whose stored protocol configs hold the given password markers."""
     prov = _make_provider()
     config = cast("MagicMock", prov.mass.config)
     config.get_raw_provider_config_value.return_value = reviewed
     config.get.return_value = {
-        player_id: {"player_id": player_id, "provider": INSTANCE_ID, "player_type": player_type}
-        for player_id in markers
-    } | {"other": {"player_id": "other", "provider": "sonos", "player_type": "player"}}
-    config.get_protocol_value.side_effect = lambda player_id, _key, _default: markers[player_id]
+        protocol_id: {"player_id": f"pl_{protocol_id}", "provider": INSTANCE_ID, "role": role}
+        for protocol_id in markers
+    } | {"other": {"player_id": "pl_other", "provider": "sonos", "role": "native"}}
+    config.get_protocol_value.side_effect = lambda protocol_id, _key, _default: markers[protocol_id]
     return prov, config
 
 
@@ -1112,15 +1097,10 @@ def test_stale_password_markers_are_dropped_once() -> None:
     )
 
 
-def test_protocol_players_are_reviewed_too() -> None:
-    """
-    Every non-Apple receiver is registered as a protocol player.
-
-    Those are exactly the ones a password applies to, and the config controller's
-    own listing drops them, so the review has to read the stored configs itself.
-    """
+def test_native_protocols_are_reviewed_too() -> None:
+    """The review covers every stored AirPlay protocol, an Apple TV's native one included."""
     prov, config = _password_marker_provider(
-        reviewed=False, markers={"spb_latched": True}, player_type="protocol"
+        reviewed=False, markers={"spb_latched": True}, role="native"
     )
 
     prov._drop_unverified_password_markers()
@@ -1167,10 +1147,12 @@ def _compat_pin_provider(
     config = cast("MagicMock", prov.mass.config)
     config.get_raw_provider_config_value.return_value = reviewed
     config.get.return_value = {
-        player_id: {"player_id": player_id, "provider": INSTANCE_ID, "player_type": "player"}
-        for player_id in modes
-    } | {"other": {"player_id": "other", "provider": "sonos", "player_type": "player"}}
-    config.get_protocol_value.side_effect = lambda player_id, _key, _default=None: modes[player_id]
+        protocol_id: {"player_id": f"pl_{protocol_id}", "provider": INSTANCE_ID, "role": "audio"}
+        for protocol_id in modes
+    } | {"other": {"player_id": "pl_other", "provider": "sonos", "role": "native"}}
+    config.get_protocol_value.side_effect = lambda protocol_id, _key, _default=None: modes[
+        protocol_id
+    ]
     return prov, config
 
 
