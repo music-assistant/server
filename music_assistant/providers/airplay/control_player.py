@@ -17,7 +17,7 @@ from music_assistant_models.enums import (
     MediaType,
     PlaybackState,
     PlayerFeature,
-    PlayerType,
+    ProtocolRole,
 )
 from music_assistant_models.errors import MediaNotFoundError, PlayerCommandFailed
 from music_assistant_models.media_items import MediaItemImage
@@ -123,12 +123,12 @@ _COMMAND_ERRORS = (
 class AirPlayControlPlayer(AirPlayPlayer):
     """AirPlay player with independent device monitoring and control."""
 
-    _attr_type = PlayerType.PLAYER
+    _attr_role = ProtocolRole.NATIVE
 
     def __init__(  # noqa: PLR0913
         self,
         provider: AirPlayProvider,
-        player_id: str,
+        protocol_id: str,
         raop_discovery_info: AsyncServiceInfo | None,
         airplay_discovery_info: AsyncServiceInfo | None,
         companion_discovery_info: AsyncServiceInfo | None,
@@ -146,7 +146,7 @@ class AirPlayControlPlayer(AirPlayPlayer):
         self._mrp_device: AppleTV | None = None
         super().__init__(
             provider=provider,
-            player_id=player_id,
+            protocol_id=protocol_id,
             raop_discovery_info=raop_discovery_info,
             airplay_discovery_info=airplay_discovery_info,
             address=address,
@@ -466,7 +466,7 @@ class AirPlayControlPlayer(AirPlayPlayer):
         await super().on_config_updated()
         self._schedule_connection(force=True)
 
-    async def on_unload(self) -> None:
+    async def on_detach(self) -> None:
         """Close control connections and pairing resources."""
         self._unloading = True
         if self._connection_task and not self._connection_task.done():
@@ -474,7 +474,7 @@ class AirPlayControlPlayer(AirPlayPlayer):
             with contextlib.suppress(asyncio.CancelledError):
                 await self._connection_task
         await self._disconnect_control_services()
-        await super().on_unload()
+        await super().on_detach()
 
     def _schedule_connection(self, *, force: bool = False) -> None:
         """Start or restart the Apple service connection loop."""
@@ -487,7 +487,7 @@ class AirPlayControlPlayer(AirPlayPlayer):
         self._restart_connections = self._restart_connections or force
         self._connection_task = self.mass.create_task(
             self._connection_loop(),
-            task_id=f"airplay_apple_control_{self.player_id}",
+            task_id=f"airplay_apple_control_{self.protocol_id}",
             abort_existing=force,
         )
 
@@ -679,7 +679,7 @@ class AirPlayControlPlayer(AirPlayPlayer):
         config = AppleTVConfig(address, self.display_name)
         config.add_service(
             ManualService(
-                self.player_id,
+                self.protocol_id,
                 protocol,
                 info.port,
                 properties,
@@ -1089,11 +1089,13 @@ class AirPlayControlPlayer(AirPlayPlayer):
             self._attr_volume_muted = True
             if mute_changed:
                 self.update_state()
+                self._sync_bridge_volume()
             return
         mute_changed = self._attr_volume_muted is not False
         self._attr_volume_muted = False
         self._volume_before_mute = None
         self._update_native_volume(volume_level, state_changed=mute_changed)
+        self._sync_bridge_volume()
 
     def _update_native_volume(self, volume: int, *, state_changed: bool = False) -> None:
         """Update and persist a volume reported by device control."""
@@ -1104,7 +1106,7 @@ class AirPlayControlPlayer(AirPlayPlayer):
             return
         self._attr_volume_level = volume
         self.mass.config.set_protocol_value(
-            self.player_id,
+            self.protocol_id,
             CONF_STORED_VOLUME,
             volume,
         )
@@ -1170,7 +1172,7 @@ class AirPlayControlPlayer(AirPlayPlayer):
             MediaType.TRACK if playing.media_type == PyatvMediaType.Music else MediaType.UNKNOWN
         )
         self._attr_current_media = PlayerMedia(
-            uri=playing.content_identifier or f"apple-device://{self.player_id}/{playing.hash}",
+            uri=playing.content_identifier or f"apple-device://{self.protocol_id}/{playing.hash}",
             media_type=media_type,
             title=playing.title or source_name,
             artist=playing.artist,
@@ -1220,7 +1222,7 @@ class AirPlayControlPlayer(AirPlayPlayer):
         """Return the image-proxy URL for external MRP artwork."""
         image = MediaItemImage(
             type=ImageType.THUMB,
-            path=f"{EXTERNAL_ARTWORK_PATH_PREFIX}/{self.player_id}/{artwork_id}",
+            path=f"{EXTERNAL_ARTWORK_PATH_PREFIX}/{self.protocol_id}/{artwork_id}",
             provider=self.provider_id,
             remotely_accessible=False,
         )
@@ -1275,7 +1277,10 @@ class AirPlayControlPlayer(AirPlayPlayer):
         # Without a live connection the snapshot can no longer be updated, and the
         # last one is typically an app held at paused: leaving it in place keeps
         # transport commands aimed at that app instead of the Music Assistant queue.
-        self.mark_external_source_ended()
+        if self.player is not None:
+            self.player.mark_external_source_ended()
+        else:
+            self.on_external_source_ended()
         self.update_state()
 
     def _notify_companion_state_change(self) -> None:
