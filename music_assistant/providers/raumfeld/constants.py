@@ -43,7 +43,7 @@ LONG_POLL_RETRY_DELAY = 5
 UNLOAD_TIMEOUT = 5
 
 # How long (seconds) to wait for a renderer's device description, which is read once per
-# room to get the hardware serial the player_id is derived from.
+# room to get the hardware serial the room's protocol id is derived from.
 DEVICE_INFO_TIMEOUT = 10
 
 # How long (seconds) a UPnP request to a speaker or the host may take.
@@ -93,8 +93,8 @@ GROUP_SETTLE_TIME = 10
 JOIN_SETTLE_TIME = 5
 JOIN_SETTLE_INTERVAL = 0.5
 
-# Player id prefix so ids are namespaced and stable-ish per room.
-PLAYER_ID_PREFIX = "raumfeld"
+# Protocol id prefix so ids are namespaced and stable-ish per room.
+PROTOCOL_ID_PREFIX = "raumfeld"
 
 # Media-server container listing each device's analog Line-In input, and the MA
 # source id used to expose a room's Line-In via PlayerFeature.SELECT_SOURCE.
