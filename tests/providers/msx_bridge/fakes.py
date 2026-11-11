@@ -12,6 +12,8 @@ from unittest.mock import AsyncMock, Mock
 from music_assistant.models.player import Player
 
 if TYPE_CHECKING:
+    from music_assistant_models.player_queue import PlayerQueue
+
     from music_assistant.providers.msx_bridge.player import MSXPlayer
 
 
@@ -30,6 +32,19 @@ def attach_tv(protocol: MSXPlayer) -> None:
     player = Mock(spec=Player, player_id=f"pl_{protocol.protocol_id}", extra_data={})
     player.display_name = protocol.name or protocol.protocol_id
     protocol.set_player(player)
+
+
+def serve_active_queue(mass: Any, queue: PlayerQueue, player_id: str = "pl_msx_test") -> None:
+    """
+    Serve a queue as the active queue of one player, as the queue controller does.
+
+    :param mass: The mocked server.
+    :param queue: The queue the player plays from (its own, or its group leader's).
+    :param player_id: The id of the player (not of its TV) the queue is active for.
+    """
+    mass.player_queues.get_active_queue = Mock(
+        side_effect=lambda queried_id: queue if queried_id == player_id else None
+    )
 
 
 async def _attach(protocol: MSXPlayer) -> None:

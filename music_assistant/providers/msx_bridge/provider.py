@@ -187,6 +187,7 @@ class MSXBridgeProvider(PlayerProvider):
             player.device_info.ip_address = ip_address
         self._player_last_activity[player_id] = time.monotonic()
         if self.mass.players.wants_protocol(player_id):
+            player.mark_available()
             await self.mass.players.attach(player)
             self.logger.info("Attached MSX player: %s (%s)", player.display_name, player_id)
         return player

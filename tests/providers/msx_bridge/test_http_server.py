@@ -55,7 +55,7 @@ from .factories import artist as make_artist
 from .factories import player_queue
 from .factories import playlist as make_playlist
 from .factories import track as make_track
-from .fakes import attach_tv
+from .fakes import attach_tv, serve_active_queue
 
 if TYPE_CHECKING:
     from aiohttp.test_utils import TestClient
@@ -811,7 +811,7 @@ async def test_next_at_queue_end_does_not_reload_playlist(
 ) -> None:
     """Complete/next at the last item must not restart that track."""
     _register_msx_player(mass_mock, provider, "msx_test")
-    mass_mock.player_queues.get_active_queue.return_value = player_queue(items=5, current_index=4)
+    serve_active_queue(mass_mock, player_queue(items=5, current_index=4))
     server = MSXHTTPServer(provider, 0)
     client = AiohttpTestClient(TestServer(server.app))
     await client.start_server()
@@ -831,7 +831,7 @@ async def test_next_reloads_playlist_when_queue_advances(
     """Next that moves the queue must return a rotated playlist action."""
     _register_msx_player(mass_mock, provider, "msx_test")
     queue = player_queue(items=2, current_index=0)
-    mass_mock.player_queues.get_active_queue.return_value = queue
+    serve_active_queue(mass_mock, queue)
 
     async def _advance(_player_id: str) -> None:
         queue.current_index = 1
@@ -1653,7 +1653,7 @@ def _wire_queue(
         items=len(queue_items),
         current_index=0,
     )
-    mass_mock.player_queues.get_active_queue = Mock(return_value=active_queue)
+    serve_active_queue(mass_mock, active_queue)
     mass_mock.player_queues.get = Mock(return_value=active_queue)
     mass_mock.player_queues.get_item = Mock(
         side_effect=lambda qid, item_id: next(
@@ -3078,7 +3078,7 @@ async def test_queued_native_seek_cannot_retarget_replacement_playback(
     queue = PlayerQueue(
         queue_id="msx_test", active=True, display_name="Queue", available=True, items=1
     )
-    mass_mock.player_queues.get_active_queue.return_value = queue
+    serve_active_queue(mass_mock, queue)
     old = player.playback_generation
     server._handle_ws_message(
         player.protocol_id,

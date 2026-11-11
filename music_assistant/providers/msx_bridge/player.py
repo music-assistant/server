@@ -92,8 +92,9 @@ class MSXPlayer(PlayerProtocol):
         return [CONF_ENTRY_OUTPUT_CODEC_DEFAULT_MP3, CONF_ENTRY_HTTP_PROFILE_DEFAULT_1]
 
     async def on_detach(self) -> None:
-        """Stop the TV when its player is disabled."""
+        """Report the TV idle until it plays again; stop it when its player is disabled."""
         await super().on_detach()
+        self._reset_playback()
         if not self.mass.players.wants_protocol(self.protocol_id):
             cast("MSXBridgeProvider", self.provider).stop_tv(self.protocol_id)
 
@@ -172,13 +173,7 @@ class MSXPlayer(PlayerProtocol):
 
     def mark_idle(self) -> None:
         """Report the player idle and drop its media, without sending a stop to the TV."""
-        self._attr_playback_state = PlaybackState.IDLE
-        self._native_completion_token = None
-        self.playback_generation = None
-        self._attr_current_media = None
-        self._attr_elapsed_time = None
-        self._attr_elapsed_time_last_updated = None
-        self._last_ws_position = None
+        self._reset_playback()
         self.update_state()
 
     def clock_context(self) -> dict[str, Any]:
@@ -408,3 +403,13 @@ class MSXPlayer(PlayerProtocol):
         self.update_state()
         if not self._skip_ws_notify:
             cast("MSXBridgeProvider", self.provider).notify_play_resumed(self.protocol_id)
+
+    def _reset_playback(self) -> None:
+        """Forget the playback the TV reported, as when it is idle."""
+        self._attr_playback_state = PlaybackState.IDLE
+        self._native_completion_token = None
+        self.playback_generation = None
+        self._attr_current_media = None
+        self._attr_elapsed_time = None
+        self._attr_elapsed_time_last_updated = None
+        self._last_ws_position = None

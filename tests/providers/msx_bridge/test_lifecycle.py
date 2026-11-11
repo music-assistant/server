@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 import pytest
+from music_assistant_models.enums import PlaybackState
 
 from music_assistant.constants import CONF_OUTPUT_CODEC
 from music_assistant.controllers.players.protocol_linking import PLAYER_ID_PREFIX
@@ -113,6 +114,29 @@ async def test_an_idle_tv_stays_listed_and_returns_on_its_player(
 
     assert _player(protocol).player_id == player_id
     assert scenario.player(player_id).available is True  # type: ignore[union-attr]
+
+
+async def test_a_tv_that_was_playing_returns_idle_after_its_idle_timeout(
+    scenario: Scenario, provider: MSXBridgeProvider
+) -> None:
+    """A TV switched off mid-playback comes back available and idle, and so does its queue."""
+    protocol = await _request(scenario, provider)
+    player_id = _player(protocol).player_id
+    await scenario.play(player_id)
+
+    protocol.on_ws_disconnected()
+    await provider._handle_player_detach(TV)
+    await scenario.settle()
+    await _request(scenario, provider)
+
+    assert scenario.player(player_id).available is True  # type: ignore[union-attr]
+
+    protocol.on_ws_connected()
+    await scenario.idle()
+
+    assert scenario.player(player_id).playback_state == PlaybackState.IDLE  # type: ignore[union-attr]
+    assert protocol.current_media is None
+    assert scenario.queue(player_id).state == PlaybackState.IDLE  # type: ignore[union-attr]
 
 
 async def test_a_removed_tv_comes_back_as_a_new_player(

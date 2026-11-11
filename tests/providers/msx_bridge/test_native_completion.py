@@ -15,6 +15,8 @@ from music_assistant.controllers.player_queues import PlayerQueuesController
 from music_assistant.controllers.player_queues.state import PlayerQueueData, SleepTimerTarget
 from music_assistant.providers.msx_bridge.player import MSXPlayer
 
+from .fakes import serve_active_queue
+
 if TYPE_CHECKING:
     from aiohttp.test_utils import TestClient
 
@@ -65,7 +67,7 @@ async def test_natural_completion_uses_real_queue_repeat_selection(
     controller._queue_data = {player.protocol_id: queue_data}
     mass_mock.players.get_protocol.return_value = player
     mass_mock.player_queues.get_next_item = controller.get_next_item
-    mass_mock.player_queues.get_active_queue.return_value = queue
+    serve_active_queue(mass_mock, queue)
     mass_mock.player_queues.get.return_value = queue
     mass_mock.player_queues.mark_ended = Mock()
     mass_mock.player_queues.stop = AsyncMock()
