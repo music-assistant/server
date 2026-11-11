@@ -335,9 +335,10 @@ class MyDemoPluginprovider(PluginProvider):
         # Plugins MUST store stream_session_id so the matching
         # on_source_unselected callback can reject stale teardowns from
         # superseded same-queue requests. Store owner_player_id for anything you
-        # act on later: it is the user-facing player, while player_id can be the
-        # id of a protocol (the output that fetches the audio) rather than of a
-        # player. To read the player, look it up with
+        # act on later: it is the user-facing player, while player_id is the id
+        # the stream is fetched under (that of the output protocol that renders
+        # the audio), no player or queue id; mass.players.get_player_by_protocol
+        # returns its player. To read the owner, look it up with
         # mass.players.get_player(owner_player_id) and read its published state
         # (player.state). Typical pattern for exclusive sources:
         #
