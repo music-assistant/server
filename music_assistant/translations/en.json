@@ -1610,7 +1610,7 @@
   "provider.hue_entertainment.config_entries.zigbee_lights.label": "Lamps",
   "provider.hue_entertainment.config_entries.zigbee_name.description": "Name of the light player. Leave empty to name it after the rooms of the chosen lamps.",
   "provider.hue_entertainment.config_entries.zigbee_name.label": "Name",
-  "provider.hue_entertainment.config_entries.zigbee_warning.label": "Music Assistant streams to all chosen lamps through one of them, so pick lamps within radio range of each other, such as the lamps in one room. A lamp can follow only one light sync at a time: don't use the same lamps in another light sync app while this player plays.",
+  "provider.hue_entertainment.config_entries.zigbee_warning.label": "Music Assistant streams to all chosen lamps through one of them, so pick lamps within radio range of each other, such as the lamps in one room. A lamp follows one light sync at a time: while another app syncs one of the chosen lamps, this player waits until it is free.",
   "provider.hue_entertainment.errors.button_not_pressed": "The link button was not pressed in time. Press the round button on top of your Hue Bridge, then try again.",
   "provider.hue_entertainment.errors.lights_not_found": "One or more of the chosen lamps are no longer in ZHA. Choose the lamps again.",
   "provider.hue_entertainment.errors.zha_unavailable": "ZHA via Ziggurat is not available. Connect the Home Assistant plugin, with ZHA running on Ziggurat, or choose Hue Bridge.",

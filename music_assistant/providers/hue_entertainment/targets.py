@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING, ClassVar, Final, Protocol
 from hue_entertainment import (
     EntertainmentSession,
     LightChannel,
+    LightsBusyError,
     ZigbeeEntertainmentSession,
     ZigbeeLight,
 )
@@ -188,8 +189,9 @@ class ZigbeeTarget:
 
     Music Assistant streams to one Zigbee target at a time: a start takes the stream over
     from the target that has it, which restores its lamps and stays parked until closed.
-    A stream only starts once every closed stream has restored its lamps. A lost stream is
-    restarted in place while the target has the stream.
+    A stream only starts once every closed stream has restored its lamps. While another app
+    streams to one of the lamps the target waits, and starts once they are free. A lost
+    stream is restarted in place while the target has the stream.
     """
 
     # the target that has the Zigbee stream, shared by all ZHA instances in the process
@@ -255,7 +257,9 @@ class ZigbeeTarget:
         Take the Zigbee stream over and open it to the lamps.
 
         Lamps that are no longer in ZHA are skipped. When a newer start takes the stream over
-        before this one completes, this returns without streaming.
+        before this one completes, this returns without streaming. While another app streams
+        to one of the lamps, this returns without streaming and the stream starts by itself
+        once the lamps are free.
 
         :raises TargetUnavailableError: When the Home Assistant plugin is not connected, ZHA
             does not run on Ziggurat, or none of the lamps is in ZHA.
@@ -277,6 +281,10 @@ class ZigbeeTarget:
         self._session = session
         try:
             await session.start()
+        except LightsBusyError as err:
+            if self._session is not session:
+                return
+            LOGGER.info("Waiting to stream to '%s': %s", self._name, err)
         except Exception:
             if self._session is not session:
                 # taken over meanwhile: the newer start closes this session
@@ -320,7 +328,7 @@ class ZigbeeTarget:
             await asyncio.wait(set(ZigbeeTarget._restoring))
 
     async def _recover(self, session: ZigbeeEntertainmentSession) -> None:
-        """Restart a lost stream in place, keeping the lamps' captured state; runs until cancelled."""
+        """Keep starting a waiting or lost stream in place, until cancelled."""
         while True:
             await asyncio.sleep(_ZIGBEE_RECOVERY_INTERVAL_S)
             if session.is_streaming:
@@ -328,9 +336,9 @@ class ZigbeeTarget:
             try:
                 await session.start()
             except Exception as err:
-                LOGGER.debug("Zigbee stream of '%s' not back yet: %s", self._name, err)
+                LOGGER.debug("Zigbee stream of '%s' not up yet: %s", self._name, err)
                 continue
-            LOGGER.info("Zigbee stream of '%s' restored", self._name)
+            LOGGER.info("Zigbee stream of '%s' is up", self._name)
 
     def _zigbee_lights(self, devices: dict[str, ZhaDevice]) -> list[ZigbeeLight]:
         """

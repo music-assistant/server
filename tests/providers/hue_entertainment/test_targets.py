@@ -8,7 +8,7 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
-from hue_entertainment import EntertainmentArea, ZigbeeLight, ZigguratError
+from hue_entertainment import EntertainmentArea, LightsBusyError, ZigbeeLight, ZigguratError
 
 from music_assistant.providers.hue_entertainment import targets
 from music_assistant.providers.hue_entertainment.constants import CONF_CLIENTKEY, CONF_USERNAME
@@ -51,6 +51,8 @@ class FakeZigbeeSession:
                 self._zigbee.fail_starts -= 1
                 msg = "Ziggurat unreachable"
                 raise ZigguratError(msg)
+            if self._zigbee.busy:
+                raise LightsBusyError(["Desk lamp"])
             self.is_streaming = True
 
     def send(self, commands: list[Any]) -> None:
@@ -81,6 +83,8 @@ class FakeZigbee:
         self.log: list[tuple[str, FakeZigbeeSession]] = []
         # the number of session starts still to fail, as with Ziggurat unreachable
         self.fail_starts = 0
+        # another app streams to the lamps while this is set
+        self.busy = False
         self.info_gate: asyncio.Event | None = None
         self.info_error: Exception | None = None
         self.info_calls = 0
@@ -495,6 +499,25 @@ async def test_recovery_restarts_a_lost_stream_in_place(
     assert session.start_calls == 3
     assert len(zigbee.sessions) == 1
     assert target.is_streaming
+
+
+async def test_start_waits_while_another_app_streams_to_the_lamps(
+    zigbee: FakeZigbee, make_target: Callable[..., ZigbeeTarget]
+) -> None:
+    """A start on busy lamps returns without streaming and streams once they are free."""
+    zigbee.busy = True
+    living = make_target("Living room")
+
+    await living.start()
+    assert not living.is_streaming
+    assert ZigbeeTarget._holder is living
+    await asyncio.sleep(0.05)
+    assert not living.is_streaming
+
+    zigbee.busy = False
+    await _until(lambda: living.is_streaming)
+    (session,) = zigbee.sessions
+    assert session.start_calls > 2
 
 
 async def test_displaced_target_does_not_recover(

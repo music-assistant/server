@@ -15,7 +15,7 @@
       }
     },
     "zigbee_warning": {
-      "label": "Music Assistant streams to all chosen lamps through one of them, so pick lamps within radio range of each other, such as the lamps in one room. A lamp can follow only one light sync at a time: don't use the same lamps in another light sync app while this player plays."
+      "label": "Music Assistant streams to all chosen lamps through one of them, so pick lamps within radio range of each other, such as the lamps in one room. A lamp follows one light sync at a time: while another app syncs one of the chosen lamps, this player waits until it is free."
     },
     "zigbee_name": {
       "label": "Name",

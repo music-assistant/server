@@ -43,7 +43,7 @@ Music Assistant runs one Zigbee stream at a time: a start takes it over from the
 - The Home Assistant plugin, connected.
 - ZHA running on Ziggurat. ZHA names Ziggurat by its add-on host name, which only resolves for add-ons; elsewhere Music Assistant connects to the same port (9999) on Home Assistant's host, so that port must be reachable.
 - Hue lamps that support Zigbee entertainment (the Hue colour lamps), within radio range of each other: one of them relays the frames to the others.
-- One streamer per lamp: a lamp can not follow two light syncs (for example this plugin and another app) at the same time.
+- One streamer per lamp: while another app streams to one of the lamps, the player waits and starts once they are free.
 
 ## Effect Modes
 
