@@ -20,11 +20,6 @@ BATHROOM = {
 MEDIA = PlayerMedia(uri="http://ma.local/stream/track.flac")
 
 
-@pytest.mark.xfail(
-    strict=True,
-    raises=AssertionError,
-    reason="phase 1 (#415): a player is available while any attached protocol is",
-)
 async def test_player_stays_available_on_its_audio_protocols(scenario: Scenario) -> None:
     """
     A player whose native protocol goes unavailable stays available on its audio protocols.
@@ -79,11 +74,6 @@ async def _switched_off_player(scenario: Scenario) -> tuple[FakeProtocol, FakePo
     return pi, plug, player_id
 
 
-@pytest.mark.xfail(
-    strict=True,
-    raises=AssertionError,
-    reason="phase 1 (#415): a player outlives its detached protocol",
-)
 async def test_offline_device_is_powered_on_through_its_power_control(scenario: Scenario) -> None:
     """
     A player whose device is gone is powered on through its external power control.
@@ -114,11 +104,6 @@ async def test_offline_device_is_powered_on_through_its_power_control(scenario: 
     assert ("play_media", MEDIA) in pi.commands
 
 
-@pytest.mark.xfail(
-    strict=True,
-    raises=AssertionError,
-    reason="phase 1 (#415): a player outlives its detached protocol",
-)
 async def test_play_on_a_switched_off_player_powers_it_on(scenario: Scenario) -> None:
     """
     Play on a player whose device is gone but has a power control is accepted: it powers on.
@@ -167,11 +152,6 @@ async def _detached_player(scenario: Scenario) -> str:
     ],
     ids=["play", "pause", "stop", "volume_set", "volume_mute", "play_media"],
 )
-@pytest.mark.xfail(
-    strict=True,
-    raises=AssertionError,
-    reason="phase 1 (#415): a player outlives its detached protocol",
-)
 async def test_command_to_an_unavailable_player_raises(
     scenario: Scenario, command: str, args: tuple[Any, ...]
 ) -> None:
@@ -183,11 +163,6 @@ async def test_command_to_an_unavailable_player_raises(
         await getattr(scenario.mass.players, command)(player_id, *args)
 
 
-@pytest.mark.xfail(
-    strict=True,
-    raises=AssertionError,
-    reason="phase 1 (#415): a player outlives its detached protocol",
-)
 async def test_power_on_of_an_unavailable_player_is_accepted(scenario: Scenario) -> None:
     """
     Power on is the one command an unavailable player takes.
