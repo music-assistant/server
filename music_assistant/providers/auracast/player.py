@@ -10,7 +10,13 @@ from contextlib import aclosing, suppress
 from typing import TYPE_CHECKING, cast
 
 import numpy as np
-from music_assistant_models.enums import ContentType, PlaybackState, PlayerFeature, PlayerType
+from music_assistant_models.enums import (
+    ContentType,
+    PlaybackState,
+    PlayerFeature,
+    PlayerType,
+    ProtocolRole,
+)
 from music_assistant_models.errors import MusicAssistantError, PlayerUnavailableError
 from music_assistant_models.media_items.audio_format import AudioFormat
 
@@ -62,9 +68,12 @@ CONTROLLER_POLL_INTERVAL = 5
 class AuracastPlayer(PlayerProtocol):
     """Expose the configured Auracast broadcast as an MA player."""
 
-    def __init__(self, provider: AuracastProvider, player_id: str) -> None:
+    # a broadcast is no device another protocol could stand for
+    _attr_role = ProtocolRole.VIRTUAL
+
+    def __init__(self, provider: AuracastProvider, protocol_id: str) -> None:
         """Initialize the player and its PCM stream state."""
-        super().__init__(provider, player_id)
+        super().__init__(provider, protocol_id)
         self._attr_name = str(
             provider.config.get_value(CONF_BROADCAST_NAME, DEFAULT_BROADCAST_NAME)
         )
@@ -88,11 +97,11 @@ class AuracastPlayer(PlayerProtocol):
             0,
             min(
                 100,
-                int(provider.mass.config.get_protocol_value(player_id, CONF_STORED_VOLUME, 100)),
+                int(provider.mass.config.get_protocol_value(protocol_id, CONF_STORED_VOLUME, 100)),
             ),
         )
         stored_broadcast_id = provider.mass.config.get_protocol_value(
-            player_id, CONF_STORED_BROADCAST_ID
+            protocol_id, CONF_STORED_BROADCAST_ID
         )
         if isinstance(stored_broadcast_id, int) and not isinstance(stored_broadcast_id, bool):
             broadcast_id = stored_broadcast_id
@@ -106,7 +115,7 @@ class AuracastPlayer(PlayerProtocol):
         if not 0 < broadcast_id < 0x1000000:
             broadcast_id = secrets.randbelow(0xFFFFFF) + 1
         device_address = parse_device_address(
-            provider.mass.config.get_protocol_value(player_id, CONF_STORED_DEVICE_ADDRESS)
+            provider.mass.config.get_protocol_value(protocol_id, CONF_STORED_DEVICE_ADDRESS)
         )
         if device_address is None:
             device_address = generate_device_address()
@@ -204,7 +213,7 @@ class AuracastPlayer(PlayerProtocol):
             self._attr_elapsed_time_last_updated = time.time()
             self._resume_event.set()
             task = asyncio.create_task(
-                self._stream_audio(media), name=f"auracast_stream_{self.player_id}"
+                self._stream_audio(media), name=f"auracast_stream_{self.protocol_id}"
             )
             task.add_done_callback(self._on_stream_task_done)
             self._stream_task = task
@@ -237,7 +246,7 @@ class AuracastPlayer(PlayerProtocol):
         """
         self._attr_volume_level = max(0, min(100, volume_level))
         self.mass.config.set_protocol_value(
-            self.player_id, CONF_STORED_VOLUME, self._attr_volume_level
+            self.protocol_id, CONF_STORED_VOLUME, self._attr_volume_level
         )
         self.update_state()
 
@@ -269,18 +278,19 @@ class AuracastPlayer(PlayerProtocol):
             (CONF_STORED_BROADCAST_ID, broadcast_config.broadcast_id),
             (CONF_STORED_DEVICE_ADDRESS, broadcast_config.device_address),
         ):
-            if self.mass.config.get_protocol_value(self.player_id, key) != value:
-                self.mass.config.set_protocol_value(self.player_id, key, value)
+            if self.mass.config.get_protocol_value(self.protocol_id, key) != value:
+                self.mass.config.set_protocol_value(self.protocol_id, key, value)
 
-    async def on_unload(self) -> None:
-        """Stop playback and release controller resources when removed."""
+    async def on_detach(self) -> None:
+        """Stop playback and release controller resources when detached."""
+        await super().on_detach()
         async with self._lifecycle_lock:
             await self._release_broadcast()
             self._set_idle()
 
     async def _stream_audio(self, media: PlayerMedia) -> None:
         """Forward PCM for the media to the broadcaster until the stream ends."""
-        source = self.mass.streams.get_stream(media, PCM_FORMAT, self.player_id)
+        source = self.mass.streams.get_stream(media, PCM_FORMAT, self.protocol_id)
         pcm_stream = self._apply_output_filters(source, media)
         pending = bytearray()
         try:
@@ -316,7 +326,7 @@ class AuracastPlayer(PlayerProtocol):
     ) -> AsyncGenerator[bytes]:
         """Apply the player's DSP/EQ filter chain to the PCM source."""
         output_plan = self.mass.streams.audio.get_player_output_plan(
-            self.player_id,
+            self.protocol_id,
             PCM_FORMAT,
             PCM_FORMAT,
             queue_id=media.source_id,
@@ -374,7 +384,7 @@ class AuracastPlayer(PlayerProtocol):
         """Schedule the silent audio frames needed to keep an idle broadcast active."""
         if self._silence_task is None or self._silence_task.done():
             task = asyncio.create_task(
-                self._send_idle_silence(), name=f"auracast_silence_{self.player_id}"
+                self._send_idle_silence(), name=f"auracast_silence_{self.protocol_id}"
             )
             task.add_done_callback(self._on_silence_task_done)
             self._silence_task = task
