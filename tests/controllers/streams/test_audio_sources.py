@@ -13,8 +13,7 @@ from music_assistant_models.enums import (
     ContentType,
     MediaType,
     PlaybackState,
-    PlayerFeature,
-    PlayerType,
+    ProtocolRole,
     SourceControl,
     StreamType,
     VolumeNormalizationMode,
@@ -36,8 +35,9 @@ from music_assistant.constants import CONF_VOLUME_NORMALIZATION_TARGET
 from music_assistant.controllers.players import PlayerController
 from music_assistant.controllers.streams.audio import StreamsAudio
 from music_assistant.mass import MusicAssistant
+from music_assistant.models.player import Player
 from music_assistant.models.plugin import PluginProvider
-from tests.common import MockPlayer, MockProvider
+from tests.common import MockProtocol, MockProvider, attach_mock
 
 # -------------------------------------------------------------------- fixtures
 
@@ -79,12 +79,13 @@ def provider(mock_mass: MagicMock) -> MockProvider:
 
 
 @pytest.fixture
-def player(provider: MockProvider, controller: PlayerController) -> MockPlayer:
-    """Create and register a mock player."""
-    p = MockPlayer(provider, "player_1", "Test Player")
-    p._attr_supported_features = {PlayerFeature.VOLUME_SET}
-    controller._players = {"player_1": p}
-    return p
+def player(provider: MockProvider, controller: PlayerController) -> Player:
+    """Create an available player with the protocol of its device attached."""
+    # attach_mock() registers in the players controller of the provider's mass
+    assert provider.mass.players is controller
+    player, protocol = attach_mock(provider, "device_1", "Test Player", player_id="player_1")
+    protocol.update_state(signal_event=False)
+    return player
 
 
 def _audio_format() -> AudioFormat:
@@ -471,7 +472,7 @@ class TestTransportCommandsRedirectToQueue:
     async def test_cmd_next_redirects_to_the_queue_controller(
         self,
         controller: PlayerController,
-        player: MockPlayer,
+        player: Player,
         mock_mass: MagicMock,
     ) -> None:
         """players/cmd/next reaches player_queues.next for the active queue."""
@@ -486,7 +487,7 @@ class TestTransportCommandsRedirectToQueue:
     async def test_cmd_previous_redirects_to_the_queue_controller(
         self,
         controller: PlayerController,
-        player: MockPlayer,
+        player: Player,
         mock_mass: MagicMock,
     ) -> None:
         """players/cmd/previous reaches player_queues.previous for the active queue."""
@@ -501,7 +502,7 @@ class TestTransportCommandsRedirectToQueue:
     async def test_cmd_seek_redirects_to_the_queue_controller(
         self,
         controller: PlayerController,
-        player: MockPlayer,
+        player: Player,
         mock_mass: MagicMock,
     ) -> None:
         """players/cmd/seek reaches player_queues.seek for the active queue."""
@@ -540,6 +541,27 @@ def _make_audio_source_session(
     return session
 
 
+def _attach_device(provider: MockProvider) -> tuple[Player, MockProtocol]:
+    """Return player `player_1` with the native protocol of its device, playing its own queue."""
+    player, protocol = attach_mock(provider, "device_1", "Test Player", player_id="player_1")
+    protocol._attr_active_source = "device_1"
+    return player, protocol
+
+
+def _attach_airplay(mass: MagicMock, player: Player) -> MockProtocol:
+    """Return an AirPlay protocol attached to the player as an audio protocol."""
+    airplay_provider = MockProvider("airplay", instance_id="airplay_prov", mass=mass)
+    _player, airplay = attach_mock(
+        airplay_provider, "airplay_1", "AirPlay", role=ProtocolRole.AUDIO, player=player
+    )
+    return airplay
+
+
+def _start_session(mass: MagicMock, session: MagicMock) -> None:
+    """Make the live source session the one that plays on its player."""
+    mass.players.get_audio_source_session = MagicMock(side_effect={session.player_id: session}.get)
+
+
 class TestAudioSourceElapsedTimeOverride:
     """
     Verify PlayerState.elapsed_time prefers what the live source reports.
@@ -557,16 +579,12 @@ class TestAudioSourceElapsedTimeOverride:
         mock_mass: MagicMock,
     ) -> None:
         """AudioSource stream_metadata.elapsed_time overrides the player clock."""
-        player = MockPlayer(provider, "player_1", "Test Player")
-        player._attr_playback_state = PlaybackState.PLAYING
-        player._attr_elapsed_time = 10.0  # physical player reports 10s
-        player._attr_elapsed_time_last_updated = time.time() - 5
-        player._attr_active_source = "player_1"
+        player, protocol = _attach_device(provider)
+        protocol._attr_playback_state = PlaybackState.PLAYING
+        protocol._attr_elapsed_time = 10.0  # physical player reports 10s
+        protocol._attr_elapsed_time_last_updated = time.time() - 5
 
-        controller._players = {"player_1": player}
-
-        session = _make_audio_source_session(elapsed_time=42)
-        mock_mass.players.get_audio_source_session = MagicMock(return_value=session)
+        _start_session(mock_mass, _make_audio_source_session(elapsed_time=42))
 
         player.update_state(signal_event=False)
 
@@ -580,16 +598,12 @@ class TestAudioSourceElapsedTimeOverride:
         mock_mass: MagicMock,
     ) -> None:
         """Without stream_metadata.elapsed_time, use the player's own clock."""
-        player = MockPlayer(provider, "player_1", "Test Player")
-        player._attr_playback_state = PlaybackState.PLAYING
-        player._attr_elapsed_time = 10.0
-        player._attr_elapsed_time_last_updated = time.time()
-        player._attr_active_source = "player_1"
+        player, protocol = _attach_device(provider)
+        protocol._attr_playback_state = PlaybackState.PLAYING
+        protocol._attr_elapsed_time = 10.0
+        protocol._attr_elapsed_time_last_updated = time.time()
 
-        controller._players = {"player_1": player}
-
-        session = _make_audio_source_session(elapsed_time=None)
-        mock_mass.players.get_audio_source_session = MagicMock(return_value=session)
+        _start_session(mock_mass, _make_audio_source_session(elapsed_time=None))
 
         player.update_state(signal_event=False)
 
@@ -602,28 +616,21 @@ class TestAudioSourceElapsedTimeOverride:
         mock_mass: MagicMock,
     ) -> None:
         """Override wins even when an output protocol is active."""
-        # Protocol player (e.g. AirPlay) reporting bytes-consumed
-        protocol_player = MockPlayer(
-            provider, "airplay_1", "AirPlay", player_type=PlayerType.PROTOCOL
-        )
-        protocol_player._attr_playback_state = PlaybackState.PLAYING
-        protocol_player._attr_elapsed_time = 5.0
-        protocol_player._attr_elapsed_time_last_updated = time.time()
-        # Main player with active output protocol
-        player = MockPlayer(provider, "player_1", "Test Player")
-        player._attr_playback_state = PlaybackState.PLAYING
-        player._attr_elapsed_time = 8.0
-        player._attr_elapsed_time_last_updated = time.time()
-        player._attr_active_source = "player_1"
+        player, protocol = _attach_device(provider)
+        protocol._attr_playback_state = PlaybackState.PLAYING
+        protocol._attr_elapsed_time = 8.0
+        protocol._attr_elapsed_time_last_updated = time.time()
+        # audio protocol (e.g. AirPlay) reporting bytes-consumed, the active output
+        airplay = _attach_airplay(mock_mass, player)
+        airplay._attr_playback_state = PlaybackState.PLAYING
+        airplay._attr_elapsed_time = 5.0
+        airplay._attr_elapsed_time_last_updated = time.time()
         player.set_active_output_protocol("airplay_1")
 
-        controller._players = {"player_1": player, "airplay_1": protocol_player}
+        _start_session(mock_mass, _make_audio_source_session(elapsed_time=42))
 
-        session = _make_audio_source_session(elapsed_time=42)
-        mock_mass.players.get_audio_source_session = MagicMock(return_value=session)
-
-        protocol_player.update_state(signal_event=False)
-        # refresh: the mocked queue/protocol player are cross-source state and the
+        airplay.update_state(signal_event=False)
+        # refresh: the mocked queue/session are cross-source state and the
         # production fan-out (which marks the player dirty) is suppressed here
         player.refresh_state(signal_event=False)
 
@@ -639,17 +646,15 @@ class TestAudioSourceElapsedTimeOverride:
         mock_mass: MagicMock,
     ) -> None:
         """When stream_metadata.elapsed_time_last_updated is None, use time.time()."""
-        player = MockPlayer(provider, "player_1", "Test Player")
-        player._attr_playback_state = PlaybackState.PLAYING
-        player._attr_elapsed_time = 10.0
+        player, protocol = _attach_device(provider)
+        protocol._attr_playback_state = PlaybackState.PLAYING
+        protocol._attr_elapsed_time = 10.0
         old_timestamp = time.time() - 100
-        player._attr_elapsed_time_last_updated = old_timestamp
-        player._attr_active_source = "player_1"
+        protocol._attr_elapsed_time_last_updated = old_timestamp
 
-        controller._players = {"player_1": player}
-
-        session = _make_audio_source_session(elapsed_time=42, elapsed_time_last_updated=None)
-        mock_mass.players.get_audio_source_session = MagicMock(return_value=session)
+        _start_session(
+            mock_mass, _make_audio_source_session(elapsed_time=42, elapsed_time_last_updated=None)
+        )
 
         before = time.time()
         player.update_state(signal_event=False)
@@ -668,26 +673,20 @@ class TestAudioSourceElapsedTimeOverride:
         mock_mass: MagicMock,
     ) -> None:
         """A source reporting no position of its own reports the player's own position."""
-        protocol_player = MockPlayer(
-            provider, "airplay_1", "AirPlay", player_type=PlayerType.PROTOCOL
-        )
-        protocol_player._attr_playback_state = PlaybackState.PLAYING
-        protocol_player._attr_elapsed_time = 5.0
-        protocol_player._attr_elapsed_time_last_updated = time.time()
-        # the owner's own clock is stale: the audio is rendered by the protocol player
-        player = MockPlayer(provider, "player_1", "Test Player")
-        player._attr_playback_state = PlaybackState.PLAYING
-        player._attr_elapsed_time = 8.0
-        player._attr_elapsed_time_last_updated = time.time()
-        player._attr_active_source = "player_1"
+        # the native protocol's clock is stale: the audio is rendered by the audio protocol
+        player, protocol = _attach_device(provider)
+        protocol._attr_playback_state = PlaybackState.PLAYING
+        protocol._attr_elapsed_time = 8.0
+        protocol._attr_elapsed_time_last_updated = time.time()
+        airplay = _attach_airplay(mock_mass, player)
+        airplay._attr_playback_state = PlaybackState.PLAYING
+        airplay._attr_elapsed_time = 5.0
+        airplay._attr_elapsed_time_last_updated = time.time()
         player.set_active_output_protocol("airplay_1")
 
-        controller._players = {"player_1": player, "airplay_1": protocol_player}
+        _start_session(mock_mass, _make_audio_source_session(elapsed_time=None))
 
-        session = _make_audio_source_session(elapsed_time=None)
-        mock_mass.players.get_audio_source_session = MagicMock(return_value=session)
-
-        protocol_player.update_state(signal_event=False)
+        airplay.update_state(signal_event=False)
         player.refresh_state(signal_event=False)
 
         assert player.state.current_media is not None
