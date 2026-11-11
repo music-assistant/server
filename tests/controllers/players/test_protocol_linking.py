@@ -499,14 +499,6 @@ def _name_of_player_with(*protocols: tuple[str, str]) -> str:
     return player.state.name
 
 
-@pytest.mark.xfail(
-    strict=True,
-    raises=AssertionError,
-    reason=(
-        "cutover core defect: Player.name takes the audio protocols in output priority, "
-        "not the name priority of #7010 (Cast first)"
-    ),
-)
 def test_name_of_a_protocol_only_player_prefers_its_cast_name() -> None:
     """Of the names the protocols of a device report, the Cast name is preferred."""
     assert (
@@ -515,11 +507,6 @@ def test_name_of_a_protocol_only_player_prefers_its_cast_name() -> None:
     )
 
 
-@pytest.mark.xfail(
-    strict=True,
-    raises=AssertionError,
-    reason="cutover core defect: Player.name shows a MAC address an audio protocol reports",
-)
 def test_name_of_a_protocol_only_player_skips_a_mac_address() -> None:
     """A name that looks like a MAC address is skipped for a real name of another protocol."""
     # AirPlay is preferred over DLNA whichever priority applies, so only skipping it helps
@@ -529,11 +516,6 @@ def test_name_of_a_protocol_only_player_skips_a_mac_address() -> None:
     )
 
 
-@pytest.mark.xfail(
-    strict=True,
-    raises=AssertionError,
-    reason="cutover core defect: Player.name shows a technical id an audio protocol reports",
-)
 @pytest.mark.parametrize(
     ("domain", "technical_name"),
     [("sendspin", "sendspin_device_abc"), ("chromecast", "cc_123456")],
@@ -554,14 +536,6 @@ def test_name_of_a_player_is_the_name_its_device_reports() -> None:
     assert player.state.name == "HomePod Mini"
 
 
-@pytest.mark.xfail(
-    strict=True,
-    raises=AssertionError,
-    reason=(
-        "cutover core defect: a MAC address an audio protocol reports replaces the "
-        "last known name and is stored as the default name"
-    ),
-)
 def test_player_keeps_its_name_while_its_protocols_report_no_usable_one() -> None:
     """A player whose protocols only report technical names keeps the name it had."""
     _, mass = _server()
