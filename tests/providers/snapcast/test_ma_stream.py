@@ -269,6 +269,9 @@ def test_output_plan_is_registered_for_all_snapcast_members() -> None:
     )
     provider._snapserver.groups = [group]
     provider._get_ma_id.return_value = "child"
+    # the client is known by its protocol, which is attached to a player of its own
+    players = {"leader": MagicMock(player_id="leader"), "child": MagicMock(player_id="pl_child")}
+    provider.mass.players.get_player_by_protocol.side_effect = players.get
     output_details = MagicMock(player_ids=["leader"])
     stream._output_plan = MagicMock(output_details=output_details)
 
@@ -277,7 +280,7 @@ def test_output_plan_is_registered_for_all_snapcast_members() -> None:
     registered_ids = {
         call.args[0] for call in provider.mass.streams.audio_processing.update_output.call_args_list
     }
-    assert registered_ids == {"leader", "child"}
+    assert registered_ids == {"leader", "pl_child"}
 
 
 @pytest.mark.asyncio
