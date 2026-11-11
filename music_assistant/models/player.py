@@ -1411,7 +1411,8 @@ class Player:
 
         Call this when the device makes clear that the session is gone, for example when
         it refuses to resume playback. Normal queue handling takes over from there.
-        Call :meth:`update_state` afterwards to publish the change.
+        It acts on the own protocol of the player: the source an audio protocol reports
+        stays as it is. Call :meth:`update_state` afterwards to publish the change.
         """
         if (own := self._own_protocol) is None:
             return

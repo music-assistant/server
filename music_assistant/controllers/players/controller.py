@@ -3278,7 +3278,7 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         """
         if protocol := player.foreign_protocol or player.own_protocol:
             return protocol
-        msg = f"Player {player.display_name} is not available"
+        msg = f"Player {player.display_name} has no protocol that can take this command"
         raise PlayerUnavailableError(msg)
 
     async def _resolve_mac_addresses(self, protocol: PlayerProtocol) -> None:
@@ -5782,7 +5782,7 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         await self._power_on_for_playback(player, skip_auto_play=True)
         # forward to player
         if (own := player.own_protocol) is None:
-            msg = f"Player {player.state.name} is not available"
+            msg = f"Player {player.state.name} has no protocol that can select a source"
             raise PlayerUnavailableError(msg)
         await own.select_source(source)
 

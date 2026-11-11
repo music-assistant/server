@@ -1352,7 +1352,9 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         # refuse targets that can never render audio (display/visualizer/lighting clients)
         # before anything is mutated, so a bad target does not destroy the source queue
         if target_player.state.type not in PLAYBACK_TARGET_TYPES:
-            raise PlayerCommandFailed(f"Player {target_player.name} is not capable of playback")
+            raise PlayerCommandFailed(
+                f"Player {target_player.display_name} is not capable of playback"
+            )
         if target_player.state.active_group or target_player.state.synced_to:
             # edge case: the user wants to move playback from the group as a whole, to a single
             # player in the group or it is grouped and the command targeted at the single player.

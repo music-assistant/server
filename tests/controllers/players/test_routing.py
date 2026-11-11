@@ -481,6 +481,25 @@ async def test_static_member_of_a_group_of_players_that_is_not_there_stays_liste
     assert group_state.static_group_members == [speaker_id, "pl0123456789ab"]
 
 
+async def test_device_that_plays_the_queue_of_its_player_has_the_player_as_source(
+    scenario: Scenario,
+) -> None:
+    """A protocol that reports its own id as active source plays the queue of its player."""
+    sonos = await scenario.add_provider("sonos")
+    native = sonos.protocol("RINCON_KITCHEN", "Kitchen", identifiers=KITCHEN)
+    await scenario.attach(native)
+    player_id = scenario.single_player(native).player_id
+    assert player_id != "RINCON_KITCHEN"
+
+    await scenario.report(
+        native, active_source="RINCON_KITCHEN", playback_state=PlaybackState.PLAYING
+    )
+
+    state = scenario.player(player_id)
+    assert state is not None
+    assert state.active_source == player_id
+
+
 async def test_published_type_is_never_protocol(scenario: Scenario) -> None:
     """A protocol that still reports the protocol type gives its player the player type."""
     sonos = await scenario.add_provider("sonos")
