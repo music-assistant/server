@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from types import SimpleNamespace
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, Any, cast
 
 from music_assistant_models.enums import ConfigEntryType, PlayerType
 
@@ -28,10 +28,12 @@ def _player(
     known_players: list[str],
     unavailable_players: list[str] | None = None,
     non_audio_players: dict[str, PlayerType] | None = None,
-    protocol_parent_id: str | None = None,
+    player_id: str = "turntable",
 ) -> SendspinBasePlayer:
     player = SendspinBasePlayer.__new__(SendspinBasePlayer)
-    player._player_id = "turntable"
+    player._protocol_id = "turntable"
+    # the player the protocol is attached to
+    player._player = cast("Any", SimpleNamespace(player_id=player_id))
     player.api = cast(
         "SendspinClient",
         SimpleNamespace(
@@ -57,11 +59,9 @@ def _player(
                         *(non_audio_players or {}).items(),
                     ]
                 ],
-                trigger_player_update=lambda _player_id: None,
             ),
         ),
     )
-    player.set_protocol_parent_id(protocol_parent_id)
     return player
 
 
@@ -167,20 +167,20 @@ def test_the_devices_own_player_leads_the_target_list() -> None:
     assert (entry.options or [])[1].translation_key == "this_device"
 
 
-def test_a_protocol_parent_is_the_default_target() -> None:
-    """A linked source defaults to its visible parent rather than its hidden protocol player."""
+def test_the_player_the_source_belongs_to_is_the_default_target() -> None:
+    """A source defaults to the player it is attached to, whose id is not its client id."""
     player = _player(
         negotiated_role_ids=["source@v1", "player@v1"],
         line_sense=True,
-        known_players=["amp", "visible-player"],
-        protocol_parent_id="visible-player",
+        known_players=["amp", "pl0123456789ab"],
+        player_id="pl0123456789ab",
     )
     entry = _target_entry(player)
     assert entry is not None
-    assert entry.default_value == "visible-player"
+    assert entry.default_value == "pl0123456789ab"
     assert [option.value for option in entry.options or []][:2] == [
         SOURCE_AUTOSTART_OFF,
-        "visible-player",
+        "pl0123456789ab",
     ]
     assert (entry.options or [])[1].translation_key == "this_device"
 

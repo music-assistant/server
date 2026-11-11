@@ -304,7 +304,8 @@ def _make_player(
     api: _FakeApi, provider: _FakeProvider, *, cls: type[SendspinBasePlayer] = SendspinBasePlayer
 ) -> SendspinBasePlayer:
     player = cls.__new__(cls)
-    player._player_id = "client-1"
+    player._protocol_id = "client-1"
+    player._player = None
     player._provider = cast("SendspinProvider", provider)
     player.api = cast("SendspinClient", api)
     return player
@@ -838,7 +839,8 @@ def _line_sense_combo(api: _FakeApi, player: SendspinBasePlayer) -> mock.MagicMo
     """Make the combo sense a line-in signal, with a speaker to autostart on."""
     api.info_or_none.source_support = SimpleNamespace(features=SimpleNamespace(line_sense=True))
     mass = _attach_mass(player)
-    player.set_protocol_parent_id(None)
+    # attached to the player "client-1"
+    player._player = cast("Any", SimpleNamespace(player_id="client-1"))
     mass.players.all_players.return_value = [
         SimpleNamespace(player_id=pid, display_name=pid, type=PlayerType.PLAYER)
         for pid in ("client-1", "kitchen")
