@@ -1236,7 +1236,7 @@ class StreamsAudio:
 
     def get_player_output_plan(
         self,
-        player_id: str,
+        protocol_id: str,
         input_format: AudioFormat,
         output_format: AudioFormat,
         *,
@@ -1249,7 +1249,7 @@ class StreamsAudio:
         """
         Return executable filters and matching output details for a player.
 
-        :param player_id: Destination player identifier.
+        :param protocol_id: ID of the protocol that renders the audio.
         :param input_format: PCM format entering player-specific processing.
         :param output_format: Furthest downstream output format known to the server.
         :param shared_player_ids: Additional players receiving this identical output path.
@@ -1260,8 +1260,8 @@ class StreamsAudio:
         :param queue_item_id: Queue item for a single-item output path.
         """
         filter_params: list[str | ComplexFilter] = []
-        player = self.mass.players.get_output_protocol(player_id)
-        destination_player_id = player.player.player_id if player and player.player else player_id
+        player = self.mass.players.get_output_protocol(protocol_id)
+        destination_player_id = player.player.player_id if player and player.player else protocol_id
         resolved_shared_player_ids = (
             resolve_output_player_ids(self.mass, shared_player_ids) - {destination_player_id}
             if shared_player_ids is not None
@@ -1277,8 +1277,8 @@ class StreamsAudio:
             else:
                 dsp_state = DSPState.ENABLED if dsp.enabled else DSPState.DISABLED
         else:
-            dsp_config_id = player_id
-            dsp = self.mass.config.get_player_dsp_config(player_id)
+            dsp_config_id = protocol_id
+            dsp = self.mass.config.get_player_dsp_config(protocol_id)
             dsp_state = DSPState.ENABLED if dsp.enabled else DSPState.DISABLED
 
         enabled_filters = [dsp_filter for dsp_filter in dsp.filters if dsp_filter.enabled]
@@ -1298,7 +1298,7 @@ class StreamsAudio:
                         self.logger.warning(
                             "Skipping the convolution filter of player %s: "
                             "impulse response %s is not stored",
-                            player_id,
+                            protocol_id,
                             dsp_filter.ir_id,
                         )
                         continue
@@ -1310,7 +1310,7 @@ class StreamsAudio:
             if dsp.output_gain != 0:
                 filter_params.append(f"volume={dsp.output_gain}dB")
 
-        channel_value = self._get_output_channels(player, player_id)
+        channel_value = self._get_output_channels(player, protocol_id)
         source_channel = None
         channel_mix = ""
         # a single channel source is already the downmix and holds no FL/FR to select
@@ -1367,7 +1367,7 @@ class StreamsAudio:
         self.logger.log(
             VERBOSE_LOG_LEVEL,
             "Generated ffmpeg params for player %s: %s",
-            player_id,
+            protocol_id,
             filter_params,
         )
         return output_plan
@@ -5565,7 +5565,7 @@ class StreamsAudio:
             dsp_player_id = child_player.player_id
         return dsp_player_id
 
-    def _get_output_channels(self, player: PlayerProtocol | None, player_id: str) -> str:
+    def _get_output_channels(self, player: PlayerProtocol | None, protocol_id: str) -> str:
         """
         Return the configured output channels for the rendering protocol.
 
@@ -5574,7 +5574,7 @@ class StreamsAudio:
         native section); the rendering protocol's own stored value wins.
 
         :param player: The protocol that renders the audio, if it is attached.
-        :param player_id: The id the audio is rendered for.
+        :param protocol_id: The id of the protocol that renders the audio.
         """
         own = player.player.own_protocol if player and player.player else None
         own_value = (
@@ -5583,7 +5583,7 @@ class StreamsAudio:
             else "stereo"
         )
         return self.mass.config.get_protocol_value(
-            player.protocol_id if player else player_id, CONF_OUTPUT_CHANNELS, own_value
+            player.protocol_id if player else protocol_id, CONF_OUTPUT_CHANNELS, own_value
         )
 
     def _pick_pcm_bit_depth(

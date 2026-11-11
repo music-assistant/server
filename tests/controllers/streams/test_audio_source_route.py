@@ -215,7 +215,7 @@ async def test_http_output_is_registered_to_the_source_session(
 
     assert result == (response, "encoded-audio")
     ctrl.audio.get_player_output_plan.assert_called_once_with(
-        player_id=player.protocol_id,
+        protocol_id=player.protocol_id,
         input_format=pcm_format,
         output_format=output_format,
         shared_player_ids=player.group_members,

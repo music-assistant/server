@@ -1111,7 +1111,7 @@ class StreamsController(CoreController):
             # filter params such as channels mixing, DSP, resampling and, only if
             # needed, encoding to lossy formats
             output_plan = self.audio.get_player_output_plan(
-                player_id=player.protocol_id,
+                protocol_id=player.protocol_id,
                 input_format=pcm_format,
                 output_format=output_format,
                 shared_player_ids=player.group_members,
@@ -2161,7 +2161,7 @@ class StreamsController(CoreController):
             display_name=session.source.name,
         )
         filter_params = self.audio.get_player_output_plan(
-            player_id=player.protocol_id,
+            protocol_id=player.protocol_id,
             input_format=pcm_format,
             output_format=output_format,
             shared_player_ids=player.group_members,
