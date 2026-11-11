@@ -55,6 +55,10 @@ class SamsungWamProvider(PlayerProvider):
         await self.discovery.start()
         self.groups.start_sync_task()
 
+    async def discover_players(self) -> None:
+        """Set up the speakers at the manually configured addresses that are not attached."""
+        await self.discovery.probe_manual_ips()
+
     async def unload(self, is_removed: bool = False) -> None:
         """
         Handle close/cleanup of the provider.
@@ -63,9 +67,6 @@ class SamsungWamProvider(PlayerProvider):
         """
         await self.discovery.stop()
         self.groups.stop_sync_task()
-        for player in list(self.get_players()):
-            self.logger.debug("Unloading player %s", player.log_name)
-            await self.mass.players.unregister(player.player_id, is_removed)
         self.groups.states.clear()
 
     async def on_upnp_service_discovered(
