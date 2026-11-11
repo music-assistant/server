@@ -226,7 +226,7 @@ jobs:
 
                 # Save old and new versions for comparison
                 git show origin/$BASE_BRANCH:$manifest > /tmp/old_manifest.json 2>/dev/null || echo '{"requirements":[]}' > /tmp/old_manifest.json
-                cp $manifest /tmp/new_manifest.json
+                cp $manifest /tmp/new_manifest.json 2>/dev/null || echo '{"requirements":[]}' > /tmp/new_manifest.json
 
                 # Use Python script to parse dependency changes
                 python3 scripts/parse_manifest_deps.py /tmp/old_manifest.json /tmp/new_manifest.json >> manifest_report.md
