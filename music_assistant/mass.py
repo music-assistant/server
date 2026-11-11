@@ -1193,8 +1193,6 @@ class MusicAssistant:
                 # a live source cannot outlive the plugin exposing it: the player would go
                 # on naming a source that can no longer be streamed, its queue held inactive
                 await self.players.release_provider_sources(instance_id)
-            if isinstance(provider, PlayerProvider):
-                await self.players.on_provider_unload(provider)
             if isinstance(provider, MusicProvider):
                 await self.music.on_provider_unload(provider)
             # check if there are no other providers dependent of this provider
@@ -1202,15 +1200,9 @@ class MusicAssistant:
                 if dep_prov.manifest.depends_on == provider.domain:
                     await self.unload_provider(dep_prov.instance_id)
             try:
-                if is_player_provider(provider):
-                    # unregister all players of this provider, straight from the registry: the
-                    # provider's own players listing hides disabled and still-initializing
-                    # players, which must be unregistered here too so their on_unload runs
-                    # and no stale entry is left behind
-                    for player in list(self.players):
-                        if player.provider.instance_id != instance_id:
-                            continue
-                        await self.players.unregister(player.player_id, permanent=is_removed)
+                if isinstance(provider, PlayerProvider):
+                    # inside the try: a teardown that fails still deregisters the provider
+                    await self.players.on_provider_unload(provider)
                 await provider.unload(is_removed)
             except Exception as err:
                 LOGGER.warning(

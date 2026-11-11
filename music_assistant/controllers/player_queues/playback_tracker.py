@@ -425,11 +425,10 @@ class PlaybackTrackerMixin(_PlayerQueuesBase):
 
     def _parse_player_current_item_id(self, queue_id: str, player: Player) -> str | None:
         """Parse QueueItem ID from Player's current url."""
-        protocol_player = player
-        if player.active_output_protocol and player.active_output_protocol != "native":
-            protocol_player = self.mass.players.get_player(player.active_output_protocol) or player
-        if not protocol_player.current_media:
-            # YES, we use player.current_media on purpose here because we need the raw metadata
+        protocol_player = player.resolve_output_protocol()
+        if protocol_player is None or not protocol_player.current_media:
+            # YES, we use the current_media of the protocol on purpose here because we need
+            # the raw metadata
             return None
         # prefer queue_id and queue_item_id within the current media
         if (
@@ -472,10 +471,8 @@ class PlaybackTrackerMixin(_PlayerQueuesBase):
 
     def _reported_queue_id(self, player: Player) -> str | None:
         """Return the known queue the player's reported media names, if it names one."""
-        protocol_player = player
-        if player.active_output_protocol and player.active_output_protocol != "native":
-            protocol_player = self.mass.players.get_player(player.active_output_protocol) or player
-        if not (current_media := protocol_player.current_media):
+        protocol_player = player.resolve_output_protocol()
+        if protocol_player is None or not (current_media := protocol_player.current_media):
             return None
         candidates: list[str | None] = [current_media.source_id]
         uri = current_media.uri or ""

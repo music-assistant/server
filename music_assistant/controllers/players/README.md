@@ -1,46 +1,93 @@
 # Player Controller Architecture
 
-This document provides an overview of the Music Assistant Player Controller architecture, including the Player/PlayerState model, multi-protocol player system, and universal player concept.
+This document provides an overview of the Music Assistant Player Controller architecture: the
+Player and the protocols it is made up of, how a protocol finds its player, the stored config,
+the lifecycle and the rules for commands and volume.
 
 ## Table of Contents
 
 - [Overview](#overview)
-- [Player vs PlayerState](#player-vs-playerstate)
+- [Player, PlayerProtocol and PlayerState](#player-playerprotocol-and-playerstate)
+- [Identity](#identity)
 - [Legacy Ids](#legacy-ids)
 - [Core Components](#core-components)
-- [Player Types](#player-types)
-- [Multi-Protocol Player System](#multi-protocol-player-system)
-- [Universal Player](#universal-player)
-- [Protocol Linking](#protocol-linking)
+- [Locking](#locking)
+- [Player Types and Protocol Roles](#player-types-and-protocol-roles)
+- [Finding the Player of a Protocol](#finding-the-player-of-a-protocol)
+- [Lifecycle](#lifecycle)
+- [Commands, Outputs and Volume](#commands-outputs-and-volume)
+- [Configuration Storage](#configuration-storage)
 - [Development Guide](#development-guide)
 
 ## Overview
 
-The Player Controller is a core controller that manages all connected audio players from various providers. It provides:
+The Player Controller is a core controller that owns every player users and clients see. It provides:
+- One player per device, made up of the protocols its providers attach (the vendor's own protocol, AirPlay, Chromecast, DLNA, Sendspin, ...)
 - Unified control interface for all players (play, pause, volume, etc.)
-- Multi-protocol player linking (combining AirPlay, Chromecast, DLNA for the same device)
-- Universal Player wrapping for devices without native vendor support
+- Players that stay known while their device is away, and come back with their settings
 - Sync group management for synchronized playback
 - Player state management and event broadcasting
 - User access control and permissions
 
-## Player vs PlayerState
+## Player, PlayerProtocol and PlayerState
 
-The Player Controller distinguishes between two key concepts:
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│                     Physical Device                                 │
+│                  (e.g., Samsung Soundbar)                           │
+├─────────────────────────────────────────────────────────────────────┤
+│  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐               │
+│  │    Native    │  │   AirPlay    │  │  Chromecast  │   provider    │
+│  │   protocol   │  │   protocol   │  │   protocol   │   objects     │
+│  └──────┬───────┘  └──────┬───────┘  └──────┬───────┘               │
+│         │ attach          │ attach          │ attach                │
+│         └─────────────────┼─────────────────┘                       │
+│                           ▼                                         │
+│              ┌─────────────────────────┐                            │
+│              │         Player          │   owned by the controller  │
+│              │  - its own config       │                            │
+│              │  - control resolution   │                            │
+│              │  - output selection     │                            │
+│              └───────────┬─────────────┘                            │
+│                          │ update_state()                           │
+│                          ▼                                          │
+│              ┌─────────────────────────┐                            │
+│              │       PlayerState       │   what the API sends       │
+│              └─────────────────────────┘                            │
+└─────────────────────────────────────────────────────────────────────┘
+```
 
-### Player (Internal Model)
+### PlayerProtocol (provider model)
 
-The `Player` class is the actual object provided by a Player Provider. It:
-- Incorporates the actual state of the player (volume, playback state, etc.)
-- Contains methods for controlling the player (play, pause, volume, etc.)
-- Is used internally by providers and the controller
-- May contain provider-specific implementation details
+A `PlayerProtocol` ([player_protocol.py](../../models/player_protocol.py)) is the object a player
+provider implements for one device: what the device reports (`_attr_*` values and the overridable
+properties) and the commands to it. It reports its `role` (see below), whether it only exists while
+connected (`session_only`) and, for a transport that rides on another protocol, the protocol it rides
+on (`underlying_protocol_id`). While it is attached, `protocol.player` is its player; its
+`update_state()` publishes through that player. Its config is its own record (`protocol.config`).
+
+### Player (controller model)
+
+A `Player` ([player.py](../../models/player.py)) is created and owned by the controller, from its
+stored record or when a device is new, and is never subclassed by a provider. It holds:
+- the attached protocols, each with the role it attached in; the one that stands for the device
+  itself is its `own_protocol` (native, else control, else virtual), the others are its
+  `audio_protocols`, most preferred first;
+- the ids of all protocols that belong to it, also those that are away;
+- its own config (name, controls, volume limits, announcements, icon, ...);
+- what it keeps for itself while it lives: the active output, the active MA source, the sleep
+  timer, the stop flag, the external-pause bookkeeping, the palette, `extra_data`;
+- the resolution of its power, volume and mute control and of the output that renders.
+
+What a player reports for its device (name, device info, extra attributes, provider) comes from its
+`device_protocol`: its own protocol, else its most preferred audio protocol, else what was stored
+when a protocol was last attached.
 
 The remembered MA source is cleared after five seconds of continuous idle.
 Returning to playing or paused before that timeout cancels the reset, preserving
 the selected queue through transient device stops during playback transitions.
 
-### PlayerState (API Model)
+### PlayerState (API model)
 
 The `PlayerState` is a dataclass representing the final state of the player. It:
 - Includes any user customizations (custom name, hidden status, etc.)
@@ -48,27 +95,25 @@ The `PlayerState` is a dataclass representing the final state of the player. It:
 - Is the object exposed to the outside world via the API
 - Is a snapshot created when `player.update_state()` is called
 - Is derived by `derive_player_state` ([player_state.py](../../models/player_state.py)), a function of a snapshot of everything the state depends on
+- Lists the protocols of the player (`protocols`: id, domain, provider, role, available, active),
+  when the player was last seen and since when it is unavailable
 - Contains only serializable data suitable for API consumers
 
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                     Player (Internal)                           │
-│  - Provider-specific implementation                             │
-│  - Control methods (play, pause, volume_set, etc.)              │
-│  - Raw state (_attr_volume_level, _attr_playback_state, etc.)   │
-│  - Device info and identifiers                                  │
-└─────────────────────────────────┬───────────────────────────────┘
-                                  │
-                                  │ update_state()
-                                  ▼
-┌─────────────────────────────────────────────────────────────────┐
-│                   PlayerState (API)                             │
-│  - Final display name (with user customizations)                │
-│  - Transformed state (fake controls applied)                    │
-│  - Player controls configuration                                │
-│  - Serializable for API/WebSocket                               │
-└─────────────────────────────────────────────────────────────────┘
-```
+A player is available while any of its protocols is (or while it is switched off at its external
+power control); it is available for playback while a protocol is reachable and set up.
+
+## Identity
+
+A player id and a protocol id are different things. A device or group first seen by this version
+gets a player id of its own (`pl` and twelve hex digits); a record that existed before the player
+configs were split keeps its id, which is then also the id of its own protocol. A protocol that only
+exists while connected (a browser or app player) gives the player it creates its own protocol id, so
+that player has the same id in every session. Nothing else may assume the two ids are equal.
+
+Protocols name each other by protocol id in what they report (`group_members`, `synced_to`,
+`can_group_with`); the state derivation translates those to player ids. A group protocol names its
+members by player id. `get_player_by_protocol` resolves either kind; `get_protocol` only knows
+protocol ids and never goes through the legacy-id resolver.
 
 ## Legacy Ids
 
@@ -99,40 +144,33 @@ registered under that id and no config is stored under it.
 
 ### 1. PlayerController ([controller.py](controller.py))
 
-The main orchestrator that manages:
-- Player registration and lifecycle
-- Player commands (play, pause, stop, volume, etc.)
-- Protocol linking and evaluation
-- Universal player creation
-- Sync group coordination
-
-**Key responsibilities:**
-- Routes commands to appropriate players or protocol players
-- Manages player availability and state
-- Handles announcements and TTS playback
-- Coordinates sync groups and grouped playback
+The main orchestrator. It keeps the players and, next to them, the protocols the providers attached
+(also those that still wait for their player), and owns their lifecycle (`attach`, `detach`,
+`remove_protocol`, `remove`), the player commands, sync group coordination, availability and the
+state events.
 
 ### 2. ProtocolLinkingMixin ([protocol_linking.py](protocol_linking.py))
 
-Mixin class containing all protocol linking logic:
-- Matching protocol players to native players via device identifiers
-- Creating and managing Universal Players
-- Protocol link lifecycle (add, remove, cleanup)
-- Output protocol selection for playback
+Finding the player a protocol belongs to, creating the player of a new device, holding a protocol
+until it is known which player it belongs to, and the output protocol selection and grouping
+translation for playback.
 
-### 3. Helper Utilities ([helpers.py](helpers.py))
+### 3. Identifier Matching ([matching.py](matching.py))
 
-Contains standalone helper functions and decorators:
-- `handle_player_command` decorator for command validation
-- `AnnounceData` type definition
+The pure function that decides whether a protocol stands for the device of a player, with every
+veto and precedence rule in one table (see [Device Identifier Matching](#device-identifier-matching)).
 
-### 4. Identifier Matching ([matching.py](matching.py))
+### 4. Helper Utilities ([helpers.py](helpers.py))
 
-The pure function that decides whether two players stand for the same physical device, with every veto and precedence rule in one table (see [Device Identifier Matching](#device-identifier-matching)).
+The `handle_player_command` decorator for command validation, and `AnnounceData`.
 
 ## Locking
 
 Player commands are serialized per player with `get_player_lock`. A command that cannot get the lock within 30 seconds runs without it, so a player stays responsive when the previous holder hangs on a dead provider call. A strict acquisition (`strict=True`) never does that: it keeps waiting, up to 120 seconds per lock (a grouped player's group lock first, then its own), and then fails with a `ResourceBusyError`. The queue play actions and the next-track handover take the lock strictly, since two of them running at once on one queue corrupt it. The timeouts live in [constants.py](constants.py).
+
+Attaching protocols is serialized by one lock of the controller, so an object that replaces
+another under the same protocol id waits for an attach of that id that is still running. A detach
+does not wait for it: it stops an attach of its protocol that is in progress.
 
 ### Lock Ordering
 
@@ -144,74 +182,53 @@ A command that locks a member and only then reaches the group — a power off de
 
 A playback command on a synced player (play, stop, resume, ...) is redirected to the owner of its playback: the sync leader, or the group holding that leader when it is captured by one. That redirect is what puts the command under the group's lock rather than the leader's.
 
-## Player Types
+## Player Types and Protocol Roles
 
-Players in Music Assistant have different types based on their capabilities:
+The type of a player (`PlayerType.PLAYER`, `GROUP`, `STEREO_PAIR`, and the kinds of Sendspin
+clients) is that of its own protocol, else the one stored for it. A player is never of the type
+`PROTOCOL`.
 
-### PlayerType.PLAYER
+What a protocol is for its device is its role (`ProtocolRole`):
+- `NATIVE`: the vendor's own control plane (Sonos, Bluesound, an Apple device over AirPlay, ...).
+- `CONTROL`: control without an audio path of its own; playback goes through an audio protocol of
+  the same device (LinkPlay with DLNA, for example). A control protocol that reports a native group
+  leader gives up the output it played on.
+- `AUDIO`: an audio protocol of the device (AirPlay, Chromecast, DLNA, Sendspin on a third-party device).
+- `VIRTUAL`: the protocol of a group player.
 
-A regular player with native (vendor-specific) support. Examples:
-- Sonos speakers via the Sonos provider
-- Apple devices via the AirPlay provider (HomePod, Apple TV)
-- Google devices via the Chromecast provider (Nest Audio, Google Home)
+A player has at most one protocol that stands for the device itself (native, control or virtual)
+and at most one protocol per domain. A role is fixed while the protocol is attached; a protocol that
+reports another role is detached and attached again, to the same player when it still has a place
+for it, else to a player of its own.
 
-### PlayerType.PROTOCOL
+## Finding the Player of a Protocol
 
-A generic protocol player without native vendor support. These are streaming endpoints discovered via generic protocols but manufactured by third parties. Examples:
-- Samsung TV discovered via AirPlay (not an Apple device)
-- Sony speaker discovered via Chromecast (not a Google device)
-- Any DLNA/UPnP device (always PROTOCOL type)
+When a protocol attaches, the controller looks for its player in this order:
+1. The player its record names, as long as none of the protocols attached to that player rules it out.
+2. A player whose device the protocol matches: the live players first, then the stored ones (a
+   match to a disabled player only stores the edge; nothing attaches until the player is enabled).
+   A protocol that matches a player holding an offline protocol record of the same provider takes
+   over that record (settings, setup data) under its own id.
+3. Else a new player is created for it.
 
-**Important:** Protocol players with `PlayerType.PROTOCOL` are hidden from the UI and wrapped in a Universal Player or attached to an existing native player.
-
-### PlayerType.GROUP
-
-A group player that represents (synchronized) playback across multiple physical speakers.
-
-### PlayerType.STEREO_PAIR
-
-A dedicated stereo pair of two speakers acting as one player.
-
-## Multi-Protocol Player System
-
-Modern audio devices often support multiple streaming protocols (AirPlay, Chromecast, DLNA). The Player Controller automatically detects and links these protocols to provide a unified experience.
-
-### How It Works
-
-```
-┌─────────────────────────────────────────────────────────────────────┐
-│                     Physical Device                                 │
-│                  (e.g., Samsung Soundbar)                           │
-├─────────────────────────────────────────────────────────────────────┤
-│  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐               │
-│  │   AirPlay    │  │  Chromecast  │  │    DLNA      │               │
-│  │   Protocol   │  │   Protocol   │  │   Protocol   │               │
-│  │   Player     │  │   Player     │  │   Player     │               │
-│  │  (hidden)    │  │  (hidden)    │  │  (hidden)    │               │
-│  └──────┬───────┘  └──────┬───────┘  └──────┬───────┘               │
-│         │                 │                 │                       │
-│         └─────────────────┼─────────────────┘                       │
-│                           │                                         │
-│                           ▼                                         │
-│              ┌─────────────────────────┐                            │
-│              │    Universal Player     │                            │
-│              │  (visible in UI)        │                            │
-│              │  - Aggregates protocols │                            │
-│              │  - Selects best output  │                            │
-│              │  - Unified control      │                            │
-│              └─────────────────────────┘                            │
-└─────────────────────────────────────────────────────────────────────┘
-```
+A protocol that rides on another one (`underlying_protocol_id`) belongs to the player of that
+protocol and waits for it to attach, however long that takes. An audio protocol that matches no
+player and has no hardware MAC address yet waits up to 15 seconds for identifiers that tie it to
+other protocols of its device; it attaches as soon as one arrives or another protocol creates the
+player of its device, and gets a player of its own when the wait ends. A native protocol never waits.
 
 ### Device Identifier Matching
 
-Whether two players stand for the same physical device is decided in one place: `identifiers_match` in [matching.py](matching.py), a pure function over what each side reports about its device:
+Whether a protocol stands for the device of a player is decided in one place: `matches_device` in [matching.py](matching.py), a pure function over what each side reports about its device:
 
-- its identifiers as a set of `(type, value)` pairs (`Player.identifiers`), so a device with two MAC addresses (the one its provider reported and the one ARP resolved) holds a pair for each
+- its identifiers as a set of `(type, value)` pairs, so a device with two MAC addresses (the one its provider reported and the one ARP resolved) holds a pair for each
 - the protocol domains that reported them
 - whether the native protocol of the device is among them
 
-A universal player reports for the protocols it holds: their identifiers next to the ones it stored, and their domains also while they are away.
+A player is described by its protocols together: those that are attached report for themselves,
+and for one that is away the identifiers it last reported are stored on its record. The rules apply
+to that merged identity, so a value one protocol of the player reported rules a newcomer out
+whichever other protocol it shares an identifier with.
 
 The rules are one table. Two sides *differ* in a type when both report it and share no value; a type only one side reports never rules a match out.
 
@@ -234,88 +251,97 @@ Every veto is checked before any shared value may match, so two sides that diffe
 
 A provider reports an identifier in the form the other protocols of the device report it: the DLNA provider strips the `_MR` suffix from the UDN of a Sonos renderer, which leaves the UUID of its Sonos player.
 
-**Important:** Protocol players from the **same protocol domain** (same provider.domain) will NOT be matched together, even if they share the same MAC/IP address. This is intentional to handle multiple software player instances (e.g., multiple Snapcast clients, multiple SendSpin web players) running on the same host. These are separate logical players, not multiple protocols of the same physical device.
+**Important:** A player never holds two protocols of the same domain. Software players of one
+provider on one host (Snapcast clients, Squeezelite instances, Sendspin software clients) are
+separate players, not protocols of one device; their provider reports an identifier of its own
+instance (`UUID` or `SERIAL_NUMBER`), which vetoes within the domain.
 
-**Fallback behavior:** Protocol players that don't expose any identifiers (like Sendspin clients) will still get wrapped in a Universal Player using their player_id as the device key. This ensures all protocol players get a consistent user-facing interface.
+## Lifecycle
+
+| Call | When | What happens |
+|---|---|---|
+| `attach(protocol)` | a provider found a device, or found it again | the player is found or created and the protocol bound to it; `on_config_updated()` and `on_attach(player)` run. Attaching the attached object again publishes what it reports now; another object under the same id replaces it. Nothing attaches for a disabled player or an output the user switched off. |
+| `detach(protocol_id)` | the device is gone, or its provider unloads | `on_detach()` runs; the player stays (unavailable while no other protocol is) and keeps its queue, which only stops when this protocol was the one that played. A player that only exists while connected goes with its last protocol. |
+| `remove_protocol(protocol_id)` | a provider forgets a device | detach and delete the protocol record; the player goes when no protocol record of it is left. |
+| `remove(player_id)` | the user removes a player | every protocol is detached and gets `on_remove()`, also one whose player is not live; the player, its protocol records, DSP and queue settings, saved queue, group memberships and user filter entries go. Its providers look for devices again, so a device still on the network comes back as a new player (not for a group). |
+
+An attach that waits on the provider (a hook, an address lookup) is stopped by a detach of its
+protocol: the protocol is released again, and a player it created that nobody saw yet goes with the
+config it stored for it. A failing attach is rolled back the same way.
+
+Disabling a player detaches its protocols and announces it as removed; its config stays. Enabling
+it creates it from its record and lets its providers look for its devices.
+
+### Startup
+
+1. The config controller loads the settings and runs the migrations, the player split last.
+2. The core controllers set up; `players.post_setup` creates a player for every stored player that
+   is enabled and not session-only, announces it with its queue, unavailable until a protocol
+   attaches. A player without protocols whose provider is not installed says so in its
+   `setup_reason` (`provider_not_installed`).
+3. The webserver starts: clients get one complete list, unavailable players included.
+4. The providers load and attach their protocols.
+
+## Commands, Outputs and Volume
+
+A playback command goes to the protocol that renders the audio of the player. A transport command
+for what the device plays itself goes to the audio protocol whose app is shown on the player, else
+to its own protocol. A command to an unavailable player raises `PlayerUnavailableError`; a power on
+is accepted, and a play on a player switched off at its external power control powers it on first.
 
 ### Output Protocol Selection
 
-When playing media, the controller selects the best output protocol:
+When playing media, the controller selects the output:
 
 1. **Grouped protocol** - If a protocol is actively grouped/synced, use it
 2. **User preference** - Honor user's configured preferred protocol
-3. **Native playback** - Use native PLAY_MEDIA if available
-4. **Best available** - Select by protocol priority (AirPlay > Chromecast > DLNA)
+3. **Native playback** - Use the own protocol when it supports PLAY_MEDIA
+4. **Default domain** - The audio protocol of the domain the own protocol prefers (a LinkPlay device prefers DLNA)
+5. **Best available** - Select by protocol priority (AirPlay > Squeezelite > Chromecast > Sendspin > DLNA)
 
-## Universal Player
+### Volume and Mute
 
-The Universal Player is a virtual player that wraps one or more protocol players when no native vendor support exists.
+The level and mute of a player are its own. Without a control the user picked, a volume or mute
+command goes to the protocol that renders the audio, else to the own protocol, else to an available
+protocol with the feature; level reports are only taken from that protocol. When the output changes,
+the protocol that becomes the control gets the level and mute of the player before it is made the
+active output and before the stream starts.
 
-### When Created
+## Configuration Storage
 
-A Universal Player is created when:
-1. A device is discovered via a protocol but has no native provider
-2. The device's protocol player has `PlayerType.PROTOCOL`
-3. There is no existing native player that matches the device identifiers
+Every player has a record under `players/{player_id}` (base keys, its name, and the values of the
+entries every player gets: controls, volume limits, announcement settings, icon, visibility,
+preferred output, plus what the player stores itself: legacy ids, last seen, device info,
+`session_only`, `created_at`). Every protocol has a record under `player_protocols/{protocol_id}`:
+its provider, the id of its player (the edge), its role, whether it is used as an output of its
+player (`enabled`), the values of the entries it declares, the audio settings of its output, what
+its provider stores for it (MAC addresses, identifiers, the protocol it rides on) and its setup data.
+DSP and queue settings stay per player under `player_dsp/` and `player_queues/`. For a record from
+before the split, the player record and the record of its own protocol share the id string.
 
-### Features
+A protocol that only exists while connected has no record until the user changes something about
+its player; until then it holds its config in memory, and provider writes go there.
 
-- **Aggregates Features** - Combines capabilities from all linked protocols
-- **No PLAY_MEDIA** - Delegates playback to protocol players
-- **Unified Control** - Single point of control for volume, power, etc.
-- **Protocol Selection** - Automatically selects best protocol for playback
+Stored config is read and written per scope, through the config controller:
+- `get_player_value` / `set_player_value` - a value of the player itself (`PLAYER_VALUE_KEYS`)
+- `get_protocol_value` / `set_protocol_value` - a value of a protocol: an entry the protocol declares, an audio setting of its output, or what its provider stores for it
 
-### Lifecycle
+The config of a player as clients read and save it (`config/players/*`) is one form: the values of
+the player, the unprefixed values of its own protocol, and the values of its audio protocols
+prefixed with their id. Saving it stores each value with whoever declared its entry.
 
-```
-1. Protocol player registered with PlayerType.PROTOCOL
-2. Controller checks for cached parent_id from previous session:
-   - If found, restores link immediately (skips evaluation)
-   - If parent not yet registered, keeps waiting without creating a universal player
-3. If no cached parent, checks for matching native player (links immediately if found)
-4. If no native player, schedules delayed evaluation:
-   - 15 seconds standard delay (allows other protocols to register)
-   - 45 seconds if previously linked to a parent that is not registered yet
-5. After delay, finds all matching protocol players by identifiers
-6. Creates or updates a UniversalPlayer and links all matching protocols
-7. Protocol players become hidden, Universal Player visible
-```
-
-## Protocol Linking
-
-### Native Player Linking
-
-When a native player (e.g., Sonos) is registered, the controller:
-1. Searches for protocol players with matching identifiers
-2. Links matching protocols to the native player
-3. Protocol players become hidden, native player gains `output_protocols`
-
-### Protocol to Universal
-
-When protocol players are registered without a native match:
-1. Each protocol player schedules a delayed evaluation
-2. After the delay, matching protocols are grouped
-3. A Universal Player is created even for a single unmatched protocol player
-4. All protocol players link to the Universal Player
-
-### Universal to Native Promotion
-
-When a native player appears for a device that has a Universal Player:
-1. Native player is registered
-2. Controller finds matching Universal Player
-3. Active and cached protocol ownership transfers to the native player
-4. Universal Player is removed
-5. Native player becomes the visible entity
+The player configs were split into these two trees by a migration that keeps a copy of the
+settings file from before it (`settings.json.pre-player-split`); see
+[player_split.py](../config/player_split.py).
 
 ## Development Guide
 
-### Adding Protocol Support
+The contract for a provider is in `DEVELOPMENT.md` ("Building your own Player Provider"), and
+`providers/_demo_player_provider` is the annotated example. In short:
 
-When implementing a new protocol provider:
-
-1. Set `_attr_type = PlayerType.PROTOCOL` for generic devices (non-vendor devices)
-2. Set `_attr_type = PlayerType.PLAYER` for devices with native support (vendor's own devices)
-3. **Populate `device_info.identifiers`** with validated identifiers:
+1. Implement one `PlayerProtocol` per device and report its role (`_attr_role`); leave the type at
+   `PlayerType.PLAYER` unless it is a group or stereo pair.
+2. **Populate `device_info.identifiers`** with every identifier the device really has, validated:
    ```python
    from music_assistant.helpers.util import is_valid_mac_address
 
@@ -325,40 +351,13 @@ When implementing a new protocol provider:
    self._attr_device_info.add_identifier(IdentifierType.IP_ADDRESS, ip_address)
    self._attr_device_info.add_identifier(IdentifierType.UUID, uuid)
    ```
-4. Filter out devices that should only be handled by native providers (e.g., passive satellites)
-5. The Player Controller handles linking automatically
-
-### Adding Native Provider Support
-
-When implementing a native provider (e.g., Sonos, Bluesound) that should link to protocol players:
-
-1. Set `_attr_type = PlayerType.PLAYER` (or the property 'type') for all devices
-2. **Populate device identifiers** - This is critical for protocol linking:
-   ```python
-   from music_assistant.helpers.util import is_valid_mac_address
-
-   self._attr_device_info = DeviceInfo(
-       model="Device Model",
-       manufacturer="Manufacturer Name",
-   )
-   # Add identifiers in order of preference (MAC is most reliable)
-   # IMPORTANT: Validate MAC addresses before adding them
-   if is_valid_mac_address(mac_address):
-       self._attr_device_info.add_identifier(IdentifierType.MAC_ADDRESS, mac_address)
-   self._attr_device_info.add_identifier(IdentifierType.UUID, "device-uuid-here")
-   ```
-3. The controller will automatically:
-   - Find protocol players (AirPlay, Chromecast, DLNA) with matching identifiers
-   - Link them to your native player as `output_protocols`
-   - Replace any existing Universal Player for that device
-
-**Identifier Priority:**
-- `MAC_ADDRESS` - Most reliable, unique to network interface
-- `SERIAL_NUMBER` - Unique device serial number
-- `UUID` - Universally unique identifier
-- `CAST_UUID` / `AIRPLAY_ID` - Protocol-specific stable identifiers
-- `IP_ADDRESS` - Last resort fallback when strong identifiers are not usable
-- `player_id` - Fallback device key when no identifiers are available
+3. `await mass.players.attach(protocol)` when the device is found, `detach(protocol_id)` when it
+   is gone, `remove_protocol(protocol_id)` when the provider forgets it.
+4. Claim per-device resources in `on_attach` and release them in `on_detach`; forget what the
+   provider keeps about a device in `on_remove`.
+5. `discover_players()` offers every known device that has no attached protocol, and is safe to
+   repeat: enabling and removing a player both end with a discovery request.
+6. Ask `mass.players.wants_protocol(protocol_id)` before setting up a connection for a device.
 
 **Important Notes:**
 - **Always validate MAC addresses** using `is_valid_mac_address()` before adding them
@@ -366,40 +365,5 @@ When implementing a native provider (e.g., Sonos, Bluesound) that should link to
   - Prevents false matches between unrelated devices
   - The controller will attempt ARP lookup to resolve real MACs automatically
 - `IP_ADDRESS` is only used as a last resort after strong identifiers were checked first
-
-### Removing a Player
-
-Every player can be removed, and the controller does it itself: `players/remove` unregisters the player for good and deletes its config, its DSP and queue settings and its saved queue, and takes it out of groups and user filters. The provider is not asked. A provider that keeps something of its own about a player, such as an entry in its list of manually added hosts or a client on its server, implements `on_remove()` on the player object, which is called once the player is gone. A device that its provider still finds comes back as a new player.
-
-### Testing Protocol Linking
-
-Key scenarios to test:
-
-1. **Single protocol device** - Should create Universal Player
-2. **Multi-protocol device** - All protocols linked to one Universal Player
-3. **Late protocol discovery** - New protocol added to existing Universal Player
-4. **Native player appears** - Universal Player replaced by native; its user
-   settings (name, config values, DSP and queue settings) carry over
-5. **Permanent parent removal** - Protocol links reset and discovery is re-scheduled
-6. **Protocol disappears** - Handle graceful degradation
-
-### Configuration Storage
-
-Protocol links are persisted in player configuration:
-- `linked_protocol_ids` - List of protocol player IDs
-- Restored on restart for fast reconnection
-
-Stored config is read and written per scope, through the config controller:
-- `get_player_value` / `set_player_value` - a value of the player itself: the entries every player gets, such as its controls, volume limits, announcement settings, icon, visibility and preferred output (`PLAYER_VALUE_KEYS`)
-- `get_protocol_value` / `set_protocol_value` - a value of a protocol: an entry the protocol declares, an audio setting of its output, or what its provider stores for it
-
-Saving a player's config stores each value with whoever declared its entry: the player itself or its native protocol. Code that reads the stored config of a protocol as a whole, or its setup data, names the tree through `CONF_PLAYER_PROTOCOLS`.
-
-### Key Methods (in protocol_linking.py)
-
-- `_evaluate_protocol_links()` - Entry point for link evaluation
-- `_try_link_protocol_to_native()` - Link protocol to existing native
-- `_schedule_protocol_evaluation()` - Delay evaluation for batching
-- `_create_or_update_universal_player()` - Create/update Universal Player
-- `_check_replace_universal_player()` - Replace Universal with native
-- `_select_best_output_protocol()` - Choose protocol for playback
+- Read your own reported values through your own properties; read `self.player.state` only for what
+  the device must display or follow (current media, position, the grouping of the player)
