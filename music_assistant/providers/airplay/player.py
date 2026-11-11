@@ -26,11 +26,10 @@ from music_assistant.constants import CONF_PASSWORD
 from music_assistant.controllers.streams.audio import overlay_active
 from music_assistant.helpers.util import get_primary_ip_address_from_zeroconf, is_valid_mac_address
 from music_assistant.models.player import (
-    AnnouncementFeature,
     DeviceInfo,
     PlayerMedia,
 )
-from music_assistant.models.player_protocol import PlayerProtocol
+from music_assistant.models.player_protocol import AnnouncementFeature, PlayerProtocol
 from music_assistant.models.setup_flow import AbortFlow
 
 from . import announce
