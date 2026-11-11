@@ -16,7 +16,7 @@ from music_assistant.providers.fastmcp_server.resource_helpers import (
     to_brief_queue,
     to_resource_text,
 )
-from tests.common import MockProvider, attach_mock, make_player_state, mock_player_mass
+from tests.common import make_player_state
 
 if TYPE_CHECKING:
     from music_assistant.models.player import Player
@@ -24,12 +24,18 @@ if TYPE_CHECKING:
 
 def test_to_brief_player_reads_the_published_state() -> None:
     """The brief of a player carries what its published state says."""
-    provider = MockProvider("test", mass=mock_player_mass())
-    player, protocol = attach_mock(provider, "kitchen", "Kitchen")
-    protocol._attr_playback_state = PlaybackState.PLAYING
-    protocol._attr_volume_level = 42
-    protocol._attr_current_media = PlayerMedia(uri="library://track/1", title="Song")
-    player.update_state(force_update=True, signal_event=False)
+    state = make_player_state(
+        "pl_kitchen",
+        name="Kitchen",
+        playback_state=PlaybackState.PLAYING,
+        powered=True,
+        current_media=PlayerMedia(uri="library://track/1", title="Song"),
+        volume_level=42,
+        volume_muted=True,
+        group_volume=30,
+        group_volume_muted=False,
+    )
+    player = cast("Player", SimpleNamespace(display_name="Kitchen", state=state))
 
     brief = to_brief_player(player)
 
@@ -40,7 +46,9 @@ def test_to_brief_player_reads_the_published_state() -> None:
         volume_level=42,
         powered=True,
         current_item="Song",
-        group_volume=42,
+        volume_muted=True,
+        group_volume=30,
+        group_volume_muted=False,
     )
 
 
