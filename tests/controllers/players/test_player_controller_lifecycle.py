@@ -716,11 +716,6 @@ class TestGroupMemberships:
 class TestPowerOnOfAReturningDevice:
     """A device that is switched on at its power control is played to once it is back."""
 
-    @pytest.mark.xfail(
-        strict=True,
-        raises=AssertionError,
-        reason="cutover core defect: a power on returns while the returning protocol attaches",
-    )
     async def test_power_on_returns_once_the_returning_protocol_finished_its_attach(
         self, scenario: Scenario
     ) -> None:
