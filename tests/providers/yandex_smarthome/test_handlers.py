@@ -23,6 +23,7 @@ from music_assistant.providers.yandex_smarthome.schema import (
     DeviceListPayload,
     YandexCapabilityType,
 )
+from tests.common import MockProvider, attach_mock, mock_player_mass
 
 
 @dataclass
@@ -221,6 +222,36 @@ class TestHandleDevicesAction:
         result = await handle_devices_action(mass, payload)
         assert len(result.devices) == 1
         mass.players.cmd_play.assert_awaited_once_with("p1")
+
+    @pytest.mark.asyncio
+    async def test_executes_on_an_exposed_player_whose_id_is_not_its_protocols(self) -> None:
+        """A player is exposed and driven by its player id, its state read from the player."""
+        mass = mock_player_mass()
+        player, _protocol = attach_mock(MockProvider("airplay", mass=mass), "ap_1")
+        player.update_state()
+        mass.players.cmd_play = AsyncMock()
+        payload = parse_action_payload(
+            {
+                "payload": {
+                    "devices": [
+                        {
+                            "id": "pl_ap_1",
+                            "capabilities": [
+                                {
+                                    "type": "devices.capabilities.on_off",
+                                    "state": {"instance": "on", "value": True},
+                                }
+                            ],
+                        }
+                    ],
+                },
+            }
+        )
+
+        result = await handle_devices_action(mass, payload, exposed_ids={"pl_ap_1"})
+
+        assert result.devices[0].capabilities[0].state.action_result.status == "DONE"
+        mass.players.cmd_play.assert_awaited_once_with("pl_ap_1")
 
     @pytest.mark.asyncio
     async def test_missing_device_returns_error(self) -> None:
