@@ -104,11 +104,11 @@ async def prepare_msx_audio(
     """Return the PlayerMedia MSX should stream for this URI."""
     # Selects a queued item (or reuses current media) so MA-driven play
     # and MSX-driven /msx/audio share one implementation.
-    if not player.config.enabled:
+    if player.player is None:
         raise PlayerUnavailableError("Player is disabled")
-    provider.on_player_activity(player.player_id)
+    provider.on_player_activity(player.protocol_id)
     async with player.prepare_lock:
-        if not player.config.enabled:
+        if player.player is None:
             raise PlayerUnavailableError("Player is disabled")
         if expected_generation is not None and expected_generation != player.playback_generation:
             raise InvalidDataError("Playback generation is no longer current")
@@ -130,7 +130,9 @@ async def _prepare_msx_audio_locked(
     queue_item_id: str | None,
 ) -> PlayerMedia:
     """Select the queued item under the per-player lock."""
-    queue_item = find_uri_in_active_queue(provider.mass, player.player_id, uri, queue_item_id)
+    queue_item = find_uri_in_active_queue(
+        provider.mass, provider.get_player_id(player.protocol_id), uri, queue_item_id
+    )
     if queue_item is None:
         raise InvalidDataError("Invalid uri parameter")
 
@@ -150,7 +152,7 @@ async def _prepare_msx_audio_locked(
         await provider.mass.player_queues.play_index(*queue_item)
 
     media = await player.wait_for_media(timeout=10.0)
-    if not player.config.enabled:
+    if player.player is None:
         raise PlayerUnavailableError("Player is disabled")
     if not media:
         raise ResourceTemporarilyUnavailable("Playback setup timeout")
