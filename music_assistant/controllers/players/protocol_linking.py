@@ -570,7 +570,8 @@ class ProtocolLinkingMixin:
         Hand the config of a protocol that is away to the protocol that takes its place.
 
         The device came back under another protocol id: the new protocol inherits the
-        settings and setup data, and what the player stored about the old one follows.
+        settings and setup data it has none of itself, and what the player stored about
+        the old one follows.
 
         :param replaced_id: Id of the protocol that is replaced.
         :param protocol_id: Id of the protocol that takes its place.
@@ -580,15 +581,16 @@ class ProtocolLinkingMixin:
         self.logger.info(
             "Protocol %s takes the place of %s on player %s", protocol_id, replaced_id, player_id
         )
-        replaced = deepcopy(config.get_protocol_record(replaced_id) or {})
+        replaced = config.get_protocol_record(replaced_id) or {}
         current = config.get_protocol_record(protocol_id) or {}
-        replaced["protocol_id"] = protocol_id
-        replaced["values"] = {**(replaced.get("values") or {}), **(current.get("values") or {})}
+        record = {**replaced, **current, "protocol_id": protocol_id}
+        for key in ("values", "setup_data"):
+            record[key] = {**(replaced.get(key) or {}), **(current.get(key) or {})}
         # what identifies the old protocol is not carried over
         for key in (CONF_PROTOCOL_IDENTIFIERS, CONF_CACHED_ARP_MAC, CONF_REPORTED_MAC):
             if key not in (current.get("values") or {}):
-                replaced["values"].pop(key, None)
-        config.set(f"{CONF_PLAYER_PROTOCOLS}/{protocol_id}", replaced)
+                record["values"].pop(key, None)
+        config.set(f"{CONF_PLAYER_PROTOCOLS}/{protocol_id}", deepcopy(record))
         config.remove_protocol_record(replaced_id)
         for key in (CONF_PREFERRED_OUTPUT_PROTOCOL, CONF_VOLUME_CONTROL, CONF_MUTE_CONTROL):
             if config.get_player_value(player_id, key) == replaced_id:

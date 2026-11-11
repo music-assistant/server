@@ -498,6 +498,46 @@ async def test_session_only_protocol_never_follows_a_link_to_the_player_of_a_dev
     assert [info.protocol_id for info in state.protocols] == ["cast_tv"]
 
 
+async def test_protocol_that_takes_the_place_of_one_that_is_away_keeps_its_own_config(
+    scenario: Scenario,
+) -> None:
+    """What a protocol stored itself wins over the record it takes over, which fills the gaps."""
+    chromecast = await scenario.add_provider("chromecast")
+    airplay = await scenario.add_provider("airplay")
+    config = scenario.mass.config
+    tv = chromecast.protocol("cast_tv", "TV", role="audio", identifiers=KITCHEN)
+    old = airplay.protocol("ap_old", "TV", role="audio", identifiers=KITCHEN)
+    await scenario.attach(tv)
+    await scenario.attach(old)
+    player_id = scenario.single_player(tv, old).player_id
+    config.set_protocol_value("ap_old", FAKE_SETTING, "old")
+    config.set_protocol_setup_value("ap_old", "credentials", "PAIRING-OF-OLD")
+    config.set_protocol_setup_value("ap_old", "pairing_id", "ID-OF-OLD")
+    config.set_protocol_value("ap_old", "enabled", False)
+    await scenario.detach(old)
+    # a record of its own that is bound to no player, as the migration can leave one
+    config.create_protocol_record(
+        "ap_new",
+        provider=airplay.instance_id,
+        player_id=None,
+        role=ProtocolRole.NATIVE,
+        default_name="TV",
+    )
+    config.set_protocol_value("ap_new", FAKE_SETTING, "mine")
+    config.set_protocol_setup_value("ap_new", "credentials", "PAIRING-OF-NEW")
+
+    new = airplay.protocol("ap_new", "TV", role="audio", identifiers=KITCHEN)
+    await scenario.attach(new)
+
+    assert scenario.player_of(new) == player_id
+    record = config.get_protocol_record("ap_new")
+    assert record is not None
+    assert record["values"][FAKE_SETTING] == "mine"
+    assert record["setup_data"] == {"credentials": "PAIRING-OF-NEW", "pairing_id": "ID-OF-OLD"}
+    assert (record["enabled"], record["role"]) == (True, ProtocolRole.AUDIO)
+    assert config.get_protocol_record("ap_old") is None
+
+
 async def test_config_stored_for_a_protocol_before_it_attaches_is_kept(scenario: Scenario) -> None:
     """A provider that stores the settings of a new device first finds them after the attach."""
     sonos = await scenario.add_provider("sonos")
