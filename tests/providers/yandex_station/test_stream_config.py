@@ -18,7 +18,8 @@ if TYPE_CHECKING:
 def _make_player() -> YandexStationPlayer:
     """Build a player with no available intercept targets."""
     player = YandexStationPlayer.__new__(YandexStationPlayer)
-    player._player_id = "test_station"
+    player._protocol_id = "test_station"
+    player._player = None
     player.mass = cast(
         "MusicAssistant",
         SimpleNamespace(players=SimpleNamespace(all_players=lambda **_kwargs: [])),
