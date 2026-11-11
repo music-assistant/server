@@ -13,7 +13,7 @@ from music_assistant_models.enums import ProviderFeature, ProviderType
 from music_assistant_models.provider import ProviderManifest
 
 from music_assistant.models.player_provider import PlayerProvider
-from tests.common import MockPlayer, capture_log_records
+from tests.common import MockProtocol, capture_log_records
 
 PLAYER_ID = "test_player"
 
@@ -49,15 +49,15 @@ def _make_provider(
 
 
 def test_get_protocol_of_another_provider_warns() -> None:
-    """A lookup of another provider's player logs a warning and still returns the player."""
+    """A lookup of another provider's protocol logs a warning and still returns the protocol."""
     mass = MagicMock()
     provider = _make_provider(mass, "test--own")
     other = _make_provider(mass, "test--other")
-    player = MockPlayer(other, PLAYER_ID, "Kitchen")  # type: ignore[arg-type]
-    mass.players.get_player.return_value = player
+    protocol = MockProtocol(other, PLAYER_ID, "Kitchen")  # type: ignore[arg-type]
+    mass.players.get_protocol.return_value = protocol
 
     with capture_log_records(provider.logger) as records:
-        assert provider.get_protocol(PLAYER_ID) is player
+        assert provider.get_protocol(PLAYER_ID) is protocol
 
     warnings = [record for record in records if record.levelno == logging.WARNING]
     assert len(warnings) == 1
@@ -70,27 +70,27 @@ def test_get_protocol_of_another_provider_warns() -> None:
 
 
 def test_get_protocol_of_own_provider_does_not_warn() -> None:
-    """A lookup of the provider's own player logs no warning."""
+    """A lookup of the provider's own protocol logs no warning."""
     mass = MagicMock()
     provider = _make_provider(mass, "test--own")
-    player = MockPlayer(provider, PLAYER_ID, "Kitchen")  # type: ignore[arg-type]
-    mass.players.get_player.return_value = player
+    protocol = MockProtocol(provider, PLAYER_ID, "Kitchen")  # type: ignore[arg-type]
+    mass.players.get_protocol.return_value = protocol
 
     with capture_log_records(provider.logger) as records:
-        assert provider.get_protocol(PLAYER_ID) is player
+        assert provider.get_protocol(PLAYER_ID) is protocol
 
     assert not [record for record in records if record.levelno == logging.WARNING]
 
 
 def test_get_protocol_of_mocked_player_does_not_warn() -> None:
-    """A player with a mocked provider is not compared against the provider."""
+    """A protocol with a mocked provider is not compared against the provider."""
     mass = MagicMock()
     provider = _make_provider(mass, "test--own")
-    player = MagicMock()
-    mass.players.get_player.return_value = player
+    protocol = MagicMock()
+    mass.players.get_protocol.return_value = protocol
 
     with capture_log_records(provider.logger) as records:
-        assert provider.get_protocol(PLAYER_ID) is player
+        assert provider.get_protocol(PLAYER_ID) is protocol
 
     assert not [record for record in records if record.levelno == logging.WARNING]
 
