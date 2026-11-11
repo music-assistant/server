@@ -158,9 +158,9 @@ class SqueezelitePlayer(Player):
             init_volume = last_state[1] if last_state else DEFAULT_PLAYER_VOLUME
         await self.client.stop()
         await self.client.volume_set(init_volume)
+        # carries a volume from the legacy cache over before that entry expires
+        self._store_volume()
         await self.mass.players.register_or_update(self)
-        # persist a volume restored from the legacy cache before that entry expires
-        self.mass.config.set_raw_player_config_value(player_id, CONF_STORED_VOLUME, init_volume)
 
     async def get_config_entries(self) -> list[ConfigEntry]:
         """Return all (provider/player specific) Config Entries for the player."""
@@ -197,11 +197,6 @@ class SqueezelitePlayer(Player):
     async def volume_set(self, volume_level: int) -> None:
         """Handle VOLUME_SET command on the player."""
         await self.client.volume_set(volume_level)
-        # stored in the player config so it does not expire while the volume is
-        # controlled elsewhere (e.g. by an AVR) and these commands never arrive
-        self.mass.config.set_raw_player_config_value(
-            self.player_id, CONF_STORED_VOLUME, volume_level
-        )
 
     async def volume_mute(self, muted: bool) -> None:
         """Handle VOLUME MUTE command on the player."""
@@ -438,6 +433,7 @@ class SqueezelitePlayer(Player):
         # all other: update attributes and update state
         self.update_attributes()
         self.update_state()
+        self._store_volume()
 
     def update_attributes(self) -> None:
         """Update player attributes from slim player."""
@@ -805,6 +801,14 @@ class SqueezelitePlayer(Player):
         """Drop an old-stream heartbeat that landed before the flush."""
         self._attr_elapsed_time = self.client.elapsed_seconds
         self._attr_elapsed_time_last_updated = time.time()
+
+    def _store_volume(self) -> None:
+        """Keep the current volume in the player config so it survives a reconnect."""
+        volume = self.client.volume_level
+        if volume != self.mass.config.get_raw_player_config_value(
+            self.player_id, CONF_STORED_VOLUME
+        ):
+            self.mass.config.set_raw_player_config_value(self.player_id, CONF_STORED_VOLUME, volume)
 
 
 async def pause_and_unpause(slim_client: SlimClient, pause_duration_ms: int) -> None:

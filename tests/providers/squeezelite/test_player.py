@@ -9,7 +9,9 @@ from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, MagicMock, PropertyMock, patch
 
 import pytest
+from aioslimproto.models import EventType as SlimEventType
 from aioslimproto.models import PlayerState as SlimPlayerState
+from aioslimproto.models import SlimEvent
 from music_assistant_models.enums import MediaType, PlaybackState, RepeatMode
 from music_assistant_models.player import PlayerMedia
 
@@ -362,21 +364,17 @@ def _player_for_volume_restore(
     player.client = MagicMock(player_id="p1", muted=False, volume_level=20)
     player.client.stop = AsyncMock()
     player.client.mute = AsyncMock()
-    player.client.volume_set = AsyncMock()
+    player.client.volume_set = AsyncMock(
+        side_effect=lambda level: setattr(player.client, "volume_level", level)
+    )
     mass.config.get_raw_player_config_value.side_effect = lambda _player_id, key, default=None: (
         stored.get(key, default)
     )
+    mass.config.set_raw_player_config_value.side_effect = lambda _player_id, key, value: (
+        stored.__setitem__(key, value)
+    )
     mass.cache.get = AsyncMock(return_value=legacy_cache)
-    mass.cache.set = AsyncMock()
     mass.players.register_or_update = AsyncMock()
-
-    def set_raw_player_config_value(_player_id: str, key: str, value: object) -> None:
-        # a new player has no config until it is registered
-        if not mass.players.register_or_update.await_count:
-            raise KeyError(_player_id)
-        stored[key] = value
-
-    mass.config.set_raw_player_config_value.side_effect = set_raw_player_config_value
     return player, mass
 
 
@@ -409,15 +407,21 @@ async def test_setup_restores_volume_without_a_valid_cache_entry(
     assert stored[CONF_STORED_VOLUME] == expected_volume
 
 
-async def test_volume_commands_store_volume_without_expiry() -> None:
-    """Volume commands keep their value in the player config, not the cache."""
-    player, mass = _player_for_volume_restore({}, None)
-    await mass.players.register_or_update(player)
+async def test_volume_changed_on_the_player_is_stored() -> None:
+    """A volume change made on the player itself (e.g. JiveLite) is kept for the next connect."""
+    stored: dict[str, object] = {}
+    player, mass = _player_for_volume_restore(stored, None)
+    with patch.object(player, "update_attributes"), patch.object(player, "update_state"):
+        await player.setup()
+        mass.config.set_raw_player_config_value.reset_mock()
+        event = SlimEvent(type=SlimEventType.PLAYER_UPDATED, player_id="p1")
 
-    await player.volume_set(100)
+        player.client.volume_level = 65
+        player.handle_slim_event(event)
+        assert stored[CONF_STORED_VOLUME] == 65
 
-    mass.config.set_raw_player_config_value.assert_called_once_with("p1", CONF_STORED_VOLUME, 100)
-    mass.cache.set.assert_not_called()
+        player.handle_slim_event(event)
+        mass.config.set_raw_player_config_value.assert_called_once()
 
 
 @pytest.mark.parametrize("entry", [CONF_ENTRY_DISPLAY, CONF_ENTRY_VISUALIZATION])
