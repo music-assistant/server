@@ -42,7 +42,7 @@ from music_assistant.constants import (
     CONF_ENTRY_LIBRARY_SYNC_PODCASTS,
     CONF_ENTRY_LIBRARY_SYNC_RADIOS,
     CONF_ENTRY_LIBRARY_SYNC_TRACKS,
-    CONF_PLAYERS,
+    CONF_PLAYER_PROTOCOLS,
     CONF_PROVIDERS,
     DEFAULT_PROVIDER_CONFIG_ENTRIES,
 )
@@ -504,17 +504,11 @@ class ProviderConfigMixin:
         if existing["type"] == "metadata":
             await self.mass.music.cleanup_provider_images(instance_id)
         if existing["type"] == "player":
-            # all players should already be removed by now through unload_provider
-            for player in list(self.mass.players):
-                if player.provider.instance_id != instance_id:
-                    continue
-                self.mass.players.delete_player_config(player.player_id)
-            # cleanup remaining player configs
-            for key, player_conf in list(self.get(CONF_PLAYERS, {}).items()):
-                if not isinstance(player_conf, dict):
-                    continue
-                if player_conf.get("provider") == instance_id:
-                    self.mass.players.delete_player_config(player_conf.get("player_id") or key)
+            # the protocols of this provider were detached by unload_provider. Their
+            # configs go with it; a player only when it has no other protocol left
+            for protocol_id, protocol_conf in list(self.get(CONF_PLAYER_PROTOCOLS, {}).items()):
+                if isinstance(protocol_conf, dict) and protocol_conf.get("provider") == instance_id:
+                    await self.mass.players.remove_protocol(protocol_id)
 
     async def remove_provider_config_value(self, instance_id: str, key: str) -> None:
         """Remove/reset single Provider config value."""
