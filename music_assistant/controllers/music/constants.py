@@ -69,6 +69,7 @@ DATABASE_CLEANUP_TASK_ID: Final[str] = "music_database_cleanup"
 PROVIDER_MAPPING_CORRECTION_TASK_ID: Final[str] = "music_provider_mapping_correction"
 MUSIC_SYNC_COMPLETION_CHECK_TASK_ID: Final[str] = "music_sync_completion_check"
 TRACK_RECONCILIATION_TASK_ID: Final[str] = "music_track_reconciliation"
+UNAVAILABLE_MAPPING_CHECK_TASK_ID: Final[str] = "music_unavailable_mapping_check"
 
 # number of duplicate track candidate pairs examined per reconciliation run
 TRACK_RECONCILIATION_BATCH_SIZE: Final[int] = 100

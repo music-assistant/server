@@ -29,6 +29,7 @@ from music_assistant_models.enums import (
 from music_assistant_models.errors import (
     LoginFailed,
     MediaNotFoundError,
+    ProviderUnavailableError,
     ResourceTemporarilyUnavailable,
 )
 from music_assistant_models.media_items import (
@@ -159,7 +160,7 @@ class OvercastProvider(MusicProvider):
                     feed_url=feed_url,
                     max_episodes=self.max_episodes,
                 )
-            except MediaNotFoundError as err:
+            except (MediaNotFoundError, ProviderUnavailableError) as err:
                 self.report_skipped_sync_item(MediaType.PODCAST, feed_url, err)
                 continue
             applied = await self._apply_playback_states(feed_url, subscription, parsed_podcast)

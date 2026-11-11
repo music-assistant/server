@@ -223,19 +223,24 @@ class PodcastsController(MediaControllerBase[Podcast]):
             ListingType.PODCAST_EPISODES, sort_field, sort_direction
         )
         strict = provider_instance_id_or_domain == "library"
-        item_id, provider_instance_id_or_domain = await self._podcast_source(
+        library_podcast, item_id, provider_instance_id_or_domain = await self._podcast_source(
             item_id, provider_instance_id_or_domain
         )
         provider = self.mass.music.resolve_visible_provider(provider_instance_id_or_domain, strict)
         if not isinstance(provider, MusicProvider):
             return []
-        episodes = await cached_listing(
-            self.mass,
-            ListingType.PODCAST_EPISODES,
-            create_uri(MediaType.PODCAST, provider.instance_id, item_id),
-            lambda: self._list_provider_podcast(item_id, provider),
-            item_type=PodcastEpisode,
-        )
+        try:
+            episodes = await cached_listing(
+                self.mass,
+                ListingType.PODCAST_EPISODES,
+                create_uri(MediaType.PODCAST, provider.instance_id, item_id),
+                lambda: self._list_provider_podcast(item_id, provider),
+                item_type=PodcastEpisode,
+            )
+        except MediaNotFoundError:
+            await self._mark_source_available(library_podcast, provider.instance_id, item_id, False)
+            raise
+        await self._mark_source_available(library_podcast, provider.instance_id, item_id, True)
         # the progress the user made, as Music Assistant recorded it, is filled in on every
         # request where it wins over what the provider reports, as it changes while listening
         await self._set_resume_positions(episodes, provider.instance_id)
@@ -266,15 +271,29 @@ class PodcastsController(MediaControllerBase[Podcast]):
         :param provider_instance_id_or_domain: The provider the id belongs to, or "library".
         """
         strict = provider_instance_id_or_domain == "library"
-        item_id, provider_instance_id_or_domain = await self._podcast_source(
+        library_podcast, item_id, provider_instance_id_or_domain = await self._podcast_source(
             item_id, provider_instance_id_or_domain
         )
-        # podcast episodes are not stored in the db/library
-        # so we always need to fetch them from the provider
-        async for episode in self._get_provider_podcast_episodes(
-            item_id, provider_instance_id_or_domain, strict=strict
-        ):
-            yield episode
+        listed = False
+        try:
+            # podcast episodes are not stored in the db/library
+            # so we always need to fetch them from the provider
+            async for episode in self._get_provider_podcast_episodes(
+                item_id, provider_instance_id_or_domain, strict=strict
+            ):
+                if not listed:
+                    listed = True
+                    await self._mark_source_available(
+                        library_podcast, provider_instance_id_or_domain, item_id, True
+                    )
+                yield episode
+        except MediaNotFoundError:
+            # a failure part way does not mean the provider lost the podcast
+            if not listed:
+                await self._mark_source_available(
+                    library_podcast, provider_instance_id_or_domain, item_id, False
+                )
+            raise
 
     async def episode(
         self,
@@ -529,22 +548,43 @@ class PodcastsController(MediaControllerBase[Podcast]):
 
     async def _podcast_source(
         self, item_id: str, provider_instance_id_or_domain: str
-    ) -> tuple[str, str]:
+    ) -> tuple[Podcast | None, str, str]:
         """
-        Return the podcast id on its provider and that provider.
+        Return the library podcast asked for, the podcast id on its provider and that provider.
+
+        The library podcast is None when the podcast is asked for by its provider id.
 
         :param item_id: The podcast id on the provider, or its library id.
         :param provider_instance_id_or_domain: The provider the id belongs to, or "library".
         :raises MediaNotFoundError: The podcast is not in the library, or the caller may use
             none of its providers.
         """
+        library_podcast: Podcast | None = None
         # always check if we have a library item for this podcast (on the user's sources)
         if provider_instance_id_or_domain == "library":
             library_podcast = await self.get_visible_library_item_by_prov_id(item_id, "library")
             if not library_podcast:
                 raise MediaNotFoundError(f"Podcast {item_id} not found in library")
             provider_instance_id_or_domain, item_id = self._select_provider_id(library_podcast)
-        return item_id, provider_instance_id_or_domain
+        return library_podcast, item_id, provider_instance_id_or_domain
+
+    async def _mark_source_available(
+        self,
+        library_podcast: Podcast | None,
+        provider_instance_id: str,
+        item_id: str,
+        available: bool,
+    ) -> None:
+        """Mark the library podcast's mapping to the given provider id (un)available."""
+        if library_podcast is None:
+            return
+        for mapping in library_podcast.provider_mappings:
+            if (mapping.provider_instance, mapping.item_id) != (provider_instance_id, item_id):
+                continue
+            if available:
+                await self.mass.music.mark_provider_mapping_available(library_podcast, mapping)
+            else:
+                await self.mass.music.mark_provider_mapping_unavailable(library_podcast, mapping)
 
     async def _get_provider_podcast_episodes(
         self, item_id: str, provider_instance_id_or_domain: str, strict: bool = False
