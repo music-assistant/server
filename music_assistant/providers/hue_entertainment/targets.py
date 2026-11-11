@@ -188,11 +188,14 @@ class ZigbeeTarget:
 
     Music Assistant streams to one Zigbee target at a time: a start takes the stream over
     from the target that has it, which restores its lamps and stays parked until closed.
-    A lost stream is restarted in place while the target has the stream.
+    A stream only starts once every closed stream has restored its lamps. A lost stream is
+    restarted in place while the target has the stream.
     """
 
     # the target that has the Zigbee stream, shared by all ZHA instances in the process
     _holder: ClassVar[ZigbeeTarget | None] = None
+    # closed sessions still restoring their lamps, of any target: the lamps may overlap
+    _restoring: ClassVar[set[asyncio.Task[None]]] = set()
 
     def __init__(
         self, provider: HueEntertainmentProvider, lights: list[tuple[str, int]], name: str
@@ -221,7 +224,6 @@ class ZigbeeTarget:
         ]
         self._session: ZigbeeEntertainmentSession | None = None
         self._recovery_task: asyncio.Task[None] | None = None
-        self._close_task: asyncio.Task[None] | None = None
 
     @property
     def client_id(self) -> str:
@@ -268,8 +270,7 @@ class ZigbeeTarget:
         if previous is not None and previous is not self:
             LOGGER.info("'%s' takes the Zigbee stream over from '%s'", self._name, previous.name)
             previous._release()
-            await previous._wait_closed()
-        await self._wait_closed()
+        await self._wait_restored()
         if ZigbeeTarget._holder is not self:
             return
         session = ZigbeeEntertainmentSession(url, lights, idle_timeout=0)
@@ -299,7 +300,7 @@ class ZigbeeTarget:
         if ZigbeeTarget._holder is self:
             ZigbeeTarget._holder = None
         self._release()
-        await self._wait_closed()
+        await self._wait_restored()
 
     def _release(self) -> None:
         """Stop the recovery and close the session in a task that outlives a cancelled caller."""
@@ -308,12 +309,15 @@ class ZigbeeTarget:
             self._recovery_task = None
         session, self._session = self._session, None
         if session is not None:
-            self._close_task = asyncio.create_task(session.aclose())
+            task = asyncio.create_task(session.aclose())
+            ZigbeeTarget._restoring.add(task)
+            task.add_done_callback(ZigbeeTarget._restoring.discard)
 
-    async def _wait_closed(self) -> None:
-        """Wait until the session closed by :meth:`_release` restored its lamps."""
-        if self._close_task is not None:
-            await asyncio.shield(self._close_task)
+    @staticmethod
+    async def _wait_restored() -> None:
+        """Wait until every closed session restored its lamps; cancelling the wait leaves them be."""
+        if ZigbeeTarget._restoring:
+            await asyncio.wait(set(ZigbeeTarget._restoring))
 
     async def _recover(self, session: ZigbeeEntertainmentSession) -> None:
         """Restart a lost stream in place, keeping the lamps' captured state; runs until cancelled."""

@@ -118,6 +118,7 @@ async def zigbee(monkeypatch: pytest.MonkeyPatch) -> AsyncIterator[FakeZigbee]:
     monkeypatch.setattr(targets, "ZigbeeEntertainmentSession", fake.session)
     monkeypatch.setattr(targets, "_ZIGBEE_RECOVERY_INTERVAL_S", 0.01)
     monkeypatch.setattr(ZigbeeTarget, "_holder", None)
+    monkeypatch.setattr(ZigbeeTarget, "_restoring", set())
     yield fake
     fake.release_gates()
     for target in fake.targets:
@@ -258,6 +259,63 @@ async def test_takeover_restores_the_previous_lamps_first(
     assert living_session.restored
     assert not living.is_streaming
     assert kitchen.is_streaming
+
+
+async def test_start_waits_for_the_restore_of_a_closed_target(
+    zigbee: FakeZigbee, make_target: Callable[..., ZigbeeTarget]
+) -> None:
+    """A start right after another target closed waits until that one restored its lamps."""
+    living, kitchen = make_target("Living room"), make_target("Kitchen", [("aa", 1)])
+    await living.start()
+    zigbee.close_gate = asyncio.Event()
+    living_close = asyncio.create_task(living.aclose())
+    await _until(lambda: len(zigbee.log) == 2)
+
+    kitchen_start = asyncio.create_task(kitchen.start())
+    await _until(lambda: zigbee.info_calls == 2)
+    await asyncio.sleep(0.01)
+    assert len(zigbee.sessions) == 1
+    zigbee.close_gate.set()
+    await living_close
+    await kitchen_start
+
+    living_session, kitchen_session = zigbee.sessions
+    assert zigbee.log == [
+        ("start", living_session),
+        ("close", living_session),
+        ("start", kitchen_session),
+    ]
+    assert kitchen.is_streaming
+
+
+async def test_chained_takeover_waits_for_the_first_restore(
+    zigbee: FakeZigbee, make_target: Callable[..., ZigbeeTarget]
+) -> None:
+    """A third start during a takeover still waits for the lamps of the first target."""
+    living = make_target("Living room")
+    kitchen = make_target("Kitchen", [("bb", 1)])
+    office = make_target("Office", [("aa", 1)])
+    await living.start()
+    zigbee.close_gate = asyncio.Event()
+    kitchen_start = asyncio.create_task(kitchen.start())
+    await _until(lambda: len(zigbee.log) == 2)
+
+    office_start = asyncio.create_task(office.start())
+    await _until(lambda: ZigbeeTarget._holder is office)
+    await asyncio.sleep(0.01)
+    assert len(zigbee.sessions) == 1
+    zigbee.close_gate.set()
+    await kitchen_start
+    await office_start
+
+    living_session, office_session = zigbee.sessions
+    assert zigbee.log == [
+        ("start", living_session),
+        ("close", living_session),
+        ("start", office_session),
+    ]
+    assert not kitchen.is_streaming
+    assert office.is_streaming
 
 
 async def test_displaced_target_close_keeps_the_new_stream(
