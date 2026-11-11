@@ -481,8 +481,9 @@ class YandexYnisonProvider(PluginProvider):
         preventing bit-depth/sample-rate mismatches that cause noise.
         """
         self._stream_stop_event.clear()
-        # Snapshot the source-session owner at stream start. The physical consumer
-        # may be a protocol bridge, while this id remains the user-facing player.
+        # Snapshot the source-session owner at stream start. The player that consumes
+        # the stream can be another one (a group member), while this id remains the
+        # user-facing player.
         # The lock may legitimately be empty here — MA's `_load_item` preload
         # path drives the generator to fill an initial audio buffer BEFORE
         # `on_source_selected` has been dispatched, so `_in_use_by_player` is
@@ -661,7 +662,7 @@ class YandexYnisonProvider(PluginProvider):
             if owner_player_id != locked_owner_id:
                 # Redirect to the configured target, but only once per
                 # idempotency window. Compare stable owner ids here: the
-                # physical consumer may be a bridge whose id differs from the
+                # player that consumes the stream can differ from the
                 # configured owner and may already be `_active_player_id` on a
                 # repeated callback.
                 if get_available_player(self.mass, locked_owner_id) and self._idempotent(
@@ -684,10 +685,15 @@ class YandexYnisonProvider(PluginProvider):
                 # be changed to: raise ActionUnavailable(msg)
                 raise RuntimeError(msg)
 
-        # Stop a previous physical consumer when switching. A protocol bridge and
-        # its owner represent the same source session and must not stop each other.
+        # the stream is requested by the protocol that renders it; hold its player
+        consumer = self.mass.players.get_player_by_protocol(player_id)
+        consumer_player_id = consumer.player_id if consumer else owner_player_id
+
+        # Stop a previous physical consumer when switching. The consuming player (a
+        # group member) and its owner represent the same source session and must not
+        # stop each other.
         if self._active_player_id and self._active_player_id not in (
-            player_id,
+            consumer_player_id,
             owner_player_id,
         ):
             prev_player_id = self._active_player_id
@@ -714,8 +720,8 @@ class YandexYnisonProvider(PluginProvider):
         # tell whether it is the live teardown or a stale callback from a
         # superseded same-owner request.
         self._active_session_id = stream_session_id
-        self._active_player_id = player_id
-        self.logger.debug("Active player set to: %s", player_id)
+        self._active_player_id = consumer_player_id
+        self.logger.debug("Active player set to: %s", consumer_player_id)
         self._publish_source_options(owner_player_id)
 
     async def on_source_unselected(
@@ -1345,7 +1351,7 @@ class YandexYnisonProvider(PluginProvider):
         meta.elapsed_time = seek_ms // 1000 if seek_ms else 0
         meta.elapsed_time_last_updated = time.time()
         # Use `_active_player_id`, the physical player wrapping our stream (a
-        # protocol bridge when present), rather than the source-session owner.
+        # group member when the owner is a group), rather than the source-session owner.
         if self._active_player_id:
             self.mass.players.trigger_player_update(self._active_player_id, force_update=True)
 
@@ -1452,12 +1458,12 @@ class YandexYnisonProvider(PluginProvider):
                 exc_info=True,
             )
             return
-        # Demote `_active_player_id` from the bridge MA streams to
-        # (e.g. `spb_*`) back to the queue id; queues live on the bare
-        # UUID. Without this, resume's `play_media(_active_player_id,
-        # …)` would target the bridge and raise
-        # `PlayerUnavailableError`. Post-success only so a failure
-        # path keeps the bridge id intact for the next attempt.
+        # Demote `_active_player_id` from the player MA streams to (a
+        # group member when the owner is a group) back to the owner,
+        # whose queue holds the session. Without this, resume's
+        # `play_media(_active_player_id, …)` would play on the member
+        # alone. Post-success only so a failure path keeps the
+        # consumer id intact for the next attempt.
         self._active_player_id = target
         self._externally_paused = True
 
@@ -1614,8 +1620,8 @@ class YandexYnisonProvider(PluginProvider):
     def _clear_active_player(self) -> None:
         """Clear the active player and reset plugin state."""
         prev_player_id = self._active_player_id
-        # the owner is the user-facing MA player; _active_player_id can be the protocol
-        # player that consumed the stream, which is not what holds the source session
+        # the owner is the user-facing MA player; _active_player_id can be the group
+        # member that consumed the stream, which is not what holds the source session
         owner_player_id = self._in_use_by_player
         source_session = (
             self.mass.players.get_audio_source_session(owner_player_id) if owner_player_id else None
@@ -1703,9 +1709,10 @@ class YandexYnisonProvider(PluginProvider):
         if not player_id:
             return rate
         player = self.mass.players.get_player(player_id)
-        if player is None:
+        protocol = player.resolve_output_protocol() if player else None
+        if protocol is None:
             return rate
-        supported = [sr for sr, _ in player.get_supported_sample_rates()]
+        supported = [sr for sr, _ in protocol.get_supported_sample_rates()]
         if not supported or rate in supported:
             return rate
         return max((r for r in supported if r <= rate), default=min(supported))
