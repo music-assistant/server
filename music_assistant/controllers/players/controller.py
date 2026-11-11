@@ -325,23 +325,13 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         self, *player_ids: str
     ) -> AsyncIterator[Callable[[str], Awaitable[None]]]:
         """
-        Acquire the playback locks of several players, each preceded by that of its group.
+        Acquire the playback locks of several players, strictly, each after its group's.
 
         For a command that changes the playback of more than one player (a queue transfer).
-        One such command runs at a time, also over unrelated players: the others wait for
-        its turn before taking any lock, so no two that wait for the turn each hold a lock
-        the other waits for, whatever the players' grouping when each looked. A command
-        that already holds a playback lock (a transfer called from a group change on the
-        leader) does not wait for the turn, since the command holding the turn may be
-        waiting for that lock. The locks are strict (see get_player_lock): the body never
-        runs without them, as the command corrupts both players' state when it overlaps
-        with a holder. The players are locked in one fixed order, every group first, as a
-        single command over a group and its member takes them. A player grouped or
-        released while its lock is awaited has the locks taken again for its new owner,
-        so the body starts under the locks of the players' current owners.
-        The body receives a callable that hands back the locks taken for one of the players
-        before the others, for a player the command is done with while it goes on with the
-        rest; a lock another of the players was given too stays held for it.
+        Such commands run one at a time server-wide, so two over changing groupings cannot
+        deadlock. A command that already holds a playback lock skips that turn. The body
+        receives a callable that hands back one player's locks early, for a player the
+        command is done with.
 
         :param player_ids: The players to lock.
         :raises ResourceBusyError: When a lock or the turn stayed taken past the strict
