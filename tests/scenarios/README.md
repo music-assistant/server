@@ -2,8 +2,8 @@
 
 Acceptance scenarios for attaching and detaching the protocols of a device: what a client sees
 when a provider finds, loses or re-identifies a device, after a restart, or when the user removes
-something. They drive a real server only through what providers and clients use (register and
-unregister, reported state, `players/all`, events, queues, the config API), so they stay valid
+something. They drive a real server only through what providers and clients use (attach and
+detach, reported state, `players/all`, events, queues, the config API), so they stay valid
 while the players controller is rebuilt for the player split
 (music-assistant/backlog `docs/plans/player-split.md`, "Scenario suite").
 
@@ -15,9 +15,9 @@ tests of the harness itself.
 - **Server**: a real `MusicAssistant` per scenario on a temporary folder (`full_mass_context`).
   `restart()` boots a new one on the same `settings.json` and cache, `seed_config()` does the
   same with values merged into (or, for a None value, deleted from) the stored config.
-- **Providers**: every player provider domain except `universal_player`, `universal_group` and
-  `sync_group` loads as a `FakePlayerProvider`. It keeps its real domain, as protocol linking keys
-  on it (priority, one protocol per domain), with as many instances as the real domain allows.
+- **Providers**: every player provider domain except `universal_group` and `sync_group` loads
+  as a `FakePlayerProvider`. It keeps its real domain, as protocol linking keys on it (priority,
+  one protocol per domain), with as many instances as the real domain allows.
 - **Devices**: `provider.protocol(...)` creates a device and its `FakeProtocol`. The scenario sets
   what it reports; its commands are recorded in `protocol.commands` and applied to its state.
   `role="native"` or `role="audio"` stands for the role of the protocol on its device,
@@ -25,9 +25,9 @@ tests of the harness itself.
   session). Every fake protocol has one config entry of its own, `FAKE_SETTING`, like a provider
   setting of the device. A device is present from `attach()` until `detach()` (or
   `set_present()`), and like a real provider the fake one attaches the present devices when it
-  loads (boot, reload) and 5 s after a player of it gets enabled or removed. A protocol object belongs to
-  one server and provider instance: after a restart or a reload, `scenario.protocol(protocol_id)`
-  returns the current one.
+  loads (boot, reload) and 5 s after a player of it gets enabled or removed. A protocol object
+  belongs to one server and provider instance: after a restart or a reload,
+  `scenario.protocol(protocol_id)` returns the current one.
 - **Music**: `play(player_id)` plays a track on a player through its queue, as a client does
   (`player_queues/play_media`). The track is one of the server's own `test` music provider
   (fake media items, no network), which loads on first use. No audio is decoded: the buffer a
@@ -36,10 +36,10 @@ tests of the harness itself.
   restart.
 - **Time**: a virtual clock, starting at 1000.0. It stands still, also while the server works,
   and only moves through `advance(seconds)`, which stops at every timer that falls due on the way
-  (the 15 s and 45 s protocol evaluation delays, debounces, polls), and `idle()`, which lets 10 s
-  pass for the server's debounces and follow-up checks and fails (`ScenarioError`) when the
-  server still has work due within as long or a protocol evaluation pending at all, which a
-  scenario lets happen with `advance()`.
+  (the 15 s an audio protocol waits for the hardware address of its device, debounces, polls),
+  and `idle()`, which lets 10 s pass for the server's debounces and follow-up checks and fails
+  (`ScenarioError`) when the server still has work due within as long or a protocol evaluation
+  pending at all, which a scenario lets happen with `advance()`.
   Timers due at one time run in the order they were armed. `time.monotonic()` and `time.time()`
   of every server module follow the clock.
 - **Settling**: every action runs what is due at the current time until the loop is quiet:
@@ -71,7 +71,7 @@ tests of the harness itself.
 | `visible_players()` | the `players/all` listing as `VisiblePlayer` records |
 | `players_carrying(*protocols)` | the visible players carrying these protocols |
 | `single_player(*protocols)` | the one visible player carrying them, a precondition (raises `ScenarioError`) |
-| `player_of(protocol)` | the id of the player a protocol is attached to, also hidden; None when none |
+| `player_of(protocol)` | the id of the player a protocol is attached to, None when none |
 | `player(id)`, `queue(id)`, `await player_config(id)` | a player state, a queue, a stored player config |
 | `await saved_queue(queue_id)` | the URIs of the saved items of a queue, None when none were ever saved; a pending (debounced) save is written first |
 | `await player_configs()` | the stored player configs as the settings page lists them, disabled ones included |
@@ -131,8 +131,8 @@ async def test_native_device_attaches_as_available_player(scenario: Scenario) ->
     assert scenario.queue(scenario.single_player(speaker).player_id) is not None
 ```
 
-Take player ids from the observations rather than from the protocol ids: new players get minted
-ids once a player is no longer the provider's object.
+Take player ids from the observations rather than from the protocol ids: a new player gets an
+id of its own.
 
 ## One xfail marker per phase
 
@@ -144,7 +144,7 @@ pass (issue numbers refer to music-assistant/backlog):
 @pytest.mark.xfail(
     strict=True,
     raises=AssertionError,
-    reason="phase 1 (#415): a player outlives its detached protocol",
+    reason="phase 2 (#416): the id of a merged player becomes a legacy id",
 )
 ```
 
