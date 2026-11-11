@@ -346,7 +346,7 @@ class MediaAssistantPlayer(PlayerProtocol):
 
     async def on_remove(self) -> None:
         """Disconnect from the Roku, so that a discovery registers it as a new player."""
-        await cast("MediaAssistantprovider", self.provider)._device_disconnect(self)
+        await cast("MediaAssistantprovider", self.provider).forget_player(self)
 
     def _app_in_front(self, device: Device, screensaver_counts: bool = True) -> bool:
         """

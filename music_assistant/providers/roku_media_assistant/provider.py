@@ -93,6 +93,15 @@ class MediaAssistantprovider(PlayerProvider):
             return
         await self._device_discovered(device_ip)
 
+    async def forget_player(self, roku_player: MediaAssistantPlayer) -> None:
+        """
+        Let go of a removed player, so the next discovery registers its Roku as a new player.
+
+        :param roku_player: The removed player.
+        """
+        await self._device_disconnect(roku_player)
+        self.roku_players.pop(roku_player.player_id, None)
+
     async def _device_disconnect(self, roku_player: MediaAssistantPlayer) -> None:
         """Destroy connections to the device."""
         async with roku_player.lock:

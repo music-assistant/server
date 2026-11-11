@@ -6,6 +6,8 @@ import asyncio
 import logging
 from unittest.mock import AsyncMock, MagicMock
 
+import pytest
+
 from music_assistant.providers.roku_media_assistant.player import MediaAssistantPlayer
 from music_assistant.providers.roku_media_assistant.provider import MediaAssistantprovider
 from tests.common import use_real_create_task
@@ -37,7 +39,8 @@ async def test_unload_disconnects_every_player() -> None:
         player.roku.close_session.assert_awaited_once()
 
 
-async def test_removed_player_is_disconnected_and_forgotten() -> None:
+@pytest.mark.parametrize("connected", [True, False], ids=["connected", "not-connected"])
+async def test_removed_player_is_disconnected_and_forgotten(connected: bool) -> None:
     """A removed player closes its connection and leaves the players discovery knows."""
     provider = MediaAssistantprovider.__new__(MediaAssistantprovider)
     provider.logger = logging.getLogger("test.roku_media_assistant.provider")
@@ -46,12 +49,13 @@ async def test_removed_player_is_disconnected_and_forgotten() -> None:
     player._player_id = "ROKU_A"
     player._attr_name = "Roku A"
     player.lock = asyncio.Lock()
-    player.roku = MagicMock()
-    player.roku.close_session = AsyncMock()
+    roku = MagicMock()
+    roku.close_session = AsyncMock()
+    player.roku = roku if connected else None  # type: ignore[assignment]
     other = _roku_player("ROKU_B")
     provider.roku_players = {"ROKU_A": player, "ROKU_B": other}  # type: ignore[misc]
 
     await player.on_remove()
 
     assert provider.roku_players == {"ROKU_B": other}
-    player.roku.close_session.assert_awaited_once()
+    assert roku.close_session.await_count == (1 if connected else 0)
