@@ -2925,6 +2925,7 @@ async def _run_unexpected_process_death(
         one. False models a stream a newer session already superseded.
     """
     stream = AirPlayStream(player)
+    stream._leave_group = MagicMock()  # type: ignore[method-assign]
     if still_owned:
         player.stream = stream
     process = MagicMock()
@@ -2955,11 +2956,12 @@ async def test_unexpected_death_of_synced_child_schedules_rejoin() -> None:
 
     stream = await _run_unexpected_process_death(player)
 
-    # the member is dropped from its AirPlay sync leader directly: cmd_ungroup
+    # the player leaves the group of its AirPlay sync leader only: cmd_ungroup
     # acts on the player at the group level, removing the member from its
     # (sync)group over one dead transport
     players_controller = player.provider.mass.players
-    leader.set_members.assert_called_once_with(player_ids_to_remove=[player.protocol_id])
+    stream._leave_group.assert_called_once_with(leader.player, "plplayera0001")  # type: ignore[attr-defined]
+    leader.set_members.assert_not_called()
     players_controller.cmd_set_members.assert_not_called()
     players_controller.cmd_ungroup.assert_not_called()
     player.schedule_group_rejoin.assert_called_once_with(["leader", "sibling"])
@@ -2975,10 +2977,11 @@ async def test_unexpected_death_of_leader_schedules_rejoin_to_members() -> None:
     player.synced_to = None
     player.group_members = [player.protocol_id, "child1", "child2"]
 
-    await _run_unexpected_process_death(player)
+    stream = await _run_unexpected_process_death(player)
 
     # the controller transfers the leadership of the player, so it gets the player id
-    player.provider.mass.players.cmd_ungroup.assert_called_once_with("plplayera0001")
+    stream._leave_group.assert_called_once_with(player.player, "plplayera0001")  # type: ignore[attr-defined]
+    player.provider.mass.players.cmd_ungroup.assert_not_called()
     player.schedule_group_rejoin.assert_called_once_with(["child1", "child2"])
     # the controller sets the leader's final state (transfer or dissolve)
     player.set_state_from_stream.assert_not_called()
@@ -2993,6 +2996,8 @@ async def test_unexpected_death_of_solo_player_schedules_no_rejoin() -> None:
 
     stream = await _run_unexpected_process_death(player)
 
+    stream._leave_group.assert_not_called()  # type: ignore[attr-defined]
+    player.provider.mass.players.cmd_ungroup.assert_not_called()
     player.schedule_group_rejoin.assert_not_called()
     player.set_state_from_stream.assert_called_once_with(
         state=PlaybackState.IDLE, elapsed_time=0, stream=stream
@@ -3015,10 +3020,11 @@ async def test_unexpected_death_of_static_group_member_drops_member_only() -> No
     player.provider.mass.players.get_player.side_effect = {"syncgroup1": group_player}.get
     player.provider.mass.players.get_protocol.side_effect = {"leader": leader}.get
 
-    await _run_unexpected_process_death(player)
+    stream = await _run_unexpected_process_death(player)
 
     players_controller = player.provider.mass.players
-    leader.set_members.assert_called_once_with(player_ids_to_remove=[player.protocol_id])
+    stream._leave_group.assert_called_once_with(leader.player, "plplayera0001")  # type: ignore[attr-defined]
+    leader.set_members.assert_not_called()
     players_controller.cmd_set_members.assert_not_called()
     players_controller.cmd_ungroup.assert_not_called()
     player.schedule_group_rejoin.assert_called_once_with(["leader"])
@@ -3040,6 +3046,7 @@ async def test_unexpected_death_of_superseded_stream_leaves_the_group_alone() ->
     stream = await _run_unexpected_process_death(player, still_owned=False)
 
     players_controller = player.provider.mass.players
+    stream._leave_group.assert_not_called()  # type: ignore[attr-defined]
     players_controller.cmd_ungroup.assert_not_called()
     players_controller.cmd_set_members.assert_not_called()
     player.schedule_group_rejoin.assert_not_called()

@@ -22,6 +22,7 @@ from music_assistant_models.enums import PlaybackState
 from music_assistant_models.errors import PlayerCommandFailed
 
 from music_assistant.constants import CONF_PASSWORD, VERBOSE_LOG_LEVEL
+from music_assistant.controllers.players.constants import PlayerLockPurpose
 from music_assistant.helpers.images import _extract_imageproxy_id, get_image_thumb_path
 from music_assistant.helpers.named_pipe import AsyncNamedPipeWriter
 from music_assistant.helpers.process import AsyncProcess
@@ -61,6 +62,7 @@ if TYPE_CHECKING:
     from music_assistant_models.media_items import AudioFormat
     from music_assistant_models.player import PlayerMedia
 
+    from music_assistant.models.player import Player
     from music_assistant.providers.airplay.player import AirPlayPlayer
     from music_assistant.providers.airplay.provider import AirPlayProvider
     from music_assistant.providers.airplay.stream_session import AirPlayStreamSession
@@ -1489,20 +1491,20 @@ class AirPlayStream:
                     # its current state here on purpose: the controller only transfers
                     # leadership while the queue still looks active, and transfer_queue or
                     # dissolve sets the final state.
-                    # A synced member is dropped from its AirPlay sync leader directly:
+                    # The player leaves the group of its AirPlay sync leader only:
                     # cmd_ungroup acts on the player at the visible/group level, which can
                     # remove the member from its (sync)group - or, for a static member,
                     # release the whole group (HA unjoin semantics) - over one dead
                     # transport. The device fell out; its membership is intent that must
                     # survive, so only the leader's live session loses it.
                     if player.synced_to:
-                        if leader := player.provider.get_protocol(player.synced_to):
-                            self.mass.create_task(
-                                leader.set_members(player_ids_to_remove=[player.protocol_id])
-                            )
-                    elif player.player is not None:
+                        sync_leader = player.provider.get_protocol(player.synced_to)
+                        leader_player = sync_leader.player if sync_leader else None
+                    else:
+                        leader_player = player.player if was_leader else None
+                    if leader_player is not None and player.player is not None:
                         self.mass.create_task(
-                            self.mass.players.cmd_ungroup(player.player.player_id)
+                            self._leave_group(leader_player, player.player.player_id)
                         )
                     if rejoin_candidates:
                         # the group (or its successor) may still be playing:
@@ -2213,6 +2215,12 @@ class AirPlayStream:
             self.player.display_name,
             margin_ms,
         )
+
+    async def _leave_group(self, leader: Player, player_id: str) -> None:
+        """Take a player out of the group of its sync leader, on the server's own behalf."""
+        players = self.mass.players
+        async with players.get_player_lock(leader.player_id, PlayerLockPurpose.PLAYBACK):
+            await players._handle_set_members(leader, player_ids_to_remove=[player_id])
 
 
 def _artwork_identity(image_url: str) -> str:

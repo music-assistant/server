@@ -49,6 +49,7 @@ def _make_stream(
     player.provider.logger = logging.getLogger("test.airplay.prov")
 
     stream = AirPlayStream(player)
+    stream._leave_group = MagicMock(return_value="leave-group-coro")  # type: ignore[method-assign]
     player.stream = stream
 
     # Mock a CLI process whose stderr is already exhausted: the reader loop
@@ -74,8 +75,9 @@ async def test_crash_on_sync_leader_defers_idle_and_ungroups() -> None:
     await stream._stderr_reader()
 
     # the leadership of the player is the controller's to transfer
-    mass.players.cmd_ungroup.assert_called_once_with("plplayer0001")
-    mass.create_task.assert_called_once()
+    stream._leave_group.assert_called_once_with(player.player, "plplayer0001")  # type: ignore[attr-defined]
+    mass.players.cmd_ungroup.assert_not_called()
+    mass.create_task.assert_called_once_with("leave-group-coro")
     # Leader must NOT be forced idle here — that would dissolve the group.
     player.set_state_from_stream.assert_not_called()
 
@@ -88,13 +90,14 @@ async def test_crash_on_member_idles_and_ungroups() -> None:
 
     await stream._stderr_reader()
 
-    # a synced member is dropped from its AirPlay sync leader, never via
+    # a synced member leaves the group of its AirPlay sync leader only, never via
     # cmd_ungroup (which acts on the player at the group level)
     leader = player.provider.get_protocol("leader")
-    leader.set_members.assert_called_once_with(player_ids_to_remove=[player.protocol_id])
+    stream._leave_group.assert_called_once_with(leader.player, "plplayer0001")  # type: ignore[attr-defined]
+    leader.set_members.assert_not_called()
     mass.players.cmd_set_members.assert_not_called()
     mass.players.cmd_ungroup.assert_not_called()
-    mass.create_task.assert_called_once()
+    mass.create_task.assert_called_once_with("leave-group-coro")
     # Members / standalone players are reflected idle right away.
     player.set_state_from_stream.assert_called_once()
     _, kwargs = player.set_state_from_stream.call_args

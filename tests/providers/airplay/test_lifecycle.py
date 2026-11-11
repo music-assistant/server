@@ -15,6 +15,7 @@ from music_assistant.controllers.players.protocol_linking import PLAYER_ID_PREFI
 from music_assistant.providers.airplay.constants import AIRPLAY_DISCOVERY_TYPE, CONF_STORED_VOLUME
 from music_assistant.providers.airplay.player import AirPlayPlayer, GenericAirPlayPlayer
 from music_assistant.providers.airplay.provider import AirPlayProvider
+from music_assistant.providers.airplay.stream import AirPlayStream
 from tests.scenarios.harness import Scenario
 
 if TYPE_CHECKING:
@@ -26,6 +27,7 @@ if TYPE_CHECKING:
 DEVICE_ID = "00:11:22:33:44:55"
 PROTOCOL_ID = "ap001122334455"
 ADDRESS = "192.168.1.50"
+MEMBER_MAC = "00:11:22:33:44:66"
 
 
 @pytest.fixture
@@ -118,6 +120,12 @@ async def _announce(
     device_id = str(info.decoded_properties["deviceid"])
     protocol_id = f"ap{device_id.replace(':', '').lower()}"
     return provider.get_player(protocol_id)
+
+
+async def _lines(*lines: str) -> AsyncGenerator[str]:
+    """Yield the stderr lines of a cliairplay process."""
+    for line in lines:
+        yield line
 
 
 def _player_of(protocol: AirPlayPlayer | None) -> Player:
@@ -276,3 +284,44 @@ async def test_a_rejected_password_is_published_to_clients(
     assert after.needs_setup is True
     assert after.setup_reason == "password_required"
     assert after.available is False
+
+
+async def test_a_member_whose_stream_dies_leaves_the_airplay_group_for_its_own_protocol(
+    scenario: Scenario, provider: AirPlayProvider
+) -> None:
+    """A device that falls out of an AirPlay group gets its volume on its own protocol again."""
+    native = (await scenario.add_provider("sonos")).protocol(
+        "RINCON_M", "Speaker M", identifiers={IdentifierType.MAC_ADDRESS: MEMBER_MAC}
+    )
+    await scenario.attach(native)
+    member_airplay = await _announce(
+        scenario, provider, _service("Speaker M", MEMBER_MAC, "192.168.1.51")
+    )
+    leader = _player_of(await _announce(scenario, provider, _service()))
+    member = _player_of(member_airplay)
+    assert member_airplay is not None
+    assert member.own_protocol is native
+    await scenario.mass.players.cmd_set_members(
+        leader.player_id, player_ids_to_add=[member.player_id]
+    )
+    await scenario.settle()
+    assert member.player_id in leader.state.group_members
+    assert member.state.active_output_protocol == member_airplay.protocol_id
+
+    scenario.expect_log("cliairplay process stopped unexpectedly")
+    stream = AirPlayStream(member_airplay)
+    member_airplay.stream = stream
+    stream._cli_proc = MagicMock(iter_stderr=MagicMock(return_value=_lines("final log line")))
+    with (
+        patch.object(member_airplay, "schedule_group_rejoin"),
+        patch.object(stream.commands_pipe, "remove", new_callable=AsyncMock),
+    ):
+        await stream._stderr_reader()
+        await scenario.idle()
+
+    assert member.player_id not in leader.state.group_members
+    assert member.state.synced_to is None
+    assert member.state.active_output_protocol in (None, "native")
+    native.commands.clear()
+    await scenario.mass.players.cmd_volume_set(member.player_id, 25)
+    assert ("volume_set", 25) in native.commands
