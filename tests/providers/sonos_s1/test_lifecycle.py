@@ -35,8 +35,12 @@ async def scenario(tmp_path: pathlib.Path) -> AsyncGenerator[Scenario]:
         await scenario.close()
 
 
-async def _attach_speaker(scenario: Scenario) -> SonosPlayer:
-    """Attach a speaker the way discovery sets it up."""
+async def _attach_speaker(scenario: Scenario, unsubscribe: AsyncMock | None = None) -> SonosPlayer:
+    """
+    Attach a speaker the way discovery sets it up.
+
+    :param unsubscribe: Stands in for the release of the speaker's event subscriptions.
+    """
     provider: Any = await scenario.add_provider("sonos_s1")
     soco = MagicMock()
     soco.uid = UID
@@ -49,6 +53,7 @@ async def _attach_speaker(scenario: Scenario) -> SonosPlayer:
         patch.object(protocol, "update_groups"),
         patch.object(protocol, "poll_media"),
         patch.object(protocol, "subscribe", AsyncMock()),
+        patch.object(protocol, "unsubscribe", unsubscribe or AsyncMock()),
     ):
         await protocol.setup()
     await scenario.settle()
@@ -88,3 +93,26 @@ async def test_a_new_speaker_streams_live_sources_as_its_own_setting_asks(
 
     stream_url = protocol.soco.play_uri.call_args.args[0]
     assert stream_url.endswith(f"/source/session_a/line_in/{UID}.wav")
+
+
+async def test_a_speaker_of_a_disabled_player_releases_its_subscriptions(
+    scenario: Scenario,
+) -> None:
+    """A speaker set up for a player the user disabled does not keep its event subscriptions."""
+    airplay = await scenario.add_provider("airplay")
+    audio = airplay.protocol(
+        "ap000e58aaaaaa",
+        "Speaker A",
+        role="audio",
+        identifiers={IdentifierType.MAC_ADDRESS: "00:0E:58:AA:AA:AA"},
+    )
+    await scenario.attach(audio)
+    player_id = scenario.player_of(audio)
+    assert player_id is not None
+    await scenario.disable(player_id)
+    unsubscribe = AsyncMock()
+
+    protocol = await _attach_speaker(scenario, unsubscribe)
+
+    assert protocol.player is None
+    unsubscribe.assert_awaited_once_with()
