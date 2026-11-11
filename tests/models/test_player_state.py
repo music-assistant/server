@@ -2055,7 +2055,7 @@ class TestEffects:
         self, stored: str, reported: str | None, to_store: str | None
     ) -> None:
         """The name the device reports is kept in the config for when it is gone."""
-        effects = _effects(default_name=stored, own=_own(name=reported))
+        effects = _effects(default_name=stored, device_name=reported)
 
         assert effects.default_name == to_store
 

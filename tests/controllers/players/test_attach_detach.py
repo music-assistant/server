@@ -96,6 +96,26 @@ async def test_new_device_gets_a_player_with_an_id_of_its_own(scenario: Scenario
     assert players.get_player_by_protocol("RINCON_KITCHEN") is players.get_player(player_id)
 
 
+async def test_technical_name_of_a_new_device_is_shown_but_never_stored(
+    scenario: Scenario,
+) -> None:
+    """A device shows a technical name until it reports a real one, which it then keeps."""
+    airplay = await scenario.add_provider("airplay")
+    speaker = airplay.protocol("ap_kitchen", "54:78:C9:E6:0D:A0", role="audio", identifiers=KITCHEN)
+    await scenario.attach(speaker)
+    player_id = scenario.single_player(speaker).player_id
+    default_name_key = f"{CONF_PLAYERS}/{player_id}/default_name"
+
+    assert scenario.single_player(speaker).name == "54:78:C9:E6:0D:A0"
+    assert scenario.mass.config.get(default_name_key) is None
+
+    await scenario.report(speaker, name="Kitchen")
+    await scenario.report(speaker, name="54:78:C9:E6:0D:A0")
+
+    assert scenario.single_player(speaker).name == "Kitchen"
+    assert scenario.mass.config.get(default_name_key) == "Kitchen"
+
+
 async def test_attaching_the_attached_object_again_publishes_what_it_reports(
     scenario: Scenario,
 ) -> None:

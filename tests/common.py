@@ -720,7 +720,6 @@ def make_protocol_snapshot(protocol_id: str = "player_1", **values: Any) -> Prot
     """
     defaults: dict[str, Any] = {
         "role": ProtocolRole.NATIVE,
-        "name": None,
         "available": True,
         "available_for_playback": True,
         "needs_setup": False,
@@ -794,6 +793,7 @@ def make_state_inputs(**values: Any) -> StateInputs:
         "previous_state": make_player_state(player_id),
         "enabled": True,
         "name": player_id,
+        "device_name": None,
         "default_name": None,
         "hide_in_ui": False,
         "expose_to_ha": True,

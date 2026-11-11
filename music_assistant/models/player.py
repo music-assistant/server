@@ -85,7 +85,7 @@ from music_assistant.models.player_state import (
 from music_assistant.models.plugin import PluginProvider
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping
+    from collections.abc import Iterable, Mapping
 
     from music_assistant_models.config_entries import PlayerConfig
     from music_assistant_models.media_items import AudioSource, MediaItemPalette
@@ -124,6 +124,12 @@ OWN_PROTOCOL_ROLES = frozenset({ProtocolRole.NATIVE, ProtocolRole.CONTROL, Proto
 # order they are preferred for it (airplay and sendspin only do while streaming).
 _CONTROL_PRIORITY = {"chromecast": 0, "dlna": 1, "airplay": 2, "sendspin": 3}
 
+# Audio protocols in the order their name is preferred in (higher priority = better names
+# typically). Chromecast and DLNA usually have good user-configured names, AirPlay also
+# provides sensible names, Squeezelite and Sendspin may use MAC addresses or technical ids.
+_NAME_PRIORITY = {"chromecast": 1, "airplay": 2, "dlna": 3, "squeezelite": 4, "sendspin": 5}
+_TECHNICAL_NAME_PREFIXES = ("ap_", "cc_", "dlna_", "sq_", "sendspin_", "universal_")
+
 
 @dataclass(frozen=True, slots=True)
 class LinkedOutputProtocol:
@@ -146,6 +152,25 @@ class LinkedOutputProtocol:
     protocol_domain: str
     priority: int = 100
     derived_from: str | None = None
+
+
+def get_device_name(own: PlayerProtocol | None, audio: Iterable[PlayerProtocol]) -> str | None:
+    """
+    Return the name the protocols of a device report for it, None without a usable one.
+
+    That is the name its own protocol reports, else the first name one of its audio
+    protocols reports that is no MAC address or technical id, asking the protocols
+    known for user-friendly names first.
+
+    :param own: The protocol that stands for the device itself, if any.
+    :param audio: The audio protocols of the device.
+    """
+    if own is not None and (name := own.name):
+        return name
+    for protocol in sorted(audio, key=lambda p: _NAME_PRIORITY.get(p.provider.domain, 10)):
+        if _is_user_friendly_name(name := protocol.name):
+            return name
+    return None
 
 
 def _anchor_moved(
@@ -316,6 +341,21 @@ def _state_fingerprint(state: PlayerState) -> dict[str, Any]:
     return fingerprint
 
 
+def _is_user_friendly_name(name: str | None) -> bool:
+    """Return whether a name looks like a real user-friendly name, not a technical id."""
+    if not name or len(name) < 2:
+        return False
+    name_lower = name.lower().replace(":", "").replace("-", "").replace("_", "")
+    # Filter out names that look like MAC addresses (12 hex chars)
+    if len(name_lower) == 12 and all(c in "0123456789abcdef" for c in name_lower):
+        return False
+    # Filter out names that look like UUIDs
+    if len(name_lower) >= 32 and all(c in "0123456789abcdef" for c in name_lower[:32]):
+        return False
+    # Filter out names that start with common player ID prefixes
+    return not name.lower().startswith(_TECHNICAL_NAME_PREFIXES)
+
+
 def _protocol_snapshot(
     player_id: str, protocol: PlayerProtocol, synced_to: str | None
 ) -> ProtocolSnapshot:
@@ -330,7 +370,6 @@ def _protocol_snapshot(
     return ProtocolSnapshot(
         protocol_id=protocol.protocol_id,
         role=protocol.role,
-        name=protocol.name,
         available=protocol.available,
         available_for_playback=protocol.available_for_playback,
         needs_setup=protocol.needs_setup,
@@ -358,7 +397,6 @@ def _absent_protocol_snapshot(player_id: str, setup_reason: str | None) -> Proto
     return ProtocolSnapshot(
         protocol_id=player_id,
         role=None,
-        name=None,
         available=False,
         available_for_playback=False,
         needs_setup=False,
@@ -669,13 +707,8 @@ class Player:
 
     @property
     def name(self) -> str | None:
-        """Return the name the device reports: its own protocol's, else an audio protocol's."""
-        if self._own_protocol is not None and (name := self._own_protocol.name):
-            return name
-        for protocol in self._audio_protocols:
-            if name := protocol.name:
-                return name
-        return None
+        """Return the name the device reports, None while it reports no usable one."""
+        return get_device_name(self._own_protocol, self._audio_protocols)
 
     @cached_property
     def display_name(self) -> str:
@@ -683,7 +716,10 @@ class Player:
         if custom_name := self._config.name:
             # always prefer the custom name over the default name
             return custom_name
-        return self.name or self._config.default_name or self.player_id
+        if name := self.name or self._config.default_name:
+            return name
+        # a new device that reports nothing better is shown by the name it reports
+        return next((p.name for p in self._protocols.values() if p.name), self.player_id)
 
     @cached_property
     def enabled(self) -> bool:
@@ -1341,6 +1377,7 @@ class Player:
             )
         # persist the default name if it changed
         if effects.default_name:
+            self._config.default_name = effects.default_name
             self.mass.config.set_player_default_name(self.player_id, effects.default_name)
         if "device_info.model" in changed_values or "device_info.manufacturer" in changed_values:
             self._store_device_info()
@@ -1969,6 +2006,7 @@ class Player:
             previous_state=self._state,
             enabled=self.enabled,
             name=self.display_name,
+            device_name=self.name,
             default_name=self._config.default_name,
             hide_in_ui=self.hide_in_ui,
             expose_to_ha=self.expose_to_ha,

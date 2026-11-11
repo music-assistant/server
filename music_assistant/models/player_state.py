@@ -66,7 +66,6 @@ class ProtocolSnapshot:
     :param protocol_id: Id of the protocol. The id of the player where it stands in for
         an own protocol that is not attached.
     :param role: Role the protocol is attached in, None where none is attached.
-    :param name: Name of the device.
     :param available: Whether the device can be reached.
     :param available_for_playback: Whether it is enabled, reachable and set up.
     :param needs_setup: Whether it has to be set up before it can be used.
@@ -87,7 +86,6 @@ class ProtocolSnapshot:
 
     protocol_id: str
     role: ProtocolRole | None
-    name: str | None
     available: bool
     available_for_playback: bool
     needs_setup: bool
@@ -179,6 +177,8 @@ class StateInputs:
     :param previous_state: The state published before this one.
     :param enabled: Whether the player is enabled in its config.
     :param name: Display name of the player.
+    :param device_name: Name the protocols of the player report for its device, None
+        while they report no usable one.
     :param default_name: Device name stored in the config.
     :param hide_in_ui: Whether the player is hidden in the UI.
     :param expose_to_ha: Whether the player is exposed to Home Assistant.
@@ -242,6 +242,7 @@ class StateInputs:
     previous_state: PlayerState
     enabled: bool
     name: str
+    device_name: str | None
     default_name: str | None
     hide_in_ui: bool
     expose_to_ha: bool
@@ -438,13 +439,11 @@ def derive_player_state(inputs: StateInputs) -> tuple[PlayerState, StateEffects]
 
     was_idle = prev_state.playback_state == PlaybackState.IDLE
     is_idle = playback_state == PlaybackState.IDLE
-    reported_name = own.name or next((p.name for p in inputs.linked if p.name), None)
+    device_name = inputs.device_name
     return state, StateEffects(
         position_jumped=position_jumped,
         media_position_jumped=media_position_jumped,
-        default_name=(
-            reported_name if reported_name and inputs.default_name != reported_name else None
-        ),
+        default_name=device_name if device_name and inputs.default_name != device_name else None,
         left_idle=was_idle and not is_idle,
         went_idle=is_idle and not was_idle,
         foreign_protocol_id=foreign_app.protocol_id if foreign_app else None,

@@ -49,7 +49,7 @@ from music_assistant.controllers.players.matching import (
     vetoes_device,
 )
 from music_assistant.helpers.util import is_valid_mac_address
-from music_assistant.models.player import OWN_PROTOCOL_ROLES, Player
+from music_assistant.models.player import OWN_PROTOCOL_ROLES, Player, get_device_name
 
 if TYPE_CHECKING:
     from music_assistant_models.player import OutputProtocol
@@ -438,11 +438,12 @@ class ProtocolLinkingMixin:
             player_id = f"{PLAYER_ID_PREFIX}{secrets.token_hex(6)}"
         if protocol.session_only:
             return player_id
+        own = protocol if protocol.role in OWN_PROTOCOL_ROLES else None
         self.mass.config.create_player_record(
             player_id,
             provider=protocol.provider_id,
             player_type=protocol.type,
-            default_name=protocol.name,
+            default_name=get_device_name(own, (protocol,)),
             enabled=protocol.enabled_by_default,
             values={CONF_CREATED_AT: time.time_ns()},
         )
