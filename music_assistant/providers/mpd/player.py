@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import time
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from typing import TYPE_CHECKING, Any, cast
 
 from mpd import CommandError, FailureResponseCode, MPDError
@@ -27,12 +29,13 @@ from music_assistant.models.player import Player
 from music_assistant.models.setup_flow import SetupFlowError
 
 from .constants import (
+    COMMAND_TIMEOUT,
     CONF_ENTRY_OUTPUT_CODEC_MPD,
+    CONNECT_TIMEOUT,
     ELAPSED_POLL_INTERVAL,
     HEALTHCHECK_POLL_INTERVAL,
     MPD_STATE_MAP,
     RECONNECT_DELAY,
-    STATUS_TIMEOUT,
 )
 
 if TYPE_CHECKING:
@@ -172,7 +175,8 @@ class MPDPlayer(Player):
             # that runs while this attempt is in flight must find no client rather
             # than a half-connected one: it would report a lost connection, and the
             # reconnect that arms would tear down this attempt right after it succeeded.
-            client, idle_client, status = await self._open_connections()
+            async with asyncio.timeout(CONNECT_TIMEOUT):
+                client, idle_client, status = await self._open_connections()
             self._client = client
             self._idle_client = idle_client
             self._attr_available = True
@@ -207,7 +211,12 @@ class MPDPlayer(Player):
                 self.reconnect()
         except (MPDError, OSError) as err:
             await self._disconnect()
-            self.logger.warning("Failed to connect to MPD at %s:%s: %s", self.host, self.port, err)
+            self.logger.warning(
+                "Failed to connect to MPD at %s:%s: %s",
+                self.host,
+                self.port,
+                str(err) or type(err).__name__,
+            )
             self._attr_available = False
             self.update_state()
             self.reconnect()
@@ -244,8 +253,8 @@ class MPDPlayer(Player):
     async def _disconnect(self) -> None:
         """Cancel any pending reconnect, stop the idle loop and disconnect both MPD clients."""
         self.mass.cancel_timer(self._reconnect_task_id)
-        # Connecting has no timeout, so an attempt may still be in flight and would
-        # otherwise arm a new reconnect after this teardown
+        # A connect attempt may still be in flight (for up to CONNECT_TIMEOUT) and
+        # would otherwise arm a new reconnect after this teardown
         reconnect_task = self.mass.get_task(self._reconnect_task_id)
         if reconnect_task is not None and reconnect_task is not asyncio.current_task():
             self.mass.cancel_task(self._reconnect_task_id)
@@ -287,6 +296,32 @@ class MPDPlayer(Player):
         self.update_state()
         self.reconnect()
 
+    @asynccontextmanager
+    async def _command(self, action: str) -> AsyncIterator[None]:
+        """
+        Bound the MPD commands sent inside this block and map their failures.
+
+        python-mpd2 does not time out commands, so on a half-open socket a command
+        would wait until the kernel gives up on the connection. A connection error
+        or no reply within COMMAND_TIMEOUT counts as a lost connection; the
+        reconnect also replaces a client left with an abandoned request. An MPD
+        error reply (CommandError) only fails this command.
+
+        :param action: Name of the player action, used in the error message.
+        """
+        try:
+            async with asyncio.timeout(COMMAND_TIMEOUT):
+                yield
+        except TimeoutError as err:
+            reason = f"no reply within {COMMAND_TIMEOUT} seconds"
+            self._handle_connection_lost(TimeoutError(reason))
+            raise PlayerCommandFailed(f"{action} failed: {reason}") from err
+        except (MPDConnectionError, OSError) as err:
+            self._handle_connection_lost(err)
+            raise PlayerCommandFailed(f"{action} failed: {err}") from err
+        except MPDError as err:
+            raise PlayerCommandFailed(f"{action} failed: {err}") from err
+
     # ------------------------------------------------------------------
     # Background idle loop
     # ------------------------------------------------------------------
@@ -317,11 +352,11 @@ class MPDPlayer(Player):
             # would otherwise block the players controller loop for minutes, so
             # cap it and treat the timeout as a lost connection. TimeoutError is an
             # OSError, so it must be handled first.
-            async with asyncio.timeout(STATUS_TIMEOUT):
+            async with asyncio.timeout(COMMAND_TIMEOUT):
                 status = await self._client.status()
         except TimeoutError:
             self._handle_connection_lost(
-                TimeoutError(f"no status reply within {STATUS_TIMEOUT} seconds")
+                TimeoutError(f"no status reply within {COMMAND_TIMEOUT} seconds")
             )
             return
         except (MPDConnectionError, OSError) as err:
@@ -369,61 +404,41 @@ class MPDPlayer(Player):
             return
         url = await self.mass.streams.resolve_stream_url(self.player_id, media)
         self.logger.debug("Sending stream URL to MPD: %s", url)
-        try:
+        async with self._command("play_media"):
             await self._client.clear()
             await self._client.add(url)
             await self._client.play(0)
-            self._attr_current_media = media
-            self._attr_playback_state = PlaybackState.PLAYING
-            self.update_state()
-        except (MPDConnectionError, OSError) as err:
-            self._handle_connection_lost(err)
-            raise PlayerCommandFailed(f"play_media failed: {err}") from err
-        except MPDError as err:
-            raise PlayerCommandFailed(f"play_media failed: {err}") from err
+        self._attr_current_media = media
+        self._attr_playback_state = PlaybackState.PLAYING
+        self.update_state()
 
     async def play(self) -> None:
         """Resume playback."""
         if self._client is None:
             return
-        try:
+        async with self._command("play"):
             await self._client.pause(0)
-            self._attr_playback_state = PlaybackState.PLAYING
-            self.update_state()
-        except (MPDConnectionError, OSError) as err:
-            self._handle_connection_lost(err)
-            raise PlayerCommandFailed(f"play failed: {err}") from err
-        except MPDError as err:
-            raise PlayerCommandFailed(f"play failed: {err}") from err
+        self._attr_playback_state = PlaybackState.PLAYING
+        self.update_state()
 
     async def stop(self) -> None:
         """Stop playback and clear current media."""
         if self._client is None:
             return
-        try:
+        async with self._command("stop"):
             await self._client.stop()
-            self._attr_playback_state = PlaybackState.IDLE
-            self._attr_current_media = None
-            self.update_state()
-        except (MPDConnectionError, OSError) as err:
-            self._handle_connection_lost(err)
-            raise PlayerCommandFailed(f"stop failed: {err}") from err
-        except MPDError as err:
-            raise PlayerCommandFailed(f"stop failed: {err}") from err
+        self._attr_playback_state = PlaybackState.IDLE
+        self._attr_current_media = None
+        self.update_state()
 
     async def pause(self) -> None:
         """Pause playback."""
         if self._client is None:
             return
-        try:
+        async with self._command("pause"):
             await self._client.pause(1)
-            self._attr_playback_state = PlaybackState.PAUSED
-            self.update_state()
-        except (MPDConnectionError, OSError) as err:
-            self._handle_connection_lost(err)
-            raise PlayerCommandFailed(f"pause failed: {err}") from err
-        except MPDError as err:
-            raise PlayerCommandFailed(f"pause failed: {err}") from err
+        self._attr_playback_state = PlaybackState.PAUSED
+        self.update_state()
 
     async def volume_set(self, volume_level: int) -> None:
         """
@@ -433,15 +448,10 @@ class MPDPlayer(Player):
         """
         if self._client is None:
             return
-        try:
+        async with self._command("volume_set"):
             await self._client.setvol(volume_level)
-            self._attr_volume_level = volume_level
-            self.update_state()
-        except (MPDConnectionError, OSError) as err:
-            self._handle_connection_lost(err)
-            raise PlayerCommandFailed(f"volume_set failed: {err}") from err
-        except MPDError as err:
-            raise PlayerCommandFailed(f"volume_set failed: {err}") from err
+        self._attr_volume_level = volume_level
+        self.update_state()
 
     async def seek(self, position: int) -> None:
         """
@@ -451,10 +461,5 @@ class MPDPlayer(Player):
         """
         if self._client is None:
             return
-        try:
+        async with self._command("seek"):
             await self._client.seekcur(position)
-        except (MPDConnectionError, OSError) as err:
-            self._handle_connection_lost(err)
-            raise PlayerCommandFailed(f"seek failed: {err}") from err
-        except MPDError as err:
-            raise PlayerCommandFailed(f"seek failed: {err}") from err

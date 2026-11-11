@@ -237,7 +237,7 @@ async def test_poll_timeout_is_treated_as_a_lost_connection(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A status poll that never answers must not stall the poll loop forever."""
-    monkeypatch.setattr("music_assistant.providers.mpd.player.STATUS_TIMEOUT", 0.05)
+    monkeypatch.setattr("music_assistant.providers.mpd.player.COMMAND_TIMEOUT", 0.05)
     player = make_mpd_player()
     client = _mock_client()
 
@@ -426,3 +426,64 @@ async def test_bare_connection_error_is_logged_by_name(
         await player.poll()
 
     assert "Lost connection to MPD at 10.0.0.6:6600: ConnectionError" in caplog.text
+
+
+async def _never_answers(*_args: object) -> None:
+    """Stand in for an MPD command on a half-open socket."""
+    await asyncio.sleep(30)
+
+
+@pytest.mark.parametrize(
+    ("method", "client_method", "args"),
+    [
+        ("play_media", "clear", (MagicMock(),)),
+        ("play", "pause", ()),
+        ("pause", "pause", ()),
+        ("stop", "stop", ()),
+        ("volume_set", "setvol", (42,)),
+        ("seek", "seekcur", (30,)),
+    ],
+)
+async def test_unanswered_command_is_treated_as_a_lost_connection(
+    make_mpd_player: Callable[..., MPDPlayer],
+    monkeypatch: pytest.MonkeyPatch,
+    method: str,
+    client_method: str,
+    args: tuple[object, ...],
+) -> None:
+    """A command on a half-open socket must give up instead of waiting for TCP."""
+    monkeypatch.setattr("music_assistant.providers.mpd.player.COMMAND_TIMEOUT", 0.05)
+    player = make_mpd_player()
+    client = _mock_client()
+    setattr(client, client_method, AsyncMock(side_effect=_never_answers))
+    player._client = client
+    mass = cast("MagicMock", player.mass)
+    mass.streams.resolve_stream_url = AsyncMock(return_value="http://10.0.0.6:8097/stream")
+    mass.call_later.reset_mock()
+
+    with pytest.raises(PlayerCommandFailed, match="no reply within"):
+        await asyncio.wait_for(getattr(player, method)(*args), timeout=5)
+
+    assert player.available is False
+    _assert_reconnect_scheduled(player)
+
+
+async def test_hanging_connect_attempt_is_given_up_and_retried(
+    make_mpd_player: Callable[..., MPDPlayer],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A connect into a blackhole must time out, close its client and retry."""
+    monkeypatch.setattr("music_assistant.providers.mpd.player.CONNECT_TIMEOUT", 0.05)
+    player = make_mpd_player()
+    player.password = None
+    client = _mock_client()
+    client.connect = AsyncMock(side_effect=_never_answers)
+    cast("MagicMock", player.mass).call_later.reset_mock()
+
+    with patch("music_assistant.providers.mpd.player.MPDClient", return_value=client):
+        await asyncio.wait_for(player._connect(), timeout=5)
+
+    client.disconnect.assert_called_once()
+    assert player._client is None
+    assert player.available is False
+    _assert_reconnect_scheduled(player)
