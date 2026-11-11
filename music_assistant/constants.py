@@ -132,9 +132,6 @@ CONF_RETIRED_LOCAL_AUDIO_CLEANED: Final[str] = "retired_local_audio_cleaned"
 CONF_PROVIDER_ACCESS_MIGRATED: Final[str] = "provider_access_migrated"
 CONF_PLAYER_SPLIT_SESSION_ONLY: Final[str] = "player_split_session_only"
 CONF_PLAYER_SPLIT_TREE: Final[str] = "player_split_tree"
-# the ids of the players the player split migration deleted, whose saved queue and
-# user filter entries are cleaned up at the next start
-CONF_PLAYER_SPLIT_PENDING_CLEANUP: Final[str] = "player_split_pending_cleanup"
 CONF_STORAGE_FOLDERS: Final[str] = "storage_folders"
 # the registered folders that were a mountpoint when they were registered
 CONF_STORAGE_FOLDER_MOUNTS: Final[str] = "storage_folder_mounts"
@@ -210,8 +207,10 @@ CONF_LAST_SEEN: Final[str] = "last_seen"  # when a player last had an available 
 CONF_SESSION_ONLY: Final[str] = "session_only"
 # the device info a player last published, for when none of its protocols is attached
 CONF_DEVICE_INFO: Final[str] = "device_info"
-# the identifiers of a device: on a protocol the ones it reported, as [type, value] pairs
+# the identifiers a player from before the protocols kept their own stored for its device
 CONF_DEVICE_IDENTIFIERS: Final[str] = "device_identifiers"
+# the identifiers a protocol reported for its device, as [type, value] pairs
+CONF_PROTOCOL_IDENTIFIERS: Final[str] = "identifiers"
 # the moment a player was created, as a nanosecond timestamp so players created in
 # the same second still order
 CONF_CREATED_AT: Final[str] = "created_at"
