@@ -142,13 +142,19 @@ class ConfigController(
         LOGGER.debug("Stopped.")
 
     def get(self, key: str, default: Any = None) -> Any:
-        """Get value(s) for a specific key/path in persistent storage."""
+        """
+        Get value(s) for a specific key/path in persistent storage.
+
+        A path that runs through a value that is no mapping gives the default.
+        """
         assert self.initialized, "Not yet (async) initialized"
         # we support a multi level hierarchy by providing the key as path,
         # with a slash (/) as splitter. Sort that out here.
-        parent = self._data
+        parent: Any = self._data
         subkeys = key.split("/")
         for index, subkey in enumerate(subkeys):
+            if not isinstance(parent, dict):
+                return default
             if index == (len(subkeys) - 1):
                 value = parent.get(subkey, default)
                 if value is None:
