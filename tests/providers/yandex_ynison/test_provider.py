@@ -1041,9 +1041,8 @@ class TestYnisonStateHandling:
     async def test_duration_updated_from_stream_details(self) -> None:
         """Duration is updated from stream_details and pushed to Ynison."""
         provider = _make_provider()
-        # trigger_player_update needs the actual player id (bridge), not the
-        # queue id — bridge players (`spb_*`) wrap the bare ALSA UUID and the
-        # MA UI's state machine lives on the bridge.
+        # trigger_player_update goes to the player MA streams to (a group
+        # member when the owner is a group), not to the owner's queue id.
         provider._active_player_id = "spb_bridge1"
         provider._in_use_by_player = "player1"
         mock_ynison = MagicMock()
@@ -3106,18 +3105,18 @@ class TestPausePlayback:
         """
         On a successful cmd_stop, `_active_player_id` demotes to the queue id.
 
-        Queues live on the bare ALSA UUID; bridge wrappers (`spb_*`) do
-        not own one. Resume's `play_media(_active_player_id, ...)`
-        must target the queue id — otherwise MA raises
-        `PlayerUnavailableError`. The demotion happens AFTER cmd_stop
-        so a failure path leaves the bridge id intact for next attempt.
+        The session lives on the owner's queue, not on the player MA
+        streams to (a group member when the owner is a group). Resume's
+        `play_media(_active_player_id, ...)` must target the owner —
+        otherwise it plays on the member alone. The demotion happens AFTER
+        cmd_stop so a failure path leaves the consumer id intact for next attempt.
         """
         provider = _make_provider()
         provider._active_player_id = "spb_bridge1"
         provider._in_use_by_player = "player1"
 
         # capture _active_player_id at the moment cmd_stop is invoked —
-        # must still be the bridge id (rewrite is post-success).
+        # must still be the consumer id (rewrite is post-success).
         captured: dict[str, str | None] = {}
 
         async def _capture_stop(_player_id: str) -> None:
@@ -3138,11 +3137,10 @@ class TestPausePlayback:
         """
         A cmd_stop failure must not demote `_active_player_id`.
 
-        If we demoted to the queue id but cmd_stop never reached MA,
-        the next `_activate_playback` would try `play_media(bare_uuid)`
-        without MA ever having released the bridge — wedges the bridge
-        in an inconsistent state. Better to keep the bridge id pinned
-        and let the next pause attempt redo the cycle.
+        If we demoted to the owner but cmd_stop never reached MA, the
+        next `_activate_playback` would try `play_media(owner)` while MA
+        still streams to the consuming player. Better to keep the
+        consumer id pinned and let the next pause attempt redo the cycle.
         """
         provider = _make_provider()
         provider._active_player_id = "spb_bridge1"
@@ -3693,7 +3691,7 @@ class TestActivatePlayback:
         """
         provider = _make_provider()
         # Post-pause state: AriaCast path demoted _active_player_id to
-        # the queue id (bare UUID) after cmd_stop succeeded.
+        # the owner's queue id after cmd_stop succeeded.
         provider._stream_stop_event.set()
         provider._active_player_id = "player1"
         provider._in_use_by_player = None
@@ -3712,8 +3710,8 @@ class TestActivatePlayback:
 
         assert len(play_media_calls) == 1
         target_id, uri = play_media_calls[0]
-        # Target must be the (queue id) bare player, NOT the bridge.
-        # Bridge id has no queue → PlayerUnavailableError.
+        # Target must be the owner, whose queue holds the session, NOT the
+        # player MA streamed to.
         assert target_id == "player1"
         assert uri == str(provider._audio_source.uri)
         assert not provider._stream_stop_event.is_set()

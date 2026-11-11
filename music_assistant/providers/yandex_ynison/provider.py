@@ -481,8 +481,9 @@ class YandexYnisonProvider(PluginProvider):
         preventing bit-depth/sample-rate mismatches that cause noise.
         """
         self._stream_stop_event.clear()
-        # Snapshot the source-session owner at stream start. The physical consumer
-        # may be a protocol bridge, while this id remains the user-facing player.
+        # Snapshot the source-session owner at stream start. The player that consumes
+        # the stream can be another one (a group member), while this id remains the
+        # user-facing player.
         # The lock may legitimately be empty here — MA's `_load_item` preload
         # path drives the generator to fill an initial audio buffer BEFORE
         # `on_source_selected` has been dispatched, so `_in_use_by_player` is
@@ -661,7 +662,7 @@ class YandexYnisonProvider(PluginProvider):
             if owner_player_id != locked_owner_id:
                 # Redirect to the configured target, but only once per
                 # idempotency window. Compare stable owner ids here: the
-                # physical consumer may be a bridge whose id differs from the
+                # player that consumes the stream can differ from the
                 # configured owner and may already be `_active_player_id` on a
                 # repeated callback.
                 if get_available_player(self.mass, locked_owner_id) and self._idempotent(
@@ -688,8 +689,9 @@ class YandexYnisonProvider(PluginProvider):
         consumer = self.mass.players.get_player_by_protocol(player_id)
         consumer_player_id = consumer.player_id if consumer else owner_player_id
 
-        # Stop a previous physical consumer when switching. A protocol bridge and
-        # its owner represent the same source session and must not stop each other.
+        # Stop a previous physical consumer when switching. The consuming player (a
+        # group member) and its owner represent the same source session and must not
+        # stop each other.
         if self._active_player_id and self._active_player_id not in (
             consumer_player_id,
             owner_player_id,
