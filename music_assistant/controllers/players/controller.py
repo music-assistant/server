@@ -2018,6 +2018,13 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
             await player.on_remove()
         except Exception:
             self.logger.exception("Error removing player %s", player.name)
+        provider = player.provider
+        if (
+            player.type != PlayerType.GROUP
+            and self.mass.get_provider(provider.instance_id) is provider
+        ):
+            # a device still on the network is found again as a new player
+            provider.schedule_discovery()
 
     def delete_player_config(
         self, player_id: str, replacement_player_id: str | None = None

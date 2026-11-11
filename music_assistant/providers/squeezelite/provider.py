@@ -115,6 +115,14 @@ class SqueezelitePlayerProvider(PlayerProvider):
             "/jsonrpc.js", self.slimproto.cli._handle_jsonrpc_client
         )
 
+    async def discover_players(self) -> None:
+        """Register the connected players that have no player object, such as a removed one."""
+        if not self.slimproto:
+            return
+        for slimclient in self.slimproto.players:
+            if self.get_protocol(slimclient.player_id) is None:
+                await SqueezelitePlayer(self, slimclient.player_id, slimclient).setup()
+
     async def unload(self, is_removed: bool = False) -> None:
         """Handle unload/close of the provider."""
         # Ensure complete cleanup

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 from unittest.mock import MagicMock
 
 import pytest
@@ -49,9 +49,14 @@ class _TestProvider:
         self.manifest.domain = self.domain
         self.manifest.name = self.name
         self.type = self.manifest.type = ProviderType.PLAYER
+        self.discovery_requests = 0
 
     async def unload(self, is_removed: bool = False) -> None:
         """Unload the provider (nothing to clean up)."""
+
+    def schedule_discovery(self) -> None:
+        """Record a request to look for devices."""
+        self.discovery_requests += 1
 
 
 class _TestPlayer(Player):
@@ -148,6 +153,32 @@ async def test_the_removal_hook_is_called_once_the_player_is_gone(mass: MusicAss
     await mass.players.remove(PLAYER_ID)
 
     assert player.hook_calls == [{"unloaded": True, "registered": False, "config": False}]
+    _assert_removed(mass)
+
+
+@pytest.mark.parametrize(
+    ("player_type", "loaded", "expected_requests"),
+    [
+        pytest.param(PlayerType.PLAYER, True, 1, id="player"),
+        pytest.param(PlayerType.GROUP, True, 0, id="group"),
+        pytest.param(PlayerType.PLAYER, False, 0, id="provider-not-loaded"),
+    ],
+)
+async def test_the_provider_looks_again_for_the_device_of_a_removed_player(
+    mass: MusicAssistant, player_type: PlayerType, loaded: bool, expected_requests: int
+) -> None:
+    """The loaded provider of a removed player looks for devices again; a removed group is gone."""
+    player = await _register(mass, _TestPlayer, player_type)
+    provider = cast("_TestProvider", player.provider)
+    if loaded:
+        mass._providers[PROVIDER] = provider  # type: ignore[assignment]
+
+    try:
+        await mass.players.remove(PLAYER_ID)
+    finally:
+        mass._providers.pop(PROVIDER, None)
+
+    assert provider.discovery_requests == expected_requests
     _assert_removed(mass)
 
 

@@ -18,7 +18,7 @@ import time
 from dataclasses import dataclass, field, replace
 from functools import partial
 from types import ModuleType, SimpleNamespace
-from typing import TYPE_CHECKING, Any, Literal, NamedTuple, TypeVar
+from typing import TYPE_CHECKING, Any, Literal, NamedTuple, TypeVar, cast
 from unittest.mock import patch
 
 from aiosqlite.core import Connection as SqliteConnection
@@ -258,6 +258,10 @@ class FakeProtocol(PlayerProtocol):
             group_members=[self.player_id, *others] if others else [],
         )
 
+    async def on_remove(self) -> None:
+        """Let the provider go of this object, so it finds the device again as a new one."""
+        cast("FakePlayerProvider", self.provider)._protocols.pop(self.player_id, None)
+
     def _apply(self, command: str, *args: Any, **state: Any) -> None:
         """Record a command and report the state it leads to."""
         self.commands.append((command, *args))
@@ -294,7 +298,7 @@ class FakePlayerProvider(PlayerProvider):
     A player provider of an impersonated domain, owning the FakeProtocols a test creates.
 
     Like a real provider, it attaches the devices that are present when it loads and when one
-    of its players gets enabled.
+    of its players gets enabled or removed.
     """
 
     def __init__(
@@ -337,7 +341,7 @@ class FakePlayerProvider(PlayerProvider):
             values reports several identifiers of one type, for a device that stands for
             several (sub)devices.
         :param session_only: Whether the protocol reports that it exists only while attached,
-            like a browser session. Today's server ignores it.
+            like a browser session. No server behaviour depends on it yet.
         :param state: Other reported state, as taken by Scenario.report().
         """
         self._devices[protocol_id] = _Device(
@@ -539,6 +543,9 @@ class Scenario:
     async def remove(self, player_id: str) -> None:
         """
         Remove a player the way a user does.
+
+        A device still present comes back as a new player once its provider looks for devices
+        again, 5 s later (idle()).
 
         :param player_id: ID of the player to remove.
         """

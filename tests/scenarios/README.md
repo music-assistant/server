@@ -25,7 +25,7 @@ tests of the harness itself.
   session). Every fake protocol has one config entry of its own, `FAKE_SETTING`, like a provider
   setting of the device. A device is present from `attach()` until `detach()` (or
   `set_present()`), and like a real provider the fake one attaches the present devices when it
-  loads (boot, reload) and 5 s after a player of it gets enabled. A protocol object belongs to
+  loads (boot, reload) and 5 s after a player of it gets enabled or removed. A protocol object belongs to
   one server and provider instance: after a restart or a reload, `scenario.protocol(protocol_id)`
   returns the current one.
 - **Music**: `play(player_id)` plays a track on a player through its queue, as a client does

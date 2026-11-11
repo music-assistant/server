@@ -123,3 +123,20 @@ async def test_the_cli_reports_the_display_name_set_in_music_assistant() -> None
         await provider.loaded_in_mass()
 
     assert provider.slimproto.cli.display_name_lookup == provider._lookup_display_name
+
+
+async def test_connected_player_without_player_object_is_registered() -> None:
+    """A connected client whose player was removed gets a new player, a registered one keeps it."""
+    provider = SqueezelitePlayerProvider.__new__(SqueezelitePlayerProvider)
+    registered = MagicMock(player_id="registered")
+    removed = MagicMock(player_id="removed")
+    provider.slimproto = MagicMock(players=[registered, removed])
+    provider.mass = MagicMock()
+    provider.mass.players.get_player.side_effect = {"registered": MagicMock()}.get
+
+    with patch("music_assistant.providers.squeezelite.provider.SqueezelitePlayer") as player_class:
+        player_class.return_value.setup = AsyncMock()
+        await provider.discover_players()
+
+    player_class.assert_called_once_with(provider, "removed", removed)
+    player_class.return_value.setup.assert_awaited_once()

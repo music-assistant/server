@@ -560,6 +560,13 @@ class SendspinProvider(PlayerProvider):
             case _:
                 self.logger.error("Unknown sendspin event: %s", event)
 
+    async def discover_players(self) -> None:
+        """Register the connected clients that have no player, such as one that got removed."""
+        for client in self.server_api.connected_clients:
+            if self.get_protocol(client.client_id) is None:
+                event_version = self._begin_client_event(client.client_id)
+                self.mass.create_task(self._handle_client_added(client.client_id, event_version))
+
     def on_player_enabled(self, player_id: str) -> None:
         """Call (by config manager) when a player gets enabled."""
         # A client that connected while disabled has no player object;

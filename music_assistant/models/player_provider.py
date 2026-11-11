@@ -74,6 +74,10 @@ class PlayerProvider(Provider):
     def on_player_enabled(self, player_id: str) -> None:
         """Call (by config manager) when a player gets enabled."""
         # default implementation: trigger discovery - feel free to override
+        self.schedule_discovery()
+
+    def schedule_discovery(self) -> None:
+        """Run the discovery of this provider in a few seconds; repeated requests run it once."""
         task_id = f"discover_players_{self.instance_id}"
         self.mass.call_later(5, self.mass.run_provider_discovery, self.instance_id, task_id=task_id)
 
