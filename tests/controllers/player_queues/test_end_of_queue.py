@@ -16,7 +16,7 @@ from unittest.mock import AsyncMock, MagicMock, Mock, patch
 import pytest
 from music_assistant_models.enums import MediaType, PlaybackState, QueueOption
 from music_assistant_models.errors import PlayerUnavailableError
-from music_assistant_models.player_queue import PlayerQueue
+from music_assistant_models.player_queue import PlayerQueue, PlayLogEntry
 from music_assistant_models.queue_item import QueueItem
 
 from music_assistant.controllers.player_queues import PlayerQueuesController
@@ -478,3 +478,52 @@ def test_a_completed_sound_effect_settles_the_queue() -> None:
     PlaybackTrackerMixin._handle_end_of_queue(tracker, _queue_stub(), prev_state, new_state)
 
     tracker.mass.create_task.assert_called_once()
+
+
+def test_a_cast_flow_stream_ending_on_its_command_item_settles_on_the_last_track() -> None:
+    """
+    A flow stream followed by the Cast 'next' command item still ends the queue on its last track.
+
+    The receiver plays the command item after the flow stream: it reports idle, then playing at
+    position 0 on the command url, then idle again.
+    """
+    ctrl, queue = _controller()
+    queue.flow_mode = True
+    queue_data = ctrl._queue_data[QUEUE_ID]
+    queue_data.session_id = "sess-1"
+    queue_data.flow_mode_stream_log = [
+        PlayLogEntry("first", seconds_streamed=100),
+        PlayLogEntry("last", seconds_streamed=100),
+    ]
+    cast("Any", ctrl.mass).streams.base_url = "http://ma:8097"
+    ctrl.is_smart_shuffle_active = Mock(return_value=False)  # type: ignore[method-assign]
+    ctrl._get_output_player_ids = Mock(return_value=set())  # type: ignore[method-assign]
+    ctrl._handle_playback_progress_report = Mock()  # type: ignore[method-assign]
+    ctrl._handle_end_of_queue = Mock()  # type: ignore[method-assign]
+    player = SimpleNamespace(
+        player_id=QUEUE_ID,
+        active_output_protocol="native",
+        current_media=None,
+        state=SimpleNamespace(name="Q1", available=True, playback_state=None, group_members=[]),
+    )
+
+    def _report(state: PlaybackState, uri: str, elapsed: float) -> None:
+        player.current_media = SimpleNamespace(uri=uri, source_id=None, queue_item_id=None)
+        player.state.playback_state = state
+        player.state.corrected_elapsed_time = elapsed
+        ctrl._update_queue_from_player(cast("Any", player))
+
+    flow_url = "http://ma:8097/flow/sess-1/q1/first/q1.mp3"
+    command_url = "http://ma:8097/command/sess-1/q1/next.mp3"
+    _report(PlaybackState.PLAYING, flow_url, 195.0)
+    _report(PlaybackState.IDLE, flow_url, 0.0)
+    _report(PlaybackState.PLAYING, command_url, 0.0)
+    assert queue.current_index == 1
+    ctrl._handle_end_of_queue.reset_mock()
+    _report(PlaybackState.IDLE, command_url, 0.0)
+
+    ctrl._handle_end_of_queue.assert_called_once()
+    prev_state, new_state = ctrl._handle_end_of_queue.call_args.args[1:]
+    assert prev_state["state"] == PlaybackState.PLAYING
+    assert prev_state["current_item_id"] == "last"
+    assert new_state["state"] == PlaybackState.IDLE

@@ -112,8 +112,9 @@ class PlaybackTrackerMixin(_PlayerQueuesBase):
             # NOTE: If the queue is not playing (yet) we will not update the current index
             # to ensure we keep the previously known current index
             if queue.flow_mode and self._reports_command_stream(player):
-                # a command item (Cast 'next') is no position in the flow stream
-                return False
+                # a command item (Cast 'next') is no position in the flow stream,
+                # so the queue keeps its position while its state still follows the player
+                return True
             if queue.flow_mode:
                 # flow mode active, the player is playing one long stream
                 # so we need to calculate the current index and elapsed time
