@@ -212,10 +212,12 @@ When a protocol attaches, the controller looks for its player in this order:
 3. Else a new player is created for it.
 
 A protocol that rides on another one (`underlying_protocol_id`) belongs to the player of that
-protocol and waits for it to attach, however long that takes. An audio protocol that matches no
-player and has no hardware MAC address yet waits up to 15 seconds for identifiers that tie it to
-other protocols of its device; it attaches as soon as one arrives or another protocol creates the
-player of its device, and gets a player of its own when the wait ends. A native protocol never waits.
+protocol: the player it is attached to, else the player its record names, so it also attaches
+while that protocol is away. It waits, however long that takes, while there is no such player or
+that player has a protocol of the same domain already. An audio protocol that matches no player
+and has no hardware MAC address yet waits up to 15 seconds for identifiers that tie it to other
+protocols of its device; it attaches as soon as one arrives or another protocol creates the player
+of its device, and gets a player of its own when the wait ends. A native protocol never waits.
 
 ### Device Identifier Matching
 
