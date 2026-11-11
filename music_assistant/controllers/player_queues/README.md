@@ -94,10 +94,10 @@ analogous to how the Player Controller pairs runtime state with the wire `Player
   (a leaf player, a group player, or a sync leader). Every per-queue record on the controller
   and the cache entries are keyed by this shared id, so provider and transport commands keyed on
   `queue_id` target the correct player.
-- **One queue object per player; reconciliation gated by type.** A `PlayerQueue` object is created
-  for every player on register and removed on player remove. `PROTOCOL` players are never
-  reconciled, however — their player-update callbacks are ignored, so a protocol player's queue
-  object stays effectively inert.
+- **One queue per player.** A `PlayerQueue` object is created when the players controller
+  publishes a player and goes when the player is dropped (disabled or removed; only a removal
+  deletes its saved state). A protocol has no queue: the queue of a player plays through whichever
+  of its protocols renders the audio, and a player whose protocols are all detached keeps its queue.
 - **Active means active-source.** A queue is considered active only when the player's active source
   is this queue's id (or none); when inactive with no prior state it is forced idle.
 - **Transitioning queues are skipped.** While a `queue_id` is marked as transitioning, incoming
