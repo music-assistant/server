@@ -39,8 +39,8 @@ from music_assistant.providers.sendspin_source.provider import OUTPUT_FORMAT
 
 from .conftest import (
     _FakeClient,
-    _FakePlayer,
     _FakeSourceRole,
+    attach_client,
     get_config,
     get_players,
     get_queues,
@@ -137,19 +137,17 @@ async def test_source_name_follows_a_player_rename(fake_client: _FakeClient) -> 
     assert details.stream_metadata.title == "Sendspin Source (Den)"
 
 
-async def test_source_name_uses_the_visible_parent_player(fake_client: _FakeClient) -> None:
-    """A protocol player's source is named after the player the user sees."""
+async def test_source_name_uses_the_player_of_the_client(fake_client: _FakeClient) -> None:
+    """The source is named after the player the client's protocol is attached to."""
     provider = await make_provider([fake_client])
-    players = get_players(provider).players
-    players["client-1"].protocol_parent_id = "cast-1"
-    players["cast-1"] = _FakePlayer("cast-1", display_name="Kitchen")
+    attach_client(provider, "client-1", "pl0123456789ab", display_name="Kitchen")
     assert [s.name for s in await provider.get_audio_sources()] == ["Sendspin Source (Kitchen)"]
 
 
 async def test_source_name_falls_back_to_the_device_name(fake_client: _FakeClient) -> None:
-    """Before its player registers, the source is named after the device's own name."""
+    """Before its protocol is attached, the source is named after the device's own name."""
     provider = await make_provider([fake_client])
-    get_players(provider).players.clear()
+    get_players(provider).protocols["client-1"].player = None
     assert [s.name for s in await provider.get_audio_sources()] == ["Sendspin Source (Turntable)"]
 
 
@@ -187,11 +185,11 @@ async def test_line_in_stays_available_to_every_player(fake_client: _FakeClient)
 
 
 async def test_reconnect_refreshes_the_player_listing_the_line_in() -> None:
-    """The visible player rebuilds its source list once the source role is back."""
+    """The player of the client rebuilds its source list once the source role is back."""
     client = _FakeClient("client-1", name="Cast Pro", has_player_role=True)
     provider = await make_provider([client])
     players = get_players(provider)
-    players.players["client-1"].protocol_parent_id = "visible-1"
+    attach_client(provider, "client-1", "visible-1")
     players.updated.clear()
     role = client.detach_roles()
     get_server_api(provider).emit(ClientConnectedEvent("client-1"))
@@ -201,11 +199,11 @@ async def test_reconnect_refreshes_the_player_listing_the_line_in() -> None:
 
 
 async def test_disconnect_refreshes_the_player_listing_the_line_in() -> None:
-    """The visible player drops the line-in once the client's connection is gone."""
+    """The player of the client drops the line-in once the client's connection is gone."""
     client = _FakeClient("client-1", has_player_role=True)
     provider = await make_provider([client])
     players = get_players(provider)
-    players.players["client-1"].protocol_parent_id = "visible-1"
+    attach_client(provider, "client-1", "visible-1")
     players.updated.clear()
     client.is_connected = False
     client.connection = None
@@ -832,6 +830,23 @@ async def test_autostart_uses_the_entry_default_when_nothing_was_saved(
     await _settle()
     assert get_queues(provider).played == [
         ("client-1", "sendspin_source://audio_source/client-1", QueueOption.PLAY)
+    ]
+
+
+@pytest.mark.usefixtures("fast_autostart")
+async def test_autostart_plays_on_the_player_of_a_device_first_seen_now(
+    fake_client: _FakeClient,
+) -> None:
+    """The default target is the player the client belongs to, whose id is no client id."""
+    provider = await make_provider([fake_client])
+    attach_client(provider, "client-1", "pl0123456789ab")
+    # the entry default the protocol's config holds: the player it is attached to
+    get_config(provider).defaults[("client-1", CONF_SOURCE_AUTOSTART_TARGET)] = "pl0123456789ab"
+    fake_client.emit(_signal(SignalState.ABSENT))
+    fake_client.emit(_signal(SignalState.PRESENT))
+    await _settle()
+    assert get_queues(provider).played == [
+        ("pl0123456789ab", "sendspin_source://audio_source/client-1", QueueOption.PLAY)
     ]
 
 
