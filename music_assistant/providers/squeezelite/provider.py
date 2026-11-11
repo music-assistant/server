@@ -13,12 +13,7 @@ from music_assistant_models.config_entries import ConfigEntry
 from music_assistant_models.enums import ConfigEntryType, MediaType
 from music_assistant_models.errors import SetupFailedError
 
-from music_assistant.constants import (
-    CONF_ENABLED,
-    CONF_PORT,
-    CONF_SYNC_ADJUST,
-    VERBOSE_LOG_LEVEL,
-)
+from music_assistant.constants import CONF_PORT, CONF_SYNC_ADJUST, VERBOSE_LOG_LEVEL
 from music_assistant.helpers.audio import get_mime_type
 from music_assistant.helpers.util import is_port_in_use
 from music_assistant.models.player_provider import PlayerProvider
@@ -121,14 +116,15 @@ class SqueezelitePlayerProvider(PlayerProvider):
         )
 
     async def discover_players(self) -> None:
-        """Register the connected players that have no player object, such as a removed one."""
+        """Attach the connected players that have no attached protocol, such as a removed one."""
         if not self.slimproto:
             return
         for slimclient in self.slimproto.players:
-            if self.get_protocol(slimclient.player_id) is None and (
-                self.mass.config.get_protocol_value(slimclient.player_id, CONF_ENABLED, True)
+            protocol_id = slimclient.player_id
+            if self.get_protocol(protocol_id) is None and self.mass.players.wants_protocol(
+                protocol_id
             ):
-                await SqueezelitePlayer(self, slimclient.player_id, slimclient).setup()
+                await SqueezelitePlayer(self, protocol_id, slimclient).setup()
 
     async def unload(self, is_removed: bool = False) -> None:
         """Handle unload/close of the provider."""
@@ -143,8 +139,8 @@ class SqueezelitePlayerProvider(PlayerProvider):
         return int(slimplayer.elapsed_milliseconds - sync_delay)
 
     def _lookup_display_name(self, player_id: str) -> str | None:
-        """Return Music Assistant's display name for a player, or None if it does not know it."""
-        mass_player = self.mass.players.get_player(player_id)
+        """Return Music Assistant's display name for a slimproto player, or None if unknown."""
+        mass_player = self.mass.players.get_player_by_protocol(player_id)
         return mass_player.display_name if mass_player else None
 
     async def _validate_all_ports(
@@ -199,6 +195,8 @@ class SqueezelitePlayerProvider(PlayerProvider):
                 return  # should not happen, but guard anyways
             # a reconnect before the old socket closed is not reported as a disconnect
             self._release_from_sync_leader(event.player_id)
+            if not self.mass.players.wants_protocol(event.player_id):
+                return
             player = SqueezelitePlayer(self, event.player_id, slimclient)
             self.mass.create_task(player.setup())
             return
@@ -209,8 +207,8 @@ class SqueezelitePlayerProvider(PlayerProvider):
 
         # Handle player disconnect
         if event.type == SlimEventType.PLAYER_DISCONNECTED:
-            self._release_from_sync_leader(player.player_id)
-            self.mass.create_task(self.mass.players.unregister(player.player_id))
+            self._release_from_sync_leader(player.protocol_id)
+            self.mass.create_task(self.mass.players.detach(player.protocol_id))
             return
 
         # forward all other events to the player itself
@@ -287,7 +285,7 @@ class SqueezelitePlayerProvider(PlayerProvider):
 
     def _release_from_sync_leader(self, player_id: str) -> None:
         """Drop a player whose connection ended from the group of its sync leader."""
-        # a reconnect registers a fresh player, so the leader must let go of the old
+        # a reconnect attaches a fresh protocol, so the leader must let go of the old
         # one or it keeps listing a member that is no longer part of its stream
         if (
             (player := self.get_protocol(player_id))
