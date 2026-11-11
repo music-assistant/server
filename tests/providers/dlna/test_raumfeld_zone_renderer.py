@@ -5,7 +5,7 @@ from __future__ import annotations
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from music_assistant.providers.dlna.player import DLNAPlayer
-from tests.common import MockProvider
+from tests.common import MockProvider, use_player_registry
 
 TEUFEL = "Lautsprecher Teufel GmbH"
 AV_TRANSPORT = "urn:schemas-upnp-org:service:AVTransport:1"
@@ -94,7 +94,10 @@ async def test_setup_ignores_a_zone_renderer_without_a_stored_config() -> None:
 async def test_setup_keeps_a_speaker_renderer_config() -> None:
     """A speaker's own renderer is attached as usual and its config is left alone."""
     player = _player(TEUFEL, AV_TRANSPORT, RAUMFELD_GENERATOR)
-    attach = AsyncMock()
+    registry = use_player_registry(player.mass)._protocols
+    attach = AsyncMock(
+        side_effect=lambda protocol: registry.update({protocol.protocol_id: protocol})
+    )
     remove_protocol = AsyncMock()
     disconnect = AsyncMock()
     with (

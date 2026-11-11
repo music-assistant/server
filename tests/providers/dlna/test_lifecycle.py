@@ -124,3 +124,20 @@ async def test_the_renderer_of_a_cast_device_joins_its_player(scenario: Scenario
     assert renderer.player is not None
     assert renderer.player.player_id == scenario.player_of(tv)
     assert renderer.player.get_role(UDN) == ProtocolRole.AUDIO
+
+
+async def test_a_renderer_of_a_disabled_player_releases_its_subscriptions(
+    scenario: Scenario,
+) -> None:
+    """A renderer set up for a player the user disabled does not keep its event subscriptions."""
+    cast = await scenario.add_provider("chromecast")
+    tv = cast.protocol("cast-tv", "TV", identifiers={IdentifierType.MAC_ADDRESS: MAC_ADDRESS})
+    await scenario.attach(tv)
+    player_id = scenario.player_of(tv)
+    assert player_id is not None
+    await scenario.disable(player_id)
+
+    renderer = await _attach_renderer(scenario)
+
+    assert renderer.player is None
+    assert renderer.device is None
