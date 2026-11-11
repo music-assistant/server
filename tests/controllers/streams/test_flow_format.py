@@ -670,7 +670,7 @@ def test_flow_restart_context_without_any_player() -> None:
     """When no player can be resolved, the raw queue config and empty rates are used."""
     audio = _make_streams_audio()
     audio.mass.players.get_player = MagicMock(return_value=None)  # type: ignore[method-assign]
-    audio.mass.config.get_raw_player_config_value = MagicMock(  # type: ignore[method-assign]
+    audio.mass.config.get_protocol_value = MagicMock(  # type: ignore[method-assign]
         return_value=FLOW_MODE_SAMPLE_RATE_SMART
     )
 

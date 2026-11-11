@@ -63,8 +63,7 @@ async def test_create_virtual_player(mass: MusicAssistant) -> None:
     assert mass.player_queues.get(player_id) is not None
     # the owner marker must be persisted for orphan sweeps
     assert (
-        mass.config.get_raw_player_config_value(player_id, CONF_VIRTUAL_PLAYER_OWNER)
-        == sendspin.instance_id
+        mass.config.get_protocol_value(player_id, CONF_VIRTUAL_PLAYER_OWNER) == sendspin.instance_id
     )
 
 

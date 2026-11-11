@@ -67,15 +67,6 @@ class SyncGroupProvider(PlayerProvider):
         )
         return await self._register_player(player_id)
 
-    async def remove_group_player(self, player_id: str) -> None:
-        """
-        Remove a group player.
-
-        :param player_id: ID of the group player to remove.
-        """
-        # we simply permanently unregister the player and wipe its config
-        await self.mass.players.unregister(player_id, True)
-
     async def discover_players(self) -> None:
         """Discover players."""
         for player_conf in await self.mass.config.get_player_configs(self.instance_id):

@@ -83,6 +83,36 @@ async def test_player_without_other_protocols_goes_with_its_removed_provider(
     assert scenario.events(EventType.PLAYER_REMOVED) == [Event(EventType.PLAYER_REMOVED, player_id)]
 
 
+async def test_removed_player_of_a_present_device_comes_back_as_new(scenario: Scenario) -> None:
+    """A removed player whose device is still there comes back as a new player with its defaults."""
+    wiim = await scenario.add_provider("wiim")
+    living = wiim.protocol("wiim_living", "Living", identifiers=LIVING)
+    await scenario.attach(living)
+    player_id = scenario.single_player(living).player_id
+    await scenario.configure_player(player_id, name="Kitchen")
+    scenario.clear_events()
+
+    await scenario.remove(player_id)
+    await scenario.idle()
+
+    current = scenario.protocol("wiim_living")
+    assert current is not living
+    assert scenario.players_carrying(current) == [
+        VisiblePlayer(
+            player_id=ANY,
+            name="Living",
+            available=True,
+            powered=None,
+            provider="wiim",
+            outputs=(("wiim", True),),
+        )
+    ]
+    assert scenario.events(EventType.PLAYER_REMOVED, EventType.PLAYER_ADDED) == [
+        Event(EventType.PLAYER_REMOVED, player_id),
+        Event(EventType.PLAYER_ADDED, scenario.single_player(current).player_id),
+    ]
+
+
 @pytest.mark.parametrize(
     ("domain", "role"),
     [("airplay", "audio"), ("chromecast", "native")],

@@ -1257,7 +1257,7 @@ class SendspinPlaybackSession:
         """Read MA config and determine if member needs a dedicated DSP channel."""
         dsp_config = self.player.mass.config.get_player_dsp_config(player_id)
         dsp_enabled = bool(dsp_config.enabled)
-        raw_output_channels = self.player.mass.config.get_raw_player_config_value(
+        raw_output_channels = self.player.mass.config.get_protocol_value(
             player_id,
             CONF_OUTPUT_CHANNELS,
             "stereo",

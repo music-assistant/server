@@ -49,7 +49,7 @@ def mock_mass() -> MagicMock:
     mass.config = MagicMock()
     mass.config.get = MagicMock(return_value=[])
 
-    def _get_raw_player_config_value(
+    def _get_player_value(
         _player_id: str, key: str, default: str | int | None = None
     ) -> str | int | None:
         """Return appropriate defaults for player config values."""
@@ -59,7 +59,7 @@ def mock_mass() -> MagicMock:
             return 100
         return default
 
-    mass.config.get_raw_player_config_value = MagicMock(side_effect=_get_raw_player_config_value)
+    mass.config.get_player_value = MagicMock(side_effect=_get_player_value)
     # Return "GLOBAL" for log level config (standard default)
     mass.config.get_raw_core_config_value = MagicMock(return_value="GLOBAL")
     mass.config.set = MagicMock()

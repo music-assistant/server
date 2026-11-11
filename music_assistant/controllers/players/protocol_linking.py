@@ -30,6 +30,7 @@ from music_assistant.constants import (
     CONF_GROUP_MEMBERS,
     CONF_LINKED_PROTOCOL_IDS,
     CONF_PLAYER_DSP,
+    CONF_PLAYER_PROTOCOLS,
     CONF_PLAYER_QUEUES,
     CONF_PLAYERS,
     CONF_PREFERRED_OUTPUT_PROTOCOL,
@@ -1344,7 +1345,7 @@ class ProtocolLinkingMixin:
         :param old_player_id: Player id that is being removed.
         :param new_player_id: Player id that replaces it, or None if there is none.
         """
-        all_player_configs = self.mass.config.get(CONF_PLAYERS, {})
+        all_player_configs = self.mass.config.get(CONF_PLAYER_PROTOCOLS, {})
         if not isinstance(all_player_configs, dict):
             return
         for other_id, other_cfg in all_player_configs.items():
@@ -1368,7 +1369,9 @@ class ProtocolLinkingMixin:
                     resolved = new_player_id if member_id == old_player_id else member_id
                     if resolved is not None and resolved not in new_members:
                         new_members.append(resolved)
-                self.mass.config.set(f"{CONF_PLAYERS}/{other_id}/values/{key}", new_members)
+                self.mass.config.set(
+                    f"{CONF_PLAYER_PROTOCOLS}/{other_id}/values/{key}", new_members
+                )
                 changed = True
                 # keep a registered player's in-place config copy in sync
                 if other_player and (entry := other_player.config.values.get(key)):
@@ -1616,9 +1619,9 @@ class ProtocolLinkingMixin:
         player is no longer derived (e.g. a bridge client turned web player).
         """
         # Only save if the player config still exists to avoid creating partial entries
-        if not self.mass.config.get(f"{CONF_PLAYERS}/{player.player_id}"):
+        if not self.mass.config.get(f"{CONF_PLAYER_PROTOCOLS}/{player.player_id}"):
             return
-        conf_key = f"{CONF_PLAYERS}/{player.player_id}/values/{CONF_UNDERLYING_PLAYER_ID}"
+        conf_key = f"{CONF_PLAYER_PROTOCOLS}/{player.player_id}/values/{CONF_UNDERLYING_PLAYER_ID}"
         if player.underlying_player_id:
             self.mass.config.set(conf_key, player.underlying_player_id)
         elif self.mass.config.get(conf_key) is not None:
@@ -1966,7 +1969,7 @@ class ProtocolLinkingMixin:
         # native output is available, otherwise "auto". A player without a native output (e.g. a
         # LinkPlay shell) therefore has no stored preference by default and gets its default
         # output domain applied in step 4.
-        preferred = self.mass.config.get_raw_player_config_value(
+        preferred = self.mass.config.get_player_value(
             player.player_id, CONF_PREFERRED_OUTPUT_PROTOCOL
         )
         if preferred and preferred != "auto":
@@ -2088,7 +2091,7 @@ class ProtocolLinkingMixin:
         if protocol_domain == protocol_player.provider.domain or placed_members != len(member_ids):
             return
         # the player plays through its preferred protocol, so the group may only move onto that one
-        preferred = self.mass.config.get_raw_player_config_value(
+        preferred = self.mass.config.get_player_value(
             player.player_id, CONF_PREFERRED_OUTPUT_PROTOCOL
         )
         if (
@@ -2158,7 +2161,7 @@ class ProtocolLinkingMixin:
         # start playback on an idle player follows it rather than the priority below.
         # The stored value survives a relink, so it only counts while it still names one
         # of this player's own outputs.
-        preferred = self.mass.config.get_raw_player_config_value(
+        preferred = self.mass.config.get_player_value(
             player.player_id, CONF_PREFERRED_OUTPUT_PROTOCOL
         )
         if preferred and preferred not in ("auto", "native"):
@@ -2306,7 +2309,7 @@ class ProtocolLinkingMixin:
 
         Returns tuple of (child_protocol_id, protocol_domain) or (None, None).
         """
-        child_preferred = self.mass.config.get_raw_player_config_value(
+        child_preferred = self.mass.config.get_player_value(
             child_player.player_id, CONF_PREFERRED_OUTPUT_PROTOCOL
         )
         if not child_preferred or child_preferred in {"auto", "native"}:

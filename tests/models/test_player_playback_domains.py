@@ -22,7 +22,7 @@ def mock_mass() -> MagicMock:
     mass = MagicMock()
     mass.closing = False
     mass.config.get = MagicMock(return_value=[])
-    mass.config.get_raw_player_config_value = MagicMock(return_value=None)
+    mass.config.get_player_value = MagicMock(return_value=None)
     mass.config.get_raw_core_config_value = MagicMock(return_value="GLOBAL")
     mass.config.set = MagicMock()
     mass.players.get_player = MagicMock(return_value=None)

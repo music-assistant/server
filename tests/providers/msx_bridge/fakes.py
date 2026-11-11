@@ -35,7 +35,7 @@ class FakeMass:
         self.config = SimpleNamespace(
             create_default_player_config=Mock(),
             get_base_player_config=Mock(return_value=player_config),
-            get_raw_player_config_value=Mock(return_value="stereo"),
+            get_protocol_value=Mock(return_value="stereo"),
             get_raw_provider_config_value=Mock(return_value=None),
             remove_provider_config_value=AsyncMock(),
             get_player_dsp_config=Mock(),

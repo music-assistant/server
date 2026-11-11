@@ -126,6 +126,10 @@ class MPDPlayer(PlayerProtocol):
         self._attr_setup_reason = None
         await self._connect()
 
+    async def on_remove(self) -> None:
+        """Take the server out of the hosts the provider is set up with."""
+        cast("MPDPlayerProvider", self.provider).forget_host(self.host, self.port)
+
     async def run_setup_flow(self, session: SetupSession) -> None:
         """Run the setup flow: collect the MPD server password."""
         entries = [

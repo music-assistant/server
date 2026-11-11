@@ -24,9 +24,7 @@ def _mock_mass() -> MagicMock:
     mass.closing = False
     mass.loop = None
     mass.config.get = MagicMock(return_value=[])
-    mass.config.get_raw_player_config_value = MagicMock(
-        side_effect=lambda _pid, _key, default=None: default
-    )
+    mass.config.get_player_value = MagicMock(side_effect=lambda _pid, _key, default=None: default)
     mass.config.get_raw_core_config_value = MagicMock(return_value="GLOBAL")
     mass.config.get_base_player_config.return_value = create_mock_config("Bedroom Speaker")
     mass.get_providers = MagicMock(return_value=[])

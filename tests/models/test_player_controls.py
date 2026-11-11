@@ -43,7 +43,7 @@ def mock_mass() -> MagicMock:
     mass.closing = False
     mass.loop = None
     mass.config.get = MagicMock(return_value=[])
-    mass.config.get_raw_player_config_value = MagicMock(return_value=None)
+    mass.config.get_player_value = MagicMock(return_value=None)
     mass.config.get_raw_core_config_value = MagicMock(return_value="GLOBAL")
     mass.config.set = MagicMock()
     mass.signal_event = MagicMock()
@@ -56,7 +56,7 @@ def mock_mass() -> MagicMock:
 def _make_config_side_effect(
     overrides: dict[str, str | None],
 ) -> Any:
-    """Create a side_effect for get_raw_player_config_value."""
+    """Create a side_effect for get_player_value."""
 
     def _side_effect(_pid: str, key: str, *_args: Any) -> str | None:
         return overrides.get(key)
@@ -121,7 +121,7 @@ class TestPowerControlExplicitConfig:
 
     def test_explicit_native(self, mock_mass: MagicMock) -> None:
         """Power control returns native when explicitly configured and feature is supported."""
-        mock_mass.config.get_raw_player_config_value = MagicMock(
+        mock_mass.config.get_player_value = MagicMock(
             side_effect=_make_config_side_effect({CONF_POWER_CONTROL: PLAYER_CONTROL_NATIVE})
         )
         # NATIVE control requires the player to actually advertise POWER —
@@ -133,7 +133,7 @@ class TestPowerControlExplicitConfig:
 
     def test_explicit_native_degrades_when_feature_missing(self, mock_mass: MagicMock) -> None:
         """Stale NATIVE config falls back to NONE when the player no longer advertises POWER."""
-        mock_mass.config.get_raw_player_config_value = MagicMock(
+        mock_mass.config.get_player_value = MagicMock(
             side_effect=_make_config_side_effect({CONF_POWER_CONTROL: PLAYER_CONTROL_NATIVE})
         )
         # no POWER in features → the explicit NATIVE in config is invalid
@@ -142,7 +142,7 @@ class TestPowerControlExplicitConfig:
 
     def test_explicit_fake(self, mock_mass: MagicMock) -> None:
         """Power control returns fake when explicitly configured."""
-        mock_mass.config.get_raw_player_config_value = MagicMock(
+        mock_mass.config.get_player_value = MagicMock(
             side_effect=_make_config_side_effect({CONF_POWER_CONTROL: PLAYER_CONTROL_FAKE})
         )
         player = _create_player(mock_mass)
@@ -150,7 +150,7 @@ class TestPowerControlExplicitConfig:
 
     def test_explicit_none(self, mock_mass: MagicMock) -> None:
         """Power control returns none when explicitly configured."""
-        mock_mass.config.get_raw_player_config_value = MagicMock(
+        mock_mass.config.get_player_value = MagicMock(
             side_effect=_make_config_side_effect({CONF_POWER_CONTROL: PLAYER_CONTROL_NONE})
         )
         player = _create_player(mock_mass, features={PlayerFeature.POWER})
@@ -161,7 +161,7 @@ class TestPowerControlExplicitConfig:
         protocol = _create_protocol_player(
             mock_mass, "protocol_1", {PlayerFeature.POWER}, available=True
         )
-        mock_mass.config.get_raw_player_config_value = MagicMock(
+        mock_mass.config.get_player_value = MagicMock(
             side_effect=_make_config_side_effect({CONF_POWER_CONTROL: "protocol_1"})
         )
         mock_mass.players.get_player = MagicMock(return_value=protocol)
@@ -175,7 +175,7 @@ class TestPowerControlExplicitConfig:
         protocol = _create_protocol_player(
             mock_mass, "protocol_1", {PlayerFeature.POWER}, available=False
         )
-        mock_mass.config.get_raw_player_config_value = MagicMock(
+        mock_mass.config.get_player_value = MagicMock(
             side_effect=_make_config_side_effect({CONF_POWER_CONTROL: "protocol_1"})
         )
         mock_mass.players.get_player = MagicMock(return_value=protocol)
@@ -187,7 +187,7 @@ class TestPowerControlExplicitConfig:
         """Power control returns player control ID when set and control exists."""
         control = MagicMock()
         control.id = "ext_control_1"
-        mock_mass.config.get_raw_player_config_value = MagicMock(
+        mock_mass.config.get_player_value = MagicMock(
             side_effect=_make_config_side_effect({CONF_POWER_CONTROL: "ext_control_1"})
         )
         mock_mass.players.get_player = MagicMock(return_value=None)
@@ -231,7 +231,7 @@ class TestPowerControlAutoSelect:
 
     def test_auto_with_config_set_to_auto(self, mock_mass: MagicMock) -> None:
         """Explicit 'auto' config value triggers the same auto-select."""
-        mock_mass.config.get_raw_player_config_value = MagicMock(
+        mock_mass.config.get_player_value = MagicMock(
             side_effect=_make_config_side_effect({CONF_POWER_CONTROL: "auto"})
         )
         player = _create_player(mock_mass, features={PlayerFeature.POWER})
@@ -255,7 +255,7 @@ class TestOfflineByPowerControl:
             supports_power=True,
             power_state=power_state,
         )
-        mock_mass.config.get_raw_player_config_value = MagicMock(
+        mock_mass.config.get_player_value = MagicMock(
             side_effect=_make_config_side_effect({CONF_POWER_CONTROL: control.id})
         )
         mock_mass.players.get_player_control = MagicMock(
@@ -353,7 +353,7 @@ class TestVolumeControlExplicitConfig:
 
     def test_explicit_native(self, mock_mass: MagicMock) -> None:
         """Volume control returns native when explicitly configured."""
-        mock_mass.config.get_raw_player_config_value = MagicMock(
+        mock_mass.config.get_player_value = MagicMock(
             side_effect=_make_config_side_effect({CONF_VOLUME_CONTROL: PLAYER_CONTROL_NATIVE})
         )
         # NATIVE control requires the player to actually advertise VOLUME_SET —
@@ -363,7 +363,7 @@ class TestVolumeControlExplicitConfig:
 
     def test_explicit_native_degrades_when_feature_missing(self, mock_mass: MagicMock) -> None:
         """Stale NATIVE config falls back to NONE when the player no longer advertises VOLUME_SET."""
-        mock_mass.config.get_raw_player_config_value = MagicMock(
+        mock_mass.config.get_player_value = MagicMock(
             side_effect=_make_config_side_effect({CONF_VOLUME_CONTROL: PLAYER_CONTROL_NATIVE})
         )
         player = _create_player(mock_mass)
@@ -377,7 +377,7 @@ class TestVolumeControlExplicitConfig:
     def test_explicit_native_degrades_to_protocol_player(self, mock_mass: MagicMock) -> None:
         """Stale NATIVE config degrades to a protocol player that can drive the volume."""
         protocol = _create_protocol_player(mock_mass, "proto_vol", {PlayerFeature.VOLUME_SET})
-        mock_mass.config.get_raw_player_config_value = MagicMock(
+        mock_mass.config.get_player_value = MagicMock(
             side_effect=_make_config_side_effect({CONF_VOLUME_CONTROL: PLAYER_CONTROL_NATIVE})
         )
         mock_mass.players.get_player = MagicMock(return_value=protocol)
@@ -387,7 +387,7 @@ class TestVolumeControlExplicitConfig:
 
     def test_explicit_none(self, mock_mass: MagicMock) -> None:
         """Volume control returns none even with native support."""
-        mock_mass.config.get_raw_player_config_value = MagicMock(
+        mock_mass.config.get_player_value = MagicMock(
             side_effect=_make_config_side_effect({CONF_VOLUME_CONTROL: PLAYER_CONTROL_NONE})
         )
         player = _create_player(mock_mass, features={PlayerFeature.VOLUME_SET})
@@ -398,7 +398,7 @@ class TestVolumeControlExplicitConfig:
         protocol = _create_protocol_player(
             mock_mass, "vol_player", {PlayerFeature.VOLUME_SET}, available=True
         )
-        mock_mass.config.get_raw_player_config_value = MagicMock(
+        mock_mass.config.get_player_value = MagicMock(
             side_effect=_make_config_side_effect({CONF_VOLUME_CONTROL: "vol_player"})
         )
         mock_mass.players.get_player = MagicMock(return_value=protocol)
@@ -433,7 +433,7 @@ class TestMuteControlExplicitConfig:
 
     def test_explicit_native(self, mock_mass: MagicMock) -> None:
         """Mute control returns native when explicitly configured."""
-        mock_mass.config.get_raw_player_config_value = MagicMock(
+        mock_mass.config.get_player_value = MagicMock(
             side_effect=_make_config_side_effect({CONF_MUTE_CONTROL: PLAYER_CONTROL_NATIVE})
         )
         # NATIVE control requires the player to actually advertise VOLUME_MUTE —
@@ -443,7 +443,7 @@ class TestMuteControlExplicitConfig:
 
     def test_explicit_native_degrades_when_feature_missing(self, mock_mass: MagicMock) -> None:
         """Stale NATIVE config falls back to NONE when the player no longer advertises the feature."""
-        mock_mass.config.get_raw_player_config_value = MagicMock(
+        mock_mass.config.get_player_value = MagicMock(
             side_effect=_make_config_side_effect({CONF_MUTE_CONTROL: PLAYER_CONTROL_NATIVE})
         )
         player = _create_player(mock_mass)
@@ -457,7 +457,7 @@ class TestMuteControlExplicitConfig:
     def test_explicit_native_degrades_to_protocol_player(self, mock_mass: MagicMock) -> None:
         """Stale NATIVE config degrades to a protocol player that can drive the mute."""
         protocol = _create_protocol_player(mock_mass, "proto_mute", {PlayerFeature.VOLUME_MUTE})
-        mock_mass.config.get_raw_player_config_value = MagicMock(
+        mock_mass.config.get_player_value = MagicMock(
             side_effect=_make_config_side_effect({CONF_MUTE_CONTROL: PLAYER_CONTROL_NATIVE})
         )
         mock_mass.players.get_player = MagicMock(return_value=protocol)
@@ -467,7 +467,7 @@ class TestMuteControlExplicitConfig:
 
     def test_explicit_none(self, mock_mass: MagicMock) -> None:
         """Mute control returns none when explicitly configured."""
-        mock_mass.config.get_raw_player_config_value = MagicMock(
+        mock_mass.config.get_player_value = MagicMock(
             side_effect=_make_config_side_effect({CONF_MUTE_CONTROL: PLAYER_CONTROL_NONE})
         )
         player = _create_player(mock_mass, features={PlayerFeature.VOLUME_MUTE})
@@ -475,7 +475,7 @@ class TestMuteControlExplicitConfig:
 
     def test_explicit_fake(self, mock_mass: MagicMock) -> None:
         """Mute control returns fake when explicitly configured and a volume control exists."""
-        mock_mass.config.get_raw_player_config_value = MagicMock(
+        mock_mass.config.get_player_value = MagicMock(
             side_effect=_make_config_side_effect({CONF_MUTE_CONTROL: PLAYER_CONTROL_FAKE})
         )
         player = _create_player(mock_mass, features={PlayerFeature.VOLUME_SET})
@@ -483,7 +483,7 @@ class TestMuteControlExplicitConfig:
 
     def test_explicit_fake_degrades_without_volume_control(self, mock_mass: MagicMock) -> None:
         """Fake mute drives the volume control, so it degrades to NONE without one."""
-        mock_mass.config.get_raw_player_config_value = MagicMock(
+        mock_mass.config.get_player_value = MagicMock(
             side_effect=_make_config_side_effect(
                 {
                     CONF_MUTE_CONTROL: PLAYER_CONTROL_FAKE,
@@ -712,7 +712,7 @@ class TestPreferredOutputProtocolAutoValue:
         mock_mass.players.get_player = MagicMock(
             side_effect=self._get_player_lookup({"proto_a": proto})
         )
-        mock_mass.config.get_raw_player_config_value = MagicMock(
+        mock_mass.config.get_player_value = MagicMock(
             side_effect=_make_config_side_effect({CONF_PREFERRED_OUTPUT_PROTOCOL: "auto"})
         )
         player = _create_player(mock_mass)
@@ -729,7 +729,7 @@ class TestPreferredOutputProtocolAutoValue:
         mock_mass.players.get_player = MagicMock(
             side_effect=self._get_player_lookup({"proto_a": proto})
         )
-        mock_mass.config.get_raw_player_config_value = MagicMock(
+        mock_mass.config.get_player_value = MagicMock(
             side_effect=_make_config_side_effect({CONF_PREFERRED_OUTPUT_PROTOCOL: "auto"})
         )
         player = _create_player(mock_mass)
@@ -746,7 +746,7 @@ class TestPreferredOutputProtocolAutoValue:
         mock_mass.players.get_player = MagicMock(
             side_effect=self._get_player_lookup({"proto_a": proto})
         )
-        mock_mass.config.get_raw_player_config_value = MagicMock(
+        mock_mass.config.get_player_value = MagicMock(
             side_effect=_make_config_side_effect({CONF_PREFERRED_OUTPUT_PROTOCOL: "auto"})
         )
         player = _create_player(mock_mass)
@@ -765,7 +765,7 @@ class TestPreferredOutputProtocolAutoValue:
         mock_mass.players.get_player = MagicMock(
             side_effect=self._get_player_lookup({"proto_a": own, "other_proto": other})
         )
-        mock_mass.config.get_raw_player_config_value = MagicMock(
+        mock_mass.config.get_player_value = MagicMock(
             side_effect=_make_config_side_effect({CONF_PREFERRED_OUTPUT_PROTOCOL: "other_proto"})
         )
         player = _create_player(mock_mass)
@@ -879,7 +879,7 @@ class TestControlForOutput:
         mock_mass.players.get_player = MagicMock(
             side_effect=self._get_player_lookup({"proto_a": proto_a})
         )
-        mock_mass.config.get_raw_player_config_value = MagicMock(
+        mock_mass.config.get_player_value = MagicMock(
             side_effect=_make_config_side_effect({CONF_VOLUME_CONTROL: PLAYER_CONTROL_NATIVE})
         )
         player = _create_player(mock_mass)
@@ -894,7 +894,7 @@ class TestControlForOutput:
         mock_mass.players.get_player = MagicMock(
             side_effect=self._get_player_lookup({"proto_a": proto_a})
         )
-        mock_mass.config.get_raw_player_config_value = MagicMock(
+        mock_mass.config.get_player_value = MagicMock(
             side_effect=_make_config_side_effect({CONF_MUTE_CONTROL: PLAYER_CONTROL_NATIVE})
         )
         player = _create_player(mock_mass)
@@ -907,7 +907,7 @@ class TestControlForOutput:
         mock_mass.players.get_player = MagicMock(
             side_effect=self._get_player_lookup({"proto_a": proto_a})
         )
-        mock_mass.config.get_raw_player_config_value = MagicMock(
+        mock_mass.config.get_player_value = MagicMock(
             side_effect=_make_config_side_effect({CONF_VOLUME_CONTROL: PLAYER_CONTROL_FAKE})
         )
         player = _create_player(mock_mass)
@@ -954,7 +954,7 @@ class TestControlForOutput:
         mock_mass.players.get_player = MagicMock(
             side_effect=self._get_player_lookup({"proto_a": proto_a, "proto_b": proto_b})
         )
-        mock_mass.config.get_raw_player_config_value = MagicMock(
+        mock_mass.config.get_player_value = MagicMock(
             side_effect=_make_config_side_effect({CONF_VOLUME_CONTROL: "proto_a"})
         )
         player = _create_player(mock_mass)
@@ -1000,7 +1000,7 @@ class TestControlForOutput:
         mock_mass.players.get_player = MagicMock(
             side_effect=self._get_player_lookup({"proto_a": proto_a})
         )
-        mock_mass.config.get_raw_player_config_value = MagicMock(
+        mock_mass.config.get_player_value = MagicMock(
             side_effect=_make_config_side_effect({CONF_MUTE_CONTROL: PLAYER_CONTROL_FAKE})
         )
         player = _create_player(mock_mass)

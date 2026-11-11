@@ -367,6 +367,10 @@ When implementing a native provider (e.g., Sonos, Bluesound) that should link to
   - The controller will attempt ARP lookup to resolve real MACs automatically
 - `IP_ADDRESS` is only used as a last resort after strong identifiers were checked first
 
+### Removing a Player
+
+Every player can be removed, and the controller does it itself: `players/remove` unregisters the player for good and deletes its config, its DSP and queue settings and its saved queue, and takes it out of groups and user filters. The provider is not asked. A provider that keeps something of its own about a player, such as an entry in its list of manually added hosts or a client on its server, implements `on_remove()` on the player object, which is called once the player is gone. A device that its provider still finds comes back as a new player.
+
 ### Testing Protocol Linking
 
 Key scenarios to test:
@@ -384,6 +388,12 @@ Key scenarios to test:
 Protocol links are persisted in player configuration:
 - `linked_protocol_ids` - List of protocol player IDs
 - Restored on restart for fast reconnection
+
+Stored config is read and written per scope, through the config controller:
+- `get_player_value` / `set_player_value` - a value of the player itself: the entries every player gets, such as its controls, volume limits, announcement settings, icon, visibility and preferred output (`PLAYER_VALUE_KEYS`)
+- `get_protocol_value` / `set_protocol_value` - a value of a protocol: an entry the protocol declares, an audio setting of its output, or what its provider stores for it
+
+Saving a player's config stores each value with whoever declared its entry: the player itself or its native protocol. Code that reads the stored config of a protocol as a whole, or its setup data, names the tree through `CONF_PLAYER_PROTOCOLS`.
 
 ### Key Methods (in protocol_linking.py)
 

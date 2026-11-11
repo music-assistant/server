@@ -204,14 +204,14 @@ class MSXBridgeProvider(PlayerProvider):
         """Handle player enabled: no-op, player already registered."""
         # Player was never unregistered (see on_player_disabled), so nothing to do.
 
-    async def remove_player(self, player_id: str) -> None:
-        """Remove the player; it may register again when the TV reconnects."""
+    def forget_player(self, player_id: str) -> None:
+        """Stop the TV of a removed player; it may register again when the TV reconnects."""
         # Called when user chooses to remove the player from MA.
-        # This fully unregisters the player. It will reappear if the TV reconnects.
+        # It will reappear if the TV reconnects.
         if self.http_server:
             self.http_server.broadcast_stop(player_id)
             self.http_server.cancel_streams_for_player(player_id)
-        await self._handle_player_unregister(player_id)
+        self._player_last_activity.pop(player_id, None)
         self.logger.info("Player %s removed by user", player_id)
 
     def notify_native_track_started(self, player_id: str) -> None:

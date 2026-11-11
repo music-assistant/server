@@ -345,6 +345,12 @@ class ChromecastPlayer(PlayerProtocol):
         else:
             await asyncio.to_thread(disconnect_cast, self.cc, 10)
 
+    async def on_remove(self) -> None:
+        """Handle logic when the player is removed for good."""
+        await cast("ChromecastProvider", self.provider).bridge_manager.remove_bridge(
+            self.player_id, permanent=True
+        )
+
     ### Callbacks from Chromecast Statuslistener
 
     def on_new_cast_status(self, status: CastStatus) -> None:

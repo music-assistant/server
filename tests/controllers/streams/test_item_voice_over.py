@@ -230,7 +230,7 @@ async def test_a_rate_switch_the_player_cannot_play_gapless_is_a_plain_cut(
     audio.select_pcm_format = AsyncMock(  # type: ignore[method-assign]
         return_value=replace(TEST_PCM_FORMAT, sample_rate=48000)
     )
-    mass.config.get_raw_player_config_value.return_value = False
+    mass.config.get_protocol_value.return_value = False
     opened = _install_item_streams(monkeypatch, audio)
 
     clip_stream = _request(audio, clip, CrossfadeMode.VOICE_OVER)
@@ -266,7 +266,7 @@ def test_a_declared_overlap_follows_the_sample_rate_rule_of_the_player(
     """A rate switch only matters between item streams; a flow stream plays one rate."""
     track = _declared_track()
     audio, mass = _item_audio(monkeypatch, next_item=track, load_next=[track])
-    mass.config.get_raw_player_config_value.return_value = player_plays_gapless_across_rates
+    mass.config.get_protocol_value.return_value = player_plays_gapless_across_rates
 
     allowed = audio.crossfade_allowed(
         cast("Any", _clip()),

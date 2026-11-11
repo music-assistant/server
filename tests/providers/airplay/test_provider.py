@@ -832,9 +832,7 @@ def _receiver_filter_provider(
         stored_player_names = {RECEIVER_PLAYER_ID: "Garage"}
     live_player_names = live_player_names or {}
 
-    def get_raw_player_config_value(
-        player_id: str, key: str, default: object | None = None
-    ) -> object | None:
+    def get_player_value(player_id: str, key: str, default: object | None = None) -> object | None:
         if key == "name":
             return stored_player_names.get(player_id, default)
         return default
@@ -850,7 +848,7 @@ def _receiver_filter_provider(
     prov.mass = MagicMock()
     prov.logger = logging.getLogger("test.airplay.provider")
     prov.mass.config.get.return_value = provider_configs
-    prov.mass.config.get_raw_player_config_value.side_effect = get_raw_player_config_value
+    prov.mass.config.get_player_value.side_effect = get_player_value
     prov.mass.players.get_player.side_effect = get_player
     prov.mass.get_provider_instances.return_value = list(receiver_instances)
     return prov
@@ -1040,7 +1038,7 @@ async def test_setup_player_skips_own_receiver_before_service_lookup() -> None:
     prov = AirPlayProvider.__new__(AirPlayProvider)
     prov.mass = MagicMock()
     prov.logger = logging.getLogger("test.airplay.provider")
-    prov.mass.config.get_raw_player_config_value.return_value = True
+    prov.mass.config.get_protocol_value.return_value = True
     prov._is_own_airplay_receiver = AsyncMock(return_value=True)  # type: ignore[method-assign]
     info = _discovery_info(["192.168.1.10"])
     info.type = "_raop._tcp.local."
@@ -1066,9 +1064,7 @@ async def test_setup_player_flags_shairport_on_this_host(
     prov = AirPlayProvider.__new__(AirPlayProvider)
     prov.mass = MagicMock()
     prov.logger = logging.getLogger("test.airplay.provider")
-    prov.mass.config.get_raw_player_config_value.side_effect = (
-        lambda _player_id, _key, default=None: default
-    )
+    prov.mass.config.get_protocol_value.side_effect = lambda _player_id, _key, default=None: default
     prov.mass.discovery.async_find_mdns_service = AsyncMock(return_value=None)
     prov.mass.players.get_player.return_value = None
     prov.mass.players.register = AsyncMock()
@@ -1098,9 +1094,7 @@ def _password_marker_provider(
         player_id: {"player_id": player_id, "provider": INSTANCE_ID, "player_type": player_type}
         for player_id in markers
     } | {"other": {"player_id": "other", "provider": "sonos", "player_type": "player"}}
-    config.get_raw_player_config_value.side_effect = lambda player_id, _key, _default: markers[
-        player_id
-    ]
+    config.get_protocol_value.side_effect = lambda player_id, _key, _default: markers[player_id]
     return prov, config
 
 
@@ -1112,9 +1106,7 @@ def test_stale_password_markers_are_dropped_once() -> None:
 
     prov._drop_unverified_password_markers()
 
-    config.set_raw_player_config_value.assert_called_once_with(
-        "ap_latched", "password_invalid", False
-    )
+    config.set_protocol_value.assert_called_once_with("ap_latched", "password_invalid", False)
     config.set_raw_provider_config_value.assert_called_once_with(
         INSTANCE_ID, "password_markers_reviewed", True
     )
@@ -1133,9 +1125,7 @@ def test_protocol_players_are_reviewed_too() -> None:
 
     prov._drop_unverified_password_markers()
 
-    config.set_raw_player_config_value.assert_called_once_with(
-        "spb_latched", "password_invalid", False
-    )
+    config.set_protocol_value.assert_called_once_with("spb_latched", "password_invalid", False)
 
 
 def test_password_markers_are_reviewed_only_on_the_first_load() -> None:
@@ -1149,7 +1139,7 @@ def test_password_markers_are_reviewed_only_on_the_first_load() -> None:
 
     prov._drop_unverified_password_markers()
 
-    config.set_raw_player_config_value.assert_not_called()
+    config.set_protocol_value.assert_not_called()
     config.get.assert_not_called()
 
 
@@ -1161,7 +1151,7 @@ def test_a_failed_review_is_retried_on_the_next_load() -> None:
     which is the state this review exists to undo.
     """
     prov, config = _password_marker_provider(reviewed=False, markers={"ap_latched": True})
-    config.set_raw_player_config_value.side_effect = RuntimeError("config write failed")
+    config.set_protocol_value.side_effect = RuntimeError("config write failed")
 
     with pytest.raises(RuntimeError):
         prov._drop_unverified_password_markers()
@@ -1180,9 +1170,7 @@ def _compat_pin_provider(
         player_id: {"player_id": player_id, "provider": INSTANCE_ID, "player_type": "player"}
         for player_id in modes
     } | {"other": {"player_id": "other", "provider": "sonos", "player_type": "player"}}
-    config.get_raw_player_config_value.side_effect = lambda player_id, _key, _default=None: modes[
-        player_id
-    ]
+    config.get_protocol_value.side_effect = lambda player_id, _key, _default=None: modes[player_id]
     return prov, config
 
 
@@ -1200,9 +1188,7 @@ def test_stale_compat_pins_are_reset_once() -> None:
 
     prov._reset_auto_pinned_compat_modes()
 
-    config.set_raw_player_config_value.assert_called_once_with(
-        "ap_pinned", "streaming_mode", "auto"
-    )
+    config.set_protocol_value.assert_called_once_with("ap_pinned", "streaming_mode", "auto")
     config.set_raw_provider_config_value.assert_called_once_with(
         INSTANCE_ID, "compat_pins_reviewed", True
     )
@@ -1214,14 +1200,14 @@ def test_compat_pins_are_reset_only_on_the_first_load() -> None:
 
     prov._reset_auto_pinned_compat_modes()
 
-    config.set_raw_player_config_value.assert_not_called()
+    config.set_protocol_value.assert_not_called()
     config.get.assert_not_called()
 
 
 def test_a_failed_compat_pin_reset_is_retried_on_the_next_load() -> None:
     """A reset that dies part-way leaves nothing behind claiming it ran."""
     prov, config = _compat_pin_provider(reviewed=False, modes={"ap_pinned": "ap2_compat"})
-    config.set_raw_player_config_value.side_effect = RuntimeError("config write failed")
+    config.set_protocol_value.side_effect = RuntimeError("config write failed")
 
     with pytest.raises(RuntimeError):
         prov._reset_auto_pinned_compat_modes()

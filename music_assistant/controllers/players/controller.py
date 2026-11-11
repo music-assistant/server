@@ -100,6 +100,7 @@ from music_assistant.constants import (
     CONF_MUTE_CONTROL,
     CONF_PLAY_MEDIA_OVERRIDES_GROUP,
     CONF_PLAYER_DSP,
+    CONF_PLAYER_PROTOCOLS,
     CONF_PLAYER_QUEUES,
     CONF_PLAYERS,
     CONF_POWER_CONTROL,
@@ -1235,7 +1236,7 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
             target_player.state.synced_to or target_player.state.active_group
         ):
             override = bool(
-                self.mass.config.get_raw_player_config_value(
+                self.mass.config.get_player_value(
                     target_player.player_id,
                     CONF_PLAY_MEDIA_OVERRIDES_GROUP,
                     True,
@@ -1644,15 +1645,14 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
 
     @api_command("players/remove_group_player", required_scope=Scope.CONFIG_PLAYERS_WRITE)
     async def remove_group_player(self, player_id: str) -> None:
-        """Remove a group player."""
-        if not (player := self.get_player(player_id)):
-            # we simply permanently delete the player by wiping its config
-            self.mass.config.remove(f"players/{player_id}")
-            return
-        if player.state.type != PlayerType.GROUP:
+        """
+        Remove a group player for good.
+
+        :param player_id: ID of the group player to remove.
+        """
+        if (player := self.get_player(player_id)) and player.state.type != PlayerType.GROUP:
             raise UnsupportedFeaturedException(f"Player {player.state.name} is not a group player")
-        player.provider.check_feature(ProviderFeature.REMOVE_GROUP_PLAYER)
-        await player.provider.remove_group_player(player_id)
+        await self.remove(player_id)
 
     @api_command("players/add_currently_playing_to_favorites", required_scope=Scope.LIBRARY_WRITE)
     async def add_currently_playing_to_favorites(self, player_id: str) -> None:
@@ -1988,33 +1988,43 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
     @api_command("players/remove", required_scope=Scope.CONFIG_PLAYERS_WRITE)
     async def remove(self, player_id: str) -> None:
         """
-        Remove a player from a provider.
+        Remove a player for good: the player itself, its config and its queue.
 
-        Can only be called when a PlayerProvider supports ProviderFeature.REMOVE_PLAYER.
+        A device its provider still finds comes back as a new player.
+
+        :param player_id: ID of the player to remove.
         """
         player = self.get_player(player_id)
         if player is None:
             # we simply permanently delete the player config since it is not registered
             self.delete_player_config(player_id)
             return
-        if player.state.type == PlayerType.GROUP:
-            # Handle group player removal
-            player.provider.check_feature(ProviderFeature.REMOVE_GROUP_PLAYER)
-            await player.provider.remove_group_player(player_id)
-            return
-        player.provider.check_feature(ProviderFeature.REMOVE_PLAYER)
-        await player.provider.remove_player(player_id)
+        player_id = player.player_id
         # check for group memberships that need to be updated
         if player.state.active_group and (
             group_player := self.mass.players.get_player(player.state.active_group)
         ):
             # try to remove from the group
-            with suppress(UnsupportedFeaturedException, PlayerCommandFailed):
+            with suppress(
+                UnsupportedFeaturedException, PlayerCommandFailed, PlayerUnavailableError
+            ):
                 await group_player.set_members(
                     player_ids_to_remove=[player_id],
                 )
-        # We removed the player and can now clean up its config
-        self.delete_player_config(player_id)
+        await self.unregister(player_id, permanent=True)
+        # the provider only cleans up what it keeps about the player itself. Best-effort:
+        # the player is gone by now, whatever happens to that
+        try:
+            await player.on_remove()
+        except Exception:
+            self.logger.exception("Error removing player %s", player.name)
+        provider = player.provider
+        if (
+            player.type != PlayerType.GROUP
+            and self.mass.get_provider(provider.instance_id) is provider
+        ):
+            # a device still on the network is found again as a new player
+            provider.schedule_discovery()
 
     def delete_player_config(
         self, player_id: str, replacement_player_id: str | None = None
@@ -2095,18 +2105,14 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
             )
         else:
             if source_raw.get("name") and not target_raw.get("name"):
-                self.mass.config.set_raw_player_config_value(
-                    replacement_player_id, "name", source_raw["name"]
-                )
+                self.mass.config.set_player_value(replacement_player_id, "name", source_raw["name"])
             source_values = source_raw.get("values")
             target_values = target_raw.get("values")
             target_values = target_values if isinstance(target_values, dict) else {}
             for key, value in (source_values if isinstance(source_values, dict) else {}).items():
                 if key in target_values and key != CONF_PROTOCOL_PARENT_ID:
                     continue
-                self.mass.config.set_raw_player_config_value(
-                    replacement_player_id, key, deepcopy(value)
-                )
+                self.mass.config.set_player_value(replacement_player_id, key, deepcopy(value))
         source_dsp = self.mass.config.get(f"{CONF_PLAYER_DSP}/{player_id}")
         if source_dsp and not self.mass.config.get(f"{CONF_PLAYER_DSP}/{replacement_player_id}"):
             self.mass.config.set(f"{CONF_PLAYER_DSP}/{replacement_player_id}", deepcopy(source_dsp))
@@ -2829,7 +2835,7 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
 
         :param player: The player to resolve the MAC address(es) for.
         """
-        conf_base = f"{CONF_PLAYERS}/{player.player_id}/values"
+        conf_base = f"{CONF_PLAYER_PROTOCOLS}/{player.player_id}/values"
         # Save the original MAC reported by the provider (before ARP enrichment)
         reported_mac = player.device_info.identifiers.get(IdentifierType.MAC_ADDRESS)
 
@@ -3084,7 +3090,7 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         return {
             str(value)
             for conf_key in (CONF_POWER_CONTROL, CONF_VOLUME_CONTROL, CONF_MUTE_CONTROL)
-            if (value := self.mass.config.get_raw_player_config_value(player_id, conf_key))
+            if (value := self.mass.config.get_player_value(player_id, conf_key))
         }
 
     def _get_volume_step(self, current_volume: int) -> int:
@@ -3107,7 +3113,7 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         min_volume = int(
             cast(
                 "int",
-                self.mass.config.get_raw_player_config_value(
+                self.mass.config.get_player_value(
                     player_id, CONF_MIN_VOLUME, CONF_ENTRY_MIN_VOLUME.default_value
                 ),
             )
@@ -3115,7 +3121,7 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         max_volume = int(
             cast(
                 "int",
-                self.mass.config.get_raw_player_config_value(
+                self.mass.config.get_player_value(
                     player_id, CONF_MAX_VOLUME, CONF_ENTRY_MAX_VOLUME.default_value
                 ),
             )
@@ -3573,9 +3579,7 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
                     new_members.append(corrected_id)
 
             if changes:
-                self.mass.config.set_raw_player_config_value(
-                    group_id, CONF_GROUP_MEMBERS, new_members
-                )
+                self.mass.config.set_protocol_value(group_id, CONF_GROUP_MEMBERS, new_members)
                 total_fixes += changes
                 fixed_groups.append(group_id)
 

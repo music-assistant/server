@@ -46,7 +46,7 @@ def _make_provider() -> ChromecastProvider:
     provider.mass.closing = False
     provider.mass.loop.call_soon_threadsafe = MagicMock(side_effect=lambda func, *args: func(*args))
     provider.mass.players.get_player.return_value = None
-    provider.mass.config.get_raw_player_config_value.return_value = True
+    provider.mass.config.get_protocol_value.return_value = True
     provider.logger = MagicMock()
     provider._discover_lock = threading.Lock()
     provider._pending_discoveries = set()
@@ -426,7 +426,7 @@ def test_discovery_registers_device_even_when_player_disabled() -> None:
     disc_info = _cast_info()
     disc_info.uuid = uuid
     provider.browser = MagicMock(devices={uuid: disc_info})
-    provider.mass.config.get_raw_player_config_value.return_value = False  # type: ignore[attr-defined]
+    provider.mass.config.get_protocol_value.return_value = False  # type: ignore[attr-defined]
 
     provider._on_chromecast_discovered(uuid, "service")
 

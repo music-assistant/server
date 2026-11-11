@@ -37,7 +37,7 @@ def mock_mass() -> MagicMock:
     mass.player_queues.set_shuffle = AsyncMock()
     mass.call_later = MagicMock()
     mass.cancel_timer = MagicMock()
-    mass.config.get_raw_player_config_value = MagicMock(return_value=False)
+    mass.config.get_protocol_value = MagicMock(return_value=False)
     return mass
 
 

@@ -20,9 +20,6 @@ from .player import MediaAssistantPlayer
 
 if TYPE_CHECKING:
     from async_upnp_client.utils import CaseInsensitiveDict
-    from music_assistant_models.enums import ProviderFeature
-
-SUPPORTED_FEATURES: set[ProviderFeature] = set()
 
 
 class MediaAssistantprovider(PlayerProvider):
@@ -30,11 +27,6 @@ class MediaAssistantprovider(PlayerProvider):
 
     roku_players: ClassVar[dict[str, MediaAssistantPlayer]] = {}
     lock: asyncio.Lock
-
-    @property
-    def supported_features(self) -> set[ProviderFeature]:
-        """Return the features supported by this Provider."""
-        return SUPPORTED_FEATURES
 
     async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
         """Return Config entries to setup this provider."""
@@ -100,6 +92,17 @@ class MediaAssistantprovider(PlayerProvider):
         if not device_ip:
             return
         await self._device_discovered(device_ip)
+
+    async def forget_player(self, roku_player: MediaAssistantPlayer) -> None:
+        """
+        Let go of a removed player, so the next discovery registers its Roku as a new player.
+
+        :param roku_player: The removed player.
+        """
+        await self._device_disconnect(roku_player)
+        # a discovery during the disconnect may have put a new player in its place
+        if self.roku_players.get(roku_player.player_id) is roku_player:
+            del self.roku_players[roku_player.player_id]
 
     async def _device_disconnect(self, roku_player: MediaAssistantPlayer) -> None:
         """Destroy connections to the device."""

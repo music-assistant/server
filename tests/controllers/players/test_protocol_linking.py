@@ -249,7 +249,7 @@ def mock_mass() -> Iterator[MagicMock]:
     mass.config = MagicMock()
     mass.config.get = MagicMock(return_value=[])
 
-    def _get_raw_player_config_value(
+    def _get_player_value(
         _player_id: str, key: str, default: str | int | None = None
     ) -> str | int | None:
         """Return appropriate defaults for player config values."""
@@ -259,7 +259,7 @@ def mock_mass() -> Iterator[MagicMock]:
             return 100
         return default
 
-    mass.config.get_raw_player_config_value = MagicMock(side_effect=_get_raw_player_config_value)
+    mass.config.get_player_value = MagicMock(side_effect=_get_player_value)
     # Return "GLOBAL" for log level config (standard default)
     mass.config.get_raw_core_config_value = MagicMock(return_value="GLOBAL")
     mass.config.set = MagicMock()
@@ -1175,7 +1175,7 @@ class TestSelectBestOutputProtocol:
                 return 100
             return "native"
 
-        mock_mass.config.get_raw_player_config_value = MagicMock(side_effect=_get_raw_config)
+        mock_mass.config.get_player_value = MagicMock(side_effect=_get_raw_config)
 
         controller = PlayerController(mock_mass)
         provider = MockProvider("sonos", mass=mock_mass)
@@ -1215,7 +1215,7 @@ class TestSelectBestOutputProtocol:
                 return 100
             return "dlna_AABBCCDDEEFF"
 
-        mock_mass.config.get_raw_player_config_value = MagicMock(side_effect=_get_raw_config)
+        mock_mass.config.get_player_value = MagicMock(side_effect=_get_raw_config)
 
         controller = PlayerController(mock_mass)
 
@@ -1277,7 +1277,7 @@ class TestSelectBestOutputProtocol:
                 return 100
             return "airplay_AABBCCDDEEFF"
 
-        mock_mass.config.get_raw_player_config_value = MagicMock(side_effect=_get_raw_config)
+        mock_mass.config.get_player_value = MagicMock(side_effect=_get_raw_config)
 
         controller = PlayerController(mock_mass)
 
@@ -1355,7 +1355,7 @@ class TestSelectBestOutputProtocol:
                 return 100
             return "auto"
 
-        mock_mass.config.get_raw_player_config_value = MagicMock(side_effect=_get_raw_config)
+        mock_mass.config.get_player_value = MagicMock(side_effect=_get_raw_config)
 
         controller = PlayerController(mock_mass)
         provider = MockProvider("sonos", mass=mock_mass)
@@ -1516,7 +1516,7 @@ class TestGetControlTarget:
         controller = PlayerController(mock_mass)
         mock_mass.players = controller
 
-        def _get_raw_player_config_value(
+        def _get_player_value(
             _player_id: str, key: str, default: str | int | None = None
         ) -> str | int | None:
             if key == CONF_PREFERRED_OUTPUT_PROTOCOL:
@@ -1527,9 +1527,7 @@ class TestGetControlTarget:
                 return 100
             return default
 
-        mock_mass.config.get_raw_player_config_value = MagicMock(
-            side_effect=_get_raw_player_config_value
-        )
+        mock_mass.config.get_player_value = MagicMock(side_effect=_get_player_value)
 
         universal_player = MockPlayer(
             MockProvider("universal_player", mass=mock_mass), "universal_123", "Kantoor"
@@ -1583,7 +1581,7 @@ class TestGetControlTarget:
         controller = PlayerController(mock_mass)
         mock_mass.players = controller
 
-        def _get_raw_player_config_value(
+        def _get_player_value(
             _player_id: str, key: str, default: str | int | None = None
         ) -> str | int | None:
             if key == CONF_PREFERRED_OUTPUT_PROTOCOL:
@@ -1594,9 +1592,7 @@ class TestGetControlTarget:
                 return 100
             return default
 
-        mock_mass.config.get_raw_player_config_value = MagicMock(
-            side_effect=_get_raw_player_config_value
-        )
+        mock_mass.config.get_player_value = MagicMock(side_effect=_get_player_value)
 
         universal_player = MockPlayer(
             MockProvider("universal_player", mass=mock_mass), "universal_123", "Kantoor"
@@ -2232,7 +2228,7 @@ class TestJoinActiveNativeSession:
                 return 100
             return default
 
-        mock_mass.config.get_raw_player_config_value = MagicMock(side_effect=_get_raw)
+        mock_mass.config.get_player_value = MagicMock(side_effect=_get_raw)
 
         controller, players = self._build_topology(mock_mass)
         # Parent A is already playing natively.
@@ -2263,7 +2259,7 @@ class TestJoinActiveNativeSession:
                 return 100
             return default
 
-        mock_mass.config.get_raw_player_config_value = MagicMock(side_effect=_get_raw)
+        mock_mass.config.get_player_value = MagicMock(side_effect=_get_raw)
 
         controller, players = self._build_topology(mock_mass)
         # Parent A has no active session (active_output_protocol stays None).
@@ -2299,7 +2295,7 @@ class TestJoinActiveNativeSession:
                 return 100
             return default
 
-        mock_mass.config.get_raw_player_config_value = MagicMock(side_effect=_get_raw)
+        mock_mass.config.get_player_value = MagicMock(side_effect=_get_raw)
 
         controller, players = self._build_topology(mock_mass)
         # Parent A stopped: active protocol still reads "native" but playback is idle.
@@ -2336,7 +2332,7 @@ class TestJoinActiveNativeSession:
                 return 100
             return default
 
-        mock_mass.config.get_raw_player_config_value = MagicMock(side_effect=_get_raw)
+        mock_mass.config.get_player_value = MagicMock(side_effect=_get_raw)
 
         controller, players = self._build_topology(mock_mass)
         self._add_airplay_only_child(controller, players, mock_mass)
@@ -2705,7 +2701,7 @@ class TestRegroupOffUnneededProtocol:
     ) -> None:
         """A leader that plays through its preferred bridge keeps its members on that bridge."""
         controller, players = await self._build_left_on_bridge(mock_mass)
-        mock_mass.config.get_raw_player_config_value = MagicMock(
+        mock_mass.config.get_player_value = MagicMock(
             side_effect=lambda player_id, key, default=None: (
                 "bridge_leader"
                 if key == CONF_PREFERRED_OUTPUT_PROTOCOL and player_id == "speaker_leader"
@@ -2729,7 +2725,7 @@ class TestRegroupOffUnneededProtocol:
         """
         controller, players = await self._build_left_on_bridge(mock_mass, with_airplay=True)
         preferred = {"speaker_leader": "airplay_leader", "speaker_member": "airplay_member"}
-        mock_mass.config.get_raw_player_config_value = MagicMock(
+        mock_mass.config.get_player_value = MagicMock(
             side_effect=lambda player_id, key, default=None: (
                 preferred.get(player_id, default)
                 if key == CONF_PREFERRED_OUTPUT_PROTOCOL
@@ -12242,7 +12238,7 @@ class TestPreferNativeGrouping:
         parent = MockPlayer(provider, "shell_parent", "Parent")
         child = _NativeGroupingMockPlayer(provider, "shell_child", "Child")
         # an explicit child output-protocol preference that would otherwise win
-        mock_mass.config.get_raw_player_config_value = MagicMock(return_value="airplay_child")
+        mock_mass.config.get_player_value = MagicMock(return_value="airplay_child")
         mock_mass.players = controller
         controller._players = {"shell_parent": parent, "shell_child": child}
         native_members: list[str] = []
@@ -12263,7 +12259,7 @@ class TestPreferNativeGrouping:
         provider = MockProvider("wiim", instance_id="wiim_instance", mass=mock_mass)
         parent = _RejectsNativeGroupingMockPlayer(provider, "shell_parent", "Parent")
         child = _NativeGroupingMockPlayer(provider, "shell_child", "Child")
-        mock_mass.config.get_raw_player_config_value = MagicMock(return_value=None)
+        mock_mass.config.get_player_value = MagicMock(return_value=None)
         mock_mass.players = controller
         controller._players = {"shell_parent": parent, "shell_child": child}
         native_members: list[str] = []
@@ -12281,7 +12277,7 @@ class TestPreferNativeGrouping:
         parent = MockPlayer(parent_provider, "shell_parent", "Parent")
         parent._attr_can_group_with = set()  # does not accept the cross-backend child
         child = _NativeGroupingMockPlayer(child_provider, "other_child", "Child")
-        mock_mass.config.get_raw_player_config_value = MagicMock(return_value=None)
+        mock_mass.config.get_player_value = MagicMock(return_value=None)
         mock_mass.players = controller
         controller._players = {"shell_parent": parent, "other_child": child}
         native_members: list[str] = []
@@ -12299,7 +12295,7 @@ class TestPreferNativeGrouping:
         parent = MockPlayer(provider, "shell_parent", "Parent")
         child = MockPlayer(provider, "plain_child", "Child")
         assert child.prefer_native_grouping is False
-        mock_mass.config.get_raw_player_config_value = MagicMock(return_value=None)
+        mock_mass.config.get_player_value = MagicMock(return_value=None)
         mock_mass.players = controller
         controller._players = {"shell_parent": parent, "plain_child": child}
         native_members: list[str] = []

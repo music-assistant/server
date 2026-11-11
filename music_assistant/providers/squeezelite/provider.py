@@ -13,7 +13,12 @@ from music_assistant_models.config_entries import ConfigEntry
 from music_assistant_models.enums import ConfigEntryType, MediaType
 from music_assistant_models.errors import SetupFailedError
 
-from music_assistant.constants import CONF_PORT, CONF_SYNC_ADJUST, VERBOSE_LOG_LEVEL
+from music_assistant.constants import (
+    CONF_ENABLED,
+    CONF_PORT,
+    CONF_SYNC_ADJUST,
+    VERBOSE_LOG_LEVEL,
+)
 from music_assistant.helpers.audio import get_mime_type
 from music_assistant.helpers.util import is_port_in_use
 from music_assistant.models.player_provider import PlayerProvider
@@ -115,6 +120,16 @@ class SqueezelitePlayerProvider(PlayerProvider):
             "/jsonrpc.js", self.slimproto.cli._handle_jsonrpc_client
         )
 
+    async def discover_players(self) -> None:
+        """Register the connected players that have no player object, such as a removed one."""
+        if not self.slimproto:
+            return
+        for slimclient in self.slimproto.players:
+            if self.get_protocol(slimclient.player_id) is None and (
+                self.mass.config.get_protocol_value(slimclient.player_id, CONF_ENABLED, True)
+            ):
+                await SqueezelitePlayer(self, slimclient.player_id, slimclient).setup()
+
     async def unload(self, is_removed: bool = False) -> None:
         """Handle unload/close of the provider."""
         # Ensure complete cleanup
@@ -124,9 +139,7 @@ class SqueezelitePlayerProvider(PlayerProvider):
 
     def get_corrected_elapsed_milliseconds(self, slimplayer: SlimClient) -> int:
         """Return corrected elapsed milliseconds for a slimplayer."""
-        sync_delay = self.mass.config.get_raw_player_config_value(
-            slimplayer.player_id, CONF_SYNC_ADJUST, 0
-        )
+        sync_delay = self.mass.config.get_protocol_value(slimplayer.player_id, CONF_SYNC_ADJUST, 0)
         return int(slimplayer.elapsed_milliseconds - sync_delay)
 
     def _lookup_display_name(self, player_id: str) -> str | None:
@@ -220,7 +233,7 @@ class SqueezelitePlayerProvider(PlayerProvider):
             raise web.HTTPNotFound(reason=f"Unknown player: {player_id}")
         sync_parent = cast("SqueezelitePlayer", sync_parent)
 
-        if not (child_player := self.mass.players.get_player(child_player_id)):
+        if not (child_player := self.get_protocol(child_player_id)):
             raise web.HTTPNotFound(reason=f"Unknown player: {child_player_id}")
 
         if not (stream := sync_parent.multi_client_stream) or stream.done:

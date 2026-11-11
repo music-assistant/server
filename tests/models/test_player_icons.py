@@ -66,7 +66,7 @@ def test_default_player_icon(
         player_type=player_type,
     )
     player._attr_device_info = DeviceInfo(manufacturer=manufacturer, model=model)
-    cast("MagicMock", player.mass.config.get_raw_player_config_value).return_value = None
+    cast("MagicMock", player.mass.config.get_player_value).return_value = None
     player._cache.clear()
 
     assert player.icon == expected
@@ -81,7 +81,7 @@ def test_explicit_player_icon_overrides_default() -> None:
     """An explicitly configured icon always wins over the computed default."""
     player = MockPlayer(MockProvider("airplay"), "apple_tv", "Apple TV")
     player._attr_device_info = DeviceInfo(manufacturer="Apple", model="Apple TV 4K")
-    cast("MagicMock", player.mass.config.get_raw_player_config_value).return_value = "living-room"
+    cast("MagicMock", player.mass.config.get_player_value).return_value = "living-room"
     player._cache.clear()
 
     assert player.icon == "living-room"
@@ -90,7 +90,7 @@ def test_explicit_player_icon_overrides_default() -> None:
 def test_automatic_player_icon_refreshes_with_device_info() -> None:
     """An automatic icon follows device information learned after initialization."""
     player = MockPlayer(MockProvider("test"), "late_metadata", "Late metadata")
-    cast("MagicMock", player.mass.config.get_raw_player_config_value).return_value = None
+    cast("MagicMock", player.mass.config.get_player_value).return_value = None
 
     assert player.icon == "speaker"
 

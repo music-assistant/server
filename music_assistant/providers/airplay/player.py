@@ -297,9 +297,7 @@ class AirPlayPlayer(PlayerProtocol):
     def password_invalid(self) -> bool:
         """Return if the device rejected the stored password on its last connect."""
         return bool(
-            self.mass.config.get_raw_player_config_value(
-                self.player_id, CONF_PASSWORD_INVALID, False
-            )
+            self.mass.config.get_protocol_value(self.player_id, CONF_PASSWORD_INVALID, False)
         )
 
     @property
@@ -322,7 +320,7 @@ class AirPlayPlayer(PlayerProtocol):
         if self.password_invalid == invalid:
             # keeps a successful connect from writing the config on every stream
             return
-        self.mass.config.set_raw_player_config_value(self.player_id, CONF_PASSWORD_INVALID, invalid)
+        self.mass.config.set_protocol_value(self.player_id, CONF_PASSWORD_INVALID, invalid)
         # needs_setup/setup_reason are part of the player's own state inputs, so a
         # plain update publishes the (dis)appeared setup action to the clients.
         self.update_state()
@@ -687,9 +685,7 @@ class AirPlayPlayer(PlayerProtocol):
             await self.stream.send_cli_command(f"VOLUME={volume_level}")
         self.update_state()
         # store last state in playerconfig
-        self.mass.config.set_raw_player_config_value(
-            self.player_id, CONF_STORED_VOLUME, volume_level
-        )
+        self.mass.config.set_protocol_value(self.player_id, CONF_STORED_VOLUME, volume_level)
 
     async def volume_mute(self, muted: bool) -> None:
         """Handle VOLUME_MUTE command on the player."""
@@ -852,7 +848,7 @@ class AirPlayPlayer(PlayerProtocol):
             self.mass.create_task(self._adopt_device_volume(volume))
         else:
             self._attr_volume_level = volume
-            self.mass.config.set_raw_player_config_value(self.player_id, CONF_STORED_VOLUME, volume)
+            self.mass.config.set_protocol_value(self.player_id, CONF_STORED_VOLUME, volume)
             self.update_state()
 
     def set_discovery_info(self, discovery_info: AsyncServiceInfo, display_name: str) -> None:
@@ -999,6 +995,12 @@ class AirPlayPlayer(PlayerProtocol):
                 await self.stream.session.remove_client(self, reason="player unloaded")
             self.stream = None
 
+    async def on_remove(self) -> None:
+        """Handle logic when the player is removed for good."""
+        await cast("AirPlayProvider", self.provider).bridge_manager.remove_bridge(
+            self.player_id, permanent=True
+        )
+
     def schedule_group_rejoin(self, candidate_ids: list[str]) -> None:
         """
         Schedule a bounded automatic re-join of this player to its still-active group.
@@ -1065,7 +1067,7 @@ class AirPlayPlayer(PlayerProtocol):
         if control == self.player_id:
             return True
         # bridge players riding on this player (e.g. Sendspin-over-AirPlay) forward to us
-        if control_player := self.mass.players.get_player(control):
+        if control_player := self.mass.players.get_protocol(control):
             return control_player.underlying_player_id == self.player_id
         return False
 
@@ -1534,7 +1536,7 @@ class AirPlayPlayer(PlayerProtocol):
 
         :param password: The plaintext password entered by the user.
         """
-        self.mass.config.set_raw_player_config_value(
+        self.mass.config.set_protocol_value(
             self.player_id, CONF_PASSWORD, self.mass.config.encrypt_string(password)
         )
         # a freshly entered password deserves a clean slate: the reject marker

@@ -148,10 +148,13 @@ def _stub_setup_data(provider: MagicMock, player_id: str, setup_data: dict[str, 
     # their own store; without this they would read back as (truthy) mocks. The
     # player's config reads from the same store so a stored password is observed.
     raw_values: dict[str, Any] = {}
-    provider.mass.config.get_raw_player_config_value.side_effect = (
-        lambda _player_id, key, default=None: raw_values.get(key, default)
+    provider.mass.config.get_player_value.side_effect = lambda _player_id, key, default=None: (
+        raw_values.get(key, default)
     )
-    provider.mass.config.set_raw_player_config_value.side_effect = lambda _player_id, key, value: (
+    provider.mass.config.get_protocol_value.side_effect = lambda _player_id, key, default=None: (
+        raw_values.get(key, default)
+    )
+    provider.mass.config.set_protocol_value.side_effect = lambda _player_id, key, value: (
         raw_values.__setitem__(key, value)
     )
     config = MagicMock()
@@ -664,7 +667,7 @@ async def test_streaming_password_pairing_persists_the_device_password() -> None
     # the pairing credentials still go to setup_data...
     assert collected == {CONF_AIRPLAY_CREDENTIALS: FAKE_AP2_CREDS}
     # ...and the password itself is persisted so every stream can present it
-    player.mass.config.set_raw_player_config_value.assert_called_once_with(  # type: ignore[attr-defined]
+    player.mass.config.set_protocol_value.assert_called_once_with(  # type: ignore[attr-defined]
         "test_player", CONF_PASSWORD, "hunter2"
     )
 
@@ -712,7 +715,7 @@ async def test_raop_password_device_is_asked_for_its_password_without_pairing() 
     # no pairing session is ever built for a device that has nothing to pair
     pairing_cls.assert_not_called()
     assert collected == {}
-    player.mass.config.set_raw_player_config_value.assert_any_call(  # type: ignore[attr-defined]
+    player.mass.config.set_protocol_value.assert_any_call(  # type: ignore[attr-defined]
         "test_player", CONF_PASSWORD, "hunter2"
     )
     assert player.needs_setup is False

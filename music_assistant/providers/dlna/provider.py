@@ -8,7 +8,7 @@ from async_upnp_client.aiohttp import AiohttpSessionRequester
 from async_upnp_client.client_factory import UpnpFactory
 from music_assistant_models.player import DeviceInfo
 
-from music_assistant.constants import CONF_PLAYERS
+from music_assistant.constants import CONF_PLAYER_PROTOCOLS
 from music_assistant.helpers.json import SerializableType
 from music_assistant.models.player_provider import PlayerProvider
 
@@ -113,7 +113,7 @@ class DLNAPlayerProvider(PlayerProvider):
                 dlna_player.description_url = description_url
             else:
                 # new player detected, setup our DLNAPlayer wrapper
-                conf_key = f"{CONF_PLAYERS}/{udn}/enabled"
+                conf_key = f"{CONF_PLAYER_PROTOCOLS}/{udn}/enabled"
                 enabled = self.mass.config.get(conf_key, True)
                 # ignore disabled players
                 if not enabled:

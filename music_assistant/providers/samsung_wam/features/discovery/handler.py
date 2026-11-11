@@ -175,7 +175,7 @@ class DiscoveryHandler(WamProviderFeatureBase):
             await temp_speaker.disconnect()
             return
 
-        if not self.mass.config.get_raw_player_config_value(attrs.mac, "enabled", True):
+        if not self.mass.config.get_protocol_value(attrs.mac, "enabled", True):
             self.logger.debug("Player at %s is disabled in configuration", ip_address)
             await temp_speaker.disconnect()
             return

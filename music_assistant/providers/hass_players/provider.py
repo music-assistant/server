@@ -11,7 +11,7 @@ from collections.abc import Callable
 from typing import TYPE_CHECKING, Any, cast
 
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption
-from music_assistant_models.enums import ConfigEntryType, ProviderFeature
+from music_assistant_models.enums import ConfigEntryType
 
 from music_assistant.mass import MusicAssistant
 from music_assistant.models.player_provider import PlayerProvider
@@ -57,8 +57,7 @@ class HomeAssistantPlayerProvider(PlayerProvider):
         hass_prov: HomeAssistantProvider,
     ) -> None:
         """Initialize MusicProvider."""
-        supported_features = {ProviderFeature.REMOVE_PLAYER}
-        super().__init__(mass, manifest, config, supported_features=supported_features)
+        super().__init__(mass, manifest, config)
         self.hass_prov = hass_prov
 
     async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
@@ -136,16 +135,6 @@ class HomeAssistantPlayerProvider(PlayerProvider):
         if self.on_unload_callbacks:
             for callback in self.on_unload_callbacks:
                 callback()
-
-    async def remove_player(self, player_id: str) -> None:
-        """Remove a player."""
-        player_ids = cast("list[str]", self.config.get_value(CONF_PLAYERS))
-        if player_id in player_ids:
-            player_ids.remove(player_id)
-            self.mass.config.set_raw_provider_config_value(
-                self.instance_id, CONF_PLAYERS, player_ids
-            )
-        await self.mass.players.unregister(player_id, True)
 
     async def _setup_player(
         self,

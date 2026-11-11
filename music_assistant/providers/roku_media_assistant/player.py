@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import time
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 from urllib.parse import urlencode
 
 from music_assistant_models.enums import MediaType, PlaybackState, PlayerFeature
@@ -343,6 +343,10 @@ class MediaAssistantPlayer(PlayerProtocol):
     async def on_unload(self) -> None:
         """Handle logic when the player is unloaded from the Player controller."""
         self.logger.info("Player %s unloaded", self.name)
+
+    async def on_remove(self) -> None:
+        """Disconnect from the Roku, so that a discovery registers it as a new player."""
+        await cast("MediaAssistantprovider", self.provider).forget_player(self)
 
     def _app_in_front(self, device: Device, screensaver_counts: bool = True) -> bool:
         """

@@ -1082,13 +1082,8 @@ class RaumfeldPlayerProvider(PlayerProvider):
         # entry's own default ("disabled"), so the "basic" default this provider's entry
         # declares would only take effect once the user saves the player's settings. Store
         # it once - only while nothing is stored, so a value the user picks later stays.
-        if (
-            self.mass.config.get_raw_player_config_value(player_id, CONF_ENABLE_ICY_METADATA)
-            is None
-        ):
-            self.mass.config.set_raw_player_config_value(
-                player_id, CONF_ENABLE_ICY_METADATA, "basic"
-            )
+        if self.mass.config.get_protocol_value(player_id, CONF_ENABLE_ICY_METADATA) is None:
+            self.mass.config.set_protocol_value(player_id, CONF_ENABLE_ICY_METADATA, "basic")
 
     def _zone_rooms_leader_first(self, zone_rooms: list[str]) -> list[str]:
         """Return the zone's rooms ordered with the coordinator (leader) first."""

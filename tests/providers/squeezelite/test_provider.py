@@ -48,10 +48,9 @@ async def test_multi_client_stream_content_type_describes_output_format(
     sync_parent = MagicMock(multi_client_stream=stream)
     child = MagicMock(display_name="Child")
     provider = MagicMock()
-    provider.mass.players.get_player.side_effect = lambda pid: (
-        sync_parent if pid == "leader" else child
-    )
-    provider.get_protocol = lambda pid: provider.mass.players.get_player(pid)
+    # the sync leader and its child are both protocol objects of this provider
+    provider.get_protocol = {"leader": sync_parent, "child": child}.get
+    provider.mass.players.get_player.return_value = None
     provider.mass.streams.audio.get_output_format = AsyncMock(return_value=output_format)
     provider.mass.streams.audio.get_player_output_plan.return_value = MagicMock(filter_params=[])
     request = MagicMock(method="GET")
@@ -124,3 +123,24 @@ async def test_the_cli_reports_the_display_name_set_in_music_assistant() -> None
         await provider.loaded_in_mass()
 
     assert provider.slimproto.cli.display_name_lookup == provider._lookup_display_name
+
+
+async def test_connected_player_without_player_object_is_registered() -> None:
+    """A connected client whose player was removed gets a new player; registered or disabled not."""
+    provider = SqueezelitePlayerProvider.__new__(SqueezelitePlayerProvider)
+    registered = MagicMock(player_id="registered")
+    removed = MagicMock(player_id="removed")
+    disabled = MagicMock(player_id="disabled")
+    provider.slimproto = MagicMock(players=[registered, removed, disabled])
+    provider.mass = MagicMock()
+    provider.mass.players.get_player.side_effect = {"registered": MagicMock()}.get
+    provider.mass.config.get_protocol_value.side_effect = lambda player_id, *_: (
+        player_id != "disabled"
+    )
+
+    with patch("music_assistant.providers.squeezelite.provider.SqueezelitePlayer") as player_class:
+        player_class.return_value.setup = AsyncMock()
+        await provider.discover_players()
+
+    player_class.assert_called_once_with(provider, "removed", removed)
+    player_class.return_value.setup.assert_awaited_once()

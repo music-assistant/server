@@ -19,7 +19,7 @@ def mock_mass() -> MagicMock:
     """Create a mock MusicAssistant instance."""
     mass = MagicMock()
     mass.closing = False
-    mass.config.get_raw_player_config_value = MagicMock(
+    mass.config.get_player_value = MagicMock(
         side_effect=lambda _player_id, _key, default=None: default
     )
     mass.player_queues.get = MagicMock(return_value=None)

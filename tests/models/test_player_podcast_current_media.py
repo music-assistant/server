@@ -17,7 +17,7 @@ def _player_playing(queue_item: QueueItem) -> MockPlayer:
     """Create a player whose MA queue is playing the given item."""
     mass = MagicMock()
     mass.closing = False
-    mass.config.get_raw_player_config_value = MagicMock(
+    mass.config.get_player_value = MagicMock(
         side_effect=lambda _player_id, _key, default=None: default
     )
     queue = MagicMock()

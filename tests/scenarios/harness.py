@@ -18,7 +18,7 @@ import time
 from dataclasses import dataclass, field, replace
 from functools import partial
 from types import ModuleType, SimpleNamespace
-from typing import TYPE_CHECKING, Any, Literal, NamedTuple, TypeVar
+from typing import TYPE_CHECKING, Any, Literal, NamedTuple, TypeVar, cast
 from unittest.mock import patch
 
 from aiosqlite.core import Connection as SqliteConnection
@@ -30,7 +30,6 @@ from music_assistant_models.enums import (
     PlaybackState,
     PlayerFeature,
     PlayerType,
-    ProviderFeature,
     ProviderType,
 )
 from music_assistant_models.player import DeviceInfo
@@ -174,9 +173,8 @@ class FakeProtocol(PlayerProtocol):
         super().__init__(provider, protocol_id)
         # every command received, as a tuple of the command name and its arguments
         self.commands: list[tuple[Any, ...]] = []
-        # whether the protocol exists only while attached, like a browser session; today's
-        # server has no such attribute to report it on
-        self.session_only = device.session_only
+        # whether the protocol exists only while attached, like a browser session
+        self._attr_session_only = device.session_only
         self._device = device
         self._attr_supported_features = set(DEFAULT_FEATURES)
         self._attr_device_info = DeviceInfo(model=f"Fake {provider.domain}", manufacturer="Fake")
@@ -260,6 +258,10 @@ class FakeProtocol(PlayerProtocol):
             group_members=[self.player_id, *others] if others else [],
         )
 
+    async def on_remove(self) -> None:
+        """Let the provider go of this object, so it finds the device again as a new one."""
+        cast("FakePlayerProvider", self.provider)._protocols.pop(self.player_id, None)
+
     def _apply(self, command: str, *args: Any, **state: Any) -> None:
         """Record a command and report the state it leads to."""
         self.commands.append((command, *args))
@@ -296,7 +298,7 @@ class FakePlayerProvider(PlayerProvider):
     A player provider of an impersonated domain, owning the FakeProtocols a test creates.
 
     Like a real provider, it attaches the devices that are present when it loads and when one
-    of its players gets enabled.
+    of its players gets enabled or removed.
     """
 
     def __init__(
@@ -314,7 +316,7 @@ class FakePlayerProvider(PlayerProvider):
         :param config: The provider instance config.
         :param devices: The devices of the scenario, by protocol id.
         """
-        super().__init__(mass, manifest, config, {ProviderFeature.REMOVE_PLAYER})
+        super().__init__(mass, manifest, config)
         self._devices = devices
         self._protocols: dict[str, FakeProtocol] = {}
 
@@ -339,7 +341,7 @@ class FakePlayerProvider(PlayerProvider):
             values reports several identifiers of one type, for a device that stands for
             several (sub)devices.
         :param session_only: Whether the protocol reports that it exists only while attached,
-            like a browser session. Today's server ignores it.
+            like a browser session. No server behaviour depends on it yet.
         :param state: Other reported state, as taken by Scenario.report().
         """
         self._devices[protocol_id] = _Device(
@@ -358,10 +360,6 @@ class FakePlayerProvider(PlayerProvider):
                 continue
             if self.mass.players.get_protocol(protocol_id) is None:
                 await self.mass.players.register_or_update(self._protocol_for(protocol_id))
-
-    async def remove_player(self, player_id: str) -> None:
-        """Remove a player from this provider."""
-        await self.mass.players.unregister(player_id, permanent=True)
 
     def _protocol_for(self, protocol_id: str) -> FakeProtocol:
         """Return the protocol object of a device on this provider instance."""
@@ -545,6 +543,9 @@ class Scenario:
     async def remove(self, player_id: str) -> None:
         """
         Remove a player the way a user does.
+
+        A device still present comes back as a new player once its provider looks for devices
+        again, 5 s later (idle()).
 
         :param player_id: ID of the player to remove.
         """

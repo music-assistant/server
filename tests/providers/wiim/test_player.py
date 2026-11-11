@@ -337,7 +337,7 @@ class TestInputTakeover:
         """
         mass = mock_provider.mass
         mass.closing = False
-        mass.config.get_raw_player_config_value = MagicMock(
+        mass.config.get_player_value = MagicMock(
             side_effect=lambda _player_id, _key, default=None: default
         )
         mass.players.get_audio_source_session = MagicMock(return_value=None)

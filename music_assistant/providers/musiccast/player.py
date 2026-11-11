@@ -552,6 +552,12 @@ class MusicCastPlayer(PlayerProtocol):
 
         self._maybe_advance_on_track_end()
 
+    async def on_remove(self) -> None:
+        """Handle logic when the player is removed for good."""
+        if TYPE_CHECKING:
+            assert isinstance(self.provider, MusicCastProvider)
+        await self.provider.forget_player(self.player_id)
+
     def _maybe_advance_on_track_end(self) -> None:
         """Schedule a queue advance if the device went idle at end of track."""
         # The device sometimes drops the queued NextURI and stops instead of
@@ -571,7 +577,7 @@ class MusicCastPlayer(PlayerProtocol):
         ):
             return
         if not bool(
-            self.mass.config.get_raw_player_config_value(
+            self.mass.config.get_protocol_value(
                 self.player_id, CONF_PLAYER_AUTO_ADVANCE, default=True
             )
         ):

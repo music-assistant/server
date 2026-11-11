@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import inspect
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, final
 
+from music_assistant_models.enums import ProviderFeature
 from music_assistant_models.errors import PlayerUnavailableError
 
 from .provider import Provider
@@ -20,6 +21,13 @@ class PlayerProvider(Provider):
 
     Player Provider implementations should inherit from this base model.
     """
+
+    @property
+    @final
+    def supported_features(self) -> set[ProviderFeature]:
+        """Return the features supported by this Provider."""
+        # every player can be removed, which the players controller handles itself
+        return {*self._supported_features, ProviderFeature.REMOVE_PLAYER}
 
     async def loaded_in_mass(self) -> None:
         """Call after the provider has been loaded."""
@@ -66,6 +74,10 @@ class PlayerProvider(Provider):
     def on_player_enabled(self, player_id: str) -> None:
         """Call (by config manager) when a player gets enabled."""
         # default implementation: trigger discovery - feel free to override
+        self.schedule_discovery()
+
+    def schedule_discovery(self) -> None:
+        """Run the discovery of this provider in a few seconds; repeated requests run it once."""
         task_id = f"discover_players_{self.instance_id}"
         self.mass.call_later(5, self.mass.run_provider_discovery, self.instance_id, task_id=task_id)
 
@@ -75,11 +87,6 @@ class PlayerProvider(Provider):
         # which will also trigger an unload on the player instance
         # feel free to override with a better implementation
         self.mass.create_task(self.mass.players.unregister(player_id))
-
-    async def remove_player(self, player_id: str) -> None:
-        """Remove a player from this provider."""
-        # will only be called for providers with REMOVE_PLAYER feature set.
-        raise NotImplementedError
 
     async def create_group_player(
         self, name: str, members: list[str], dynamic: bool = True
@@ -92,16 +99,6 @@ class PlayerProvider(Provider):
         :param name: Name of the group player
         :param members: List of player ids to add to the group
         :param dynamic: Whether the group is dynamic (members can change)
-        """
-        raise NotImplementedError
-
-    async def remove_group_player(self, player_id: str) -> None:
-        """
-        Remove a group player.
-
-        Only called for providers that support REMOVE_GROUP_PLAYER feature.
-
-        :param player_id: ID of the group player to remove.
         """
         raise NotImplementedError
 

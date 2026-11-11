@@ -221,7 +221,7 @@ class ChromecastProvider(PlayerProvider):
         # On early return or exception, we clean it up here via finally.
         scheduled = False
         try:
-            if not self.mass.config.get_raw_player_config_value(player_id, CONF_ENABLED, True):
+            if not self.mass.config.get_protocol_value(player_id, CONF_ENABLED, True):
                 self.logger.debug("Ignoring disabled player: %s", player_id)
                 return
 

@@ -76,29 +76,27 @@ def test_group_audio_source_uses_wav_when_member_prefers_it() -> None:
     )
 
     assert codec == "wav"
-    mass.config.get_raw_player_config_value.assert_not_called()
+    mass.config.get_protocol_value.assert_not_called()
 
 
 def test_group_audio_source_falls_back_to_output_codec_when_disabled() -> None:
     """A sync group member that disabled the WAV preference uses its configured output codec."""
     player, mass = _player_with_mocked_mass()
     mass.players.get_player.return_value = _member_player(prefer_wav_for_live_sources=False)
-    mass.config.get_raw_player_config_value.return_value = "aac"
+    mass.config.get_protocol_value.return_value = "aac"
 
     codec = player._get_member_output_codec(
         "member_1", PlayerMedia(uri="fake://x", media_type=MediaType.AUDIO_SOURCE)
     )
 
     assert codec == "aac"
-    mass.config.get_raw_player_config_value.assert_called_once_with(
-        "member_1", CONF_OUTPUT_CODEC, "flac"
-    )
+    mass.config.get_protocol_value.assert_called_once_with("member_1", CONF_OUTPUT_CODEC, "flac")
 
 
 def test_group_regular_track_ignores_wav_preference() -> None:
     """Regular track playback in a sync group always uses the member's configured codec."""
     player, mass = _player_with_mocked_mass()
-    mass.config.get_raw_player_config_value.return_value = "flac"
+    mass.config.get_protocol_value.return_value = "flac"
 
     codec = player._get_member_output_codec(
         "member_1", PlayerMedia(uri="fake://x", media_type=MediaType.TRACK)

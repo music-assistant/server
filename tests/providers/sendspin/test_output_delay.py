@@ -41,7 +41,7 @@ def _unregistered_player(mass: MusicAssistant) -> SendspinPlayer:
     player._player_id = "p1"
     player._config = mass.config.get_base_player_config("p1", "sendspin")
     mass.players = MagicMock()
-    mass.players.get_player.return_value = player
+    mass.players.get_protocol.return_value = player
     return player
 
 
@@ -82,7 +82,7 @@ def test_device_reported_delay_is_stored() -> None:
 
     SendspinPlayer.event_cb(player, MagicMock(), OutputDelayChangedEvent(output_delay_ms=120))
 
-    player.mass.config.set_raw_player_config_value.assert_called_once_with(
+    player.mass.config.set_protocol_value.assert_called_once_with(
         "p1", CONF_SENDSPIN_STATIC_DELAY, 120
     )
 
@@ -100,7 +100,7 @@ async def test_delay_reported_before_registration_is_stored_and_applied(
     player._config = _load_config(mass_minimal, player)
     player_role = await _run_config_hook(player)
 
-    assert mass_minimal.config.get_raw_player_config_value("p1", CONF_SENDSPIN_STATIC_DELAY) == 120
+    assert mass_minimal.config.get_protocol_value("p1", CONF_SENDSPIN_STATIC_DELAY) == 120
     player_role.set_output_delay.assert_called_once_with(120)
 
 
@@ -114,12 +114,12 @@ async def test_delay_reported_while_registration_loads_the_config_is_applied(
     loaded_config = _load_config(mass_minimal, player)
 
     SendspinPlayer.event_cb(player, MagicMock(), OutputDelayChangedEvent(output_delay_ms=120))
-    assert mass_minimal.config.get_raw_player_config_value("p1", CONF_SENDSPIN_STATIC_DELAY) is None
+    assert mass_minimal.config.get_protocol_value("p1", CONF_SENDSPIN_STATIC_DELAY) is None
 
     player._config = loaded_config
     player_role = await _run_config_hook(player)
 
-    assert mass_minimal.config.get_raw_player_config_value("p1", CONF_SENDSPIN_STATIC_DELAY) == 120
+    assert mass_minimal.config.get_protocol_value("p1", CONF_SENDSPIN_STATIC_DELAY) == 120
     player_role.set_output_delay.assert_called_once_with(120)
 
 
@@ -139,7 +139,7 @@ def test_unchanged_delay_is_not_stored_again() -> None:
 
     SendspinPlayer.event_cb(player, MagicMock(), OutputDelayChangedEvent(output_delay_ms=120))
 
-    player.mass.config.set_raw_player_config_value.assert_not_called()
+    player.mass.config.set_protocol_value.assert_not_called()
 
 
 @pytest.mark.parametrize(

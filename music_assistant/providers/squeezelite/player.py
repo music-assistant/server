@@ -733,7 +733,7 @@ class SqueezelitePlayer(PlayerProtocol):
         """Set the presets for a player."""
         preset_items: list[SlimPreset] = []
         for preset_index in range(1, 11):
-            if preset_conf := self.mass.config.get_raw_player_config_value(
+            if preset_conf := self.mass.config.get_protocol_value(
                 self.player_id, f"preset_{preset_index}"
             ):
                 try:
@@ -764,12 +764,12 @@ class SqueezelitePlayer(PlayerProtocol):
 
     async def _set_display(self) -> None:
         """Set the display config for a player."""
-        display_enabled = self.mass.config.get_raw_player_config_value(
+        display_enabled = self.mass.config.get_protocol_value(
             self.player_id,
             CONF_ENTRY_DISPLAY.key,
             CONF_ENTRY_DISPLAY.default_value,
         )
-        visualization = self.mass.config.get_raw_player_config_value(
+        visualization = self.mass.config.get_protocol_value(
             self.player_id,
             CONF_ENTRY_VISUALIZATION.key,
             CONF_ENTRY_VISUALIZATION.default_value,
@@ -797,9 +797,7 @@ class SqueezelitePlayer(PlayerProtocol):
                 CONF_PREFER_WAV_FOR_LIVE_SOURCES, default=False
             ):
                 return "wav"
-        return self.mass.config.get_raw_player_config_value(
-            member_player_id, CONF_OUTPUT_CODEC, "flac"
-        )
+        return self.mass.config.get_protocol_value(member_player_id, CONF_OUTPUT_CODEC, "flac")
 
     def _sync_elapsed_after_flush(self) -> None:
         """Drop an old-stream heartbeat that landed before the flush."""

@@ -55,7 +55,7 @@ def mock_mass() -> MagicMock:
     mass.config = MagicMock()
     mass.config.get = MagicMock(return_value=[])
 
-    def _get_raw_player_config_value(
+    def _get_player_value(
         _player_id: str, key: str, default: str | int | None = None
     ) -> str | int | None:
         if key == "min_volume":
@@ -64,7 +64,7 @@ def mock_mass() -> MagicMock:
             return 100
         return default
 
-    mass.config.get_raw_player_config_value = MagicMock(side_effect=_get_raw_player_config_value)
+    mass.config.get_player_value = MagicMock(side_effect=_get_player_value)
     mass.config.get_raw_core_config_value = MagicMock(return_value="GLOBAL")
     mass.config.set = MagicMock()
     mass.signal_event = MagicMock()
@@ -200,7 +200,7 @@ class TestGroupPlayMediaPower:
         mock_mass.players = controller
         mock_mass.cache.set = AsyncMock()
         mock_mass.player_queues.resume = AsyncMock()
-        mock_mass.config.get_raw_player_config_value = MagicMock(
+        mock_mass.config.get_player_value = MagicMock(
             side_effect=lambda _player_id, key, default=None: (
                 "fake"
                 if key == CONF_POWER_CONTROL

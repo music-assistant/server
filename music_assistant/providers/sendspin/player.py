@@ -660,7 +660,7 @@ class SendspinBasePlayer(PlayerProtocol):
             return False
         if self.api.roles_by_family("source"):
             return False
-        return not self.mass.config.get_raw_player_config_value(
+        return not self.mass.config.get_protocol_value(
             self.player_id, CONF_SOURCE_INPUT_DECLINED, False
         )
 
@@ -700,7 +700,7 @@ class SendspinBasePlayer(PlayerProtocol):
             return True
         allow_input = method == CONNECT_METHOD_UNPAIRED_WITH_INPUT
         if has_input:
-            self.mass.config.set_raw_player_config_value(
+            self.mass.config.set_protocol_value(
                 self.player_id, CONF_SOURCE_INPUT_DECLINED, not allow_input
             )
         await provider.set_trusted_unpaired(self.player_id, enabled=True, allow_input=allow_input)
@@ -726,9 +726,7 @@ class SendspinBasePlayer(PlayerProtocol):
         )
         if str(values[CONF_SOURCE_INPUT_ACTION]) != SOURCE_INPUT_DISMISS:
             return False
-        self.mass.config.set_raw_player_config_value(
-            self.player_id, CONF_SOURCE_INPUT_DECLINED, True
-        )
+        self.mass.config.set_protocol_value(self.player_id, CONF_SOURCE_INPUT_DECLINED, True)
         self.update_state()
         return True
 
@@ -741,7 +739,7 @@ class SendspinBasePlayer(PlayerProtocol):
         values = await session.form([entry], step_id="source_autostart", last_step=True)
         target = values[CONF_SOURCE_AUTOSTART_TARGET]
         # Keep the default unstored, as the settings page does, so it follows the device's player.
-        self.mass.config.set_raw_player_config_value(
+        self.mass.config.set_protocol_value(
             self.player_id,
             CONF_SOURCE_AUTOSTART_TARGET,
             None if target == entry.default_value else target,
@@ -1096,14 +1094,14 @@ class SendspinBasePlayer(PlayerProtocol):
                 # Set the decline before revoking and clear it only after approving, so the
                 # device never drops back to needs_setup, not even when the call fails.
                 if not allow_input:
-                    self.mass.config.set_raw_player_config_value(
+                    self.mass.config.set_protocol_value(
                         self.player_id, CONF_SOURCE_INPUT_DECLINED, True
                     )
                 await provider.set_trusted_unpaired(
                     self.player_id, enabled=True, allow_input=allow_input
                 )
                 if allow_input:
-                    self.mass.config.set_raw_player_config_value(
+                    self.mass.config.set_protocol_value(
                         self.player_id, CONF_SOURCE_INPUT_DECLINED, False
                     )
             elif action in _MANAGEMENT_ACTIONS:
@@ -1528,6 +1526,7 @@ class SendspinPlayer(SendspinBasePlayer):
         self._attr_hidden_by_default = False
         self._attr_private = False
         self._attr_expose_to_ha_by_default = True
+        self._attr_session_only = False
         self._attr_type = PlayerType.PROTOCOL
 
     def event_cb(self, client: SendspinClient, event: ClientEvent) -> None:
@@ -1553,7 +1552,7 @@ class SendspinPlayer(SendspinBasePlayer):
                     # an older report kept from before the config was loaded is outdated now
                     self._reported_static_delay = None
                     if current != delay_ms:
-                        self.mass.config.set_raw_player_config_value(
+                        self.mass.config.set_protocol_value(
                             self.player_id, CONF_SENDSPIN_STATIC_DELAY, delay_ms
                         )
             case _:
@@ -1762,7 +1761,7 @@ class SendspinPlayer(SendspinBasePlayer):
                 CONF_SENDSPIN_STATIC_DELAY, self.static_delay_default_ms
             ):
                 # also updates the in-place config entry that _apply_static_delay reads
-                self.mass.config.set_raw_player_config_value(
+                self.mass.config.set_protocol_value(
                     self.player_id, CONF_SENDSPIN_STATIC_DELAY, reported_delay
                 )
         await self._apply_preferred_format()
@@ -2171,6 +2170,7 @@ class SendspinPlayer(SendspinBasePlayer):
         self._attr_expose_to_ha_by_default = not is_standalone
         self._attr_hidden_by_default = is_standalone
         self._attr_private = is_standalone
+        self._attr_session_only = is_standalone
         # register web/app player as native player type because it doesn't need to be linked
         # every web/app player is just a standalone player.
         self._attr_type = PlayerType.PLAYER if is_standalone else PlayerType.PROTOCOL
@@ -2906,6 +2906,7 @@ class SendspinVisualizerPlayer(SendspinBasePlayer):
     _attr_type = PlayerType.VISUALIZER
     _attr_hidden_by_default = True
     _attr_expose_to_ha_by_default = False
+    _attr_session_only = True
 
     def __init__(
         self,
@@ -3034,3 +3035,4 @@ class SendspinSourcePlayer(SendspinBasePlayer):
     _attr_type = PlayerType.SOURCE
     _attr_hidden_by_default = True
     _attr_expose_to_ha_by_default = False
+    _attr_session_only = True

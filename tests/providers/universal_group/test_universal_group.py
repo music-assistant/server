@@ -58,7 +58,7 @@ def _make_mock_mass() -> MagicMock:
     mass.config.get_base_player_config.return_value = MagicMock(
         name=None, default_name="Test UGP", get_value=_config_value
     )
-    mass.config.get_raw_player_config_value = MagicMock(return_value=None)
+    mass.config.get_player_value = MagicMock(return_value=None)
 
     mass.streams = MagicMock()
     mass.streams.base_url = "http://test"
@@ -462,7 +462,7 @@ class TestSupportedFeaturesPower:
         """No power_control config → no POWER feature."""
         mass = _make_mock_mass()
         # explicitly ensure power_control config is empty
-        mass.config.get_raw_player_config_value = MagicMock(return_value=None)
+        mass.config.get_player_value = MagicMock(return_value=None)
         ugp = _make_ugp(mass)
         # on_config_updated is what (re)evaluates the feature set
         await ugp.on_config_updated()
@@ -478,7 +478,7 @@ class TestSupportedFeaturesPower:
                 return PLAYER_CONTROL_FAKE
             return default
 
-        mass.config.get_raw_player_config_value = MagicMock(side_effect=_get_raw)
+        mass.config.get_player_value = MagicMock(side_effect=_get_raw)
         ugp = _make_ugp(mass)
         await ugp.on_config_updated()
         assert PlayerFeature.POWER in ugp.supported_features

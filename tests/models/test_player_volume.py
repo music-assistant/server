@@ -26,7 +26,7 @@ def mock_mass() -> MagicMock:
     mass.closing = False
     mass.loop = None
     mass.config.get = MagicMock(return_value=[])
-    mass.config.get_raw_player_config_value = MagicMock(return_value=None)
+    mass.config.get_player_value = MagicMock(return_value=None)
     mass.config.get_raw_core_config_value = MagicMock(return_value="GLOBAL")
     mass.config.set = MagicMock()
     mass.signal_event = MagicMock()
@@ -39,7 +39,7 @@ class TestFinalVolumeLevel:
 
     def test_uses_control_player_when_available(self, mock_mass: MagicMock) -> None:
         """Final volume uses the control player's volume when it is present."""
-        mock_mass.config.get_raw_player_config_value = MagicMock(
+        mock_mass.config.get_player_value = MagicMock(
             side_effect=lambda _pid, key, *_a: (
                 "control_player" if key == CONF_VOLUME_CONTROL else None
             )
@@ -60,7 +60,7 @@ class TestFinalVolumeLevel:
 
     def test_falls_back_to_native_when_control_player_missing(self, mock_mass: MagicMock) -> None:
         """Final volume falls back to native when the control player doesn't exist."""
-        mock_mass.config.get_raw_player_config_value = MagicMock(
+        mock_mass.config.get_player_value = MagicMock(
             side_effect=lambda _pid, key, *_a: (
                 "missing_player" if key == CONF_VOLUME_CONTROL else None
             )
@@ -79,7 +79,7 @@ class TestFinalVolumeLevel:
 
     def test_reports_unknown_when_control_has_no_volume(self, mock_mass: MagicMock) -> None:
         """Final volume is unknown when the resolved control's volume is None."""
-        mock_mass.config.get_raw_player_config_value = MagicMock(
+        mock_mass.config.get_player_value = MagicMock(
             side_effect=lambda _pid, key, *_a: (
                 "control_player" if key == CONF_VOLUME_CONTROL else None
             )
@@ -100,7 +100,7 @@ class TestFinalVolumeLevel:
 
     def test_uses_zero_from_external_control_player(self, mock_mass: MagicMock) -> None:
         """Volume 0 from an external (non-linked) control player is trusted as genuine."""
-        mock_mass.config.get_raw_player_config_value = MagicMock(
+        mock_mass.config.get_player_value = MagicMock(
             side_effect=lambda _pid, key, *_a: "amplifier" if key == CONF_VOLUME_CONTROL else None
         )
         provider = MockProvider("test", mass=mock_mass)
@@ -124,7 +124,7 @@ class TestFinalVolumeMutedState:
 
     def test_uses_control_player_when_available(self, mock_mass: MagicMock) -> None:
         """Final mute state uses the control player's mute state when present."""
-        mock_mass.config.get_raw_player_config_value = MagicMock(
+        mock_mass.config.get_player_value = MagicMock(
             side_effect=lambda _pid, key, default=None: (
                 "control_player"
                 if key == CONF_MUTE_CONTROL
@@ -150,7 +150,7 @@ class TestFinalVolumeMutedState:
 
     def test_falls_back_to_native_when_control_player_missing(self, mock_mass: MagicMock) -> None:
         """Final mute state falls back to native when the control player doesn't exist."""
-        mock_mass.config.get_raw_player_config_value = MagicMock(
+        mock_mass.config.get_player_value = MagicMock(
             side_effect=lambda _pid, key, default=None: (
                 "missing_player"
                 if key == CONF_MUTE_CONTROL
@@ -174,7 +174,7 @@ class TestFinalVolumeMutedState:
 
     def test_reports_unknown_when_control_has_no_mute_state(self, mock_mass: MagicMock) -> None:
         """Final mute state is unknown when the resolved control's mute state is None."""
-        mock_mass.config.get_raw_player_config_value = MagicMock(
+        mock_mass.config.get_player_value = MagicMock(
             side_effect=lambda _pid, key, default=None: (
                 "control_player"
                 if key == CONF_MUTE_CONTROL

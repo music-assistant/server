@@ -206,7 +206,7 @@ def _make_provider() -> tuple[SonosPlayerProvider, MagicMock]:
     """Create a provider bound to a mocked server, and return both."""
     mass = MagicMock()
     mass.players.get_player.return_value = None
-    mass.config.get_raw_player_config_value.return_value = True
+    mass.config.get_protocol_value.return_value = True
     provider = object.__new__(SonosPlayerProvider)
     provider.mass = mass
     provider.logger = logging.getLogger("test.sonos_s1.provider")
@@ -228,7 +228,7 @@ def _make_soco(ip_address: str = "127.0.0.1") -> MagicMock:
 async def test_disabled_speaker_is_not_interrogated() -> None:
     """A speaker the user disabled must not be queried over the network at all."""
     provider, mass = _make_provider()
-    mass.config.get_raw_player_config_value.return_value = False
+    mass.config.get_protocol_value.return_value = False
     soco = _make_soco()
 
     with patch("music_assistant.providers.sonos_s1.provider.SonosPlayer") as player_cls:

@@ -187,7 +187,7 @@ class SonosPlayerProvider(PlayerProvider):
             if existing.soco.ip_address != soco.ip_address:
                 await existing.update_ip(soco)
             return
-        enabled = self.mass.config.get_raw_player_config_value(player_id, "enabled", True)
+        enabled = self.mass.config.get_protocol_value(player_id, "enabled", True)
         if not enabled:
             self.logger.debug("Ignoring disabled player: %s", player_id)
             return

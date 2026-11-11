@@ -1103,7 +1103,7 @@ class AirPlayControlPlayer(AirPlayPlayer):
                 self.update_state()
             return
         self._attr_volume_level = volume
-        self.mass.config.set_raw_player_config_value(
+        self.mass.config.set_protocol_value(
             self.player_id,
             CONF_STORED_VOLUME,
             volume,

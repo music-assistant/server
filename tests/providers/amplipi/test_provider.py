@@ -6,7 +6,7 @@ import asyncio
 from ipaddress import IPv4Address, IPv6Address
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, cast
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from music_assistant_models.errors import PlayerCommandFailed, SetupFailedError
@@ -22,6 +22,7 @@ from music_assistant.providers.amplipi.constants import (
     MA_STREAM_TYPE,
     MDNS_TYPE,
 )
+from music_assistant.providers.amplipi.player import AmpliPiZonePlayer
 from music_assistant.providers.amplipi.provider import AmpliPiPlayerProvider
 
 if TYPE_CHECKING:
@@ -327,6 +328,31 @@ class TestDiscoverAndHelpers:
         )
         await prov.discover_players()
         prov.mass.players.register_or_update.assert_not_awaited()
+
+    async def test_removed_zone_is_registered_again_as_a_new_player(self) -> None:
+        """A removed zone player is let go of, so the next discovery registers a new one."""
+        prov = _provider()
+        prov._status = SimpleNamespace(zones=[_zone(0), _zone(1)], sources=[])
+        prov.mass.players.register_or_update = AsyncMock()  # type: ignore[method-assign]
+        removed, kept = (AmpliPiZonePlayer.__new__(AmpliPiZonePlayer) for _ in range(2))
+        for zone_id, player in enumerate((removed, kept)):
+            player._provider = prov
+            player._zone_id = zone_id
+        prov._players = {0: removed, 1: kept}
+
+        await removed.on_remove()
+        assert prov._players == {1: kept}
+
+        with patch(
+            "music_assistant.providers.amplipi.provider.AmpliPiZonePlayer",
+            lambda _provider, zone_id: SimpleNamespace(
+                player_id=f"z{zone_id}", update_from_status=MagicMock()
+            ),
+        ):
+            await prov.discover_players()
+        assert set(prov._players) == {0, 1}
+        assert prov._players[0] is not removed
+        prov.mass.players.register_or_update.assert_awaited_once_with(prov._players[0])
 
     def test_status_property(self) -> None:
         """The status property returns the last polled status."""

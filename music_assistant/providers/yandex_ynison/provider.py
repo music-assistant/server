@@ -1482,9 +1482,9 @@ class YandexYnisonProvider(PluginProvider):
         """Return the connected player's current or stored display name."""
         if player := self.mass.players.get_player(self._default_player_id):
             return str(player.display_name)
-        stored_name = self.mass.config.get_raw_player_config_value(
+        stored_name = self.mass.config.get_player_value(
             self._default_player_id, "name"
-        ) or self.mass.config.get_raw_player_config_value(self._default_player_id, "default_name")
+        ) or self.mass.config.get_player_value(self._default_player_id, "default_name")
         return stored_name if isinstance(stored_name, str) and stored_name else DEFAULT_DISPLAY_NAME
 
     def _get_target_player_id(self) -> str | None:

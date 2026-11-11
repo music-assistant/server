@@ -44,7 +44,7 @@ def mock_mass() -> MagicMock:
     """Create a mock MusicAssistant instance."""
     mass = MagicMock()
     mass.closing = False
-    mass.config.get_raw_player_config_value = MagicMock(
+    mass.config.get_player_value = MagicMock(
         side_effect=lambda _player_id, _key, default=None: default
     )
     # no queue registered: current_media resolves from the player's native media
@@ -1034,7 +1034,7 @@ def _store_legacy_ids(mock_mass: MagicMock, stored: Any) -> None:
     :param mock_mass: The mocked Music Assistant instance.
     :param stored: The value to store.
     """
-    mock_mass.config.get_raw_player_config_value = MagicMock(
+    mock_mass.config.get_player_value = MagicMock(
         side_effect=lambda _player_id, key, default=None: (
             stored if key == CONF_LEGACY_IDS else default
         )
