@@ -6,7 +6,7 @@ import asyncio
 import time
 from collections.abc import AsyncIterator
 from typing import TYPE_CHECKING
-from unittest.mock import AsyncMock, MagicMock, PropertyMock, call, patch
+from unittest.mock import AsyncMock, MagicMock, PropertyMock, patch
 
 import pytest
 from aioslimproto.models import PlayerState as SlimPlayerState
@@ -21,7 +21,6 @@ from music_assistant.constants import (
 from music_assistant.providers.squeezelite.constants import (
     CONF_ENTRY_DISPLAY,
     CONF_ENTRY_VISUALIZATION,
-    CONF_STORED_MUTED,
     CONF_STORED_VOLUME,
     DEFAULT_PLAYER_VOLUME,
 )
@@ -382,21 +381,20 @@ def _player_for_volume_restore(
 
 
 @pytest.mark.parametrize(
-    ("stored", "legacy_cache", "expected_muted", "expected_volume"),
+    ("stored", "legacy_cache", "expected_volume"),
     [
         # volume mapped to an AVR: the provider never sends volume commands, so the
         # cache entry expired, but the stored value must still be restored
-        ({CONF_STORED_VOLUME: 100, CONF_STORED_MUTED: False}, None, False, 100),
-        ({CONF_STORED_VOLUME: 35, CONF_STORED_MUTED: True}, [False, 80], True, 35),
+        ({CONF_STORED_VOLUME: 100}, None, 100),
+        ({CONF_STORED_VOLUME: 35}, [False, 80], 35),
         # stored before the volume moved out of the cache
-        ({}, [True, 55], True, 55),
-        ({}, None, False, DEFAULT_PLAYER_VOLUME),
+        ({}, [True, 55], 55),
+        ({}, None, DEFAULT_PLAYER_VOLUME),
     ],
 )
 async def test_setup_restores_volume_without_a_valid_cache_entry(
     stored: dict[str, object],
     legacy_cache: list[object] | None,
-    expected_muted: bool,
     expected_volume: int,
 ) -> None:
     """Reconnecting restores the last volume even after the cache entry expired."""
@@ -405,24 +403,20 @@ async def test_setup_restores_volume_without_a_valid_cache_entry(
     with patch.object(player, "update_attributes"):
         await player.setup()
 
-    player.client.mute.assert_awaited_once_with(expected_muted)
+    player.client.mute.assert_not_called()
     player.client.volume_set.assert_awaited_once_with(expected_volume)
     mass.players.register_or_update.assert_awaited_once_with(player)
     assert stored[CONF_STORED_VOLUME] == expected_volume
 
 
-async def test_volume_commands_store_volume_and_mute_without_expiry() -> None:
-    """Volume and mute commands keep their value in the player config, not the cache."""
+async def test_volume_commands_store_volume_without_expiry() -> None:
+    """Volume commands keep their value in the player config, not the cache."""
     player, mass = _player_for_volume_restore({}, None)
     await mass.players.register_or_update(player)
 
     await player.volume_set(100)
-    await player.volume_mute(True)
 
-    assert mass.config.set_raw_player_config_value.call_args_list == [
-        call("p1", CONF_STORED_VOLUME, 100),
-        call("p1", CONF_STORED_MUTED, True),
-    ]
+    mass.config.set_raw_player_config_value.assert_called_once_with("p1", CONF_STORED_VOLUME, 100)
     mass.cache.set.assert_not_called()
 
 

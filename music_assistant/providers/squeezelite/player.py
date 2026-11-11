@@ -47,7 +47,6 @@ from music_assistant.models.player import (
 from .constants import (
     CONF_ENTRY_DISPLAY,
     CONF_ENTRY_VISUALIZATION,
-    CONF_STORED_MUTED,
     CONF_STORED_VOLUME,
     DEFAULT_PLAYER_VOLUME,
     DEVIATION_JUMP_IGNORE,
@@ -144,23 +143,20 @@ class SqueezelitePlayer(Player):
         self.logger.info("Player %s connected", self.client.name or player_id)
         # update all dynamic attributes
         self.update_attributes()
-        # restore volume state, the (expiring) cache entry only covers values
-        # stored by older versions
-        init_muted = False
-        init_volume = DEFAULT_PLAYER_VOLUME
-        if last_state := await self.mass.cache.get(
-            key=player_id, provider=self.provider.instance_id, category=CACHE_CATEGORY_PREV_STATE
-        ):
-            init_muted = last_state[0]
-            init_volume = last_state[1]
-        init_muted = bool(
-            self.mass.config.get_raw_player_config_value(player_id, CONF_STORED_MUTED, init_muted)
+        # restore volume state
+        init_volume = cast(
+            "int | None",
+            self.mass.config.get_raw_player_config_value(player_id, CONF_STORED_VOLUME),
         )
-        init_volume = int(
-            self.mass.config.get_raw_player_config_value(player_id, CONF_STORED_VOLUME, init_volume)
-        )
+        if init_volume is None:
+            # older versions kept it in an (expiring) cache entry
+            last_state = await self.mass.cache.get(
+                key=player_id,
+                provider=self.provider.instance_id,
+                category=CACHE_CATEGORY_PREV_STATE,
+            )
+            init_volume = last_state[1] if last_state else DEFAULT_PLAYER_VOLUME
         await self.client.stop()
-        await self.client.mute(init_muted)
         await self.client.volume_set(init_volume)
         await self.mass.players.register_or_update(self)
         # persist a volume restored from the legacy cache before that entry expires
@@ -210,7 +206,6 @@ class SqueezelitePlayer(Player):
     async def volume_mute(self, muted: bool) -> None:
         """Handle VOLUME MUTE command on the player."""
         await self.client.mute(muted)
-        self.mass.config.set_raw_player_config_value(self.player_id, CONF_STORED_MUTED, muted)
 
     async def power(self, powered: bool) -> None:
         """Handle POWER command on the player."""
