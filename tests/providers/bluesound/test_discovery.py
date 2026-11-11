@@ -16,7 +16,8 @@ async def test_musp_zone_falls_back_to_sync_status_mac_without_arp() -> None:
     """A secondary zone must still register when ARP can't resolve the chassis MAC."""
     provider = BluesoundPlayerProvider.__new__(BluesoundPlayerProvider)
     provider.mass = MagicMock()
-    provider.mass.players.get_player.return_value = None
+    provider.mass.players.get_protocol.return_value = None
+    provider.mass.players.wants_protocol.return_value = True
     provider.logger = MagicMock()
     info = MagicMock(type=MUSP_MDNS_TYPE, decoded_properties={})
     client = MagicMock()
@@ -34,6 +35,6 @@ async def test_musp_zone_falls_back_to_sync_status_mac_without_arp() -> None:
             "Office._musp._tcp.local.", ServiceStateChange.Added, info
         )
 
-    _, player_id, discovery_info, *_ = player_cls.call_args.args
-    assert player_id == "00:11:22:aa:bb:cc:11010"
+    _, protocol_id, discovery_info, *_ = player_cls.call_args.args
+    assert protocol_id == "00:11:22:aa:bb:cc:11010"
     assert discovery_info["mac"] == "00:11:22:aa:bb:cc"

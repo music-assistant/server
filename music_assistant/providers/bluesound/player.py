@@ -47,14 +47,14 @@ class BluesoundPlayer(PlayerProtocol):
     def __init__(
         self,
         provider: BluesoundPlayerProvider,
-        player_id: str,
+        protocol_id: str,
         discovery_info: BluesoundDiscoveryInfo,
         name: str,
         ip_address: str,
         port: int,
     ) -> None:
         """Initialize the BluOS Player."""
-        super().__init__(provider, player_id)
+        super().__init__(provider, protocol_id)
         self.port = port
         self.discovery_info = discovery_info
         self.ip_address = ip_address
@@ -74,6 +74,9 @@ class BluesoundPlayer(PlayerProtocol):
             manufacturer="BluOS",
         )
         self._attr_device_info.add_identifier(IdentifierType.IP_ADDRESS, ip_address)
+        # the zones of a multi-zone device share its MAC and IP: the id of the zone tells
+        # them apart
+        self._attr_device_info.add_identifier(IdentifierType.ZONE, protocol_id)
         # Only add MAC address if it's valid (not 00:00:00:00:00:00)
         if mac_address := discovery_info.get("mac"):
             if is_valid_mac_address(mac_address):
@@ -92,7 +95,7 @@ class BluesoundPlayer(PlayerProtocol):
     async def setup(self) -> None:
         """Set up the player."""
         await self.update_attributes()
-        await self.mass.players.register_or_update(self)
+        await self.mass.players.attach(self)
 
     async def get_config_entries(self) -> list[ConfigEntry]:
         """Return all (provider/player specific) Config Entries for the player."""
@@ -187,7 +190,7 @@ class BluesoundPlayer(PlayerProtocol):
         """Handle PLAY MEDIA for BluOS player using the provided URL."""
         self.logger.debug("Play_media called")
         self.logger.debug(media)
-        url = await self.provider.mass.streams.resolve_stream_url(self.player_id, media)
+        url = await self.provider.mass.streams.resolve_stream_url(self.protocol_id, media)
         play_state = await self.client.play_url(url, timeout=1)
 
         # Enable dynamic polling
@@ -264,7 +267,7 @@ class BluesoundPlayer(PlayerProtocol):
         if (leader_player_id := provider.player_map.get((leader.ip, leader.port))) and (
             leader_player := provider.get_protocol(leader_player_id)
         ):
-            await leader_player.set_members(None, [self.player_id])
+            await leader_player.set_members(None, [self.protocol_id])
 
     async def poll(self) -> None:
         """Poll player for state updates."""
@@ -352,7 +355,7 @@ class BluesoundPlayer(PlayerProtocol):
 
     async def update_attributes(self) -> None:
         """Update the BluOS player attributes."""
-        self.logger.debug(f"updating {self.player_id} attributes")
+        self.logger.debug(f"updating {self.protocol_id} attributes")
         if self.dynamic_poll_count > 0:
             self.dynamic_poll_count -= 1
 
@@ -422,8 +425,13 @@ class BluesoundPlayer(PlayerProtocol):
             # Player has group leader
             self._attr_group_members.clear()
             leader = self.sync_status.leader
-            leader_player_id = provider.player_map.get((leader.ip, leader.port), None)
-            self._attr_active_source = leader_player_id
+            leader_protocol_id = provider.player_map.get((leader.ip, leader.port), None)
+            leader_player = (
+                self.mass.players.get_player_by_protocol(leader_protocol_id)
+                if leader_protocol_id
+                else None
+            )
+            self._attr_active_source = leader_player.player_id if leader_player else None
 
         self.update_state()
 
