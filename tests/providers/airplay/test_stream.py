@@ -512,11 +512,12 @@ async def test_cli_args_featureless_ap2_only_device_forces_airplay2() -> None:
     [
         ("[STATUS] route protocol=airplay2 flow=native timing=ptp buffered=1", True),
         ("[STATUS] route protocol=airplay2 flow=native timing=ptp buffered=0", False),
+        ("[STATUS] route protocol=airplay2 flow=realtime timing=ntp buffered=1", True),
         ("[STATUS] route protocol=raop flow=realtime timing=ntp buffered=1", False),
     ],
 )
 def test_parse_route_status_records_the_buffered_route(line: str, buffered: bool) -> None:
-    """Only a native AirPlay 2 stream on the buffered route counts as buffered."""
+    """Only an AirPlay 2 stream on the buffered route counts as buffered."""
     stream = AirPlayStream(_make_player())
     stream._parse_route_status(line)
     assert stream.buffered_route is buffered
