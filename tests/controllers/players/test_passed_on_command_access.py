@@ -249,8 +249,7 @@ async def test_a_user_of_the_member_only_is_refused(kind: str, source: str, comm
         _caller("member-only", kind),
         pytest.raises(
             InsufficientPermissions,
-            # the queue controller names the owner by its id
-            match=f"limited does not have access to player ({OWNER_NAME[OWNER[kind]]}|{OWNER[kind]})$",
+            match=f"limited does not have access to player {OWNER_NAME[OWNER[kind]]}$",
         ),
     ):
         await setup.run(command, "a")

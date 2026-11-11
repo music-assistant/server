@@ -746,6 +746,8 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         """
         player = self._get_player_with_redirect(player_id)
         async with self.get_player_lock(player.player_id, PlayerLockPurpose.PLAYBACK):
+            # the player can have joined a group while waiting for the lock
+            self.check_player_access(self._resolve_playback_owner(player).player_id)
             if player.state.playback_state == PlaybackState.PLAYING:
                 self.logger.info(
                     "Ignore PLAY request to player %s: player is already playing",
@@ -810,6 +812,8 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         """
         player = self._get_player_with_redirect(player_id)
         async with self.get_player_lock(player.player_id, PlayerLockPurpose.PLAYBACK):
+            # the player can have joined a group while waiting for the lock
+            self.check_player_access(self._resolve_playback_owner(player).player_id)
             await self._handle_cmd_resume(player.player_id, source, media)
 
     @api_command("players/cmd/seek", required_scope=Scope.PLAYERS_CONTROL)
@@ -4515,7 +4519,8 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         """
         self.check_player_access(player_id)
         player = self._get_player_with_redirect(player_id)
-        self.check_player_access(player.player_id)
+        if player.player_id != player_id:
+            self.check_player_access(player.player_id)
         return player
 
     # Private command handlers (no permission checks)
