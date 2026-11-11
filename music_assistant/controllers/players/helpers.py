@@ -58,6 +58,7 @@ def handle_player_command[PlayerControllerT: "PlayerController", **P, R](
     *,
     lock: PlayerLockPurpose | None = None,
     switched_off: SwitchedOffAction = SwitchedOffAction.REFUSE,
+    accept_unavailable: bool = False,
 ) -> Callable[
     [Callable[Concatenate[PlayerControllerT, P], Awaitable[R]]],
     Callable[Concatenate[PlayerControllerT, P], Coroutine[Any, Any, R | None]],
@@ -69,6 +70,7 @@ def handle_player_command[PlayerControllerT: "PlayerController", **P, R](
     *,
     lock: PlayerLockPurpose | None = None,
     switched_off: SwitchedOffAction = SwitchedOffAction.REFUSE,
+    accept_unavailable: bool = False,
 ) -> (
     Callable[Concatenate[PlayerControllerT, P], Coroutine[Any, Any, R | None]]
     | Callable[
@@ -80,7 +82,7 @@ def handle_player_command[PlayerControllerT: "PlayerController", **P, R](
     Decorator to check and log commands to players.
 
     Validates that the player exists and is available before executing the command,
-    raising PlayerUnavailableError otherwise.
+    raising PlayerUnavailableError otherwise (see accept_unavailable).
     Also checks user permissions and optionally acquires a per-player lock.
 
     :param func: The function to wrap (when used without parentheses).
@@ -92,6 +94,8 @@ def handle_player_command[PlayerControllerT: "PlayerController", **P, R](
         the command has nothing to act on (volume), ignored after calling off a power on
         under way (stop, pause), powered on first (before any lock is taken) for commands
         that start playback, or run as is for commands that handle it themselves.
+    :param accept_unavailable: Run the command for an unavailable player too, for a
+        command that handles such a player itself (power).
     """  # noqa: D401
 
     def decorator(
@@ -103,27 +107,29 @@ def handle_player_command[PlayerControllerT: "PlayerController", **P, R](
             player_id = kwargs.get("player_id") or args[0]
             assert isinstance(player_id, str)  # for type checking
 
-            # this should not happen, but in case a player_id of a protocol player is used,
-            # auto-resolve it to the parent player
+            # this should not happen, but in case the id of a protocol is used,
+            # auto-resolve it to the player it is attached to
             if (
-                (player := self._players.get(player_id))
-                and player.protocol_parent_id
-                and (protocol_parent := self._players.get(player.protocol_parent_id))
+                player_id not in self._players
+                and (protocol := self._protocols.get(player_id))
+                and (protocol_parent := protocol.player)
             ):
                 if "player_id" in kwargs:
                     kwargs["player_id"] = protocol_parent.player_id
                 else:
                     args = (protocol_parent.player_id, *args[1:])  # type: ignore[assignment]
                 self.logger.debug(
-                    "Auto-resolved protocol player %s to linked parent %s for command %s",
+                    "Auto-resolved protocol %s to its player %s for command %s",
                     player_id,
                     protocol_parent.player_id,
                     fn.__name__,
                 )
                 player_id = protocol_parent.player_id
 
-            player = self.get_player(player_id, raise_unavailable=True)
-            assert player is not None  # for type checking
+            player = self.get_player(player_id, raise_unavailable=not accept_unavailable)
+            if player is None:
+                msg = f"Player {player_id} is not available"
+                raise PlayerUnavailableError(msg)
 
             current_user = get_current_user()
             if current_user and not has_player_access(current_user, player.player_id, player):
@@ -200,7 +206,7 @@ async def wait_for_power_on(
                 while not player_control.power_state:
                     await asyncio.sleep(0.1)
             else:
-                while not player.powered:
+                while not ((own := player.own_protocol) and own.powered):
                     await asyncio.sleep(0.1)
     except TimeoutError:
         logger.debug(
