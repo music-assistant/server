@@ -80,20 +80,22 @@ class MusicCastProvider(PlayerProvider):
         for physical_device in list(self.mc_controller.physical_devices):
             physical_device.remove()
 
-    def on_player_enabled(self, player_id: str) -> None:
-        """Call (by config manager) when a player gets enabled."""
-        self.mass.create_task(self._register_enabled_player(player_id))
+    async def discover_players(self) -> None:
+        """Attach the zones of the known devices that have no attached protocol."""
+        for device_id, musiccast_player_helper in list(self.musiccast_player_helpers.items()):
+            for zone_name in list(musiccast_player_helper.physical_device.zone_devices):
+                await self._attach_known_zone(f"{device_id}{PLAYER_ZONE_SPLITTER}{zone_name}")
 
-    async def forget_player(self, player_id: str) -> None:
+    async def forget_player(self, protocol_id: str) -> None:
         """
-        Let go of a removed player, so the next discovery sets up its device again.
+        Let go of a removed zone, so the next discovery sets up its device again.
 
         The other zones of the device keep working until then and are taken over by that
         new setup.
 
-        :param player_id: ID of the removed player.
+        :param protocol_id: ID of the protocol of the removed zone.
         """
-        device_id, _, zone_name = player_id.partition(PLAYER_ZONE_SPLITTER)
+        device_id, _, zone_name = protocol_id.partition(PLAYER_ZONE_SPLITTER)
         async with self._registration_locks.setdefault(device_id, asyncio.Lock()):
             if (musiccast_player_helper := self.musiccast_player_helpers.get(device_id)) is None:
                 return
@@ -213,13 +215,15 @@ class MusicCastProvider(PlayerProvider):
                     device_ip,
                 )
 
-    async def _register_enabled_player(self, player_id: str) -> None:
-        device_id, _, zone_name = player_id.partition(PLAYER_ZONE_SPLITTER)
+    async def _attach_known_zone(self, protocol_id: str) -> None:
+        """Attach a zone of a known device that has no attached protocol, such as a re-enabled one."""
+        device_id, _, zone_name = protocol_id.partition(PLAYER_ZONE_SPLITTER)
         async with self._registration_locks.setdefault(device_id, asyncio.Lock()):
-            # a re-enable still queued must not register players for an unloaded instance
+            # a discovery still queued must not attach zones for an unloaded instance
             if self.unloading:
                 return
-            # a known device only lacks the player, which got unregistered when disabled
+            # a known device only lacks the protocol of the zone, which got detached when
+            # its player was disabled or removed
             musiccast_player_helper = self.musiccast_player_helpers.get(device_id)
             zone_device = (
                 musiccast_player_helper.physical_device.zone_devices.get(zone_name)
@@ -232,11 +236,12 @@ class MusicCastProvider(PlayerProvider):
                 or zone_device.zone_data is None
                 or zone_device.zone_data.name is None
             ):
-                super().on_player_enabled(player_id)
                 return
-            if self.get_protocol(player_id) is None:
+            if self.get_protocol(protocol_id) is None and self.mass.players.wants_protocol(
+                protocol_id
+            ):
                 player = await self._setup_zone_player(musiccast_player_helper, zone_device)
-                await self.mass.players.register_or_update(player)
+                await self.mass.players.attach(player)
                 setattr(musiccast_player_helper, f"player_{zone_device.zone_name}", player)
 
     async def _register_player(
@@ -257,17 +262,17 @@ class MusicCastProvider(PlayerProvider):
             physical_device=physical_device,
         )
 
-        # set up every zone before registering any, so a failing zone leaves no player
-        # registered on this device
+        # set up every zone before attaching any, so a failing zone leaves no protocol
+        # attached on this device
         players = [
             await self._setup_zone_player(musiccast_player_helper, zone_device)
             for zone_device in physical_device.zone_devices.values()
             if zone_device.zone_data is not None and zone_device.zone_data.name is not None
         ]
         for player in players:
-            await self.mass.players.register_or_update(player)
+            await self.mass.players.attach(player)
             setattr(musiccast_player_helper, f"player_{player.zone_device.zone_name}", player)
-            physical_device.register_callback(partial(self._on_udp_update, player.player_id))
+            physical_device.register_callback(partial(self._on_udp_update, player.protocol_id))
 
         if (
             musiccast_player_helper.player_zone2 is not None
@@ -296,15 +301,15 @@ class MusicCastProvider(PlayerProvider):
         # seek implementation
         player = MusicCastPlayer(
             provider=self,
-            player_id=f"{musiccast_player_helper.device_id}{PLAYER_ZONE_SPLITTER}{zone_device.zone_name}",
+            protocol_id=f"{musiccast_player_helper.device_id}{PLAYER_ZONE_SPLITTER}{zone_device.zone_name}",
             physical_device=musiccast_player_helper.physical_device,
             zone_device=zone_device,
         )
         await player.setup()
         return player
 
-    def _on_udp_update(self, player_id: str, physical_device: MusicCastPhysicalDevice) -> None:
-        # resolved per update: a re-enabled player replaces the disabled one without a new callback
-        player = self.get_protocol(player_id)
+    def _on_udp_update(self, protocol_id: str, physical_device: MusicCastPhysicalDevice) -> None:
+        # resolved per update: a re-enabled zone replaces the disabled one without a new callback
+        player = self.get_protocol(protocol_id)
         if isinstance(player, MusicCastPlayer) and player.physical_device is physical_device:
             player._non_async_udp_callback(physical_device)
