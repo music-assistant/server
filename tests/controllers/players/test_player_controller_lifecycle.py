@@ -709,3 +709,47 @@ class TestGroupMemberships:
 
         # the live config copy is pruned before the group re-reads it
         assert seen == [["pl_other"]]
+
+
+class TestPowerOnOfAReturningDevice:
+    """A device that is switched on at its power control is played to once it is back."""
+
+    async def test_power_on_returns_once_the_returning_protocol_finished_its_attach(
+        self, scenario: Scenario
+    ) -> None:
+        """A protocol that is still setting up the returning device is not played to yet."""
+        squeezelite = await scenario.add_provider("squeezelite")
+        pi = squeezelite.protocol("b8:27:eb:aa:bb:cc", "Bathroom", identifiers=KITCHEN)
+        await scenario.attach(pi)
+        player_id = scenario.single_player(pi).player_id
+        plug = await scenario.add_power_control("switch.plug", "Plug", powered=True)
+        await scenario.configure_player(player_id, power_control=plug.control_id)
+        await scenario.switch(plug, False)
+        await scenario.detach(pi)
+        await scenario.idle()
+        players = scenario.mass.players
+        release = asyncio.Event()
+        on_attach = pi.on_attach
+
+        async def _attach_later(player: Player) -> None:
+            await release.wait()
+            await on_attach(player)
+
+        pi.on_attach = _attach_later  # type: ignore[method-assign]
+
+        power_on = await scenario.command(players.cmd_power(player_id, True))
+        assert plug.commands == [True]
+        attach = await scenario.command(players.attach(pi))
+        # the power on looks for the device every 0.5 s
+        await scenario.advance(1)
+
+        assert not power_on.done()
+
+        release.set()
+        await scenario.settle()
+        await attach
+        await scenario.advance(1)
+        await power_on
+        state = scenario.player(player_id)
+        assert state is not None
+        assert state.powered is True
