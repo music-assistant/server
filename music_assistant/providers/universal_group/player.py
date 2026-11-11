@@ -685,7 +685,8 @@ class UniversalGroupPlayer(PlayerProtocol):
         # prefer the configuration of the player that actually renders the audio
         # (the member's active protocol player when it outputs via a protocol);
         # child player_id may be stale/invalid, then fall back to the group profile
-        if child_player_id and (child_player := self.mass.players.get_player(child_player_id)):
+        child_player = self.mass.players.get_player(child_player_id) if child_player_id else None
+        if child_player:
             http_profile = child_player.get_output_config_value(CONF_HTTP_PROFILE, http_profile)
         if http_profile == "chunked" and request.version < HttpVersion11:
             # chunked encoding is not allowed on HTTP/1.0; fall back to
@@ -715,9 +716,9 @@ class UniversalGroupPlayer(PlayerProtocol):
 
         # Generate filter params for the player specific DSP settings
         output_plan = None
-        if child_player_id:
+        if child_player and (output_protocol := child_player.resolve_output_protocol()):
             output_plan = self.mass.streams.audio.get_player_output_plan(
-                child_player_id,
+                output_protocol.protocol_id,
                 self.stream.input_format,
                 output_format,
                 queue_id=self.stream.queue_id,

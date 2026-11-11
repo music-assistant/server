@@ -17,18 +17,29 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from aiohttp import HttpVersion11
 from music_assistant_models.config_entries import PlayerConfig
 from music_assistant_models.constants import (
     PLAYER_CONTROL_FAKE,
     PLAYER_CONTROL_NATIVE,
     PLAYER_CONTROL_NONE,
 )
-from music_assistant_models.enums import PlaybackState, PlayerFeature, PlayerType, ProtocolRole
+from music_assistant_models.dsp import AudioChannel, DSPConfig
+from music_assistant_models.enums import (
+    ContentType,
+    PlaybackState,
+    PlayerFeature,
+    PlayerType,
+    ProtocolRole,
+)
 from music_assistant_models.errors import UnsupportedFeaturedException
+from music_assistant_models.media_items import AudioFormat
 
 from music_assistant.constants import CONF_GROUP_MEMBERS
 from music_assistant.controllers.players import PlayerController
 from music_assistant.controllers.players.constants import PlayerLockPurpose
+from music_assistant.controllers.streams.audio import StreamsAudio
+from music_assistant.controllers.streams.audio_processing import AudioOutputPlan
 from music_assistant.models.player import Player
 from music_assistant.providers.universal_group.player import UniversalGroupPlayer
 from tests.common import MockProvider, attach_mock, make_player_state, mock_player_mass
@@ -737,3 +748,54 @@ class TestSupportedFeaturesFromMembers:
 
         assert ugp.player is not None
         assert ugp.player.mute_control == PLAYER_CONTROL_NONE
+
+
+class TestMemberStream:
+    """The stream a member fetches is processed for the protocol that renders it."""
+
+    async def test_a_pre_split_member_gets_the_output_of_its_audio_protocol(self) -> None:
+        """A member whose player id is that of its own protocol, playing over AirPlay."""
+        mass = _make_mock_mass()
+        ugp = _make_ugp(mass, members=["m1"])
+        member, _native = attach_mock(MockProvider("sonos", mass=mass), "m1", player_id="m1")
+        attach_mock(
+            MockProvider("airplay", mass=mass), "ap_m1", role=ProtocolRole.AUDIO, player=member
+        )
+        member.set_active_output_protocol("ap_m1")
+        mass.config.get_player_dsp_config.return_value = DSPConfig(enabled=False)
+        mass.config.get_protocol_value.side_effect = lambda protocol_id, _key, default: {
+            "ap_m1": "left",
+            "m1": "right",
+        }.get(protocol_id, default)
+        mass.config.get_dsp_irs.return_value = []
+        mass.streams.audio = StreamsAudio(mass)
+        plans: list[AudioOutputPlan] = []
+        get_plan = mass.streams.audio.get_player_output_plan
+
+        def _record(*args: Any, **kwargs: Any) -> AudioOutputPlan:
+            plans.append(get_plan(*args, **kwargs))
+            return plans[-1]
+
+        async def _audio(*_args: Any, **_kwargs: Any) -> AsyncIterator[bytes]:
+            yield b"audio"
+
+        pcm = AudioFormat(content_type=ContentType.PCM_F32LE, sample_rate=48000, bit_depth=32)
+        ugp.stream = MagicMock(
+            done=False, input_format=pcm, queue_id=None, session_id=None, get_stream=_audio
+        )
+        request = MagicMock(
+            path=f"/ugp/{GROUP_PROTOCOL_ID}.mp3",
+            query={"player_id": "m1"},
+            method="GET",
+            version=HttpVersion11,
+        )
+        with (
+            patch.object(mass.streams.audio, "get_player_output_plan", side_effect=_record),
+            patch(
+                "music_assistant.providers.universal_group.player.web.StreamResponse",
+                return_value=MagicMock(prepare=AsyncMock(), write=AsyncMock()),
+            ),
+        ):
+            await ugp._serve_ugp_stream(request)
+
+        assert [plan.output_details.source_channel for plan in plans] == [AudioChannel.FL]
