@@ -33,7 +33,6 @@ from .constants import (
 )
 
 if TYPE_CHECKING:
-    from music_assistant.models.player import Player
     from music_assistant.models.setup_flow import SetupSession
 
     from .provider import MPDPlayerProvider
@@ -126,13 +125,10 @@ class MPDPlayer(PlayerProtocol):
         self._attr_setup_reason = None
         await self._connect()
 
-    async def on_attach(self, player: Player) -> None:
-        """Disconnect from MPD once the protocol is detached again."""
-
-        def _schedule_disconnect() -> None:
-            self.mass.call_later(0, self._disconnect, task_id=f"mpd_disconnect_{self.protocol_id}")
-
-        self._on_detach_callbacks.append(_schedule_disconnect)
+    async def on_detach(self) -> None:
+        """Disconnect from MPD."""
+        await super().on_detach()
+        await self._disconnect()
 
     async def on_remove(self) -> None:
         """Take the server out of the hosts the provider is set up with."""
@@ -165,21 +161,21 @@ class MPDPlayer(PlayerProtocol):
         # A failed attempt or a dead idle loop can leave connected clients behind
         await self._disconnect()
         try:
-            self._client = MPDClient()
-            await self._client.connect(self.host, self.port)
+            client = self._client = MPDClient()
+            await client.connect(self.host, self.port)
             if self.password:
-                await self._client.password(self.password)
+                await client.password(self.password)
 
-            self._idle_client = MPDClient()
-            await self._idle_client.connect(self.host, self.port)
+            idle_client = self._idle_client = MPDClient()
+            await idle_client.connect(self.host, self.port)
             if self.password:
-                await self._idle_client.password(self.password)
+                await idle_client.password(self.password)
 
-            status = await self._client.status()
+            status = await client.status()
             self._attr_available = True
             self._attr_needs_setup = False
             self._attr_setup_reason = None
-            self._attr_device_info.model = f"MPD {self._client.mpd_version}"
+            self._attr_device_info.model = f"MPD {client.mpd_version}"
             self.logger.info("Connected to MPD at %s:%s", self.host, self.port)
             self._idle_task = self.mass.create_task(self._idle_loop())
             await self._sync_state(status)

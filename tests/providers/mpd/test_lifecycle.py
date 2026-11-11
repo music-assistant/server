@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import gc
 from typing import TYPE_CHECKING, Any, cast
 from unittest.mock import patch
@@ -10,7 +11,15 @@ from music_assistant.constants import CONF_OUTPUT_CODEC
 from music_assistant.controllers.players.protocol_linking import PLAYER_ID_PREFIX
 from music_assistant.providers.mpd.provider import CONF_MANUAL_IPS
 
-from .conftest import FIRST, HOST, SECOND, add_provider, load_provider, reconfigure
+from .conftest import (
+    FIRST,
+    HOST,
+    SECOND,
+    FakeMPDClient,
+    add_provider,
+    load_provider,
+    reconfigure,
+)
 
 if TYPE_CHECKING:
     from music_assistant.models.player import Player
@@ -98,6 +107,33 @@ async def test_a_server_disconnects_at_every_detach(scenario: Scenario) -> None:
 
     await scenario.disable(player_id)
     assert not _connected(protocol)
+
+
+async def test_a_detach_during_the_connect_leaves_no_connection(scenario: Scenario) -> None:
+    """A server detached while its attach still connects holds no connection or idle loop."""
+    provider = await add_provider(scenario, [HOST])
+    protocol = _protocol(provider, FIRST)
+    await scenario.mass.players.detach(FIRST)
+    await scenario.settle()
+    connecting = asyncio.Event()
+    release = asyncio.Event()
+
+    async def _held_connect(_client: FakeMPDClient, _host: str, _port: int) -> None:
+        connecting.set()
+        await release.wait()
+
+    with patch.object(FakeMPDClient, "connect", _held_connect):
+        task = await scenario.command(provider.discover_players())
+        assert connecting.is_set()
+        await scenario.mass.players.detach(FIRST)
+        release.set()
+        await scenario.settle()
+        await task
+
+    assert protocol.player is None
+    assert not _connected(protocol)
+    assert protocol._idle_task is None
+    assert protocol._on_detach_callbacks == []
 
 
 async def test_discovery_leaves_an_attached_server_alone(scenario: Scenario) -> None:
