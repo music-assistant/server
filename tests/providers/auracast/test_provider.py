@@ -43,21 +43,42 @@ async def test_serial_port_has_no_platform_specific_default() -> None:
 
 
 @pytest.mark.asyncio
-async def test_discover_players_starts_broadcast_after_registering_player(
+async def test_discover_players_starts_broadcast_after_attaching_player(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Start the empty broadcast as soon as provider discovery registers its player."""
+    """Start the empty broadcast as soon as provider discovery attaches its player."""
     player = MagicMock()
     player.start_broadcast = AsyncMock()
     monkeypatch.setattr("music_assistant.providers.auracast.AuracastPlayer", lambda *_: player)
     provider = MagicMock()
     provider.instance_id = "auracast"
-    provider.mass.players.register = AsyncMock()
+    provider.get_protocol.side_effect = [None, player]
+    provider.mass.players.wants_protocol.return_value = True
+    provider.mass.players.attach = AsyncMock()
 
     await AuracastProvider.discover_players(cast("Any", provider))
 
-    provider.mass.players.register.assert_awaited_once_with(player)
+    provider.mass.players.attach.assert_awaited_once_with(player)
     player.start_broadcast.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_discover_players_starts_nothing_for_a_player_that_was_not_attached(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """No broadcast starts when the player was disabled while it was being attached."""
+    player = MagicMock()
+    player.start_broadcast = AsyncMock()
+    monkeypatch.setattr("music_assistant.providers.auracast.AuracastPlayer", lambda *_: player)
+    provider = MagicMock()
+    provider.instance_id = "auracast"
+    provider.get_protocol.return_value = None
+    provider.mass.players.wants_protocol.return_value = True
+    provider.mass.players.attach = AsyncMock()
+
+    await AuracastProvider.discover_players(cast("Any", provider))
+
+    player.start_broadcast.assert_not_awaited()
 
 
 @pytest.mark.asyncio

@@ -76,15 +76,14 @@ class AuracastProvider(PlayerProvider):
         )
 
     async def discover_players(self) -> None:
-        """Register the controller as the provider's single player."""
-        player = AuracastPlayer(self, f"auracast_{self.instance_id}")
-        await self.mass.players.register(player)
-        await player.start_broadcast()
-
-    async def unload(self, is_removed: bool = False) -> None:
-        """Unregister the player and release any active Bluetooth transport."""
-        for player in self.protocols:
-            await self.mass.players.unregister(player.player_id)
+        """Attach the broadcast of the controller as the provider's single player."""
+        protocol_id = f"auracast_{self.instance_id}"
+        if self.get_protocol(protocol_id) or not self.mass.players.wants_protocol(protocol_id):
+            return
+        player = AuracastPlayer(self, protocol_id)
+        await self.mass.players.attach(player)
+        if self.get_protocol(protocol_id) is player:
+            await player.start_broadcast()
 
 
 async def setup(
