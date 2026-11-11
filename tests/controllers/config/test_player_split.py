@@ -7,10 +7,11 @@ import logging
 from copy import deepcopy
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from unittest.mock import patch
 
 import pytest
+from music_assistant_models.enums import IdentifierType
 
 from music_assistant.constants import (
     CONF_PLAYER_DSP,
@@ -29,6 +30,12 @@ from music_assistant.controllers.config.player_split import (
     needs_player_split,
 )
 from tests.common import capture_log_records
+
+# the real server with fake providers, for what a device finds of its migrated config
+from tests.scenarios.conftest import scenario  # noqa: F401
+
+if TYPE_CHECKING:
+    from tests.scenarios.harness import Scenario
 
 AIRPLAY = "airplay--a1"
 CAST = "chromecast--c1"
@@ -379,6 +386,36 @@ def test_empty_wrapper_is_only_kept_when_the_user_customised_it() -> None:
     assert result[CONF_PLAYER_PROTOCOLS] == {}
     assert result[CONF_PLAYER_DSP] == {"up0009": {"enabled": True}}
     assert result[CONF_PLAYER_QUEUES] == queues
+
+
+@pytest.mark.parametrize(
+    ("linked", "players"),
+    [
+        (["ap_31", "cc_31"], {"ap_31": "up0031", "cc_31": "up0031"}),
+        # a customised one without protocols is kept for a device that returns
+        ([], {}),
+    ],
+    ids=["with_protocols", "without_protocols"],
+)
+def test_wrapper_is_stored_as_a_player_whatever_type_it_was_created_with(
+    linked: list[str], players: dict[str, str]
+) -> None:
+    """A wrapper whose creation was interrupted still stored the type of a group."""
+    wrapper = _record(
+        "up0031", UNIVERSAL_PLAYER, "group", name="Den", values={"linked_protocol_ids": linked}
+    )
+    providers = {"ap_31": AIRPLAY, "cc_31": CAST}
+    protocols = [
+        _protocol(protocol_id, providers[protocol_id], "up0031") for protocol_id in players
+    ]
+
+    result = _migrated(_settings(wrapper, *protocols))
+
+    assert result[CONF_PLAYERS]["up0031"]["player_type"] == "player"
+    assert {
+        protocol_id: record["player_id"]
+        for protocol_id, record in result[CONF_PLAYER_PROTOCOLS].items()
+    } == players
 
 
 def test_protocol_without_a_player_is_unbound_and_enabled() -> None:
@@ -754,3 +791,35 @@ async def test_new_installation_gets_no_backup(tmp_path: Path) -> None:
 
     assert controller._data == FLAGS
     assert list(tmp_path.iterdir()) == []
+
+
+async def test_protocols_attach_to_a_wrapper_that_was_stored_as_a_group(
+    scenario: Scenario,  # noqa: F811
+) -> None:
+    """The protocols of a wrapper whose creation was interrupted come back on its player."""
+    airplay = await scenario.add_provider("airplay")
+    chromecast = await scenario.add_provider("chromecast")
+    den = {IdentifierType.MAC_ADDRESS: "00:11:22:33:44:55"}
+    den_airplay = airplay.protocol("airplay_den", "Den", role="audio", identifiers=den)
+    den_cast = chromecast.protocol("cast_den", "Den", role="audio", identifiers=den)
+    scenario.set_present("airplay_den", True)
+    scenario.set_present("cast_den", True)
+    wrapper = _record(
+        "up0032",
+        UNIVERSAL_PLAYER,
+        "group",
+        name="Den TV",
+        values={"linked_protocol_ids": ["airplay_den", "cast_den"]},
+    )
+    stored = [
+        wrapper,
+        _protocol("airplay_den", airplay.instance_id, "up0032"),
+        _protocol("cast_den", chromecast.instance_id, "up0032"),
+    ]
+
+    await scenario.seed_pre_split_config({record["player_id"]: record for record in stored})
+    await scenario.idle()
+
+    player = scenario.single_player(den_airplay, den_cast)
+    assert (player.player_id, player.name) == ("up0032", "Den TV")
+    assert [visible.player_id for visible in scenario.visible_players()] == ["up0032"]

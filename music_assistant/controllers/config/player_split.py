@@ -451,6 +451,8 @@ def _convert_wrapper(
         default=None,
     )
     record["provider"] = records[best_child].get("provider") if best_child else ""
+    # a wrapper was created as a group and only got the type of a player at its first update
+    record["player_type"] = PlayerType.PLAYER.value
     values = _values(record)
     values.pop(LEGACY_LINKED_PROTOCOL_IDS, None)
     values.pop(LEGACY_PROTOCOL_PARENT_ID, None)
