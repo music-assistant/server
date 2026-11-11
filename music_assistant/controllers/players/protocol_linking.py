@@ -38,6 +38,7 @@ from music_assistant.constants import (
     CONF_PREFERRED_OUTPUT_PROTOCOL,
     CONF_PROTOCOL_IDENTIFIERS,
     CONF_REPORTED_MAC,
+    CONF_SESSION_ONLY,
     CONF_UNDERLYING_PLAYER_ID,
     CONF_VOLUME_CONTROL,
     VERBOSE_LOG_LEVEL,
@@ -139,6 +140,9 @@ class ProtocolLinkingMixin:
         if protocol.role == ProtocolRole.VIRTUAL:
             # a group is no device that another protocol could stand for
             return None
+        if protocol.session_only:
+            # what only exists while it is connected stands for no device
+            return None
         for player_id in self._get_candidate_player_ids():
             if not self._can_attach_to(protocol, identity, player_id):
                 continue
@@ -196,8 +200,9 @@ class ProtocolLinkingMixin:
         Return whether the attach rules allow a protocol on a player.
 
         A player has at most one protocol per domain and at most one that stands for the
-        device itself, and no identifier of its device may rule the protocol out. Nothing
-        attaches to a player that is being removed.
+        device itself, and no identifier of its device may rule the protocol out. A player
+        that only exists while its device is connected takes only such a protocol, and such
+        a protocol only such a player. Nothing attaches to a player that is being removed.
 
         :param protocol: The protocol that attaches.
         :param identity: What the protocol reports about its device.
@@ -210,6 +215,13 @@ class ProtocolLinkingMixin:
         player = self._players.get(player_id)
         stored = self.mass.config.get(f"{CONF_PLAYERS}/{player_id}")
         if player is None and not isinstance(stored, dict):
+            return False
+        if player is not None:
+            session_only = player.session_only
+        else:
+            values = (stored or {}).get("values")
+            session_only = isinstance(values, dict) and bool(values.get(CONF_SESSION_ONLY))
+        if session_only != protocol.session_only:
             return False
         player_type = player.type if player else (stored or {}).get("player_type")
         is_own = protocol.role in OWN_PROTOCOL_ROLES

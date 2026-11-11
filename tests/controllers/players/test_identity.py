@@ -419,6 +419,85 @@ async def test_session_only_player_keeps_its_player_when_its_protocol_changes_ro
     assert scenario.events(*PLAYER_EVENTS) == []
 
 
+@pytest.mark.parametrize("first", ["session_only", "device"])
+async def test_session_only_player_shares_no_device_with_another_protocol(
+    scenario: Scenario, first: str
+) -> None:
+    """A protocol that only exists while connected and a device it shares an address with stay apart."""
+    sendspin = await scenario.add_provider("sendspin")
+    chromecast = await scenario.add_provider("chromecast")
+    app = sendspin.protocol(
+        "sendspin_app_1", "TV app", session_only=True, identifiers=KITCHEN_ADDRESS
+    )
+    tv = chromecast.protocol("cast_tv", "TV", role="audio", identifiers=KITCHEN)
+    for protocol in (app, tv) if first == "session_only" else (tv, app):
+        await scenario.attach(protocol)
+    await scenario.idle()
+
+    assert scenario.player_of(app) == "sendspin_app_1"
+    assert scenario.player_of(tv) not in (None, "sendspin_app_1")
+
+
+async def test_session_only_protocol_takes_the_place_of_no_other_session_only_player(
+    scenario: Scenario,
+) -> None:
+    """A protocol that only exists while connected never takes over another one's player."""
+    sendspin = await scenario.add_provider("sendspin")
+    display = sendspin.protocol(
+        "sendspin_display_1", "Display", session_only=True, identifiers=KITCHEN
+    )
+    await scenario.attach(display)
+    await scenario.configure_player("sendspin_display_1", name="Kitchen display")
+    await scenario.detach(display)
+    # a session of the customised player stores what it reports
+    await scenario.attach(display)
+    await scenario.detach(display)
+
+    visualizer = sendspin.protocol(
+        "sendspin_visualizer_1", "Visualizer", session_only=True, identifiers=KITCHEN
+    )
+    await scenario.attach(visualizer)
+
+    assert scenario.player_of(visualizer) == "sendspin_visualizer_1"
+    assert _edge(scenario, "sendspin_display_1") == "sendspin_display_1"
+    assert scenario.mass.config.get_protocol_record("sendspin_visualizer_1") is None
+
+
+async def test_session_only_protocol_never_follows_a_link_to_the_player_of_a_device(
+    scenario: Scenario,
+) -> None:
+    """
+    A protocol that connects as one that only exists while connected gets a player of its own.
+
+    Its record may still link it to the player of a device, as a client that rode on that
+    device before; that player keeps its own protocol.
+    """
+    chromecast = await scenario.add_provider("chromecast")
+    sendspin = await scenario.add_provider("sendspin")
+    tv = chromecast.protocol("cast_tv", "TV", identifiers=KITCHEN)
+    await scenario.attach(tv)
+    player_id = scenario.single_player(tv).player_id
+    scenario.mass.config.create_protocol_record(
+        "sendspin_receiver",
+        provider=sendspin.instance_id,
+        player_id=player_id,
+        role=ProtocolRole.AUDIO,
+        default_name="TV",
+    )
+    await scenario.detach(tv)
+
+    receiver = sendspin.protocol("sendspin_receiver", "Web Browser", session_only=True)
+    await scenario.attach(receiver)
+    await scenario.attach(tv)
+    await scenario.idle()
+
+    assert scenario.player_of(receiver) == "sendspin_receiver"
+    assert scenario.player_of(tv) == player_id
+    state = scenario.player(player_id)
+    assert state is not None
+    assert [info.protocol_id for info in state.protocols] == ["cast_tv"]
+
+
 async def test_config_stored_for_a_protocol_before_it_attaches_is_kept(scenario: Scenario) -> None:
     """A provider that stores the settings of a new device first finds them after the attach."""
     sonos = await scenario.add_provider("sonos")
