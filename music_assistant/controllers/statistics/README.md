@@ -28,7 +28,7 @@ should restart pagination when refreshing after a newly completed play.
 `statistics/play_count` remains the all-history total. It is not reconstructed
 from mutable progress, manual marks or provider-reported play counts.
 
-This API requires schema 105 and a models release containing `PlayHistoryItem`.
-Release the models change first, then update the server's exact models pin before
-shipping the paired server/frontend changes. Local integration tests can use the
-models worktree through `PYTHONPATH`; that is not a production dependency.
+The dated history fields and item filters are available from API schema 109.
+`PlayHistoryItem` is included in `music-assistant-models` 1.1.238, which is pinned
+by the server. Clients not bundled with the server can use the schema version to
+check for support.
