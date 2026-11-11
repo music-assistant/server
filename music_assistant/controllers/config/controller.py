@@ -33,6 +33,11 @@ from music_assistant.controllers.config.migrations import (
     migrate_connected_player_plugins,
     migrate_provider_setup_data,
 )
+from music_assistant.controllers.config.player_split import (
+    backup_before_player_split,
+    mark_player_split_done,
+    needs_player_split,
+)
 from music_assistant.controllers.config.players import PlayerConfigMixin
 from music_assistant.controllers.config.providers import ProviderConfigMixin
 from music_assistant.controllers.config.queues import PlayerQueueConfigMixin
@@ -307,6 +312,8 @@ class ConfigController(
                 async with aiofiles.open(filename, encoding="utf-8") as _file:
                     self._data = await async_json_loads(await _file.read())
                     LOGGER.debug("Loaded persistent settings from %s", filename)
+                    if needs_player_split(self._data):
+                        await self._backup_before_player_split(filename)
                     if await migrate(self._data):
                         await self.async_save()
                     return
@@ -315,6 +322,25 @@ class ConfigController(
             except JSON_DECODE_EXCEPTIONS:
                 LOGGER.exception("Error while reading persistent storage file %s", filename)
         LOGGER.debug("Started with empty storage: No persistent storage file found.")
+        mark_player_split_done(self._data)
+
+    async def _backup_before_player_split(self, loaded_filename: str) -> None:
+        """
+        Keep a copy of the settings as they were before the player configs are migrated.
+
+        :param loaded_filename: The file the settings were loaded from.
+        :raises RuntimeError: When the copy can not be written: there is no migration
+            without it, so the startup stops and the next start tries again.
+        """
+        try:
+            await asyncio.to_thread(backup_before_player_split, loaded_filename, self.filename)
+        except OSError as err:
+            msg = (
+                f"Could not keep a copy of {loaded_filename} before migrating the player "
+                f"settings: {err}. Nothing was changed; fix this and start the server again."
+            )
+            LOGGER.error(msg)
+            raise RuntimeError(msg) from err
 
     def _start_save(self) -> None:
         """Start the save task, called by the save timer."""
