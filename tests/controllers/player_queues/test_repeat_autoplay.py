@@ -153,11 +153,20 @@ def _loader(
     return loader
 
 
-def _player(player_id: str = "p1") -> Any:
-    """Build a player stand-in with the state fields the queue snapshot is built from."""
-    return SimpleNamespace(
+def _player(queues: Any, player_id: str = "p1") -> Any:
+    """
+    Build a live player stand-in with the state fields the queue snapshot is built from.
+
+    :param queues: The queue-controller stand-in, whose players controller gets the player.
+    :param player_id: The id of the player.
+    """
+    player = SimpleNamespace(
         player_id=player_id, state=SimpleNamespace(name="Player A", available=True)
     )
+    queues.mass.players.get_player = MagicMock(
+        side_effect=lambda queried_id: player if queried_id == player_id else None
+    )
+    return player
 
 
 @pytest.mark.parametrize(
@@ -285,7 +294,7 @@ async def test_repeating_queue_is_restored_with_locked_autoplay_from_cache() -> 
     )
     queues.mass.cache.get = AsyncMock(side_effect=[stored.to_cache(), []])
 
-    await PlayerQueuesController.on_player_register(queues, _player())
+    await PlayerQueuesController.on_player_register(queues, _player(queues))
 
     restored = queues._queue_data["p1"]
     assert restored.autoplay_override is True
