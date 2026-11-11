@@ -864,14 +864,15 @@ class AriaCastReceiver(PluginProvider):
 
     async def _cmd_pause(self) -> None:
         self.logger.info("PAUSE")
-        # Stop the player actually holding the stream (e.g. a sync group's
-        # leader) so a paused group stays formed
-        player_id = self._session_player_id or self._active_player_id
         # Clear queue guard before stop so a fast resume can re-trigger play_media
         self._in_use_by_player = None
         self._is_playing = False
-        if player_id:
-            await self.mass.players.cmd_stop(player_id)
+        if self._session_player_id:
+            # Stop the player actually holding the stream (e.g. a sync group's
+            # leader) so a paused group stays formed
+            await self.mass.players._handle_cmd_stop(self._session_player_id)
+        elif self._active_player_id:
+            await self.mass.players.cmd_stop(self._active_player_id)
         await self._forward_action("pause")
         await self._broadcast_meta()
 

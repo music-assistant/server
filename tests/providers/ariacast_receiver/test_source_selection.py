@@ -131,16 +131,18 @@ def _pause_receiver(
 
 async def _pause(receiver: SimpleNamespace) -> None:
     receiver.mass.players.cmd_stop = AsyncMock()
+    receiver.mass.players._handle_cmd_stop = AsyncMock()
     await AriaCastReceiver._cmd_pause(cast("AriaCastReceiver", receiver))
 
 
 async def test_cmd_pause_stops_the_stream_player_not_the_play_target() -> None:
-    """Pause stops the player actually holding the stream."""
+    """Pause stops the player actually holding the stream, without a redirect to its group."""
     receiver = _pause_receiver(session_player_id="leaf_1", active_player_id="group_1")
 
     await _pause(receiver)
 
-    receiver.mass.players.cmd_stop.assert_awaited_once_with("leaf_1")
+    receiver.mass.players._handle_cmd_stop.assert_awaited_once_with("leaf_1")
+    receiver.mass.players.cmd_stop.assert_not_awaited()
     assert receiver._in_use_by_player is None
     assert receiver._is_playing is False
 
@@ -152,6 +154,7 @@ async def test_cmd_pause_falls_back_to_the_play_target_without_a_live_session() 
     await _pause(receiver)
 
     receiver.mass.players.cmd_stop.assert_awaited_once_with("group_1")
+    receiver.mass.players._handle_cmd_stop.assert_not_awaited()
 
 
 async def test_cmd_pause_does_not_stop_anything_without_a_known_player() -> None:
@@ -161,6 +164,7 @@ async def test_cmd_pause_does_not_stop_anything_without_a_known_player() -> None
     await _pause(receiver)
 
     receiver.mass.players.cmd_stop.assert_not_awaited()
+    receiver.mass.players._handle_cmd_stop.assert_not_awaited()
     receiver._forward_action.assert_awaited_once_with("pause")
     receiver._broadcast_meta.assert_awaited_once()
 
