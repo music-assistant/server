@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any, cast
 
+import pytest
 from music_assistant_models.enums import (
     IdentifierType,
     PlaybackState,
@@ -13,7 +14,7 @@ from music_assistant_models.enums import (
 
 from music_assistant.constants import CONF_OUTPUT_CHANNELS
 from tests.common import grouping_player_controller
-from tests.scenarios.harness import FakeProtocol, Scenario
+from tests.scenarios.harness import DEFAULT_FEATURES, FakeProtocol, Scenario
 
 if TYPE_CHECKING:
     from unittest.mock import AsyncMock
@@ -255,6 +256,100 @@ async def test_control_protocol_alone_makes_a_player_neither_available_nor_playa
     state = scenario.player(player_id)
     assert state is not None
     assert (state.available, state.needs_setup) == (False, True)
+
+
+# the speakers of a Cast group, by their Cast id: name and MAC address
+CAST_MEMBERS = {
+    "uuid-a": ("Player A", "54:78:C9:E6:0E:A1"),
+    "uuid-b": ("Player B", "54:78:C9:E6:0E:B1"),
+}
+
+
+@pytest.mark.parametrize("pre_split", [False, True], ids=["minted", "pre_split"])
+async def test_ungrouping_a_member_of_a_cast_group_releases_the_group(
+    scenario: Scenario, pre_split: bool
+) -> None:
+    """A group that reports its fixed members by their protocol ids has them as static members."""
+    chromecast = await scenario.add_provider("chromecast")
+    for protocol_id, (name, mac) in CAST_MEMBERS.items():
+        chromecast.protocol(protocol_id, name, identifiers={IdentifierType.MAC_ADDRESS: mac})
+    chromecast.protocol(
+        "uuid-group",
+        "Group Z",
+        type=PlayerType.GROUP,
+        supported_features={*DEFAULT_FEATURES, PlayerFeature.POWER},
+        powered=True,
+        group_members=list(CAST_MEMBERS),
+        static_group_members=list(CAST_MEMBERS),
+    )
+    protocol_ids = [*CAST_MEMBERS, "uuid-group"]
+    if pre_split:
+        for protocol_id in protocol_ids:
+            scenario.set_present(protocol_id, True)
+        await scenario.seed_pre_split_config(
+            {
+                protocol_id: {
+                    "player_id": protocol_id,
+                    "provider": chromecast.instance_id,
+                    "player_type": "group" if protocol_id == "uuid-group" else "player",
+                    "enabled": True,
+                    "name": None,
+                    "default_name": None,
+                    "values": {},
+                }
+                for protocol_id in protocol_ids
+            }
+        )
+    else:
+        for protocol_id in protocol_ids:
+            await scenario.attach(scenario.protocol(protocol_id))
+    await scenario.idle()
+    member_ids = [
+        scenario.player_of(scenario.protocol(protocol_id)) for protocol_id in CAST_MEMBERS
+    ]
+    group_id = scenario.player_of(scenario.protocol("uuid-group"))
+    assert (member_ids == list(CAST_MEMBERS)) is pre_split
+    group_state, member_state = scenario.player(str(group_id)), scenario.player(str(member_ids[0]))
+    assert group_state is not None
+    assert member_state is not None
+    assert group_state.static_group_members == member_ids
+    assert member_state.active_group == group_id
+
+    await scenario.mass.players.cmd_ungroup(str(member_ids[0]))
+    await scenario.settle()
+
+    assert ("power", False) in scenario.protocol("uuid-group").commands
+
+    # they stay its static members while it holds none of them
+    await scenario.report(scenario.protocol("uuid-group"), group_members=[])
+
+    group_state = scenario.player(str(group_id))
+    assert group_state is not None
+    assert group_state.static_group_members == member_ids
+
+
+async def test_static_member_of_a_group_of_players_that_is_not_there_stays_listed(
+    scenario: Scenario,
+) -> None:
+    """A group of players names its fixed members by their player ids, also one that is away."""
+    sonos = await scenario.add_provider("sonos")
+    speaker = sonos.protocol("RINCON_KITCHEN", "Kitchen", identifiers=KITCHEN)
+    await scenario.attach(speaker)
+    speaker_id = scenario.single_player(speaker).player_id
+    snapcast = await scenario.add_provider("snapcast")
+    group = snapcast.protocol(
+        "group_all",
+        "All rooms",
+        role="virtual",
+        type=PlayerType.GROUP,
+        static_group_members=[speaker_id, "pl0123456789ab"],
+    )
+
+    await scenario.attach(group)
+
+    group_state = scenario.player(scenario.single_player(group).player_id)
+    assert group_state is not None
+    assert group_state.static_group_members == [speaker_id, "pl0123456789ab"]
 
 
 async def test_published_type_is_never_protocol(scenario: Scenario) -> None:

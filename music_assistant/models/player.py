@@ -1993,6 +1993,9 @@ class Player:
         )
         for member_id in own.group_members:
             self._collect_peer(peers, member_id, as_member=True)
+        static_group_members = own_protocol.static_group_members if own_protocol else []
+        for member_id in static_group_members:
+            self._collect_peer(peers, member_id)
         if own.synced_to:
             self._collect_peer(peers, own.synced_to)
         can_group_with: set[str] = set()
@@ -2049,7 +2052,7 @@ class Player:
             active_sound_mode=own_protocol.active_sound_mode if own_protocol else None,
             sound_mode_list=own_protocol.sound_mode_list if own_protocol else UniqueList(),
             options=own_protocol.options if own_protocol else UniqueList(),
-            static_group_members=own_protocol.static_group_members if own_protocol else [],
+            static_group_members=static_group_members,
             can_group_with=can_group_with,
             protocol_can_group_with=protocol_can_group_with,
             has_setup_flow=self.has_setup_flow,

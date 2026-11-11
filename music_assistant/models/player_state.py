@@ -204,7 +204,7 @@ class StateInputs:
     :param active_sound_mode: Sound mode the device has selected.
     :param sound_mode_list: Sound modes of the device.
     :param options: Options of the device.
-    :param static_group_members: Ids of the group members that can not be removed.
+    :param static_group_members: Ids naming the group members that can not be removed.
     :param can_group_with: Ids naming the players the own protocol can group with.
     :param protocol_can_group_with: Ids naming the players the audio protocols can
         group with.
@@ -360,7 +360,7 @@ def derive_player_state(inputs: StateInputs) -> tuple[PlayerState, StateEffects]
         volume_level=inputs.volume_level,
         volume_muted=inputs.volume_muted,
         group_members=UniqueList(_group_members(inputs, synced_to)),
-        static_group_members=UniqueList(inputs.static_group_members),
+        static_group_members=UniqueList(_static_group_members(inputs)),
         can_group_with=_can_group_with(inputs, synced_to, active_source),
         synced_to=synced_to,
         active_source=active_source,
@@ -909,6 +909,16 @@ def _group_members(inputs: StateInputs, synced_to: str | None) -> list[str]:
         if members == [inputs.player_id]:
             return []
     return members
+
+
+def _static_group_members(inputs: StateInputs) -> list[str]:
+    """Return the ids of the players that can not be removed from the group."""
+    # an id that names no player stays: a group of players also lists its members that
+    # are not there, by their player id
+    return [
+        peer.player_id if (peer := inputs.peers.get(member_id)) else member_id
+        for member_id in inputs.static_group_members
+    ]
 
 
 def _players(inputs: StateInputs, ids: Iterable[str]) -> Iterator[PeerSnapshot]:
