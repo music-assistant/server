@@ -8,6 +8,7 @@ from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from music_assistant_models.enums import PlayerFeature
 from music_assistant_models.errors import InsufficientPermissions
 
 from music_assistant.helpers.shared_playback import SharedPlaybackSession
@@ -17,20 +18,26 @@ from music_assistant.providers.music_quiz.models import (
     MusicQuizConfig,
     MusicQuizGame,
 )
-from tests.common import as_user, grouping_player_controller
+from tests.common import MockProvider, as_user, attach_mock, grouping_player_controller
 
 
 @pytest.fixture
 async def plugin() -> MusicQuizPlugin:
     """
-    Build a Music Quiz plugin with a game around venue player "v", and client player "w".
+    Build a Music Quiz plugin with a game around venue player "v", and client player "pl_w".
 
-    The players "a" and "b" are regular players that can group with the venue.
+    The players "a" and "b" are regular players that can group with the venue. The client
+    player has the id "pl_w"; "w" is the id of its client protocol, which its client announces.
     """
-    controller = grouping_player_controller("v", "a", "b", "w")
-    web_player = controller._players["w"]
-    web_player._attr_private = True
-    web_player.update_state(force_update=True, signal_event=False)
+    controller = grouping_player_controller("v", "a", "b")
+    provider = cast("MockProvider", controller._protocols["proto_v"].provider)
+    _, web_protocol = attach_mock(provider, "w", "Player W")
+    web_protocol._attr_private = True
+    web_protocol._attr_supported_features.add(PlayerFeature.SET_MEMBERS)
+    for protocol in controller._protocols.values():
+        protocol._attr_can_group_with = set(controller._protocols) - {protocol.protocol_id}
+    for player in controller._players.values():
+        player.refresh_state(signal_event=False)
     plugin = MusicQuizPlugin.__new__(MusicQuizPlugin)
     plugin.mass = controller.mass
     plugin.logger = MagicMock()
@@ -74,10 +81,10 @@ async def test_listen_in_with_another_player_is_refused(plugin: MusicQuizPlugin)
 async def test_listen_in_with_own_client_player_is_permitted(plugin: MusicQuizPlugin) -> None:
     """A guest may join the client player they are connected on to the game audio."""
     with as_user(["a"], client_player_id="w"):
-        await _api(plugin, "music_quiz/listen_in")("w")
+        await _api(plugin, "music_quiz/listen_in")("pl_w")
 
     players = plugin.mass.players
-    _set_members(plugin).assert_awaited_once_with(players._players["v"], ["w"], None)
+    _set_members(plugin).assert_awaited_once_with(players._players["v"], ["pl_w"], None)
 
 
 async def test_stop_listen_in_with_another_player_is_refused(plugin: MusicQuizPlugin) -> None:
@@ -91,9 +98,10 @@ async def test_stop_listen_in_with_another_player_is_refused(plugin: MusicQuizPl
 async def test_stop_listen_in_with_permitted_player_detaches_it(plugin: MusicQuizPlugin) -> None:
     """A guest may take a player within their players out of the game audio."""
     players = plugin.mass.players
-    players._players["v"]._attr_group_members = ["v", "a"]
+    # the venue reports its members by their protocol ids
+    players._protocols["proto_v"]._attr_group_members = ["proto_v", "proto_a"]
     for player in players._players.values():
-        player.update_state(signal_event=False)
+        player.refresh_state(signal_event=False)
 
     with as_user(["a"], client_player_id="w"):
         await _api(plugin, "music_quiz/stop_listen_in")("a")
