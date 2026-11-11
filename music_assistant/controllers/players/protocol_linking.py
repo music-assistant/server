@@ -592,12 +592,30 @@ class ProtocolLinkingMixin:
                 record["values"].pop(key, None)
         config.set(f"{CONF_PLAYER_PROTOCOLS}/{protocol_id}", deepcopy(record))
         config.remove_protocol_record(replaced_id)
-        for key in (CONF_PREFERRED_OUTPUT_PROTOCOL, CONF_VOLUME_CONTROL, CONF_MUTE_CONTROL):
-            if config.get_player_value(player_id, key) == replaced_id:
-                config.set_player_value(player_id, key, protocol_id)
+        self._replace_protocol_references(player_id, replaced_id, protocol_id)
         if player := self._players.get(player_id):
             player.protocol_ids.discard(replaced_id)
             player.protocol_ids.add(protocol_id)
+
+    def _replace_protocol_references(
+        self, player_id: str, protocol_id: str, replacement_id: str | None
+    ) -> None:
+        """
+        Let the output and control choices of a player that name a protocol name another one.
+
+        :param player_id: Id of the player.
+        :param protocol_id: Id of the protocol the choices may name.
+        :param replacement_id: Id of the protocol that takes its place, None to let the
+            choices fall back to their default.
+        """
+        config = self.mass.config
+        for key in (CONF_PREFERRED_OUTPUT_PROTOCOL, CONF_VOLUME_CONTROL, CONF_MUTE_CONTROL):
+            if config.get_player_value(player_id, key) != protocol_id:
+                continue
+            if replacement_id is None:
+                config.remove(f"{CONF_PLAYERS}/{player_id}/values/{key}")
+            else:
+                config.set_player_value(player_id, key, replacement_id)
 
     def _update_group_memberships(self, player_id: str) -> None:
         """

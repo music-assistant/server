@@ -612,6 +612,99 @@ async def test_removal_reaches_the_protocol_of_a_disabled_player(scenario: Scena
     assert _stored(scenario) == ([], [])
 
 
+@pytest.mark.parametrize("away", ["detached", "switched_off"])
+async def test_removal_reaches_a_protocol_its_provider_still_holds(
+    scenario: Scenario, away: str
+) -> None:
+    """A provider is told about the removal of a device whose protocol is not attached."""
+    sonos = await scenario.add_provider("sonos")
+    airplay = await scenario.add_provider("airplay")
+    native = sonos.protocol("RINCON_KITCHEN", "Kitchen", identifiers=KITCHEN)
+    audio = airplay.protocol("ap_kitchen", "Kitchen", role="audio", identifiers=KITCHEN)
+    await scenario.attach(native)
+    await scenario.attach(audio)
+    player_id = scenario.single_player(native, audio).player_id
+    removed: list[str] = []
+
+    async def _on_remove() -> None:
+        removed.append(audio.protocol_id)
+
+    audio.on_remove = _on_remove  # type: ignore[method-assign]
+    if away == "detached":
+        await scenario.detach(audio)
+    else:
+        await scenario.mass.config.save_protocol_config("ap_kitchen", {"enabled": False})
+        await scenario.settle()
+    assert audio.player is None
+    for protocol_id in ("RINCON_KITCHEN", "ap_kitchen"):
+        scenario.set_present(protocol_id, False)
+
+    await scenario.remove(player_id)
+    await scenario.idle()
+
+    assert removed == ["ap_kitchen"]
+
+
+async def test_removal_does_not_reach_a_protocol_of_a_provider_that_unloaded(
+    scenario: Scenario,
+) -> None:
+    """A protocol object of a provider that unloaded is not told about a removal."""
+    sonos = await scenario.add_provider("sonos")
+    speaker = sonos.protocol("RINCON_KITCHEN", "Kitchen", identifiers=KITCHEN)
+    await scenario.attach(speaker)
+    player_id = scenario.single_player(speaker).player_id
+    removed: list[str] = []
+
+    async def _on_remove() -> None:
+        removed.append(speaker.protocol_id)
+
+    speaker.on_remove = _on_remove  # type: ignore[method-assign]
+    await scenario.mass.unload_provider(sonos.instance_id)
+    await scenario.settle()
+
+    await scenario.remove(player_id)
+    await scenario.idle()
+
+    assert removed == []
+    assert _stored(scenario) == ([], [])
+
+
+async def test_removed_protocol_is_no_longer_named_by_its_player(scenario: Scenario) -> None:
+    """A protocol that is removed leaves no output or control choice naming it."""
+    sonos = await scenario.add_provider("sonos")
+    airplay = await scenario.add_provider("airplay")
+    native = sonos.protocol("RINCON_KITCHEN", "Kitchen", identifiers=KITCHEN)
+    audio = airplay.protocol("ap_kitchen", "Kitchen", role="audio", identifiers=KITCHEN)
+    await scenario.attach(native)
+    await scenario.attach(audio)
+    player_id = scenario.single_player(native, audio).player_id
+    choices = ("preferred_output_protocol", "volume_control", "mute_control")
+    await scenario.configure_player(player_id, **dict.fromkeys(choices, "ap_kitchen"))
+
+    await scenario.remove_provider(airplay)
+
+    config = scenario.mass.config
+    assert [config.get_player_value(player_id, key) for key in choices] == [None, None, None]
+
+
+async def test_player_names_the_provider_of_its_protocols_after_one_is_removed(
+    scenario: Scenario,
+) -> None:
+    """The provider stored for a player follows when the protocol that named it is removed."""
+    sonos = await scenario.add_provider("sonos")
+    airplay = await scenario.add_provider("airplay")
+    native = sonos.protocol("RINCON_KITCHEN", "Kitchen", identifiers=KITCHEN)
+    audio = airplay.protocol("ap_kitchen", "Kitchen", role="audio", identifiers=KITCHEN)
+    await scenario.attach(native)
+    await scenario.attach(audio)
+    player_id = scenario.single_player(native, audio).player_id
+
+    await scenario.remove_provider(sonos)
+
+    stored_provider = scenario.mass.config.get(f"{CONF_PLAYERS}/{player_id}/provider")
+    assert stored_provider == airplay.instance_id
+
+
 async def test_group_that_is_removed_while_it_plays_stops_its_members(scenario: Scenario) -> None:
     """A player that plays is stopped before it goes: a group stops what its members play."""
     await scenario.mass.config._create_provider_instance("universal_group", {})

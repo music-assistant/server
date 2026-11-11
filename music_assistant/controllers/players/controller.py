@@ -231,8 +231,8 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         # the protocol objects the providers attached, by their id: bound to their
         # player, or held while it is not known yet which player they belong to
         self._protocols: dict[str, PlayerProtocol] = {}
-        # the protocol objects the providers hold that were not attached, as their
-        # player is disabled or the user switched the protocol off
+        # the protocol objects the providers hold that are not attached: detached, or not
+        # attached as their player is disabled or the user switched the protocol off
         self._unattached: weakref.WeakValueDictionary[str, PlayerProtocol] = (
             weakref.WeakValueDictionary()
         )
@@ -1922,6 +1922,9 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
                 "Protocol %s detached from player %s", protocol_id, player.display_name
             )
             await self._settle_player(player)
+        if not protocol.provider.unloading:
+            # its provider may keep the object, which a removal of the player has to reach
+            self._unattached[protocol_id] = protocol
         # Schedule debounced update of all players since can_group_with values may change
         self._schedule_update_all_players()
 
@@ -1930,7 +1933,8 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         Remove a protocol for good: its provider forgets the device.
 
         The protocol is detached and its config deleted, and so are the protocols that
-        ride on it. The player it belonged to goes with it when no other protocol of it
+        ride on it. An output or control choice of its player that names it falls back to
+        its default. The player it belonged to goes with it when no other protocol of it
         is left.
 
         :param protocol_id: Id of the protocol to remove.
@@ -1947,11 +1951,13 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
             self._unattached.pop(protocol_id, None)
         if player_id is None:
             return
+        self._replace_protocol_references(player_id, protocol_id, None)
         if player := self._players.get(player_id):
             player.remove_protocol(protocol_id, forget=True)
         if self.mass.config.get_protocol_ids_of_player(player_id) or (player and player.protocols):
             if player:
                 player.refresh_state()
+                self._store_player_base(player)
             # a protocol that waits for the place of its domain may get it now
             self._schedule_held_protocols()
             return
