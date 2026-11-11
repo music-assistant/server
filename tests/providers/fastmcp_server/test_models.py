@@ -4,8 +4,11 @@ from __future__ import annotations
 
 import json
 from types import SimpleNamespace
+from typing import TYPE_CHECKING, cast
 
 import pytest
+from music_assistant_models.enums import PlaybackState
+from music_assistant_models.player import PlayerMedia
 
 from music_assistant.providers.fastmcp_server.models import PlayerBrief, QueueBrief, QueueItemBrief
 from music_assistant.providers.fastmcp_server.resource_helpers import (
@@ -13,41 +16,31 @@ from music_assistant.providers.fastmcp_server.resource_helpers import (
     to_brief_queue,
     to_resource_text,
 )
+from tests.common import MockProvider, attach_mock, make_player_state, mock_player_mass
+
+if TYPE_CHECKING:
+    from music_assistant.models.player import Player
 
 
-def test_to_brief_player_prefers_canonical_state_fields() -> None:
-    """Canonical state wins over stale raw power/media and supplies display state."""
-    player = SimpleNamespace(
-        player_id="kitchen",
-        display_name="Kitchen",
-        name="Fallback",
-        playback_state=SimpleNamespace(value="playing"),
-        powered=False,
-        current_media=SimpleNamespace(title="stale", uri="old://track"),
-        volume_level=42,
-        state=SimpleNamespace(
-            powered=True,
-            current_media=SimpleNamespace(title="Song", uri="library://track/1"),
-            volume_muted=False,
-            group_volume=40,
-            group_volume_muted=True,
-            active_group=None,
-            synced_to=None,
-        ),
-    )
+def test_to_brief_player_reads_the_published_state() -> None:
+    """The brief of a player carries what its published state says."""
+    provider = MockProvider("test", mass=mock_player_mass())
+    player, protocol = attach_mock(provider, "kitchen", "Kitchen")
+    protocol._attr_playback_state = PlaybackState.PLAYING
+    protocol._attr_volume_level = 42
+    protocol._attr_current_media = PlayerMedia(uri="library://track/1", title="Song")
+    player.update_state(force_update=True, signal_event=False)
 
     brief = to_brief_player(player)
 
     assert brief == PlayerBrief(
-        player_id="kitchen",
+        player_id="pl_kitchen",
         name="Kitchen",
         state="playing",
         volume_level=42,
         powered=True,
         current_item="Song",
-        volume_muted=False,
-        group_volume=40,
-        group_volume_muted=True,
+        group_volume=42,
     )
 
 
@@ -57,37 +50,27 @@ def test_to_brief_player_prefers_canonical_state_fields() -> None:
         ({"available": False}, "unavailable"),
         ({"enabled": False}, "disabled"),
         ({"needs_setup": True}, "needs_setup"),
-        ({"synced_to": "leader"}, "synced"),
+        ({"synced_to": "pl_leader"}, "synced"),
+        ({"active_group": "pl_group"}, "synced"),
     ],
 )
 def test_to_brief_player_synthesizes_blocker_state(
     overrides: dict[str, object], expected: str
 ) -> None:
     """Availability/setup/group blockers remain visible to resource clients."""
-    values: dict[str, object] = {
-        "player_id": "p1",
-        "name": "P1",
-        "playback_state": SimpleNamespace(value="idle"),
-        "current_media": None,
-        "powered": True,
-        "available": True,
-        "enabled": True,
-        "needs_setup": False,
-        "synced_to": None,
-        "active_group": None,
-    }
-    values.update(overrides)
-    assert to_brief_player(SimpleNamespace(**values)).state == expected
+    player = cast(
+        "Player", SimpleNamespace(display_name="P1", state=make_player_state("pl_p1", **overrides))
+    )
+    assert to_brief_player(player).state == expected
 
 
 def test_to_brief_player_surfaces_external_audio_source() -> None:
     """Active external sources override idle state and the stale player title."""
-    player = SimpleNamespace(
-        player_id="p1",
-        name="P1",
-        playback_state=SimpleNamespace(value="idle"),
-        current_media=None,
-        powered=True,
+    player = cast(
+        "Player",
+        SimpleNamespace(
+            display_name="P1", state=make_player_state("pl_p1", playback_state=PlaybackState.IDLE)
+        ),
     )
     queue = SimpleNamespace(
         state=SimpleNamespace(value="playing"),
