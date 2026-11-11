@@ -594,6 +594,20 @@ class PlayerConfigMixin:
             if isinstance(record, dict) and record.get("provider") == provider
         ]
 
+    def get_protocol_ids_derived_from(self, protocol_id: str) -> list[str]:
+        """
+        Return the ids of the protocols that are stored as riding on another protocol.
+
+        :param protocol_id: ID of the protocol they ride on.
+        """
+        return [
+            derived_id
+            for derived_id, record in self.get(CONF_PLAYER_PROTOCOLS, {}).items()
+            if isinstance(record, dict)
+            and derived_id != protocol_id
+            and (record.get("values") or {}).get(CONF_UNDERLYING_PLAYER_ID) == protocol_id
+        ]
+
     def create_player_record(
         self,
         player_id: str,
