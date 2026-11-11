@@ -16,6 +16,7 @@ from music_assistant_models.enums import ContentType, MediaType
 from music_assistant_models.media_items import AudioFormat
 from music_assistant_models.player import PlayerMedia
 
+from music_assistant.constants import CONF_HTTP_PROFILE
 from music_assistant.controllers.players.helpers import AnnounceData
 from music_assistant.controllers.streams.announcements import (
     ANNOUNCEMENT_PCM_FORMAT,
@@ -260,31 +261,38 @@ async def test_a_reader_can_start_before_the_render_finished() -> None:
 
 
 def test_announcement_http_profile_prefers_fetching_player() -> None:
-    """The http profile comes from the player that actually fetches the announcement."""
+    """The http profile comes from the protocol that actually fetches the announcement."""
     controller = StreamsController.__new__(StreamsController)
     controller.mass = mass = MagicMock()
-    fetcher = MagicMock()
-    fetcher.get_output_config_value.return_value = "forced_content_length"
-    parent = MagicMock()
-    parent.get_output_config_value.return_value = "chunked"
-    players = {"fetcher": fetcher, "parent": parent}
-    mass.players.get_player = MagicMock(side_effect=lambda pid: players.get(pid))
+    fetcher = _protocol_with_http_profile("forced_content_length")
+    rendering = _protocol_with_http_profile("chunked")
+    mass.players.get_protocol = MagicMock(side_effect={"fetcher": fetcher}.get)
+    mass.players.get_output_protocol = MagicMock(side_effect={"player": rendering}.get)
 
-    # a known fetcher (e.g. a linked protocol player) provides the profile
-    profile = controller._get_announcement_http_profile("parent", _announce_data("fetcher"))
+    # a known fetcher (e.g. an audio protocol of the player) provides the profile
+    profile = controller._get_announcement_http_profile("player", _announce_data("fetcher"))
     assert profile == "forced_content_length"
 
-    # without a recorded fetcher, resolve against the visible player's output path
-    profile = controller._get_announcement_http_profile("parent", _announce_data(None))
+    # without a recorded fetcher, resolve against the protocol the player renders through
+    profile = controller._get_announcement_http_profile("player", _announce_data(None))
     assert profile == "chunked"
 
-    # a dangling fetcher id falls back to the visible player
-    profile = controller._get_announcement_http_profile("parent", _announce_data("ghost"))
+    # a dangling fetcher id falls back to the protocol the player renders through
+    profile = controller._get_announcement_http_profile("player", _announce_data("ghost"))
     assert profile == "chunked"
 
     # unknown player resolves to the safe default
     profile = controller._get_announcement_http_profile("unknown", _announce_data(None))
     assert profile == "default"
+
+
+def _protocol_with_http_profile(http_profile: str) -> MagicMock:
+    """Return a protocol double whose config holds the given http profile."""
+    protocol = MagicMock()
+    protocol.config.get_value.side_effect = lambda key, default=None: (
+        http_profile if key == CONF_HTTP_PROFILE else default
+    )
+    return protocol
 
 
 ANNOUNCEMENT_AUDIO = b"announcement-audio"
@@ -313,11 +321,10 @@ def _announcement_controller(http_profile: str) -> tuple[StreamsController, Magi
     controller.logger = logging.getLogger("test.streams.announcement")
     controller.announcement_renderer = AnnouncementRenderer()
     controller.announcement_renderer._by_player = {"player1": _announce_data(None)}
-    player = MagicMock()
-    player.display_name = "Player A"
-    player.get_output_config_value.return_value = http_profile
-    mass.players.get_player = MagicMock(
-        side_effect=lambda pid, *_args, **_kwargs: player if pid == "player1" else None
+    protocol = _protocol_with_http_profile(http_profile)
+    protocol.display_name = "Player A"
+    mass.players.get_output_protocol = MagicMock(
+        side_effect=lambda pid: protocol if pid == "player1" else None
     )
     # no queue is registered for this player: announcements must be served regardless
     mass.player_queues.get = MagicMock(return_value=None)
