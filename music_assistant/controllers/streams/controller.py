@@ -96,6 +96,7 @@ from music_assistant.controllers.streams.constants import (
     DEFAULT_PORT,
     DEFAULT_VOLUME_NORMALIZATION_MODE,
     FLOW_STREAM_LEAD_OUT_SECONDS,
+    ICY_WRITE_SIZE,
     OUTCOME_ONLY_NORMALIZATION_MODES,
     BufferSize,
     PacingProfile,
@@ -157,6 +158,9 @@ if TYPE_CHECKING:
 
 
 isfile = wrap(os.path.isfile)
+
+# request-scoped key under which a per-item stream request records the queue item it resolved to
+_REQUEST_QUEUE_ITEM_ID = "queue_item_id"
 
 
 def _volume_normalization_preference_options() -> list[ConfigValueOption]:
@@ -645,6 +649,11 @@ class StreamsController(CoreController):
                 ),
                 (
                     "*",
+                    "/single/{session_id}/{queue_id}/pos/{queue_index:\\d+}/{player_id}.{fmt}",
+                    self.serve_queue_item_stream,
+                ),
+                (
+                    "*",
                     "/source/{session_id}/{source_player_id}/{player_id}.{fmt}",
                     self.serve_audio_source_stream,
                 ),
@@ -703,12 +712,17 @@ class StreamsController(CoreController):
         if changed_keys & {f"values/{CONF_SMART_FADES_LOG_LEVEL}", f"values/{CONF_LOG_LEVEL}"}:
             self._setup_derived_loggers(config)
 
-    async def resolve_stream_url(self, player_id: str, media: PlayerMedia) -> str:
+    async def resolve_stream_url(
+        self, player_id: str, media: PlayerMedia, queue_index: int | None = None
+    ) -> str:
         """
         Resolve the stream URL for the given PlayerMedia.
 
         :param player_id: The (protocol) player ID requesting the stream.
         :param media: The PlayerMedia object for which to resolve the stream URL.
+        :param queue_index: Address the queue item by this queue position instead of its id,
+            for a player that plays out of a cached copy of the queue: the URL then plays
+            whatever the queue holds at that position when the player fetches it.
         :return: The resolved stream URL as a string.
         """
         if media.media_type in (MediaType.ANNOUNCEMENT, MediaType.FLOW_STREAM):
@@ -775,6 +789,11 @@ class StreamsController(CoreController):
             )
             and media.media_type not in (MediaType.RADIO, MediaType.AUDIO_SOURCE)
         )
+        if queue_index is not None and not flow_mode:
+            return (
+                f"{self.base_url}/single/{session_id}/{queue_id}/pos/{queue_index}"
+                f"/{player_id}.{fmt}"
+            )
         base_path = "flow" if flow_mode else "single"
         return (
             f"{self.base_url}/{base_path}/{session_id}/{queue_id}/{queue_item_id}/{player_id}.{fmt}"
@@ -811,21 +830,22 @@ class StreamsController(CoreController):
             raise web.HTTPNotFound(reason=f"Unknown (or invalid) session: {session_id}")
         if not (player := self.mass.players.get_player(player_id)):
             raise web.HTTPNotFound(reason=f"Unknown Player: {player_id}")
-        queue_item_id = request.match_info["queue_item_id"]
-        queue_item = self.mass.player_queues.get_item(queue_id, queue_item_id)
-        if not queue_item:
-            raise web.HTTPNotFound(reason=f"Unknown Queue item: {queue_item_id}")
-        # the player may be asking for a track out of a stale cached copy of the queue
-        # (its refresh signal can get lost): refusing it makes the player re-read the
-        # queue, where serving it would silently play a track the user moved away
-        # both checks measure from what the player asked for before this request: once
-        # recorded below, this request no longer vouches for itself
-        requested_after = pq_data.last_requested_item_id
-        self._raise_if_stale_item_request(player, queue_id, queue_item, requested_after)
-        if request.method == "GET":
-            # recorded before any audio goes out: a player that gives up waiting on a slow
-            # item asks for the one after it, which must not be refused as stale
-            pq_data.last_requested_item_id = queue_item_id
+        if (queue_index := request.match_info.get("queue_index")) is not None:
+            # the player plays out of a cached copy of the queue and addresses its items by
+            # position, so it gets whatever the queue holds there now, not what it cached there
+            queue_item = self.mass.player_queues.get_item(queue_id, int(queue_index))
+            if not queue_item:
+                raise web.HTTPNotFound(reason=f"No queue item at position {queue_index}")
+            if request.method == "GET":
+                player.on_queue_position_served(int(queue_index), queue_item.queue_item_id)
+        else:
+            queue_item_id = request.match_info["queue_item_id"]
+            queue_item = self.mass.player_queues.get_item(queue_id, queue_item_id)
+            if not queue_item:
+                raise web.HTTPNotFound(reason=f"Unknown Queue item: {queue_item_id}")
+        queue_item_id = queue_item.queue_item_id
+        # the sweeps over open requests read the item from here, however the URL named it
+        request[_REQUEST_QUEUE_ITEM_ID] = queue_item_id
 
         is_audio_source = (
             queue_item.media_item is not None
@@ -1040,10 +1060,6 @@ class StreamsController(CoreController):
             elif http_profile == "chunked":
                 resp.enable_chunked_encoding()
 
-            # re-check right before audio is handed out: a queue edit landing during
-            # the awaited setup above must not hand the player a stale track after all
-            self._raise_if_stale_item_request(player, queue_id, queue_item, requested_after)
-
             await resp.prepare(request)
 
             # return early if this is not a GET request
@@ -1138,6 +1154,7 @@ class StreamsController(CoreController):
                 )
             first_chunk_received = False
             bytes_sent = 0
+            stream_completed = False
             stream_failure: AudioError | None = None
             # Mark this player as actively streaming so audio analysis yields CPU to playback
             # for the duration of the transfer (see audio_analysis.playback_active).
@@ -1196,6 +1213,8 @@ class StreamsController(CoreController):
                                     resp.content_length,
                                 )
                             break
+                    else:
+                        stream_completed = True
             except AudioError as err:
                 # the response is already being written: raising answers one that is
                 # long gone, which aiohttp logs as two unhandled tracebacks. Whose
@@ -1219,13 +1238,17 @@ class StreamsController(CoreController):
                 # so the player waits out a stream that already ended (as the flow route)
                 resp.force_close()
             elif (
-                bytes_sent > 0
+                stream_completed
+                and bytes_sent > 0
                 and queue_item.streamdetails
                 and queue_item.streamdetails.seconds_streamed
                 and queue_item.duration
             ):
                 # cache the actual encoded bytes-per-second for this URI + output format
-                # so future content_length estimates are near-exact
+                # so future content_length estimates are near-exact. Only a stream that ran
+                # to its end measures that: one the player left early counts the bytes it
+                # got against the audio already read ahead of them, which announces the
+                # next play too short and cuts it off.
                 self.mass.create_task(
                     store_content_length_in_cache(
                         self.mass,
@@ -1468,6 +1491,7 @@ class StreamsController(CoreController):
         )
         enable_icy = request.headers.get("Icy-MetaData", "") == "1" and icy_preference != "disabled"
         icy_meta_interval = 256000 if icy_preference == "full" else 16384
+        icy_bytes_until_meta = icy_meta_interval
 
         # prepare request, add some DLNA/UPNP compatible headers.
         # icy-name (in DEFAULT_STREAM_HEADERS) is always present so players have a
@@ -1544,8 +1568,9 @@ class StreamsController(CoreController):
             # one continuous stream, so the player gains nothing from running far ahead
             extra_input_args=output_pacing_args(PacingProfile.NEAR_REALTIME),
             # without ICY framing, pass on whatever ffmpeg has encoded: an exact 1s read
-            # holds back FLAC on quiet passages until the player gives up waiting
-            chunk_size=icy_meta_interval if enable_icy else None,
+            # holds back FLAC on quiet passages until the player gives up waiting.
+            # with ICY framing the write loop counts bytes towards the metadata interval
+            chunk_size=ICY_WRITE_SIZE if enable_icy else None,
         )
         client_disconnected = False
         # same registry as the single-item route: a forced-flow player (overlay)
@@ -1566,40 +1591,25 @@ class StreamsController(CoreController):
             async with aclosing(audio_bytes):
                 async for chunk in audio_bytes:
                     try:
-                        await resp.write(chunk)
+                        if not enable_icy:
+                            await resp.write(chunk)
+                            continue
+                        pending = chunk
+                        while pending:
+                            head, pending = (
+                                pending[:icy_bytes_until_meta],
+                                pending[icy_bytes_until_meta:],
+                            )
+                            await resp.write(head)
+                            icy_bytes_until_meta -= len(head)
+                            if icy_bytes_until_meta == 0:
+                                await resp.write(
+                                    _icy_metadata_block(queue, full=icy_preference == "full")
+                                )
+                                icy_bytes_until_meta = icy_meta_interval
                     except BrokenPipeError, ConnectionResetError, ConnectionError:
-                        # race condition
-                        client_disconnected = True
-                        break
-
-                    if not enable_icy:
-                        continue
-
-                    # if icy metadata is enabled, send the icy metadata after the chunk
-                    if (
-                        # use current item here and not buffered item, otherwise
-                        # the icy metadata will be too much ahead
-                        (current_item := queue.current_item)
-                        and current_item.streamdetails
-                        and current_item.streamdetails.stream_title
-                    ):
-                        title = current_item.streamdetails.stream_title
-                    elif queue and current_item and current_item.name:
-                        title = current_item.name
-                    else:
-                        title = "Music Assistant"
-                    metadata = f"StreamTitle='{title}';".encode()
-                    if icy_preference == "full" and current_item and current_item.image:
-                        metadata += f"StreamURL='{current_item.image.path}'".encode()
-                    while len(metadata) % 16 != 0:
-                        metadata += b"\x00"
-                    length = len(metadata)
-                    length_b = chr(int(length / 16)).encode()
-                    try:
-                        await resp.write(length_b + metadata)
-                    except BrokenPipeError, ConnectionResetError, ConnectionError:
-                        # same as the chunk write above: a superseded response is
-                        # aborted under us and this is its normal end
+                        # a superseded response is aborted under us and this is
+                        # its normal end
                         client_disconnected = True
                         break
         except AbortFlowStream:
@@ -2503,34 +2513,6 @@ class StreamsController(CoreController):
         # Without this the player is left waiting on a stream that already ended.
         resp.force_close()
 
-    def _raise_if_stale_item_request(
-        self,
-        player: Player,
-        queue_id: str,
-        queue_item: QueueItem,
-        requested_after: str | None,
-    ) -> None:
-        """
-        Refuse (404) the request if the item fell out of the queue's playhead window.
-
-        :param player: The player that requested the item.
-        :param queue_id: The queue the item belongs to.
-        :param queue_item: The requested queue item.
-        :param requested_after: The queue item id the player asked for before this one.
-        """
-        if not player.strict_queue_item_requests:
-            return
-        if self.mass.player_queues.is_current_window_item(
-            queue_id, queue_item.queue_item_id, requested_after
-        ):
-            return
-        self.logger.debug(
-            "Denying stream request from %s for %s: the queue has moved on",
-            player.display_name,
-            queue_item.name,
-        )
-        raise web.HTTPNotFound(reason=f"Queue item is not up next: {queue_item.queue_item_id}")
-
     def _requested_item_ids(
         self,
         queue_id: str,
@@ -2550,7 +2532,7 @@ class StreamsController(CoreController):
         # a request whose player closed the connection no longer counts, even while its
         # handler has yet to notice that on its next write
         return {
-            request.match_info["queue_item_id"]
+            _request_queue_item_id(request)
             for entry_session_id, request in entries
             if entry_session_id == session_id
             and request.method == "GET"
@@ -2590,7 +2572,7 @@ class StreamsController(CoreController):
         # a player that hung up before its first audio left a request that has not ended
         # yet, while its source may already hold the slot
         candidate_ids.update(
-            request.match_info["queue_item_id"]
+            _request_queue_item_id(request)
             for entry_session_id, request in self._open_item_streams.get(queue_id) or []
             if entry_session_id == session_id
             and request.method == "GET"
@@ -2742,6 +2724,25 @@ class StreamsController(CoreController):
             del owners[queue_id]
 
 
+def _icy_metadata_block(queue: PlayerQueue, *, full: bool) -> bytes:
+    """Return the length-prefixed ICY metadata block for the queue's current item."""
+    # use current item here and not buffered item, otherwise
+    # the icy metadata will be too much ahead
+    current_item = queue.current_item
+    if current_item and current_item.streamdetails and current_item.streamdetails.stream_title:
+        title = current_item.streamdetails.stream_title
+    elif current_item and current_item.name:
+        title = current_item.name
+    else:
+        title = "Music Assistant"
+    metadata = f"StreamTitle='{title}';".encode()
+    if full and current_item and current_item.image:
+        metadata += f"StreamURL='{current_item.image.path}'".encode()
+    while len(metadata) % 16 != 0:
+        metadata += b"\x00"
+    return chr(len(metadata) // 16).encode() + metadata
+
+
 def _same_ip_family(ip: str, other_ip: str) -> bool:
     """Return whether two addresses belong to the same IP family."""
     return (":" in ip) == (":" in other_ip)
@@ -2760,6 +2761,13 @@ def _is_valid_publish_ip(value: ConfigValueType) -> bool:
     except ValueError:
         return False
     return True
+
+
+def _request_queue_item_id(request: web.Request) -> str:
+    """Return the queue item a registered stream request plays, however its URL named it."""
+    # a request addressed by queue position resolved its item on the way in; the id and
+    # flow routes name it in the URL
+    return request.get(_REQUEST_QUEUE_ITEM_ID) or request.match_info["queue_item_id"]
 
 
 def _root_cause(err: BaseException) -> BaseException:

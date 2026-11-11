@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import time
 from collections.abc import AsyncIterator
+from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, MagicMock, PropertyMock, call, patch
 
 import pytest
@@ -18,12 +19,17 @@ from music_assistant.constants import (
     CONF_PREFER_WAV_FOR_LIVE_SOURCES,
 )
 from music_assistant.providers.squeezelite.constants import (
+    CONF_ENTRY_DISPLAY,
+    CONF_ENTRY_VISUALIZATION,
     CONF_STORED_MUTED,
     CONF_STORED_VOLUME,
     DEFAULT_PLAYER_VOLUME,
 )
 from music_assistant.providers.squeezelite.player import SqueezelitePlayer, is_protocol_only_device
 from tests.common import use_real_create_task
+
+if TYPE_CHECKING:
+    from music_assistant_models.config_entries import ConfigEntry
 
 
 async def test_squeezelite_prefers_wav_for_live_sources_by_default() -> None:
@@ -109,13 +115,14 @@ def test_group_regular_track_ignores_wav_preference() -> None:
     [
         (MediaType.RADIO, (64, 1)),
         (MediaType.AUDIO_SOURCE, (64, 1)),
+        (MediaType.ANNOUNCEMENT, (64, 1)),
         (MediaType.TRACK, (200, 20)),
     ],
 )
 async def test_live_streams_start_on_a_smaller_buffer(
     media_type: MediaType, expected: tuple[int, int]
 ) -> None:
-    """Radio and AudioSource streams start on a smaller buffer, also when repeated."""
+    """Radio, AudioSource and announcement streams start on a smaller buffer, also when repeated."""
     player, mass = _player_with_mocked_mass()
     player._extra_data = {}
     mass.player_queues.get.return_value = MagicMock(
@@ -407,3 +414,11 @@ async def test_volume_commands_store_volume_and_mute_without_expiry() -> None:
         call("p1", CONF_STORED_MUTED, True),
     ]
     mass.cache.set.assert_not_called()
+
+
+@pytest.mark.parametrize("entry", [CONF_ENTRY_DISPLAY, CONF_ENTRY_VISUALIZATION])
+def test_the_settings_entries_of_a_player_can_be_serialized(entry: ConfigEntry) -> None:
+    """The settings page of a player turns its entries into a dict, which a bad default breaks."""
+    entry.to_dict()
+    if entry.options:
+        assert entry.default_value in {option.value for option in entry.options}

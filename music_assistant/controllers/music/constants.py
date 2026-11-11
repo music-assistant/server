@@ -8,11 +8,13 @@ from music_assistant_models.enums import SortDirection, SortField
 
 CONF_RESET_DB = "reset_db"
 DEFAULT_SYNC_INTERVAL = 12 * 60  # default sync interval in minutes
+# the playlog stores whole seconds, so closer resume positions count as unchanged
+RESUME_POSITION_TOLERANCE_SECONDS: Final[int] = 2
 CONF_SYNC_INTERVAL = "sync_interval"
 CONF_DELETED_PROVIDERS = "deleted_providers"
 CONF_KEEP_REMASTERS_APART: Final[str] = "keep_remasters_apart"
 
-DB_SCHEMA_VERSION: Final[int] = 71
+DB_SCHEMA_VERSION: Final[int] = 73
 # headroom kept free on top of what moving the audio analysis out of library.db writes
 DB_FREE_SPACE_MARGIN: Final[int] = 100 * 1024 * 1024
 
@@ -31,6 +33,9 @@ LISTING_CACHE_EXPIRATION: Final[int] = 15 * 60
 BROWSE_CACHE_EXPIRATION: Final[int] = 2 * 60
 # how many similar artists or tracks the providers are asked for, the size of such a listing
 SIMILAR_ITEMS_LIMIT: Final[int] = 25
+# caps the album track lookups in flight when an artist's tracks are listed from its albums,
+# so a large discography does not flood a provider
+ARTIST_ALBUM_LOOKUP_BATCH: Final[int] = 5
 
 # max time to wait for a single provider's search results before
 # contributing empty results for it, so one slow provider can never block
@@ -64,6 +69,7 @@ DATABASE_CLEANUP_TASK_ID: Final[str] = "music_database_cleanup"
 PROVIDER_MAPPING_CORRECTION_TASK_ID: Final[str] = "music_provider_mapping_correction"
 MUSIC_SYNC_COMPLETION_CHECK_TASK_ID: Final[str] = "music_sync_completion_check"
 TRACK_RECONCILIATION_TASK_ID: Final[str] = "music_track_reconciliation"
+UNAVAILABLE_MAPPING_CHECK_TASK_ID: Final[str] = "music_unavailable_mapping_check"
 
 # number of duplicate track candidate pairs examined per reconciliation run
 TRACK_RECONCILIATION_BATCH_SIZE: Final[int] = 100

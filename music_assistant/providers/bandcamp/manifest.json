@@ -5,6 +5,7 @@
   "name": "Bandcamp",
   "description": "Stream music from Bandcamp's catalog.",
   "codeowners": ["@ALERTua", "@teancom"],
+  "tier": "community",
   "requirements": ["bandcamp-async-api==0.3.0"],
   "documentation": "https://music-assistant.io/music-providers/bandcamp/",
   "multi_instance": true

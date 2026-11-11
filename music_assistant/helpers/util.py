@@ -69,6 +69,12 @@ LOGGER = logging.getLogger(__name__)
 
 CALLBACK_TYPE = Callable[[], None]
 
+# getmac has no timeout of its own and can hang on some addresses
+MAC_LOOKUP_TIMEOUT = 3.0
+# A timed out lookup keeps its executor thread until getmac returns, so later
+# callers for the same address share it instead of starting another one.
+_PENDING_MAC_LOOKUPS: dict[str, asyncio.Future[str | None]] = {}
+
 
 async def warn_if_missing_x86_64_v2(logger: logging.Logger) -> None:
     """
@@ -1859,9 +1865,16 @@ async def get_mac_address(ip_address: str) -> str | None:
     try:
         from getmac import get_mac_address as getmac_lookup  # noqa: PLC0415
 
-        return await asyncio.to_thread(getmac_lookup, ip=ip_address)
+        if (lookup := _PENDING_MAC_LOOKUPS.get(ip_address)) is None:
+            lookup = asyncio.ensure_future(asyncio.to_thread(getmac_lookup, ip=ip_address))
+            _PENDING_MAC_LOOKUPS[ip_address] = lookup
+            lookup.add_done_callback(functools.partial(_on_mac_lookup_done, ip_address))
+        return await asyncio.wait_for(asyncio.shield(lookup), timeout=MAC_LOOKUP_TIMEOUT)
     except ImportError:
         LOGGER.debug("getmac module not available, cannot resolve MAC from IP")
+        return None
+    except TimeoutError:
+        LOGGER.debug("Timed out resolving MAC address for %s", ip_address)
         return None
     except Exception as err:
         LOGGER.debug("Failed to resolve MAC address for %s: %s", ip_address, err)
@@ -2253,9 +2266,10 @@ def guard_single_request[SelfT: _SupportsMass, **P, R](
 
     Callers arriving while an identical call is already in flight await that same call and
     receive its result. Cancelling one caller leaves both the request and the other callers
-    unaffected. Calls count as identical when they are made on the same object with equal
-    arguments, no matter whether those were passed positionally or by keyword; the request
-    runs with the arguments of the caller that started it.
+    unaffected. Calls count as identical when they are made on the same object, by the same
+    user in the same role (or no user), with equal arguments, no matter whether those were
+    passed positionally or by keyword; the request runs with the arguments of the caller that
+    started it.
 
     Every argument must be a scalar or an object identified by its ``uri``, so that equal
     arguments are guaranteed to produce an equal key.
@@ -2266,8 +2280,14 @@ def guard_single_request[SelfT: _SupportsMass, **P, R](
 
     @functools.wraps(func)
     async def wrapper(self: SelfT, /, *args: P.args, **kwargs: P.kwargs) -> R:
+        from music_assistant.controllers.webserver.helpers.auth_middleware import (  # noqa: PLC0415
+            get_current_user,
+        )
+
         mass = self.mass
-        # create a task_id dynamically based on the bound method and args/kwargs.
+        # create a task_id dynamically based on the bound method, the user and args/kwargs.
+        # a request may resolve differently per user and role (which music sources it may
+        # use), so two identities never join the same flight.
         # the instance is part of the key because a decorated method may be inherited by
         # multiple subclasses (all media controllers share
         # MediaControllerBase.get_provider_item) and a class may have multiple instances
@@ -2284,6 +2304,7 @@ def guard_single_request[SelfT: _SupportsMass, **P, R](
                 type(self).__name__,
                 id(self),
                 func.__qualname__,
+                (user.user_id, user.role) if (user := get_current_user()) else None,
                 # skip the instance: it is the first parameter and is keyed by id() above
                 *(
                     (name, _canonical_key_part(value))
@@ -2317,3 +2338,10 @@ def _canonical_key_part(value: Any) -> Any:
         # full item and an ItemMapping for that same item are not handled the same.
         return (type(value).__name__, uri)
     return value
+
+
+def _on_mac_lookup_done(ip_address: str, lookup: asyncio.Future[str | None]) -> None:
+    """Forget a finished MAC lookup, retrieving its outcome so nothing is left unread."""
+    _PENDING_MAC_LOOKUPS.pop(ip_address, None)
+    if not lookup.cancelled():
+        lookup.exception()

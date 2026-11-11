@@ -195,6 +195,7 @@ class StorytelHelper:
         """Build the standard API headers used for Storytel requests."""
         headers: dict[str, str] = {
             "Accept": "application/json",
+            # TODO: check whether this can use MASS_USER_AGENT
             "User-Agent": "MusicAssistant-Storytel/1.0",
         }
         if self._auth:

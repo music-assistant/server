@@ -28,7 +28,7 @@ if TYPE_CHECKING:
     from mutagen.mp4 import MP4Tags
 
 from music_assistant.constants import MASS_LOGGER_NAME, UNKNOWN_ARTIST
-from music_assistant.helpers.ffmpeg import tls_verify_args
+from music_assistant.helpers.ffmpeg import tls_verify_args, user_agent_args
 from music_assistant.helpers.json import json_loads
 from music_assistant.helpers.process import (
     AsyncProcess,
@@ -350,14 +350,14 @@ class AudioTags:
     @property
     def artists(self) -> tuple[str, ...]:
         """Return track artists."""
-        # Preferred path when unambiguously separated artist names are available
-        # Vorbis: multiple ARTIST fields, ID3: TXXX:ARTISTS or multi-value TPE1
-        # APEv2: null-separated ARTISTS tag (if present), MP4: not supported
+        # Preferred path when unambiguously separated artist names are
+        # available. While all formats support multi-value fields, we also
+        # handle textual fields split with semicolons.
         if tag := self.tags.get("artists"):
             mb_id_count = len(self.musicbrainz_artistids)
-            # Runtime check: mutagen returns list[str] for Vorbis multi-field
+            # Runtime check: mutagen returns list[str] for multi-field
             if isinstance(tag, list) and len(tag) > 1:
-                # Multiple ARTIST fields from Vorbis - already separated, no splitting needed
+                # Already separated, no splitting needed
                 artists = clean_tuple(tag)
             elif mb_id_count == 1:
                 # Single MB ID confirms single artist - don't split
@@ -367,8 +367,6 @@ class AudioTags:
                 artists = split_items(tag)
             return artists
         # Fallback to single artist string, splitting if necessary
-        # All formats: parser returns artist (singular)
-        # APEv2: also falls through here if no ARTISTS tag present
         if tag := self.tags.get("artist"):
             mb_id_count = len(self.musicbrainz_artistids)
             if mb_id_count == 1:
@@ -434,13 +432,14 @@ class AudioTags:
     @property
     def album_artists(self) -> tuple[str, ...]:
         """Return (all) album artists (if any)."""
-        # Preferred path when unambiguously separated album artist names are available
-        # Vorbis: multiple ALBUMARTIST fields, ID3: multi-value TPE2
+        # Preferred path when unambiguously separated album artist names are
+        # available. While all formats support multi-value fields, we also
+        # handle textual fields split with semicolons.
         if tag := self.tags.get("albumartists"):
             mb_id_count = len(self.musicbrainz_albumartistids)
-            # Runtime check: mutagen returns list[str] for Vorbis multi-field
+            # Runtime check: mutagen returns list[str] for multi-field
             if isinstance(tag, list) and len(tag) > 1:
-                # Multiple ALBUMARTIST fields from Vorbis - already separated, no splitting needed
+                # Already separated, no splitting needed
                 artists = clean_tuple(tag)
             elif mb_id_count == 1:
                 # Single MB ID confirms single artist - don't split
@@ -450,7 +449,6 @@ class AudioTags:
                 artists = split_items(tag)
             return artists
         # Fallback to single album artist string, splitting if necessary
-        # All formats: parser returns albumartist (singular)
         if tag := self.tags.get("albumartist"):
             mb_id_count = len(self.musicbrainz_albumartistids)
             if mb_id_count == 1:
@@ -806,6 +804,7 @@ def parse_tags(
         "-print_format",
         "json",
         *tls_verify_args(source, verify_ssl),
+        *user_agent_args(source),
         "-i",
         source,
     )
@@ -880,6 +879,7 @@ def get_file_duration(
         "-loglevel",
         "info",
         *tls_verify_args(input_file, verify_ssl),
+        *user_agent_args(input_file),
         "-i",
         input_file,
         "-f",
@@ -1114,6 +1114,10 @@ def _parse_mp4_tags(tags: MP4Tags) -> dict[str, Any]:  # noqa: C901, PLR0912, PL
     # Additional freeform tags
     if "----:com.apple.iTunes:ARTISTS" in tags:
         result["artists"] = _decode_mp4_freeform_list(tags["----:com.apple.iTunes:ARTISTS"])
+    if "----:com.apple.iTunes:ALBUMARTISTS" in tags:
+        result["albumartists"] = _decode_mp4_freeform_list(
+            tags["----:com.apple.iTunes:ALBUMARTISTS"]
+        )
     if "----:com.apple.iTunes:BARCODE" in tags:
         result["barcode"] = _decode_mp4_freeform_list(tags["----:com.apple.iTunes:BARCODE"])
     if "----:com.apple.iTunes:ISRC" in tags:
@@ -1773,6 +1777,7 @@ async def _get_embedded_image(
         # URL may not open local files, whatever either of them references
         "-protocol_whitelist",
         "http,https,tcp,tls" if is_url else "file",
+        *user_agent_args(source),
         "-i",
         source,
         "-an",

@@ -46,8 +46,8 @@ def _mass(providers: list[MagicMock] | None = None) -> MagicMock:
     mass.get_provider.side_effect = lambda instance_id, **_kwargs: next(
         (prov for prov in loaded if prov.instance_id == instance_id), None
     )
-    mass.get_provider_instances.side_effect = lambda domain, **_kwargs: [
-        prov for prov in loaded if prov.domain == domain
+    mass.get_provider_instances.side_effect = lambda domain, return_unavailable=False, **_: [
+        prov for prov in loaded if prov.domain == domain and (return_unavailable or prov.available)
     ]
     set_music_source_access(mass, {})
     return mass
@@ -166,11 +166,13 @@ def test_hidden_music_sources_lists_the_sources_a_user_may_not_see() -> None:
         {
             "builtin": None,
             "spotify--aaaa": ProviderAccess(owner=OWNER, sharing=ProviderSharing.PRIVATE),
+            "spotify--cccc": ProviderAccess(owner=MEMBER, sharing=ProviderSharing.PRIVATE),
             "tidal--bbbb": ProviderAccess(owner=MEMBER, sharing=ProviderSharing.PRIVATE),
         },
     )
+    # a service's domain is hidden too once the user may see none of its accounts
     assert hidden_music_sources(mass, _user(MEMBER)) == {"spotify--aaaa"}
-    assert hidden_music_sources(mass, _user(OWNER)) == {"tidal--bbbb"}
+    assert hidden_music_sources(mass, _user(OWNER)) == {"spotify--cccc", "tidal--bbbb", "tidal"}
 
 
 def test_visible_playback_sources_for_anonymous_playback() -> None:
@@ -399,17 +401,22 @@ def test_visible_provider_checks_the_account_that_serves() -> None:
     )
 
     assert visible_provider(mass, "spotify--mine", _user(OWNER)) is mine
-    assert visible_provider(mass, "spotify--mine", _user(MEMBER)) is None
+    # a hidden account gives way to the user's own account of the service, if there is one
+    assert visible_provider(mass, "spotify--mine", _user(MEMBER)) is theirs
+    assert visible_provider(mass, "spotify--mine", _user(GUEST)) is None
+    assert visible_provider(mass, "spotify--mine", _user(MEMBER), strict=True) is None
     assert visible_provider(mass, "unknown", _user(OWNER)) is None
     # a plugin is not a music source and no user at all means no narrowing
     assert visible_provider(mass, "hass", _user(MEMBER)) is plugin
     assert visible_provider(mass, "spotify--theirs", None) is theirs
 
     # an unavailable account resolves to another account of the service: that one is checked
+    mine.available = False
     mass.get_provider.side_effect = None
     mass.get_provider.return_value = theirs
-    assert visible_provider(mass, "spotify--mine", _user(OWNER)) is None
     assert visible_provider(mass, "spotify--mine", _user(MEMBER)) is theirs
+    assert visible_provider(mass, "spotify--mine", _user(OWNER)) is None
+    assert visible_provider(mass, "spotify--mine", _user(GUEST)) is None
 
 
 def test_derived_provider_filter_is_empty_when_nothing_is_hidden() -> None:

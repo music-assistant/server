@@ -195,6 +195,8 @@ The manifest file contains metadata and configuration about a provider. The supp
 | name  | The full name of the provider, e.g. `Spotify` or `Youtube Music`  | string  |
 | description  | The full description of the provider  | string  |
 | codeowners  | List of Github names of the codeowners of the provider  | array[string]  |
+| tier | `core` or `community`: who builds and maintains the provider. `core` requires `@music-assistant` in `codeowners`; everything else is `community`. Required for every provider that ships. | string |
+| support_url | Optional https URL where the maintainer takes bug reports and questions, when not the project's support repository. | string |
 | stage | The development/stability stage: `alpha`, `beta`, `stable`, `experimental`, `unmaintained` or `deprecated`. Defaults to `stable`. | string |
 | requirements | Python packages the provider needs, in standard pip / [PEP 508](https://peps.python.org/pep-0508/) requirement syntax, e.g. `package==version`, a version range, an extras marker, or a `git+https://…` direct reference | array[string] |
 | documentation | URL to the provider's documentation page. | string |
@@ -211,3 +213,27 @@ The manifest file contains metadata and configuration about a provider. The supp
 A provider's config entries are not declared in the manifest. They are built in code by overriding `get_config_entries` on the provider, and their values are read via `self.config.get_value(key)`. One-time setup input is collected by the provider's setup flow (`setup_flow.py`).
 
 Two more `ProviderManifest` fields are filled in automatically at load time and must not be set in the manifest: `icon_images` (the icon variants found in the provider folder — `icon.svg`/`icon.png`, `icon_dark.svg`/`icon_dark.png` and `icon_monochrome.svg`/`icon_monochrome.png`, with SVG preferred over PNG) and `has_setup_flow` (set when the provider folder contains a `setup_flow.py`).
+
+## 🤝 Community providers
+Every provider ships in this repository and is reviewed against the same usage policy, whoever maintains it. The manifest's `tier` says who that is: `core` providers are maintained by the Music Assistant team (`@music-assistant` is a codeowner), `community` providers by the people listed in `codeowners`. Set `support_url` if you want bug reports and questions somewhere other than the support repository.
+
+**Getting your changes merged**
+
+Bot-MArley, the maintainers' review bot, reviews every PR that is ready for review within about an hour of its last push, and approves it when the review is clean and the change stays inside one provider. An approval does not merge the PR. As a codeowner of that provider, comment `@Bot-MArley merge` on a line of its own, and the bot adds the PR to the merge queue once its current commit is approved and `lint` and `test` are green. This works on PRs into `dev` that only change your provider's folders (`music_assistant/providers/<domain>/` and `tests/providers/<domain>/`), whoever opened them. After a new push, ask again.
+
+A maintainer still approves or merges:
+* a new provider, after checking it against the [usage policy](https://github.com/music-assistant/.github/blob/main/USAGE_POLICY.md);
+* a change to your provider's `codeowners`, `tier` or `support_url`;
+* a change to `requirements`, or to anything outside your provider's folders;
+* a PR of 1,000 changed lines or more;
+* a change to a player provider, or other code that talks to a device, until you say in the PR which real device you tested it on.
+
+Comment `@Bot-MArley help` on a PR for all of the bot's commands.
+
+**Keeping your provider working**
+
+Changes to the provider base classes land several times a month, and the core team updates every provider in the PR that makes them. When a change in Music Assistant still breaks your provider, you are expected to fix it.
+
+**Backports**
+
+A bugfix that also affects the current stable release can be backported. Ask for it in your PR: a maintainer adds the `backport-to-stable` label, and the fix is cherry-picked onto the stable branch once it merges into `dev`.

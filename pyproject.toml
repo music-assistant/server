@@ -26,8 +26,8 @@ dependencies = [
   "ifaddr==0.2.0",
   "getmac==0.9.6",
   "mashumaro==3.22",
-  "music-assistant-models==1.1.232",
-  "music-assistant-frontend==2.17.354",
+  "music-assistant-models==1.1.238",
+  "music-assistant-frontend @ https://github.com/music-assistant/frontend/releases/download/2.17.364/music_assistant_frontend-2.17.364-py3-none-any.whl#sha256=4d79124c7ef4e5790a6e5a4839afe7030e6106aaddb5bfa85df2e5ca543d631d",
   "mutagen==1.48.1",
   "orjson==3.11.6",
   "pillow==13.0.0",
@@ -88,6 +88,7 @@ mass = "music_assistant.__main__:main"
 # "overal" is a Dutch word ("everywhere") in a VRT MAX station tagline
 # translations/*.json are machine-translated locale files (Lokalise); foreign words aren't typos
 # tidal fixtures are captured API responses; foreign album/track titles aren't typos
+# dr_lyd fixtures are captured API responses, in Danish
 # instructions/*.instructions.md quotes reviewer comments verbatim (incl. their original typos)
 ignore-words-list = "provid,hass,followings,childs,explict,additionals,commitish,nam,connexion,claus,childrens,speaches,overal,"
 skip = """*.js,*.svg,\
@@ -96,6 +97,7 @@ music_assistant/helpers/resources/countries.json,\
 music_assistant/helpers/resources/genres/genre_mapping.json,\
 music_assistant/providers/sonic_analysis/vendored_clap/**,\
 music_assistant/translations/*.json,\
+tests/providers/dr_lyd/fixtures/**,\
 tests/providers/tidal/fixtures/**,\
 NOTICE,\
 """

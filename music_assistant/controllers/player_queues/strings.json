@@ -19,13 +19,16 @@
         "similar": "Similar to what you played",
         "library": "Infinite mix from your library",
         "playlist": "Tracks from a playlist",
+        "similar_artists": "Similar artists",
         "global": "Global"
       },
       "option_descriptions": {
+        "similar_artists": "Plays a similar artist of the last track's artist, the same way as playing that artist.",
         "global": "Follow the Player Queues default."
       },
       "disabled_reasons": {
-        "similar": "No music or metadata provider that can supply similar tracks is currently available."
+        "similar": "No music source or metadata provider that can supply similar tracks is currently available.",
+        "similar_artists": "No music source that can supply similar artists is currently available."
       }
     },
     "autoplay_playlist": {
@@ -138,6 +141,10 @@
       "option_descriptions": {
         "global": "Follow the Player Queues default."
       }
+    },
+    "pause_timeout": {
+      "label": "Stop a paused player after (seconds)",
+      "description": "How long a player may stay paused before Music Assistant stops it to free the audio it holds. Once stopped, the player shows as idle, and pressing play still continues where you paused. Not every player can stay paused for long."
     },
     "default_enqueue_select_artist": {
       "label": "Items to select when you play a (in-library) artist.",

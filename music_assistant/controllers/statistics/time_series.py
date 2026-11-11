@@ -34,7 +34,6 @@ from music_assistant.controllers.statistics.queries import (
     TRACK_ARTISTS_CTE,
     TRACK_HISTORY_CTE,
 )
-from music_assistant.controllers.webserver.helpers.auth_middleware import get_current_user
 from music_assistant.helpers.api import api_command
 from music_assistant.helpers.datetime import get_timezone
 from music_assistant.helpers.json import json_loads
@@ -64,6 +63,8 @@ class TimeSeriesMixin(_StatisticsBase):
         period: str = "week",
         granularity: str = "day",
         timezone: str = "UTC",
+        users: list[str] | None = None,
+        all_users: bool = False,
     ) -> list[TimeSeriesPoint]:
         """
         Get play counts over time (time series data).
@@ -76,11 +77,10 @@ class TimeSeriesMixin(_StatisticsBase):
         :param period: Time period - 'today', 'week', 'month', 'year', 'all_time'.
         :param granularity: Time bucket size - 'hour', 'day', 'week', 'month'.
         :param timezone: IANA timezone for calendar buckets and boundaries; defaults to UTC.
+        :param users: User ids or usernames whose plays are combined; defaults to the current user.
+        :param all_users: Combine the plays of every user, instead of the given users.
         """
-        user = get_current_user()
-        user_id = user.user_id if user else None
-
-        if not user_id:
+        if not (user_ids := await self._get_statistics_user_ids(users, all_users)):
             return []
 
         cutoff_timestamp = self._get_period_cutoff(period, timezone)
@@ -93,7 +93,7 @@ class TimeSeriesMixin(_StatisticsBase):
         buckets: dict[str, int] = {}
         if timezone != "UTC":
             async for local_time, count in self._iter_local_play_counts(
-                user_id, cutoff_timestamp, timezone
+                user_ids, cutoff_timestamp, timezone
             ):
                 bucket = _bucket_key(local_time, granularity)
                 buckets[bucket] = buckets.get(bucket, 0) + count
@@ -111,7 +111,7 @@ class TimeSeriesMixin(_StatisticsBase):
                     SELECT CAST(timestamp AS INTEGER) / {bucket_seconds} AS bucket,
                         COUNT(*) AS play_count
                     FROM {DB_TABLE_PLAY_HISTORY}
-                    WHERE userid = :user_id
+                    WHERE userid IN :user_ids
                         AND timestamp >= :cutoff_timestamp
                         AND media_type IN ({PLAY_HISTORY_EVENT_TYPE_SQL})
                     GROUP BY bucket
@@ -121,7 +121,7 @@ class TimeSeriesMixin(_StatisticsBase):
             """
 
             params = {
-                "user_id": user_id,
+                "user_ids": user_ids,
                 "cutoff_timestamp": cutoff_timestamp,
             }
 
@@ -147,17 +147,18 @@ class TimeSeriesMixin(_StatisticsBase):
         self,
         period: str = "week",
         timezone: str = "UTC",
+        users: list[str] | None = None,
+        all_users: bool = False,
     ) -> list[HeatmapPoint]:
         """
         Get listening activity heatmap (plays by hour of day and weekday).
 
         :param period: Time period - 'today', 'week', 'month', 'year', 'all_time'.
         :param timezone: IANA timezone for calendar buckets and boundaries; defaults to UTC.
+        :param users: User ids or usernames whose plays are combined; defaults to the current user.
+        :param all_users: Combine the plays of every user, instead of the given users.
         """
-        user = get_current_user()
-        user_id = user.user_id if user else None
-
-        if not user_id:
+        if not (user_ids := await self._get_statistics_user_ids(users, all_users)):
             return []
 
         cutoff_timestamp = self._get_period_cutoff(period, timezone)
@@ -165,7 +166,7 @@ class TimeSeriesMixin(_StatisticsBase):
         if timezone != "UTC":
             buckets: dict[tuple[int, int], int] = {}
             async for local_time, count in self._iter_local_play_counts(
-                user_id, cutoff_timestamp, timezone
+                user_ids, cutoff_timestamp, timezone
             ):
                 bucket = (local_time.weekday(), local_time.hour)
                 buckets[bucket] = buckets.get(bucket, 0) + count
@@ -183,7 +184,7 @@ class TimeSeriesMixin(_StatisticsBase):
                 SELECT CAST(timestamp AS INTEGER) / 3600 AS bucket,
                     COUNT(*) AS play_count
                 FROM {DB_TABLE_PLAY_HISTORY}
-                WHERE userid = :user_id
+                WHERE userid IN :user_ids
                     AND timestamp >= :cutoff_timestamp
                     AND media_type IN ({PLAY_HISTORY_EVENT_TYPE_SQL})
                 GROUP BY bucket
@@ -193,7 +194,7 @@ class TimeSeriesMixin(_StatisticsBase):
         """
 
         params = {
-            "user_id": user_id,
+            "user_ids": user_ids,
             "cutoff_timestamp": cutoff_timestamp,
         }
 
@@ -211,6 +212,8 @@ class TimeSeriesMixin(_StatisticsBase):
         group_by: str = "artist",
         limit: int = 10,
         timezone: str = "UTC",
+        users: list[str] | None = None,
+        all_users: bool = False,
     ) -> list[ListeningTimeItem]:
         """
         Sum stored durations for completed plays resolvable to library tracks.
@@ -223,11 +226,10 @@ class TimeSeriesMixin(_StatisticsBase):
         :param group_by: Group by 'artist' or 'genre' (default 'artist').
         :param limit: Maximum number of items to return (default 10).
         :param timezone: IANA timezone for calendar boundaries; defaults to UTC.
+        :param users: User ids or usernames whose plays are combined; defaults to the current user.
+        :param all_users: Combine the plays of every user, instead of the given users.
         """
-        user = get_current_user()
-        user_id = user.user_id if user else None
-
-        if not user_id:
+        if not (user_ids := await self._get_statistics_user_ids(users, all_users)):
             return []
         limit = validate_statistics_limit(limit)
         if group_by not in ("artist", "genre"):
@@ -285,7 +287,7 @@ class TimeSeriesMixin(_StatisticsBase):
             """
 
         params = {
-            "user_id": user_id,
+            "user_ids": user_ids,
             "media_type": MediaType.TRACK.value,
             "cutoff_timestamp": cutoff_timestamp,
         }
@@ -323,7 +325,7 @@ class TimeSeriesMixin(_StatisticsBase):
         return result
 
     async def _iter_local_play_counts(
-        self, user_id: str, cutoff_timestamp: float, timezone: str
+        self, user_ids: list[str], cutoff_timestamp: float, timezone: str
     ) -> AsyncGenerator[tuple[datetime, int]]:
         """Yield completed play counts with their local event time."""
         # Recorded-history zone offsets align to 15-minute UTC buckets; grouping first keeps
@@ -331,14 +333,14 @@ class TimeSeriesMixin(_StatisticsBase):
         query = f"""
             SELECT CAST(timestamp AS INTEGER) / 900 AS bucket, COUNT(*) AS play_count
             FROM {DB_TABLE_PLAY_HISTORY}
-            WHERE userid = :user_id
+            WHERE userid IN :user_ids
                 AND timestamp >= :cutoff_timestamp
                 AND media_type IN ({PLAY_HISTORY_EVENT_TYPE_SQL})
             GROUP BY bucket
         """
         zone = get_timezone(timezone)
         async for row in self.mass.music.database.iter_rows_from_query(
-            query, {"user_id": user_id, "cutoff_timestamp": cutoff_timestamp}
+            query, {"user_ids": user_ids, "cutoff_timestamp": cutoff_timestamp}
         ):
             yield (
                 datetime.fromtimestamp(row["bucket"] * 900, UTC).astimezone(zone),

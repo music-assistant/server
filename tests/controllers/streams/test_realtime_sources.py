@@ -40,6 +40,7 @@ from music_assistant.controllers.streams.audio import (
 )
 from music_assistant.controllers.streams.audio_buffer import AudioBuffer
 from music_assistant.controllers.streams.constants import (
+    ICY_WRITE_SIZE,
     BufferSize,
     PacingProfile,
     output_pacing_args,
@@ -1198,7 +1199,7 @@ async def test_the_incoming_item_waits_for_a_fade_still_being_mixed(
     )
     audio = StreamsAudio(MagicMock())
     queue = cast("Any", SimpleNamespace(queue_id="queue-1", display_name="Queue"))
-    item = cast("Any", SimpleNamespace(queue_item_id="next", name="Next"))
+    item = cast("Any", SimpleNamespace(queue_item_id="next", name="Next", streamdetails=None))
 
     # nothing being mixed: the caller is told so straight away
     assert await audio._await_pending_crossfade(queue, item, "session-1") is None
@@ -1233,6 +1234,33 @@ async def test_the_incoming_item_waits_for_a_fade_still_being_mixed(
     started = asyncio.get_event_loop().time()
     assert await audio._await_pending_crossfade(queue, item, "session-1") is None
     assert asyncio.get_event_loop().time() - started >= 0.2
+
+
+async def test_a_realtime_item_waits_for_its_fade_within_the_speakers_patience(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A realtime item starts without its fade once the shorter bound has passed."""
+    monkeypatch.setattr("music_assistant.controllers.streams.audio.CROSSFADE_HANDOFF_WAIT", 5.0)
+    monkeypatch.setattr(
+        "music_assistant.controllers.streams.audio.REALTIME_CROSSFADE_HANDOFF_WAIT", 0.1
+    )
+    audio = StreamsAudio(MagicMock())
+    queue = cast("Any", SimpleNamespace(queue_id="queue-1", display_name="Queue"))
+    item = cast(
+        "Any",
+        SimpleNamespace(
+            queue_item_id="next",
+            name="Next",
+            streamdetails=SimpleNamespace(is_realtime=True),
+        ),
+    )
+    audio._crossfade_pending["queue-1"] = ("next", asyncio.Event())
+
+    started = asyncio.get_event_loop().time()
+    assert await audio._await_pending_crossfade(queue, item, "session-1") is None
+    assert asyncio.get_event_loop().time() - started < 2.0
+    # given up: a fade landing later must not play an intro the item plays itself
+    assert "queue-1" not in audio._crossfade_pending
 
 
 async def test_smartfade_a_source_still_delivering_hands_over_gapless(
@@ -2131,7 +2159,7 @@ def _single_item_handler(
     mass = MagicMock()
     mass.player_queues.get.return_value = queue
     mass.player_queues.queue_data.return_value = SimpleNamespace(
-        session_id="session-1", last_served_item_id=None, last_requested_item_id=None
+        session_id="session-1", last_served_item_id=None
     )
     mass.player_queues.get_item.return_value = queue_item
     mass.config.get_raw_core_config_value.return_value = 8
@@ -2394,6 +2422,42 @@ async def test_flow_passes_on_encoded_audio_without_waiting_for_a_full_chunk(
         await controller.serve_queue_flow_stream(request)
 
     assert seen["chunk_size"] is None
+
+
+async def test_flow_with_icy_framing_writes_small_blocks_and_counts_to_the_interval(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """
+    An ICY flow hands audio on in small writes and inserts metadata by byte count.
+
+    A write per metadata interval held back 1.5s of FLAC at a time, which drained
+    a near-realtime player below its restart threshold (server#7147).
+    """
+    controller, request, _ = _flow_handler(monkeypatch, is_realtime=False)
+    controller.mass.config.get_raw_player_config_value.return_value = "full"
+    request.headers = {"Icy-MetaData": "1"}
+    seen: dict[str, Any] = {}
+    written: list[bytes] = []
+
+    async def _encoded_audio(**kwargs: Any) -> AsyncGenerator[bytes]:
+        seen["chunk_size"] = kwargs.get("chunk_size")
+        for _ in range(3):
+            yield b"a" * 100_000
+
+    async def _record(_self: Any, chunk: bytes) -> None:
+        written.append(chunk)
+
+    monkeypatch.setattr(controller_mod, "get_ffmpeg_stream", _encoded_audio)
+    monkeypatch.setattr(_FakeStreamResponse, "write", _record)
+
+    await controller.serve_queue_flow_stream(request)
+
+    assert seen["chunk_size"] == ICY_WRITE_SIZE
+    stream = b"".join(written)
+    metadata = controller_mod._icy_metadata_block(
+        controller.mass.player_queues.get.return_value, full=True
+    )
+    assert stream == b"a" * 256_000 + metadata + b"a" * 44_000
 
 
 async def test_flow_producer_learns_when_its_player_left(monkeypatch: pytest.MonkeyPatch) -> None:

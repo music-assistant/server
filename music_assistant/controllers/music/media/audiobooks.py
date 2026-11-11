@@ -33,6 +33,8 @@ from music_assistant.constants import (
     DB_TABLE_MEDIA_PROGRESS,
     DB_TABLE_PROVIDER_MAPPINGS,
 )
+from music_assistant.controllers.music.constants import RESUME_POSITION_TOLERANCE_SECONDS
+from music_assistant.controllers.music.helpers import ResumePoint, select_resume_point
 from music_assistant.controllers.webserver.helpers.auth_middleware import get_current_user
 from music_assistant.helpers.compare import (
     compare_audiobook,
@@ -40,7 +42,7 @@ from music_assistant.helpers.compare import (
     loose_compare_strings,
 )
 from music_assistant.helpers.database import UNSET
-from music_assistant.helpers.datetime import utc_timestamp
+from music_assistant.helpers.datetime import from_utc_timestamp, utc_timestamp
 from music_assistant.helpers.json import serialize_to_json
 from music_assistant.helpers.util import parse_optional_bool
 from music_assistant.models.music_provider import MusicProvider
@@ -48,7 +50,7 @@ from music_assistant.models.music_provider import MusicProvider
 from .base import AudiobookSyncDetails, MediaControllerBase
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping
+    from collections.abc import Iterable, Mapping
 
     from music_assistant_models.auth import User
 
@@ -427,14 +429,14 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
         search_query = audiobook.name
         result: UniqueList[Audiobook] = UniqueList()
         for provider_id in self.mass.music.get_unique_providers():
-            provider = self.mass.get_provider(provider_id)
+            provider = self.mass.music.get_visible_provider(provider_id)
             if not isinstance(provider, MusicProvider):
                 continue
             if MediaType.AUDIOBOOK not in provider.supported_media_types:
                 continue
             result.extend(
                 prov_item
-                for prov_item in await self.search(search_query, provider_id)
+                for prov_item in await self.search(search_query, provider.instance_id)
                 if loose_compare_strings(audiobook.name, prov_item.name)
                 # make sure that the 'base' version is NOT included
                 and not audiobook.provider_mappings.intersection(prov_item.provider_mappings)
@@ -640,17 +642,7 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
 
     async def _set_playlog(self, db_id: int, media_item: Audiobook) -> None:
         """Update/set the playlog table for the given audiobook db item_id."""
-        # Get user(s)
-        user: User | None = None
-        if session_user := get_current_user():
-            # this is the active session user that triggered the action
-            user = session_user
-        elif provider_user := await self.mass.music._get_user_for_provider(
-            media_item.provider_mappings
-        ):
-            # based on configured provider filter we can try to find a user
-            user = provider_user
-        if user:
+        if user := await self._playlog_user(media_item.provider_mappings):
             user_ids = [user.user_id]
         else:
             # NOTE: if no user was found, we will alter the playlog for all users
@@ -669,7 +661,7 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
                         "userid": user_id,
                     },
                 )
-        if media_item.fully_played is None and media_item.resume_position_ms is None:
+        if (provider_point := ResumePoint.from_item(media_item)) is None:
             return
 
         for user_id in user_ids:
@@ -683,13 +675,17 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
                 },
             )
             seconds_played = int((media_item.resume_position_ms or 0) / 1000)
-            # abort if nothing changed
-            if (
-                cur_entry
-                and parse_optional_bool(cur_entry["fully_played"]) == media_item.fully_played
-                and abs((cur_entry["seconds_played"] or 0) - seconds_played) <= 2
+            # skip the user if nothing changed, or Music Assistant's own record wins
+            if cur_entry and (
+                (
+                    parse_optional_bool(cur_entry["fully_played"]) == media_item.fully_played
+                    and abs((cur_entry["seconds_played"] or 0) - seconds_played)
+                    <= RESUME_POSITION_TOLERANCE_SECONDS
+                )
+                or select_resume_point(provider_point, ResumePoint.from_playlog_row(cur_entry))
+                is not provider_point
             ):
-                return
+                continue
 
             await self.mass.music.database.insert(
                 DB_TABLE_MEDIA_PROGRESS,
@@ -720,17 +716,19 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
             result.update(json_loads(row[column]))
         return UniqueList(sorted(result))
 
-    def _sync_details_query_parts(self) -> tuple[str, str, dict[str, Any]]:
+    async def _sync_details_query_parts(
+        self, provider_mappings: Iterable[ProviderMapping]
+    ) -> tuple[str, str, dict[str, Any]]:
         """Return extra (columns, joins, params) for the audiobooks sync-details query."""
         # the sync loop needs the stored authors/narrators (linked and plain)
         # plus the user-scoped resume state to detect changes on the provider side
         params: dict[str, Any] = {}
-        # mirror base_query: scope the playlog lookup to the session user (if any) and
+        # scope the playlog lookup to the user _set_playlog writes for (if any) and
         # pick at most one row (the most recent) so the join can never fan out
         playlog_user_clause = ""
-        if session_user := get_current_user():
+        if user := await self._playlog_user(provider_mappings):
             playlog_user_clause = "AND p2.userid = :playlog_userid "
-            params["playlog_userid"] = session_user.user_id
+            params["playlog_userid"] = user.user_id
         extra_columns = f"""
             , (
                 SELECT JSON_GROUP_ARRAY(json_array(
@@ -746,19 +744,27 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
             , audiobooks.narrators AS stored_narrators
             , playlog.fully_played AS fully_played
             , playlog.seconds_played * 1000 AS resume_position_ms
+            , playlog.timestamp AS resume_position_timestamp
         """
         extra_joins = (
             f"LEFT JOIN {DB_TABLE_MEDIA_PROGRESS} AS playlog ON playlog.id = ("
             f"SELECT p2.id FROM {DB_TABLE_MEDIA_PROGRESS} p2 "
             "WHERE p2.item_id = CAST(audiobooks.item_id AS TEXT) "
-            "AND p2.media_type = 'audiobook' "
+            "AND p2.media_type = 'audiobook' AND p2.provider = 'library' "
             f"{playlog_user_clause}ORDER BY p2.timestamp DESC LIMIT 1)"
         )
         return extra_columns, extra_joins, params
 
+    async def _playlog_user(self, provider_mappings: Iterable[ProviderMapping]) -> User | None:
+        """Return the user whose playlog a provider's progress goes to, None for all users."""
+        if session_user := get_current_user():
+            return session_user
+        return await self.mass.music._get_user_for_provider(provider_mappings)
+
     def _parse_sync_details_row(self, db_row: Mapping[str, Any]) -> AudiobookSyncDetails:
         """Parse a raw sync-details db row into an AudiobookSyncDetails object."""
         resume_position_ms = db_row["resume_position_ms"]
+        resume_position_timestamp = db_row["resume_position_timestamp"]
         return AudiobookSyncDetails(
             item_id=db_row["item_id"],
             date_added=datetime.fromtimestamp(db_row["timestamp_added"], tz=UTC),
@@ -775,6 +781,9 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
             ),
             fully_played=parse_optional_bool(db_row["fully_played"]),
             resume_position_ms=int(resume_position_ms) if resume_position_ms is not None else None,
+            resume_position_timestamp=from_utc_timestamp(resume_position_timestamp)
+            if resume_position_timestamp is not None
+            else None,
         )
 
     def _parse_summary_row(

@@ -257,6 +257,18 @@ async def test_member_creates_a_music_source_of_its_own(flow_mass: MusicAssistan
     }
 
 
+async def test_adding_a_provider_leaves_onboarding_open(flow_mass: MusicAssistant) -> None:
+    """Onboarding completes when the wizard says so, not when the first provider is added."""
+    set_current_user(User(user_id="admin", username="admin", role=UserRole.ADMIN))
+    assert not flow_mass.config.onboard_done
+    with patch.object(flow_mass, "load_provider_config", AsyncMock()):
+        await flow_mass.config._create_provider_instance(FAKE_DOMAIN, {})
+
+    assert not flow_mass.config.onboard_done
+    await flow_mass.config.set_onboard_complete()
+    assert flow_mass.config.onboard_done
+
+
 class _FlowlessProvider(MusicProvider):
     """
     A genuine (minimal) provider for a domain that ships no setup_flow module.
@@ -421,11 +433,13 @@ async def test_form_flow_translation_params(flow_mass: MusicAssistant) -> None:
             [USERNAME_ENTRY],
             step_id="credentials",
             translation_params=["https://example.com/callback"],
+            copy_text="copy-value",
         )
 
     with _use_flow(flow_mass, run_setup):
         step = await flow_mass.config.setup_provider(FAKE_DOMAIN)
         assert step.translation_params == ["https://example.com/callback"]
+        assert step.copy_text == "copy-value"
         await flow_mass.config.abort_setup_flow(step.flow_id)
 
 
@@ -2508,6 +2522,7 @@ async def test_external_until_completes_on_awaitable(flow_mass: MusicAssistant) 
             url="https://example.com/device",
             step_id="device",
             expires_in=300,
+            copy_text="copy-value",
         )
         await session.finish({"token": result["token"]})
 
@@ -2519,6 +2534,7 @@ async def test_external_until_completes_on_awaitable(flow_mass: MusicAssistant) 
         assert step.type == FlowStepType.EXTERNAL
         assert step.step_id == "device"
         assert step.url == "https://example.com/device"
+        assert step.copy_text == "copy-value"
         session = flow_mass.config._setup_flows[step.flow_id].session
         # completion is driven by the awaitable resolving, not a browser callback
         release.set()

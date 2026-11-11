@@ -1,9 +1,11 @@
 {
   "type": "audio_analysis",
   "domain": "loudness_analysis",
+  "stage": "stable",
   "name": "Loudness Analysis",
   "description": "EBU R128 integrated loudness measurement used for volume normalization.",
   "codeowners": ["@music-assistant"],
+  "tier": "core",
   "requirements": [],
   "multi_instance": false,
   "builtin": true,

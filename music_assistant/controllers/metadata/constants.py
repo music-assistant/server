@@ -81,6 +81,10 @@ CONF_LINK_PROVIDERS_VIA_MUSICBRAINZ = "link_providers_via_musicbrainz"
 # items looked up on MusicBrainz before that still lack its links
 CONF_MUSICBRAINZ_LINKED_DOMAINS = "musicbrainz_linked_domains"
 
+# core config key holding when the preferred metadata language last changed; an item
+# refreshed before then with a description in another language is due once more
+CONF_LANGUAGE_CHANGED = "language_changed"
+
 # keeps its historical artist-only id (and task domain) so existing schedules survive
 MISSING_METADATA_SCAN_TASK_ID = "metadata_missing_artist_metadata_scan_v2"
 
