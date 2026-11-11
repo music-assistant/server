@@ -31,7 +31,7 @@ COMMANDS: dict[str, Command] = {
 def controller() -> PlayerController:
     """Build a players controller over players "a" and "b" and a private client player "w"."""
     controller = grouping_player_controller("a", "b", "w")
-    controller._players["w"]._attr_private = True
+    controller._protocols["w"]._attr_private = True
     return controller
 
 
