@@ -38,13 +38,13 @@ class MediaAssistantPlayer(PlayerProtocol):
     def __init__(
         self,
         provider: MediaAssistantprovider,
-        player_id: str,
+        protocol_id: str,
         roku_name: str,
         roku: Roku,
         queued: PlayerMedia | None = None,
     ) -> None:
         """Initialize the Player."""
-        super().__init__(provider, player_id)
+        super().__init__(provider, protocol_id)
         # init some static variables
         self.roku = roku
         self.queued = queued
@@ -66,7 +66,7 @@ class MediaAssistantPlayer(PlayerProtocol):
         """Set up player in MA."""
         self._attr_available = False
         self._attr_powered = False
-        await self.mass.players.register_or_update(self)
+        await self.mass.players.attach(self)
 
     @property
     def needs_poll(self) -> bool:
@@ -93,7 +93,7 @@ class MediaAssistantPlayer(PlayerProtocol):
 
     async def power(self, powered: bool) -> None:
         """Handle POWER command on the player."""
-        logger = self.provider.logger.getChild(self.player_id)
+        logger = self.provider.logger.getChild(self.protocol_id)
         logger.info("Received POWER command on player %s", self.display_name)
 
         app_running = False
@@ -120,7 +120,7 @@ class MediaAssistantPlayer(PlayerProtocol):
         """Handle VOLUME MUTE command on the player."""
         await self.roku.remote("volume_mute")
 
-        logger = self.provider.logger.getChild(self.player_id)
+        logger = self.provider.logger.getChild(self.protocol_id)
         logger.info(
             "Received VOLUME_MUTE command on player %s with muted %s", self.display_name, muted
         )
@@ -131,7 +131,7 @@ class MediaAssistantPlayer(PlayerProtocol):
         """Play command."""
         await self.roku.remote("play")
 
-        logger = self.provider.logger.getChild(self.player_id)
+        logger = self.provider.logger.getChild(self.protocol_id)
         logger.info("Received PLAY command on player %s", self.display_name)
         self._attr_playback_state = PlaybackState.PLAYING
         self.update_state()
@@ -156,7 +156,7 @@ class MediaAssistantPlayer(PlayerProtocol):
                     },
                 )
 
-            logger = self.provider.logger.getChild(self.player_id)
+            logger = self.provider.logger.getChild(self.protocol_id)
             logger.info("Received STOP command on player %s", self.display_name)
             self._attr_playback_state = PlaybackState.IDLE
             self._attr_current_media = None
@@ -173,13 +173,13 @@ class MediaAssistantPlayer(PlayerProtocol):
         """Pause command."""
         await self.roku.remote("play")
 
-        logger = self.provider.logger.getChild(self.player_id)
+        logger = self.provider.logger.getChild(self.protocol_id)
         logger.info("Received PAUSE command on player %s", self.display_name)
         self.update_state()
 
     async def play_media(self, media: PlayerMedia) -> None:
         """Play media command."""
-        stream_url = await self.provider.mass.streams.resolve_stream_url(self.player_id, media)
+        stream_url = await self.provider.mass.streams.resolve_stream_url(self.protocol_id, media)
         try:
             device_info = await self.roku.update()
 
@@ -228,7 +228,7 @@ class MediaAssistantPlayer(PlayerProtocol):
                     return
                 await self.roku.launch(app_id, f_media)
 
-            logger = self.provider.logger.getChild(self.player_id)
+            logger = self.provider.logger.getChild(self.protocol_id)
             logger.info(
                 "Received PLAY_MEDIA command on player %s with uri %s", self.display_name, media.uri
             )
@@ -250,7 +250,7 @@ class MediaAssistantPlayer(PlayerProtocol):
 
     async def enqueue_next_media(self, media: PlayerMedia) -> None:
         """Handle enqueuing of the next (queue) item on the player."""
-        stream_url = await self.provider.mass.streams.resolve_stream_url(self.player_id, media)
+        stream_url = await self.provider.mass.streams.resolve_stream_url(self.protocol_id, media)
         # Music Assistant hands the next item over exactly once and never
         # retries (player_queues/stream_feeder._enqueue_next_item), so one failed POST used
         # to mean the app ran out of audio at the end of the track. Retry here, and say
@@ -393,16 +393,17 @@ class MediaAssistantPlayer(PlayerProtocol):
                 self.update_state()
 
                 if (
-                    not self.state.current_media
+                    self.player is None
+                    or not (current_media := self.player.state.current_media)
                     or self._attr_playback_state != PlaybackState.PLAYING
                 ):
                     return
 
-                image_url = self.state.current_media.image_url or ""
+                image_url = current_media.image_url or ""
 
-                album_name = self.state.current_media.album or ""
-                song_name = self.state.current_media.title or ""
-                artist_name = self.state.current_media.artist or ""
+                album_name = current_media.album or ""
+                song_name = current_media.title or ""
+                artist_name = current_media.artist or ""
                 if app_running and self.flow_mode:
                     await self.roku_input(
                         {
@@ -428,9 +429,10 @@ class MediaAssistantPlayer(PlayerProtocol):
         encoded = urlencode(params)
         await self.roku._request(f"input?{encoded}", method="POST", encoded=True)
 
-    async def on_unload(self) -> None:
-        """Handle logic when the player is unloaded from the Player controller."""
+    async def on_detach(self) -> None:
+        """Handle logic when the protocol is detached from its player."""
         self.logger.info("Player %s unloaded", self.name)
+        await super().on_detach()
 
     async def on_remove(self) -> None:
         """Disconnect from the Roku, so that a discovery registers it as a new player."""
