@@ -43,6 +43,7 @@ from music_assistant.providers.spotify_connect.soloist.backend import (
     VOLUME_MODE_SYNC_SPOTIFY,
     SoloistBackend,
 )
+from tests.common import MockProvider, attach_mock, mock_player_mass
 
 # the connected player the tested daemon is bound to; doubles as the source item_id
 _PLAYER_ID = "player1"
@@ -712,6 +713,22 @@ async def test_reconcile_starts_daemon_when_assigned_player_registers() -> None:
     mocks.start_daemon.assert_awaited_once()
     assert mocks.start_daemon.call_args.args[1] == "Kitchen | Music Assistant"
     assert "p1" in prov._daemons
+
+
+async def test_reconcile_starts_the_daemon_of_a_player_whose_id_is_not_its_protocols() -> None:
+    """A connected player with an id of its own gets its daemon, keyed by the player id."""
+    prov, mocks = _reconcile_provider((), {})
+    prov.mass = mocks.mass = mock_player_mass()
+    prov._availability = PlayerAvailabilityTracker(prov.mass)
+    player, _protocol = attach_mock(MockProvider("airplay", mass=prov.mass), "ap_1", "Kitchen")
+    player.update_state()
+    prov._assigned_player_ids = (player.player_id,)
+
+    await prov._on_player_event(MassEvent(event=EventType.PLAYER_ADDED, object_id="pl_ap_1"))
+
+    mocks.start_daemon.assert_awaited_once()
+    assert mocks.start_daemon.call_args.args[0] is player
+    assert list(prov._daemons) == ["pl_ap_1"]
 
 
 async def test_reconcile_restarts_daemon_on_advertised_name_drift() -> None:
