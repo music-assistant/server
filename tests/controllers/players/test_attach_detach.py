@@ -706,6 +706,29 @@ async def test_player_names_the_provider_of_its_protocols_after_one_is_removed(
     assert stored_provider == airplay.instance_id
 
 
+async def test_removed_player_leaves_the_player_filters_of_the_users(scenario: Scenario) -> None:
+    """A player that is removed no longer stands in the list of players a user may use."""
+    sonos = await scenario.add_provider("sonos")
+    kitchen = sonos.protocol("RINCON_KITCHEN", "Kitchen", identifiers=KITCHEN)
+    den = sonos.protocol(
+        "RINCON_DEN", "Den", identifiers={IdentifierType.MAC_ADDRESS: "54:78:C9:E6:0D:B1"}
+    )
+    await scenario.attach(kitchen)
+    await scenario.attach(den)
+    kitchen_id = scenario.single_player(kitchen).player_id
+    den_id = scenario.single_player(den).player_id
+    auth = scenario.mass.webserver.auth
+    user = await auth.create_user(username="guest", player_filter=[kitchen_id, den_id])
+    scenario.set_present("RINCON_KITCHEN", False)
+
+    await scenario.remove(kitchen_id)
+    await scenario.idle()
+
+    stored_user = await auth.get_user(user.user_id)
+    assert stored_user is not None
+    assert stored_user.player_filter == [den_id]
+
+
 async def test_group_that_is_removed_while_it_plays_stops_its_members(scenario: Scenario) -> None:
     """A player that plays is stopped before it goes: a group stops what its members play."""
     await scenario.mass.config._create_provider_instance("universal_group", {})

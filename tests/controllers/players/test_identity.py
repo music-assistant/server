@@ -538,6 +538,53 @@ async def test_protocol_that_takes_the_place_of_one_that_is_away_keeps_its_own_c
     assert config.get_protocol_record("ap_old") is None
 
 
+async def test_protocol_that_takes_the_place_of_one_that_is_away_takes_its_choices(
+    scenario: Scenario,
+) -> None:
+    """The output and control choices that named the replaced protocol name its successor."""
+    chromecast = await scenario.add_provider("chromecast")
+    airplay = await scenario.add_provider("airplay")
+    tv = chromecast.protocol("cast_tv", "TV", role="audio", identifiers=KITCHEN)
+    old = airplay.protocol("ap_old", "TV", role="audio", identifiers=KITCHEN)
+    await scenario.attach(tv)
+    await scenario.attach(old)
+    player_id = scenario.single_player(tv, old).player_id
+    choices = ("preferred_output_protocol", "volume_control", "mute_control")
+    await scenario.configure_player(player_id, **dict.fromkeys(choices, "ap_old"))
+    await scenario.detach(old)
+
+    new = airplay.protocol("ap_new", "TV", role="audio", identifiers=KITCHEN)
+    await scenario.attach(new)
+
+    assert scenario.player_of(new) == player_id
+    config = scenario.mass.config
+    assert [config.get_player_value(player_id, key) for key in choices] == ["ap_new"] * 3
+
+
+async def test_waiting_protocol_joins_when_a_protocol_of_its_device_reports_more(
+    scenario: Scenario,
+) -> None:
+    """An attached protocol that is refreshed with new identifiers lets a waiting one join."""
+    sonos = await scenario.add_provider("sonos")
+    airplay = await scenario.add_provider("airplay")
+    native = sonos.protocol(
+        "RINCON_KITCHEN",
+        "Kitchen",
+        identifiers={IdentifierType.MAC_ADDRESS: KITCHEN[IdentifierType.MAC_ADDRESS]},
+    )
+    audio = airplay.protocol("ap_kitchen", "Kitchen", role="audio", identifiers=KITCHEN_ADDRESS)
+    await scenario.attach(native)
+    player_id = scenario.single_player(native).player_id
+    await scenario.attach(audio)
+    assert scenario.player_of(audio) is None
+
+    native._set_reported(identifiers=KITCHEN)
+    await scenario.attach(native)
+    await scenario.settle()
+
+    assert scenario.player_of(audio) == player_id
+
+
 async def test_config_stored_for_a_protocol_before_it_attaches_is_kept(scenario: Scenario) -> None:
     """A provider that stores the settings of a new device first finds them after the attach."""
     sonos = await scenario.add_provider("sonos")
