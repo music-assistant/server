@@ -116,11 +116,6 @@ async def test_receivers_on_one_host_stay_separate_players(
     assert len(scenario.visible_players()) == 2
 
 
-@pytest.mark.xfail(
-    strict=True,
-    raises=AssertionError,
-    reason="phase 2 (#416): a protocol-only player names its protocol's provider",
-)
 async def test_protocol_only_player_names_the_provider_of_its_protocol(scenario: Scenario) -> None:
     """A player with one audio protocol and no native one names that protocol's provider."""
     airplay = await scenario.add_provider("airplay")
@@ -260,11 +255,6 @@ async def test_room_of_several_renderers_is_one_player(scenario: Scenario) -> No
     assert {scenario.player_of(renderer) for renderer in (connector, one_m, one_s)} == {room_id}
 
 
-@pytest.mark.xfail(
-    strict=True,
-    raises=AssertionError,
-    reason="phase 2 (#416): a protocol matching a player without one of its domain attaches to it",
-)
 async def test_reflashed_device_keeps_its_player(scenario: Scenario) -> None:
     """
     A device re-flashed to another firmware with the same MAC keeps its player.
@@ -294,11 +284,6 @@ async def test_reflashed_device_keeps_its_player(scenario: Scenario) -> None:
     assert ("sendspin", True) in players[0].outputs
 
 
-@pytest.mark.xfail(
-    strict=True,
-    raises=AssertionError,
-    reason="phase 2 (#416): a protocol matching an offline one of its provider takes its place",
-)
 async def test_device_with_a_new_protocol_id_keeps_its_player_and_settings(
     scenario: Scenario,
 ) -> None:
@@ -331,11 +316,6 @@ async def test_device_with_a_new_protocol_id_keeps_its_player_and_settings(
     ("first_role", "second_role"),
     [("audio", "native"), ("native", "audio")],
     ids=["audio_to_native", "native_to_audio"],
-)
-@pytest.mark.xfail(
-    strict=True,
-    raises=AssertionError,
-    reason="phase 2 (#416): a role change is a re-attach, the universal takeover goes",
 )
 async def test_role_flip_of_a_protocol_keeps_its_player(
     scenario: Scenario, first_role: Role, second_role: Role
@@ -449,7 +429,7 @@ async def _played(scenario: Scenario, players: _TwoPlayers) -> None:
     await scenario.mass.player_queues.stop(players.younger_id)
     await scenario.idle()
     if not any(command[0] == "play_media" for command in players.cast.commands):
-        msg = f"{players.cast.player_id} did not play"
+        msg = f"{players.cast.protocol_id} did not play"
         raise ScenarioError(msg)
     if not await scenario.saved_queue(players.younger_id):
         msg = f"the queue of {players.younger_id} was not saved"
