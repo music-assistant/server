@@ -869,6 +869,10 @@ class PlayerConfigMixin:
         config = await self.get_player_config(player_id)
         changed_keys = config.update(values)
         new_raw = config.to_raw()
+        # the config shows the display name as default name; the stored one is what the
+        # device reported
+        if "default_name" in existing_raw:
+            new_raw["default_name"] = existing_raw["default_name"]
         # what a setup flow collected belongs to a protocol
         new_raw.pop("setup_data", None)
         new_values = new_raw.get("values", {})

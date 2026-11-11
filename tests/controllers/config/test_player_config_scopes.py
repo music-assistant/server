@@ -8,7 +8,13 @@ from unittest.mock import AsyncMock
 import pytest
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueType
 from music_assistant_models.constants import PLAYER_CONTROL_FAKE
-from music_assistant_models.enums import ConfigEntryType, PlayerFeature, PlayerType, ProtocolRole
+from music_assistant_models.enums import (
+    ConfigEntryType,
+    IdentifierType,
+    PlayerFeature,
+    PlayerType,
+    ProtocolRole,
+)
 
 from music_assistant.constants import (
     CONF_CACHED_ARP_MAC,
@@ -26,12 +32,16 @@ from music_assistant.constants import (
 from music_assistant.controllers.config.constants import PLAYER_VALUE_KEYS
 from tests.common import MockProtocol, use_player_registry
 
+# the real server with fake providers, for the config of a player that is offline
+from tests.scenarios.conftest import scenario  # noqa: F401
+
 from .helpers import attach_on_config
 
 if TYPE_CHECKING:
     from music_assistant.controllers.config import ConfigController
     from music_assistant.mass import MusicAssistant
     from music_assistant.models.player import Player
+    from tests.scenarios.harness import Scenario
 
 # a player that was first seen after the split: its id is not that of its protocol
 PLAYER_ID = "pl0123456789ab"
@@ -356,3 +366,46 @@ async def test_the_entries_every_player_gets_are_values_of_the_player_itself(
     assert own_keys | {CONF_PREFERRED_OUTPUT_PROTOCOL} <= PLAYER_VALUE_KEYS
     assert PROTOCOL_SETTING in protocol_keys
     assert not protocol_keys & PLAYER_VALUE_KEYS
+
+
+async def test_saving_a_player_without_an_attached_protocol_keeps_its_default_name(
+    scenario: Scenario,  # noqa: F811
+) -> None:
+    """The name its device reported stays stored while the player is renamed offline."""
+    sonos = await scenario.add_provider("sonos")
+    speaker = sonos.protocol(
+        "speaker_1", "Speaker", identifiers={IdentifierType.MAC_ADDRESS: "54:78:C9:E6:0D:A1"}
+    )
+    await scenario.attach(speaker)
+    player_id = scenario.single_player(speaker).player_id
+    await scenario.detach(speaker)
+
+    await scenario.configure_player(player_id, name="Kitchen")
+    await scenario.configure_player(player_id, name="Study")
+
+    stored = scenario.mass.config.get(f"{CONF_PLAYERS}/{player_id}")
+    assert (stored["name"], stored["default_name"]) == ("Study", "Speaker")
+
+
+async def test_saving_a_player_kept_without_protocols_keeps_its_default_name(
+    scenario: Scenario,  # noqa: F811
+) -> None:
+    """A former wrapper the migration kept for its returning device keeps its device name."""
+    await scenario.seed_pre_split_config(
+        {
+            "up0001": {
+                "player_id": "up0001",
+                "provider": "universal_player",
+                "player_type": "player",
+                "enabled": True,
+                "name": "Den",
+                "default_name": "Den TV",
+                "values": {"icon": "mdi-television"},
+            }
+        }
+    )
+
+    await scenario.configure_player("up0001", name="Study")
+
+    stored = scenario.mass.config.get(f"{CONF_PLAYERS}/up0001")
+    assert (stored["name"], stored["default_name"]) == ("Study", "Den TV")
