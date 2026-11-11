@@ -24,11 +24,6 @@ WEB_PLAYER: dict[str, Any] = {"hidden_by_default": True, "private": True}
 MEDIA = PlayerMedia(uri="http://ma.local/stream/track.flac")
 
 
-@pytest.mark.xfail(
-    strict=True,
-    raises=AssertionError,
-    reason="phase 1 (#415): a player is not owned by a provider instance",
-)
 async def test_player_outlives_its_removed_provider_on_its_other_protocols(
     scenario: Scenario,
 ) -> None:
@@ -118,11 +113,6 @@ async def test_removed_player_of_a_present_device_comes_back_as_new(scenario: Sc
     [("airplay", "audio"), ("chromecast", "native")],
     ids=["airplay_mac", "cast_tv"],
 )
-@pytest.mark.xfail(
-    strict=True,
-    raises=AssertionError,
-    reason="phase 1 (#415): no player for a disabled-by-default device until the user enables it",
-)
 async def test_disabled_by_default_device_is_no_player_until_enabled(
     scenario: Scenario, domain: str, role: Role
 ) -> None:
@@ -175,11 +165,6 @@ async def _stored_mentions(scenario: Scenario, *texts: str) -> list[str]:
     return [mention for text in texts for mention in await scenario.stored_config_mentioning(text)]
 
 
-@pytest.mark.xfail(
-    strict=True,
-    raises=AssertionError,
-    reason="phase 1 (#415): a session-only protocol leaves no persisted player behind",
-)
 async def test_session_only_web_player_exists_while_attached(scenario: Scenario) -> None:
     """
     A web player exists while its protocol is attached and leaves nothing behind.
@@ -255,6 +240,76 @@ async def test_customised_session_only_player_keeps_its_config(scenario: Scenari
     ]
 
 
+async def test_session_only_player_has_the_same_id_in_every_session(scenario: Scenario) -> None:
+    """A web player is known by the id of its protocol, in every session and after a restart."""
+    sendspin = await scenario.add_provider("sendspin")
+    browser = sendspin.protocol("sendspin_web_3f2a", "Web Browser", session_only=True, **WEB_PLAYER)
+    await scenario.attach(browser)
+
+    assert scenario.player_of(browser) == "sendspin_web_3f2a"
+
+    await scenario.detach(browser)
+    await scenario.attach(browser)
+
+    assert scenario.player_of(browser) == "sendspin_web_3f2a"
+
+    await scenario.detach(browser)
+    await scenario.restart()
+    await scenario.attach(scenario.protocol("sendspin_web_3f2a"))
+    await scenario.idle()
+
+    assert [player.player_id for player in scenario.visible_players()] == ["sendspin_web_3f2a"]
+    assert (
+        scenario.events(EventType.PLAYER_ADDED)
+        == [Event(EventType.PLAYER_ADDED, "sendspin_web_3f2a")] * 3
+    )
+
+
+# the stored config of a web player as written before the split, where every player was stored
+PRE_SPLIT_WEB_PLAYER: dict[str, Any] = {
+    "player_id": "sendspin_web_3f2a",
+    "provider": "sendspin",
+    "player_type": "player",
+    "enabled": True,
+    "default_name": "Web Browser",
+    "values": {"sendspin_static_delay": 120},
+}
+
+
+@pytest.mark.parametrize(
+    ("name", "stored_name"),
+    [(None, None), ("Study browser", "Study browser")],
+    ids=["uncustomised", "customised"],
+)
+async def test_pre_split_session_only_player_comes_back_with_its_id(
+    scenario: Scenario, name: str | None, stored_name: str | None
+) -> None:
+    """
+    A web player stored before the split has the same id when it next connects.
+
+    Its config is only kept when the user customised it, and then it comes back with it.
+    """
+    sendspin = await scenario.add_provider("sendspin")
+    sendspin.protocol("sendspin_web_3f2a", "Web Browser", session_only=True, **WEB_PLAYER)
+
+    await scenario.seed_pre_split_config(
+        {"sendspin_web_3f2a": PRE_SPLIT_WEB_PLAYER | ({"name": name} if name else {})}
+    )
+    await scenario.idle()
+
+    assert scenario.visible_players() == []
+    assert [(c.player_id, c.name) for c in await scenario.player_configs()] == (
+        [("sendspin_web_3f2a", stored_name)] if stored_name else []
+    )
+
+    await scenario.attach(scenario.protocol("sendspin_web_3f2a"))
+    await scenario.idle()
+
+    assert [(player.player_id, player.name) for player in scenario.visible_players()] == [
+        ("sendspin_web_3f2a", stored_name or "Web Browser")
+    ]
+
+
 # the stored config of a protocol-only player as written before the split: a universal player
 # config and the configs of its protocols pointing at it
 PRE_SPLIT_DEN_TV: dict[str, dict[str, Any]] = {
@@ -315,7 +370,7 @@ async def test_pre_split_universal_player_config_comes_back_as_the_same_player(
     scenario.set_present("airplay_den", True)
     scenario.set_present("cast_den", True)
 
-    await scenario.seed_config({"players": stored})
+    await scenario.seed_pre_split_config(stored)
     await scenario.idle()
 
     assert scenario.visible_players() == [
