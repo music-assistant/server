@@ -995,6 +995,12 @@ class AirPlayPlayer(PlayerProtocol):
                 await self.stream.session.remove_client(self, reason="player unloaded")
             self.stream = None
 
+    async def on_remove(self) -> None:
+        """Handle logic when the player is removed for good."""
+        await cast("AirPlayProvider", self.provider).bridge_manager.remove_bridge(
+            self.player_id, permanent=True
+        )
+
     def schedule_group_rejoin(self, candidate_ids: list[str]) -> None:
         """
         Schedule a bounded automatic re-join of this player to its still-active group.

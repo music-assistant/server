@@ -10,12 +10,14 @@ import pytest
 from music_assistant_models.errors import PlayerCommandFailed
 
 from music_assistant.constants import CONF_PROTOCOL_EXPERIMENTAL_NOTE, CONF_PROTOCOL_PARENT_ID
+from music_assistant.providers.airplay.player import AirPlayPlayer
 from music_assistant.providers.chromecast import sendspin_bridge as bridge_module
 from music_assistant.providers.chromecast.constants import (
     CONF_SENDSPIN_OPT_OUT_PENDING,
     CONF_SENDSPIN_UNSUPPORTED,
     SENDSPIN_CAST_EXPERIMENTAL_NOTE,
 )
+from music_assistant.providers.chromecast.player import ChromecastPlayer
 from music_assistant.providers.chromecast.sendspin_bridge import (
     SendspinBridgeManager as CastSendspinBridgeManager,
 )
@@ -27,9 +29,10 @@ from tests.common import scheduled_call
 class FakeBridge:
     """Minimal Sendspin bridge implementation for testing."""
 
-    def __init__(self, sendspin_server: Any) -> None:
+    def __init__(self, sendspin_server: Any, player: Any = None) -> None:
         """Initialize the fake bridge."""
         self.sendspin_server = sendspin_server
+        self.player = player
         self.started = False
         self.stopped = False
 
@@ -58,7 +61,7 @@ class FakeBridgeManager(SendspinBridgeManagerBase[FakeBridge]):
 
     def _create_bridge(self, player: Any) -> FakeBridge:
         """Create a (not yet started) bridge instance for the given player."""
-        return FakeBridge(self.sendspin_server)
+        return FakeBridge(self.sendspin_server, player)
 
     def _should_have_bridge(self, player: Any) -> bool:
         """Return whether provider policy wants a bridge for this player."""
@@ -260,6 +263,26 @@ class TestBridgeLifecycleReconciliation:
         assert new_bridge is not None
         assert new_bridge is not old_bridge
         assert new_bridge.sendspin_server is new_provider.server_api
+
+    @pytest.mark.parametrize("player_class", [AirPlayPlayer, ChromecastPlayer])
+    async def test_removed_player_found_again_gets_a_new_bridge(self, player_class: Any) -> None:
+        """The bridge of a removed player goes with it, the player found again gets its own."""
+        manager, _, player, registered_players, _ = _make_environment()
+        player.provider.bridge_manager = manager
+        await manager.evaluate_bridge(player)
+        old_bridge = manager.get_bridge("player_1")
+        assert old_bridge is not None
+
+        del registered_players["player_1"]
+        await player_class.on_remove(player)
+        new_player = MagicMock(player_id="player_1", provider=player.provider)
+        registered_players["player_1"] = new_player
+        await manager.evaluate_bridge(new_player)
+
+        new_bridge = manager.get_bridge("player_1")
+        assert old_bridge.stopped
+        assert new_bridge is not None
+        assert new_bridge.player is new_player
 
 
 class TestCastBridgePolicy:
