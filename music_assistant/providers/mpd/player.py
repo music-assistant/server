@@ -28,6 +28,7 @@ from music_assistant.models.setup_flow import SetupFlowError
 from .constants import (
     CONF_ENTRY_OUTPUT_CODEC_MPD,
     ELAPSED_POLL_INTERVAL,
+    HEALTHCHECK_POLL_INTERVAL,
     MPD_STATE_MAP,
     RECONNECT_DELAY,
 )
@@ -99,14 +100,26 @@ class MPDPlayer(Player):
     @property
     def needs_poll(self) -> bool:
         """
-        Return True when elapsed time polling is required.
+        Return True because polling doubles as the connection health check.
 
-        MPD's idle mechanism does not push elapsed time continuously;
-        polling fills this gap during active playback.
+        MPD only pushes state over the idle connection, which receives nothing
+        while the player is idle, so a socket that died without a RST (a
+        rebooted or re-associated player) is never noticed from that side.
 
-        :return: True when playback is active.
+        :return: Always True.
         """
-        return self._attr_playback_state == PlaybackState.PLAYING
+        return True
+
+    @property
+    def poll_interval(self) -> int:
+        """
+        Return the poll interval: fast while playing, slower while idle.
+
+        :return: The interval in seconds.
+        """
+        if self._attr_playback_state == PlaybackState.PLAYING:
+            return ELAPSED_POLL_INTERVAL
+        return HEALTHCHECK_POLL_INTERVAL
 
     async def get_config_entries(self) -> list[ConfigEntry]:
         """
@@ -222,6 +235,21 @@ class MPDPlayer(Player):
         """Schedule a reconnect attempt, deduplicating any pending reconnect tasks."""
         self.mass.call_later(RECONNECT_DELAY, self._connect, task_id=self._reconnect_task_id)
 
+    def _handle_connection_lost(self, err: Exception) -> None:
+        """
+        Mark the player unavailable and schedule a reconnect after a connection loss.
+
+        Without this, a command that fails on a dead socket only raises for that
+        one call and leaves the player available-but-broken until the idle loop
+        happens to report the disconnect.
+
+        :param err: The error that revealed the lost connection.
+        """
+        self.logger.warning("Lost connection to MPD at %s:%s: %s", self.host, self.port, err)
+        self._attr_available = False
+        self.update_state()
+        self.reconnect()
+
     # ------------------------------------------------------------------
     # Background idle loop
     # ------------------------------------------------------------------
@@ -237,10 +265,7 @@ class MPDPlayer(Player):
                 if subsystem in ("player", "mixer", "playlist"):
                     await self._fetch_and_sync_state()
         except MPDError as err:
-            self.logger.warning("MPD idle loop disconnected: %s", err)
-            self._attr_available = False
-            self.update_state()
-            self.reconnect()
+            self._handle_connection_lost(err)
 
     # ------------------------------------------------------------------
     # State sync
@@ -255,7 +280,7 @@ class MPDPlayer(Player):
             await self._sync_state(status)
             self.update_state()
         except MPDError as err:
-            self.logger.warning("Failed to fetch MPD status: %s", err)
+            self._handle_connection_lost(err)
 
     async def _sync_state(self, status: dict[str, Any]) -> None:
         """
@@ -301,6 +326,7 @@ class MPDPlayer(Player):
             self._attr_playback_state = PlaybackState.PLAYING
             self.update_state()
         except MPDError as err:
+            self._handle_connection_lost(err)
             raise PlayerCommandFailed(f"play_media failed: {err}") from err
 
     async def play(self) -> None:
@@ -312,6 +338,7 @@ class MPDPlayer(Player):
             self._attr_playback_state = PlaybackState.PLAYING
             self.update_state()
         except MPDError as err:
+            self._handle_connection_lost(err)
             raise PlayerCommandFailed(f"play failed: {err}") from err
 
     async def stop(self) -> None:
@@ -324,6 +351,7 @@ class MPDPlayer(Player):
             self._attr_current_media = None
             self.update_state()
         except MPDError as err:
+            self._handle_connection_lost(err)
             raise PlayerCommandFailed(f"stop failed: {err}") from err
 
     async def pause(self) -> None:
@@ -335,6 +363,7 @@ class MPDPlayer(Player):
             self._attr_playback_state = PlaybackState.PAUSED
             self.update_state()
         except MPDError as err:
+            self._handle_connection_lost(err)
             raise PlayerCommandFailed(f"pause failed: {err}") from err
 
     async def volume_set(self, volume_level: int) -> None:
@@ -350,6 +379,7 @@ class MPDPlayer(Player):
             self._attr_volume_level = volume_level
             self.update_state()
         except MPDError as err:
+            self._handle_connection_lost(err)
             raise PlayerCommandFailed(f"volume_set failed: {err}") from err
 
     async def seek(self, position: int) -> None:
@@ -363,4 +393,5 @@ class MPDPlayer(Player):
         try:
             await self._client.seekcur(position)
         except MPDError as err:
+            self._handle_connection_lost(err)
             raise PlayerCommandFailed(f"seek failed: {err}") from err
