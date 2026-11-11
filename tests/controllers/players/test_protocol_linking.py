@@ -1186,14 +1186,6 @@ async def test_derived_protocol_waits_while_its_player_has_a_protocol_of_its_dom
     assert len(scenario.visible_players()) == 1
 
 
-@pytest.mark.xfail(
-    strict=True,
-    raises=AssertionError,
-    reason=(
-        "cutover core defect: a held derived protocol is only evaluated again after a "
-        "bind or a refresh, not when the protocol holding its domain goes"
-    ),
-)
 @pytest.mark.parametrize("detached_first", [False, True], ids=["removed", "removed_while_away"])
 async def test_waiting_derived_protocol_attaches_once_its_domain_is_free(
     scenario: Scenario, detached_first: bool
