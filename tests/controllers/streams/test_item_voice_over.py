@@ -95,7 +95,7 @@ def _request(
 ) -> AsyncGenerator[bytes]:
     """Open the item's own stream, as the player's request for its url does."""
     return audio.get_queue_item_stream_with_smartfade(
-        cast("Any", SimpleNamespace(player_id="player-1", name="Player")),
+        cast("Any", SimpleNamespace(protocol_id="player-1", name="Player")),
         cast("Any", queue_item),
         TEST_PCM_FORMAT,
         crossfade_mode=crossfade_mode,
@@ -427,7 +427,7 @@ async def test_a_declared_clip_plays_plainly_on_a_player_without_gapless(
     """A player that leaves a gap between two items gets the clip whole."""
     controller, request, seen = _single_item_handler(is_realtime=False, capture_ffmpeg=monkeypatch)
     _declare_clip(controller)
-    controller.mass.players.get_player.return_value.state.supported_features = set()
+    controller.mass.players.get_output_protocol.return_value.supported_features = set()
 
     with pytest.raises(_FfmpegArgsCaptured):
         await controller.serve_queue_item_stream(request)
