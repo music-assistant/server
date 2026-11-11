@@ -245,7 +245,7 @@ class AirPlayStreamSession:
         format and a connected stream still taking audio on every member;
         anything else takes the cold path.
         """
-        if {p.player_id for p in sync_clients} != {p.player_id for p in self.sync_clients}:
+        if {p.protocol_id for p in sync_clients} != {p.protocol_id for p in self.sync_clients}:
             return False
         # the encoding matters as much as the depth here (a 24-bit session carries
         # PCM_S32LE): replace() wires the new source into the session's declared format
@@ -279,7 +279,7 @@ class AirPlayStreamSession:
                 with suppress(asyncio.CancelledError):
                     await self._audio_source_task
             for player in self.sync_clients:
-                if ffmpeg := self._player_ffmpeg.pop(player.player_id, None):
+                if ffmpeg := self._player_ffmpeg.pop(player.protocol_id, None):
                     await ffmpeg.kill()
             flushed = await asyncio.gather(
                 *[self._flush_member(player) for player in self.sync_clients]
@@ -337,7 +337,7 @@ class AirPlayStreamSession:
             with suppress(asyncio.CancelledError):
                 await self._audio_source_task
         for player in self.sync_clients:
-            if ffmpeg := self._player_ffmpeg.pop(player.player_id, None):
+            if ffmpeg := self._player_ffmpeg.pop(player.protocol_id, None):
                 await ffmpeg.kill()
             stream = player.stream
             assert stream
@@ -345,13 +345,13 @@ class AirPlayStreamSession:
                 command_delivered = await stream.send_cli_command("ACTION=STANDBY")
             except Exception as err:
                 self.prov.logger.warning(
-                    "Could not park AirPlay player %s: %s", player.player_id, err
+                    "Could not park AirPlay player %s: %s", player.protocol_id, err
                 )
                 return False
             if not command_delivered:
                 self.prov.logger.warning(
                     "Could not park AirPlay player %s: standby command was not delivered",
-                    player.player_id,
+                    player.protocol_id,
                 )
                 return False
             player.set_state_from_stream(state=PlaybackState.PAUSED, stream=stream)
@@ -402,11 +402,11 @@ class AirPlayStreamSession:
         self.prov.logger.debug(
             "AirPlay session teardown: session=%s client=%s reason=%s",
             id(self),
-            airplay_player.player_id,
+            airplay_player.protocol_id,
             reason,
         )
-        self._client_skip_bytes.pop(airplay_player.player_id, None)
-        ffmpeg = self._player_ffmpeg.pop(airplay_player.player_id, None)
+        self._client_skip_bytes.pop(airplay_player.protocol_id, None)
+        ffmpeg = self._player_ffmpeg.pop(airplay_player.protocol_id, None)
         # note that we use kill instead of graceful close here,
         # because otherwise it can take a very long time for the process to exit.
         if ffmpeg and not ffmpeg.closed:
@@ -461,7 +461,7 @@ class AirPlayStreamSession:
         except Exception as err:
             self.prov.logger.warning(
                 "Late joiner %s: failed to connect pipeline: %s",
-                airplay_player.player_id,
+                airplay_player.protocol_id,
                 err,
             )
             await self.stop_client(airplay_player, reason="late joiner connection failed")
@@ -476,7 +476,7 @@ class AirPlayStreamSession:
             self.prov.logger.warning(
                 "Late joiner %s: not adding it to the group - its receiver never answered "
                 "the server's PTP clock, so it would render silence",
-                airplay_player.player_id,
+                airplay_player.protocol_id,
             )
             await self.stop_client(airplay_player, reason="receiver clock stalled")
             return
@@ -524,7 +524,7 @@ class AirPlayStreamSession:
                     self.prov.logger.debug(
                         "Late joiner %s: prime start realigned +%d bytes "
                         "(write head sits mid-frame)",
-                        airplay_player.player_id,
+                        airplay_player.protocol_id,
                         realign,
                     )
                 # The ring's own head is frame-aligned only by accident - it is
@@ -558,7 +558,7 @@ class AirPlayStreamSession:
                             "position, past the %.2fs of audio kept for a join; opening "
                             "with %.2fs of silence to cover the missing head. %s Please "
                             "report this with a debug log.",
-                            airplay_player.player_id,
+                            airplay_player.protocol_id,
                             lead,
                             len(servable) / pcm_sample_size,
                             pad / pcm_sample_size,
@@ -575,7 +575,7 @@ class AirPlayStreamSession:
                             "Late joiner %s: due position predates the %.2fs ring "
                             "(feed runs %.2fs ahead); anchoring %.2fs later, on the "
                             "ring's oldest sample",
-                            airplay_player.player_id,
+                            airplay_player.protocol_id,
                             len(servable) / pcm_sample_size,
                             lead,
                             missing / pcm_sample_size,
@@ -605,7 +605,7 @@ class AirPlayStreamSession:
             )
         self.prov.logger.debug(
             "Late joiner %s: receiver clock %s",
-            airplay_player.player_id,
+            airplay_player.protocol_id,
             clock_note,
         )
         async with self._lock:
@@ -647,7 +647,7 @@ class AirPlayStreamSession:
         except Exception as err:
             self.prov.logger.warning(
                 "Late joiner %s: failed to start/prime pipeline: %r",
-                airplay_player.player_id,
+                airplay_player.protocol_id,
                 err,
             )
             await self.stop_client(airplay_player, reason="late joiner start/prime failed")
@@ -668,7 +668,7 @@ class AirPlayStreamSession:
                 # covers whatever the group was fed while the ack was outstanding.
                 acked_at = (actual - adjust_ms) / 1000
                 start_at, fed_pos_due, prime, skip_bytes = map_to(acked_at, committed=True)
-                self._client_skip_bytes[airplay_player.player_id] = skip_bytes
+                self._client_skip_bytes[airplay_player.protocol_id] = skip_bytes
                 # An instant that moved carries the content mapped onto it
                 # further into the stream than the position sent with the
                 # command, so progress is reported against the sample that
@@ -682,7 +682,7 @@ class AirPlayStreamSession:
                     "fed_pos_due=%.2fs, start_at is %.2fs from now, acked %+d ms off the "
                     "commanded instant (min_headroom=%.2fs, effective_shift=%.2fs, "
                     "write_head_lead=%.2fs, peak=%.2fs, ring=%.2fs)",
-                    airplay_player.player_id,
+                    airplay_player.protocol_id,
                     len(prime) / pcm_sample_size,
                     skip_bytes / pcm_sample_size,
                     self.seconds_streamed,
@@ -702,7 +702,7 @@ class AirPlayStreamSession:
                     except Exception as err:
                         self.prov.logger.warning(
                             "Late joiner %s: failed to start/prime pipeline: %r",
-                            airplay_player.player_id,
+                            airplay_player.protocol_id,
                             err,
                         )
                         await self.stop_client(
@@ -730,7 +730,7 @@ class AirPlayStreamSession:
 
         self.prov.logger.debug(
             "Late joiner %s: started after %.2fs",
-            airplay_player.player_id,
+            airplay_player.protocol_id,
             cli_clock_time() - now,
         )
 
@@ -963,13 +963,13 @@ class AirPlayStreamSession:
                 if isinstance(result, TimeoutError):
                     self.prov.logger.warning(
                         "Removing player %s from session: stopped reading data (write timeout)",
-                        player.player_id,
+                        player.protocol_id,
                     )
                     players_to_remove.append((player, "audio write timeout"))
                 elif isinstance(result, Exception):
                     self.prov.logger.warning(
                         "Removing player %s from session due to write error: %s",
-                        player.player_id,
+                        player.protocol_id,
                         result,
                     )
                     players_to_remove.append((player, f"audio write error: {result}"))
@@ -989,17 +989,17 @@ class AirPlayStreamSession:
 
     async def _write_chunk_to_player(self, airplay_player: AirPlayPlayer, chunk: bytes) -> None:
         """Write audio chunk to a player's ffmpeg process."""
-        player_id = airplay_player.player_id
+        protocol_id = airplay_player.protocol_id
         # Drain any pending late-join skip first: a joiner anchored ahead of the
         # write head must drop that many leading bytes of the live feed so its
         # first delivered byte is the sample due at its anchor.
-        if skip := self._client_skip_bytes.get(player_id, 0):
+        if skip := self._client_skip_bytes.get(protocol_id, 0):
             if skip >= len(chunk):
-                self._client_skip_bytes[player_id] = skip - len(chunk)
+                self._client_skip_bytes[protocol_id] = skip - len(chunk)
                 return
             chunk = chunk[skip:]
-            self._client_skip_bytes[player_id] = 0
-        if ffmpeg := self._player_ffmpeg.get(player_id):
+            self._client_skip_bytes[protocol_id] = 0
+        if ffmpeg := self._player_ffmpeg.get(protocol_id):
             if ffmpeg.closed:
                 return
             await asyncio.wait_for(ffmpeg.write(chunk), timeout=35.0)
@@ -1040,7 +1040,7 @@ class AirPlayStreamSession:
             replacement opens with discards it anyway, and no byte may reach the
             binary between the old ffmpeg dying and that flush.
         """
-        if not (ffmpeg := self._player_ffmpeg.pop(airplay_player.player_id, None)):
+        if not (ffmpeg := self._player_ffmpeg.pop(airplay_player.protocol_id, None)):
             return
         if not end_of_stream:
             await ffmpeg.kill()
@@ -1082,7 +1082,7 @@ class AirPlayStreamSession:
             # stdin: closing only this end would leave the pipe open and the
             # binary still waiting on it.
             for player in self.sync_clients:
-                if ffmpeg := self._player_ffmpeg.pop(player.player_id, None):
+                if ffmpeg := self._player_ffmpeg.pop(player.protocol_id, None):
                     await ffmpeg.kill()
             await asyncio.gather(
                 *[
@@ -1414,11 +1414,11 @@ class AirPlayStreamSession:
         :param stream: The published stream to wire the ffmpeg into, resolved by
             the caller so an await here cannot swap player.stream under us.
         """
-        if ffmpeg := self._player_ffmpeg.pop(player.player_id, None):
+        if ffmpeg := self._player_ffmpeg.pop(player.protocol_id, None):
             await ffmpeg.close()
         handoff_format = stream.pcm_format
         output_plan = self.mass.streams.audio.get_player_output_plan(
-            player.player_id,
+            player.protocol_id,
             input_format=self.pcm_format,
             output_format=get_final_output_format(handoff_format),
             handoff_format=handoff_format,
@@ -1439,7 +1439,7 @@ class AirPlayStreamSession:
             audio_output=audio_output,
         )
         await ffmpeg.start()
-        self._player_ffmpeg[player.player_id] = ffmpeg
+        self._player_ffmpeg[player.protocol_id] = ffmpeg
 
 
 def _first_music_assistant_error(err: BaseException) -> MusicAssistantError | None:
