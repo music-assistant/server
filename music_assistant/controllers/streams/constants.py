@@ -28,6 +28,9 @@ OUTCOME_ONLY_NORMALIZATION_MODES: Final = (
     VolumeNormalizationMode.UNKNOWN,
 )
 
+# Ceiling of the limiter that catches peaks a positive normalization gain pushes past full scale.
+NORMALIZATION_LIMITER_CEILING_DB: Final = -2.0
+
 
 class BufferMode(StrEnum):
     """Buffer mode determines buffer behavior."""
