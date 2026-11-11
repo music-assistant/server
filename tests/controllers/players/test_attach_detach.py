@@ -427,6 +427,98 @@ async def test_removal_reaches_the_protocol_of_a_disabled_player(scenario: Scena
     assert _stored(scenario) == ([], [])
 
 
+async def test_group_that_is_removed_while_it_plays_stops_its_members(scenario: Scenario) -> None:
+    """A player that plays is stopped before it goes: a group stops what its members play."""
+    await scenario.mass.config._create_provider_instance("universal_group", {})
+    sonos = await scenario.add_provider("sonos")
+    member_a = sonos.protocol("RINCON_A", "Player A")
+    member_b = sonos.protocol("RINCON_B", "Player B")
+    await scenario.attach(member_a)
+    await scenario.attach(member_b)
+    member_ids = [scenario.single_player(member).player_id for member in (member_a, member_b)]
+    group = await scenario.mass.players.create_group_player(
+        "universal_group", "Group Z", member_ids, False
+    )
+    await scenario.settle()
+    await scenario.play(group.player_id)
+    member_a.commands.clear()
+    member_b.commands.clear()
+
+    await scenario.remove(group.player_id)
+
+    for member, member_id in zip((member_a, member_b), member_ids, strict=True):
+        assert ("stop",) in member.commands
+        state = scenario.player(member_id)
+        assert state is not None
+        assert state.playback_state == PlaybackState.IDLE
+
+
+async def test_protocol_that_waits_takes_no_place_on_a_player_that_is_removed(
+    scenario: Scenario,
+) -> None:
+    """A protocol that waits for a place on a player is not bound to it while it is removed."""
+    airplay = await scenario.add_provider("airplay")
+    sendspin = await scenario.add_provider("sendspin")
+    carrier = airplay.protocol("ap_kitchen", "Kitchen", role="audio", identifiers=KITCHEN)
+    client = sendspin.protocol("sendspin_kitchen", "Kitchen", role="audio", identifiers=KITCHEN)
+    await scenario.attach(carrier)
+    await scenario.attach(client)
+    player_id = scenario.single_player(carrier, client).player_id
+    # the place of its domain is taken by the client of the device itself
+    bridge = sendspin.protocol(
+        "sendspin_bridge_kitchen", "Kitchen", role="audio", underlying_protocol_id="ap_kitchen"
+    )
+    await scenario.attach(bridge)
+    assert scenario.player_of(bridge) is None
+    for protocol_id in ("ap_kitchen", "sendspin_kitchen", "sendspin_bridge_kitchen"):
+        scenario.set_present(protocol_id, False)
+
+    await scenario.remove(player_id)
+    await scenario.idle()
+
+    assert bridge.player is None
+    assert scenario.mass.players.get_player(player_id) is None
+    assert _stored(scenario) == ([], [])
+
+
+async def test_device_found_again_while_its_player_is_removed_becomes_a_new_player(
+    scenario: Scenario,
+) -> None:
+    """A device that reconnects while its player is removed ends up as a player of its own."""
+    squeezelite = await scenario.add_provider("squeezelite")
+    old = squeezelite.protocol("aa:bb:cc:00:00:01", "Bedroom", identifiers=KITCHEN)
+    await scenario.attach(old)
+    player_id = scenario.single_player(old).player_id
+    players = scenario.mass.players
+    removed: list[str] = []
+    closing = asyncio.Event()
+
+    async def _close_slowly() -> None:
+        await closing.wait()
+
+    async def _on_remove() -> None:
+        removed.append(old.protocol_id)
+
+    old.on_detach = _close_slowly  # type: ignore[method-assign]
+    old.on_remove = _on_remove  # type: ignore[method-assign]
+    removal = await scenario.command(players.remove(player_id))
+    new = squeezelite.protocol("aa:bb:cc:00:00:01", "Bedroom", identifiers=KITCHEN)
+    await players.attach(new)
+    closing.set()
+    await scenario.settle()
+    await removal
+    await scenario.idle()
+
+    assert new.player is not None
+    new_player_id = new.player.player_id
+    assert new_player_id != player_id
+    assert players.get_player(player_id) is None
+    assert [player.player_id for player in scenario.visible_players()] == [new_player_id]
+    assert _stored(scenario) == ([new_player_id], ["aa:bb:cc:00:00:01"])
+    # its provider still needs the device it found again
+    assert removed == []
+
+
 async def test_discovery_after_a_removal_is_dropped_when_its_provider_unloads(
     scenario: Scenario,
 ) -> None:

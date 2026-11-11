@@ -90,6 +90,7 @@ class ProtocolLinkingMixin:
         _players: dict[str, Player]
         _protocols: dict[str, PlayerProtocol]
         _unattached: Any
+        _removing: set[str]
         _pending_protocol_evaluations: dict[str, asyncio.TimerHandle]
         _register_lock: asyncio.Lock
         logger: logging.Logger
@@ -152,8 +153,8 @@ class ProtocolLinkingMixin:
         """
         Return the id of the player of the protocol a derived protocol rides on.
 
-        None while that protocol is not attached to a player, or when its player
-        already has a protocol of the domain of the derived one.
+        None while that protocol is not attached to a player, when its player already
+        has a protocol of the domain of the derived one, or is being removed.
 
         :param protocol: The derived protocol.
         """
@@ -165,7 +166,11 @@ class ProtocolLinkingMixin:
             player_id = stored.get("player_id")
         else:
             player_id = None
-        if not player_id or self._has_other_protocol_of_domain(protocol, player_id):
+        if (
+            not player_id
+            or player_id in self._removing
+            or self._has_other_protocol_of_domain(protocol, player_id)
+        ):
             return None
         return player_id
 
@@ -189,7 +194,8 @@ class ProtocolLinkingMixin:
         Return whether the attach rules allow a protocol on a player.
 
         A player has at most one protocol per domain and at most one that stands for the
-        device itself, and no identifier of its device may rule the protocol out.
+        device itself, and no identifier of its device may rule the protocol out. Nothing
+        attaches to a player that is being removed.
 
         :param protocol: The protocol that attaches.
         :param identity: What the protocol reports about its device.
@@ -197,6 +203,8 @@ class ProtocolLinkingMixin:
         :param attached_only: Only the protocols that are attached to the player count,
             for a protocol that was attached to the player before.
         """
+        if player_id in self._removing:
+            return False
         player = self._players.get(player_id)
         stored = self.mass.config.get(f"{CONF_PLAYERS}/{player_id}")
         if player is None and not isinstance(stored, dict):

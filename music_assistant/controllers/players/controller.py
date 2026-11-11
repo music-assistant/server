@@ -236,6 +236,8 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         )
         # the attach that is setting up a protocol, by protocol id
         self._attaching: dict[str, _Attach] = {}
+        # the ids of the players that are being removed, which no protocol attaches to
+        self._removing: set[str] = set()
         # when each protocol that needs polling was last polled, by protocol id
         self._last_polls: dict[str, float] = {}
         # the player id behind every legacy id of the stored players
@@ -3078,45 +3080,63 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
             protocol_ids.update(player.protocols)
         if player is None and stored is None and not protocol_ids:
             return
-        # check for group memberships that need to be updated
-        if (
-            player is not None
-            and player.state.active_group
-            and (group_player := self.get_player(player.state.active_group))
-        ):
-            # try to remove from the group
-            with suppress(
-                UnsupportedFeaturedException, PlayerCommandFailed, PlayerUnavailableError
+        self._removing.add(player_id)
+        try:
+            # check for group memberships that need to be updated
+            if (
+                player is not None
+                and player.state.active_group
+                and (group_player := self.get_player(player.state.active_group))
             ):
-                if group_protocol := group_player.own_protocol:
-                    await group_protocol.set_members(player_ids_to_remove=[player_id])
-        is_group = (
-            player.type if player else (stored or {}).get("player_type")
-        ) == PlayerType.GROUP
-        provider_ids = {
-            str(record.get("provider"))
-            for protocol_id in protocol_ids
-            if (record := self.mass.config.get_protocol_record(protocol_id))
-        }
-        # the objects the providers hold, also of a protocol that is not attached
-        protocols = [
-            protocol
-            for protocol_id in protocol_ids
-            if (protocol := self._protocols.get(protocol_id) or self._unattached.get(protocol_id))
-        ]
-        for protocol in protocols:
-            provider_ids.add(protocol.provider_id)
-            self._attaching.pop(protocol.protocol_id, None)
-            self._unattached.pop(protocol.protocol_id, None)
-            await self._unbind(protocol)
-        # No group detach is issued for its persisted memberships: the player is out of
-        # the registry, so it is filtered out of every group's live member list, and
-        # its persisted membership is settled by the config cleanup below.
-        if player is not None:
-            await self._drop_player(player, permanent=True)
-        self._delete_player_config(player_id, protocol_ids)
+                # try to remove from the group
+                with suppress(
+                    UnsupportedFeaturedException, PlayerCommandFailed, PlayerUnavailableError
+                ):
+                    if group_protocol := group_player.own_protocol:
+                        await group_protocol.set_members(player_ids_to_remove=[player_id])
+            if player is not None:
+                with suppress(
+                    UnsupportedFeaturedException, PlayerCommandFailed, PlayerUnavailableError
+                ):
+                    await self._stop_player_that_goes(player)
+            is_group = (
+                player.type if player else (stored or {}).get("player_type")
+            ) == PlayerType.GROUP
+            provider_ids = {
+                str(record.get("provider"))
+                for protocol_id in protocol_ids
+                if (record := self.mass.config.get_protocol_record(protocol_id))
+            }
+            # the objects the providers hold, also of a protocol that is not attached
+            protocols = [
+                protocol
+                for protocol_id in protocol_ids
+                if (
+                    protocol := self._protocols.get(protocol_id)
+                    or self._unattached.get(protocol_id)
+                )
+            ]
+            for protocol in protocols:
+                provider_ids.add(protocol.provider_id)
+                self._attaching.pop(protocol.protocol_id, None)
+                self._unattached.pop(protocol.protocol_id, None)
+                await self._unbind(protocol)
+            # No group detach is issued for its persisted memberships: the player is out of
+            # the registry, so it is filtered out of every group's live member list, and
+            # its persisted membership is settled by the config cleanup below.
+            if player is not None:
+                await self._drop_player(player, permanent=True)
+            # a protocol found again during the awaits above belongs to another player now
+            self._delete_player_config(
+                player_id, set(self.mass.config.get_protocol_ids_of_player(player_id))
+            )
+        finally:
+            self._removing.discard(player_id)
         self.logger.info("Player removed: %s", player.display_name if player else player_id)
         for protocol in protocols:
+            if protocol.protocol_id in self._protocols or protocol.protocol_id in self._unattached:
+                # its device was found again meanwhile, so its provider still needs it
+                continue
             # the provider only cleans up what it keeps about the device itself.
             # Best-effort: the player is gone by now, whatever happens to that
             try:
@@ -3209,13 +3229,7 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
 
         :param player: The player to disable.
         """
-        player_id = player.player_id
-        if player.state.available:
-            # edge case: ensure that the player is powered off if the player gets disabled
-            if player.state.power_control != PLAYER_CONTROL_NONE:
-                await self._handle_cmd_power(player_id, False)
-            elif player.state.playback_state != PlaybackState.IDLE:
-                await self.cmd_stop(player_id)
+        await self._stop_player_that_goes(player)
         for protocol in list(player.protocols.values()):
             self._attaching.pop(protocol.protocol_id, None)
             await self._unbind(protocol)
@@ -3224,6 +3238,20 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         await self._drop_player(player, permanent=False)
         self.logger.info("Player disabled: %s", player.display_name)
         self._schedule_update_all_players()
+
+    async def _stop_player_that_goes(self, player: Player) -> None:
+        """
+        Stop what a player plays before it is disabled or removed.
+
+        :param player: The player that goes.
+        """
+        if not player.state.available:
+            return
+        # edge case: ensure that the player is powered off if the player gets disabled
+        if player.state.power_control != PLAYER_CONTROL_NONE:
+            await self._handle_cmd_power(player.player_id, False)
+        elif player.state.playback_state != PlaybackState.IDLE:
+            await self.cmd_stop(player.player_id)
 
     async def _enable_player(self, player_id: str) -> None:
         """
