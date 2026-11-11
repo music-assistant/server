@@ -211,6 +211,52 @@ async def test_device_that_follows_a_native_leader_gives_up_its_own_output(
     assert player.active_output_protocol is None
 
 
+async def test_control_protocol_alone_makes_a_player_neither_available_nor_playable(
+    scenario: Scenario,
+) -> None:
+    """A device whose audio protocols are away has nothing to play on, whatever controls it."""
+    wiim = await scenario.add_provider("wiim")
+    dlna = await scenario.add_provider("dlna")
+    control = wiim.protocol(
+        "wiim_den",
+        "Den",
+        role="control",
+        identifiers=KITCHEN,
+        supported_features={PlayerFeature.VOLUME_SET, PlayerFeature.SET_MEMBERS},
+    )
+    audio = dlna.protocol("dlna_den", "Den", role="audio", identifiers=KITCHEN)
+    await scenario.attach(control)
+    await scenario.attach(audio)
+    await scenario.idle()
+    player_id = scenario.single_player(control, audio).player_id
+    player = scenario.mass.players.get_player(player_id)
+    assert player is not None
+
+    def _availability() -> tuple[bool, bool, bool]:
+        state = scenario.player(player_id)
+        assert state is not None
+        return state.available, player.available, player.available_for_playback
+
+    assert _availability() == (True, True, True)
+
+    await scenario.detach(audio)
+
+    # the control protocol still answers, which is no output for a sync group to lead on
+    assert control.available
+    assert _availability() == (False, False, False)
+
+    await scenario.attach(audio)
+
+    assert _availability() == (True, True, True)
+
+    # nor does it make the player usable while its output still has to be set up
+    await scenario.report(audio, needs_setup=True)
+
+    state = scenario.player(player_id)
+    assert state is not None
+    assert (state.available, state.needs_setup) == (False, True)
+
+
 async def test_published_type_is_never_protocol(scenario: Scenario) -> None:
     """A protocol that still reports the protocol type gives its player the player type."""
     sonos = await scenario.add_provider("sonos")

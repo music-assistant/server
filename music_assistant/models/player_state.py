@@ -546,14 +546,25 @@ def reconcile_position_anchor(
 
 
 def _reachable(inputs: StateInputs) -> bool:
-    """Return whether any protocol of the player reports its device as reachable."""
-    return inputs.own.available or any(protocol.available for protocol in inputs.linked)
+    """Return whether a protocol of the player that can render audio reaches its device."""
+    own = inputs.own
+    return (own.available and own.role != ProtocolRole.CONTROL) or any(
+        protocol.available for protocol in inputs.linked
+    )
+
+
+def _playable(inputs: StateInputs) -> bool:
+    """Return whether a protocol of the player that can render audio is reachable and set up."""
+    own = inputs.own
+    return (own.available_for_playback and own.role != ProtocolRole.CONTROL) or any(
+        protocol.available_for_playback for protocol in inputs.linked
+    )
 
 
 def _protocol_needing_setup(inputs: StateInputs) -> ProtocolSnapshot | None:
     """Return the protocol that has to be set up before the player can be used, if any."""
     own = inputs.own
-    if own.available_for_playback or any(p.available_for_playback for p in inputs.linked):
+    if _playable(inputs):
         # a protocol that is reachable and set up makes the player usable as it is
         return None
     if own.needs_setup:
@@ -1272,9 +1283,7 @@ def _volume_members(inputs: StateInputs, state: PlayerState) -> list[PlayerState
         if (peer.player_id if peer else member_id) == inputs.player_id:
             if inputs.player_type != PlayerType.PLAYER:
                 continue
-            available_for_playback: bool | None = inputs.own.available_for_playback or any(
-                protocol.available_for_playback for protocol in inputs.linked
-            )
+            available_for_playback: bool | None = _playable(inputs)
             member = state
         elif peer:
             available_for_playback = peer.available_for_playback

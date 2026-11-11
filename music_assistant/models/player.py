@@ -733,10 +733,14 @@ class Player:
 
     @property
     def available(self) -> bool:
-        """Return if any protocol of the player reports its device as reachable."""
+        """
+        Return if a protocol of the player that can render audio reaches its device.
+
+        A control protocol alone does not count: there is nothing to play on.
+        """
         # a plain loop: this is read for every player the state of another one refers to
-        for protocol in self._protocols.values():  # noqa: SIM110
-            if protocol.available:
+        for protocol_id, protocol in self._protocols.items():
+            if protocol.available and self._roles[protocol_id] != ProtocolRole.CONTROL:
                 return True
         return False
 
@@ -745,9 +749,9 @@ class Player:
         """
         Return if the player can currently be used to play (or control) audio.
 
-        That takes a protocol that is reachable and set up. Neither a device that still
-        needs setup - an unpaired AirPlay receiver, for example - nor a disabled player
-        can accept a stream.
+        That takes a protocol that can render audio, is reachable and set up: a control
+        protocol alone does not count. Neither a device that still needs setup - an
+        unpaired AirPlay receiver, for example - nor a disabled player can accept a stream.
 
         Use this, not state.available, for a device that must be reachable right now:
         the state also reports a player that is switched off at its power control as
@@ -755,8 +759,8 @@ class Player:
         """
         if not self.enabled:
             return False
-        for protocol in self._protocols.values():  # noqa: SIM110
-            if protocol.available_for_playback:
+        for protocol_id, protocol in self._protocols.items():
+            if protocol.available_for_playback and self._roles[protocol_id] != ProtocolRole.CONTROL:
                 return True
         return False
 
@@ -1724,7 +1728,7 @@ class Player:
         """
         Return if the device is offline because it is switched off at its external power control.
 
-        :param reachable: Whether any protocol of the player reports its device as reachable.
+        :param reachable: Whether the player is available (see available).
         """
         if reachable or self.type == PlayerType.GROUP:
             return False
@@ -1748,7 +1752,7 @@ class Player:
         """
         Keep when the player was last seen and since when it is unavailable.
 
-        :param reachable: Whether any protocol of the player reports its device as reachable.
+        :param reachable: Whether the player is available (see available).
         """
         if reachable == self._was_available:
             return
@@ -1946,7 +1950,7 @@ class Player:
         calculated position - is event-relevant.
 
         :param prev_state: The state the player had before the current one.
-        :param reachable: Whether any protocol of the player reports its device as reachable.
+        :param reachable: Whether the player is available (see available).
         """
         prev_fingerprint = self._state_fingerprint or _state_fingerprint(prev_state)
         new_fingerprint = _state_fingerprint(self._state)
@@ -1975,7 +1979,7 @@ class Player:
         """
         Collect everything the state of the player is derived from.
 
-        :param reachable: Whether any protocol of the player reports its device as reachable.
+        :param reachable: Whether the player is available (see available).
         """
         own_protocol = self._own_protocol
         own = (
