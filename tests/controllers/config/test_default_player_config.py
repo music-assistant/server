@@ -1,9 +1,8 @@
 """
-Tests for create_default_player_config.
+Tests for the config a new player is stored with.
 
-An existing stored player_type is never rewritten (support#5745), the default name
-of an existing config follows the player while a name the user set stays, and a new
-config stores the name as its default name only.
+The name of its device is stored as its default name only, which follows the device
+while a name the user set stays.
 """
 
 from music_assistant_models.enums import PlayerType
@@ -11,31 +10,29 @@ from music_assistant_models.enums import PlayerType
 from music_assistant.constants import CONF_PLAYERS
 from music_assistant.mass import MusicAssistant
 
-PLAYER_ID = "e4:5f:01:70:ef:67"
+PLAYER_ID = "pl0123456789ab"
 
 
-async def test_existing_player_type_not_rewritten(mass_minimal: MusicAssistant) -> None:
-    """A repeated call with a transient type must not touch the persisted player_type."""
-    mass_minimal.config.create_default_player_config(
-        PLAYER_ID, "squeezelite", PlayerType.PROTOCOL, "solarium-bath-sl"
+async def test_new_player_config_holds_the_given_base_values(mass_minimal: MusicAssistant) -> None:
+    """A new player config stores its provider, type and values, and nothing of a setup."""
+    mass_minimal.config.create_player_record(
+        PLAYER_ID,
+        provider="squeezelite",
+        player_type=PlayerType.PLAYER,
+        default_name="old-name",
+        enabled=False,
+        values={"created_at": 1},
     )
-    assert mass_minimal.config.get(f"{CONF_PLAYERS}/{PLAYER_ID}/player_type") == "protocol"
 
-    # a later call with another type
-    mass_minimal.config.create_default_player_config(PLAYER_ID, "squeezelite", PlayerType.PLAYER)
-
-    assert mass_minimal.config.get(f"{CONF_PLAYERS}/{PLAYER_ID}/player_type") == "protocol"
-
-
-async def test_existing_default_name_still_updated(mass_minimal: MusicAssistant) -> None:
-    """The default_name update for existing configs keeps working."""
-    mass_minimal.config.create_default_player_config(
-        PLAYER_ID, "squeezelite", PlayerType.PROTOCOL, "old-name"
-    )
-    mass_minimal.config.create_default_player_config(
-        PLAYER_ID, "squeezelite", PlayerType.PROTOCOL, "new-name"
-    )
-    assert mass_minimal.config.get(f"{CONF_PLAYERS}/{PLAYER_ID}/default_name") == "new-name"
+    assert mass_minimal.config.get(f"{CONF_PLAYERS}/{PLAYER_ID}") == {
+        "player_id": PLAYER_ID,
+        "provider": "squeezelite",
+        "player_type": "player",
+        "enabled": False,
+        "name": None,
+        "default_name": "old-name",
+        "values": {"created_at": 1},
+    }
 
 
 async def test_creation_name_is_stored_as_default_name_only(mass_minimal: MusicAssistant) -> None:
@@ -47,8 +44,8 @@ async def test_creation_name_is_stored_as_default_name_only(mass_minimal: MusicA
     rename. It kept shadowing every later default name and was carried over to
     any replacement player, producing duplicated friendly names.
     """
-    mass_minimal.config.create_default_player_config(
-        PLAYER_ID, "squeezelite", PlayerType.PROTOCOL, "old-name"
+    mass_minimal.config.create_player_record(
+        PLAYER_ID, provider="squeezelite", player_type=PlayerType.PLAYER, default_name="old-name"
     )
     assert mass_minimal.config.get(f"{CONF_PLAYERS}/{PLAYER_ID}/name") is None
     assert mass_minimal.config.get(f"{CONF_PLAYERS}/{PLAYER_ID}/default_name") == "old-name"
@@ -63,8 +60,8 @@ async def test_user_renamed_name_preserved_on_default_name_update(
     mass_minimal: MusicAssistant,
 ) -> None:
     """A real user rename is never overwritten by a default name update."""
-    mass_minimal.config.create_default_player_config(
-        PLAYER_ID, "squeezelite", PlayerType.PROTOCOL, "old-name"
+    mass_minimal.config.create_player_record(
+        PLAYER_ID, provider="squeezelite", player_type=PlayerType.PLAYER, default_name="old-name"
     )
     mass_minimal.config.set(f"{CONF_PLAYERS}/{PLAYER_ID}/name", "My Custom Name")
 
@@ -72,3 +69,12 @@ async def test_user_renamed_name_preserved_on_default_name_update(
 
     assert mass_minimal.config.get(f"{CONF_PLAYERS}/{PLAYER_ID}/default_name") == "new-name"
     assert mass_minimal.config.get(f"{CONF_PLAYERS}/{PLAYER_ID}/name") == "My Custom Name"
+
+
+async def test_default_name_of_a_player_without_config_is_not_stored(
+    mass_minimal: MusicAssistant,
+) -> None:
+    """A default name update never creates a partial config for a player that has none."""
+    mass_minimal.config.set_player_default_name(PLAYER_ID, "new-name")
+
+    assert mass_minimal.config.get(f"{CONF_PLAYERS}/{PLAYER_ID}") is None
