@@ -38,8 +38,9 @@ if TYPE_CHECKING:
     import pathlib
     from collections.abc import AsyncGenerator, Coroutine
 
-KITCHEN = "sonos_kitchen"
-BEDROOM = "sonos_bedroom"
+# the protocols of the two devices; their players get ids of their own
+KITCHEN_DEVICE = "sonos_kitchen"
+BEDROOM_DEVICE = "sonos_bedroom"
 # an id the kitchen player was known under before
 LEGACY_ID = "sonos_old_kitchen"
 
@@ -68,10 +69,12 @@ async def scenario(tmp_path: pathlib.Path) -> AsyncGenerator[Scenario]:
     try:
         await scenario.start()
         sonos = await scenario.add_provider("sonos")
-        await scenario.attach(sonos.protocol(KITCHEN, "Kitchen"))
-        await scenario.attach(sonos.protocol(BEDROOM, "Bedroom"))
+        kitchen = sonos.protocol(KITCHEN_DEVICE, "Kitchen")
+        await scenario.attach(kitchen)
+        await scenario.attach(sonos.protocol(BEDROOM_DEVICE, "Bedroom"))
+        kitchen_id = scenario.single_player(kitchen).player_id
         await scenario.seed_config(
-            {CONF_PLAYERS: {KITCHEN: {"values": {CONF_LEGACY_IDS: [LEGACY_ID]}}}}
+            {CONF_PLAYERS: {kitchen_id: {"values": {CONF_LEGACY_IDS: [LEGACY_ID]}}}}
         )
         yield scenario
     finally:
@@ -145,7 +148,7 @@ def _queue_items(scenario: Scenario) -> dict[str, int]:
     """Return the number of items in the queue of each player."""
     return {
         queue_id: queue.items
-        for queue_id in (KITCHEN, BEDROOM)
+        for queue_id in (_kitchen(scenario), _bedroom(scenario))
         if (queue := scenario.queue(queue_id)) is not None
     }
 
@@ -153,12 +156,13 @@ def _queue_items(scenario: Scenario) -> dict[str, int]:
 @TRANSPORTS
 async def test_player_is_read_by_its_legacy_id(scenario: Scenario, transport: Transport) -> None:
     """A user limited to a player reads it by its legacy id."""
-    user = await _user(scenario, KITCHEN)
+    kitchen = _kitchen(scenario)
+    user = await _user(scenario, kitchen)
 
     reply = await _send(scenario, transport, user, "players/get", player_id=LEGACY_ID)
 
     assert not reply.refused
-    assert reply.result["player_id"] == KITCHEN
+    assert reply.result["player_id"] == kitchen
     assert reply.result["name"] == "Kitchen"
 
 
@@ -167,8 +171,10 @@ async def test_queue_is_transferred_from_a_legacy_id(
     scenario: Scenario, transport: Transport
 ) -> None:
     """A user limited to both players moves the queue of the one named by its legacy id."""
-    user = await _user(scenario, KITCHEN, BEDROOM)
-    await scenario.play(KITCHEN)
+    kitchen = _kitchen(scenario)
+    bedroom = _bedroom(scenario)
+    user = await _user(scenario, kitchen, bedroom)
+    await scenario.play(kitchen)
 
     reply = await _send(
         scenario,
@@ -176,12 +182,12 @@ async def test_queue_is_transferred_from_a_legacy_id(
         user,
         "player_queues/transfer",
         source_queue_id=LEGACY_ID,
-        target_queue_id=BEDROOM,
+        target_queue_id=bedroom,
         auto_play=False,
     )
 
     assert not reply.refused
-    assert _queue_items(scenario) == {KITCHEN: 0, BEDROOM: 1}
+    assert _queue_items(scenario) == {kitchen: 0, bedroom: 1}
 
 
 @TRANSPORTS
@@ -189,9 +195,11 @@ async def test_transfer_from_a_legacy_id_needs_access_to_its_player(
     scenario: Scenario, transport: Transport
 ) -> None:
     """A user without access to a player cannot reach it by its legacy id either."""
-    user = await _user(scenario, BEDROOM)
-    await scenario.play(KITCHEN)
-    scenario.expect_log(f"does not have access to player {KITCHEN}")
+    kitchen = _kitchen(scenario)
+    bedroom = _bedroom(scenario)
+    user = await _user(scenario, bedroom)
+    await scenario.play(kitchen)
+    scenario.expect_log(f"does not have access to player {kitchen}")
 
     reply = await _send(
         scenario,
@@ -199,12 +207,12 @@ async def test_transfer_from_a_legacy_id_needs_access_to_its_player(
         user,
         "player_queues/transfer",
         source_queue_id=LEGACY_ID,
-        target_queue_id=BEDROOM,
+        target_queue_id=bedroom,
         auto_play=False,
     )
 
     assert reply.refused
-    assert _queue_items(scenario) == {KITCHEN: 1, BEDROOM: 0}
+    assert _queue_items(scenario) == {kitchen: 1, bedroom: 0}
 
 
 @TRANSPORTS
@@ -212,16 +220,17 @@ async def test_queue_selected_as_source_by_a_legacy_id_is_active_under_its_own_i
     scenario: Scenario, transport: Transport
 ) -> None:
     """A player whose queue is selected as source by a legacy id plays from that queue."""
-    user = await _user(scenario, KITCHEN)
+    kitchen = _kitchen(scenario)
+    user = await _user(scenario, kitchen)
 
     reply = await _send(
-        scenario, transport, user, "players/cmd/select_source", player_id=KITCHEN, source=LEGACY_ID
+        scenario, transport, user, "players/cmd/select_source", player_id=kitchen, source=LEGACY_ID
     )
 
     assert not reply.refused
-    kitchen = scenario.player(KITCHEN)
-    assert kitchen is not None
-    assert kitchen.active_source == KITCHEN
+    kitchen_state = scenario.player(kitchen)
+    assert kitchen_state is not None
+    assert kitchen_state.active_source == kitchen
 
 
 @TRANSPORTS
@@ -229,17 +238,18 @@ async def test_playing_queue_selected_again_by_a_legacy_id_keeps_playing(
     scenario: Scenario, transport: Transport
 ) -> None:
     """Selecting the queue a player already plays, by a legacy id, leaves the playback alone."""
-    user = await _user(scenario, KITCHEN)
-    await scenario.play(KITCHEN)
+    kitchen = _kitchen(scenario)
+    user = await _user(scenario, kitchen)
+    await scenario.play(kitchen)
 
     reply = await _send(
-        scenario, transport, user, "players/cmd/select_source", player_id=KITCHEN, source=LEGACY_ID
+        scenario, transport, user, "players/cmd/select_source", player_id=kitchen, source=LEGACY_ID
     )
 
     assert not reply.refused
-    kitchen = scenario.player(KITCHEN)
-    assert kitchen is not None
-    assert kitchen.playback_state == PlaybackState.PLAYING
+    kitchen_state = scenario.player(kitchen)
+    assert kitchen_state is not None
+    assert kitchen_state.playback_state == PlaybackState.PLAYING
 
 
 @TRANSPORTS
@@ -247,21 +257,22 @@ async def test_command_aimed_at_the_playing_queue_by_a_legacy_id_reaches_it(
     scenario: Scenario, transport: Transport
 ) -> None:
     """A command for the source a player plays takes the queue under a legacy id as well."""
-    user = await _user(scenario, KITCHEN)
-    await scenario.play(KITCHEN)
+    kitchen = _kitchen(scenario)
+    user = await _user(scenario, kitchen)
+    await scenario.play(kitchen)
 
     reply = await _send(
         scenario,
         transport,
         user,
         "players/cmd/shuffle",
-        player_id=KITCHEN,
+        player_id=kitchen,
         shuffle_enabled=True,
         source_id=LEGACY_ID,
     )
 
     assert not reply.refused
-    queue = scenario.queue(KITCHEN)
+    queue = scenario.queue(kitchen)
     assert queue is not None
     assert queue.shuffle_enabled
 
@@ -271,8 +282,10 @@ async def test_user_is_limited_to_the_player_behind_a_legacy_id(
     scenario: Scenario, transport: Transport
 ) -> None:
     """A player filter given with a legacy id is stored with the id of the player itself."""
+    kitchen = _kitchen(scenario)
+    bedroom = _bedroom(scenario)
     admin = await _user(scenario, role=UserRole.ADMIN)
-    user = await _user(scenario, BEDROOM)
+    user = await _user(scenario, bedroom)
 
     reply = await _send(
         scenario,
@@ -280,13 +293,13 @@ async def test_user_is_limited_to_the_player_behind_a_legacy_id(
         admin,
         "auth/user/update",
         user_id=user.user_id,
-        player_filter=[LEGACY_ID, BEDROOM],
+        player_filter=[LEGACY_ID, bedroom],
     )
 
-    assert reply.result["player_filter"] == [KITCHEN, BEDROOM]
+    assert reply.result["player_filter"] == [kitchen, bedroom]
     stored = await scenario.mass.webserver.auth.get_user(user.user_id)
     assert stored is not None
-    assert stored.player_filter == [KITCHEN, BEDROOM]
+    assert stored.player_filter == [kitchen, bedroom]
 
 
 @TRANSPORTS
@@ -294,8 +307,9 @@ async def test_party_player_set_by_a_legacy_id_takes_votes_of_a_user_of_its_play
     scenario: Scenario, transport: Transport
 ) -> None:
     """A user limited to a player votes on the party it hosts, set up with a legacy id."""
-    user = await _user(scenario, KITCHEN)
-    await scenario.play(KITCHEN)
+    kitchen = _kitchen(scenario)
+    user = await _user(scenario, kitchen)
+    await scenario.play(kitchen)
     await scenario.mass.config._create_provider_instance(
         "party",
         {
@@ -312,3 +326,17 @@ async def test_party_player_set_by_a_legacy_id_takes_votes_of_a_user_of_its_play
 
     assert not reply.refused
     assert reply.result["vote_counted"]
+
+
+def _kitchen(scenario: Scenario) -> str:
+    """Return the id of the kitchen player, which holds the legacy id."""
+    player_id = scenario.player_of(scenario.protocol(KITCHEN_DEVICE))
+    assert player_id is not None
+    return player_id
+
+
+def _bedroom(scenario: Scenario) -> str:
+    """Return the id of the bedroom player."""
+    player_id = scenario.player_of(scenario.protocol(BEDROOM_DEVICE))
+    assert player_id is not None
+    return player_id
