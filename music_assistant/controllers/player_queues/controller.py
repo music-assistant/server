@@ -27,7 +27,6 @@ from music_assistant_models.enums import (
     ListingType,
     MediaType,
     PlaybackState,
-    PlayerType,
     QueueOption,
     RepeatMode,
     SleepTimerMode,
@@ -1353,7 +1352,9 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         # refuse targets that can never render audio (display/visualizer/lighting clients)
         # before anything is mutated, so a bad target does not destroy the source queue
         if target_player.state.type not in PLAYBACK_TARGET_TYPES:
-            raise PlayerCommandFailed(f"Player {target_player.name} is not capable of playback")
+            raise PlayerCommandFailed(
+                f"Player {target_player.display_name} is not capable of playback"
+            )
         if target_player.state.active_group or target_player.state.synced_to:
             # edge case: the user wants to move playback from the group as a whole, to a single
             # player in the group or it is grouped and the command targeted at the single player.
@@ -1497,7 +1498,9 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
             )
         # new queues and queues restored without a pinned override follow the global defaults
         self._resolve_default_toggles(queue_data)
-
+        if self.mass.players.get_player(queue_id) is not player:
+            # the player was removed while its queue was restored
+            return
         self._queue_data[queue_id] = queue_data
         # always call update to calculate state etc
         self.on_player_update(player, {})
@@ -1513,9 +1516,6 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
 
         NOTE: This is called every second if the player is playing.
         """
-        if player.type == PlayerType.PROTOCOL:
-            # protocol players do not have a queue on their own
-            return
         queue_id = player.player_id
         if (queue := self.get(queue_id)) is None:
             # race condition
@@ -1538,8 +1538,6 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
 
     def on_player_elapsed_time_corrected(self, player: Player) -> None:
         """Correct the queue's timing base if the player's real elapsed_time diverged."""
-        if player.type == PlayerType.PROTOCOL:
-            return
         queue_id = player.player_id
         if (queue := self.get(queue_id)) is None:
             return
@@ -1576,14 +1574,26 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
             data=queue.elapsed_time,
         )
 
-    def on_player_remove(self, player_id: str, permanent: bool, release_audio: bool = True) -> None:
+    def on_player_detached(self, player_id: str) -> None:
+        """
+        Call when the protocol that rendered the audio of a player is detached from it.
+
+        The queue stays, with its items and the position to resume from: only its audio
+        and the work that was pending for it are released.
+
+        :param player_id: The player whose playback path is gone.
+        """
+        self.mass.streams.audio_processing.clear(player_id)
+        self._cancel_pending_playback(player_id)
+        if (queue_data := self._queue_data.get(player_id)) is not None:
+            self._release_queue_audio(player_id, queue_data)
+
+    def on_player_remove(self, player_id: str, permanent: bool) -> None:
         """
         Call when a player is removed from the registry.
 
         :param player_id: The player whose queue is removed.
         :param permanent: Also delete the queue's persisted state and items.
-        :param release_audio: Release the audio buffers of the queue's items. Pass False to
-            leave a stream that is still playing untouched.
         """
         self.mass.streams.audio_processing.clear(player_id)
         self._cancel_pending_playback(player_id)
@@ -1599,13 +1609,8 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
             self.mass.signal_event(
                 EventType.QUEUE_UPDATED, object_id=player_id, data=queue_data.queue
             )
-            if release_audio:
-                # released here: _cleanup_queue_audio_data looks the queue up, and it is gone now
-                self.mass.streams.audio.clear_crossfade_handover(player_id)
-                for item in queue_data.items:
-                    if (streamdetails := item.streamdetails) and (buffer := streamdetails.buffer):
-                        streamdetails.buffer = None
-                        self.mass.create_task(buffer.clear())
+            # released here: _cleanup_queue_audio_data looks the queue up, and it is gone now
+            self._release_queue_audio(player_id, queue_data)
         self._managed_pool.forget(player_id)
 
     def purge_saved_queue(self, queue_id: str) -> None:
@@ -2374,6 +2379,19 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
                 self.mass.streams.audio_processing.clear(queue_id, session_id)
                 self.mass.create_task(self._cleanup_queue_audio_data(queue_id, session_id))
 
+    def _release_queue_audio(self, queue_id: str, queue_data: PlayerQueueData) -> None:
+        """
+        Release the audio buffers that are held for the items of a queue.
+
+        :param queue_id: Id of the queue.
+        :param queue_data: The data of that queue.
+        """
+        self.mass.streams.audio.clear_crossfade_handover(queue_id)
+        for item in queue_data.items:
+            if (streamdetails := item.streamdetails) and (buffer := streamdetails.buffer):
+                streamdetails.buffer = None
+                self.mass.create_task(buffer.clear())
+
     def _cancel_pending_playback(self, queue_id: str) -> None:
         """Cancel the queue's pending play_index, preload, enqueue-next and prewarm work."""
         # cancel any pending play_index calls for this queue to prevent conflicts
@@ -2408,7 +2426,10 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
                 attribute_value=PlaybackState.PLAYING,
                 timeout=PLAYBACK_START_TIMEOUT,
             ):
-                await queue_player.play()
+                if (output_protocol := queue_player.resolve_output_protocol()) is None:
+                    msg = f"Player {queue_player.display_name} is not available"
+                    raise PlayerUnavailableError(msg)
+                await output_protocol.play()
             return
         # player is not paused, perform resume instead
         await self.resume(queue_id)
