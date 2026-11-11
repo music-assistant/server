@@ -143,6 +143,7 @@ def _make_provider(config_values: dict[str, Any]) -> YandexStationProvider:
     provider._pending_discoveries = set()
     provider._mdns_players = {}
     provider._discovery_done = False
+    provider._known_speakers = {}
     provider._init_lock = asyncio.Lock()
     provider._cascade = provider._build_cascade()
     provider._borrow_source = provider._build_borrow_source()
@@ -709,6 +710,8 @@ async def test_discover_falls_back_to_glagol_device_list_when_quasar_fails(
     assert create_player.await_count == 2
     registered_ids = {c.args[0] for c in create_player.await_args_list}
     assert registered_ids == {"ys_dev_a", "ys_dev_b"}
+    # what was found is kept, to offer a removed or re-enabled device again
+    assert set(provider._known_speakers) == {"ys_dev_a", "ys_dev_b"}
     # Speakers passed in carry the synthesised quasar_info.
     speakers_arg = [c.args[1] for c in create_player.await_args_list]
     for s in speakers_arg:
