@@ -605,6 +605,29 @@ def test_session_only_players_are_deleted_unless_customised() -> None:
     }
 
 
+@pytest.mark.parametrize("tree", [None, ["ss_40"]], ids=["null", "list"])
+def test_dsp_and_queue_trees_that_are_no_mapping_hold_no_customisation(
+    tree: list[str] | None,
+) -> None:
+    """A DSP or queue tree that can not be read does not keep a player from its migration."""
+    data = _settings(
+        _record("ss_40", SENDSPIN),
+        _record("ss_41", SENDSPIN, name="Tablet"),
+        _record("up0040", UNIVERSAL_PLAYER),
+        player_dsp=deepcopy(tree),
+        player_queues=deepcopy(tree),
+    )
+
+    with capture_log_records(player_split.LOGGER) as records:
+        result = _migrated(data)
+
+    assert result[CONF_PLAYERS] == {
+        "ss_41": _record("ss_41", SENDSPIN, name="Tablet", values={"session_only": True})
+    }
+    assert (result[CONF_PLAYER_DSP], result[CONF_PLAYER_QUEUES]) == (tree, tree)
+    assert [record.getMessage() for record in records if record.levelno > logging.INFO] == []
+
+
 def test_record_that_is_no_mapping_is_left_alone() -> None:
     """A record that can not be read is logged and skipped, the others are migrated."""
     data = _settings(_record("sonos_11", SONOS), _record("odd", SONOS, values="not a dict"))

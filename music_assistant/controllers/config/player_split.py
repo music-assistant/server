@@ -241,10 +241,11 @@ def _is_customised(data: dict[str, Any], player_id: str, record: dict[str, Any])
         return True
     if any(key not in AUTOMATIC_KEYS for key in _values(record)):
         return True
-    dsp_config = data.get(CONF_PLAYER_DSP, {}).get(player_id)
+    dsp_configs, queue_configs = data.get(CONF_PLAYER_DSP), data.get(CONF_PLAYER_QUEUES)
+    dsp_config = dsp_configs.get(player_id) if isinstance(dsp_configs, dict) else None
     if isinstance(dsp_config, dict) and dsp_config.get("enabled"):
         return True
-    return player_id in data.get(CONF_PLAYER_QUEUES, {})
+    return isinstance(queue_configs, dict) and player_id in queue_configs
 
 
 def _migrate_player_tree(data: dict[str, Any]) -> None:
