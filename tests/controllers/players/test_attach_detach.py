@@ -7,10 +7,11 @@ from typing import TYPE_CHECKING, Any
 from unittest.mock import PropertyMock, patch
 
 import pytest
-from music_assistant_models.enums import EventType, IdentifierType, PlaybackState
-from music_assistant_models.errors import PlayerUnavailableError
+from music_assistant_models.enums import EventType, IdentifierType, PlaybackState, PlayerType
+from music_assistant_models.errors import ActionUnavailable, PlayerUnavailableError
 
 from music_assistant.constants import CONF_PLAYER_PROTOCOLS, CONF_PLAYERS
+from music_assistant.controllers.players.controller import REMOVE_UNAVAILABLE_GRACE
 from tests.scenarios.harness import Event, FakeProtocol, Scenario
 
 if TYPE_CHECKING:
@@ -795,6 +796,88 @@ async def test_device_found_again_while_its_player_is_removed_becomes_a_new_play
     assert _stored(scenario) == ([new_player_id], ["aa:bb:cc:00:00:01"])
     # its provider still needs the device it found again
     assert removed == []
+
+
+async def test_remove_unavailable_removes_the_players_whose_devices_are_gone(
+    scenario: Scenario,
+) -> None:
+    """Only a player that no running provider finds a device of is removed, and returned."""
+    sonos = await scenario.add_provider("sonos")
+    airplay = await scenario.add_provider("airplay")
+    present = sonos.protocol("RINCON_KITCHEN", "Kitchen", identifiers=KITCHEN)
+    gone = sonos.protocol(
+        "RINCON_DEN", "Den", identifiers={IdentifierType.MAC_ADDRESS: "54:78:C9:E6:0D:B1"}
+    )
+    unloaded = airplay.protocol(
+        "ap_office",
+        "Office",
+        role="audio",
+        identifiers={IdentifierType.MAC_ADDRESS: "54:78:C9:E6:0D:C1"},
+    )
+    for protocol in (present, gone, unloaded):
+        await scenario.attach(protocol)
+    present_id, gone_id, unloaded_id = (
+        scenario.single_player(protocol).player_id for protocol in (present, gone, unloaded)
+    )
+    # a player with nothing but a config of its own, as the migration keeps a customised one
+    scenario.mass.config.create_player_record(
+        "up0a1b2c3d", provider="", player_type=PlayerType.PLAYER, default_name="Kitchen"
+    )
+    scenario.mass.config.set_player_value("up0a1b2c3d", "name", "Kitchen radio")
+    scenario.set_present("RINCON_DEN", False)
+    scenario.set_present("ap_office", False)
+    await scenario.restart()
+    await scenario.mass.unload_provider(scenario.provider("airplay").instance_id)
+    await scenario.advance(REMOVE_UNAVAILABLE_GRACE)
+
+    removed = await scenario.mass.players.remove_unavailable()
+    await scenario.idle()
+
+    assert sorted(removed) == sorted([gone_id, "up0a1b2c3d"])
+    assert sorted(_stored(scenario)[0]) == sorted([present_id, unloaded_id])
+
+
+async def test_remove_unavailable_keeps_a_player_whose_device_needs_setup(
+    scenario: Scenario,
+) -> None:
+    """A player whose device is reachable is no leftover, also while it awaits its setup."""
+    airplay = await scenario.add_provider("airplay")
+    speaker = airplay.protocol("ap_den", "Den", role="audio", identifiers=KITCHEN)
+    await scenario.attach(speaker)
+    player_id = scenario.single_player(speaker).player_id
+    await scenario.report(speaker, needs_setup=True, setup_reason="pairing_required")
+    state = scenario.player(player_id)
+    assert state is not None
+    assert state.available is False
+    await scenario.advance(REMOVE_UNAVAILABLE_GRACE)
+
+    assert await scenario.mass.players.remove_unavailable() == []
+    assert scenario.player_of(speaker) == player_id
+
+
+@pytest.mark.parametrize("after", ["restart", "provider_reload"])
+async def test_remove_unavailable_is_refused_while_the_providers_find_their_devices(
+    scenario: Scenario, after: str
+) -> None:
+    """Right after a start or a provider load nothing is removed: devices are still found."""
+    sonos = await scenario.add_provider("sonos")
+    speaker = sonos.protocol("RINCON_KITCHEN", "Kitchen", identifiers=KITCHEN)
+    await scenario.attach(speaker)
+    player_id = scenario.single_player(speaker).player_id
+    scenario.set_present("RINCON_KITCHEN", False)
+    if after == "restart":
+        await scenario.restart()
+    else:
+        await scenario.detach(speaker)
+        await scenario.advance(REMOVE_UNAVAILABLE_GRACE)
+        await scenario.reload_provider(sonos)
+
+    with pytest.raises(ActionUnavailable):
+        await scenario.mass.players.remove_unavailable()
+    assert _stored(scenario) == ([player_id], ["RINCON_KITCHEN"])
+
+    await scenario.advance(REMOVE_UNAVAILABLE_GRACE)
+    assert await scenario.mass.players.remove_unavailable() == [player_id]
 
 
 async def test_discovery_after_a_removal_is_dropped_when_its_provider_unloads(

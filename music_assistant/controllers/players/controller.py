@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import math
 import time
 import weakref
 from collections.abc import AsyncIterator
@@ -48,6 +49,7 @@ from music_assistant_models.enums import (
     SourceControl,
 )
 from music_assistant_models.errors import (
+    ActionUnavailable,
     AlreadyRegisteredError,
     InsufficientPermissions,
     InvalidCommand,
@@ -188,6 +190,10 @@ AUDIO_SOURCE_CLAIM_TIMEOUT = 30
 # poll, short enough that a real power off is not left streaming.
 EXTERNAL_POWER_OFF_STOP_DELAY = 15
 
+# How long after the start, and after a player provider was loaded, the providers get to find
+# their devices again before players/remove_unavailable may remove what they did not find.
+REMOVE_UNAVAILABLE_GRACE = 60.0
+
 # Player types that must be detached from their (sync)group when they power off.
 # A stereo pair joins a group and leads a sync session exactly like a single speaker does.
 # A GROUP player has no group of its own to leave: its members are released by its own
@@ -240,6 +246,8 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         self._attaching: dict[str, _Attach] = {}
         # the ids of the players that are being removed, which no protocol attaches to
         self._removing: set[str] = set()
+        # when a player provider was last loaded (monotonic): the builtin ones load at every start
+        self._providers_loaded_at = 0.0
         # when each protocol that needs polling was last polled, by protocol id
         self._last_polls: dict[str, float] = {}
         # the player id behind every legacy id of the stored players
@@ -421,6 +429,7 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
 
     async def on_provider_loaded(self, provider: PlayerProvider) -> None:
         """Handle logic when a provider is loaded."""
+        self._providers_loaded_at = time.monotonic()
 
     async def on_provider_unload(self, provider: PlayerProvider) -> None:
         """
@@ -1979,12 +1988,23 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         """
         Remove every player that is unavailable while its providers are running.
 
-        A player of a provider that is not loaded is left alone, as is a disabled one.
-        Returns the ids of the players that were removed.
+        A player is left alone while one of its protocols reaches its device (also one
+        that still needs setup), while a provider of its protocols is not loaded, and
+        when it is disabled. Returns the ids of the players that were removed.
+
+        :raises ActionUnavailable: Shortly after the start or after a player provider was
+            loaded, while the providers are still finding their devices.
         """
+        if (wait := self._providers_loaded_at + REMOVE_UNAVAILABLE_GRACE - time.monotonic()) > 0:
+            msg = f"Players are still being found, try again in {math.ceil(wait)} seconds"
+            raise ActionUnavailable(msg)
         removed: list[str] = []
         for player in list(self._players.values()):
-            if player.state.available or not player.initialized.is_set():
+            if (
+                player.state.available
+                or not player.initialized.is_set()
+                or any(protocol.available for protocol in player.protocols.values())
+            ):
                 continue
             provider_ids = {
                 str(record.get("provider"))
