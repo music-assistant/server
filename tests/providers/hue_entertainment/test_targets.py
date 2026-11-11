@@ -484,6 +484,28 @@ async def test_takeover_while_the_previous_still_starts(
     assert living_session.start_calls == 1
 
 
+async def test_failed_start_after_a_takeover_returns_quietly(
+    zigbee: FakeZigbee, make_target: Callable[..., ZigbeeTarget]
+) -> None:
+    """A start that fails once a newer one took over does not raise, so it is not retried."""
+    living, kitchen = make_target("Living room"), make_target("Kitchen", [("bb", 1)])
+    living_gate = zigbee.start_gate = asyncio.Event()
+    zigbee.fail_starts = 1
+    living_start = asyncio.create_task(living.start())
+    await _until(lambda: len(zigbee.log) == 1)
+    zigbee.start_gate = None
+
+    kitchen_start = asyncio.create_task(kitchen.start())
+    await _until(lambda: ZigbeeTarget._holder is kitchen)
+    living_gate.set()
+    await living_start
+    await kitchen_start
+
+    assert not living.is_streaming
+    assert kitchen.is_streaming
+    assert ZigbeeTarget._holder is kitchen
+
+
 async def test_recovery_restarts_a_lost_stream_in_place(
     zigbee: FakeZigbee, make_target: Callable[..., ZigbeeTarget]
 ) -> None:
