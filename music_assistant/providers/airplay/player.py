@@ -379,7 +379,8 @@ class AirPlayPlayer(PlayerProtocol):
         return {
             p.protocol_id
             for p in prov.get_players()
-            if p.available and p.protocol_id != self.protocol_id
+            # a protocol that still waits for its player is no group member yet
+            if p.available and p.player is not None and p.protocol_id != self.protocol_id
         }
 
     @property
