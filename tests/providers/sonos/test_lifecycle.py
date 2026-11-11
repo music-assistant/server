@@ -152,3 +152,23 @@ async def test_a_speaker_listens_to_its_events_only_while_attached(scenario: Sce
     for unsubscribe in unsubscribers:
         unsubscribe.assert_called_once_with()
     assert protocol._on_detach_callbacks == []
+
+
+async def test_a_speaker_of_a_disabled_player_releases_its_connection(scenario: Scenario) -> None:
+    """A speaker set up for a player the user disabled does not keep its connection."""
+    airplay = await scenario.add_provider("airplay")
+    audio = airplay.protocol(
+        "apf0f6c1cc8d04",
+        "Speaker A",
+        role="audio",
+        identifiers={IdentifierType.MAC_ADDRESS: "F0:F6:C1:CC:8D:04"},
+    )
+    await scenario.attach(audio)
+    player_id = scenario.player_of(audio)
+    assert player_id is not None
+    await scenario.disable(player_id)
+
+    protocol = await _attach_speaker(scenario)
+
+    assert protocol.player is None
+    cast("AsyncMock", protocol.client.disconnect).assert_awaited_once_with()

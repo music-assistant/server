@@ -277,6 +277,11 @@ class SonosPlayer(PlayerProtocol):
 
         self.update_attributes()
         await self.mass.players.attach(self)
+        if self.provider.get_protocol(self.protocol_id) is not self:
+            # the attach skipped it (e.g. a disabled player or during a teardown):
+            # release the connection setup opened, as only an attached protocol
+            # gets detached
+            await self.on_detach()
 
     async def on_attach(self, player: Player) -> None:
         """Handle logic when the protocol is attached to its player."""
