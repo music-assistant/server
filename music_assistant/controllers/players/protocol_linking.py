@@ -370,9 +370,11 @@ class ProtocolLinkingMixin:
         if not attached_only:
             # what a player from before the protocols kept their own identifiers stored
             # for its device: one value per type, of any of its protocols
-            stored_identifiers = self.mass.config.get(
-                f"{CONF_PLAYERS}/{player_id}/values/{CONF_DEVICE_IDENTIFIERS}"
-            )
+            player_record = self.mass.config.get(f"{CONF_PLAYERS}/{player_id}") or {}
+            player_values = player_record.get("values")
+            if not isinstance(player_values, dict):
+                player_values = {}
+            stored_identifiers = player_values.get(CONF_DEVICE_IDENTIFIERS)
             if isinstance(stored_identifiers, dict) and stored_identifiers:
                 parts.append(
                     DeviceIdentity(

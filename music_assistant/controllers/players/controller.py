@@ -3261,11 +3261,11 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         for player_id, stored in list(stored_players.items()):
             if not isinstance(stored, dict) or not stored.get("enabled", True):
                 continue
-            if (stored.get("values") or {}).get(CONF_SESSION_ONLY):
-                continue
             if player_id in self._players:
                 continue
             try:
+                if (stored.get("values") or {}).get(CONF_SESSION_ONLY):
+                    continue
                 await self._publish_player(self._create_player(player_id))
             except Exception:
                 self.logger.exception("Could not restore player %s", player_id)

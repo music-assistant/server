@@ -734,6 +734,39 @@ async def test_player_that_was_kept_without_protocols_can_be_listed_renamed_and_
     )
 
 
+async def test_players_are_restored_past_a_player_config_that_cannot_be_read(
+    scenario: Scenario,
+) -> None:
+    """A stored player whose settings are no mapping is skipped at the start, the others come."""
+    sonos = await scenario.add_provider("sonos")
+    sonos.protocol("RINCON_KITCHEN", "Kitchen", identifiers=KITCHEN)
+    scenario.expect_log("Could not restore player odd")
+
+    await scenario.seed_pre_split_config(
+        {
+            "odd": {"player_id": "odd", "provider": None, "enabled": True, "values": [1, 2]},
+            "RINCON_KITCHEN": {
+                "player_id": "RINCON_KITCHEN",
+                "provider": sonos.instance_id,
+                "enabled": True,
+                "values": {},
+            },
+        }
+    )
+    await scenario.idle()
+
+    assert scenario.mass.players.get_player("odd") is None
+    assert scenario.mass.players.get_player("RINCON_KITCHEN") is not None
+    await scenario.attach(scenario.protocol("RINCON_KITCHEN"))
+    assert scenario.player_of(scenario.protocol("RINCON_KITCHEN")) == "RINCON_KITCHEN"
+    # a new device is matched against the stored players, that one included
+    den = scenario.provider(sonos.instance_id).protocol(
+        "RINCON_DEN", "Den", identifiers={IdentifierType.MAC_ADDRESS: "54:78:C9:E6:0D:B1"}
+    )
+    await scenario.attach(den)
+    assert scenario.player_of(den) not in (None, "odd", "RINCON_KITCHEN")
+
+
 async def test_players_are_restored_without_the_user_database(scenario: Scenario) -> None:
     """The stored players come back at a start before the database of the users is opened."""
     restored: list[bool] = []
