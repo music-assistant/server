@@ -144,7 +144,7 @@ async def test_the_first_discovery_starts_the_browser() -> None:
 
 
 async def test_an_endpoint_found_to_be_passive_is_removed() -> None:
-    """A passive multichannel endpoint is removed with its record and its bridge client's."""
+    """A passive multichannel endpoint is removed for good, which takes its bridge along."""
     removals = MagicMock(remove_bridge=AsyncMock(), remove_protocol=AsyncMock())
     provider: Any = ChromecastProvider.__new__(ChromecastProvider)
     provider.mass = MagicMock()
@@ -161,11 +161,9 @@ async def test_an_endpoint_found_to_be_passive_is_removed() -> None:
         info_class.from_cast_info.return_value.is_multichannel_child = True
         await provider._recheck_multichannel_child(protocol_id, MagicMock())
 
-    # the bridge client goes first: once the protocol is gone, its record would keep the player
-    assert removals.mock_calls == [
-        call.remove_bridge(protocol_id, permanent=True),
-        call.remove_protocol(protocol_id),
-    ]
+    # the detach stops its bridge and the removal takes the bridge client along, so the
+    # provider has nothing to remove of the bridge itself
+    assert removals.mock_calls == [call.remove_protocol(protocol_id)]
 
 
 async def _attach_cast(scenario: Scenario, cast_info: ChromecastInfo) -> ChromecastPlayer:

@@ -326,8 +326,8 @@ class ChromecastProvider(PlayerProvider):
                     "Removing %s as it is now identified as a passive (multichannel) endpoint",
                     castplayer.cast_info.friendly_name,
                 )
-                # the record of its bridge client would keep the player otherwise
-                await self.bridge_manager.remove_bridge(protocol_id, permanent=True)
+                # its bridge goes with it: the detach stops it, its bridge client is removed
+                # along with the protocol it rides on
                 await self.mass.players.remove_protocol(protocol_id)
         except Exception:
             self.logger.debug("Multichannel re-check failed for %s", protocol_id, exc_info=True)
