@@ -10,6 +10,8 @@ import pytest
 from music_assistant_models.enums import EventType, IdentifierType
 from music_assistant_models.player import PlayerMedia
 
+from music_assistant.constants import CONF_PLAYER_SPLIT_SESSION_ONLY, CONF_PLAYER_SPLIT_TREE
+
 from .harness import Event, Role, Scenario, VisiblePlayer
 
 LIVING = {
@@ -24,11 +26,6 @@ WEB_PLAYER: dict[str, Any] = {"hidden_by_default": True, "private": True}
 MEDIA = PlayerMedia(uri="http://ma.local/stream/track.flac")
 
 
-@pytest.mark.xfail(
-    strict=True,
-    raises=AssertionError,
-    reason="phase 1 (#415): a player is not owned by a provider instance",
-)
 async def test_player_outlives_its_removed_provider_on_its_other_protocols(
     scenario: Scenario,
 ) -> None:
@@ -118,11 +115,6 @@ async def test_removed_player_of_a_present_device_comes_back_as_new(scenario: Sc
     [("airplay", "audio"), ("chromecast", "native")],
     ids=["airplay_mac", "cast_tv"],
 )
-@pytest.mark.xfail(
-    strict=True,
-    raises=AssertionError,
-    reason="phase 1 (#415): no player for a disabled-by-default device until the user enables it",
-)
 async def test_disabled_by_default_device_is_no_player_until_enabled(
     scenario: Scenario, domain: str, role: Role
 ) -> None:
@@ -175,11 +167,6 @@ async def _stored_mentions(scenario: Scenario, *texts: str) -> list[str]:
     return [mention for text in texts for mention in await scenario.stored_config_mentioning(text)]
 
 
-@pytest.mark.xfail(
-    strict=True,
-    raises=AssertionError,
-    reason="phase 1 (#415): a session-only protocol leaves no persisted player behind",
-)
 async def test_session_only_web_player_exists_while_attached(scenario: Scenario) -> None:
     """
     A web player exists while its protocol is attached and leaves nothing behind.
@@ -315,7 +302,9 @@ async def test_pre_split_universal_player_config_comes_back_as_the_same_player(
     scenario.set_present("airplay_den", True)
     scenario.set_present("cast_den", True)
 
-    await scenario.seed_config({"players": stored})
+    # a settings file from before the split has not been through its migration
+    not_migrated = {CONF_PLAYER_SPLIT_SESSION_ONLY: None, CONF_PLAYER_SPLIT_TREE: None}
+    await scenario.seed_config({"players": stored, **not_migrated})
     await scenario.idle()
 
     assert scenario.visible_players() == [
