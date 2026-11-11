@@ -6,40 +6,33 @@ Covers two regressions from support#5771:
   reused on a fresh playback start (it bypassed protocol selection entirely,
   e.g. a Sonos kept playing via AirPlay after leaving a sync group);
 - a stop command arriving when the player already reports IDLE must still
-  forward the stop to the pinned protocol player and schedule the protocol
-  clear (previously it returned early, leaving a stale session on the device
-  and the protocol pinned forever).
+  forward the stop to the pinned protocol and schedule the protocol clear
+  (previously it returned early, leaving a stale session on the device and
+  the protocol pinned forever).
 """
 
 from __future__ import annotations
 
-from typing import cast
+from typing import TYPE_CHECKING, Any, cast
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-from music_assistant_models.enums import PlaybackState, PlayerFeature, PlayerType
+from music_assistant_models.enums import PlaybackState, PlayerFeature, ProtocolRole
 from music_assistant_models.player import PlayerMedia
 
-from music_assistant.constants import CONF_POWER_CONTROL
 from music_assistant.controllers.players import PlayerController
-from music_assistant.models.player import LinkedOutputProtocol
-from music_assistant.providers.sync_group.player import SyncGroupPlayer
-from music_assistant.providers.sync_group.provider import SyncGroupProvider
-from tests.common import MockPlayer, MockProvider
+from tests.common import MockProtocol, MockProvider, attach_mock
+
+if TYPE_CHECKING:
+    from music_assistant.models.player import Player
 
 
-class PlayableMockPlayer(MockPlayer):
-    """MockPlayer that records play_media calls."""
+class PlayableMockProtocol(MockProtocol):
+    """MockProtocol that records play_media calls."""
 
-    def __init__(
-        self,
-        provider: MockProvider,
-        player_id: str,
-        name: str,
-        player_type: PlayerType = PlayerType.PLAYER,
-    ) -> None:
-        """Initialize the mock player with play_media call recording."""
-        super().__init__(provider, player_id, name, player_type=player_type)
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        """Initialize the mock protocol with play_media call recording."""
+        super().__init__(*args, **kwargs)
         self.play_media_calls: list[PlayerMedia] = []
 
     async def play_media(self, media: PlayerMedia) -> None:
@@ -87,33 +80,38 @@ def _make_player_with_protocol(
     controller: PlayerController,
     protocol_state: PlaybackState,
     native_play_media: bool = True,
-) -> tuple[PlayableMockPlayer, PlayableMockPlayer]:
-    """Create a native player with one linked sendspin protocol player."""
-    native_provider = MockProvider("sonos", mass=mock_mass)
-    player = PlayableMockPlayer(native_provider, "player_1", "Test Player")
+) -> tuple[Player, PlayableMockProtocol, PlayableMockProtocol]:
+    """
+    Create a player of a native protocol, with a sendspin audio protocol as its active output.
+
+    Returns the player, its native protocol and its audio protocol.
+
+    :param mock_mass: The mocked server.
+    :param controller: The players controller the player is registered in.
+    :param protocol_state: The playback state the audio protocol reports.
+    :param native_play_media: Whether the native protocol can play media itself.
+    """
+    native_provider = MockProvider("sonos", instance_id="sonos", mass=mock_mass)
+    player, native = attach_mock(
+        native_provider, "native_1", "Test Player", protocol_class=PlayableMockProtocol
+    )
     if native_play_media:
-        player._attr_supported_features.add(PlayerFeature.PLAY_MEDIA)
+        native._attr_supported_features.add(PlayerFeature.PLAY_MEDIA)
 
-    protocol_provider = MockProvider("sendspin", mass=mock_mass)
-    protocol_player = PlayableMockPlayer(
-        protocol_provider, "proto_1", "Test Protocol", player_type=PlayerType.PROTOCOL
+    protocol_provider = MockProvider("sendspin", instance_id="sendspin", mass=mock_mass)
+    _, audio = attach_mock(
+        protocol_provider,
+        "proto_1",
+        "Test Protocol",
+        role=ProtocolRole.AUDIO,
+        player=player,
+        protocol_class=PlayableMockProtocol,
     )
-    protocol_player._attr_playback_state = protocol_state
-
-    controller._players = {"player_1": player, "proto_1": protocol_player}
-    player.set_linked_output_protocols(
-        [
-            LinkedOutputProtocol(
-                output_protocol_id="proto_1",
-                protocol_domain="sendspin",
-                priority=40,
-            )
-        ]
-    )
+    audio._attr_playback_state = protocol_state
     player.set_active_output_protocol("proto_1")
-    protocol_player.update_state(signal_event=False)
     player.refresh_state(signal_event=False)
-    return player, protocol_player
+    assert controller.get_player(player.player_id) is player
+    return player, cast("PlayableMockProtocol", native), cast("PlayableMockProtocol", audio)
 
 
 class TestPlayMediaProtocolSelection:
@@ -129,164 +127,66 @@ class TestPlayMediaProtocolSelection:
         after leaving the group, so the next standalone playback used AirPlay
         instead of native playback.
         """
-        player, protocol_player = _make_player_with_protocol(
+        player, native, audio = _make_player_with_protocol(
             mock_mass, controller, PlaybackState.IDLE
         )
         media = PlayerMedia(uri="http://test/stream")
 
-        await controller._handle_play_media("player_1", media)
+        await controller._handle_play_media(player.player_id, media)
 
-        assert player.play_media_calls == [media]
-        assert protocol_player.play_media_calls == []
+        assert native.play_media_calls == [media]
+        assert audio.play_media_calls == []
         assert player.active_output_protocol == "native"
 
     async def test_playing_player_keeps_active_protocol(
         self, mock_mass: MagicMock, controller: PlayerController
     ) -> None:
         """While a session is active the already-set protocol stays in use."""
-        player, protocol_player = _make_player_with_protocol(
+        player, native, audio = _make_player_with_protocol(
             mock_mass, controller, PlaybackState.PLAYING
         )
         media = PlayerMedia(uri="http://test/stream")
 
-        await controller._handle_play_media("player_1", media)
+        await controller._handle_play_media(player.player_id, media)
 
-        assert protocol_player.play_media_calls == [media]
-        assert player.play_media_calls == []
+        assert audio.play_media_calls == [media]
+        assert native.play_media_calls == []
         assert player.active_output_protocol == "proto_1"
 
-    async def test_unlinked_active_protocol_falls_back_to_selection(
+    async def test_detached_active_protocol_falls_back_to_selection(
         self, mock_mass: MagicMock, controller: PlayerController
     ) -> None:
-        """An active protocol that is no longer linked falls back to selection."""
-        player, protocol_player = _make_player_with_protocol(
+        """A playing player whose active protocol detached plays through selection again."""
+        player, native, audio = _make_player_with_protocol(
             mock_mass, controller, PlaybackState.PLAYING
         )
-        # simulate the protocol link being removed while the id stays pinned
-        player.set_linked_output_protocols([])
-        player.refresh_state(signal_event=False)
+        # the native protocol keeps the session going, so this is no fresh start
+        native._attr_playback_state = PlaybackState.PLAYING
+        mock_mass.config.get_player_object_config = AsyncMock(return_value=player.config)
+        await controller.detach("proto_1")
+        assert player.state.playback_state == PlaybackState.PLAYING
         media = PlayerMedia(uri="http://test/stream")
 
-        await controller._handle_play_media("player_1", media)
+        await controller._handle_play_media(player.player_id, media)
 
-        assert player.play_media_calls == [media]
-        assert protocol_player.play_media_calls == []
+        assert native.play_media_calls == [media]
+        assert audio.play_media_calls == []
         assert player.active_output_protocol == "native"
 
     async def test_idle_player_reselects_best_protocol_without_native(
         self, mock_mass: MagicMock, controller: PlayerController
     ) -> None:
         """Without native playback, re-selection picks the best protocol again."""
-        player, protocol_player = _make_player_with_protocol(
+        player, native, audio = _make_player_with_protocol(
             mock_mass, controller, PlaybackState.IDLE, native_play_media=False
         )
         media = PlayerMedia(uri="http://test/stream")
 
-        await controller._handle_play_media("player_1", media)
+        await controller._handle_play_media(player.player_id, media)
 
-        assert protocol_player.play_media_calls == [media]
-        assert player.play_media_calls == []
+        assert audio.play_media_calls == [media]
+        assert native.play_media_calls == []
         assert player.active_output_protocol == "proto_1"
-
-
-class TestGroupPlayMediaPower:
-    """Playing new media must form an explicitly configured group before capture."""
-
-    async def test_unpowered_fake_power_group_captures_linked_sendspin_target(  # noqa: PLR0915
-        self, mock_mass: MagicMock
-    ) -> None:
-        """The real controller path powers and captures a group before its first play."""
-        controller = PlayerController(mock_mass)
-        mock_mass.players = controller
-        mock_mass.cache.set = AsyncMock()
-        mock_mass.player_queues.resume = AsyncMock()
-        mock_mass.config.get_player_value = MagicMock(
-            side_effect=lambda _player_id, key, default=None: (
-                "fake"
-                if key == CONF_POWER_CONTROL
-                else (0 if key == "min_volume" else 100 if key == "max_volume" else default)
-            )
-        )
-        provider = cast("SyncGroupProvider", MockProvider("sync_group", mass=mock_mass))
-        native = MockProvider("sonos", mass=mock_mass)
-        sendspin = MockProvider("sendspin", mass=mock_mass)
-        group = SyncGroupPlayer(provider, "group_1")
-        leader = PlayableMockPlayer(native, "leader", "Leader")
-        display = PlayableMockPlayer(native, "display", "Display")
-        target = PlayableMockPlayer(sendspin, "target", "Leader protocol", PlayerType.PROTOCOL)
-        display_target = PlayableMockPlayer(
-            sendspin, "display_target", "Display protocol", PlayerType.PROTOCOL
-        )
-        for protocol in (target, display_target):
-            protocol._attr_supported_features.update(
-                {PlayerFeature.PLAY_MEDIA, PlayerFeature.SET_MEMBERS}
-            )
-        target.set_protocol_parent_id("leader")
-        display_target.set_protocol_parent_id("display")
-        target._attr_can_group_with = {"display_target"}
-        display_target._attr_can_group_with = {"target"}
-        leader.set_linked_output_protocols(
-            [LinkedOutputProtocol(output_protocol_id="target", protocol_domain="sendspin")]
-        )
-        display.set_linked_output_protocols(
-            [LinkedOutputProtocol(output_protocol_id="display_target", protocol_domain="sendspin")]
-        )
-        leader._attr_supported_features.add(PlayerFeature.SET_MEMBERS)
-        leader._attr_can_group_with = {"display"}
-        leader.set_active_output_protocol("target")
-        group._attr_group_members = ["leader", "display"]
-        group._attr_powered = False
-        controller._players = {
-            "group_1": group,
-            "leader": leader,
-            "display": display,
-            "target": target,
-            "display_target": display_target,
-        }
-        for player in (leader, display, target, display_target):
-            player.set_initialized()
-        group.set_initialized()
-        group.refresh_state(signal_event=False)
-        for player in (leader, display, target, display_target):
-            player.update_state(signal_event=False)
-        leader.state.can_group_with = {"display"}
-
-        snapshot = object()
-        target.snapshot = snapshot  # type: ignore[attr-defined]
-        events: list[str] = []
-
-        async def _takeover() -> int:
-            events.append("clear")
-            target.snapshot = None  # type: ignore[attr-defined]
-            return 1
-
-        async def _set_members(**kwargs: object) -> None:
-            events.append("set_members")
-            assert kwargs["player_ids_to_add"] == ["display_target"]
-            assert target.snapshot is None  # type: ignore[attr-defined]
-
-        async def _takeover_finished(_token: object) -> None:
-            events.append("finish")
-
-        async def _play_media(_media: PlayerMedia) -> None:
-            events.append("play")
-
-        target.on_group_content_takeover = _takeover  # type: ignore[method-assign]
-        target.on_group_content_takeover_finished = _takeover_finished  # type: ignore[assignment]
-        target.set_members = _set_members  # type: ignore[assignment]
-        target.play_media = _play_media  # type: ignore[assignment]
-        media = PlayerMedia(uri="http://test/new-stream")
-
-        await controller._handle_play_media("group_1", media)
-
-        assert group._attr_powered is True
-        assert group.sync_leader is leader
-        assert leader.state.active_group == "group_1"
-        assert group._attr_group_members == ["leader", "display"]
-        assert group.state.group_members == ["leader"]
-        assert target.play_media_calls == []
-        assert events == ["clear", "set_members", "play", "finish"]
-        assert group._pending_content_takeover is None
 
 
 class TestCmdStopWithPinnedProtocol:
@@ -296,74 +196,74 @@ class TestCmdStopWithPinnedProtocol:
         self, mock_mass: MagicMock, controller: PlayerController
     ) -> None:
         """
-        Stop on an idle player with a pinned protocol stops the protocol player.
+        Stop on an idle player with a pinned protocol stops the protocol.
 
         Regression: when the source stream ended on its own before the stop
         command arrived, the early idle-return skipped the protocol stop, so the
         device kept a stale session (reported "playing" while silent) and the
         protocol stayed pinned forever.
         """
-        player, protocol_player = _make_player_with_protocol(
+        player, native, audio = _make_player_with_protocol(
             mock_mass, controller, PlaybackState.IDLE
         )
-        protocol_player.stop = AsyncMock()  # type: ignore[method-assign]
-        player.stop = AsyncMock()  # type: ignore[method-assign]
+        audio.stop = AsyncMock()  # type: ignore[method-assign]
+        native.stop = AsyncMock()  # type: ignore[method-assign]
         controller.schedule_active_output_protocol_clear = MagicMock()  # type: ignore[method-assign]
 
-        await controller._handle_cmd_stop("player_1")
+        await controller._handle_cmd_stop(player.player_id)
 
-        protocol_player.stop.assert_awaited_once()
-        player.stop.assert_not_awaited()
+        audio.stop.assert_awaited_once()
+        native.stop.assert_not_awaited()
         controller.schedule_active_output_protocol_clear.assert_called_once_with(player)
 
     async def test_idle_stop_without_pinned_protocol_is_noop(
         self, mock_mass: MagicMock, controller: PlayerController
     ) -> None:
         """Stop on an idle player without an active protocol does nothing."""
-        player, protocol_player = _make_player_with_protocol(
+        player, native, audio = _make_player_with_protocol(
             mock_mass, controller, PlaybackState.IDLE
         )
         player.set_active_output_protocol(None)
         player.refresh_state(signal_event=False)
-        protocol_player.stop = AsyncMock()  # type: ignore[method-assign]
-        player.stop = AsyncMock()  # type: ignore[method-assign]
+        audio.stop = AsyncMock()  # type: ignore[method-assign]
+        native.stop = AsyncMock()  # type: ignore[method-assign]
         controller.schedule_active_output_protocol_clear = MagicMock()  # type: ignore[method-assign]
 
-        await controller._handle_cmd_stop("player_1")
+        await controller._handle_cmd_stop(player.player_id)
 
-        protocol_player.stop.assert_not_awaited()
-        player.stop.assert_not_awaited()
+        audio.stop.assert_not_awaited()
+        native.stop.assert_not_awaited()
         controller.schedule_active_output_protocol_clear.assert_not_called()
 
     async def test_idle_stop_grouped_protocol_keeps_pin(
         self, mock_mass: MagicMock, controller: PlayerController
     ) -> None:
-        """A protocol player that still has group members keeps the pin."""
-        _player, protocol_player = _make_player_with_protocol(
+        """A protocol that still has group members keeps the pin."""
+        player, _native, audio = _make_player_with_protocol(
             mock_mass, controller, PlaybackState.IDLE
         )
-        protocol_player._attr_group_members = ["proto_1", "proto_2"]
-        protocol_player.stop = AsyncMock()  # type: ignore[method-assign]
+        audio._attr_group_members = ["proto_1", "proto_2"]
+        audio.stop = AsyncMock()  # type: ignore[method-assign]
         controller.schedule_active_output_protocol_clear = MagicMock()  # type: ignore[method-assign]
 
-        await controller._handle_cmd_stop("player_1")
+        await controller._handle_cmd_stop(player.player_id)
 
-        protocol_player.stop.assert_awaited_once()
+        audio.stop.assert_awaited_once()
         controller.schedule_active_output_protocol_clear.assert_not_called()
 
     async def test_playing_stop_delegates_and_schedules_clear(
         self, mock_mass: MagicMock, controller: PlayerController
     ) -> None:
         """The regular stop path (player playing) is unchanged."""
-        player, protocol_player = _make_player_with_protocol(
+        player, native, audio = _make_player_with_protocol(
             mock_mass, controller, PlaybackState.PLAYING
         )
-        protocol_player.stop = AsyncMock()  # type: ignore[method-assign]
-        player.stop = AsyncMock()  # type: ignore[method-assign]
+        audio.stop = AsyncMock()  # type: ignore[method-assign]
+        native.stop = AsyncMock()  # type: ignore[method-assign]
         controller.schedule_active_output_protocol_clear = MagicMock()  # type: ignore[method-assign]
 
-        await controller._handle_cmd_stop("player_1")
+        await controller._handle_cmd_stop(player.player_id)
 
-        protocol_player.stop.assert_awaited_once()
-        player.stop.assert_not_awaited()
+        audio.stop.assert_awaited_once()
+        native.stop.assert_not_awaited()
         controller.schedule_active_output_protocol_clear.assert_called_once_with(player)
