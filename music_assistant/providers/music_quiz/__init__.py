@@ -2053,7 +2053,10 @@ class MusicQuizPlugin(PluginProvider):
             return None
         return {
             "playback_mode": cast("str", playback_mode),
-            "venue_player_id": venue_player_id,
+            # a stored id can be a legacy id of a player that answers to another id now
+            "venue_player_id": (
+                self.mass.players.resolve_player_id(venue_player_id) if venue_player_id else None
+            ),
         }
 
     async def _store_playback_preference(
@@ -2103,7 +2106,7 @@ class MusicQuizPlugin(PluginProvider):
         else:
             playback_mode = SharedPlaybackMode.VENUE
         venue_player_id = (
-            raw_player_id
+            self.mass.players.resolve_player_id(raw_player_id)
             if isinstance(raw_player_id, str)
             and raw_player_id
             and raw_player_id != CONF_PLAYER_AUTO
