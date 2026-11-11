@@ -45,7 +45,7 @@ class PlayerProvider(Provider):
         :raises PlayerUnavailableError: If raise_unavailable is set and the protocol object is
             unknown, unavailable or disabled.
         """
-        protocol = self.mass.players.get_player(protocol_id)
+        protocol = self.mass.players.get_protocol(protocol_id)
         if (
             protocol is not None
             # a mocked provider (tests) is no owner to compare against
@@ -64,29 +64,15 @@ class PlayerProvider(Provider):
                 caller.f_lineno if caller else "?",
             )
             del frame, caller
-        if raise_unavailable and (
-            protocol is None or not protocol.state.available or not protocol.state.enabled
-        ):
+        if raise_unavailable and (protocol is None or not protocol.available_for_playback):
             msg = f"Player {protocol_id} is not available"
             raise PlayerUnavailableError(msg)
         return protocol
-
-    def on_player_enabled(self, player_id: str) -> None:
-        """Call (by config manager) when a player gets enabled."""
-        # default implementation: trigger discovery - feel free to override
-        self.schedule_discovery()
 
     def schedule_discovery(self) -> None:
         """Run the discovery of this provider in a few seconds; repeated requests run it once."""
         task_id = f"discover_players_{self.instance_id}"
         self.mass.call_later(5, self.mass.run_provider_discovery, self.instance_id, task_id=task_id)
-
-    def on_player_disabled(self, player_id: str) -> None:
-        """Call (by config manager) when a player gets disabled."""
-        # default implementation: unregister player from player controller
-        # which will also trigger an unload on the player instance
-        # feel free to override with a better implementation
-        self.mass.create_task(self.mass.players.unregister(player_id))
 
     async def create_group_player(
         self, name: str, members: list[str], dynamic: bool = True
@@ -103,21 +89,23 @@ class PlayerProvider(Provider):
         raise NotImplementedError
 
     async def discover_players(self) -> None:
-        """Discover players for this provider."""
-        # This will be called when the player provider is (re)loaded into MA.
-        # For providers that support dynamic discovery of players via mdns,
-        # there is no need to implement this method.
+        """
+        Attach every device this provider knows of that has no attached protocol.
+
+        Called when the provider is (re)loaded, when one of its players gets enabled and
+        after one of its players was removed. A provider that discovers its devices
+        through mdns only does not need to implement this.
+        """
 
     @property
     def protocols(self) -> list[PlayerProtocol]:
-        """Return all protocol objects belonging to this provider."""
-        # a provider owns these players, so it always sees all of them - narrowing this
+        """
+        Return the protocol objects of this provider that the players controller holds.
+
+        One that still waits for the player it belongs to is included (its ``player``
+        is None).
+        """
+        # a provider owns these protocols, so it always sees all of them - narrowing this
         # to what some user happens to see corrupts the provider's own bookkeeping, such
-        # as the grouping options it derives from this list. Note this still hides
-        # disabled and still-initializing players; teardown needs those too and therefore
-        # walks the registry itself (see mass.unload_provider).
-        return list(
-            self.mass.players.iter_players(
-                provider_filter=self.instance_id, return_protocol_players=True
-            )
-        )
+        # as the grouping options it derives from this list.
+        return list(self.mass.players.iter_protocols(self.instance_id))

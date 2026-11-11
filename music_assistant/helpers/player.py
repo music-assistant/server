@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from functools import lru_cache
 from typing import TYPE_CHECKING
 
 from music_assistant_models.enums import EventType, PlayerType
@@ -53,6 +54,8 @@ _DEFAULT_ICON_MATCHES = (
 )
 
 
+# asked for at every state update of a player, with the few values its device reports
+@lru_cache(maxsize=512)
 def get_default_player_icon(
     player_type: PlayerType,
     provider_domain: str,

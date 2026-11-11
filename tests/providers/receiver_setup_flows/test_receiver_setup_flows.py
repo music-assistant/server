@@ -37,6 +37,7 @@ def _player(
     player.player_id = player_id
     player.display_name = display_name
     player.type = player_type
+    player.session_only = False
     return player
 
 
