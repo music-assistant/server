@@ -20,6 +20,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from music_assistant_models.auth import User, UserRole
 from music_assistant_models.enums import PlaybackState, PlayerFeature, PlayerType
+from music_assistant_models.errors import InsufficientPermissions
 from music_assistant_models.player_queue import PlayerQueue
 
 from music_assistant.controllers.player_queues.helpers import handle_play_action
@@ -30,8 +31,8 @@ from music_assistant.controllers.webserver.helpers.auth_middleware import (
     get_current_user,
     set_current_user,
 )
-from music_assistant.models.player import LinkedOutputProtocol
-from tests.common import MockPlayer, MockProvider, use_real_create_task
+from music_assistant.models.player import LinkedOutputProtocol, PlayerMedia
+from tests.common import MockPlayer, MockProvider, as_user, use_real_create_task
 
 if TYPE_CHECKING:
     from collections.abc import Coroutine
@@ -966,6 +967,73 @@ class TestGroupAndMemberLockOrder:
 
         assert lock_keys[0] == "playback_g1"
         assert "playback_member" not in lock_keys
+
+    @pytest.mark.parametrize("command", ["play", "resume", "resume-with-media"])
+    async def test_a_command_that_waits_for_an_announcement_needs_access_to_the_group(
+        self, mock_mass: MagicMock, command: str
+    ) -> None:
+        """
+        A play or resume that waits for the member's announcement is refused on the group.
+
+        The announcement takes the member out of its group and joins it back under the
+        member's lock, so the command finds the group only once it holds that lock.
+        """
+        controller, group, member = self._setup_announcement(mock_mass)
+        group.release.set()
+        mock_mass.player_queues.get = MagicMock(return_value=None)
+        # the group holds a paused source of a plugin, which a play would unpause
+        source = MagicMock(can_play_pause=True, item_id="plugin-source")
+        plugin = MagicMock()
+        plugin.on_source_control = AsyncMock()
+        controller.get_player_audio_source = MagicMock(  # type: ignore[method-assign]
+            side_effect=lambda player_id: (source, plugin) if player_id == "g1" else None
+        )
+        announcing = asyncio.Event()
+        finish = asyncio.Event()
+
+        async def _clip(_player_id: str, _media: PlayerMedia) -> None:
+            announcing.set()
+            await finish.wait()
+
+        controller._handle_play_media = AsyncMock(side_effect=_clip)  # type: ignore[method-assign]
+        device_calls = {
+            (player.player_id, method): AsyncMock()
+            for player in (group, member)
+            for method in ("play_media", "play")
+        }
+        for (player_id, method), mock in device_calls.items():
+            setattr(controller._players[player_id], method, mock)
+        media = PlayerMedia(uri="http://media.test/stream.mp3", title="Stream")
+        commands = {
+            "play": lambda: controller.cmd_play("member"),
+            "resume": lambda: controller.cmd_resume("member"),
+            "resume-with-media": lambda: controller.cmd_resume("member", "other", media),
+        }
+
+        with as_user(["member"]):
+            announcement = asyncio.create_task(
+                controller.play_announcement("member", "http://test/announce.mp3")
+            )
+            async with asyncio.timeout(5):
+                await announcing.wait()
+            # the member plays the clip on its own, so the command passes its first check
+            assert member.state.active_group != "g1"
+            task = asyncio.create_task(commands[command]())
+            for _ in range(20):
+                await asyncio.sleep(0)
+            assert not task.done()
+            finish.set()
+            async with asyncio.timeout(5):
+                await announcement
+                with pytest.raises(
+                    InsufficientPermissions, match=r"limited does not have access to player Group$"
+                ):
+                    await task
+
+        assert member.state.active_group == "g1"
+        device_calls["g1", "play_media"].assert_not_awaited()
+        device_calls["g1", "play"].assert_not_awaited()
+        plugin.on_source_control.assert_not_awaited()
 
 
 class TestPlayerBaseIsActiveSession:
