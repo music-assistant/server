@@ -22,7 +22,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 from unittest.mock import AsyncMock, MagicMock
 
 from music_assistant_models.enums import ConfigEntryType, PlaybackState, PlayerFeature, PlayerType
@@ -56,7 +56,8 @@ def _make_intercept_player(
 ) -> YandexStationPlayer:
     """Build a player with intercept-related state and mocked mass."""
     player = YandexStationPlayer.__new__(YandexStationPlayer)
-    player._player_id = "yandex_station_1"
+    player._protocol_id = "yandex_station_1"
+    player._player = MagicMock(player_id="pl_yandex_station_1")
     player._external_playing = external_playing
     player._external_media = None
     vars(player)["_audio_client"] = False
@@ -1281,8 +1282,7 @@ async def test_target_dropdown_lists_all_players_except_self() -> None:
     group_player.display_name = "Group"
     group_player.type = PlayerType.GROUP
     group_player.supported_features = set()
-    self_player = MagicMock()
-    self_player.player_id = player.player_id
+    self_player = cast("MagicMock", player.player)
     self_player.display_name = "Self"
     self_player.type = PlayerType.PLAYER
     self_player.supported_features = {PlayerFeature.PLAY_MEDIA}
