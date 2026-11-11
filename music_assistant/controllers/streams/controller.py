@@ -1436,6 +1436,12 @@ class StreamsController(CoreController):
         if not (player := self.mass.players.get_player(player_id)):
             raise web.HTTPNotFound(reason=f"Unknown Player: {player_id}")
         if self.mass.player_queues.flow_stream_finished(queue_id):
+            if request.headers.get("Range") and (range_start := request.http_range.start):
+                # a Cast receiver resumes a stream that closed short of its declared length;
+                # a 404 makes it drop its buffer, a 416 lets it play out and finish
+                raise web.HTTPRequestRangeNotSatisfiable(
+                    headers={"Content-Range": f"bytes */{range_start}"}
+                )
             # the session already streamed everything it had; a player that opens it again
             # (Sonos reconnects to a stream url that ended) would replay the current track
             self.logger.debug(

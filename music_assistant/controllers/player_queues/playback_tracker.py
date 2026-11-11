@@ -111,6 +111,9 @@ class PlaybackTrackerMixin(_PlayerQueuesBase):
         ):
             # NOTE: If the queue is not playing (yet) we will not update the current index
             # to ensure we keep the previously known current index
+            if queue.flow_mode and self._reports_command_stream(player):
+                # a command item (Cast 'next') is no position in the flow stream
+                return False
             if queue.flow_mode:
                 # flow mode active, the player is playing one long stream
                 # so we need to calculate the current index and elapsed time
@@ -469,6 +472,15 @@ class PlaybackTrackerMixin(_PlayerQueuesBase):
                     return current_item_id
 
         return None
+
+    def _reports_command_stream(self, player: Player) -> bool:
+        """Return whether the player reports one of the special command streams as its media."""
+        protocol_player = player
+        if player.active_output_protocol and player.active_output_protocol != "native":
+            protocol_player = self.mass.players.get_player(player.active_output_protocol) or player
+        uri = protocol_player.current_media.uri if protocol_player.current_media else None
+        base_url = self.mass.streams.base_url
+        return bool(uri and base_url and uri.startswith(f"{base_url}/command/"))
 
     def _reported_queue_id(self, player: Player) -> str | None:
         """Return the known queue the player's reported media names, if it names one."""
