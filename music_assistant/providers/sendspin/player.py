@@ -70,7 +70,11 @@ from aiosendspin.server.roles.metadata.state import Metadata
 from aiosendspin.server.roles.player.events import OutputDelayChangedEvent
 from aiosendspin.server.roles.player.types import PlayerRoleProtocol
 from aiosendspin.server.roles.player.v1 import PlayerPersistentState
-from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption
+from music_assistant_models.config_entries import (
+    ConfigEntry,
+    ConfigValueOption,
+    ConfigValueType,
+)
 from music_assistant_models.constants import PLAYER_CONTROL_NONE
 from music_assistant_models.enums import (
     ConfigEntryType,
@@ -526,6 +530,18 @@ class SendspinBasePlayer(PlayerProtocol):
         entries = await super().get_config_entries()
         entries.extend(await self._get_security_config_entries())
         entries.extend(self._get_source_autostart_config_entries())
+        if "source" in self._negotiated_families():
+            # an entry for the decline keeps it in the config of a client nothing is stored
+            # for yet, so it is stored once the user declines the input
+            entries.append(
+                ConfigEntry(
+                    key=CONF_SOURCE_INPUT_DECLINED,
+                    type=ConfigEntryType.BOOLEAN,
+                    default_value=False,
+                    required=False,
+                    hidden=True,
+                )
+            )
         return entries
 
     async def handle_config_action(self, action: str) -> list[ConfigEntry]:
@@ -731,9 +747,7 @@ class SendspinBasePlayer(PlayerProtocol):
             return True
         allow_input = method == CONNECT_METHOD_UNPAIRED_WITH_INPUT
         if has_input:
-            self.mass.config.set_protocol_value(
-                self.protocol_id, CONF_SOURCE_INPUT_DECLINED, not allow_input
-            )
+            await self._save_user_choice(CONF_SOURCE_INPUT_DECLINED, not allow_input)
         await provider.set_trusted_unpaired(self.protocol_id, enabled=True, allow_input=allow_input)
         if allow_input:
             await self._run_source_autostart_step(session)
@@ -757,7 +771,7 @@ class SendspinBasePlayer(PlayerProtocol):
         )
         if str(values[CONF_SOURCE_INPUT_ACTION]) != SOURCE_INPUT_DISMISS:
             return False
-        self.mass.config.set_protocol_value(self.protocol_id, CONF_SOURCE_INPUT_DECLINED, True)
+        await self._save_user_choice(CONF_SOURCE_INPUT_DECLINED, True)
         self.update_state()
         return True
 
@@ -770,19 +784,29 @@ class SendspinBasePlayer(PlayerProtocol):
         values = await session.form([entry], step_id="source_autostart", last_step=True)
         target = values[CONF_SOURCE_AUTOSTART_TARGET]
         # Keep the default unstored, as the settings page does, so it follows the device's player.
-        value = None if target == entry.default_value else target
+        await self._save_user_choice(
+            CONF_SOURCE_AUTOSTART_TARGET, None if target == entry.default_value else target
+        )
+
+    async def _save_user_choice(self, key: str, value: ConfigValueType) -> None:
+        """
+        Store a value the user chose for this client, the way a save of its settings does.
+
+        The first choice that is not the default stores the config of a client that only
+        exists while it is connected; going back to the default stores nothing for it.
+
+        :param key: Key of a config entry the client declares.
+        :param value: The chosen value: None or False for the default.
+        """
         if (
             value is not None
+            and value is not False
             and self.player is not None
             and self.mass.config.get_protocol_record(self.protocol_id) is None
         ):
-            # saved as the settings page saves it: the first choice of the user stores the
-            # config of a client that only exists while it is connected
-            await self.mass.config.save_player_config(
-                self.player.player_id, {CONF_SOURCE_AUTOSTART_TARGET: value}
-            )
+            await self.mass.config.save_player_config(self.player.player_id, {key: value})
             return
-        self.mass.config.set_protocol_value(self.protocol_id, CONF_SOURCE_AUTOSTART_TARGET, value)
+        self.mass.config.set_protocol_value(self.protocol_id, key, value)
 
     def _subscribe_client_callbacks(self) -> None:
         """Subscribe to client and group events for the currently bound client."""
@@ -1150,16 +1174,12 @@ class SendspinBasePlayer(PlayerProtocol):
                 # Set the decline before revoking and clear it only after approving, so the
                 # device never drops back to needs_setup, not even when the call fails.
                 if not allow_input:
-                    self.mass.config.set_protocol_value(
-                        self.protocol_id, CONF_SOURCE_INPUT_DECLINED, True
-                    )
+                    await self._save_user_choice(CONF_SOURCE_INPUT_DECLINED, True)
                 await provider.set_trusted_unpaired(
                     self.protocol_id, enabled=True, allow_input=allow_input
                 )
                 if allow_input:
-                    self.mass.config.set_protocol_value(
-                        self.protocol_id, CONF_SOURCE_INPUT_DECLINED, False
-                    )
+                    await self._save_user_choice(CONF_SOURCE_INPUT_DECLINED, False)
             elif action in _MANAGEMENT_ACTIONS:
                 await provider.management_set_pairing_config(
                     self.protocol_id, _MANAGEMENT_ACTIONS[action]
