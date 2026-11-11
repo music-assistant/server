@@ -553,7 +553,8 @@ def _player() -> MagicMock:
     player.display_name = "Kitchen"
     player.available = True
     player.offline_by_power_control = False
-    player.protocol_parent_id = None
+    # a shared speaker: none of its protocols is the private client player of a user
+    player.protocols = {}
     return player
 
 
