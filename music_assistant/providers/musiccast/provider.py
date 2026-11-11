@@ -84,6 +84,28 @@ class MusicCastProvider(PlayerProvider):
         """Call (by config manager) when a player gets enabled."""
         self.mass.create_task(self._register_enabled_player(player_id))
 
+    async def forget_player(self, player_id: str) -> None:
+        """
+        Let go of a removed player, so the next discovery sets up its device again.
+
+        The other zones of the device keep working until then and are taken over by that
+        new setup.
+
+        :param player_id: ID of the removed player.
+        """
+        device_id, _, zone_name = player_id.partition(PLAYER_ZONE_SPLITTER)
+        async with self._registration_locks.setdefault(device_id, asyncio.Lock()):
+            if (musiccast_player_helper := self.musiccast_player_helpers.get(device_id)) is None:
+                return
+            setattr(musiccast_player_helper, f"player_{zone_name}", None)
+            physical_device = musiccast_player_helper.physical_device
+            if not any(
+                self.get_protocol(f"{device_id}{PLAYER_ZONE_SPLITTER}{zone}")
+                for zone in physical_device.zone_devices
+            ):
+                physical_device.remove()
+                del self.musiccast_player_helpers[device_id]
+
     async def handle_async_init(self) -> None:
         """Async init."""
         self.mc_controller = MusicCastController(logger=self.logger)
@@ -159,6 +181,12 @@ class MusicCastProvider(PlayerProvider):
                 and mc_player_known.physical_device.device.device.upnp_description
                 == description_url
                 and mc_player_known.player_main.available
+                # a zone whose player got removed is set up again with the whole device
+                and all(
+                    getattr(mc_player_known, f"player_{zone_device.zone_name}", None) is not None
+                    for zone_device in mc_player_known.physical_device.zone_devices.values()
+                    if zone_device.zone_data is not None and zone_device.zone_data.name is not None
+                )
             ):
                 # nothing to do, device is already connected
                 return

@@ -166,3 +166,52 @@ async def test_player_enabled_during_rediscovery(
     physical_device = network.provider.musiccast_player_helpers["B"].physical_device
     assert physical_device.device.ip == "192.168.1.21"
     assert network.registry["B___zone2"].physical_device is physical_device
+
+
+DESCRIPTION_URL_B = "http://192.168.1.20:49154/MediaRenderer/desc.xml"
+
+
+@pytest.mark.parametrize(
+    "removed_zones",
+    [
+        pytest.param(["main"], id="main"),
+        pytest.param(["zone2"], id="zone2"),
+        pytest.param(["main", "zone2", "zone3"], id="all-zones"),
+    ],
+)
+async def test_removed_player_found_again_as_new_player(
+    network: MusicCastNetwork, monkeypatch: pytest.MonkeyPatch, removed_zones: list[str]
+) -> None:
+    """A removed zone of a receiver still on the network is registered anew on its next discovery."""
+    monkeypatch.setattr(provider_module, "MusicCastDevice", _DiscoveredDevice)
+    monkeypatch.setattr(MusicCastPlayer, "setup", AsyncMock())
+    previous_device = network.player("B___main").physical_device
+    previous_device.device.upnp_description = DESCRIPTION_URL_B
+    removed = {zone: network.registry.pop(f"B___{zone}") for zone in removed_zones}
+    for player in removed.values():
+        await player.on_remove()
+    # the other zones keep the device until the receiver is set up again, a receiver without
+    # a zone in use lets go of it right away
+    in_use = len(removed) < 3
+    assert (previous_device in network.provider.mc_controller.physical_devices) is in_use
+    assert ("B" in network.provider.musiccast_player_helpers) is in_use
+    assert all(
+        player.physical_device is previous_device
+        for player_id, player in network.registry.items()
+        if player_id.startswith("B___")
+    )
+
+    await network.provider._device_discovered(
+        device_id="B", device_ip="192.168.1.20", description_url=DESCRIPTION_URL_B
+    )
+
+    physical_device = network.provider.musiccast_player_helpers["B"].physical_device
+    assert physical_device is not previous_device
+    for zone in ("main", "zone2", "zone3"):
+        assert network.registry[f"B___{zone}"].physical_device is physical_device
+    for zone, player in removed.items():
+        assert network.registry[f"B___{zone}"] is not player
+    assert network.provider.mc_controller.physical_devices == [
+        network.provider.musiccast_player_helpers["A"].physical_device,
+        physical_device,
+    ]
