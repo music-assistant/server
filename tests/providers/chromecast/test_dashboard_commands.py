@@ -27,8 +27,8 @@ def _make_dashboards() -> ChromecastDashboards:
     provider.mass.loop.run_in_executor = AsyncMock(
         side_effect=lambda _executor, func, *args: func(*args)
     )
-    provider.mass.players.get_player.return_value = None
-    provider.get_protocol = lambda pid: provider.mass.players.get_player(pid)
+    provider.mass.players.get_protocol.return_value = None
+    provider.get_protocol = lambda pid: provider.mass.players.get_protocol(pid)
     return ChromecastDashboards(provider)
 
 
@@ -45,7 +45,7 @@ def _make_provider() -> ChromecastProvider:
     provider.mass = MagicMock()
     provider.mass.closing = False
     provider.mass.loop.call_soon_threadsafe = MagicMock(side_effect=lambda func, *args: func(*args))
-    provider.mass.players.get_player.return_value = None
+    provider.mass.players.get_protocol.return_value = None
     provider.mass.config.get_protocol_value.return_value = True
     provider.logger = MagicMock()
     provider._discover_lock = threading.Lock()
@@ -135,7 +135,7 @@ async def test_on_show_reuses_connected_player_cc() -> None:
     castplayer = MagicMock(spec=ChromecastPlayer)
     castplayer.cc = connected_chromecast
     castplayer.app_quit_sent = False
-    dashboards.mass.players.get_player.return_value = castplayer  # type: ignore[attr-defined]
+    dashboards.mass.players.get_protocol.return_value = castplayer  # type: ignore[attr-defined]
     url = "https://mass.example.com?path=%2Fparty"
     dashboards.mass.dashboard.resolve_dashboard_url = AsyncMock(return_value=url)  # type: ignore[method-assign]
 
@@ -156,7 +156,7 @@ async def test_on_show_keeps_the_player_from_releasing_the_device() -> None:
     castplayer = MagicMock(spec=ChromecastPlayer)
     castplayer.cc = connected_chromecast
     castplayer.app_quit_sent = False
-    dashboards.mass.players.get_player.return_value = castplayer  # type: ignore[attr-defined]
+    dashboards.mass.players.get_protocol.return_value = castplayer  # type: ignore[attr-defined]
     dashboards.mass.dashboard.resolve_dashboard_url = AsyncMock(return_value="https://mass.test")  # type: ignore[method-assign]
 
     with patch("music_assistant.providers.chromecast.dashboard.send_show_dashboard"):
@@ -177,7 +177,7 @@ async def test_on_show_forces_a_launch_when_a_release_is_on_the_wire(
     castplayer = MagicMock(spec=ChromecastPlayer)
     castplayer.cc = connected_chromecast
     castplayer.app_quit_sent = app_quit_sent
-    dashboards.mass.players.get_player.return_value = castplayer  # type: ignore[attr-defined]
+    dashboards.mass.players.get_protocol.return_value = castplayer  # type: ignore[attr-defined]
     url = "https://mass.example.com?path=%2Fparty"
     dashboards.mass.dashboard.resolve_dashboard_url = AsyncMock(return_value=url)  # type: ignore[method-assign]
 
@@ -202,7 +202,7 @@ async def test_on_show_leaves_a_release_sent_while_it_was_launching() -> None:
     castplayer = MagicMock(spec=ChromecastPlayer)
     castplayer.cc = connected_chromecast
     castplayer.app_quit_sent = False
-    dashboards.mass.players.get_player.return_value = castplayer  # type: ignore[attr-defined]
+    dashboards.mass.players.get_protocol.return_value = castplayer  # type: ignore[attr-defined]
     dashboards.mass.dashboard.resolve_dashboard_url = AsyncMock(return_value="https://mass.test")  # type: ignore[method-assign]
 
     def _release_the_device(*_args: object, **_kwargs: object) -> None:
@@ -312,7 +312,7 @@ async def test_on_hide_keeps_registered_player_connection() -> None:
     connected_chromecast.socket_client.is_connected = True
     castplayer = MagicMock(spec=ChromecastPlayer)
     castplayer.cc = connected_chromecast
-    dashboards.mass.players.get_player.return_value = castplayer  # type: ignore[attr-defined]
+    dashboards.mass.players.get_protocol.return_value = castplayer  # type: ignore[attr-defined]
 
     with patch("music_assistant.providers.chromecast.dashboard.send_hide_dashboard"):
         await dashboards._on_hide(str(device_uuid))
@@ -328,7 +328,7 @@ async def test_on_hide_with_stale_cache_entry_spares_player_connection() -> None
     player_cc.socket_client.is_connected = True
     castplayer = MagicMock(spec=ChromecastPlayer)
     castplayer.cc = player_cc
-    dashboards.mass.players.get_player.return_value = castplayer  # type: ignore[attr-defined]
+    dashboards.mass.players.get_protocol.return_value = castplayer  # type: ignore[attr-defined]
     stale = MagicMock()
     dashboards._dashboard_connections[str(device_uuid)] = stale
 
@@ -412,7 +412,7 @@ def test_discovery_registers_device_with_dashboards() -> None:
     castplayer.available = True
     castplayer.cast_info = MagicMock(is_audio_group=False)
     castplayer.cc = MagicMock()  # discovery fast-path reads castplayer.cc.socket_client
-    provider.mass.players.get_player.return_value = castplayer  # type: ignore[attr-defined]
+    provider.mass.players.get_protocol.return_value = castplayer  # type: ignore[attr-defined]
 
     provider._on_chromecast_discovered(uuid, "service")
 
@@ -426,11 +426,13 @@ def test_discovery_registers_device_even_when_player_disabled() -> None:
     disc_info = _cast_info()
     disc_info.uuid = uuid
     provider.browser = MagicMock(devices={uuid: disc_info})
-    provider.mass.config.get_protocol_value.return_value = False  # type: ignore[attr-defined]
+    provider.mass.players.wants_protocol.return_value = False  # type: ignore[attr-defined]
 
     provider._on_chromecast_discovered(uuid, "service")
 
     provider.dashboards.register.assert_called_once_with(uuid, disc_info)  # type: ignore[attr-defined]
+    provider.mass.players.wants_protocol.assert_called_once_with(str(uuid))  # type: ignore[attr-defined]
+    assert str(uuid) not in provider._pending_discoveries
 
 
 def test_removed_callback_unregisters_dashboard() -> None:
