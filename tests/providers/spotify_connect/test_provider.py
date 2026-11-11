@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import pytest
 from music_assistant_models.config_entries import ConfigEntry, ProviderConfig
 from music_assistant_models.enums import ConfigEntryType, EventType, ProviderType
 from music_assistant_models.event import MassEvent
@@ -392,7 +393,10 @@ async def test_a_prompt_stop_after_pause_is_not_reported() -> None:
 
 
 async def _play_state_event(
-    provider: SpotifyConnectProvider, daemon: _PlayerDaemon, event_type: BackendEventType, now: int
+    provider: SpotifyConnectProvider,
+    daemon: _PlayerDaemon,
+    event_type: BackendEventType,
+    now: float,
 ) -> None:
     """Deliver a play state event from the backend at a given wall clock time."""
     with patch("music_assistant.providers.spotify_connect.provider.time.time", return_value=now):
@@ -411,6 +415,59 @@ async def test_a_resume_does_not_count_the_pause_as_play_time() -> None:
 
     assert daemon.stream_metadata.elapsed_time == 90
     assert daemon.stream_metadata.elapsed_time_last_updated == 1360
+
+
+def _at(now: float) -> Any:
+    """Patch the provider's wall clock to a fixed time."""
+    return patch("music_assistant.providers.spotify_connect.provider.time.time", return_value=now)
+
+
+def test_a_position_keeps_its_fraction_of_a_second() -> None:
+    """
+    32.9 s reported is 32.9 s shown, not 32 s or 33 s.
+
+    The elapsed time only holds whole seconds, and the receipt time used to be rounded down
+    too, so the shown position was up to a second off either way.
+    """
+    _provider, daemon, _ = _tethered_provider()
+    daemon.playing = True
+
+    with _at(1000.25):
+        daemon.set_position(32.9)
+
+    assert daemon.stream_metadata.elapsed_time == 32
+    with _at(1001.25):
+        assert daemon.stream_metadata.corrected_elapsed_time == pytest.approx(33.9)
+
+
+async def test_a_pause_keeps_the_fraction_of_a_second() -> None:
+    """Pausing at 15.6 s and resuming continues from 15.6 s, not from 15 s."""
+    provider, daemon, _ = _tethered_provider()
+    daemon.playing = True
+    with _at(100.0):
+        daemon.set_position(10.6)
+
+    await _play_state_event(provider, daemon, BackendEventType.PAUSED, now=105)
+    assert daemon.stream_metadata.elapsed_time == 15
+    await _play_state_event(provider, daemon, BackendEventType.PLAYING, now=200)
+
+    with _at(201.0):
+        assert daemon.stream_metadata.corrected_elapsed_time == pytest.approx(16.6)
+
+
+async def test_a_position_reported_while_paused_resumes_exactly() -> None:
+    """A seek while paused shows its whole seconds, and resumes with the fraction."""
+    provider, daemon, _ = _tethered_provider()
+    daemon.playing = False
+    with _at(500.0):
+        daemon.set_position(42.5)
+
+    assert daemon.stream_metadata.elapsed_time == 42
+    assert daemon.stream_metadata.elapsed_time_last_updated == 500.0
+    await _play_state_event(provider, daemon, BackendEventType.PLAYING, now=600)
+
+    with _at(602.0):
+        assert daemon.stream_metadata.corrected_elapsed_time == pytest.approx(44.5)
 
 
 async def test_a_repeated_pause_event_keeps_the_paused_position() -> None:

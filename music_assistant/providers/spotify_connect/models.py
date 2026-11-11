@@ -66,7 +66,8 @@ class BackendTrackMetadata:
     """
     Normalized track metadata carried by a METADATA event.
 
-    ``duration`` and ``position`` are in seconds. A None ``title`` means the
+    ``duration`` is in whole seconds, ``position`` in seconds with their fraction. A None
+    ``title`` means the
     backend did not report one (the provider keeps the previous title).
     """
 
@@ -76,7 +77,7 @@ class BackendTrackMetadata:
     album: str | None = None
     image_url: str | None = None
     duration: int | None = None
-    position: int = 0
+    position: float = 0
 
 
 class QueueEntrySource(StrEnum):
@@ -136,7 +137,7 @@ class BackendEvent:
     ``context_uri`` / ``track_uri`` piggyback on every event type: they carry
     the latest context/track seen by the backend so the provider can take
     playback back after the user moved the active device away. ``position`` is
-    the elapsed time in seconds (POSITION events), ``volume`` a 0-100
+    the elapsed time in seconds with their fraction (POSITION events), ``volume`` a 0-100
     percentage (VOLUME events), ``error`` the failure description (ERROR and
     FATAL_ERROR events), ``queue`` the session's queue view (QUEUE_CHANGED
     events) and ``options`` the session's playback options (OPTIONS_CHANGED
@@ -148,7 +149,7 @@ class BackendEvent:
     context_uri: str | None = None
     track_uri: str | None = None
     metadata: BackendTrackMetadata | None = None
-    position: int | None = None
+    position: float | None = None
     volume: int | None = None
     error: str | None = None
     queue: BackendQueueState | None = None
