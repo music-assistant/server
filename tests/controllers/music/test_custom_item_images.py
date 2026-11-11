@@ -59,6 +59,7 @@ def _controller(tmp_path: Path, images: list[MediaItemImage]) -> tuple[TracksCon
     mass.music.database = AsyncMock()
     mass.music.database.deferred_commit = MagicMock()
     mass.music.favorites = AsyncMock()
+    mass.music.bookmarks = AsyncMock()
     mass.streams.audio_analysis.delete_audio_analysis = AsyncMock()
     mass.metadata.invalidate_image_cache = AsyncMock()
     mass.get_provider.return_value = None

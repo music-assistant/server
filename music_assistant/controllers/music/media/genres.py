@@ -769,16 +769,7 @@ class GenreController(MediaControllerBase[Genre]):
                 f"WHERE metadata LIKE '%{CUSTOM_IMAGES_DIRNAME}/%'",
                 limit=0,
             )
-            for row in rows:
-                metadata = json.loads(row["metadata"]) if row["metadata"] else {}
-                for img in metadata.get("images") or []:
-                    img_path = img.get("path") or ""
-                    if not img_path.startswith(f"{CUSTOM_IMAGES_DIRNAME}/"):
-                        continue
-                    await self.mass.metadata.invalidate_image_cache(
-                        img.get("provider") or "builtin", img_path
-                    )
-                    await self._delete_custom_image_file(img_path)
+            await self._delete_custom_images_of_rows(rows)
             await self.mass.music.database.delete(DB_TABLE_GENRE_MEDIA_ITEM_MAPPING)
             await self.mass.music.database.delete(DB_TABLE_GENRE_MEDIA_ITEM_EXCLUSION)
             await self.mass.music.database.delete(
@@ -1734,8 +1725,7 @@ class GenreController(MediaControllerBase[Genre]):
             f")",
         )
         genres_before = await db.get_count(DB_TABLE_GENRES)
-        await db.delete_where_query(
-            DB_TABLE_GENRES,
+        empty_genres_where = (
             f"is_default = 0 "
             f"AND is_excluded = 0 "
             f"AND NOT EXISTS ("
@@ -1743,8 +1733,16 @@ class GenreController(MediaControllerBase[Genre]):
             f") "
             f"AND NOT EXISTS ("
             f"  SELECT 1 FROM {excl} WHERE {excl}.genre_id = {DB_TABLE_GENRES}.item_id"
-            f")",
+            f")"
         )
+        rows = await db.get_rows_from_query(
+            f"SELECT metadata FROM {DB_TABLE_GENRES} "
+            f"WHERE {empty_genres_where} "
+            f"AND metadata LIKE '%{CUSTOM_IMAGES_DIRNAME}/%'",
+            limit=0,
+        )
+        await self._delete_custom_images_of_rows(rows)
+        await db.delete_where_query(DB_TABLE_GENRES, empty_genres_where)
         genres_deleted = genres_before - await db.get_count(DB_TABLE_GENRES)
         if genres_deleted:
             self.logger.info("Genre scan: deleted %d empty non-default genres", genres_deleted)
@@ -2359,6 +2357,23 @@ class GenreController(MediaControllerBase[Genre]):
                 str(err),
                 exc_info=err if self.logger.isEnabledFor(logging.DEBUG) else None,
             )
+
+    async def _delete_custom_images_of_rows(self, rows: list[Mapping[str, Any]]) -> None:
+        """
+        Delete the custom image files (and cached variants) referenced by genre rows.
+
+        :param rows: Genre rows carrying a `metadata` JSON column.
+        """
+        for row in rows:
+            metadata = json.loads(row["metadata"]) if row["metadata"] else {}
+            for img in metadata.get("images") or []:
+                img_path = img.get("path") or ""
+                if not img_path.startswith(f"{CUSTOM_IMAGES_DIRNAME}/"):
+                    continue
+                await self.mass.metadata.invalidate_image_cache(
+                    img.get("provider") or "builtin", img_path
+                )
+                await self._delete_custom_image_file(img_path)
 
     def _parse_summary_row(
         self, db_row: Mapping[str, Any], hidden_sources: set[str]

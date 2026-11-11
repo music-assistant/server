@@ -3369,6 +3369,21 @@ class TestCustomGenreImages:
         await genre_ctrl.restore_default_genres(full_restore=True)
         assert not custom_file.exists()
 
+    async def test_stale_cleanup_deletes_custom_image_file(
+        self, mass: MusicAssistant, genre_ctrl: GenreController
+    ) -> None:
+        """Deleting an empty non-default genre during stale cleanup removes its custom image."""
+        genre = await genre_ctrl.add_item_to_library(_make_genre("Doomed Genre"))
+        updated = await genre_ctrl.set_item_image(genre.item_id, _png_base64())
+        assert updated.image is not None
+        custom_file = Path(mass.storage_path) / updated.image.path
+        assert custom_file.is_file()
+        await genre_ctrl._cleanup_stale_genre_mappings()
+        assert (
+            await mass.music.database.get_row(DB_TABLE_GENRES, {"item_id": genre.item_id}) is None
+        )
+        assert not custom_file.exists()
+
     async def test_soft_delete_keeps_custom_image(
         self, mass: MusicAssistant, genre_ctrl: GenreController
     ) -> None:

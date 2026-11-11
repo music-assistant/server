@@ -485,7 +485,6 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         library_item = await self.get_library_item(db_id)
         assert library_item, f"Item does not exist: {db_id}"
         await self._delete_removed_mapping_analysis(db_id, library_item.provider_mappings, set())
-        stored_images: Iterable[MediaItemImage] = library_item.metadata.images or []
         # delete item
         await self.mass.music.database.delete(
             self.db_table,
@@ -534,7 +533,6 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         # drop cached artwork for the removed item
         for img in library_item.metadata.images or []:
             await self.mass.metadata.invalidate_image_cache(img.provider, img.path)
-        for img in stored_images:
             if self._is_custom_image(img):
                 await self._delete_custom_image_file(img.path)
         if not SUPPRESS_MEDIA_ITEM_UPDATES.get():
