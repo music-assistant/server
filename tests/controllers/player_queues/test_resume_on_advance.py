@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 from types import SimpleNamespace
 from typing import cast
 from unittest.mock import AsyncMock, MagicMock
@@ -89,8 +90,28 @@ def _controller(
     )
     get_stream_details = AsyncMock(return_value=MagicMock(duration=None))
     mass.streams.audio.get_stream_details = get_stream_details
+    # the lookup of the chapters the controller starts for an audiobook finds none
+    mass.music.audiobooks.get_provider_item = AsyncMock(
+        return_value=MagicMock(metadata=MagicMock(chapters=None))
+    )
+    mass.create_task.side_effect = _close_task
     controller.mass = mass
     return controller, get_stream_details
+
+
+def _close_task(target: object, *_args: object, **_kwargs: object) -> MagicMock:
+    """Stand in for a task that a test does not run: close its coroutine, so none is left."""
+    if inspect.iscoroutine(target):
+        target.close()
+    return MagicMock()
+
+
+async def _run_tasks(tasks: list[asyncio.Task[None]]) -> None:
+    """Await the tasks the controller started, also those they started in turn."""
+    awaited = 0
+    while awaited < len(tasks):
+        awaited = len(tasks)
+        await asyncio.gather(*tasks)
 
 
 def _report_played(
@@ -190,7 +211,7 @@ async def test_non_flow_repeat_preloads_and_enqueues(repeat_mode: RepeatMode) ->
     controller._enqueue_next_item = MagicMock()  # type: ignore[method-assign]
 
     controller._preload_next_item(QUEUE_ID, item.queue_item_id)
-    await asyncio.gather(*tasks)
+    await _run_tasks(tasks)
 
     get_stream_details.assert_awaited_once()
     assert get_stream_details.call_args.kwargs["seek_position"] == 0
@@ -211,7 +232,7 @@ async def test_preload_next_audiobook_still_resumes_and_enqueues(flow_mode: bool
     controller._enqueue_next_item = MagicMock()  # type: ignore[method-assign]
 
     controller._preload_next_item(QUEUE_ID, items[0].queue_item_id)
-    await asyncio.gather(*tasks)
+    await _run_tasks(tasks)
 
     assert get_stream_details.call_args.kwargs["seek_position"] == 59
     controller._enqueue_next_item.assert_called_once_with(QUEUE_ID, items[1])
