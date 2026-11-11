@@ -1037,6 +1037,19 @@ def _attach_to_player(
     return player
 
 
+def test_can_group_with_skips_protocols_that_wait_for_their_player(
+    airplay_player: AirPlayPlayer,
+) -> None:
+    """Only AirPlay protocols that are attached to a player are offered as group members."""
+    attached = MagicMock(protocol_id="attached", available=True)
+    waiting = MagicMock(protocol_id="waiting", available=True, player=None)
+    offline = MagicMock(protocol_id="offline", available=False)
+    provider = cast("MagicMock", airplay_player.provider)
+    provider.get_players.return_value = [airplay_player, attached, waiting, offline]
+
+    assert airplay_player.can_group_with == {"attached"}
+
+
 def test_owns_volume_true_while_not_attached(airplay_player: AirPlayPlayer) -> None:
     """A protocol without a player has no other interface to defer to."""
     assert airplay_player.owns_volume is True
