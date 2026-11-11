@@ -718,8 +718,13 @@ class Player:
             return custom_name
         if name := self.name or self._config.default_name:
             return name
-        # a new device that reports nothing better is shown by the name it reports
-        return next((p.name for p in self._protocols.values() if p.name), self.player_id)
+        # a new device that reports nothing better is shown by the name it reports,
+        # also while it is away
+        return (
+            next((p.name for p in self._protocols.values() if p.name), None)
+            or self._stored_protocol_name()
+            or self.player_id
+        )
 
     @cached_property
     def enabled(self) -> bool:
@@ -1666,6 +1671,17 @@ class Player:
         """Return whether the own protocol of the player is attached and has a feature."""
         own = self._own_protocol
         return own is not None and feature in own.supported_features
+
+    def _stored_protocol_name(self) -> str | None:
+        """Return the name a protocol of the player was last seen with, its own protocol first."""
+        names: list[tuple[bool, int, str, str]] = []
+        for protocol_id in self._protocol_ids:
+            stored = self.mass.config.get_protocol_record(protocol_id) or {}
+            if name := stored.get("default_name"):
+                domain = str(stored.get("provider") or "").split("--", maxsplit=1)[0]
+                is_own = stored.get("role") in OWN_PROTOCOL_ROLES
+                names.append((not is_own, _NAME_PRIORITY.get(domain, 10), protocol_id, str(name)))
+        return min(names)[3] if names else None
 
     def _stored_device_info(self) -> DeviceInfo:
         """Return the device info of a player without protocols, from what was stored."""
