@@ -30,7 +30,7 @@ from music_assistant.helpers.external_ids import (
     is_valid_isrc,
     normalize_external_id,
 )
-from music_assistant.helpers.uri import apple_storefront_from_url, canonical_provider_url
+from music_assistant.helpers.uri import canonical_mapping_url
 from music_assistant.helpers.util import parse_title_and_version
 from music_assistant.models.metadata_provider import MetadataProvider
 
@@ -1181,10 +1181,7 @@ class MusicbrainzProvider(MetadataProvider):
             if domain == "qobuz" and not mapping.url:
                 # a performer without a Qobuz page has its name as id and no URL
                 continue
-            storefront = None
-            if domain == "apple_music" and mapping.url:
-                storefront = apple_storefront_from_url(mapping.url)
-            if url := canonical_provider_url(domain, item.media_type, mapping.item_id, storefront):
+            if url := canonical_mapping_url(mapping, item.media_type):
                 urls.append(url)
                 # the mapping's own URL is the same item in a form MusicBrainz may not store
                 mappings.remove(mapping)

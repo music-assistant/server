@@ -77,7 +77,7 @@ from music_assistant.helpers.database import UNSET
 from music_assistant.helpers.json import serialize_to_json
 from music_assistant.helpers.logging import log_once
 from music_assistant.helpers.provider_access import visible_items
-from music_assistant.helpers.uri import apple_storefront_from_url, canonical_provider_url
+from music_assistant.helpers.uri import canonical_mapping_url
 from music_assistant.models.music_provider import (
     PROVIDER_FETCH_ERRORS,
     MusicProvider,
@@ -2051,7 +2051,7 @@ class ArtistsController(MediaControllerBase[Artist]):
         :param other_mbid: The MusicBrainz id of the same-name artist it must be told apart
             from, if known.
         """
-        if (url := _artist_url(mapping)) is None:
+        if (url := canonical_mapping_url(mapping, MediaType.ARTIST)) is None:
             return None
         if url in lookups.mbids:
             return lookups.mbids[url]
@@ -2389,14 +2389,4 @@ def _same_mbid(mbid: str, other_mbid: str) -> bool:
             {(ExternalID.MB_ARTIST, other_mbid)},
             ExternalID.MB_ARTIST,
         )
-    )
-
-
-def _artist_url(mapping: ProviderMapping) -> str | None:
-    """Return the streaming artist URL of a provider mapping, in the form MusicBrainz links it."""
-    storefront = None
-    if mapping.provider_domain == "apple_music" and mapping.url:
-        storefront = apple_storefront_from_url(mapping.url)
-    return canonical_provider_url(
-        mapping.provider_domain, MediaType.ARTIST, mapping.item_id, storefront
     )
