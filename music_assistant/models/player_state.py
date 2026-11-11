@@ -9,11 +9,17 @@ as effects, for the caller to carry out.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING
 
 from music_assistant_models.constants import PLAYER_CONTROL_NONE
-from music_assistant_models.enums import MediaType, PlaybackState, PlayerFeature, PlayerType
+from music_assistant_models.enums import (
+    MediaType,
+    PlaybackState,
+    PlayerFeature,
+    PlayerType,
+    ProtocolRole,
+)
 from music_assistant_models.player import Player as PlayerState
 from music_assistant_models.player import PlayerMedia, PlayerSource
 from music_assistant_models.unique_list import UniqueList
@@ -37,6 +43,7 @@ if TYPE_CHECKING:
         DeviceInfo,
         OutputProtocol,
         PlayerOption,
+        PlayerProtocolInfo,
         PlayerSoundMode,
     )
     from music_assistant_models.player_queue import PlayerQueue
@@ -51,13 +58,14 @@ POSITION_JUMP_THRESHOLD = 1.0
 @dataclass(slots=True, kw_only=True)
 class ProtocolSnapshot:
     """
-    What one provider object reports for a player.
+    What one protocol reports for the player it is attached to.
 
-    Taken from the player's own provider object and from each protocol player linked
-    to it, through their properties.
+    Taken from the player's own protocol and from each of its audio protocols, through
+    their properties. Other protocols are named by their protocol id.
 
-    :param protocol_id: Player id the provider object is registered under.
-    :param name: Name of the device.
+    :param protocol_id: Id of the protocol. The id of the player where it stands in for
+        an own protocol that is not attached.
+    :param role: Role the protocol is attached in, None where none is attached.
     :param available: Whether the device can be reached.
     :param available_for_playback: Whether it is enabled, reachable and set up.
     :param needs_setup: Whether it has to be set up before it can be used.
@@ -66,17 +74,18 @@ class ProtocolSnapshot:
     :param playback_state: Playback state of the device.
     :param elapsed_time: Playback position of the device, in seconds.
     :param elapsed_time_last_updated: Timestamp the playback position was taken at.
-    :param active_source: Source the device has selected.
+    :param active_source: Source the device has selected, the id of the player for its
+        own queue.
     :param source_list: Sources of the device.
     :param current_media: Media the device has loaded.
-    :param group_members: Ids of the players grouped to the device, itself included.
-    :param synced_to: Id of the player the device is synced to. Only given where it
-        counts: for the player's own provider object, and for the linked protocol
-        players of a player that reports no sync leader itself.
+    :param group_members: Ids of the protocols grouped to the device, itself included.
+    :param synced_to: Id of the protocol the device is synced to. Only given where it
+        counts: for the player's own protocol, and for the audio protocols of a player
+        whose own protocol reports no sync leader.
     """
 
     protocol_id: str
-    name: str | None
+    role: ProtocolRole | None
     available: bool
     available_for_playback: bool
     needs_setup: bool
@@ -97,10 +106,12 @@ class PeerSnapshot:
     """
     Another player, as far as the state of a player depends on it.
 
+    Found under its own id and under every id that names it: a legacy id, or the id
+    of one of its protocols.
+
     :param player_id: Id of the player.
-    :param type: Type its provider object reports.
+    :param type: Type of the player.
     :param available: Whether its device can be reached.
-    :param protocol_parent_id: Id of the player it is linked to as a protocol player.
     :param grouping_locked: Whether its provider keeps its grouping read-only.
     :param state: The state it publishes.
     :param available_for_playback: Whether it is enabled, reachable and set up. Only
@@ -110,7 +121,6 @@ class PeerSnapshot:
     player_id: str
     type: PlayerType
     available: bool
-    protocol_parent_id: str | None
     grouping_locked: bool
     state: PlayerState
     available_for_playback: bool | None = None
@@ -122,7 +132,7 @@ class GroupSnapshot:
     A group player that can hold a player.
 
     :param player_id: Id of the group player.
-    :param powered: Power state its provider object reports.
+    :param powered: Power state its own protocol reports.
     :param is_active_session: Whether it is holding its members.
     :param state: The state it publishes.
     """
@@ -162,16 +172,20 @@ class StateInputs:
 
     :param player_id: Id of the player.
     :param provider: Instance id of the provider of the player.
-    :param player_type: Type the provider object reports.
+    :param player_type: Type of the player.
     :param now: Current time, as a timestamp.
     :param previous_state: The state published before this one.
     :param enabled: Whether the player is enabled in its config.
     :param name: Display name of the player.
+    :param device_name: Name the protocols of the player report for its device, None
+        while they report no usable one.
     :param default_name: Device name stored in the config.
     :param hide_in_ui: Whether the player is hidden in the UI.
     :param expose_to_ha: Whether the player is exposed to Home Assistant.
     :param icon: Icon of the player.
     :param legacy_ids: Ids the player was known under before, which it keeps answering to.
+    :param last_seen: Timestamp the availability of the player last changed at.
+    :param unavailable_since: Timestamp since when none of its protocols is available.
     :param power_control: The control the power of the player is resolved to.
     :param volume_control: The control the volume of the player is resolved to.
     :param mute_control: The control the mute of the player is resolved to.
@@ -180,7 +194,8 @@ class StateInputs:
     :param volume_muted: Mute state the mute control reports.
     :param offline_by_power_control: Whether the device is offline because it is
         switched off at its power control.
-    :param own: What the player's own provider object reports.
+    :param own: What the player's own protocol reports: its native protocol, one that
+        controls it without an audio path, or the virtual one of a group.
     :param device_info: Device info of the player.
     :param private: Whether the player may not be offered to other clients.
     :param trusts_reported_source: Whether a source on the player's own source list
@@ -190,16 +205,17 @@ class StateInputs:
     :param sound_mode_list: Sound modes of the device.
     :param options: Options of the device.
     :param static_group_members: Ids of the group members that can not be removed.
-    :param can_group_with: Ids of the players the player reports it can group with,
-        a provider it names standing for all available players of that provider.
+    :param can_group_with: Ids naming the players the own protocol can group with.
+    :param protocol_can_group_with: Ids naming the players the audio protocols can
+        group with.
     :param has_setup_flow: Whether a setup flow can be started for the player.
-    :param linked: What the linked protocol players report, in link order.
-    :param active_protocol: What the protocol player of the active output reports.
-    :param foreign_app: The linked protocol player that plays an app Music Assistant
-        did not start.
-    :param protocol_parent_id: Id of the player this one is linked to as a protocol.
+    :param linked: What the audio protocols report, most preferred first.
+    :param active_protocol: What the audio protocol of the active output reports.
+    :param foreign_app: The audio protocol that plays an app Music Assistant did
+        not start.
     :param output_protocols: Output options of the player.
-    :param active_output_protocol: Id of the active output: a protocol player,
+    :param protocols: The protocols the player is made up of.
+    :param active_output_protocol: Id of the active output: an audio protocol,
         "native" or None.
     :param active_mass_source: Id of the last active Music Assistant source.
     :param sleep_timer_expires_at: Timestamp the sleep timer stops playback at.
@@ -226,11 +242,14 @@ class StateInputs:
     previous_state: PlayerState
     enabled: bool
     name: str
+    device_name: str | None
     default_name: str | None
     hide_in_ui: bool
     expose_to_ha: bool
     icon: str
     legacy_ids: list[str]
+    last_seen: float | None
+    unavailable_since: float | None
     power_control: str
     volume_control: str
     mute_control: str
@@ -248,12 +267,13 @@ class StateInputs:
     options: UniqueList[PlayerOption]
     static_group_members: list[str]
     can_group_with: set[str]
+    protocol_can_group_with: set[str]
     has_setup_flow: bool
     linked: tuple[ProtocolSnapshot, ...]
     active_protocol: ProtocolSnapshot | None
     foreign_app: ProtocolSnapshot | None
-    protocol_parent_id: str | None
     output_protocols: list[OutputProtocol]
+    protocols: list[PlayerProtocolInfo]
     active_output_protocol: str | None
     active_mass_source: str | None
     sleep_timer_expires_at: float | None
@@ -281,8 +301,10 @@ class StateEffects:
     :param default_name: Device name to store as the default name of the player.
     :param left_idle: Playback started on an idle player.
     :param went_idle: Playback ended, the player is idle now.
-    :param foreign_protocol_id: Id of the linked protocol player whose app the state
-        shows, which is where its transport commands have to go.
+    :param foreign_protocol_id: Id of the audio protocol whose app the state shows,
+        which is where its transport commands have to go.
+    :param clear_active_output: The active output is no longer the playback path: the
+        device follows a native group leader now.
     """
 
     position_jumped: bool
@@ -291,6 +313,7 @@ class StateEffects:
     left_idle: bool
     went_idle: bool
     foreign_protocol_id: str | None
+    clear_active_output: bool
 
 
 def derive_player_state(inputs: StateInputs) -> tuple[PlayerState, StateEffects]:
@@ -301,8 +324,18 @@ def derive_player_state(inputs: StateInputs) -> tuple[PlayerState, StateEffects]
     """
     own = inputs.own
     prev_state = inputs.previous_state
+    # a device that follows a native group leader gets its audio from that leader, so
+    # an output that was active before is not its playback path anymore
+    follows_native_leader = (
+        own.role == ProtocolRole.CONTROL
+        and own.synced_to is not None
+        and inputs.active_output_protocol not in (None, "native")
+    )
+    if follows_native_leader:
+        inputs = replace(inputs, active_protocol=None, active_output_protocol=None)
     synced_to = resolve_synced_to(own, inputs.linked, inputs.peers)
     active_group = _active_group(inputs)
+    setup_protocol = _protocol_needing_setup(inputs)
     foreign_app = _shown_foreign_app(inputs, synced_to, active_group)
     playback_state, elapsed_time, elapsed_time_last_updated = _playback_position(
         inputs, synced_to, active_group, foreign_app
@@ -316,8 +349,8 @@ def derive_player_state(inputs: StateInputs) -> tuple[PlayerState, StateEffects]
         # the client view: it includes a player switched off at its power control, so
         # internal code that needs a reachable device checks available_for_playback
         available=inputs.enabled
-        and (own.available or inputs.offline_by_power_control)
-        and not own.needs_setup,
+        and (_reachable(inputs) or inputs.offline_by_power_control)
+        and setup_protocol is None,
         device_info=inputs.device_info,
         supported_features=_supported_features(inputs, foreign_app, source_list),
         playback_state=playback_state,
@@ -358,12 +391,20 @@ def derive_player_state(inputs: StateInputs) -> tuple[PlayerState, StateEffects]
         mute_control=inputs.mute_control,
         output_protocols=inputs.output_protocols,
         active_output_protocol=inputs.active_output_protocol,
-        needs_setup=own.needs_setup,
-        setup_reason=own.setup_reason,
+        needs_setup=setup_protocol is not None,
+        setup_reason=(
+            setup_protocol.setup_reason
+            if setup_protocol
+            # without an own protocol, the reason is why the player has no protocol at all
+            else (inputs.own.setup_reason if inputs.own.role is None else None)
+        ),
         has_setup_flow=inputs.has_setup_flow,
         sleep_timer_expires_at=inputs.sleep_timer_expires_at,
         sleep_timer_mode=inputs.sleep_timer_mode,
         legacy_ids=inputs.legacy_ids,
+        last_seen=inputs.last_seen,
+        unavailable_since=inputs.unavailable_since,
+        protocols=_protocols(inputs),
     )
     volume_members = _volume_members(inputs, state)
     state.group_volume = _group_volume(state, volume_members)
@@ -383,15 +424,10 @@ def derive_player_state(inputs: StateInputs) -> tuple[PlayerState, StateEffects]
         inputs.now,
         force_adopt=True,
     )
-    # Players that mirror another player's media (grouped/synced members,
-    # protocol children) share the owner's PlayerMedia object, which the owner
-    # already reconciled - only report the jump, never mutate the shared object.
-    mirrors_owner = bool(
-        active_group
-        or synced_to
-        or (inputs.player_type == PlayerType.PROTOCOL and inputs.protocol_parent_id)
-        or foreign_app
-    )
+    # Players that mirror another player's media (grouped/synced members) share
+    # the owner's PlayerMedia object, which the owner already reconciled - only
+    # report the jump, never mutate the shared object.
+    mirrors_owner = bool(active_group or synced_to or foreign_app)
     media_position_jumped = _reconcile_media_anchor(
         prev_state.current_media,
         state.current_media,
@@ -403,13 +439,15 @@ def derive_player_state(inputs: StateInputs) -> tuple[PlayerState, StateEffects]
 
     was_idle = prev_state.playback_state == PlaybackState.IDLE
     is_idle = playback_state == PlaybackState.IDLE
+    device_name = inputs.device_name
     return state, StateEffects(
         position_jumped=position_jumped,
         media_position_jumped=media_position_jumped,
-        default_name=own.name if own.name and inputs.default_name != own.name else None,
+        default_name=device_name if device_name and inputs.default_name != device_name else None,
         left_idle=was_idle and not is_idle,
         went_idle=is_idle and not was_idle,
         foreign_protocol_id=foreign_app.protocol_id if foreign_app else None,
+        clear_active_output=follows_native_leader,
     )
 
 
@@ -419,32 +457,24 @@ def resolve_synced_to(
     peers: Mapping[str, PeerSnapshot],
 ) -> str | None:
     """
-    Return the id of the visible player a player is synced to.
+    Return the id of the player a player is synced to.
 
-    This checks both the sync state of the player itself and that of its linked
-    protocol players, translating protocol player ids to visible player ids.
+    This checks both the sync state of the player's own protocol and that of its
+    audio protocols, translating the id of the leading protocol to its player.
 
-    :param own: What the player's own provider object reports.
-    :param linked: What the linked protocol players report, in link order.
+    :param own: What the player's own protocol reports.
+    :param linked: What the audio protocols report, most preferred first.
     :param peers: The other players referred to, by id.
     """
     if own_synced_to := own.synced_to:
         if sync_parent := peers.get(own_synced_to):
-            return sync_parent.protocol_parent_id or sync_parent.player_id
-        return own_synced_to
-    # check if any of the linked protocol players are synced,
-    # and if so, return the visible player they are synced to
-    for protocol in linked:
-        if not protocol.synced_to:
-            continue
-        if not (sync_parent := peers.get(protocol.synced_to)):
-            continue
-        if sync_parent.type != PlayerType.PROTOCOL:
-            # Sync parent is already a visible player (e.g., native AirPlay player)
             return sync_parent.player_id
-        if sync_parent.protocol_parent_id and (parent := peers.get(sync_parent.protocol_parent_id)):
-            # Sync parent is a protocol player, return its visible parent
-            return parent.player_id
+        return own_synced_to
+    # check if any of the audio protocols are synced,
+    # and if so, return the player they are synced to
+    for protocol in linked:
+        if protocol.synced_to and (sync_parent := peers.get(protocol.synced_to)):
+            return sync_parent.player_id
     return None
 
 
@@ -459,13 +489,6 @@ def resolve_media_queue(inputs: StateInputs) -> QueueSnapshot | None:
     foreign_app = _shown_foreign_app(inputs, synced_to, active_group)
     if synced_to or active_group or foreign_app or inputs.session is not None:
         # the media is that of another player, an app or a live external source
-        return None
-    if (
-        inputs.player_type == PlayerType.PROTOCOL
-        and inputs.protocol_parent_id
-        and inputs.protocol_parent_id in inputs.peers
-    ):
-        # a protocol player has the media of its parent player
         return None
     return _active_queue(inputs, _active_source(inputs, synced_to, active_group, foreign_app))
 
@@ -522,16 +545,41 @@ def reconcile_position_anchor(
     return prev_position, prev_timestamp, False
 
 
+def _reachable(inputs: StateInputs) -> bool:
+    """Return whether any protocol of the player reports its device as reachable."""
+    return inputs.own.available or any(protocol.available for protocol in inputs.linked)
+
+
+def _protocol_needing_setup(inputs: StateInputs) -> ProtocolSnapshot | None:
+    """Return the protocol that has to be set up before the player can be used, if any."""
+    own = inputs.own
+    if own.available_for_playback or any(p.available_for_playback for p in inputs.linked):
+        # a protocol that is reachable and set up makes the player usable as it is
+        return None
+    if own.needs_setup:
+        return own
+    return next((p for p in inputs.linked if p.available and p.needs_setup), None)
+
+
+def _protocols(inputs: StateInputs) -> list[PlayerProtocolInfo]:
+    """Return the protocols the player is made up of, the one of the active output marked."""
+    active_id = inputs.active_output_protocol
+    if active_id == "native":
+        active_id = inputs.own.protocol_id
+    if active_id is None:
+        return inputs.protocols
+    return [
+        replace(protocol, active=True) if protocol.protocol_id == active_id else protocol
+        for protocol in inputs.protocols
+    ]
+
+
 def _active_group(inputs: StateInputs) -> str | None:
     """Return the id of the group player that currently holds the player, if any."""
-    if inputs.player_type == PlayerType.PROTOCOL:
-        # protocol players should not have an active group,
-        # they follow the group state of their parent player
-        return None
     for group in inputs.groups:
         if group.player_id == inputs.player_id:
             continue
-        # Use the power state the group's provider object reports (not `state.powered`)
+        # Use the power state the group's own protocol reports (not `state.powered`)
         # so the check reflects what the group player itself believes — for
         # native/fake control the group's `power()` method sets it directly.
         # `state.powered` is resolved through the power control, which may be None
@@ -552,7 +600,7 @@ def _active_group(inputs: StateInputs) -> str | None:
 def _shown_foreign_app(
     inputs: StateInputs, synced_to: str | None, active_group: str | None
 ) -> ProtocolSnapshot | None:
-    """Return the linked protocol player whose app is shown on the player, if any."""
+    """Return the audio protocol whose app is shown on the player, if any."""
     own = inputs.own
     if (
         (foreign_app := inputs.foreign_app)
@@ -583,13 +631,11 @@ def _playback_position(
     elapsed_time: float | None
     elapsed_time_last_updated: float | None
     # If an output protocol is active (and not native),
-    # use the protocol player's state as the source of truth
-    if inputs.active_protocol and (
-        protocol_player := inputs.peers.get(inputs.active_protocol.protocol_id)
-    ):
-        playback_state = protocol_player.state.playback_state
-        elapsed_time = protocol_player.state.elapsed_time
-        elapsed_time_last_updated = protocol_player.state.elapsed_time_last_updated
+    # use what that protocol reports as the source of truth
+    if active_protocol := inputs.active_protocol:
+        playback_state = active_protocol.playback_state
+        elapsed_time = active_protocol.elapsed_time
+        elapsed_time_last_updated = active_protocol.elapsed_time_last_updated
     elif foreign_app:
         playback_state = foreign_app.playback_state
         elapsed_time = foreign_app.elapsed_time
@@ -616,7 +662,6 @@ def _playback_position(
     if (
         not synced_to
         and not active_group
-        and not (inputs.player_type == PlayerType.PROTOCOL and inputs.protocol_parent_id)
         and (session := inputs.session) is not None
         and session.stream_metadata is not None
         and session.stream_metadata.elapsed_time is not None
@@ -643,12 +688,10 @@ def _active_source(
 
     This is rather complicated as we need to account for various scenarios like:
         - player is grouped/synced: use the active source of the group/parent player
-        - protocol player: prefer the active source of the parent player
         - plugin source active: return the active plugin source
-        - linked protocol active: prefer the active source of the linked protocol player
-        - a protocol player may report an active source that is actually from an
+        - an audio protocol that has a 3rd party source active
+        - the device may report an active source that is actually from an
             active output protocol (e.g. AirPlay)
-        - a protocol player that has a 3rd party source active
     """
     own = inputs.own
     # if the player is grouped/synced, use the active source of the group/parent player
@@ -657,21 +700,12 @@ def _active_source(
             return parent.state.active_source
         return None  # should not happen but just in case
 
-    # if this is a protocol player, prefer the active source of the parent player
-    # a protocol player can not have an active source on its own.
-    if (
-        inputs.player_type == PlayerType.PROTOCOL
-        and inputs.protocol_parent_id
-        and (parent := inputs.peers.get(inputs.protocol_parent_id))
-    ):
-        return parent.state.active_source
-
     # a live external source playing on this player is what it is playing, and MA
     # put it there, so it outranks whatever the device reports about itself
     if inputs.session is not None:
         return inputs.session.active_source
 
-    # an app on a linked protocol player plays past this player, which plays nothing itself
+    # an app on an audio protocol plays past the device's own protocol, which plays nothing
     if foreign_app:
         return foreign_app.active_source
 
@@ -717,9 +751,6 @@ def _active_source_audio(
         if parent_id != inputs.player_id and (parent := inputs.peers.get(parent_id)):
             return parent.state.active_source_audio
         return None
-    if inputs.player_type == PlayerType.PROTOCOL and inputs.protocol_parent_id:
-        if parent := inputs.peers.get(inputs.protocol_parent_id):
-            return parent.state.active_source_audio
     if inputs.session is not None:
         return inputs.session.active_source_audio
     return None
@@ -731,8 +762,6 @@ def _source_list(
     """Return the sources of the player."""
     player_id = inputs.player_id
     sources = UniqueList(inputs.own.source_list)
-    if inputs.player_type == PlayerType.PROTOCOL:
-        return sources
     # always ensure the Music Assistant Queue is in the source list
     mass_source = next((x for x in sources if x.id == player_id), None)
     if mass_source is None:
@@ -772,7 +801,7 @@ def _source_list(
                 repeat_mode=session.repeat_mode,
             )
         )
-    # an app on a linked protocol player, with what that player offers for it; the same
+    # an app on an audio protocol, with what that protocol offers for it; the same
     # service among the player's own sources is another way to play it
     if foreign_app:
         app_source = next(x for x in foreign_app.source_list if x.id == foreign_app.active_source)
@@ -811,13 +840,13 @@ def _supported_features(
     """Return the supported features, based on the supported output protocol(s)."""
     features = inputs.own.supported_features.copy()
     if inputs.active_protocol:
-        # Active linked protocol: add from that specific protocol
+        # Active audio protocol: add from that specific protocol
         for feature in inputs.active_protocol.supported_features:
             if feature in ACTIVE_PROTOCOL_FEATURES:
                 features.add(feature)
     if foreign_app:
         features |= foreign_app.supported_features & FOREIGN_PROTOCOL_FEATURES
-    # Append (allowed features) from all linked protocols
+    # Append (allowed features) from all audio protocols
     for protocol in inputs.linked:
         for feature in protocol.supported_features:
             if feature in PROTOCOL_FEATURES:
@@ -841,32 +870,23 @@ def _supported_features(
         features.add(PlayerFeature.SELECT_SOURCE)
     if inputs.grouping_locked:
         # A provider keeps this group read-only (e.g. an externally-created mixed group);
-        # withdraw grouping even if a linked protocol player would otherwise supply it.
+        # withdraw grouping even if an audio protocol would otherwise supply it.
         features.discard(PlayerFeature.SET_MEMBERS)
     return features
 
 
 def _group_members(inputs: StateInputs, synced_to: str | None) -> list[str]:
-    """Return the ids of the visible players grouped to the player."""
+    """Return the ids of the players grouped to the player."""
     if synced_to:
         # If player is synced to another player, it has no group members itself
         return []
 
-    # Start by translating the reported group members to visible player IDs
-    # This handles cases where a native player (e.g., native AirPlay) has grouped
-    # protocol players (e.g., Sonos AirPlay protocol players) that need translation
-    members: list[str] = []
-    if inputs.player_type == PlayerType.PROTOCOL:
-        # protocol players use their own group members without translation
-        members.extend(inputs.own.group_members)
-    else:
-        for member_id in _visible_player_ids(inputs, set(inputs.own.group_members)):
-            if member_id not in members:
-                members.append(member_id)
+    # Start by translating the reported group members (protocols) to player IDs
+    members = _player_ids(inputs, inputs.own.group_members)
 
-    # If there's an active linked protocol, include its group members (translated)
+    # If there's an active audio protocol, include its group members (translated)
     if inputs.active_protocol:
-        for member_id in _visible_player_ids(inputs, set(inputs.active_protocol.group_members)):
+        for member_id in _player_ids(inputs, inputs.active_protocol.group_members):
             if member_id not in members:
                 members.append(member_id)
 
@@ -880,46 +900,33 @@ def _group_members(inputs: StateInputs, synced_to: str | None) -> list[str]:
     return members
 
 
-def _visible_players(inputs: StateInputs, player_ids: Iterable[str]) -> Iterator[PeerSnapshot]:
+def _players(inputs: StateInputs, ids: Iterable[str]) -> Iterator[PeerSnapshot]:
     """
-    Translate player ids to the visible players they stand for.
+    Translate the ids protocols report to the players they stand for.
 
-    Protocol players are hidden and users interact with visible players
-    (native or universal), so a protocol player id translates to its parent.
-
-    :param player_ids: Ids of visible players and protocol players.
+    :param ids: Ids of protocols and players.
     """
-    for player_id in player_ids:
-        if not (target := inputs.peers.get(player_id)):
-            continue
-        if target.type != PlayerType.PROTOCOL:
-            # Non-protocol player is already visible - include directly
-            yield target
-            continue
-        # This is a protocol player - find its visible parent
-        if not target.protocol_parent_id:
-            continue
-        if parent := inputs.peers.get(target.protocol_parent_id):
-            yield parent
+    for peer_id in ids:
+        if peer := inputs.peers.get(peer_id):
+            yield peer
 
 
-def _visible_player_ids(inputs: StateInputs, player_ids: Iterable[str]) -> set[str]:
-    """Translate player ids to the ids of the visible players they stand for."""
-    return {player.player_id for player in _visible_players(inputs, player_ids)}
+def _player_ids(inputs: StateInputs, ids: Iterable[str]) -> list[str]:
+    """Translate the ids protocols report to the ids of the players they stand for, in order."""
+    return list(dict.fromkeys(player.player_id for player in _players(inputs, ids)))
 
 
 def _can_group_with(
     inputs: StateInputs, synced_to: str | None, active_source: str | None
 ) -> set[str]:
     """
-    Return the ids of the visible players the player can group with.
+    Return the ids of the players the player can group with.
 
-    If player is synced to a native parent: return empty set (already grouped).
-    If player is synced to a protocol: can still group with other players.
-    If no active linked protocol: return can_group_with from all active output protocols.
-    If active linked protocol: return native can_group_with + active protocol's.
+    If player is synced: return empty set (already grouped).
+    Otherwise what its own protocol can group with, plus what its audio protocols can
+    while no external source plays.
 
-    All protocol player IDs are translated to their visible parent player IDs.
+    All protocol IDs are translated to the IDs of the players they are attached to.
     """
 
     def _should_include_player(player: PeerSnapshot) -> bool:
@@ -930,7 +937,7 @@ def _can_group_with(
             return False  # Don't include self
         if player.grouping_locked:
             # The candidate keeps its own group read-only (e.g. an externally-created
-            # mixed group); never offer it as a target, including via a linked protocol
+            # mixed group); never offer it as a target, including via an audio protocol
             # that would otherwise reintroduce it.
             return False
         # Don't include (playing) players that have group members (they are group leaders)
@@ -949,50 +956,29 @@ def _can_group_with(
 
     if inputs.grouping_locked:
         # A provider keeps this group read-only; offer no grouping targets, including
-        # any a linked protocol player would otherwise contribute.
+        # any an audio protocol would otherwise contribute.
         return set()
 
-    candidates = [
-        candidate
-        for candidate_id in inputs.can_group_with
-        if (candidate := inputs.peers.get(candidate_id))
-        and candidate.type not in (PlayerType.UNKNOWN, PlayerType.SOURCE)
-    ]
-    # Scenario 1: Player is a protocol player - just return the candidates
-    if inputs.player_type == PlayerType.PROTOCOL:
-        return {x.player_id for x in candidates}
+    # always start with the options of the player's own protocol. These name protocols,
+    # e.g. the AirPlay protocols of other players a native AirPlay player can group with
+    result = {
+        candidate.player_id
+        for candidate in _players(inputs, inputs.can_group_with)
+        if candidate.type not in (PlayerType.UNKNOWN, PlayerType.SOURCE)
+        and _should_include_player(candidate)
+    }
 
-    result: set[str] = set()
-    # always start with the player's own can_group_with options
-    # NOTE we need to translate protocol player IDs to visible player IDs here as well,
-    # to cover cases where a native player (e.g., native AirPlay) has grouped protocol players
-    # (e.g., Sonos AirPlay protocol players)
-    for candidate in candidates:
-        if candidate.type == PlayerType.PROTOCOL:
-            if not candidate.protocol_parent_id:
-                continue
-            parent = inputs.peers.get(candidate.protocol_parent_id)
-            if not parent or not _should_include_player(parent):
-                continue
-            result.add(parent.player_id)
-        elif _should_include_player(candidate):
-            result.add(candidate.player_id)
-
-    # Scenario 2: External source is active - don't include protocol-based grouping
+    # External source is active - don't include protocol-based grouping
     # When the device plays something MA does not produce (a TV input, line-in, its own
     # streaming endpoint), grouping via protocols (AirPlay, Sendspin, etc.) wouldn't
     # work - only native grouping is available.
     if _plays_external_source(inputs, active_source):
         return result
 
-    # Translate can_group_with from the linked protocol(s) and add to result
-    for protocol in inputs.linked:
-        if not (protocol_player := inputs.peers.get(protocol.protocol_id)):
-            continue
-        for player in _visible_players(inputs, protocol_player.state.can_group_with):
-            if not _should_include_player(player):
-                continue
-            result.add(player.player_id)
+    # Add the options of the audio protocol(s)
+    for candidate in _players(inputs, inputs.protocol_can_group_with):
+        if _should_include_player(candidate):
+            result.add(candidate.player_id)
     return result
 
 
@@ -1030,10 +1016,6 @@ def _current_media(
         if parent_id != inputs.player_id and (parent := inputs.peers.get(parent_id)):
             return parent.state.current_media
         return None  # if parent player not found, return None for current media
-    # if this is a protocol player, use the current_media of the parent player
-    if inputs.player_type == PlayerType.PROTOCOL and inputs.protocol_parent_id:
-        if parent := inputs.peers.get(inputs.protocol_parent_id):
-            return parent.state.current_media
     # a live external source reports what it plays itself
     if inputs.session is not None:
         return _session_media(inputs, inputs.session, elapsed_time, elapsed_time_last_updated)
@@ -1042,26 +1024,28 @@ def _current_media(
     # if MA queue is active, return those details
     if active_queue := _active_queue(inputs, active_source):
         return _queue_media(inputs, active_queue)
-    # return the media the player reports itself if no group/queue is active
-    if own.current_media:
-        image_url = own.current_media.image_url
+    # return the media the device reports itself if no group/queue is active: on its
+    # own protocol, else on the protocol that renders the audio
+    reporting = own if own.current_media or not inputs.active_protocol else inputs.active_protocol
+    if media := reporting.current_media:
+        image_url = media.image_url
         media_elapsed_time, media_elapsed_time_last_updated = _resolve_position(
-            own.current_media.elapsed_time,
-            own.current_media.elapsed_time_last_updated,
-            own.elapsed_time,
-            own.elapsed_time_last_updated,
+            media.elapsed_time,
+            media.elapsed_time_last_updated,
+            reporting.elapsed_time,
+            reporting.elapsed_time_last_updated,
         )
         return PlayerMedia(
-            uri=own.current_media.uri,
-            media_type=own.current_media.media_type,
-            title=own.current_media.title,
-            artist=own.current_media.artist,
-            album=own.current_media.album,
+            uri=media.uri,
+            media_type=media.media_type,
+            title=media.title,
+            artist=media.artist,
+            album=media.album,
             image_url=image_url,
             palette=_resolved_palette(inputs, image_url),
-            duration=own.current_media.duration,
-            source_id=own.current_media.source_id or active_source,
-            queue_item_id=own.current_media.queue_item_id,
+            duration=media.duration,
+            source_id=media.source_id or active_source,
+            queue_item_id=media.queue_item_id,
             elapsed_time=media_elapsed_time,
             elapsed_time_last_updated=media_elapsed_time_last_updated,
         )
@@ -1190,7 +1174,7 @@ def _session_media(
         # resolve, as the announcement restore does
         queue_session_id=session.playback_session_id,
         # the published playback position already resolves the source's own position
-        # against the clock this player reports (protocol player, or its own) - taking it
+        # against the clock this player reports (an audio protocol's, or its own) - taking it
         # from there is what keeps current_media and PlayerState.elapsed_time in agreement
         elapsed_time=int(elapsed_time) if elapsed_time is not None else None,
         elapsed_time_last_updated=elapsed_time_last_updated,
@@ -1288,7 +1272,9 @@ def _volume_members(inputs: StateInputs, state: PlayerState) -> list[PlayerState
         if (peer.player_id if peer else member_id) == inputs.player_id:
             if inputs.player_type != PlayerType.PLAYER:
                 continue
-            available_for_playback: bool | None = inputs.own.available_for_playback
+            available_for_playback: bool | None = inputs.own.available_for_playback or any(
+                protocol.available_for_playback for protocol in inputs.linked
+            )
             member = state
         elif peer:
             available_for_playback = peer.available_for_playback

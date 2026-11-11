@@ -26,12 +26,11 @@ from music_assistant.constants import (
 )
 from music_assistant.helpers.datetime import from_iso_string
 from music_assistant.models.player import (
-    AnnouncementFeature,
     DeviceInfo,
     PlayerMedia,
     PlayerSource,
 )
-from music_assistant.models.player_protocol import PlayerProtocol
+from music_assistant.models.player_protocol import AnnouncementFeature, PlayerProtocol
 from music_assistant.models.player_provider import PlayerProvider
 from music_assistant.providers.hass.constants import (
     OFF_STATES,
