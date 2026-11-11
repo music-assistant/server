@@ -416,6 +416,67 @@ async def test_failed_attach_to_a_player_that_exists_leaves_that_player_alone(
     assert scenario.player_of(audio) == player_id
 
 
+@pytest.mark.parametrize("ends", ["failed", "interrupted"])
+async def test_incomplete_first_attach_of_another_protocol_stores_nothing_of_it(
+    scenario: Scenario, ends: str
+) -> None:
+    """A new protocol of a player that does not get attached is no output of that player."""
+    sonos = await scenario.add_provider("sonos")
+    airplay = await scenario.add_provider("airplay")
+    native = sonos.protocol("RINCON_KITCHEN", "Kitchen", identifiers=KITCHEN)
+    audio = airplay.protocol("ap_kitchen", "Kitchen", role="audio", identifiers=KITCHEN)
+    await scenario.attach(native)
+    player_id = scenario.single_player(native).player_id
+    players = scenario.mass.players
+
+    if ends == "failed":
+
+        async def _refuse(player: Player) -> None:  # noqa: ARG001
+            raise RuntimeError("device refused")
+
+        audio.on_attach = _refuse  # type: ignore[method-assign]
+        with pytest.raises(RuntimeError, match="device refused"):
+            await players.attach(audio)
+    else:
+        gate = asyncio.Event()
+        _record_hooks(audio, gate)
+        task = await scenario.command(players.attach(audio))
+        await players.detach("ap_kitchen")
+        gate.set()
+        await scenario.settle()
+        await task
+
+    state = scenario.player(player_id)
+    assert state is not None
+    assert [info.protocol_id for info in state.protocols] == ["RINCON_KITCHEN"]
+    await scenario.idle()
+    assert _stored(scenario) == ([player_id], ["RINCON_KITCHEN"])
+
+
+async def test_failed_attach_of_a_protocol_that_returns_keeps_its_config(
+    scenario: Scenario,
+) -> None:
+    """A protocol whose attach fails on its return keeps what was stored for it before."""
+    sonos = await scenario.add_provider("sonos")
+    airplay = await scenario.add_provider("airplay")
+    native = sonos.protocol("RINCON_KITCHEN", "Kitchen", identifiers=KITCHEN)
+    audio = airplay.protocol("ap_kitchen", "Kitchen", role="audio", identifiers=KITCHEN)
+    await scenario.attach(native)
+    await scenario.attach(audio)
+    player_id = scenario.single_player(native, audio).player_id
+    await scenario.detach(audio)
+
+    async def _refuse(player: Player) -> None:  # noqa: ARG001
+        raise RuntimeError("device refused")
+
+    audio.on_attach = _refuse  # type: ignore[method-assign]
+    with pytest.raises(RuntimeError, match="device refused"):
+        await scenario.mass.players.attach(audio)
+    await scenario.idle()
+
+    assert _stored(scenario) == ([player_id], ["RINCON_KITCHEN", "ap_kitchen"])
+
+
 @pytest.mark.parametrize("stopping", ["provider", "server"])
 async def test_nothing_attaches_while_its_provider_or_the_server_stops(
     scenario: Scenario, stopping: str

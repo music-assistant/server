@@ -207,12 +207,14 @@ class _Attach:
     takes it away, after which the attach stops at its next step.
     """
 
-    __slots__ = ("minted_player_id", "new_player")
+    __slots__ = ("minted_player_id", "new_player", "new_protocol_record")
 
     def __init__(self) -> None:
         """Initialize the state of an attach."""
         # id of the player whose config this attach stored for a new device
         self.minted_player_id: str | None = None
+        # id of the protocol whose config this attach stored for a player that exists
+        self.new_protocol_record: str | None = None
         # the player this attach created, unpublished until the attach completes
         self.new_player: Player | None = None
 
@@ -2775,6 +2777,8 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
                     self._hold_protocol(protocol)
                 return
             player_id = attach.minted_player_id = self._mint_player(protocol)
+        elif self.mass.config.get_protocol_record(protocol_id) is None:
+            attach.new_protocol_record = protocol_id
         self._store_protocol(protocol, player_id)
         if not self.wants_protocol(protocol_id):
             # no player for a device the user does not want: its provider keeps the
@@ -2815,7 +2819,7 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
             # a hook may have finished after the detach that stopped this attach, which
             # also left a player nobody saw yet to it
             await self._run_on_detach(protocol)
-            self._discard_unpublished_player(attach)
+            self._discard_incomplete_attach(attach)
             return
         self._store_player_base(player)
         if not player.initialized.is_set():
@@ -2877,20 +2881,28 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
             if player is not None:
                 player.remove_protocol(protocol_id)
                 protocol.set_player(None)
-        self._discard_unpublished_player(attach)
+        self._discard_incomplete_attach(attach)
         # protocols claim resources (event subscriptions, connections) that only
         # on_detach releases, and a failing hook may have claimed them after a detach
         await self._run_on_detach(protocol)
 
-    def _discard_unpublished_player(self, attach: _Attach) -> None:
+    def _discard_incomplete_attach(self, attach: _Attach) -> None:
         """
         Drop what an attach that did not complete created and nobody saw yet.
 
-        That is the player it created, and the config it stored for a new device: a
-        device that is found again starts from scratch.
+        That is the player it created, and the config it stored for a new device or for
+        a new protocol of a player: a device that is found again starts from scratch.
 
         :param attach: The state of the attach.
         """
+        if (protocol_id := attach.new_protocol_record) and (
+            record := self.mass.config.get_protocol_record(protocol_id)
+        ):
+            self.mass.config.remove_protocol_record(protocol_id)
+            if player := self._players.get(str(record.get("player_id"))):
+                player.remove_protocol(protocol_id, forget=True)
+                if player.initialized.is_set():
+                    player.refresh_state()
         player = attach.new_player
         if player is not None and player.initialized.is_set():
             return
