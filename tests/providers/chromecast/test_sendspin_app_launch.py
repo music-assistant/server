@@ -43,7 +43,7 @@ def _make_bridge(
     mass.config.get_protocol_value = MagicMock(return_value=None)
 
     cast_player = MagicMock()
-    cast_player.player_id = "cc_player"
+    cast_player.protocol_id = "cc_player"
     cast_player.display_name = "Esszimmer"
     cast_player.cc.app_id = None
     receiver = cast_player.cc.socket_client.receiver_controller
