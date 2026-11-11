@@ -370,6 +370,14 @@ def _player_for_volume_restore(
     mass.cache.get = AsyncMock(return_value=legacy_cache)
     mass.cache.set = AsyncMock()
     mass.players.register_or_update = AsyncMock()
+
+    def set_raw_player_config_value(_player_id: str, key: str, value: object) -> None:
+        # a new player has no config until it is registered
+        if not mass.players.register_or_update.await_count:
+            raise KeyError(_player_id)
+        stored[key] = value
+
+    mass.config.set_raw_player_config_value.side_effect = set_raw_player_config_value
     return player, mass
 
 
@@ -400,11 +408,13 @@ async def test_setup_restores_volume_without_a_valid_cache_entry(
     player.client.mute.assert_awaited_once_with(expected_muted)
     player.client.volume_set.assert_awaited_once_with(expected_volume)
     mass.players.register_or_update.assert_awaited_once_with(player)
+    assert stored[CONF_STORED_VOLUME] == expected_volume
 
 
 async def test_volume_commands_store_volume_and_mute_without_expiry() -> None:
     """Volume and mute commands keep their value in the player config, not the cache."""
     player, mass = _player_for_volume_restore({}, None)
+    await mass.players.register_or_update(player)
 
     await player.volume_set(100)
     await player.volume_mute(True)

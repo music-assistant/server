@@ -163,6 +163,8 @@ class SqueezelitePlayer(Player):
         await self.client.mute(init_muted)
         await self.client.volume_set(init_volume)
         await self.mass.players.register_or_update(self)
+        # persist a volume restored from the legacy cache before that entry expires
+        self.mass.config.set_raw_player_config_value(player_id, CONF_STORED_VOLUME, init_volume)
 
     async def get_config_entries(self) -> list[ConfigEntry]:
         """Return all (provider/player specific) Config Entries for the player."""
