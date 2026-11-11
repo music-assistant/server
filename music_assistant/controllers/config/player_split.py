@@ -61,6 +61,9 @@ LEGACY_UNIVERSAL_PLAYER = "universal_player"
 # the domains whose players are no device: their protocol has the virtual role
 VIRTUAL_DOMAINS = frozenset({"sync_group", "universal_group", "auracast"})
 
+# the lists of player ids a group stores: its members and the players it allows as one
+GROUP_MEMBER_KEYS = (CONF_GROUP_MEMBERS, "allowed_members")
+
 # values the server or a provider stores by itself, which do not make a record one the
 # user customised
 AUTOMATIC_KEYS = frozenset(
@@ -485,9 +488,10 @@ def _repair_group_members(protocols: dict[str, Any], edges: dict[str, str]) -> N
     for record in protocols.values():
         if not isinstance(record, dict):
             continue
-        members = _values(record).get(CONF_GROUP_MEMBERS)
-        if not isinstance(members, list):
-            continue
-        repaired = list(dict.fromkeys(edges.get(member_id, member_id) for member_id in members))
-        if repaired != members:
-            record["values"][CONF_GROUP_MEMBERS] = repaired
+        for key in GROUP_MEMBER_KEYS:
+            members = _values(record).get(key)
+            if not isinstance(members, list):
+                continue
+            repaired = list(dict.fromkeys(edges.get(member_id, member_id) for member_id in members))
+            if repaired != members:
+                record["values"][key] = repaired

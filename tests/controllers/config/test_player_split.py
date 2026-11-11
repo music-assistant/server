@@ -524,7 +524,7 @@ def test_outputs_of_a_disabled_player_are_enabled_again() -> None:
 
 
 def test_group_members_name_players() -> None:
-    """A member list that names a protocol names its player after the split, once."""
+    """A member or allow list that names a protocol names its player after the split, once."""
     wrapper = _record("up0010", UNIVERSAL_PLAYER)
     airplay = _protocol("ap_10", AIRPLAY, "up0010")
     native = _record("sonos_10", SONOS)
@@ -532,7 +532,11 @@ def test_group_members_name_players() -> None:
         "syncgroup_1",
         "sync_group",
         "group",
-        values={"group_members": ["ap_10", "sonos_10", "up0010"], "power_control": "fake"},
+        values={
+            "group_members": ["ap_10", "sonos_10", "up0010"],
+            "allowed_members": ["sonos_10", "ap_10", "up0010"],
+            "power_control": "fake",
+        },
     )
     universal_group = _record(
         "ugp_1", "universal_group", "group", values={"group_members": ["ap_10", "sonos_10"]}
@@ -546,7 +550,7 @@ def test_group_members_name_players() -> None:
         "sync_group",
         "syncgroup_1",
         role="virtual",
-        values={"group_members": ["up0010", "sonos_10"]},
+        values={"group_members": ["up0010", "sonos_10"], "allowed_members": ["sonos_10", "up0010"]},
     )
     assert result[CONF_PLAYER_PROTOCOLS]["ugp_1"]["role"] == "virtual"
     assert result[CONF_PLAYER_PROTOCOLS]["ugp_1"]["values"] == {
