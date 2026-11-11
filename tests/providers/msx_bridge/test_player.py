@@ -227,7 +227,7 @@ async def test_play_resume(player: MSXPlayer) -> None:
         await player.play()
 
     assert player._attr_playback_state == PlaybackState.PLAYING
-    mock_notify.assert_called_once_with(player.player_id)
+    mock_notify.assert_called_once_with(player.protocol_id)
 
 
 async def test_pause_accumulates_time(player: MSXPlayer) -> None:
@@ -268,7 +268,7 @@ async def test_pause_notifies_pause_on_msx(player: MSXPlayer) -> None:
         await player.pause()
 
     assert player._attr_playback_state == PlaybackState.PAUSED
-    mock_notify.assert_called_once_with(player.player_id)
+    mock_notify.assert_called_once_with(player.protocol_id)
 
 
 async def test_stop_clears_all(player: MSXPlayer) -> None:
@@ -325,7 +325,7 @@ async def test_volume_set_reaches_native_client(
     server = MSXHTTPServer(provider, 0)
     provider.http_server = server
     ws = Mock(closed=False, send_str=AsyncMock())
-    server._ws_clients[player.player_id] = {ws}
+    server._ws_clients[player.protocol_id] = {ws}
     tasks: list[asyncio.Task[Any]] = []
     mass_mock.create_task = Mock(side_effect=lambda coro: tasks.append(asyncio.ensure_future(coro)))
 
@@ -450,13 +450,13 @@ async def test_play_media_non_queue_sends_broadcast_play(
 
     mock_playlist.assert_not_called()
     mock_play.assert_called_once_with(
-        player.player_id,
+        player.protocol_id,
         title="Track 1",
         artist="Artist 1",
         image_url="http://ma-server/image.png",
         duration=180,
-        next_action=f"execute:/api/next/{player.player_id}",
-        prev_action=f"execute:/api/previous/{player.player_id}",
+        next_action=f"execute:/api/next/{player.protocol_id}",
+        prev_action=f"execute:/api/previous/{player.protocol_id}",
     )
 
 
@@ -671,7 +671,7 @@ async def test_resume_sends_ws_resume(player: MSXPlayer) -> None:
 
     assert player._attr_playback_state == PlaybackState.PLAYING
     assert player._attr_elapsed_time_last_updated is not None
-    mock_notify.assert_called_once_with(player.player_id)
+    mock_notify.assert_called_once_with(player.protocol_id)
 
 
 async def test_resume_skips_ws_when_skip_notify(player: MSXPlayer) -> None:
@@ -705,11 +705,10 @@ async def test_pause_skips_ws_when_skip_notify(player: MSXPlayer) -> None:
     mock_notify.assert_not_called()
 
 
-async def test_disabled_player_rejects_direct_media_and_resume(
-    player: MSXPlayer, player_config_mock: Mock
-) -> None:
+async def test_disabled_player_rejects_direct_media_and_resume(player: MSXPlayer) -> None:
     """Native and delayed core commands cannot start a disabled player."""
-    player_config_mock.enabled = False
+    # the protocol of a disabled player is detached
+    player.set_player(None)
     with pytest.raises(PlayerUnavailableError):
         await player.play_media(PlayerMedia(uri="http://ma/track"))
     with pytest.raises(PlayerUnavailableError):
