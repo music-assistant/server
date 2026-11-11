@@ -403,6 +403,67 @@ async def test_removed_protocol_takes_its_player_with_it_when_it_was_the_last(
     assert scenario.events(EventType.PLAYER_REMOVED) == [Event(EventType.PLAYER_REMOVED, player_id)]
 
 
+async def test_removed_protocol_takes_the_protocols_that_ride_on_it_along(
+    scenario: Scenario,
+) -> None:
+    """
+    A protocol that rides on a removed one goes with it, and the player with its last one.
+
+    A protocol that rides on another protocol of the same player stays.
+    """
+    airplay = await scenario.add_provider("airplay")
+    chromecast = await scenario.add_provider("chromecast")
+    sendspin = await scenario.add_provider("sendspin")
+    base_ap = airplay.protocol("ap_kitchen", "Kitchen", role="audio", identifiers=KITCHEN)
+    base_cast = chromecast.protocol("cast_kitchen", "Kitchen", role="audio", identifiers=KITCHEN)
+    await scenario.attach(base_ap)
+    await scenario.attach(base_cast)
+    player_id = scenario.single_player(base_ap, base_cast).player_id
+    bridge = sendspin.protocol(
+        "spb_kitchen", "Kitchen", role="audio", underlying_protocol_id="ap_kitchen"
+    )
+    await scenario.attach(bridge)
+    assert scenario.player_of(bridge) == player_id
+
+    await scenario.mass.players.remove_protocol("cast_kitchen")
+    await scenario.settle()
+
+    assert _stored(scenario) == ([player_id], ["ap_kitchen", "spb_kitchen"])
+    assert scenario.player_of(bridge) == player_id
+    scenario.clear_events()
+
+    await scenario.mass.players.remove_protocol("ap_kitchen")
+    await scenario.idle()
+
+    assert _stored(scenario) == ([], [])
+    assert scenario.visible_players() == []
+    assert scenario.events(EventType.PLAYER_REMOVED) == [Event(EventType.PLAYER_REMOVED, player_id)]
+
+
+async def test_a_removed_provider_takes_the_protocols_that_ride_on_its_own_along(
+    scenario: Scenario,
+) -> None:
+    """The player of a device goes with the provider of its only protocol, bridge and all."""
+    airplay = await scenario.add_provider("airplay")
+    sendspin = await scenario.add_provider("sendspin")
+    base = airplay.protocol("ap_kitchen", "Kitchen", role="audio", identifiers=KITCHEN)
+    await scenario.attach(base)
+    player_id = scenario.player_of(base)
+    bridge = sendspin.protocol(
+        "spb_kitchen", "Kitchen", role="audio", underlying_protocol_id="ap_kitchen"
+    )
+    await scenario.attach(bridge)
+    assert scenario.player_of(bridge) == player_id
+    # the bridge goes when its provider unloads the protocol it rides on
+    await scenario.detach(bridge)
+
+    await scenario.remove_provider(airplay)
+    await scenario.idle()
+
+    assert _stored(scenario) == ([], [])
+    assert scenario.visible_players() == []
+
+
 async def test_removal_reaches_the_protocol_of_a_disabled_player(scenario: Scenario) -> None:
     """A provider is told about the removal of a device it holds without it being attached."""
     sonos = await scenario.add_provider("sonos")
