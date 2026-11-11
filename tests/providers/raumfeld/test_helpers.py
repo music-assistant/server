@@ -26,8 +26,8 @@ from music_assistant.providers.raumfeld.helpers import (
     parse_serial_number,
     play_mode_for,
     query_last_change,
-    room_udn_to_player_id,
-    serial_to_player_id,
+    room_udn_to_protocol_id,
+    serial_to_protocol_id,
 )
 
 _LINE_IN_DIDL = (
@@ -45,18 +45,18 @@ _LINE_IN_DIDL = (
 )
 
 
-def test_room_udn_to_player_id() -> None:
-    """The fallback player id is derived from the room UDN, for a room with a shared serial."""
-    assert room_udn_to_player_id("uuid:1234-abcd") == "raumfeld_1234-abcd"
+def test_room_udn_to_protocol_id() -> None:
+    """The fallback protocol id is derived from the room UDN, for a room with a shared serial."""
+    assert room_udn_to_protocol_id("uuid:1234-abcd") == "raumfeld_1234-abcd"
     # the same UDN always yields the same id (unlike a mutable room name)
-    assert room_udn_to_player_id("uuid:1234-abcd") == room_udn_to_player_id("uuid:1234-abcd")
+    assert room_udn_to_protocol_id("uuid:1234-abcd") == room_udn_to_protocol_id("uuid:1234-abcd")
 
 
-def test_serial_to_player_id() -> None:
-    """The player id comes from the hardware serial, normalised and punctuation-free."""
-    assert serial_to_player_id("04:a3:16:f3:b6:c4") == "raumfeld_04a316f3b6c4"
+def test_serial_to_protocol_id() -> None:
+    """The protocol id comes from the hardware serial, normalised and punctuation-free."""
+    assert serial_to_protocol_id("04:a3:16:f3:b6:c4") == "raumfeld_04a316f3b6c4"
     # the same device always yields the same id, however the serial is punctuated or cased
-    assert serial_to_player_id("04-A3-16-F3-B6-C4") == serial_to_player_id("04:a3:16:f3:b6:c4")
+    assert serial_to_protocol_id("04-A3-16-F3-B6-C4") == serial_to_protocol_id("04:a3:16:f3:b6:c4")
 
 
 def test_parse_duration() -> None:
