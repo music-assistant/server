@@ -123,6 +123,23 @@ async def test_position_frozen_briefly_at_the_end_is_still_playing() -> None:
     assert player._attr_playback_state == PlaybackState.PLAYING
 
 
+async def test_pause_at_the_end_is_not_the_stream_ending() -> None:
+    """Time spent paused near the end doesn't count towards the end of the stream."""
+    player = _make_player()
+    await player.play_media(_media("first"))
+    playing: dict[str, Any] = {"@state": "play", "position": "299500 ms", "duration": "300000 ms"}
+    player.roku._get_media_state.return_value = playing  # type: ignore[attr-defined]
+    await player.poll()
+
+    player._position_last_moved = time.time() - 60
+    player.roku._get_media_state.return_value = {**playing, "@state": "pause"}  # type: ignore[attr-defined]
+    await player.poll()
+    player.roku._get_media_state.return_value = playing  # type: ignore[attr-defined]
+    await player.poll()
+
+    assert player._attr_playback_state == PlaybackState.PLAYING
+
+
 async def test_position_frozen_mid_track_is_still_playing() -> None:
     """Only a position at the end of the stream counts as the stream having ended."""
     player = _make_player()
