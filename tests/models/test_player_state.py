@@ -96,11 +96,6 @@ def _peer(player_id: str, **values: Any) -> PeerSnapshot:
     return make_peer_snapshot(player_id, make_player_state(player_id, **values), **snapshot_values)
 
 
-def _protocol_peer(protocol_id: str, **values: Any) -> PeerSnapshot:
-    """Return a protocol player that is linked to the player."""
-    return _peer(protocol_id, type=PlayerType.PROTOCOL, protocol_parent_id=PLAYER_ID, **values)
-
-
 def _group(group_id: str = "group_1", **values: Any) -> GroupSnapshot:
     """
     Return a powered group player that holds the player.
@@ -177,7 +172,7 @@ def _session(source: AudioSource | None = None, **values: Any) -> AudioSourceSes
 
 
 def _app_protocol(**values: Any) -> ProtocolSnapshot:
-    """Return a linked protocol player that plays an app Music Assistant did not start."""
+    """Return an audio protocol that plays an app Music Assistant did not start."""
     app_values: dict[str, Any] = {
         "playback_state": PlaybackState.PLAYING,
         "elapsed_time": 12.0,
@@ -234,7 +229,9 @@ class TestPublishedValues:
             sleep_timer_expires_at=NOW + 60,
             sleep_timer_mode=SleepTimerMode.DURATION,
             extra_attributes={"key": "value"},
-            own=_own(needs_setup=True, setup_reason="pairing_required"),
+            own=_own(
+                needs_setup=True, setup_reason="pairing_required", available_for_playback=False
+            ),
         )
 
         assert state.player_id == PLAYER_ID
@@ -305,7 +302,11 @@ class TestAvailability:
         state = _derive(
             enabled=enabled,
             offline_by_power_control=switched_off,
-            own=_own(available=reachable, needs_setup=needs_setup),
+            own=_own(
+                available=reachable,
+                needs_setup=needs_setup,
+                available_for_playback=reachable and not needs_setup,
+            ),
         )
 
         assert state.available is available
@@ -321,16 +322,10 @@ class TestSyncedTo:
 
         assert state.synced_to == "leader"
 
-    def test_leader_that_is_a_protocol_player_is_named_by_its_parent(self) -> None:
-        """Clients only know visible players, so a protocol leader shows as its parent."""
+    def test_leader_named_by_its_protocol_is_the_player_of_that_protocol(self) -> None:
+        """Clients only know players, so a leading protocol shows as the player it belongs to."""
         state = _derive(
-            own=_own(synced_to="airplay_leader"),
-            peers={
-                "airplay_leader": _peer(
-                    "airplay_leader", type=PlayerType.PROTOCOL, protocol_parent_id="leader"
-                ),
-                "leader": _peer("leader"),
-            },
+            own=_own(synced_to="airplay_leader"), peers={"airplay_leader": _peer("leader")}
         )
 
         assert state.synced_to == "leader"
@@ -341,44 +336,27 @@ class TestSyncedTo:
 
         assert state.synced_to == "gone"
 
-    def test_linked_protocol_synced_to_a_visible_player_names_that_player(self) -> None:
-        """A sync of a linked protocol player is a sync of the player."""
+    def test_linked_protocol_synced_to_a_player_names_that_player(self) -> None:
+        """A sync of an audio protocol of the player is a sync of the player."""
         state = _derive(
             linked=(make_protocol_snapshot("airplay_1", synced_to="leader"),),
-            peers={"airplay_1": _protocol_peer("airplay_1"), "leader": _peer("leader")},
+            peers={"leader": _peer("leader")},
         )
 
         assert state.synced_to == "leader"
 
-    def test_linked_protocol_synced_to_a_protocol_player_names_its_parent(self) -> None:
-        """A protocol player leading the sync shows as the visible player it belongs to."""
+    def test_linked_protocol_synced_to_a_protocol_names_its_player(self) -> None:
+        """A protocol leading the sync shows as the player it belongs to."""
         state = _derive(
             linked=(make_protocol_snapshot("airplay_1", synced_to="airplay_leader"),),
-            peers={
-                "airplay_1": _protocol_peer("airplay_1"),
-                "airplay_leader": _peer(
-                    "airplay_leader", type=PlayerType.PROTOCOL, protocol_parent_id="leader"
-                ),
-                "leader": _peer("leader"),
-            },
+            peers={"airplay_leader": _peer("leader")},
         )
 
         assert state.synced_to == "leader"
 
-    @pytest.mark.parametrize("parent_id", [None, "gone"], ids=["unlinked", "parent_gone"])
-    def test_linked_protocol_synced_to_a_protocol_without_a_player_is_not_synced(
-        self, parent_id: str | None
-    ) -> None:
-        """A protocol leader that belongs to no visible player gives nothing to sync to."""
-        state = _derive(
-            linked=(make_protocol_snapshot("airplay_1", synced_to="airplay_leader"),),
-            peers={
-                "airplay_1": _protocol_peer("airplay_1"),
-                "airplay_leader": _peer(
-                    "airplay_leader", type=PlayerType.PROTOCOL, protocol_parent_id=parent_id
-                ),
-            },
-        )
+    def test_linked_protocol_synced_to_a_protocol_without_a_player_is_not_synced(self) -> None:
+        """A leading protocol that belongs to no player gives nothing to sync to."""
+        state = _derive(linked=(make_protocol_snapshot("airplay_1", synced_to="airplay_leader"),))
 
         assert state.synced_to is None
 
@@ -418,16 +396,6 @@ class TestActiveGroup:
 
         assert state.active_group == "group_1"
 
-    def test_protocol_player_has_no_active_group(self) -> None:
-        """A protocol player follows the group state of its parent player."""
-        group = _group()
-
-        state = _derive(
-            player_type=PlayerType.PROTOCOL, groups=(group,), peers={"group_1": _group_peer(group)}
-        )
-
-        assert state.active_group is None
-
     def test_group_does_not_hold_itself(self) -> None:
         """A group player listing its own id is not its own active group."""
         group = _group(PLAYER_ID)
@@ -440,17 +408,13 @@ class TestActiveGroup:
 
 
 class TestForeignApp:
-    """An app on a linked protocol player that Music Assistant did not start."""
+    """An app on an audio protocol that Music Assistant did not start."""
 
     def test_app_shows_on_an_idle_player(self) -> None:
-        """Source, state, position, media and controls come from the protocol player."""
+        """Source, state, position, media and controls come from the protocol that plays the app."""
         app = _app_protocol()
 
-        state, effects = derive_player_state(
-            make_state_inputs(
-                linked=(app,), foreign_app=app, peers={"cast_1": _protocol_peer("cast_1")}
-            )
-        )
+        state, effects = derive_player_state(make_state_inputs(linked=(app,), foreign_app=app))
 
         assert state.active_source == "tunein"
         assert state.playback_state == PlaybackState.PLAYING
@@ -550,21 +514,16 @@ class TestPlaybackPosition:
         assert state.elapsed_time_last_updated == NOW - 1
 
     def test_active_output_protocol_is_the_source_of_truth(self) -> None:
-        """While a protocol player renders the audio, its published playback is the player's."""
-        protocol = make_protocol_snapshot("airplay_1", playback_state=PlaybackState.IDLE)
+        """While an audio protocol renders the audio, the playback it reports is the player's."""
+        protocol = make_protocol_snapshot(
+            "airplay_1",
+            playback_state=PlaybackState.PLAYING,
+            elapsed_time=30.0,
+            elapsed_time_last_updated=NOW - 5,
+        )
 
         state = _derive(
-            active_output_protocol="airplay_1",
-            active_protocol=protocol,
-            linked=(protocol,),
-            peers={
-                "airplay_1": _protocol_peer(
-                    "airplay_1",
-                    playback_state=PlaybackState.PLAYING,
-                    elapsed_time=30.0,
-                    elapsed_time_last_updated=NOW - 5,
-                )
-            },
+            active_output_protocol="airplay_1", active_protocol=protocol, linked=(protocol,)
         )
 
         assert state.playback_state == PlaybackState.PLAYING
@@ -640,13 +599,8 @@ class TestPlaybackPosition:
                 "peers": {"group_1": _group_peer(_group())},
                 "own": _own(elapsed_time=8.0),
             },
-            {
-                "player_type": PlayerType.PROTOCOL,
-                "protocol_parent_id": "parent",
-                "own": _own(elapsed_time=8.0),
-            },
         ],
-        ids=["synced", "grouped", "protocol_child"],
+        ids=["synced", "grouped"],
     )
     def test_live_source_position_is_only_for_the_player_playing_the_source(
         self, values: dict[str, Any]
@@ -713,17 +667,6 @@ class TestActiveSource:
     def test_player_synced_to_an_unknown_leader_has_no_source(self) -> None:
         """Without the leader there is no source to take over."""
         assert _derive(own=_own(synced_to="gone")).active_source is None
-
-    def test_protocol_player_takes_the_source_of_its_parent(self) -> None:
-        """A protocol player can not have an active source of its own."""
-        state = _derive(
-            player_type=PlayerType.PROTOCOL,
-            protocol_parent_id="parent",
-            own=_own(active_source="spotify", playback_state=PlaybackState.PLAYING),
-            peers={"parent": _peer("parent", active_source="parent")},
-        )
-
-        assert state.active_source == "parent"
 
     def test_live_source_outranks_what_the_device_reports(self) -> None:
         """A live source Music Assistant put on the player is what it plays."""
@@ -844,18 +787,6 @@ class TestActiveSourceAudio:
         group = _group(active_source_audio=details)
 
         state = _derive(groups=(group,), peers={"group_1": _group_peer(group)}, session=_session())
-
-        assert state.active_source_audio is details
-
-    def test_protocol_player_takes_the_details_of_its_parent(self) -> None:
-        """A protocol player publishes the details of what its parent plays."""
-        details = self._details()
-
-        state = _derive(
-            player_type=PlayerType.PROTOCOL,
-            protocol_parent_id="parent",
-            peers={"parent": _peer("parent", active_source_audio=details)},
-        )
 
         assert state.active_source_audio is details
 
@@ -998,19 +929,6 @@ class TestSourceList:
 
         assert [x.id for x in state.source_list].count(SOURCE_URI) == 1
 
-    def test_protocol_player_gets_no_standing_entry(self) -> None:
-        """Protocol players keep their bare source list, without queue or bound-source entries."""
-        own_source = PlayerSource(id="line_in", name="Line-in")
-
-        state = _derive(
-            player_type=PlayerType.PROTOCOL,
-            own=_own(source_list=[own_source]),
-            standing_sources=(_audio_source(can_initiate=True),),
-            session=_session(),
-        )
-
-        assert state.source_list == [own_source]
-
 
 class TestSupportedFeatures:
     """The features of a player."""
@@ -1030,7 +948,7 @@ class TestSupportedFeatures:
         assert reported == set()
 
     def test_active_output_protocol_adds_its_playback_features(self) -> None:
-        """The protocol player rendering the audio decides what playback can do."""
+        """The protocol rendering the audio decides what playback can do."""
         protocol = make_protocol_snapshot(
             "airplay_1",
             supported_features={
@@ -1052,7 +970,7 @@ class TestSupportedFeatures:
         }
 
     def test_idle_linked_protocol_only_adds_what_works_without_playing(self) -> None:
-        """A linked protocol player that renders nothing adds announcements and grouping."""
+        """An audio protocol that renders nothing adds announcements and grouping."""
         protocol = make_protocol_snapshot(
             "airplay_1",
             supported_features={
@@ -1160,69 +1078,39 @@ class TestGroupMembers:
 
         assert state.group_members == []
 
-    def test_protocol_members_show_as_their_visible_players(self) -> None:
-        """Members a device reports as protocol players are the players those belong to."""
+    def test_protocol_members_show_as_their_players(self) -> None:
+        """Members a device reports as protocols are the players those belong to."""
         state = _derive(
-            own=_own(group_members=[PLAYER_ID, "airplay_2", "airplay_3", "unknown"]),
-            peers={
-                PLAYER_ID: _peer(PLAYER_ID),
-                "airplay_2": _peer(
-                    "airplay_2", type=PlayerType.PROTOCOL, protocol_parent_id="player_2"
-                ),
-                "player_2": _peer("player_2"),
-                # a protocol player without a visible player has nothing to show
-                "airplay_3": _peer("airplay_3", type=PlayerType.PROTOCOL),
-            },
+            # the last one is a protocol that is attached to no player
+            own=_own(group_members=[PLAYER_ID, "airplay_2", "airplay_3"]),
+            peers={PLAYER_ID: _peer(PLAYER_ID), "airplay_2": _peer("player_2")},
         )
 
         assert state.group_members == [PLAYER_ID, "player_2"]
 
     def test_active_output_protocol_adds_its_members(self) -> None:
-        """A group formed on the protocol player that renders the audio is the player's group."""
+        """A group formed on the protocol that renders the audio is the player's group."""
         protocol = make_protocol_snapshot("airplay_1", group_members=["airplay_1", "airplay_2"])
 
         state = _derive(
             linked=(protocol,),
             active_protocol=protocol,
             active_output_protocol="airplay_1",
-            peers={
-                "airplay_1": _protocol_peer("airplay_1"),
-                PLAYER_ID: _peer(PLAYER_ID),
-                "airplay_2": _peer(
-                    "airplay_2", type=PlayerType.PROTOCOL, protocol_parent_id="player_2"
-                ),
-                "player_2": _peer("player_2"),
-            },
+            peers={"airplay_1": _peer(PLAYER_ID), "airplay_2": _peer("player_2")},
         )
 
         assert state.group_members == [PLAYER_ID, "player_2"]
 
     def test_idle_linked_protocol_does_not_add_its_members(self) -> None:
-        """Only the protocol player of the active output contributes members."""
+        """Only the protocol of the active output contributes members."""
         protocol = make_protocol_snapshot("airplay_1", group_members=["airplay_1", "airplay_2"])
 
         state = _derive(
             linked=(protocol,),
-            peers={
-                "airplay_1": _protocol_peer("airplay_1"),
-                "airplay_2": _peer(
-                    "airplay_2", type=PlayerType.PROTOCOL, protocol_parent_id="player_2"
-                ),
-                "player_2": _peer("player_2"),
-            },
+            peers={"airplay_1": _peer(PLAYER_ID), "airplay_2": _peer("player_2")},
         )
 
         assert state.group_members == []
-
-    def test_protocol_player_keeps_its_members_as_reported(self) -> None:
-        """A protocol player groups protocol players, which are not translated."""
-        state = _derive(
-            player_type=PlayerType.PROTOCOL,
-            own=_own(group_members=["airplay_3", PLAYER_ID, "airplay_2"]),
-        )
-
-        # in the order reported, but for the player itself, which leads
-        assert state.group_members == [PLAYER_ID, "airplay_3", "airplay_2"]
 
     def test_group_player_does_not_list_itself(self) -> None:
         """A group player lists its members, of which it is not one."""
@@ -1297,22 +1185,15 @@ class TestCanGroupWith:
 
         assert state.can_group_with == {"player_2"}
 
-    def test_protocol_candidates_show_as_their_visible_players(self) -> None:
-        """A protocol player a device can group with stands for the player it belongs to."""
+    def test_protocol_candidates_show_as_their_players(self) -> None:
+        """A protocol a device can group with stands for the player it belongs to."""
         state = _derive(
+            # the second one is a protocol that is attached to no player
             can_group_with={"airplay_2", "airplay_3", "airplay_4"},
             peers={
-                "airplay_2": _peer(
-                    "airplay_2", type=PlayerType.PROTOCOL, protocol_parent_id="player_2"
-                ),
-                "player_2": _peer("player_2"),
-                # belongs to no visible player
-                "airplay_3": _peer("airplay_3", type=PlayerType.PROTOCOL),
-                # its visible player can not join
-                "airplay_4": _peer(
-                    "airplay_4", type=PlayerType.PROTOCOL, protocol_parent_id="player_4"
-                ),
-                "player_4": _peer("player_4", available=False),
+                "airplay_2": _peer("player_2"),
+                # its player can not join
+                "airplay_4": _peer("player_4", available=False),
             },
         )
 
@@ -1329,52 +1210,25 @@ class TestCanGroupWith:
         assert state.can_group_with == set()
 
     def test_locked_grouping_offers_no_targets(self) -> None:
-        """A read-only group offers no targets, also not those of a linked protocol."""
-        protocol = make_protocol_snapshot("airplay_1")
-
+        """A read-only group offers no targets, also not those of an audio protocol."""
         state = _derive(
             grouping_locked=True,
             can_group_with={"player_2"},
-            linked=(protocol,),
-            peers={
-                "player_2": _peer("player_2"),
-                "airplay_1": _protocol_peer("airplay_1", can_group_with={"player_2"}),
-            },
+            protocol_can_group_with={"player_2"},
+            linked=(make_protocol_snapshot("airplay_1"),),
+            peers={"player_2": _peer("player_2")},
         )
 
         assert state.can_group_with == set()
 
-    def test_protocol_player_keeps_its_candidates_as_reported(self) -> None:
-        """A protocol player groups with protocol players, whatever those are doing."""
-        state = _derive(
-            player_type=PlayerType.PROTOCOL,
-            can_group_with={"airplay_2", "source_1"},
-            peers={
-                "airplay_2": _peer("airplay_2", type=PlayerType.PROTOCOL, available=False),
-                "source_1": _peer("source_1", type=PlayerType.SOURCE),
-            },
-        )
-
-        assert state.can_group_with == {"airplay_2"}
-
     def test_linked_protocols_add_their_candidates(self) -> None:
-        """What a linked protocol player can group with, the player can group with."""
-        protocol = make_protocol_snapshot("airplay_1")
-
+        """What an audio protocol of the player can group with, the player can group with."""
         state = _derive(
-            linked=(protocol,),
+            linked=(make_protocol_snapshot("airplay_1"),),
+            protocol_can_group_with={"airplay_2", "airplay_3", "player_4"},
             peers={
-                "airplay_1": _protocol_peer(
-                    "airplay_1", can_group_with={"airplay_2", "airplay_3", "player_4"}
-                ),
-                "airplay_2": _peer(
-                    "airplay_2", type=PlayerType.PROTOCOL, protocol_parent_id="player_2"
-                ),
-                "player_2": _peer("player_2"),
-                "airplay_3": _peer(
-                    "airplay_3", type=PlayerType.PROTOCOL, protocol_parent_id="player_3"
-                ),
-                "player_3": _peer("player_3", available=False),
+                "airplay_2": _peer("player_2"),
+                "airplay_3": _peer("player_3", available=False),
                 "player_4": _peer("player_4"),
             },
         )
@@ -1383,17 +1237,12 @@ class TestCanGroupWith:
 
     def test_external_source_leaves_only_the_own_candidates(self) -> None:
         """A device playing something MA does not produce can not group through a protocol."""
-        protocol = make_protocol_snapshot("airplay_1")
-
         state = _derive(
             own=_own(active_source="tv", playback_state=PlaybackState.PLAYING),
             can_group_with={"player_2"},
-            linked=(protocol,),
-            peers={
-                "player_2": _peer("player_2"),
-                "airplay_1": _protocol_peer("airplay_1", can_group_with={"player_3"}),
-                "player_3": _peer("player_3"),
-            },
+            protocol_can_group_with={"player_3"},
+            linked=(make_protocol_snapshot("airplay_1"),),
+            peers={"player_2": _peer("player_2"), "player_3": _peer("player_3")},
         )
 
         assert state.active_source == "tv"
@@ -1401,16 +1250,12 @@ class TestCanGroupWith:
 
     def test_source_ma_plays_itself_keeps_the_protocol_candidates(self) -> None:
         """Another queue or a live audio source is audio MA can send to a protocol group."""
-        protocol = make_protocol_snapshot("airplay_1")
-
         state = _derive(
             active_mass_source="queue_x",
             mass_sources=frozenset({"queue_x"}),
-            linked=(protocol,),
-            peers={
-                "airplay_1": _protocol_peer("airplay_1", can_group_with={"player_3"}),
-                "player_3": _peer("player_3"),
-            },
+            linked=(make_protocol_snapshot("airplay_1"),),
+            protocol_can_group_with={"player_3"},
+            peers={"player_3": _peer("player_3")},
         )
 
         assert state.active_source == "queue_x"
@@ -1456,18 +1301,6 @@ class TestCurrentMedia:
         )
 
         assert state.current_media is None
-
-    def test_protocol_player_shares_the_media_of_its_parent(self) -> None:
-        """A protocol player publishes the very media object of its parent."""
-        media = PlayerMedia(uri="parent://media", title="Parent song")
-
-        state = _derive(
-            player_type=PlayerType.PROTOCOL,
-            protocol_parent_id="parent",
-            peers={"parent": _peer("parent", current_media=media)},
-        )
-
-        assert state.current_media is media
 
     def test_live_source_names_what_it_plays(self) -> None:
         """The metadata a live source reports is the current media."""
@@ -1517,7 +1350,7 @@ class TestCurrentMedia:
         assert media.queue_session_id == session.playback_session_id
 
     def test_foreign_app_media_is_published_as_reported(self) -> None:
-        """The media of an app on a linked protocol player is that player's own object."""
+        """The media of an app on an audio protocol is the object that protocol reports."""
         app = _app_protocol()
 
         state = _derive(
@@ -1855,15 +1688,6 @@ class TestMediaQueue:
             ),
             ({"own": _own(synced_to="leader"), "peers": {"leader": _peer("leader")}}, None),
             ({"groups": (_group(),), "peers": {"group_1": _group_peer(_group())}}, None),
-            (
-                {
-                    "player_type": PlayerType.PROTOCOL,
-                    "protocol_parent_id": "parent",
-                    "peers": {"parent": _peer("parent")},
-                },
-                None,
-            ),
-            ({"player_type": PlayerType.PROTOCOL, "protocol_parent_id": "gone"}, PLAYER_ID),
             ({"session": _session()}, None),
             ({"linked": (_app_protocol(),), "foreign_app": _app_protocol()}, None),
         ],
@@ -1875,8 +1699,6 @@ class TestMediaQueue:
             "external_source",
             "synced",
             "grouped",
-            "protocol_child",
-            "protocol_without_its_parent",
             "live_source",
             "foreign_app",
         ],
@@ -1978,17 +1800,10 @@ class TestMediaPositionAnchor:
                 "groups": (group,),
                 "peers": {"group_1": _group_peer(group)},
             }
-        if kind == "protocol_child":
-            return {
-                "player_type": PlayerType.PROTOCOL,
-                "protocol_parent_id": "parent",
-                "own": _own(playback_state=PlaybackState.PLAYING),
-                "peers": {"parent": _peer("parent", **owner)},
-            }
         app = _app_protocol(current_media=media)
         return {"linked": (app,), "foreign_app": app}
 
-    @pytest.mark.parametrize("kind", ["synced", "grouped", "protocol_child", "foreign_app"])
+    @pytest.mark.parametrize("kind", ["synced", "grouped", "foreign_app"])
     def test_mirrored_media_keeps_the_anchor_of_its_owner(self, kind: str) -> None:
         """The media object of another player is shared, so its anchor is never rewritten."""
         media = PlayerMedia(uri="http://stream", elapsed_time=15, elapsed_time_last_updated=NOW)
@@ -2082,16 +1897,16 @@ class TestGroupVolume:
         assert state.group_volume == 40
 
     def test_player_named_by_a_legacy_id_does_not_count_itself(self) -> None:
-        """A protocol player that lists itself by a legacy id is still no member of its own."""
+        """A group player that lists itself by a legacy id is still no member of its own."""
         state = _derive(
-            player_type=PlayerType.PROTOCOL,
+            player_type=PlayerType.GROUP,
             volume_control=PLAYER_CONTROL_NATIVE,
             volume_level=90,
             own=_own(group_members=["legacy_id", "member"]),
             peers={
                 "legacy_id": _peer(
                     PLAYER_ID,
-                    type=PlayerType.PROTOCOL,
+                    type=PlayerType.GROUP,
                     volume_control=PLAYER_CONTROL_NATIVE,
                     volume_level=90,
                 ),
@@ -2274,6 +2089,7 @@ class TestEffects:
             left_idle=False,
             went_idle=False,
             foreign_protocol_id=None,
+            clear_active_output=False,
         )
 
 
