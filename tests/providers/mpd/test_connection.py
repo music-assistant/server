@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Callable
+import logging
+from collections.abc import AsyncIterator, Callable
 from typing import cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -116,6 +117,15 @@ async def test_disconnect_never_cancels_its_own_connect_attempt(
     cast("MagicMock", player.mass.cancel_task).assert_not_called()
 
 
+# python-mpd2 hands the raw socket error to commands that were in flight when the
+# connection broke, and ConnectionError to the ones issued after it
+CONNECTION_ERRORS = [
+    pytest.param(MPDConnectionError("Can not send command to disconnected client"), id="mpd"),
+    pytest.param(ConnectionResetError(104, "Connection reset by peer"), id="oserror"),
+]
+
+
+@pytest.mark.parametrize("error", CONNECTION_ERRORS)
 @pytest.mark.parametrize(
     ("method", "client_method", "args"),
     [
@@ -131,15 +141,12 @@ async def test_command_failure_reconnects_instead_of_staying_available(
     method: str,
     client_method: str,
     args: tuple[int, ...],
+    error: Exception,
 ) -> None:
     """A command on a dead socket must mark the player unavailable and reconnect."""
     player = make_mpd_player()
     client = _mock_client()
-    setattr(
-        client,
-        client_method,
-        AsyncMock(side_effect=MPDConnectionError("Can not send command to disconnected client")),
-    )
+    setattr(client, client_method, AsyncMock(side_effect=error))
     player._client = client
     cast("MagicMock", player.mass).call_later.reset_mock()
 
@@ -262,3 +269,160 @@ async def test_poll_command_error_keeps_the_player(
 
     assert player.available is True
     mass.call_later.assert_not_called()
+
+
+def _reconnects_scheduled(player: MPDPlayer) -> int:
+    """Return how often a reconnect was (re-)armed for this player."""
+    return sum(
+        1
+        for call in cast("MagicMock", player.mass).call_later.call_args_list
+        if call.kwargs.get("task_id") == player._reconnect_task_id
+    )
+
+
+def _published_client(player: MPDPlayer) -> MagicMock | None:
+    """Return the command client the player currently exposes to polls and commands."""
+    return cast("MagicMock | None", player._client)
+
+
+def _slow_connect_client(release: asyncio.Event) -> MagicMock:
+    """Return a mocked MPDClient whose connect blocks until release is set."""
+    client = _mock_client()
+
+    async def _connect(*_args: object) -> None:
+        await release.wait()
+
+    client.connect = AsyncMock(side_effect=_connect)
+    return client
+
+
+async def test_poll_during_a_connect_attempt_finds_no_client(
+    make_mpd_player: Callable[..., MPDPlayer],
+) -> None:
+    """
+    A poll racing a connect attempt must not see the half-connected client.
+
+    It would report a lost connection, and the reconnect it arms would tear down
+    the attempt right after it succeeded, every poll interval.
+    """
+    player = make_mpd_player()
+    player.password = None
+    release = asyncio.Event()
+    command_client = _slow_connect_client(release)
+    idle_client = _mock_client()
+
+    with patch(
+        "music_assistant.providers.mpd.player.MPDClient",
+        side_effect=[command_client, idle_client],
+    ):
+        attempt = asyncio.create_task(player._connect())
+        await asyncio.sleep(0)
+        cast("MagicMock", player.mass).call_later.reset_mock()
+
+        assert _published_client(player) is None
+        await player.poll()
+
+        command_client.status.assert_not_called()
+        assert _reconnects_scheduled(player) == 0
+
+        release.set()
+        await attempt
+
+    assert player._client is command_client
+    assert player._idle_client is idle_client
+    assert player.available is True
+
+
+async def test_cancelled_connect_attempt_closes_its_client(
+    make_mpd_player: Callable[..., MPDPlayer],
+) -> None:
+    """A connect attempt aborted by a newer one must not leak its connection."""
+    player = make_mpd_player()
+    player.password = None
+    command_client = _slow_connect_client(asyncio.Event())
+
+    with patch("music_assistant.providers.mpd.player.MPDClient", return_value=command_client):
+        attempt = asyncio.create_task(player._connect())
+        await asyncio.sleep(0)
+        attempt.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await attempt
+
+    command_client.disconnect.assert_called_once()
+    assert player._client is None
+
+
+async def test_repeated_loss_does_not_push_back_the_pending_reconnect(
+    make_mpd_player: Callable[..., MPDPlayer],
+) -> None:
+    """Only the first loss arms a reconnect; later ones must not restart its timer."""
+    player = make_mpd_player()
+    client = _mock_client()
+    lost = MPDConnectionError("Connection lost while reading line")
+    client.status = AsyncMock(side_effect=lost)
+    client.pause = AsyncMock(side_effect=lost)
+    player._client = client
+    cast("MagicMock", player.mass).call_later.reset_mock()
+
+    await player.poll()
+    await player.poll()
+    with pytest.raises(PlayerCommandFailed):
+        await player.pause()
+
+    assert player.available is False
+    assert _reconnects_scheduled(player) == 1
+
+
+async def test_poll_socket_error_is_treated_as_a_lost_connection(
+    make_mpd_player: Callable[..., MPDPlayer],
+) -> None:
+    """A raw socket error from an in-flight status poll must reconnect too."""
+    player = make_mpd_player()
+    client = _mock_client()
+    client.status = AsyncMock(side_effect=ConnectionResetError(104, "Connection reset by peer"))
+    player._client = client
+    cast("MagicMock", player.mass).call_later.reset_mock()
+
+    await player.poll()
+
+    assert player.available is False
+    _assert_reconnect_scheduled(player)
+
+
+async def test_idle_loop_socket_error_is_treated_as_a_lost_connection(
+    make_mpd_player: Callable[..., MPDPlayer],
+) -> None:
+    """A raw socket error ending the idle loop must reconnect, like an MPDError does."""
+    player = make_mpd_player()
+
+    async def _abort() -> str:
+        raise ConnectionAbortedError(103, "Software caused connection abort")
+
+    async def _idle() -> AsyncIterator[str]:
+        yield await _abort()
+
+    idle_client = MagicMock()
+    idle_client.idle = _idle
+    player._idle_client = idle_client
+    cast("MagicMock", player.mass).call_later.reset_mock()
+
+    await player._idle_loop()
+
+    assert player.available is False
+    _assert_reconnect_scheduled(player)
+
+
+async def test_bare_connection_error_is_logged_by_name(
+    make_mpd_player: Callable[..., MPDPlayer],
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """python-mpd2's message-less ConnectionError() must not produce an empty reason."""
+    player = make_mpd_player()
+    client = _mock_client()
+    client.status = AsyncMock(side_effect=MPDConnectionError())
+    player._client = client
+
+    with caplog.at_level(logging.WARNING):
+        await player.poll()
+
+    assert "Lost connection to MPD at 10.0.0.6:6600: ConnectionError" in caplog.text

@@ -168,22 +168,18 @@ class MPDPlayer(Player):
         # A failed attempt or a dead idle loop can leave connected clients behind
         await self._disconnect()
         try:
-            self._client = MPDClient()
-            await self._client.connect(self.host, self.port)
-            if self.password:
-                await self._client.password(self.password)
-
-            self._idle_client = MPDClient()
-            await self._idle_client.connect(self.host, self.port)
-            if self.password:
-                await self._idle_client.password(self.password)
-
-            status = await self._client.status()
+            # Only publish the clients once both are connected. A poll or command
+            # that runs while this attempt is in flight must find no client rather
+            # than a half-connected one: it would report a lost connection, and the
+            # reconnect that arms would tear down this attempt right after it succeeded.
+            client, idle_client, status = await self._open_connections()
+            self._client = client
+            self._idle_client = idle_client
             self._attr_available = True
             self._attr_needs_setup = False
             self._attr_setup_reason = None
             self._attr_device_info = DeviceInfo(
-                model=f"MPD {self._client.mpd_version}",
+                model=f"MPD {client.mpd_version}",
                 manufacturer="Music Player Daemon",
             )
             self._attr_device_info.add_identifier(IdentifierType.IP_ADDRESS, self.host)
@@ -216,6 +212,35 @@ class MPDPlayer(Player):
             self.update_state()
             self.reconnect()
 
+    async def _open_connections(self) -> tuple[MPDClient, MPDClient, dict[str, Any]]:
+        """
+        Open the command and idle connections and fetch the initial status.
+
+        Both are closed again when any step fails, including cancellation by a newer
+        attempt, so a failed attempt never leaves a connection behind.
+
+        :return: The command client, the idle client and the initial MPD status.
+        """
+        client = MPDClient()
+        idle_client: MPDClient | None = None
+        try:
+            await client.connect(self.host, self.port)
+            if self.password:
+                await client.password(self.password)
+
+            idle_client = MPDClient()
+            await idle_client.connect(self.host, self.port)
+            if self.password:
+                await idle_client.password(self.password)
+
+            status = await client.status()
+        except BaseException:
+            client.disconnect()
+            if idle_client is not None:
+                idle_client.disconnect()
+            raise
+        return client, idle_client, status
+
     async def _disconnect(self) -> None:
         """Cancel any pending reconnect, stop the idle loop and disconnect both MPD clients."""
         self.mass.cancel_timer(self._reconnect_task_id)
@@ -247,7 +272,17 @@ class MPDPlayer(Player):
 
         :param err: The error that revealed the lost connection.
         """
-        self.logger.warning("Lost connection to MPD at %s:%s: %s", self.host, self.port, err)
+        if not self._attr_available:
+            # A reconnect is already pending. Re-arming it would only push it back,
+            # since scheduling the same task id restarts its timer.
+            return
+        self.logger.warning(
+            "Lost connection to MPD at %s:%s: %s",
+            self.host,
+            self.port,
+            # python-mpd2 signals a closed connection with a bare ConnectionError()
+            str(err) or type(err).__name__,
+        )
         self._attr_available = False
         self.update_state()
         self.reconnect()
@@ -266,7 +301,7 @@ class MPDPlayer(Player):
             async for subsystem in self._idle_client.idle():
                 if subsystem in ("player", "mixer", "playlist"):
                     await self._fetch_and_sync_state()
-        except MPDError as err:
+        except (MPDError, OSError) as err:
             self._handle_connection_lost(err)
 
     # ------------------------------------------------------------------
@@ -274,13 +309,14 @@ class MPDPlayer(Player):
     # ------------------------------------------------------------------
 
     async def _fetch_and_sync_state(self) -> None:
-        """Fetch current MPD state to update elapsed time."""
+        """Fetch current MPD status and update MA player state."""
         if self._client is None:
             return
         try:
             # python-mpd2 does not time out commands: on a half-open socket this
             # would otherwise block the players controller loop for minutes, so
-            # cap it and treat the timeout as a lost connection.
+            # cap it and treat the timeout as a lost connection. TimeoutError is an
+            # OSError, so it must be handled first.
             async with asyncio.timeout(STATUS_TIMEOUT):
                 status = await self._client.status()
         except TimeoutError:
@@ -288,7 +324,7 @@ class MPDPlayer(Player):
                 TimeoutError(f"no status reply within {STATUS_TIMEOUT} seconds")
             )
             return
-        except MPDConnectionError as err:
+        except (MPDConnectionError, OSError) as err:
             self._handle_connection_lost(err)
             return
         except MPDError as err:
@@ -340,7 +376,7 @@ class MPDPlayer(Player):
             self._attr_current_media = media
             self._attr_playback_state = PlaybackState.PLAYING
             self.update_state()
-        except MPDConnectionError as err:
+        except (MPDConnectionError, OSError) as err:
             self._handle_connection_lost(err)
             raise PlayerCommandFailed(f"play_media failed: {err}") from err
         except MPDError as err:
@@ -354,7 +390,7 @@ class MPDPlayer(Player):
             await self._client.pause(0)
             self._attr_playback_state = PlaybackState.PLAYING
             self.update_state()
-        except MPDConnectionError as err:
+        except (MPDConnectionError, OSError) as err:
             self._handle_connection_lost(err)
             raise PlayerCommandFailed(f"play failed: {err}") from err
         except MPDError as err:
@@ -369,7 +405,7 @@ class MPDPlayer(Player):
             self._attr_playback_state = PlaybackState.IDLE
             self._attr_current_media = None
             self.update_state()
-        except MPDConnectionError as err:
+        except (MPDConnectionError, OSError) as err:
             self._handle_connection_lost(err)
             raise PlayerCommandFailed(f"stop failed: {err}") from err
         except MPDError as err:
@@ -383,7 +419,7 @@ class MPDPlayer(Player):
             await self._client.pause(1)
             self._attr_playback_state = PlaybackState.PAUSED
             self.update_state()
-        except MPDConnectionError as err:
+        except (MPDConnectionError, OSError) as err:
             self._handle_connection_lost(err)
             raise PlayerCommandFailed(f"pause failed: {err}") from err
         except MPDError as err:
@@ -401,7 +437,7 @@ class MPDPlayer(Player):
             await self._client.setvol(volume_level)
             self._attr_volume_level = volume_level
             self.update_state()
-        except MPDConnectionError as err:
+        except (MPDConnectionError, OSError) as err:
             self._handle_connection_lost(err)
             raise PlayerCommandFailed(f"volume_set failed: {err}") from err
         except MPDError as err:
@@ -417,7 +453,7 @@ class MPDPlayer(Player):
             return
         try:
             await self._client.seekcur(position)
-        except MPDConnectionError as err:
+        except (MPDConnectionError, OSError) as err:
             self._handle_connection_lost(err)
             raise PlayerCommandFailed(f"seek failed: {err}") from err
         except MPDError as err:
