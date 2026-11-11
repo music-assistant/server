@@ -191,7 +191,8 @@ class _Rig:
             player_id=queue_id,
             state=SimpleNamespace(playback_state=state, active_source=queue_id),
             extra_data={},
-            private=False,
+            # a shared speaker: its protocol is no private client player
+            protocols={f"{queue_id}_device": SimpleNamespace(private=False)},
             offline_by_power_control=False,
         )
         return item
