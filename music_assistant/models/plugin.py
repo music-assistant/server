@@ -134,7 +134,8 @@ class PluginProvider(
 
         Sync on purpose: called from the player's (sync) state calculation.
 
-        :param player_id: The player to return the input AudioSources for.
+        :param player_id: The id of the player or of one of its protocols: the player asks
+            with each, so a device known by the id of its protocol is found as well.
         """
         return []
 
@@ -206,13 +207,13 @@ class PluginProvider(
         prior request's teardown — see ``on_source_unselected`` for details.
 
         :param source_id: The AudioSource.item_id that was selected.
-        :param player_id: The player the audio is served to. For a source playing on
-            a player this is the owner itself; only direct-PCM consumers and the
-            legacy queue-item path pass a different (protocol or group member) player.
+        :param player_id: The id the stream is fetched under: that of the output protocol
+            of the player that renders the audio (only a live source fetched on its own
+            route passes the owner player). It is no player or queue id: do not use it as
+            one; ``mass.players.get_player_by_protocol`` returns its player.
         :param owner_player_id: The player that owns this playback session. Prefer this
-            for anything you store: it is the user-facing player and stays valid for
-            play_media and cmd_stop, where ``player_id`` can be an ephemeral protocol
-            bridge whose id is gone by the time you use it.
+            for anything you store: it is the user-facing player, the id that player and
+            queue commands such as play_media and cmd_stop take.
         :param stream_session_id: Opaque controller-generated token identifying
             this specific stream request. The matching ``on_source_unselected``
             receives the same value.
